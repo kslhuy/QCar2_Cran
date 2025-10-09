@@ -1,0 +1,10 @@
+# Additional requirements for refactored vehicle control system
+
+# Testing
+pytest>=7.0.0
+
+# Configuration file support
+pyyaml>=6.0
+
+# Note: Core dependencies (numpy, etc.) should already be installed
+# from the original QCar setup

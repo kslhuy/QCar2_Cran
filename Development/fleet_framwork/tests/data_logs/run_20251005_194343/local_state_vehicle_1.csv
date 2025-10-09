@@ -1,0 +1,1 @@
+timestamp,vehicle_id,x,y,theta,velocity,gps_available,dt,gps_x,gps_y,gps_theta,gps_velocity,control_steering,control_acceleration

@@ -1,0 +1,56 @@
+# Configuration for Custom Roadmap (Nodes 0-10)
+
+speed:
+  v_ref: 0.75
+  K_p: 0.1
+  K_i: 1.0
+  max_throttle: 0.3
+
+steering:
+  K_stanley: 0.7
+  max_steering_angle: 0.5236  # pi/6 radians
+  enable_steering_control: true
+
+timing:
+  tf: 6000
+  start_delay: 1.0
+  controller_update_rate: 200
+  telemetry_send_rate: 10
+
+yolo:
+  stop_sign_threshold: 0.6
+  traffic_threshold: 1.7
+  car_threshold: 0.3
+  yield_threshold: 1.0
+  person_threshold: 0.6
+  pulse_length_multiplier: 3
+
+network:
+  host_ip: "192.168.2.200"  # Your host PC IP
+  base_port: 5000
+  car_id: 0
+  connection_timeout: 5
+  max_reconnect_attempts: 10
+  reconnect_delay: 2.0
+
+path:
+  node_configuration: 0
+  calibration_pose: [0, 2, -1.5708]  # [x, y, theta] - adjust based on your map
+  calibrate: false
+  left_hand_traffic: false
+  # Note: valid_nodes is defined in config.py based on node_configuration
+  # For custom map with nodes 0-10, edit config.py valid_nodes property
+
+safety:
+  gps_timeout_max: 100
+  max_loop_time_warning: 0.01
+  emergency_stop_distance: 0.2
+  watchdog_timeout: 1.0
+
+logging:
+  log_dir: "logs"
+  data_log_dir: "data_logs"
+  enable_telemetry_logging: true
+  enable_state_logging: true
+  log_level: "INFO"
+  console_output: true

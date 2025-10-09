@@ -1,0 +1,54 @@
+# Example configuration file for Vehicle Control System
+
+speed:
+  v_ref: 0.6  # Desired velocity in m/s
+  K_p: 0.1     # Proportional gain
+  K_i: 1.0     # Integral gain
+  max_throttle: 0.3
+
+steering:
+  K_stanley: 0.7
+  max_steering_angle: 0.5236  # pi/6 radians (30 degrees)
+  enable_steering_control: true
+
+timing:
+  tf: 6000  # Experiment duration in seconds
+  start_delay: 1.0
+  controller_update_rate: 200  # Hz
+  telemetry_send_rate: 10  # Hz
+
+yolo:
+  stop_sign_threshold: 0.6
+  traffic_threshold: 1.7
+  car_threshold: 0.3
+  yield_threshold: 1.0
+  person_threshold: 0.6
+  pulse_length_multiplier: 3
+
+network:
+  host_ip: 192.168.2.200  # Set to host PC IP for remote control
+  base_port: 5000
+  car_id: 0
+  connection_timeout: 10
+  max_reconnect_attempts: 10
+  reconnect_delay: 2.0
+
+path:
+  node_configuration: 0
+  calibration_pose: [-1.28205, -0.45991, -0.7330382858376184] # [x, y, theta] in radians
+  calibrate: false
+  left_hand_traffic: false
+
+safety:
+  gps_timeout_max: 100  # iterations
+  max_loop_time_warning: 0.01  # seconds
+  emergency_stop_distance: 0.2  # meters
+  watchdog_timeout: 1.0  # seconds
+
+logging:
+  log_dir: "logs"
+  data_log_dir: "data_logs"
+  enable_telemetry_logging: true
+  enable_state_logging: true
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  console_output: true

@@ -1,0 +1,19 @@
+/pure_pursuit:
+  ros__parameters:
+    K_p: 0.5
+    lookahead_ratio: 8.0
+    max_lookahead: 1.0
+    min_lookahead: 0.5
+    nodeSequence:
+    - 10
+    - 4
+    - 20
+    - 10
+    steering_limit: 25.0
+    use_sim_time: false
+    velocity_percentage: 0.1
+
+    
+waypoints:
+  ros__parameters:
+    nodeSequence: [10, 4, 20, 10]
