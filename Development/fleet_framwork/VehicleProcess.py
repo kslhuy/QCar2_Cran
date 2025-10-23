@@ -190,6 +190,8 @@ def vehicle_process_main(vehicle_config: Dict, stop_event: multiprocessing.Event
         status_queue.put({'vehicle_id': vehicle_id, 'status': 'shutdown'})
 
 
+
+
 class VehicleProcess:
     """
     Vehicle class that runs in its own process and manages its own control logic.

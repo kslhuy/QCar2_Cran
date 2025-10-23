@@ -24,10 +24,15 @@ class CACC:
         self.K = self.param_opt['K']
         self.h = self.param_opt['hi']
         
-        # Acceleration limits
-        self.max_acc = 30.0
-        self.min_acc = -30.0
-    
+        # Acceleration limits - FIXED: More reasonable limits for QCar
+        # QCar is small and slow, so use gentler acceleration limits
+        self.max_acc = 1.5   # Maximum acceleration (m/s²) - reduced from 5.0
+        self.min_acc = -1.5  # Maximum deceleration (m/s²) - reduced from -5.0
+        
+        # Smoothing filter for acceleration commands
+        self.prev_acc = 0.0  # Previous acceleration command
+        self.alpha_filter = 0.5  # Smoothing factor (0 = no new input, 1 = no smoothing)
+
     def compute_cacc_acceleration(self, follower_state, leader_state):
         """
         Compute CACC acceleration directly from follower and leader states.
@@ -44,26 +49,42 @@ class CACC:
         x, y, theta, v = follower_state
         x_j, y_j, theta_j, v_j = leader_state
         
-        # Calculate spacing and velocity errors
+        # Calculate actual distance between vehicles
         pos = np.array([x, y])
         pos_j = np.array([x_j, y_j])
         d_vec = pos_j - pos
-        s = np.linalg.norm(d_vec)
         
-        # Calculate target spacing and errors
+        # Use Euclidean distance for spacing measurement
+        spacing = np.linalg.norm(d_vec)
+        
+        # Alternative: Project distance along follower's heading (more accurate for lane following)
+        # This measures the distance component in the direction the follower is moving
+        # unit_heading_follower = np.array([math.cos(theta), math.sin(theta)])
+        # spacing = d_vec @ unit_heading_follower
+        
+        # Calculate target spacing using constant time headway policy
+        # s* = s0 + h * v (spacing increases with velocity)
         spacing_target = self.s0 + self.h * v
-        spacing_error = s - spacing_target
-        velocity_error = v_j - v
+        
+        # Calculate errors
+        spacing_error = spacing - spacing_target  # Positive if too far, negative if too close
+        velocity_error = v_j - v  # Positive if leader is faster
         
         # Compute cooperative acceleration using CACC control law
+        # u = K * [spacing_error; velocity_error]
         control_vector = np.array([spacing_error, velocity_error])
         u_coop = self.K @ control_vector
         acc = u_coop[0]
         
-        # Apply acceleration limits
+        # Apply acceleration limits for safety
         acc = max(self.min_acc, min(acc, self.max_acc))
         
-        return acc
+        # Apply exponential smoothing to reduce jerkiness
+        # Smoothed output = alpha * new_value + (1 - alpha) * previous_value
+        acc_smoothed = self.alpha_filter * acc + (1 - self.alpha_filter) * self.prev_acc
+        self.prev_acc = acc_smoothed
+        
+        return acc_smoothed
 
     def get_optimal_input(self, host_car_id, state, last_input, lane_id, input_log,
                           initial_lane_id, direction_flag, type_state, acc_flag):

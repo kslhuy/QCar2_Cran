@@ -89,7 +89,7 @@ class ObserverDataLogger:
         self.csv_writers['local'].writerow([
             'timestamp', 'vehicle_id', 'x', 'y', 'theta', 'velocity', 
             'gps_available', 'dt', 'gps_x', 'gps_y', 'gps_theta', 'gps_velocity',
-            'control_steering', 'control_acceleration'
+            'control_steering', 'control_acceleration', 'actual_acceleration'
         ])
         
         # Fleet state CSV  
@@ -105,7 +105,7 @@ class ObserverDataLogger:
     
     def log_local_state(self, timestamp: float, local_state: np.ndarray, 
                        measured_state: Optional[np.ndarray], control_input: np.ndarray,
-                       gps_available: bool, dt: float):
+                       gps_available: bool, dt: float, actual_acceleration: float = 0.0):
         """
         Log local state data.
         
@@ -116,6 +116,7 @@ class ObserverDataLogger:
             control_input: Control input [steering, acceleration]
             gps_available: Whether GPS is available
             dt: Time step
+            actual_acceleration: Actual measured acceleration
         """
         with self.lock:
             # Store in memory
@@ -126,7 +127,8 @@ class ObserverDataLogger:
                 'measured_state': measured_state.copy() if measured_state is not None else None,
                 'control_input': control_input.copy(),
                 'gps_available': gps_available,
-                'dt': dt
+                'dt': dt,
+                'actual_acceleration': actual_acceleration
             }
             self.local_state_data.append(data_entry)
             
@@ -137,7 +139,7 @@ class ObserverDataLogger:
                 local_state[0], local_state[1], local_state[2], local_state[3],
                 gps_available, dt,
                 gps_values[0], gps_values[1], gps_values[2], gps_values[3],
-                control_input[0], control_input[1]
+                control_input[0], control_input[1], actual_acceleration
             ]
             self.csv_writers['local'].writerow(csv_row)
             self.csv_files['local'].flush()
@@ -420,8 +422,9 @@ class FleetDataVisualizer:
         plt.plot(data['x'].iloc[-1], data['y'].iloc[-1], 'ro', markersize=8, label='End')
         
         # Plot GPS measurements if available and requested
-        if show_gps and 'gps_x' in data.columns:
-            gps_data = data.dropna(subset=['gps_x', 'gps_y'])
+        if show_gps and 'gps_x' in data.columns and 'gps_available' in data.columns:
+            # Only plot GPS when it's actually available (not just last value)
+            gps_data = data[data['gps_available'] == True].copy()
             if not gps_data.empty:
                 plt.scatter(gps_data['gps_x'], gps_data['gps_y'], 
                            c='red', alpha=0.5, s=20, label='GPS Measurements')
@@ -611,28 +614,38 @@ class FleetDataVisualizer:
         # Calculate relative time
         relative_time = self._calculate_relative_time(data)
         
-        # Create subplots
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        # Check if acceleration data is available
+        has_acceleration = 'actual_acceleration' in data.columns
+        
+        # Create subplots - 3x2 if acceleration available, else 2x2
+        if has_acceleration:
+            fig, axes = plt.subplots(3, 2, figsize=(15, 14))
+        else:
+            fig, axes = plt.subplots(2, 2, figsize=(15, 10))
         fig.suptitle(f'Vehicle {vehicle_id} State Estimation vs GPS', fontsize=16)
         
         # Position X
         axes[0, 0].plot(relative_time, data['x'], 'b-', label='Estimated', linewidth=2)
-        if 'gps_x' in data.columns:
-            gps_data = data.dropna(subset=['gps_x'])
-            gps_relative_time = self._calculate_relative_time(gps_data)
-            axes[0, 0].scatter(gps_relative_time, gps_data['gps_x'], 
-                              c='red', alpha=0.7, s=15, label='GPS')
+        if 'gps_x' in data.columns and 'gps_available' in data.columns:
+            # Only plot GPS when it's actually available
+            gps_data = data[data['gps_available'] == True].copy()
+            if not gps_data.empty:
+                gps_relative_time = self._calculate_relative_time(gps_data)
+                axes[0, 0].scatter(gps_relative_time, gps_data['gps_x'], 
+                                  c='red', alpha=0.7, s=15, label='GPS')
         axes[0, 0].set_ylabel('X Position (m)')
         axes[0, 0].legend()
         axes[0, 0].grid(True, alpha=0.3)
         
         # Position Y
         axes[0, 1].plot(relative_time, data['y'], 'b-', label='Estimated', linewidth=2)
-        if 'gps_y' in data.columns:
-            gps_data = data.dropna(subset=['gps_y'])
-            gps_relative_time = self._calculate_relative_time(gps_data)
-            axes[0, 1].scatter(gps_relative_time, gps_data['gps_y'], 
-                              c='red', alpha=0.7, s=15, label='GPS')
+        if 'gps_y' in data.columns and 'gps_available' in data.columns:
+            # Only plot GPS when it's actually available
+            gps_data = data[data['gps_available'] == True].copy()
+            if not gps_data.empty:
+                gps_relative_time = self._calculate_relative_time(gps_data)
+                axes[0, 1].scatter(gps_relative_time, gps_data['gps_y'], 
+                                  c='red', alpha=0.7, s=15, label='GPS')
         axes[0, 1].set_ylabel('Y Position (m)')
         axes[0, 1].legend()
         axes[0, 1].grid(True, alpha=0.3)
@@ -640,11 +653,13 @@ class FleetDataVisualizer:
         # Heading
         axes[1, 0].plot(relative_time, np.rad2deg(data['theta']), 'b-', 
                        label='Estimated', linewidth=2)
-        if 'gps_theta' in data.columns:
-            gps_data = data.dropna(subset=['gps_theta'])
-            gps_relative_time = self._calculate_relative_time(gps_data)
-            axes[1, 0].scatter(gps_relative_time, np.rad2deg(gps_data['gps_theta']), 
-                              c='red', alpha=0.7, s=15, label='GPS')
+        if 'gps_theta' in data.columns and 'gps_available' in data.columns:
+            # Only plot GPS when it's actually available
+            gps_data = data[data['gps_available'] == True].copy()
+            if not gps_data.empty:
+                gps_relative_time = self._calculate_relative_time(gps_data)
+                axes[1, 0].scatter(gps_relative_time, np.rad2deg(gps_data['gps_theta']), 
+                                  c='red', alpha=0.7, s=15, label='GPS')
         axes[1, 0].set_ylabel('Heading (degrees)')
         axes[1, 0].set_xlabel('Time (s)')
         axes[1, 0].legend()
@@ -652,15 +667,37 @@ class FleetDataVisualizer:
         
         # Velocity
         axes[1, 1].plot(relative_time, data['velocity'], 'b-', label='Estimated', linewidth=2)
-        if 'gps_velocity' in data.columns:
-            gps_data = data.dropna(subset=['gps_velocity'])
-            gps_relative_time = self._calculate_relative_time(gps_data)
-            axes[1, 1].scatter(gps_relative_time, gps_data['gps_velocity'], 
-                              c='red', alpha=0.7, s=15, label='GPS')
+        if 'gps_velocity' in data.columns and 'gps_available' in data.columns:
+            # Only plot GPS when it's actually available
+            gps_data = data[data['gps_available'] == True].copy()
+            if not gps_data.empty:
+                gps_relative_time = self._calculate_relative_time(gps_data)
+                axes[1, 1].scatter(gps_relative_time, gps_data['gps_velocity'], 
+                                  c='red', alpha=0.7, s=15, label='GPS')
         axes[1, 1].set_ylabel('Velocity (m/s)')
         axes[1, 1].set_xlabel('Time (s)')
         axes[1, 1].legend()
         axes[1, 1].grid(True, alpha=0.3)
+        
+        # Acceleration (if available)
+        if has_acceleration:
+            axes[2, 0].plot(relative_time, data['actual_acceleration'], 'g-', 
+                           label='Actual Acceleration', linewidth=2)
+            if 'control_acceleration' in data.columns:
+                axes[2, 0].plot(relative_time, data['control_acceleration'], 'orange', 
+                               linestyle='--', label='Control Acceleration', linewidth=1.5, alpha=0.7)
+            axes[2, 0].set_ylabel('Acceleration (m/s²)')
+            axes[2, 0].set_xlabel('Time (s)')
+            axes[2, 0].legend()
+            axes[2, 0].grid(True, alpha=0.3)
+            
+            # Control Steering (if acceleration plot is shown)
+            axes[2, 1].plot(relative_time, data['control_steering'], 'purple', 
+                           label='Steering Control', linewidth=2)
+            axes[2, 1].set_ylabel('Steering Angle (rad)')
+            axes[2, 1].set_xlabel('Time (s)')
+            axes[2, 1].legend()
+            axes[2, 1].grid(True, alpha=0.3)
         
         plt.tight_layout()
         

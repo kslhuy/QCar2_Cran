@@ -31,6 +31,10 @@ class RealSenseWrapper:
         self.img_proc = ImageProcessing()
         # self.img_proc.calibrate_camera()
     
+    def get_frames_RT(self,myYolo=None):
+        pass
+        
+
     def get_frames(self,myYolo=None):
         """
         Get RGB and depth frames

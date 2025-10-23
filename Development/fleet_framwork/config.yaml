@@ -21,7 +21,7 @@ active_preset: "studio_cacc"      # Studio configuration (indoor, smaller scale)
 # =============================================================================
 simulation:
   time: 60                        # Simulation duration in seconds (0 = unlimited)
-  road_type: "OpenRoad"             # "OpenRoad" or "Studio" (overridden by preset if set)
+  road_type: "Studio"             # "OpenRoad" or "Studio" (overridden by preset if set)
   controller_type: "CACC"         # "CACC" or "IDM" or "LOOKAHEAD" (only use for following controllers)
 
 # =============================================================================
@@ -31,20 +31,21 @@ fleet:
   num_vehicles: 2                 # Number of vehicles in fleet (2-5) - Testing chain following
   leader_index: 0                 # Which vehicle is the leader (0-based)
   distance_between_cars: 0.2      # Distance between vehicles (meters)
+  spawn_method: "individual"      # Vehicle spawn method: "multiagent" or "individual"
 
 # =============================================================================
 # VEHICLE CONTROL PARAMETERS
 # =============================================================================
 control:
-  max_velocity: 2.0               # Maximum vehicle velocity (m/s)
+  max_velocity: 0.4               # Maximum vehicle velocity (m/s)
   max_steering: 0.6               # Maximum steering angle (radians)
-  lookahead_distance: 7.0         # Path following lookahead distance (meters)
+  lookahead_distance: 0.5         # Path following lookahead distance (meters)
   enable_steering_control: false  # Enable steering control (false for OpenRoad straight path)
   
   # Update rates (Hz)
   general_update_rate: 50         # Main control loop rate
   controller_rate: 100              # Controller update rate
-  observer_rate: 100               # Observer update rate
+  observer_rate: 120               # Observer update rate
   gps_update_rate: 5               # GPS update rate
 
 # =============================================================================
@@ -52,8 +53,8 @@ control:
 # =============================================================================
 path:
   rebuild_path: true              # Whether to rebuild the path
-  # node_sequence: [10, 4, 20, 13, 10]  # Path nodes for Studio
-  node_sequence: [0, 1]         # Path nodes for OpenRoad (uncomment if needed)
+  node_sequence: [10, 4, 20, 13, 10]  # Path nodes for Studio
+  # node_sequence: [0, 1]         # Path nodes for OpenRoad (uncomment if needed)
 
 # =============================================================================
 # CONTROLLER PARAMETERS
@@ -61,17 +62,18 @@ path:
 # These parameters control the vehicle following behavior
 controller_params:
   # Car-following parameters
-  alpha: 1.0                      # Acceleration sensitivity
+  alpha: 1.2                      # Acceleration sensitivity
   beta: 1.5                       # Deceleration sensitivity
-  v0: 1.0                         # Desired velocity (m/s)
-  delta: 4                        # Acceleration exponent
-  T: 0.4                          # Time headway (seconds)
-  s0: 7                           # Minimum spacing (meters)
-  ri: 7                           # CACC spacing parameter (meters)
-  hi: 0.5                         # Time headway for CACC (seconds)
+  v0: 0.4                         # Desired velocity (m/s)
+  delta: 3                        # Acceleration exponent
+  T: 0.3                          # Time headway (seconds)
+  s0: 1                         # Minimum spacing (meters) - FIXED: was 7m, now 0.5m for small QCars
+  ri: 1                         # CACC spacing parameter (meters) - FIXED: was 7m, now 0.5m
+  hi: 0.3                         # Time headway for CACC (seconds) - INCREASED for smoother following
   
   # Control gains (2x2 matrix as [K11, K12, K21, K22])
-  K_gains: [1.0, 0.0, 0.0, 1.0]  # Control gain matrix
+  # FIXED: Increased gains and added coupling for better tracking
+  K_gains: [1.0, 1.0, 0.5, 2.0]  # [spacing_gain, velocity_feedforward, spatial_coupling, velocity_gain]
 
 # =============================================================================
 # OBSERVER SETTINGS

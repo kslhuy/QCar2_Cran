@@ -1,0 +1,44 @@
+# Example configuration for using TRAJECTORY controller type
+# This allows a follower vehicle to follow a predefined trajectory instead of following another vehicle
+
+vehicles:
+  - id: 0
+    role: "leader"
+    controller_type: "leader"
+    road_type: "Studio"  # or "OpenRoad"
+    node_sequence: [0, 1, 2, 3]  # Waypoint nodes to follow
+    enable_steering_control: true
+    K_p: 0.1  # Speed controller proportional gain
+    K_i: 0.08  # Speed controller integral gain
+    K_stanley: 0.8  # Stanley steering gain
+    max_steering: 0.6
+    startDelay: 1
+
+  - id: 1
+    role: "follower"
+    controller_type: "TRAJECTORY"  # New trajectory-following controller
+    road_type: "Studio"  # Should match leader's road type
+    node_sequence: [0, 1, 2, 3]  # Can be same or different trajectory
+    enable_steering_control: true
+    K_p: 0.1  # Speed controller proportional gain
+    K_i: 0.08  # Speed controller integral gain
+    K_stanley: 0.8  # Stanley steering gain
+    max_steering: 0.55
+    startDelay: 1
+
+  - id: 2
+    role: "follower"
+    controller_type: "CACC"  # Traditional follower using CACC
+    leader_id: 1  # Follow vehicle 1
+    road_type: "Studio"
+    enable_steering_control: true
+    lookahead_distance: 0.4
+    max_steering: 0.55
+    k_steering: 2.0
+
+# Notes:
+# - TRAJECTORY controller allows a follower to independently follow a path
+# - It uses the same waypoint-following logic as the leader vehicle
+# - Useful for multi-vehicle scenarios where not all vehicles follow each other
+# - Each TRAJECTORY vehicle can have its own node_sequence (path)
+# - Parameters like K_p, K_i, K_stanley control speed and steering behavior

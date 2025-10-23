@@ -31,9 +31,9 @@ node_options = args.node_configuration
 
 # choosing between two sets of nodes which avoids two way traffic
 if node_options==0:
-    valid_nodes=[10, 2, 4, 6, 8, 1]
+    valid_nodes=[10, 4, 6, 8, 1]
 else:
-    valid_nodes=[10, 2, 4, 6, 8, 1]
+    valid_nodes=[10, 4, 6, 8, 1]
 
 # choosing random node sequence
 # random.shuffle(valid_nodes)

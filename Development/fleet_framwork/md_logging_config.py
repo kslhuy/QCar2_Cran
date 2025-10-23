@@ -100,9 +100,10 @@ class FilteredLoggerAdapter(logging.LoggerAdapter):
         if 'TRUST:' in msg_str or 'TRUST_SCORE:' in msg_str or 'TRUST_EVAL:' in msg_str or 'GRAPH_TRUST:' in msg_str:
             return self.fleet_config.module_logging_enabled.get('trust', True)
         
-        # Debug logs
+        # For DEBUG level, allow if the module is enabled (don't require separate 'debug' module)
+        # The 'debug' module setting is now only for general debug filtering if needed
         if level == logging.DEBUG:
-            return self.fleet_config.module_logging_enabled.get('debug', False)
+            return True  # Allow DEBUG if module is enabled
         
         return True
     
@@ -167,7 +168,7 @@ class FleetLoggingConfig:
             'weight': True,        # Weight calculation and distribution
             'timing': True,        # Performance timing logs
             'state': True,         # State update logs
-            'debug': False         # Debug level logs
+            'debug': False         # Debug level logs (deprecated - now controlled by individual logger levels)
         }
         
         # Create logs directory if it doesn't exist

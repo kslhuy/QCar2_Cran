@@ -13,9 +13,21 @@ class SimpleFleetConfig:
     """
     Simple configuration loader that reads from YAML file.
     Much easier to modify than the complex FleetConfig class.
+    
+    This class provides:
+    - Easy loading of YAML configuration files
+    - Preset configurations for quick setup (OpenRoad, Studio)
+    - Property-based access to configuration values
+    - Dynamic configuration updates
+    - Configuration saving and printing
+    
+    Usage:
+        config = SimpleFleetConfig("config.yaml")
+        num_vehicles = config.qcar_num
+        config.print_config()
     """
     
-    # Define preset configurations
+    # Define preset configurations for common scenarios
     PRESETS = {
         'openroad_cacc': {
             'simulation': {
@@ -48,7 +60,7 @@ class SimpleFleetConfig:
                 'controller_type': 'CACC'
             },
             'control': {
-                'max_velocity': 0.5,
+                'max_velocity': 0.3,
                 'lookahead_distance': 0.5,
                 'enable_steering_control': True  # Studio has curves, steering needed
             },
@@ -58,13 +70,13 @@ class SimpleFleetConfig:
             'controller_params': {
                 'alpha': 1.2,
                 'beta': 2.0,
-                'v0': 0.5,
+                'v0': 0.3,
                 'delta': 3,
                 'T': 0.3,
                 's0': 1,
                 'ri': 1,
                 'hi': 0.3,
-                'K_gains': [1.1, 0.0, 0.0, 1.1]
+                'K_gains': [1.1, 1.0, 0.0, 1.1]
             }
         }
     }
@@ -73,8 +85,14 @@ class SimpleFleetConfig:
         """
         Initialize configuration from YAML file.
         
+        This method:
+        1. Sets the config file path
+        2. Initializes empty config_data dictionary
+        3. Loads configuration from YAML file (or defaults if file not found)
+        4. Applies preset if 'active_preset' is specified in the config
+        
         Args:
-            config_file: Path to YAML configuration file
+            config_file: Path to YAML configuration file (default: "config.yaml")
         """
         self.config_file = config_file
         self.config_data = {}
@@ -82,7 +100,19 @@ class SimpleFleetConfig:
         self._apply_preset_if_specified()
     
     def load_config(self):
-        """Load configuration from YAML file."""
+        """
+        Load configuration from YAML file.
+        
+        This method attempts to load the configuration file from:
+        1. Current working directory
+        2. Same directory as this script
+        
+        If loading fails:
+        - FileNotFoundError: Falls back to default configuration
+        - YAMLError: Falls back to default configuration
+        
+        Prints the config file path on success, warnings on failure.
+        """
         try:
             # Try to load from current directory first
             if os.path.exists(self.config_file):
@@ -106,7 +136,17 @@ class SimpleFleetConfig:
             self._load_default_config()
     
     def _load_default_config(self):
-        """Load default configuration if YAML file is not available."""
+        """
+        Load default configuration if YAML file is not available.
+        
+        This method provides a fallback configuration with reasonable defaults:
+        - Studio environment with CACC controller
+        - 2 vehicles in platoon formation
+        - Standard control parameters for Studio environment
+        - All sensors and communication enabled
+        
+        Used when: YAML file not found or has parsing errors.
+        """
         self.config_data = {
             'simulation': {
                 'time': 40,
@@ -116,7 +156,8 @@ class SimpleFleetConfig:
             'fleet': {
                 'num_vehicles': 2,
                 'leader_index': 0,
-                'distance_between_cars': 0.2
+                'distance_between_cars': 0.2,
+                'spawn_method': 'multiagent'
             },
             'control': {
                 'max_velocity': 0.5,
@@ -124,7 +165,7 @@ class SimpleFleetConfig:
                 'lookahead_distance': 0.5,
                 'enable_steering_control': True,
                 'update_rate': 100,
-                'observer_rate': 100,
+                'observer_rate': 110,
                 'gps_update_rate': 50
             },
             'path': {
@@ -140,7 +181,7 @@ class SimpleFleetConfig:
                 's0': 1,
                 'ri': 1,
                 'hi': 0.3,
-                'K_gains': [1.1, 0.0, 0.0, 1.1]
+                'K_gains': [1.1, 1.0, 0.0, 1.1]
             },
             'communication': {
                 'use_communication': True,
@@ -162,7 +203,20 @@ class SimpleFleetConfig:
         }
     
     def _apply_preset_if_specified(self):
-        """Apply preset configuration if 'active_preset' is specified in config."""
+        """
+        Apply preset configuration if 'active_preset' is specified in config.
+        
+        This method checks if the loaded YAML config contains an 'active_preset' key.
+        If found and valid:
+        - Applies the preset configuration (merges preset values into config)
+        - Prints confirmation message
+        
+        If preset name is invalid:
+        - Prints warning with list of available presets
+        - Continues with existing configuration
+        
+        Available presets: 'openroad_cacc', 'studio_cacc'
+        """
         active_preset = self.config_data.get('active_preset')
         
         if active_preset:
@@ -266,6 +320,10 @@ class SimpleFleetConfig:
     @property
     def distance_between_cars(self) -> float:
         return self.get('fleet', 'distance_between_cars', 0.2)
+    
+    @property
+    def spawn_method(self) -> str:
+        return self.get('fleet', 'spawn_method', 'multiagent')
     
     @property
     def max_velocity(self) -> float:

@@ -4,8 +4,10 @@ from pal.utilities.scope import MultiScope
 import pal.resources.images as images
 
 from qvl.qlabs import QuanserInteractiveLabs
+from qvl.multi_agent import MultiAgent, readRobots
 from qvl.qcar2 import QLabsQCar2
 from qvl.real_time import QLabsRealTime
+from qvl.free_camera import QLabsFreeCamera
 #Environment
 from qvl.basic_shape import QLabsBasicShape
 from qvl.walls import QLabsWalls
@@ -18,7 +20,9 @@ from src.Controller.DummyController import DummyVehicle
 from src.Controller.idm_control import IDMControl
 from src.Controller.CACC import CACC
 from src.OpenRoad import OpenRoad
-from VehicleProcess import vehicle_process_main
+# from VehicleProcess import vehicle_process_main
+import VehicleProcess
+import VehicleProcess_RTmodel
 
 import time, io, math, threading, os, multiprocessing
 import numpy as np
@@ -392,12 +396,6 @@ class QcarFleet:
             quit()
             #Check the number of cars in the fleet. 
         self.InitQcarSpawnData(QlabType)  # Only prepare spawn data, don't spawn here
-        
-        # if not self.LeaderIndex in self.QcarIndexList:
-        #     print("Error: Leader Car Index Illegal")
-        #     quit()
-        # else:
-        #     QLabsRealTime().start_real_time_model(self.rtModel, actorNumber=self.LeaderIndex)
 
         self.InitThread()  # Keep for compatibility, but won't use threading locks
         self.PrepareVehicleConfigs()  # Prepare configurations for vehicle processes
@@ -618,6 +616,74 @@ class QcarFleet:
         print(f"Graph connectivity: {stats['total_connections']}/{stats['max_connections']} connections ({stats['connectivity_ratio']:.1%})")
         pass
 
+
+    def spawn_cars_multiagent(self, camera_pose=None, camera_rotation=None, close_camera_session=False, radians=True):
+        """
+        Spawn vehicles using the QVL MultiAgent helper (like `initCars.py`).
+
+        - camera_pose/camera_rotation: optional camera location/rotation to spawn and possess
+        - close_camera_session: if True, close the qlabs session used for the camera (mirrors initCars.py)
+        - radians: whether rotations are in radians (default True to match initCars.py)
+
+        Returns the MultiAgent instance or None on failure. Stores it in `self.multiagent_spawns`.
+        """
+        if not hasattr(self, 'vehicle_configs') or not self.vehicle_configs:
+            print("No vehicle configurations found. Call PrepareVehicleConfigs() first.")
+            return None
+        # QLabsRealTime().terminate_all_real_time_models()
+        # time.sleep(1)
+
+
+
+        # Prepare QCARS list in the format expected by MultiAgent
+        QCARS_list = []
+        for cfg in self.vehicle_configs:
+            robot_type = cfg.get('RobotType', 'QCar2')
+            loc = cfg.get('spawn_location', [0, 0, 0])
+            rot = cfg.get('spawn_rotation', [0, 0, 0])
+            
+            # Extract scale - vehicle_scale is a list [x,y,z], but MultiAgent expects a single float
+            vehicle_scale = cfg.get('vehicle_scale', [0.1, 0.1, 0.1])
+            if isinstance(vehicle_scale, list):
+                scale = float(vehicle_scale[0])  # Use first element as uniform scale
+            else:
+                scale = float(vehicle_scale)
+
+            QCARS_list.append({
+                'RobotType': robot_type,
+                'Location': loc,
+                'Rotation': rot,
+                'Radians': bool(radians),
+                'Scale': scale,
+            })
+
+        # Optional camera handling (use the fleet qlabs session)
+        if camera_pose is not None:
+            try:
+                cam = QLabsFreeCamera(self.qlabs)
+                rot = camera_rotation if camera_rotation is not None else [0, 0, 0]
+                cam.spawn_degrees(location=camera_pose, rotation=rot)
+                cam.possess()
+                print("Spawned and possessed free camera for multiagent spawn")
+                if close_camera_session:
+                    # Close the qlabs session used by the camera (initCars closes it)
+                    try:
+                        self.qlabs.close()
+                        print("Closed camera qlabs session")
+                    except Exception as e:
+                        print(f"Failed to close camera qlabs session: {e}")
+            except Exception as e:
+                print(f"Warning: failed to spawn/possess camera: {e}")
+
+        try:
+            mySpawns = MultiAgent(QCARS_list)
+            self.multiagent_spawns = mySpawns
+            print(f"MultiAgent spawned {len(QCARS_list)} vehicles")
+            return mySpawns
+        except Exception as e:
+            print(f"Failed to spawn with MultiAgent: {e}")
+            return None
+
     def get_fleet_graph(self):
         """
         Get the current fleet adjacency matrix
@@ -670,18 +736,31 @@ class QcarFleet:
         Start processes for every vehicle in the fleet
         """
         print("Starting fleet vehicle processes...")
-        
-        for i, vehicle_config in enumerate(self.vehicle_configs):
-            # Create a new process for each vehicle
-            process = multiprocessing.Process(
-                target=vehicle_process_main,
-                args=(vehicle_config, self.stop_event, self.status_queue, self.start_event),
-                name=f"Vehicle-{i}"
-            )
-            process.start()
-            self.vehicle_processes.append(process)
-            print(f"Started process for vehicle {i} ({'Leader' if vehicle_config['is_leader'] else 'Follower'})")
-            time.sleep(0.5)  # Increased from 0.1 to 0.5 seconds
+        if self.config.spawn_method == "multiagent": 
+            self.spawn_cars_multiagent()
+            for i, vehicle_config in enumerate(self.vehicle_configs):
+                # Create a new process for each vehicle
+                process = multiprocessing.Process(
+                    target=VehicleProcess_RTmodel.vehicle_process_main,
+                    args=(vehicle_config, self.stop_event, self.status_queue, self.start_event),
+                    name=f"Vehicle-{i}"
+                )
+                process.start()
+                self.vehicle_processes.append(process)
+                print(f"Started process for vehicle {i} ({'Leader' if vehicle_config['is_leader'] else 'Follower'})")
+                time.sleep(0.5) 
+        else:        
+            for i, vehicle_config in enumerate(self.vehicle_configs):
+                # Create a new process for each vehicle
+                process = multiprocessing.Process(
+                    target=VehicleProcess.vehicle_process_main,
+                    args=(vehicle_config, self.stop_event, self.status_queue, self.start_event),
+                    name=f"Vehicle-{i}"
+                )
+                process.start()
+                self.vehicle_processes.append(process)
+                print(f"Started process for vehicle {i} ({'Leader' if vehicle_config['is_leader'] else 'Follower'})")
+                time.sleep(0.5)  
         
         # Wait for all vehicles to initialize
         print("Waiting for vehicle processes to initialize...")
@@ -755,12 +834,28 @@ class QcarFleet:
         # Clear the process list
         self.vehicle_processes.clear()
         
+
+        
         # Close QLabs connection in main process
         try:
             if hasattr(self, 'qlabs') and self.qlabs is not None:
                 print("Closing main QLabs connection...")
                 self.qlabs.close()
                 print("Main QLabs connection closed")
+            else :
+                for robot in self.multiagent_spawns.robotActors:
+                    robot.set_velocity_and_request_state(
+                        forward=0.0, 
+                        turn=0.0,
+                        headlights=False,
+                        leftTurnSignal=False,
+                        rightTurnSignal=False,
+                        brakeSignal=False,
+                        reverseSignal=False
+                    )   
+
+                self.multiagent_spawns.qlabs.close()
+                print("Main QLabs connection closed from multiagent spawns")
         except Exception as e:
             print(f"Error closing QLabs connection: {e}")
         
@@ -841,60 +936,3 @@ class QcarFleet:
     #endregion
 
 
-    #region: API for writing the Fleet Leader and Get/Print Fleet Data
-    def APIQcarInfoGet(self, CarIndex:int, InfoType:str = "position"):
-        """
-        Obtain the Data in current time for whole fleet or some qcar InformationType: all, position, rotation.
-        
-        CarIndex            :int                The index of the object Qcar
-        InfoType            :str                The requirement information ("all", "position", "rotation", "state", "exist")
-        
-        Note: In process-based architecture, this method has limited functionality.
-        Vehicle data is primarily accessible through the status queue.
-        """
-        if CarIndex not in self.QcarIndexList:
-            print("Error: Illegal car index")
-            return None
-
-        # Check if process exists and is alive
-        if CarIndex < len(self.vehicle_processes):
-            process = self.vehicle_processes[CarIndex]
-            
-            match InfoType:
-                case "exist":
-                    return process.is_alive()
-                case "state":
-                    # Try to get recent state from status queue
-                    try:
-                        recent_states = {}
-                        while True:
-                            status = self.status_queue.get_nowait()
-                            recent_states[status['vehicle_id']] = status
-                    except:
-                        pass
-                    
-                    return recent_states.get(CarIndex, {'status': 'unknown'})
-                case "all" | "position" | "rotation":
-                    print(f"Warning: {InfoType} data not directly available in process-based architecture")
-                    print("Use get_fleet_status() or monitor status queue for vehicle data")
-                    return None
-                case _:
-                    print("InfoType not supported in process-based architecture")
-                    return None
-        else:
-            print(f"Error: Vehicle {CarIndex} process not found")
-            return None
-
-    def APIQcarWrite(self, CarIndex:int, SpeedCMD:float = 0, SteeringCMD:float = 0):
-        """
-        Write commands to a vehicle.
-        
-        Note: Direct vehicle control is not available in process-based architecture.
-        Each vehicle process manages its own control loop independently.
-        """
-        print("Warning: Direct vehicle control not available in process-based architecture")
-        print("Vehicle processes manage their own control loops based on their configuration")
-        print(f"Requested: Vehicle {CarIndex}, Speed={SpeedCMD}, Steering={SteeringCMD}")
-        return False
-    
-    #endregion

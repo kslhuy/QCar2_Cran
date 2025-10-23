@@ -53,22 +53,15 @@ class VehicleObserver:
         create_new_run = config.get('data_logging', {}).get('create_new_run', True) if config else True
         custom_run_name = config.get('data_logging', {}).get('custom_run_name', None) if config else None
         
-        try:
-            from DataLogger import ObserverDataLogger
-            self.data_logger = ObserverDataLogger(
-                vehicle_id, fleet_size, 
-                log_dir="data_logs", 
-                create_new_run=create_new_run,
-                custom_run_name=custom_run_name
-            )
-        except ImportError:
-            try:
-                from BasicDataLogger import BasicObserverDataLogger
-                self.data_logger = BasicObserverDataLogger(vehicle_id, fleet_size, log_dir="data_logs")
-                self.logger.info("Using BasicDataLogger (plotting features limited)")
-            except ImportError:
-                self.logger.warning("No DataLogger available. Data logging disabled.")
-                self.data_logger = None
+
+        from DataLogger import ObserverDataLogger
+        self.data_logger = ObserverDataLogger(
+            vehicle_id, fleet_size, 
+            log_dir="data_logs", 
+            create_new_run=create_new_run,
+            custom_run_name=custom_run_name
+        )
+
         
         # State dimensions: [x, y, theta, v] - position, orientation, velocity
         self.state_dim = 4
@@ -265,7 +258,7 @@ class VehicleObserver:
         return A, B
     
     def update_local_state(self, measured_state: Optional[np.ndarray], control_input: np.ndarray, 
-                          timestamp: float, motor_tach: float = 0.0, gyroscope_z: float = 99) -> np.ndarray:
+                          timestamp: float, motor_tach: float = 0.0, gyroscope_z: float = 99 , acceleration: np.ndarray = None) -> np.ndarray:
         """
         Update local state estimation using QCarEKF or fallback methods.
         
@@ -368,13 +361,17 @@ class VehicleObserver:
             
             # Log to enhanced data logger for plotting
             if self.data_logger is not None:
+                # Extract actual acceleration from the acceleration parameter if provided
+                actual_accel = acceleration[0] if acceleration is not None and len(acceleration) > 1 else 0.0
+                
                 self.data_logger.log_local_state(
                     timestamp=timestamp,
                     local_state=self.local_state,
                     measured_state=measured_state,
                     control_input=control_input,
                     gps_available=self.gps_available,
-                    dt=dt
+                    dt=dt,
+                    actual_acceleration=actual_accel
                 )
             
             logging_time = (time.perf_counter() - logging_start) * 1000

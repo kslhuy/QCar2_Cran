@@ -16,18 +16,20 @@ from DataLogger import FleetDataVisualizer
 
 # ==== EASY CONFIGURATION ====
 # To quickly change the default data directory, modify this path:
-DEFAULT_DATA_DIR = r"C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\Work\qcar2\Development\fleet_framwork\data_logs\run_20250902_110443"
+# Using relative path - points to the most recent run folder
+DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_logs", "run_20251019_134736")
 # Set to None to always show directory selection menu
-# Example paths:
-# r"c:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\Work\qcar2\data_logs\run_20250901_173541"
-# r"c:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\Work\qcar2\data_logs\run_20250901_173546"
+# Example: DEFAULT_DATA_DIR = None
+# Or change the run folder name to another run:
+# DEFAULT_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data_logs", "run_20251019_125521")
 # ================================
 
 def get_available_data_directories():
     """Get list of available data directories."""
-    # Common data directories to check
+    # Common data directories to check - using relative path
+    script_dir = os.path.dirname(os.path.abspath(__file__))
     possible_data_dirs = [
-        r"C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\Work\qcar2\Development\fleet_framwork\data_logs",
+        os.path.join(script_dir, "data_logs"),
     ]
     
     available_dirs = []

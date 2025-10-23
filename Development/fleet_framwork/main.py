@@ -4,15 +4,9 @@ import multiprocessing
 import threading
 
 # Import the new simple configuration system
-try:
-    from simple_config import  ConfigPresets
-    SIMPLE_CONFIG_AVAILABLE = True
-    print("Using Simple YAML Configuration System (config.yaml)")
-except ImportError:
-    print("Warning: simple_config modules not available")
-    print("Falling back to original FleetConfig system")
-    from FleetConfig import FleetConfig, ConfigPresets, RoadType, ControllerType
-    SIMPLE_CONFIG_AVAILABLE = False
+from simple_config import  ConfigPresets
+SIMPLE_CONFIG_AVAILABLE = True
+
 
 from QcarFleet import QcarFleet
 
@@ -47,14 +41,7 @@ class FleetApplication:
 
     def _load_configuration(self) -> None:
         """Clean config loading logic"""
-        if SIMPLE_CONFIG_AVAILABLE:
-            print("Using Simple Configuration System")
-            # Option 1: Load from text file (recommended - easy to modify)
-            self.config = ConfigPresets.load_from_file("config.yaml")
-        else:
-            print("Using Original Configuration System")
-            # Fallback to original system
-            self.config = ConfigPresets.get_studio_cacc()
+        self.config = ConfigPresets.load_from_file("config.yaml")
 
         # Print current configuration
         print("\nCurrent Configuration:")
