@@ -36,11 +36,17 @@ def read_config(config_path):
                     key = key.strip()
                     value = value.strip()
                     
-                    # Parse QCAR_IPS as list
+                    # Parse QCAR_IPS and PROBING_IP as lists
                     if key == 'QCAR_IPS':
                         # Remove brackets and split by comma
                         value = value.strip('[]')
                         config[key] = [ip.strip() for ip in value.split(',')]
+                    elif key == 'PROBING_IP':
+                        # Parse PROBING_IP as list (can be multiple IPs)
+                        if ',' in value:
+                            config[key] = [ip.strip() for ip in value.split(',')]
+                        else:
+                            config[key] = [value.strip()]
                     else:
                         config[key] = value
     
@@ -52,7 +58,7 @@ config = read_config(args.config)
 # Extract configuration values
 QCAR_IPS = config.get('QCAR_IPS', [])
 LOCAL_IP = config.get('LOCAL_IP', '192.168.2.200')
-PROBING_IP = config.get('PROBING_IP', QCAR_IPS[0] if QCAR_IPS else None)
+PROBING_IPS = config.get('PROBING_IP', [QCAR_IPS[0]] if QCAR_IPS else [])
 REMOTE_PATH = config.get('REMOTE_PATH', '/home/nvidia/Documents/multi_vehicle_RealCar')
 WIDTH = config.get('WIDTH', '320')
 HEIGHT = config.get('HEIGHT', '200')
@@ -74,7 +80,7 @@ print(f"\nConfiguration:")
 print(f"  Number of QCars: {len(QCAR_IPS)}")
 print(f"  QCar IPs: {', '.join(QCAR_IPS)}")
 print(f"  Host PC IP: {LOCAL_IP}")
-print(f"  Probing QCar: {PROBING_IP}")
+print(f"  Probing QCars: {', '.join(PROBING_IPS)}")
 print(f"  Remote Path: {REMOTE_PATH}")
 print(f"  Base Port: {BASE_PORT}")
 print(f"  Observer Size: {WIDTH}x{HEIGHT}")
@@ -127,7 +133,7 @@ try:
     for idx, ip in enumerate(QCAR_IPS):
         car_id = idx
         port = BASE_PORT + car_id
-        is_probing = (ip == PROBING_IP)
+        is_probing = (ip in PROBING_IPS)
         
         print(f"\n{'='*70}")
         print(f" Starting QCar {car_id}: {ip} (Port: {port})")
@@ -146,15 +152,22 @@ try:
             else:
                 print(f"  [⊘] Skipped file upload")
             
-            # Start observer locally if this is the probing QCar
+            # Start multi-observer locally if we have probing vehicles
             if is_probing and observer_process is None:
-                print(f"  [→] Starting observer.py locally (probing mode)...")
-                observer_script = os.path.join(CURRENT_DIR, LOCAL_OBSERVER_PATH)
+                print(f"  [→] Starting multi-observer.py locally...")
+                # Count how many vehicles are probing
+                # probing_count = sum(1 for ip in QCAR_IPS if ip in PROBING_IPS)
+                observer_script = os.path.join(CURRENT_DIR, "multi_observer.py")
                 if os.path.exists(observer_script):
-                    observer_process = subprocess.Popen(["python", observer_script])
-                    print(f"  [✓] Observer started")
+                    observer_process = subprocess.Popen([
+                        "python", observer_script, 
+                        "--cars" , idx,
+                        "--width", WIDTH, 
+                        "--height", HEIGHT
+                    ])
+                    print(f"  [✓] Multi-observer started for {idx} vehicle")
                 else:
-                    print(f"  [⚠] Observer script not found: {observer_script}")
+                    print(f"  [⚠] Multi-observer script not found: {observer_script}")
             
             # Kill any existing processes on the QCar
             print(f"  [→] Stopping any existing processes...")
@@ -187,10 +200,11 @@ try:
                 f"-i {LOCAL_IP} "
                 f"-w {WIDTH} "
                 f"-ht {HEIGHT} "
+                f"--car-id {car_id} "
                 f"> yolo_{car_id}.log 2>&1 &"
             )
             ssh.exec_command(cmd_yolo)
-            print(f"  [✓] YOLO server started (Probing: {is_probing})")
+            print(f"  [✓] YOLO server started (Probing: {is_probing}, Car ID: {car_id})")
             
             # Close connections
             ssh.close()

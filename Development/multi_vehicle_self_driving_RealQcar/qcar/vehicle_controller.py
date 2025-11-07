@@ -290,7 +290,9 @@ class VehicleController:
     def _initialize_perception(self) -> bool:
         """Initialize perception systems"""
         try:
-            self.yolo = YOLOReceiver()
+            # Use different YOLO port for each car
+            yolo_port = f"1866{self.config.network.car_id}"
+            self.yolo = YOLOReceiver(port=yolo_port)
             
             pulse_length = (
                 self.config.timing.controller_update_rate *

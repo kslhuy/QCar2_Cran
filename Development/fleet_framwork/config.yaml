@@ -6,8 +6,8 @@
 # ACTIVE PRESET - EASY SWITCHING!
 # =============================================================================
 # Uncomment ONE of these to quickly switch between configurations:
-# active_preset: "openroad_cacc"    # OpenRoad configuration (outdoor, larger scale)
-active_preset: "studio_cacc"      # Studio configuration (indoor, smaller scale)
+active_preset: "openroad_cacc"    # OpenRoad configuration (outdoor, larger scale)
+# active_preset: "studio_cacc"      # Studio configuration (indoor, smaller scale)
 # Leave BOTH commented (or remove active_preset) to use manual configuration below
 
 # When active_preset is set, it will automatically configure:
@@ -31,7 +31,7 @@ fleet:
   num_vehicles: 2                 # Number of vehicles in fleet (2-5) - Testing chain following
   leader_index: 0                 # Which vehicle is the leader (0-based)
   distance_between_cars: 0.2      # Distance between vehicles (meters)
-  spawn_method: "individual"      # Vehicle spawn method: "multiagent" or "individual"
+  spawn_method: "multiagent"      # Vehicle spawn method: "multiagent" or "individual"
 
 # =============================================================================
 # VEHICLE CONTROL PARAMETERS
@@ -42,11 +42,12 @@ control:
   lookahead_distance: 0.5         # Path following lookahead distance (meters)
   enable_steering_control: false  # Enable steering control (false for OpenRoad straight path)
   
-  # Update rates (Hz)
+  # Update rates (Hz) - OPTIMIZED: Separated local and fleet observer rates
   general_update_rate: 50         # Main control loop rate
-  controller_rate: 100              # Controller update rate
-  observer_rate: 120               # Observer update rate
-  gps_update_rate: 5               # GPS update rate
+  controller_rate: 50            # Controller update rate
+  observer_rate: 50              # Local observer update rate (high frequency for precise state estimation)
+  fleet_observer_rate: 50         # Fleet observer update rate (lower frequency for distributed estimation and communication)
+  gps_update_rate: 5              # GPS update rate
 
 # =============================================================================
 # PATH SETTINGS
@@ -98,7 +99,7 @@ communication:
 # =============================================================================
 physical_qcar:
   use_physical_qcar: true        # Use physical QCar hardware (leader only)
-  use_control_observer_mode: true # Use control observer mode with physical QCar
+  use_control_observer_mode: false # Use control observer mode with physical QCar
   calibrate: true                # Calibrate GPS on startup
 
 # =============================================================================

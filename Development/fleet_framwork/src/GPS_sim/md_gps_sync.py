@@ -56,14 +56,39 @@ class GPSSync:
         
         # GPS-specific logging setup
         self.logger = get_gps_logger(self.vehicle_id)
+        
+        # Persistent UDP socket for better performance
+        self.sock = None
+        self._initialize_socket()
+
+    def _initialize_socket(self):
+        """Initialize or reinitialize the UDP socket connection."""
+        try:
+            if self.sock is not None:
+                self.sock.close()
+            
+            # Create persistent UDP socket
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.settimeout(0.5)  # 500ms timeout to prevent blocking
+            
+            self.logger.debug(f"Vehicle {self.vehicle_id}: GPS socket initialized")
+        except Exception as e:
+            self.logger.error(f"Vehicle {self.vehicle_id}: Failed to initialize GPS socket: {e}")
+            self.sock = None
+
+    def _ensure_socket_ready(self):
+        """Ensure socket is ready for communication, reinitialize if needed."""
+        if self.sock is None:
+            self._initialize_socket()
+        return self.sock is not None
 
     def request_gps_time(self):
         """
-        Request current GPS time from the central time server.
+        Request current GPS time from the central time server using persistent socket.
         
-        Establishes a UDP connection to the GPS time server and requests the current
-        synchronized time. Includes error handling for network failures and simulates
-        realistic GPS behavior by adding random jitter to the received time.
+        Uses a persistent UDP socket to communicate with the GPS time server, avoiding
+        the overhead of creating/destroying sockets for each request. Includes error 
+        handling for network failures and simulates realistic GPS behavior.
         
         The method implements a timeout mechanism to avoid blocking and provides
         fallback behavior using the last known valid offset when the server is
@@ -77,16 +102,17 @@ class GPSSync:
             Exception: Network or communication errors are caught and logged,
                       fallback time is returned instead of propagating exceptions
         """
-        # Create UDP socket for communication with GPS server
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(0.5)  # 500ms timeout to prevent blocking
+        # Ensure socket is ready for communication
+        if self.sock is None:
+            self.logger.error(f"Vehicle {self.vehicle_id}: GPS socket not available, using fallback time")
+            return time.time() + self.last_valid_offset
         
         try:
-            # Send time request to GPS server
-            sock.sendto(b"time_request", (self.gps_server_ip, self.gps_server_port))
+            # Send time request to GPS server using persistent socket
+            self.sock.sendto(b"time_request", (self.gps_server_ip, self.gps_server_port))
             
             # Receive GPS time response
-            data, _ = sock.recvfrom(1024)  # 1KB buffer should be sufficient
+            data, _ = self.sock.recvfrom(1024)  # 1KB buffer should be sufficient
             gps_time = ujson.loads(data.decode())
             
             # Simulate realistic GPS jitter (±10ms)
@@ -96,15 +122,20 @@ class GPSSync:
             
             return gps_time
             
-        except Exception as e:
-            # Log communication error and use fallback mechanism
-            self.logger.warning(f"GPS server connection failed: {e}, using fallback time")
-            # Return estimated time using last known valid offset
+        except socket.timeout:
+            # Specific handling for timeout errors
+            self.logger.warning(f"Vehicle {self.vehicle_id}: GPS server timeout, using fallback time")
             return time.time() + self.last_valid_offset
             
-        finally:
-            # Always close socket to free resources
-            sock.close()
+        except Exception as e:
+            # Log communication error and use fallback mechanism
+            self.logger.warning(f"Vehicle {self.vehicle_id}: GPS server connection failed: {e}, using fallback time")
+            
+            # Reinitialize socket on error in case it's corrupted
+            self._initialize_socket()
+            
+            # Return estimated time using last known valid offset
+            return time.time() + self.last_valid_offset
 
     def sync_with_gps(self):
         """
@@ -139,7 +170,26 @@ class GPSSync:
         self.last_sync_time = local_time
         
         # Log synchronization results for monitoring and debugging
-        self.logger.info(f"GPS Time: {gps_time:.3f}, Local Time: {local_time:.3f}, Offset: {self.gps_time_offset:.3f} sec")
+        self.logger.info(f"Vehicle {self.vehicle_id}: GPS Time: {gps_time:.3f}, Local Time: {local_time:.3f}, Offset: {self.gps_time_offset:.3f} sec")
+
+    def cleanup(self):
+        """
+        Clean up resources, particularly the persistent socket.
+        
+        Should be called when the GPSSync instance is no longer needed
+        to properly close the socket and free system resources.
+        """
+        try:
+            if self.sock is not None:
+                self.sock.close()
+                self.sock = None
+                self.logger.debug(f"Vehicle {self.vehicle_id}: GPS socket cleaned up")
+        except Exception as e:
+            self.logger.error(f"Vehicle {self.vehicle_id}: Error cleaning up GPS socket: {e}")
+
+    def __del__(self):
+        """Destructor to ensure socket cleanup."""
+        self.cleanup()
 
     def get_synced_time(self):
         """
@@ -162,4 +212,4 @@ class GPSSync:
             - Stability of local system clock since last sync
             - Network latency variations since last sync
         """
-        return time.time() + self.gps_time_offset
+        return time.time() 

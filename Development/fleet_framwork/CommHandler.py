@@ -85,10 +85,15 @@ class CommHandler:
         self.communication_mode = communication_mode
         self.is_bidirectional = (communication_mode == 'bidirectional')
         
-        # Initialize communication state
+        # Initialize communication state with randomized timing to prevent synchronization
         self.initialized = False
         self.last_send_time = 0
-        self.send_interval = 0.05  # 20Hz for non-blocking mode
+        self.send_interval = 0.04  # 25Hz for non-blocking mode
+        
+        # Add small random jitter to prevent all vehicles from communicating simultaneously
+        import random
+        self.send_jitter = random.uniform(0.001, 0.01)  # 1-10ms random jitter
+        self.actual_send_interval = self.send_interval + self.send_jitter
         
         # NEW: Communication topology configuration (from vehicle config)
         self.topology = topology
@@ -105,7 +110,7 @@ class CommHandler:
         
         # NEW: Initialize ACK counter for periodic ACK sending
         self.ack_counter = 0
-        self.ack_interval = 5    # Send ACK every 5th message to reduce overhead
+        self.ack_interval = 10    # Send ACK every 10th message to reduce overhead
         
         # Initialize UDP sockets for different communication purposes
         if mode == 'threaded':
@@ -123,48 +128,15 @@ class CommHandler:
         self.heartbeat_timeout = self.HEARTBEAT_TIMEOUT
         self.heartbeat = True
         
-        self.logger.info(f"CommHandler initialized for Vehicle {self.vehicle_id} in {mode} mode")
+        # Add communication rate tracking for diagnostics
+        self.send_count = 0
+        self.recv_count = 0
+        self.start_time = time.time()
         
-    def _setup_sockets_threaded(self):
-        """
-        Initialize and configure all UDP sockets for threaded communication.
+        self.logger.info(f"CommHandler initialized for Vehicle {self.vehicle_id} in {mode} mode, "
+                        f"send_interval={self.actual_send_interval:.4f}s (base={self.send_interval:.4f}s + jitter={self.send_jitter:.4f}s)")
         
-        Creates four sockets:
-        - send_sock: For sending state messages to other vehicles
-        - recv_sock: For receiving messages from other vehicles
-        - send_ack_sock: For sending ACK responses
-        - ack_sock: For receiving ACK confirmations
-        """
-        try:
-            # Socket for sending state messages
-            self.send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB buffer
-            self.send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)  # 256KB buffer
-            
-            # Socket for receiving messages from other vehicles
-            self.recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
-            self.recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
-            self.recv_sock.bind(('0.0.0.0', self.recv_port))
-            self.recv_sock.settimeout(self.RECV_TIMEOUT)
-            
-            # Socket for sending ACK responses
-            self.send_ack_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.send_ack_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
-            self.send_ack_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
-            
-            # Socket for receiving ACK confirmations
-            self.ack_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.ack_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
-            self.ack_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
-            self.ack_sock.settimeout(self.ACK_TIMEOUT)
-            self.ack_sock.bind(('0.0.0.0', self.ack_port))
-            
-            self.logger.info(f"Threaded sockets configured - recv_port: {self.recv_port}, ack_port: {self.ack_port}")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to setup threaded sockets: {e}")
-            raise
+
     
     def _setup_sockets_non_blocking(self):
         """
@@ -173,25 +145,35 @@ class CommHandler:
         try:
             # Create send socket
             self.send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB buffer
-            self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
+            # self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            # self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)  # 256KB buffer
+            # self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
             
-            # Create receive socket
+            # # Create receive socket
+            # self.recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
+            # self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
+
+
+            self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8192)  # 8KB - smaller, faster
+            self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)  # Enable broadcast
+            
+            # Receive socket - OPTIMIZED for fast reception
             self.recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
-            self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
+            self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16384)  # 16KB - optimized size
+
             self.recv_socket.bind(('', self.recv_port))
-            self.recv_socket.settimeout(0.001)  # 1ms timeout for non-blocking
+            self.recv_socket.settimeout(0.01)  # 1ms timeout for non-blocking
             
-            # Create ACK socket
+            # # Create ACK socket
             self.ack_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.ack_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.ack_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 262144)
-            self.ack_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 262144)
+            self.ack_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 8192)
+            self.ack_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
             self.ack_socket.bind(('', self.ack_port))
-            self.ack_socket.settimeout(0.001)  # 1ms timeout for non-blocking
+            self.ack_socket.settimeout(0.01)  # 10ms timeout for non-blocking
             
             self.initialized = True
             self.logger.info(f"Non-blocking sockets configured - recv_port: {self.recv_port}, ack_port: {self.ack_port}")
@@ -201,11 +183,7 @@ class CommHandler:
             self.initialized = False
             raise
         
-    def _setup_sockets(self):
-        """
-        Legacy method for backward compatibility - calls threaded setup.
-        """
-        return self._setup_sockets_threaded()
+
 
     def _create_state_message(self) -> Dict[str, Any]:
         """
@@ -268,124 +246,8 @@ class CommHandler:
             self.logger.error(f"Failed to send state message: {e}")
             return False
     
-    def _wait_for_ack(self) -> bool:
-        """
-        Wait for ACK response after sending a state message.
-        
-        Returns:
-            True if valid ACK received, False on timeout or invalid ACK
-        """
-        try:
-            self.ack_sock.settimeout(self.ACK_TIMEOUT)
-            ack_data, addr = self.ack_sock.recvfrom(1024)
-            ack = ujson.loads(ack_data.decode())
-            
-            self.logger.debug(f"ACK received on port {self.ack_port} from {addr}")
-            self.logger.debug(f"ACK content: ack_id={ack.get('ack_id')}, "
-                            f"ack_seq={ack.get('ack_seq')}, expected_seq={self.sequence_number}")
-            
-            # Validate ACK message
-            if (ack.get('type') == 'ack' and 
-                ack.get('ack_seq') == self.sequence_number and 
-                ack.get('ack_id') != self.vehicle_id):  # Don't ACK our own messages
-                
-                # Increment sequence number for next message
-                with self.lock:
-                    self.sequence_number += 1
-                    
-                self.logger.info(f"Valid ACK received for seq: {self.sequence_number - 1} from {addr}")
-                return True
-            else:
-                self.logger.debug(f"ACK discarded - invalid or unexpected: {ack}")
-                return False
-                
-        except socket.timeout:
-            self.logger.warning(f"ACK timeout for seq: {self.sequence_number}")
-            return False
-        except Exception as e:
-            self.logger.error(f"ACK processing error: {e}")
-            return False
+    
 
-    def send_state(self):
-        """
-        Main state transmission loop - runs in dedicated thread.
-        
-        Continuously sends vehicle state updates with reliable delivery:
-        1. Create state message with current vehicle data
-        2. Send message via UDP
-        3. Wait for ACK confirmation
-        4. Retry up to MAX_RETRIES times if no ACK received
-        5. Maintain consistent transmission rate
-        """
-        self.logger.info(f"Starting state transmission thread for Vehicle {self.vehicle_id}")
-        
-        try:
-            while self.running.is_set():
-                self.logger.debug(f"Vehicle {self.vehicle_id} send_state active, seq: {self.sequence_number}")
-                
-                start_time = time.monotonic()  # Use monotonic for elapsed time measurement
-                retries = 0
-                ack_received = False
-                
-                # Retry loop for reliable delivery
-                while retries < self.MAX_RETRIES and not ack_received and self.running.is_set():
-                    try:
-                        # Step 1: Create state message
-                        state_data = self._create_state_message()
-                        
-                        # Step 2: Send state message
-                        if self._send_state_message(state_data):
-                            # Step 3: Wait for ACK confirmation
-                            ack_received = self._wait_for_ack()
-                        
-                        if not ack_received:
-                            retries += 1
-                            if retries < self.MAX_RETRIES:
-                                self.logger.warning(f"Retry {retries}/{self.MAX_RETRIES} for seq: {self.sequence_number}")
-                                time.sleep(0.1)  # Brief delay before retry
-                            
-                    except Exception as e:
-                        self.logger.error(f"State transmission error: {e}")
-                        retries += 1
-                        time.sleep(0.1)
-                
-                # Log final result for this transmission cycle
-                if not ack_received:
-                    self.logger.error(f"Failed to receive ACK for seq: {self.sequence_number} after {self.MAX_RETRIES} retries")
-                
-                # Maintain consistent transmission rate
-                elapsed = time.monotonic() - start_time
-                sleep_time = max(0, self.STATE_SEND_PERIOD - elapsed)
-                time.sleep(sleep_time)
-                
-        except Exception as e:
-            self.logger.error(f"State transmission thread crashed: {e}")
-        finally:
-            self.logger.info(f"Vehicle {self.vehicle_id} state transmission thread exited")
-
-    def _send_ack_response(self, seq: int, sender_addr: Tuple[str, int], sender_ack_port: int):
-        """
-        Send ACK response to acknowledge received message.
-        
-        Args:
-            seq: Sequence number to acknowledge
-            sender_addr: Address tuple (IP, port) of message sender
-            sender_ack_port: Port where sender expects ACK response
-        """
-        try:
-            ack_message = {
-                'type': 'ack',
-                'ack_seq': seq,
-                'ack_id': self.vehicle_id
-            }
-            
-            ack_json = ujson.dumps(ack_message).encode()
-            self.send_ack_sock.sendto(ack_json, (sender_addr[0], sender_ack_port))
-            
-            self.logger.info(f"SENT: ACK for seq: {seq} to {sender_addr[0]}:{sender_ack_port}")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to send ACK response: {e}, sender: {sender_addr}")
     
     def _handle_state_message(self, message: Dict[str, Any], sender_addr: Tuple[str, int]):
         """
@@ -417,10 +279,6 @@ class CommHandler:
                         f"Pos=({message.get('pos', [0,0,0])[0]:.3f},{message.get('pos', [0,0,0])[1]:.3f}), "
                         f"Vel={message.get('v', 0.0):.3f}")
         
-        # Send ACK response
-        sender_ack_port = message.get('ack_port')
-        if sender_ack_port:
-            self._send_ack_response(seq, sender_addr, sender_ack_port)
         
         # Process state through Vehicle's enhanced state management
         try:
@@ -609,87 +467,8 @@ class CommHandler:
         if PERFORMANCE_MONITORING:
             perf_monitor.end_timing(process_start, "processing")
 
-    def receive_messages(self):
-        """
-        Main message reception loop - runs in dedicated thread.
-        
-        Continuously listens for incoming messages:
-        1. Receive UDP packets on the designated port
-        2. Decode and validate message format
-        3. Route messages to appropriate handlers based on type
-        4. Send ACK responses for state messages
-        5. Update vehicle state for follower vehicles
-        """
-        self.logger.info(f"Starting message reception thread for Vehicle {self.vehicle_id}")
-        
-        while self.running.is_set():
-            start_time = time.monotonic()  # Use monotonic for loop timing
-            
-            try:
-                # Inner loop for more responsive shutdown checking
-                while time.monotonic() - start_time < 0.09 and self.running.is_set():
-                    try:
-                        # Attempt to receive message with timeout
-                        data, sender_addr = self.recv_sock.recvfrom(1024)
-                        
-                        # self.logger.debug(f"Vehicle {self.vehicle_id} received data from {sender_addr}")
-                        
-                        # Process the received message
-                        self._process_received_message(data, sender_addr)
-                        
-                    except socket.timeout:
-                        # Timeout is expected - allows for responsive shutdown
-                        break
-                    except Exception as e:
-                        self.logger.error(f"Message reception error: {e}")
-                        break
-                        
-            except Exception as e:
-                self.logger.error(f"Reception loop error: {e}")
-            
-            # Maintain consistent loop timing
-            elapsed = time.monotonic() - start_time
-            sleep_time = max(0, self.RECEIVE_PERIOD - elapsed)
-            time.sleep(sleep_time)
-            
-        self.logger.info(f"Message reception thread terminated for Vehicle {self.vehicle_id}")
-
-    def is_heartbeat_alive(self) -> bool:
-        """
-        Check if heartbeat signal is still active.
-        
-        Returns:
-            True if recent heartbeat received, False if timeout exceeded
-        """
-        time_since_heartbeat = time.monotonic() - self.last_heartbeat_time
-        is_alive = time_since_heartbeat < self.heartbeat_timeout
-        
-        if not is_alive:
-            self.logger.warning(f"Heartbeat timeout: {time_since_heartbeat:.2f}s since last heartbeat")
-            
-        return is_alive
     
-    def get_communication_stats(self) -> Dict[str, Any]:
-        """
-        Get current communication statistics for monitoring.
-        
-        Returns:
-            Dictionary with communication status and statistics
-        """
-        return {
-            'vehicle_id': self.vehicle_id,
-            'sequence_number': self.sequence_number,
-            'heartbeat_active': self.heartbeat,
-            'last_heartbeat_time': self.last_heartbeat_time,
-            'time_since_heartbeat': time.monotonic() - self.last_heartbeat_time,
-            'is_running': self.running.is_set(),
-            'target_ip': self.target_ip,
-            'ports': {
-                'send': self.send_port,
-                'receive': self.recv_port,
-                'ack': self.ack_port
-            }
-        }
+
 
     # Non-blocking communication methods for process-based vehicles
     def send_state_broadcast(self, state_data: dict):
@@ -702,7 +481,7 @@ class CommHandler:
             return
             
         current_time = time.time()
-        if not self.initialized or current_time - self.last_send_time < self.send_interval:
+        if not self.initialized or current_time - self.last_send_time < self.actual_send_interval:
             return
             
         try:
@@ -737,6 +516,13 @@ class CommHandler:
             
             # Update state
             self.last_send_time = current_time
+            self.send_count += 1
+
+            # Periodic rate diagnostic (every 50 sends)
+            if self.send_count % 50 == 0:
+                elapsed = current_time - self.start_time
+                send_rate = self.send_count / elapsed if elapsed > 0 else 0
+                self.logger.info(f"V{self.vehicle_id} Send Rate: {send_rate:.1f} Hz (target: {1/self.actual_send_interval:.1f} Hz), count={self.send_count}")
             self.sequence_number += 1
             
             # End performance timing
@@ -848,34 +634,22 @@ class CommHandler:
             if sender_id == self.vehicle_id:
                 return None  # Don't process our own messages
             
-            # # Log detailed receive data in vehicle 1 (we see all messages send to vehicle 1)
-            # if self.vehicle_id == 1:
-            #     receive_time = time.time()
-            #     pos = message.get('pos', message.get('position', [0, 0, 0]))
-            #     rot = message.get('rot', message.get('rotation', [0, 0, 0]))
-            #     vel = message.get('v', message.get('velocity', 0.0))
-            #     control = message.get('ctrl_u', [0.0, 0.0])
-            #     msg_timestamp = message.get('timestamp', 0.0)
+         
+            # # Send ACK if this is a state message (non-blocking)
+            # msg_type = message.get('type', 'state')  # Default to state for backward compatibility
+            # if msg_type == 'state':
             #     seq = message.get('seq', -1)
-            #     delay = receive_time - msg_timestamp if msg_timestamp > 0 else 0.0
-                
-                # self.logger.info(f"RECEIVE_DATA: {{\"receive_timestamp\": {receive_time:.6f}, \"message_timestamp\": {msg_timestamp:.6f}, \"delay\": {delay:.6f}, \"seq\": {seq}, \"sender_id\": {sender_id}, \"position\": {pos}, \"rotation\": {rot}, \"velocity\": {vel:.2f}, \"control_input\": {control}, \"message_size\": {len(data)}}}")
-                
-            # Send ACK if this is a state message (non-blocking)
-            msg_type = message.get('type', 'state')  # Default to state for backward compatibility
-            if msg_type == 'state':
-                seq = message.get('seq', -1)
-                sender_ack_port = message.get('ack_port')
-                if sender_ack_port and seq >= 0 and self.ack_enabled:
-                    # Send ACK periodically to reduce overhead
-                    self.ack_counter += 1
-                    if self.ack_counter >= self.ack_interval:
-                        self.ack_counter = 0
-                        # Send ACK asynchronously without blocking
-                        try:
-                            self._send_ack_non_blocking(seq, addr[0], sender_ack_port)
-                        except Exception as ack_error:
-                            self.logger.debug(f"ACK send failed (non-critical): {ack_error}")
+            #     sender_ack_port = message.get('ack_port')
+            #     if sender_ack_port and seq >= 0 and self.ack_enabled:
+            #         # Send ACK periodically to reduce overhead
+            #         self.ack_counter += 1
+            #         if self.ack_counter >= self.ack_interval:
+            #             self.ack_counter = 0
+            #             # Send ACK asynchronously without blocking
+            #             try:
+            #                 self._send_ack_non_blocking(seq, addr[0], sender_ack_port)
+            #             except Exception as ack_error:
+            #                 self.logger.debug(f"ACK send failed (non-critical): {ack_error}")
             
 
             
@@ -908,55 +682,11 @@ class CommHandler:
         Returns:
             True if broadcast successful, False otherwise
         """
-        if self.mode == 'threaded':
-            # For threaded mode, use the existing socket infrastructure
-            return self._send_fleet_estimates_threaded(fleet_message)
-        elif self.mode == 'non_blocking':
-            return self._send_fleet_estimates_non_blocking(fleet_message)
-        else:
-            self.logger.warning(f"Unknown mode '{self.mode}' for fleet estimates broadcast")
-            return False
+        return self._send_fleet_estimates_non_blocking(fleet_message)
+        
+
     
-    def _send_fleet_estimates_threaded(self, fleet_message: dict) -> bool:
-        """Send fleet estimates in threaded mode."""
-        try:
-            # Prepare fleet estimates message with minimal fields
-            message = {
-                'type': 'fleet_estimates',
-                'vehicle_id': self.vehicle_id,
-                'timestamp': time.time(),
-                'seq': self.sequence_number,
-                'fleet_size': fleet_message.get('fleet_size', 0),
-                'estimates': fleet_message.get('estimates', {})
-            }
-            
-            # JSON encode and send
-            message_json = ujson.dumps(message).encode()
-            self.send_sock.sendto(message_json, (self.target_ip, self.send_port))
-            
-            # Update sequence number
-            with self.lock:
-                self.sequence_number += 1
-            
-            # Log to fleet logger with complete format
-            estimates = message.get('estimates', {})
-            seq = message['seq']
-            timestamp = message.get('timestamp', 0.0)
-            
-            # Extract complete estimate data (pos, rot, vel)
-            est_data = {}
-            for vid, est in estimates.items():
-                pos = est.get('pos', [0, 0])
-                rot = est.get('rot', [0, 0, 0])
-                vel = est.get('vel', 0.0)
-                est_data[f'V{vid}'] = f'Pos=({pos[0]:.2f},{pos[1]:.2f}) Rot={rot[2]:.2f} Vel={vel:.2f}'
-            
-            # self.fleet_comm_logger.info(f"SEND From=V{self.vehicle_id} Seq={seq} T={timestamp:.3f} {est_data}")
-            return True
-            
-        except Exception as e:
-            self.fleet_comm_logger.error(f"Vehicle {self.vehicle_id}: Threaded fleet estimates broadcast error: {e}")
-            return False
+
     
     def _send_fleet_estimates_non_blocking(self, fleet_message: dict) -> bool:
         """Send fleet estimates in non-blocking mode."""        

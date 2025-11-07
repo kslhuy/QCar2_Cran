@@ -7,6 +7,7 @@
 from pal.utilities.probe import Observer
 
 observer = Observer()
+# observer.numDisplays = car_id  # Set the counter to car_id
 observer.add_display(imageSize = [200, 320, 3],
                     name='YOLO Image',scalingFactor=1)
 

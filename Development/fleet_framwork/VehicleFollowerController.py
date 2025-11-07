@@ -1,12 +1,14 @@
 import math
 import time
 import logging
+import traceback
 import numpy as np
+import yaml
+import os
 from typing import Optional, Tuple
 
 from src.Controller.CACC import CACC
 from src.Controller.idm_control import IDMControl
-from src.Controller.DummyController import DummyController, DummyVehicle
 from pal.utilities.math import wrap_to_pi
 
 # Import trajectory following components
@@ -48,87 +50,205 @@ class VehicleFollowerController:
         self.config = config or {}
         self.logger = logger or logging.getLogger(f"FollowerController_{vehicle_id}")
 
-        # Control / vehicle parameters (defaults; override via config)
+        # ===== LOAD CONTROLLER CONFIG FROM YAML FILE =====
+        # This is the main config file that the controller reads directly
+        # No need to pass complex config through QcarFleet or VehicleProcess!
+        self.controller_config = self._load_controller_config()
+        
+        # Get follower mode (with per-vehicle override support)
+        self.follower_mode = self._get_follower_mode()
+        self.logger.info(f"Vehicle {vehicle_id}: Using follower mode '{self.follower_mode}'")
+
+        # ===== LOAD MODE-SPECIFIC CONFIGURATION =====
+
+        self.max_throttle_cmd = self.controller_config.get('max_throttle_cmd', 0.7)
+        self.max_steering = self.controller_config.get('max_steering', 0.55)
+
+        # Load main config path settings (for trajectory) - MUST BE BEFORE mode-specific config
         self.road_type = self.config.get('road_type', None)
-        self.enable_steering_control = self.config.get('enable_steering_control', True)
-        self.lookahead_distance = self.config.get('lookahead_distance', 0.4)
-        self.max_steering = self.config.get('max_steering', 0.55) # in radians (~30 degrees)
-        self.k_steering = self.config.get('k_steering', 2.0)
 
-        # TODO : Need to be more dynamic in future
-        self.prev_theta_lead = -0.7177  # initial previous leader heading (for curvature calc)
-        self.prev_yaw_rate_lead = 0.0  # previous yaw rate for filtering
-
-        # Parameters used by the translated MATLAB controller
-        # param_sys
-        self.l_r = self.config.get('l_r', 0.141)      # rear axle dist
-        self.l_f = self.config.get('l_f', 0.115)      # front axle dist
-        self.C1 = self.config.get('C1', 1.0)        # tire stiffness front (unused in current delta formula)
-        self.C2 = self.config.get('C2', 1.0)        # tire stiffness rear (unused in current delta formula)
-        self.mass = self.config.get('mass', 5.0) # vehicle mass kg ??? 
-
-        # param_opt
-        self.hi = self.config.get('hi', 0.3)  # time-gap policy
-        self.ri = self.config.get('ri', 1 )  # standstill distance
-
-        # controller gains (MATLAB used k1=k2=3.5)
-        self.k1 = self.config.get('k1', 1)
-        self.k2 = self.config.get('k2', 1)
-
+        # Each mode has its own config section in controller_config.yaml
+        if self.follower_mode == "vehicle_following":
+            self._load_vehicle_following_config()
+        elif self.follower_mode == "trajectory":
+            self._load_trajectory_config()
+        elif self.follower_mode == "hybrid":
+            self._load_hybrid_config()
+        else:
+            self.logger.error(f"Unknown follower mode: {self.follower_mode}. Defaulting to vehicle_following")
+            self.follower_mode = "vehicle_following"
+            self._load_vehicle_following_config()
+        
         self.leader_state = None
         self.prev_pos = None
         self.prev_time = None
         self.velocity = 0.0
         self.initialized = False
 
-        # Trajectory following components (for TRAJECTORY controller type)
+        self.logger.info(f"Follower controller initialized for vehicle {vehicle_id} with mode '{self.follower_mode}'")
+        self._init_controller()
+        
+        # Initialize trajectory controller if needed
+        if self.follower_mode in ["trajectory", "hybrid"]:
+            self.init_trajectory_controller(road_type=self.road_type)
+
+    def _load_controller_config(self) -> dict:
+        """Load controller configuration from controller_config.yaml file."""
+        config_file = os.path.join(os.path.dirname(__file__), 'controller_config.yaml')
+        
+        try:
+            with open(config_file, 'r') as f:
+                config = yaml.safe_load(f) or {}
+            # self.logger.info(f"Loaded controller config from {config_file}")
+            print(f"Vehicle {self.vehicle_id}: Successfully loaded controller_config.yaml from {config_file}")
+            return config
+        except Exception as e:
+            self.logger.error(f"Error loading controller config: {e}")
+            print(f"Vehicle {self.vehicle_id}: ERROR - Failed to load controller config: {e}")
+            return {}
+
+    def _get_follower_mode(self) -> str:
+        """Get follower mode with per-vehicle override support."""
+        # Check per-vehicle overrides first
+        overrides = self.controller_config.get('vehicle_mode_overrides', {}) or {}
+        if self.vehicle_id in overrides:
+            mode = overrides[self.vehicle_id]
+            self.logger.info(f"Vehicle {self.vehicle_id}: Using mode override '{mode}'")
+            print(f"Vehicle {self.vehicle_id}: Using follower mode override: '{mode}'")
+            return mode
+        
+        # Use default mode from config
+        mode = self.controller_config.get('follower_mode', 'vehicle_following')
+        print(f"Vehicle {self.vehicle_id}: Using default follower mode: '{mode}'")
+        return mode
+
+    def _load_vehicle_following_config(self):
+        """Load vehicle-following mode configuration."""
+        vf_config = self.controller_config.get('vehicle_following', {})
+        
+        # Control / vehicle parameters
+        self.alpha = vf_config.get('alpha', 1.2)
+        self.beta = vf_config.get('beta', 1.5)
+        self.v0 = vf_config.get('v0', 0.4)
+        self.delta = vf_config.get('delta', 3)
+        self.T = vf_config.get('T', 0.3)
+        self.s0 = vf_config.get('s0', 1)
+        self.ri = vf_config.get('ri', 1)
+        
+        # self.s0 = self.config.get('s0', self.s0)
+        # self.ri = self.s0
+
+        self.hi = vf_config.get('hi', 0.3)
+        self.K_gains = vf_config.get('K_gains')
+        
+        # Physical parameters
+        self.l_r = vf_config.get('l_r', 0.141)
+        self.l_f = vf_config.get('l_f', 0.115)
+        self.C1 = vf_config.get('C1', 1.0)
+        self.C2 = vf_config.get('C2', 1.0)
+        self.mass = vf_config.get('mass', 5.0)
+        
+        # Controller gains
+        self.k1 = vf_config.get('k1', 1.0)
+        self.k2 = vf_config.get('k2', 1.0)
+
+        self.lookahead_distance = self.config.get('lookahead_distance', 7) ## TODO : Fix here
+        print(f"Vehicle {self.vehicle_id}: lookahead_distance set to {self.lookahead_distance}")
+        self.startDelay = vf_config.get('startDelay', 1)  
+        self.start_time = None
+  
+        
+        # Steering
+        self.enable_steering_control = vf_config.get('enable_steering_control', True) 
+        # self.enable_steering_control = vf_config.get('enable_steering_control', True) 
+
+        if self.road_type == "OpenRoad":
+            self.k_steering = vf_config.get('k_steering_openroad', 0.2)
+        else:
+            self.k_steering = vf_config.get('k_steering', 0.5)
+
+        
+        self.prev_theta_lead = -0.7177
+        self.prev_yaw_rate_lead = 0.0
+        
+        # Actuator delay parameters
+        self.tau = self.controller_config.get('control', {}).get('tau', 0.1)  # Actuator time constant
+        self.delayed_speed_cmd = 0.0  # Previous delayed speed command
+        
+        self.logger.info(f"Vehicle {self.vehicle_id}: Loaded vehicle-following config")
+
+    def _load_trajectory_config(self):
+        """Load trajectory-following mode configuration."""
+        traj_config = self.controller_config.get('trajectory_following', {})
+        
+        # Speed controller
+        self.K_p = traj_config.get('K_p', 0.1)
+        self.K_i = traj_config.get('K_i', 0.08)
+        
+        # Steering controller
+        self.K_stanley = traj_config.get('K_stanley', 0.8)
+        self.enable_steering_control = traj_config.get('enable_steering_control', False)
+        self.lookahead_distance = self.config.get('lookahead_distance', 0.5)  ## TODO : Fix here 
+        self.startDelay = traj_config.get('startDelay', 1)
+        
+
+        
+        # Trajectory components (will be initialized later)
         self.waypointSequence = None
         self.InitialPose = None
         self.speedController = None
         self.steeringController = None
         self.start_time = None
-        self.K_p = self.config.get('K_p', 0.1)  # Speed controller proportional gain
-        self.K_i = self.config.get('K_i', 0.08)  # Speed controller integral gain
-        self.K_stanley = self.config.get('K_stanley', 0.8)  # Stanley steering gain
-        self.startDelay = self.config.get('startDelay', 1)  # Start delay in seconds
-
-        self.logger.info(f"Follower controller initialized for vehicle {vehicle_id} with {controller_type}")
-        self._init_controller()
         
-        # Optionally initialize trajectory controller (can be used alongside vehicle-following)
-        # Users can call init_trajectory_controller() explicitly if needed
-        self.init_trajectory_controller()
+        # Actuator delay parameters
+        self.tau = self.controller_config.get('control', {}).get('tau', 0.1)  # Actuator time constant
+        self.delayed_speed_cmd = 0.0  # Previous delayed speed command
+        
+        self.logger.info(f"Vehicle {self.vehicle_id}: Loaded trajectory-following config")
+
+    def _load_hybrid_config(self):
+        """Load hybrid mode configuration (combines vehicle-following and trajectory)."""
+        # Load both vehicle-following and trajectory configs
+        self._load_vehicle_following_config()
+        self._load_trajectory_config()
+        
+        # Load hybrid-specific settings
+        hybrid_config = self.controller_config.get('hybrid', {})
+        self.hybrid_priority = hybrid_config.get('priority', 'vehicle_following')
+        self.hybrid_distance_threshold = hybrid_config.get('distance_threshold', 2.0)
+        self.hybrid_leader_timeout = hybrid_config.get('leader_data_timeout', 1.0)
+        self.hybrid_hysteresis_offset = hybrid_config.get('hysteresis_offset', 0.5)
+        
+        self.hybrid_current_mode = 'trajectory'  # Start with trajectory
+        self.last_leader_data_time = 0
+        
+        # Actuator delay parameters (already loaded from individual configs above)
+        # self.tau and self.delayed_speed_cmd are already set by _load_vehicle_following_config()
+        
+        self.logger.info(f"Vehicle {self.vehicle_id}: Loaded hybrid config with priority '{self.hybrid_priority}'")
 
     def _init_controller(self):
-        """Initialize the appropriate longitudinal controller for this vehicle."""
+        """Initialize the appropriate controller for this vehicle."""
         try:
-            dummy_controller_params = self.config.get('dummy_controller_params', {})
-            if str(self.vehicle_id) in dummy_controller_params:
-                dummy_params = dummy_controller_params[str(self.vehicle_id)]
-            elif isinstance(dummy_controller_params, dict) and 'alpha' in dummy_controller_params:
-                dummy_params = dummy_controller_params
-            else:
-                dummy_params = None
-
-            dummy_controller = DummyController(self.vehicle_id, dummy_params)
-
             if self.controller_type == "CACC":
-                self.controller = CACC(dummy_controller)
+                # Use parameters already loaded from config
+                # K_gains should be 1x2 for CACC (spacing_gain, velocity_gain)
+                K_gains = np.array(self.K_gains).reshape(1, 2) if len(self.K_gains) == 2 else np.array([[0.2, 0.05]])
+                self.controller = CACC(s0=self.ri, h=self.hi, K=K_gains, logger=self.logger)
             elif self.controller_type == "IDM":
-                self.controller = IDMControl(dummy_controller)
+                self.controller = IDMControl(alpha=self.alpha, beta=self.beta, v0=self.v0, 
+                                           delta=self.delta, T=self.T, s0=self.s0, logger=self.logger)
             elif self.controller_type == "LOOKAHEAD":
-                # For LOOKAHEAD we still create a dummy controller for compatibility with _compute_legacy_control
-                # but the main logic will use the translated look-ahead algorithm below.
-                self.controller = dummy_controller
+                self.controller = None  # LOOKAHEAD doesn't need a controller object
             else:
-                # Fallback: keep the dummy controller so legacy path works
-                self.controller = dummy_controller
+                self.controller = None
 
             self.initialized = True
-            print(f"Vehicle {self.vehicle_id}: Controller {self.controller_type} initialized successfully")
+            self.reset_actuator_delay()  # Initialize actuator delay state
+            print(f"Vehicle {self.vehicle_id}: ✅ Controller {self.controller_type} initialized")
 
         except Exception as e:
-            print(f"Vehicle {self.vehicle_id}: Error initializing controller: {e}")
+            print(f"Vehicle {self.vehicle_id}: ❌ Error initializing controller: {e}")
             self.initialized = False
 
     # ═══════════════════════════════════════════════════════════
@@ -148,7 +268,7 @@ class VehicleFollowerController:
             return False
         
         # Get configuration parameters (use overrides if provided)
-        road_type = road_type or self.config.get('road_type', 'OpenRoad')
+        # road_type = road_type or self.config.get('road_type', 'OpenRoad')
         node_sequence = node_sequence or self.config.get('node_sequence', [0, 1])
         
         self.logger.info(f"Initializing trajectory controller with road_type={road_type}, node_sequence={node_sequence}")
@@ -199,15 +319,15 @@ class VehicleFollowerController:
         
         if road_type == "OpenRoad":
             if t < 5:
-                v_ref = 2
+                v_ref = self.max_throttle_cmd
             elif t < 10:
                 v_ref = 0
             elif t < 15:
                 v_ref = -0.5
             elif t < 20:
-                v_ref = 1
+                v_ref = 0.5
             else:
-                v_ref = 2
+                v_ref = self.max_throttle_cmd
             return v_ref
         elif road_type == "Studio":
             return 0.3
@@ -280,11 +400,14 @@ class VehicleFollowerController:
             steering_angle = delta
             
             # Clamp to safe ranges
-            forward_speed = max(-2.0, min(2.0, forward_speed))
+            forward_speed = max(-self.max_throttle_cmd, min(self.max_throttle_cmd, forward_speed))
             steering_angle = max(-self.max_steering, min(self.max_steering, steering_angle))
             
-            self.logger.debug(f"Trajectory-following control - Speed: {forward_speed:.3f}, Steering: {steering_angle:.3f}")
-            return forward_speed, steering_angle
+            # Apply actuator delay to speed command
+            delayed_forward_speed = self._apply_actuator_delay(forward_speed, dt)
+            
+            # self.logger.debug(f"Trajectory-following control - Speed: {forward_speed:.3f}, Delayed Speed: {delayed_forward_speed:.3f}, Steering: {steering_angle:.3f}")
+            return delayed_forward_speed, steering_angle
 
         except Exception as e:
             self.logger.error(f"Error computing trajectory-following control: {e}")
@@ -322,6 +445,20 @@ class VehicleFollowerController:
             follower_state = [current_pos[0], current_pos[1], current_rot[2], current_velocity]
             leader_state = [leader_pos[0], leader_pos[1], leader_rot[2], leader_velocity]
 
+            # Initialize start time if needed
+            if self.start_time is None:
+                self.start_time = time.time()
+                self.logger.info("Following Vehicle started")
+            
+            # Calculate elapsed time
+            t = time.time() - self.start_time
+
+            # Control logic
+            if t < self.startDelay:
+                # u = 0
+                # delta = 0
+                return 0.0, 0.0
+
             if self.controller_type == "LOOKAHEAD":
                 speed_cmd, steering_cmd = self._compute_lookahead_control(follower_state, leader_state, dt)
                 if not self.enable_steering_control:
@@ -337,23 +474,18 @@ class VehicleFollowerController:
                     steering_cmd = 0.0  # No steering for straight roads
 
             # Clip commands based on road type
-            if self.road_type == "OpenRoad":
-                # OpenRoad: higher speed limits, but steering depends on enable_steering_control
-                speed_cmd = max(-2.0, min(2.0, speed_cmd))
-                if not self.enable_steering_control:
-                    steering_cmd = 0.0  # Force zero only if explicitly disabled
-            elif self.road_type == "Studio":
-                # Studio: lower speed limits for indoor environment
-                speed_cmd = max(-0.01, min(0.3, speed_cmd))
-            else:
-                # Default: conservative limits
-                speed_cmd = max(-0.01, min(0.3, speed_cmd))
-
+            speed_cmd = max(-self.max_throttle_cmd, min(self.max_throttle_cmd, speed_cmd))
+            if not self.enable_steering_control:
+                steering_cmd = 0.0  # Force zero only if explicitly disabled
+            
             # Always apply steering limits (even if zero)
             steering_cmd = max(-self.max_steering, min(self.max_steering, steering_cmd))
             
-            self.logger.debug(f"Vehicle-following control - Acc: {speed_cmd:.3f}, Steering: {steering_cmd:.3f}")
-            return speed_cmd, steering_cmd
+            # Apply actuator delay to speed command
+            delayed_speed_cmd = self._apply_actuator_delay(speed_cmd, dt)
+            
+            self.logger.debug(f"Vehicle-following control - Raw Acc: {speed_cmd:.3f}, Delayed Acc: {delayed_speed_cmd:.3f}, Steering: {steering_cmd:.3f}")
+            return delayed_speed_cmd, steering_cmd
 
         except Exception as e:
             self.logger.error(f"Error computing vehicle-following control: {e}")
@@ -363,76 +495,45 @@ class VehicleFollowerController:
         """
         Compute the longitudinal control (acceleration command).
         For 'CACC' uses controller.compute_cacc_acceleration.
+        For 'IDM' uses controller.compute_idm_acceleration.
         For 'LOOKAHEAD' uses the translated MATLAB look-ahead acceleration law.
-        For 'IDM' or others uses the legacy interface.
         """
         try:
             self.logger.debug(f"--- Vehicle {self.vehicle_id}: Computing longitudinal control ---")
             self.logger.debug(f"Vehicle {self.vehicle_id}: Follower state: {follower_state}")
             self.logger.debug(f"Vehicle {self.vehicle_id}: Leader state: {leader_state}")
-            self.logger.debug(f"Vehicle {self.vehicle_id}: Controller type: {self.controller_type}")
 
             if self.controller_type == "CACC":
-                # existing optimized path
+                # Use CACC controller's direct acceleration method
                 acc_cmd = self.controller.compute_cacc_acceleration(follower_state, leader_state)
-                self.logger.debug(f"Vehicle {self.vehicle_id}: CACC acceleration command: {acc_cmd:.6f}")
+                
+            elif self.controller_type == "IDM":
+                # Use IDM controller's direct acceleration method
+                acc_cmd = self.controller.compute_idm_acceleration(follower_state, leader_state)
+                
+            elif self.controller_type == "LOOKAHEAD":
+                # Use the look-ahead control algorithm (no separate controller object)
+                acc_cmd = self._compute_lookahead_acceleration(follower_state, leader_state)
                 
             else:
-                # For IDM or other controllers, use the legacy interface with DummyVehicle
-                acc_cmd = self._compute_legacy_control(follower_state, leader_state)
-                self.logger.debug(f"Vehicle {self.vehicle_id}: Legacy acceleration command: {acc_cmd:.6f}")
+                self.logger.warning(f"Unknown controller type '{self.controller_type}', using zero acceleration")
+                acc_cmd = 0.0
 
-            # Ensure acceleration command is non-negative
-            # acc_cmd = max(-0.05, acc_cmd)
-            self.logger.debug(f"Vehicle {self.vehicle_id}: Final acceleration command: {acc_cmd:.6f}")
-
+            # self.logger.debug(f"Vehicle {self.vehicle_id}: Final acceleration command: {acc_cmd:.6f}")
             return acc_cmd
 
         except Exception as e:
             self.logger.error(f"Error in longitudinal control: {e}")
             return 0.0
 
-    def _compute_legacy_control(self, follower_state: list, leader_state: list) -> float:
-        """
-        Legacy control computation for non-CACC controllers.
-        This maintains the old behavior for IDM and other controllers.
-        """
-        dummy_leader = DummyVehicle(leader_state, vehicle_id=0)
-
-        if not hasattr(self, '_original_get_surrounding_vehicles'):
-            # save original if exists
-            self._original_get_surrounding_vehicles = getattr(self.controller, 'get_surrounding_vehicles', None)
-
-        # temporarily provide get_surrounding_vehicles to the underlying controller if required
-        def fake_get_surrounding_vehicles(*args, **kwargs):
-            # (car_fc, others...) - but previous code expected (None, [dummy_leader], None, None)
-            return (None, [dummy_leader], None, None)
-
-        # attach if controller exposes attribute
-        if hasattr(self.controller, 'get_surrounding_vehicles'):
-            self.controller.get_surrounding_vehicles = fake_get_surrounding_vehicles
-
+    def _compute_lookahead_acceleration(self, follower_state: list, leader_state: list) -> float:
+        """Extract acceleration command from lookahead control."""
         try:
-            # call the old-style get_optimal_input signature
-            # emulate previous usage: return _, input_u, _
-            _, input_u, _ = self.controller.get_optimal_input(
-                host_car_id=self.vehicle_id,
-                state=follower_state,
-                last_input=None,
-                lane_id=None,
-                input_log=None,
-                initial_lane_id=None,
-                direction_flag=None,
-                type_state="true",
-                acc_flag=0
-            )
-            speed_cmd = input_u[0]
-            return speed_cmd
-
-        finally:
-            # restore original method if we overrode it
-            if hasattr(self.controller, 'get_surrounding_vehicles') and hasattr(self, '_original_get_surrounding_vehicles'):
-                self.controller.get_surrounding_vehicles = self._original_get_surrounding_vehicles
+            acc_cmd, _ = self._compute_lookahead_control(follower_state, leader_state)
+            return acc_cmd
+        except Exception as e:
+            self.logger.error(f"Error in lookahead acceleration computation: {e}")
+            return 0.0
 
     def _compute_lateral_control(self, follower_state: list, leader_state: list) -> float:
         """
@@ -548,10 +649,7 @@ class VehicleFollowerController:
             return 0.0, 0.0
 
         # Compute yaw rate from heading change with filtering to reduce noise
-        if abs(theta_lead) > 30:
-            theta_lead = math.radians(theta_lead)
-        if abs(theta) > 30:
-            theta = math.radians(theta)
+        # Note: theta values are now in radians from CSV config files
             
         yaw_rate_lead = (theta_lead - self.prev_theta_lead) / max(dt, 0.001)
         
@@ -617,32 +715,118 @@ class VehicleFollowerController:
         tmp = 1.0 + (kappa ** 2) * (ri + hi * v) ** 2
         return (-1.0 + math.sqrt(max(0.0, tmp))) / kappa
 
-    # ---------- Utilities ----------
-    def update_parameters(self, **kwargs):
-        if 'lookahead_distance' in kwargs:
-            self.lookahead_distance = kwargs['lookahead_distance']
-            self.logger.info(f"Updated lookahead distance to {self.lookahead_distance}")
-        if 'max_steering' in kwargs:
-            self.max_steering = kwargs['max_steering']
-            self.logger.info(f"Updated max steering to {self.max_steering}")
-        if 'k_steering' in kwargs:
-            self.k_steering = kwargs['k_steering']
-            self.logger.info(f"Updated steering gain to {self.k_steering}")
-        # update lookahead-specific params if provided
-        for name in ('l_r', 'l_f', 'C1', 'C2', 'mass', 'hi', 'ri', 'k1', 'k2'):
-            if name in kwargs:
-                setattr(self, name, kwargs[name])
-                self.logger.info(f"Updated {name} to {getattr(self, name)}")
+    def _apply_actuator_delay(self, speed_cmd: float, dt: float) -> float:
+        """
+        Apply first-order actuator delay to speed command.
+        Uses the formula: delayed_cmd = (1 - dt/tau) * prev_delayed_cmd + (dt/tau) * cmd
+        
+        Args:
+            speed_cmd: Raw speed command from controller
+            dt: Time step
+            
+        Returns:
+            Delayed speed command
+        """
+        if self.tau <= 0:
+            # No delay if tau is zero or negative
+            return speed_cmd
+            
+        # First-order low-pass filter representing actuator dynamics
+        alpha = dt / (self.tau + dt)  # Filter coefficient
+        self.delayed_speed_cmd = (1 - alpha) * self.delayed_speed_cmd + alpha * speed_cmd
+        
+        return self.delayed_speed_cmd
+
+    def reset_actuator_delay(self):
+        """Reset actuator delay state (useful for restarting or switching modes)."""
+        self.delayed_speed_cmd = 0.0
+        self.logger.debug(f"Vehicle {self.vehicle_id}: Actuator delay state reset")
+
+
+
+    def compute_control(self, current_pos: list, current_rot: list, current_velocity: float,
+                       leader_pos: list = None, leader_rot: list = None, leader_velocity: float = None,
+                       leader_timestamp: float = None, dt: float = 0.1) -> Tuple[float, float]:
+        """
+        Universal control method that handles all follower modes automatically:
+        - vehicle_following: Follows a target vehicle (requires leader data)
+        - trajectory: Follows predefined waypoints independently 
+        - hybrid: Combines both modes based on conditions
+        
+        Args:
+            current_pos: Current position [x, y, z]
+            current_rot: Current rotation [roll, pitch, yaw] 
+            current_velocity: Current velocity
+            leader_pos: Leader position [x, y, z] (optional, for vehicle_following)
+            leader_rot: Leader rotation [roll, pitch, yaw] (optional, for vehicle_following)
+            leader_velocity: Leader velocity (optional, for vehicle_following)
+            leader_timestamp: Timestamp of leader data (optional)
+            dt: Time step
+            
+        Returns:
+            Tuple of (forward_speed_command, steering_angle)
+        """
+        if not self.initialized:
+            return 0.0, 0.0
+            
+        try:
+            if self.follower_mode == "vehicle_following":
+                if leader_pos is None or leader_rot is None or leader_velocity is None:
+                    self.logger.warning(f"Vehicle {self.vehicle_id}: No leader data for vehicle_following mode")
+                    return 0.0, 0.0
+                return self.compute_vehicle_following_control(
+                    current_pos, current_rot, current_velocity,
+                    leader_pos, leader_rot, leader_velocity, leader_timestamp, dt
+                )
+                
+            elif self.follower_mode == "trajectory":
+                return self.compute_trajectory_following_control(
+                    current_pos, current_rot, current_velocity, dt
+                )
+                
+            elif self.follower_mode == "hybrid":
+                # Check if leader data is available and recent
+                leader_available = (leader_pos is not None and leader_rot is not None and 
+                                  leader_velocity is not None)
+                
+                if leader_available:
+                    # Calculate distance to leader
+                    distance = np.sqrt((leader_pos[0] - current_pos[0])**2 + 
+                                     (leader_pos[1] - current_pos[1])**2)
+                    
+                    # Use vehicle following if leader is close enough or priority is vehicle_following
+                    if (self.hybrid_priority == "vehicle_following" or 
+                        distance < self.hybrid_distance_threshold):
+                        return self.compute_vehicle_following_control(
+                            current_pos, current_rot, current_velocity,
+                            leader_pos, leader_rot, leader_velocity, leader_timestamp, dt
+                        )
+                
+                # Fall back to trajectory following
+                return self.compute_trajectory_following_control(
+                    current_pos, current_rot, current_velocity, dt
+                )
+                
+            else:
+                self.logger.error(f"Vehicle {self.vehicle_id}: Unknown follower_mode '{self.follower_mode}'")
+                return 0.0, 0.0
+                
+        except Exception as e:
+            self.logger.error(f"Vehicle {self.vehicle_id}: Error in compute_control: {e}")
+            return 0.0, 0.0
 
     def get_control_state(self) -> dict:
         """Get current control state information for both controllers."""
         state = {
             'vehicle_id': self.vehicle_id,
             'controller_type': self.controller_type,
+            'follower_mode': self.follower_mode,
             'initialized': self.initialized,
             'lookahead_distance': self.lookahead_distance,
             'max_steering': self.max_steering,
-            'k_steering': self.k_steering
+            'k_steering': self.k_steering,
+            'actuator_tau': self.tau,
+            'delayed_speed_cmd': self.delayed_speed_cmd
         }
         
         # Add trajectory controller state (independent of controller_type)
@@ -663,6 +847,7 @@ class VehicleFollowerController:
     def stop_control(self):
         """Stop both vehicle-following and trajectory-following controllers."""
         self.logger.info(f"Stopping follower controller for vehicle {self.vehicle_id}")
+        self.reset_actuator_delay()  # Reset actuator delay state when stopping
         self.initialized = False
 
     def stop_trajectory_following(self):
@@ -675,3 +860,25 @@ class VehicleFollowerController:
         """Reset trajectory following timing (restart from beginning)."""
         self.start_time = None
         self.logger.info(f"Trajectory following reset for vehicle {self.vehicle_id}")
+
+    # ---------- Utilities ----------
+    def update_parameters(self, **kwargs):
+        if 'lookahead_distance' in kwargs:
+            self.lookahead_distance = kwargs['lookahead_distance']
+            self.logger.info(f"Updated lookahead distance to {self.lookahead_distance}")
+        if 'max_steering' in kwargs:
+            self.max_steering = kwargs['max_steering']
+            self.logger.info(f"Updated max steering to {self.max_steering}")
+        if 'k_steering' in kwargs:
+            self.k_steering = kwargs['k_steering']
+            self.logger.info(f"Updated steering gain to {self.k_steering}")
+        # update actuator delay parameter if provided
+        if 'tau' in kwargs:
+            self.tau = kwargs['tau']
+            self.logger.info(f"Updated actuator time constant (tau) to {self.tau}")
+        
+        # update lookahead-specific params if provided
+        for name in ('l_r', 'l_f', 'C1', 'C2', 'mass', 'hi', 'ri', 'k1', 'k2'):
+            if name in kwargs:
+                setattr(self, name, kwargs[name])
+                self.logger.info(f"Updated {name} to {getattr(self, name)}")

@@ -20,9 +20,14 @@ from qvl.free_camera import QLabsFreeCamera
 qlabs = QuanserInteractiveLabs()
     
 print("Connecting to QLabs...")
-if (not qlabs.open("localhost")):
-    print("Unable to connect to QLabs") 
-    sys.exit()  
+try:
+    qlabs.open("localhost")
+    qlabs.destroy_all_spawned_actors()
+    QLabsRealTime().terminate_all_real_time_models()
+    print("Connected to QLabs")
+except:
+    print("Unable to connect to QLabs")
+    quit() 
 
 print("Connected")  
 
@@ -53,11 +58,45 @@ QCars.append({
 
 QCars.append({
     "RobotType": "QC2", 
-    "Location": [22.5478, 00.814, 0], 
-    "Rotation": [0, 0, 1.5707963267948966], 
+    "Location": [-17.666, -1.153, 0], 
+    "Rotation": [0, 0, -0.74], 
     'Radians': True,
     "Scale": 1
 })
+
+QCars.append({
+    "RobotType": "QC2", 
+    "Location": [-18.302, 5.93, 0], 
+    "Rotation": [0, 0, -1.515], 
+    'Radians': True,
+    "Scale": 1
+})
+
+QCars.append({
+    "RobotType": "QC2", 
+    "Location": [-17.832, 11.507, 0], 
+    "Rotation": [0, 0, -1.664], 
+    'Radians': True,
+    "Scale": 1
+})
+
+# QCars.append({
+#     "RobotType": "QC2", 
+#     "Location": [22.5478, 00.814, 0], 
+#     "Rotation": [0, 0, 1.5707963267948966], 
+#     'Radians': True,
+#     "Scale": 1
+# })
+
+
+
+# QCars.append({
+#     "RobotType": "QC2", 
+#     "Location": [22.5478, 00.814, 0], 
+#     "Rotation": [0, 0, 1.5707963267948966], 
+#     'Radians': True,
+#     "Scale": 1
+# })
 
 mySpawns = MultiAgent(QCars)
 

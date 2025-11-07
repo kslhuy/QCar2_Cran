@@ -262,7 +262,7 @@ class FleetLoggingConfig:
             try:
                 with open(log_file_path, 'w') as f:
                     f.truncate(0)
-                print(f"Truncated existing {config['filename']} for new run")
+                # print(f"Truncated existing {config['filename']} for new run")
             except Exception as e:
                 print(f"Failed to truncate {config['filename']}: {e}")
         

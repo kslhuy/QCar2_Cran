@@ -16,7 +16,6 @@ from qvl.crosswalk import QLabsCrosswalk
 
 from hal.content.qcar_functions import QCarEKF
 
-from src.Controller.DummyController import DummyVehicle
 from src.Controller.idm_control import IDMControl
 from src.Controller.CACC import CACC
 from src.OpenRoad import OpenRoad
@@ -265,7 +264,7 @@ class VehicleConfigBuilder:
             
             # GPS settings
             'gps_server_ip': "127.0.0.1",
-            'gps_server_port': 8001,
+            'gps_server_port': getattr(self.config, 'gps_server_port', 8001),
             
             # Control parameters
             'max_steering': getattr(self.config, 'max_steering', 0.6),
@@ -273,6 +272,7 @@ class VehicleConfigBuilder:
             'general_update_rate': getattr(self.config, 'update_rate', 100),
             'controller_rate': getattr(self.config, 'control_rate', 50),
             'observer_rate': getattr(self.config, 'observer_rate', 100),
+            'fleet_observer_rate': getattr(self.config, 'fleet_observer_rate', 50),  # NEW: Separate fleet observer rate
             'gps_update_rate': getattr(self.config, 'gps_update_rate', 5),
 
             # Observer configuration
@@ -392,12 +392,10 @@ class QcarFleet:
         self.InitEnv(QlabType)
         #Number of the Qcars in the fleet, int
         if self.NumQcar < 2:
-            print("Error: Number of cars in the fleet is too small")
-            quit()
+            raise ValueError("Error: Number of cars in the fleet is too small (minimum 2 required)")
             #Check the number of cars in the fleet. 
         self.InitQcarSpawnData(QlabType)  # Only prepare spawn data, don't spawn here
 
-        self.InitThread()  # Keep for compatibility, but won't use threading locks
         self.PrepareVehicleConfigs()  # Prepare configurations for vehicle processes
         pass
 
@@ -407,17 +405,18 @@ class QcarFleet:
         """
         Initiate the environment of the Qlab 
         """
-        try:
-            self.qlabs.open("localhost")
-            #qlabs.open("host.docker.internal")
-            print("Connected to QLabs")
-        except:
-            print("Error: Unable to connect to QLabs")
-            quit()
-        self.qlabs.destroy_all_spawned_actors()
-        QLabsRealTime().terminate_all_real_time_models()
-
         if (QlabType == "Studio"):
+            try:
+                self.qlabs.open("localhost")
+                #qlabs.open("host.docker.internal")
+                print("Connected to QLabs")
+            except Exception as e:
+                print(f"Error: Unable to connect to QLabs: {e}")
+                raise RuntimeError("Failed to connect to QLabs. Please ensure QLabs is running.")
+            self.qlabs.destroy_all_spawned_actors()
+            QLabsRealTime().terminate_all_real_time_models()
+            time.sleep(1)  # Allow time for environment setup
+
             # Setup environment
             x_offset = 0.13
             y_offset = 1.67
@@ -439,9 +438,9 @@ class QcarFleet:
             myCrossWalk.spawn_degrees(location=[-2 + x_offset, -1.475 + y_offset, 0.01], rotation=[0, 0, 0], scale=[0.1, 0.1, 0.075], configuration=0)
             mySpline = QLabsBasicShape(self.qlabs)
             mySpline.spawn_degrees(location=[2.05 + x_offset, -1.5 + y_offset, 0.01], rotation=[0, 0, 0], scale=[0.27, 0.02, 0.001], waitForConfirmation=False)
-
-
-        #QLabsRealTime().terminate_all_real_time_models(RTModelHostName='host.docker.internal')
+            time.sleep(1)  # Allow time for environment setup
+            self.qlabs.close()
+        # print("Main QLabs connection closed")
         pass
 
     def InitQcarSpawnData(self, QlabType:str):
@@ -463,8 +462,7 @@ class QcarFleet:
                 self.QcarScale =  [0.1,0.1,0.1]
             case _:
                 self.QcarScale = [1,1,1]
-                print("Error: QlabType not found")
-                quit()
+                raise ValueError(f"Error: QlabType '{QlabType}' not found. Valid types: 'OpenRoad', 'Studio'")
 
         InitPositionTable = InitPositionTable.to_numpy()
         
@@ -474,9 +472,6 @@ class QcarFleet:
         print(f"Prepared spawn data for {self.NumQcar} vehicles with scale {self.QcarScale}")
         pass
 
-    def InitThread(self):
-        self.lock = threading.Lock()
-        pass
 
     def create_fleet_graph(self, graph_type="fully_connected"):
         """
@@ -623,7 +618,7 @@ class QcarFleet:
 
         - camera_pose/camera_rotation: optional camera location/rotation to spawn and possess
         - close_camera_session: if True, close the qlabs session used for the camera (mirrors initCars.py)
-        - radians: whether rotations are in radians (default True to match initCars.py)
+        - radians: whether rotations are in radians (default True to match CSV config files in radians)
 
         Returns the MultiAgent instance or None on failure. Stores it in `self.multiagent_spawns`.
         """
@@ -657,31 +652,39 @@ class QcarFleet:
                 'Scale': scale,
             })
 
-        # Optional camera handling (use the fleet qlabs session)
-        if camera_pose is not None:
-            try:
-                cam = QLabsFreeCamera(self.qlabs)
-                rot = camera_rotation if camera_rotation is not None else [0, 0, 0]
-                cam.spawn_degrees(location=camera_pose, rotation=rot)
-                cam.possess()
-                print("Spawned and possessed free camera for multiagent spawn")
-                if close_camera_session:
-                    # Close the qlabs session used by the camera (initCars closes it)
-                    try:
-                        self.qlabs.close()
-                        print("Closed camera qlabs session")
-                    except Exception as e:
-                        print(f"Failed to close camera qlabs session: {e}")
-            except Exception as e:
-                print(f"Warning: failed to spawn/possess camera: {e}")
+        # # Optional camera handling (use the fleet qlabs session)
+        # if camera_pose is not None:
+        #     try:
+        #         cam = QLabsFreeCamera(self.qlabs)
+        #         rot = camera_rotation if camera_rotation is not None else [0, 0, 0]
+        #         cam.spawn_degrees(location=camera_pose, rotation=rot)
+        #         cam.possess()
+        #         print("Spawned and possessed free camera for multiagent spawn")
+        #         if close_camera_session:
+        #             # Close the qlabs session used by the camera (initCars closes it)
+        #             try:
+        #                 self.qlabs.close()
+        #                 print("Closed camera qlabs session")
+        #             except Exception as e:
+        #                 print(f"Failed to close camera qlabs session: {e}")
+        #     except Exception as e:
+        #         print(f"Warning: failed to spawn/possess camera: {e}")
 
         try:
             mySpawns = MultiAgent(QCARS_list)
             self.multiagent_spawns = mySpawns
-            print(f"MultiAgent spawned {len(QCARS_list)} vehicles")
+            print(f"MultiAgent spawned {len(QCARS_list)} vehicles successfully")
             return mySpawns
         except Exception as e:
-            print(f"Failed to spawn with MultiAgent: {e}")
+            error_msg = str(e)
+            if "-64" in error_msg:
+                print(f"Failed to spawn with MultiAgent: {e}")
+                print("Error -64: QLabs communication error. Possible causes:")
+                print("  - QLabs is not running or not responding")
+                print("  - QLabs connection was interrupted")
+                print("  - Invalid spawn parameters or configuration")
+            else:
+                print(f"Failed to spawn with MultiAgent: {e}")
             return None
 
     def get_fleet_graph(self):
@@ -737,7 +740,11 @@ class QcarFleet:
         """
         print("Starting fleet vehicle processes...")
         if self.config.spawn_method == "multiagent": 
-            self.spawn_cars_multiagent()
+            spawn_result = self.spawn_cars_multiagent()
+            if spawn_result is None:
+                raise RuntimeError("Failed to spawn vehicles using MultiAgent. Check QLabs connection and configuration.")
+            
+            # Start all processes simultaneously to avoid timing bias
             for i, vehicle_config in enumerate(self.vehicle_configs):
                 # Create a new process for each vehicle
                 process = multiprocessing.Process(
@@ -748,8 +755,10 @@ class QcarFleet:
                 process.start()
                 self.vehicle_processes.append(process)
                 print(f"Started process for vehicle {i} ({'Leader' if vehicle_config['is_leader'] else 'Follower'})")
-                time.sleep(0.5) 
+                # Remove sequential delay to prevent timing bias
+                time.sleep(0.5)  # REMOVED: This causes vehicle 0 to get priority
         else:        
+            # Start all processes simultaneously to avoid timing bias
             for i, vehicle_config in enumerate(self.vehicle_configs):
                 # Create a new process for each vehicle
                 process = multiprocessing.Process(
@@ -760,7 +769,8 @@ class QcarFleet:
                 process.start()
                 self.vehicle_processes.append(process)
                 print(f"Started process for vehicle {i} ({'Leader' if vehicle_config['is_leader'] else 'Follower'})")
-                time.sleep(0.5)  
+                # Remove sequential delay to prevent timing bias
+                time.sleep(0.5)  # REMOVED: This causes vehicle 0 to get priority  
         
         # Wait for all vehicles to initialize
         print("Waiting for vehicle processes to initialize...")
@@ -787,13 +797,6 @@ class QcarFleet:
             time.sleep(2.0)  # Brief pause before starting control
             self.start_event.set()
             print("Fleet control activated! Vehicles can now start moving.")
-        # else:
-        #     print(f"Warning: Only {initialized_count}/{self.NumQcar} vehicles initialized within timeout")
-        #     if initialized_count >= 1:
-        #         print("Proceeding with available vehicles...")
-        #         self.start_event.set()
-        #     else:
-        #         print("Fleet control activation cancelled due to insufficient vehicles")
         pass
 
     def FleetCanceling(self):
@@ -838,30 +841,24 @@ class QcarFleet:
         
         # Close QLabs connection in main process
         try:
-            if hasattr(self, 'qlabs') and self.qlabs is not None:
-                print("Closing main QLabs connection...")
-                self.qlabs.close()
-                print("Main QLabs connection closed")
-            else :
-                for robot in self.multiagent_spawns.robotActors:
-                    robot.set_velocity_and_request_state(
-                        forward=0.0, 
-                        turn=0.0,
-                        headlights=False,
-                        leftTurnSignal=False,
-                        rightTurnSignal=False,
-                        brakeSignal=False,
-                        reverseSignal=False
-                    )   
+            for robot in self.multiagent_spawns.robotActors:
+                robot.set_velocity_and_request_state(
+                    forward=0.0, 
+                    turn=0.0,
+                    headlights=False,
+                    leftTurnSignal=False,
+                    rightTurnSignal=False,
+                    brakeSignal=False,
+                    reverseSignal=False
+                )   
 
-                self.multiagent_spawns.qlabs.close()
-                print("Main QLabs connection closed from multiagent spawns")
+            self.multiagent_spawns.qlabs.close()
+            print("Main QLabs connection closed from multiagent spawns")
         except Exception as e:
             print(f"Error closing QLabs connection: {e}")
         
         # Terminate any remaining real-time models
         try:
-            from qvl.real_time import QLabsRealTime
             print("Terminating all real-time models...")
             QLabsRealTime().terminate_all_real_time_models()
             print("All real-time models terminated")

@@ -1,0 +1,131 @@
+# =============================================================================
+# FOLLOWER CONTROLLER CONFIGURATION
+# =============================================================================
+# This file controls the follower vehicle behavior.
+# The VehicleFollowerController reads this file directly at initialization.
+# Simple and clean - no need to pass through QcarFleet or VehicleProcess!
+
+# =============================================================================
+# FOLLOWER CONTROL MODE
+# =============================================================================
+# Choose which control mode followers should use:
+#   "trajectory"      - Follow predefined waypoints independently
+#   "vehicle_following" - Follow leader vehicle using CACC/IDM/LOOKAHEAD
+#   "hybrid"          - Smart switching between trajectory and vehicle following
+
+follower_mode: "vehicle_following"  # Change this to switch all followers' mode
+
+# Per-vehicle mode overrides (optional)
+# If a vehicle_id is listed here, it will use this mode instead of the default
+vehicle_mode_overrides:
+  # vehicle_1: "trajectory"
+  # vehicle_2: "hybrid"
+  # Example: Make vehicle 1 follow trajectory while others follow leader
+
+# =============================================================================
+# VEHICLE-FOLLOWING CONFIGURATION
+# =============================================================================
+vehicle_following:
+  # Car-following parameters (used by CACC, IDM, LOOKAHEAD)
+  # IDM parameters
+  alpha: 1.2                      # Acceleration sensitivity
+  beta: 1.5                       # Deceleration sensitivity
+  v0: 0.3                         # Desired velocity (m/s)
+  delta: 3                        # Acceleration exponent
+  T: 0.3                          # Time headway (seconds)
+  s0: 1.0                           # Minimum spacing (meters)
+
+  # CACC-specific parameters
+  ri: 1.0                           # CACC spacing parameter (meters)
+  hi: 0.3                           # Time headway for CACC (seconds)
+  
+  # Control gains (1x2 matrix as [spacing_gain, velocity_gain])  
+  K_gains: [0.2, 0.05]  # [spacing_error_gain, velocity_error_gain]
+  # Tuning guide:
+  # - spacing_error_gain: Higher = more aggressive spacing correction (typical: 0.1-0.5)
+  # - velocity_error_gain: Higher = more aggressive velocity matching (typical: 0.01-0.1)
+  
+  # Vehicle physical parameters
+  l_r: 0.141                      # Rear axle distance (meters)
+  l_f: 0.115                      # Front axle distance (meters)
+  C1: 1.0                         # Tire stiffness front
+  C2: 1.0                         # Tire stiffness rear
+  mass: 5.0                       # Vehicle mass (kg)
+  
+  # Extended Look-Ahead controller gains (for LOOKAHEAD mode)
+  k1: 0.2                         # Spacing error gain
+  k2: 0.05                         # Velocity error gain
+  
+  # Steering control
+
+  # Steering controller
+  enable_steering_control: true  # Enable steering control
+  lookahead_distance: 1         # Path following lookahead distance (meters)
+
+  max_steering: 0.55              # Maximum steering angle (radians)
+  k_steering: 0.5                 # Steering control gain
+  k_steering_openroad: 0.2        # Steering control gain for OpenRoad (straight path)
+
+
+  # Start timing
+  startDelay: 1                   # Start delay in seconds
+
+# =============================================================================
+# TRAJECTORY FOLLOWING CONFIGURATION
+# =============================================================================
+trajectory_following:
+  # Speed controller gains
+  K_p: 0.1                        # Proportional gain
+  K_i: 0.08                       # Integral gain
+  
+  # Steering controller
+  K_stanley: 0.8                  # Stanley steering gain
+  enable_steering_control: false  # Enable steering control
+  lookahead_distance: 0.5         # Path following lookahead distance (meters)
+  
+  # Start timing
+  startDelay: 1                   # Start delay in seconds
+  
+  # Path configuration (read from main config.yaml)
+  # The controller will use road_type and node_sequence from main config
+  use_main_config_path: true      # If true, reads path from config.yaml
+
+# =============================================================================
+# HYBRID MODE CONFIGURATION
+# =============================================================================
+# Smart switching between trajectory and vehicle-following modes
+hybrid:
+  # Priority: which mode is preferred?
+  # "vehicle_following" = prefer following leader when data available
+  # "trajectory" = prefer trajectory, switch to vehicle_following if leader close
+  priority: "vehicle_following"
+  
+  # Distance threshold (meters)
+  # If leader is within this distance, use vehicle_following
+  # If leader is beyond this distance or missing, use trajectory
+  distance_threshold: 2.0
+  
+  # Leader data timeout (seconds)
+  # If leader data is older than this, consider it stale and switch to trajectory
+  leader_data_timeout: 1.0
+  
+  # Switching hysteresis (prevents oscillation)
+  # Distance offset for switching back (e.g., if threshold is 2.0, switch back at 2.5)
+  hysteresis_offset: 0.5
+
+# =============================================================================
+# GENERAL CONTROL PARAMETERS
+# =============================================================================
+control:
+  # Update rates (Hz)
+  general_update_rate: 50         # Main control loop rate
+  controller_rate: 50            # Controller update rate
+  observer_rate: 50              # Observer update rate
+  gps_update_rate: 5              # GPS update rate
+  
+  # Steering and velocity limits
+  max_velocity: 0.4               # Maximum vehicle velocity (m/s)
+  max_steering: 0.6               # Maximum steering angle (radians)
+  enable_steering_control: false  # Enable steering control (false for OpenRoad straight path)
+  tau : 0.1                        # Actuator time constant (seconds)
+  max_throttle_cmd: 0.7           # Maximum throttle command per control step 

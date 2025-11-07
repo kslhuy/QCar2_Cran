@@ -57,12 +57,15 @@ class GPSTimeServer:
             'last_request_time': 0
         }
         
-        # Setup logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        self.logger = logging.getLogger("GPSTimeServer")
+        # Track connected vehicles
+        self.connected_vehicles = set()  # Set of client addresses that have connected
+        
+        # # Setup logging
+        # logging.basicConfig(
+        #     level=logging.INFO,
+        #     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        # )
+        # self.logger = logging.getLogger("GPSTimeServer")
         
         # Create UDP socket
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -98,6 +101,13 @@ class GPSTimeServer:
             client_addr: Client address tuple (IP, port)
         """
         try:
+            # Check if this is a new vehicle connection
+            client_ip_port = f"{client_addr[0]}:{client_addr[1]}"
+            if client_addr not in self.connected_vehicles:
+                self.connected_vehicles.add(client_addr)
+                print(f"🚗 NEW VEHICLE CONNECTED: {client_ip_port} at {time.strftime('%H:%M:%S')}")
+                # self.logger.info(f"New vehicle connected from {client_ip_port}")
+            
             # Generate GPS time
             gps_time = self.get_gps_time()
             
@@ -111,11 +121,11 @@ class GPSTimeServer:
             self.stats['requests_served'] += 1
             self.stats['last_request_time'] = time.time()
             
-            self.logger.debug(f"Served time request from {client_addr}: {gps_time:.6f}")
+            # self.logger.debug(f"Served time request from {client_addr}: {gps_time:.6f}")
             
         except Exception as e:
-            self.logger.error(f"Error handling time request from {client_addr}: {e}")
-    
+            # self.logger.error(f"Error handling time request from {client_addr}: {e}")
+            pass
     def handle_status_request(self, client_addr: tuple) -> None:
         """
         Handle status request from monitoring tools.
@@ -131,6 +141,8 @@ class GPSTimeServer:
                 'server_type': 'GPS_Time_Server',
                 'version': '1.0',
                 'uptime_seconds': uptime,
+                'connected_vehicles': len(self.connected_vehicles),
+                'vehicle_addresses': [f"{addr[0]}:{addr[1]}" for addr in self.connected_vehicles],
                 'requests_served': self.stats['requests_served'],
                 'current_gps_time': self.get_gps_time(),
                 'current_system_time': current_time,
@@ -142,10 +154,11 @@ class GPSTimeServer:
             response = ujson.dumps(status).encode()
             self.socket.sendto(response, client_addr)
             
-            self.logger.info(f"Status request served to {client_addr}")
+            # self.logger.info(f"Status request served to {client_addr}")
             
         except Exception as e:
-            self.logger.error(f"Error handling status request from {client_addr}: {e}")
+            # self.logger.error(f"Error handling status request from {client_addr}: {e}")
+            pass
     
     def start_server(self) -> None:
         """Start the GPS time server."""
@@ -154,8 +167,8 @@ class GPSTimeServer:
             self.socket.bind((self.host, self.port))
             self.socket.settimeout(1.0)  # 1 second timeout for shutdown responsiveness
             
-            self.logger.info(f"GPS Time Server started on {self.host}:{self.port}")
-            self.logger.info(f"Drift rate: {self.drift_rate} s/s, Noise: ±{self.noise_amplitude*1000:.1f}ms")
+            # self.logger.info(f"GPS Time Server started on {self.host}:{self.port}")
+            # self.logger.info(f"Drift rate: {self.drift_rate} s/s, Noise: ±{self.noise_amplitude*1000:.1f}ms")
             
             self.running.set()
             
@@ -184,26 +197,37 @@ class GPSTimeServer:
                     # Timeout is expected for shutdown responsiveness
                     continue
                 except Exception as e:
-                    self.logger.error(f"Server loop error: {e}")
+                    # self.logger.error(f"Server loop error: {e}")
+                    pass
                     
         except Exception as e:
-            self.logger.error(f"Failed to start server: {e}")
+            # self.logger.error(f"Failed to start server: {e}")
             raise
         finally:
             self.cleanup()
     
     def stop_server(self) -> None:
         """Stop the GPS time server."""
-        self.logger.info("Stopping GPS Time Server...")
+        # self.logger.info("Stopping GPS Time Server...")
         self.running.clear()
     
     def cleanup(self) -> None:
         """Clean up server resources."""
         try:
             self.socket.close()
-            self.logger.info("GPS Time Server stopped and cleaned up")
+            # self.logger.info("GPS Time Server stopped and cleaned up")
         except Exception as e:
-            self.logger.error(f"Cleanup error: {e}")
+            # self.logger.error(f"Cleanup error: {e}")
+            pass
+    
+    def show_connected_vehicles(self) -> None:
+        """Display currently connected vehicles."""
+        if self.connected_vehicles:
+            print(f"\n🚗 Connected Vehicles ({len(self.connected_vehicles)}):")
+            for i, addr in enumerate(sorted(self.connected_vehicles), 1):
+                print(f"  {i}. {addr[0]}:{addr[1]}")
+        else:
+            print("\n🚗 No vehicles currently connected")
     
     def print_stats(self) -> None:
         """Print server statistics."""
@@ -212,6 +236,8 @@ class GPSTimeServer:
         
         print(f"\n=== GPS Time Server Statistics ===")
         print(f"Uptime: {uptime:.1f} seconds")
+        print(f"Connected vehicles: {len(self.connected_vehicles)}")
+        print(f"Vehicle addresses: {[f'{addr[0]}:{addr[1]}' for addr in self.connected_vehicles]}")
         print(f"Requests served: {self.stats['requests_served']}")
         print(f"Average requests/sec: {self.stats['requests_served']/max(uptime, 1):.2f}")
         print(f"Current GPS time: {self.get_gps_time():.6f}")
@@ -242,9 +268,10 @@ def main():
     server.noise_amplitude = args.noise
     
     try:
-        print(f"Starting GPS Time Server on {args.host}:{args.port}")
+        print(f"🛰️  Starting GPS Time Server on {args.host}:{args.port}")
         print(f"Drift rate: {args.drift} s/s")
         print(f"Noise amplitude: ±{args.noise*1000:.1f}ms")
+        print("📡 Waiting for vehicle connections...")
         print("Press Ctrl+C to stop\n")
         
         # Start server in a thread so we can handle keyboard interrupt

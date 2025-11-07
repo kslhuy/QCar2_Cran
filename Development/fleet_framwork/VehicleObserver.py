@@ -335,12 +335,12 @@ class VehicleObserver:
 
             state_update_time = (time.perf_counter() - state_update_start) * 1000
             
-            # Step 3: GPS availability tracking
-            gps_tracking_start = time.perf_counter()
-            self.gps_available = measured_state is not None
-            if self.gps_available:
-                self.last_gps_update = timestamp
-            gps_tracking_time = (time.perf_counter() - gps_tracking_start) * 1000
+            # # Step 3: GPS availability tracking
+            # gps_tracking_start = time.perf_counter()
+            # self.gps_available = measured_state is not None
+            # if self.gps_available:
+            #     self.last_gps_update = timestamp
+            # gps_tracking_time = (time.perf_counter() - gps_tracking_start) * 1000
             
             # Step 4: Fleet state update
             fleet_update_start = time.perf_counter()
@@ -381,7 +381,7 @@ class VehicleObserver:
             
             # Log detailed timing information for observer performance analysis
             self.logger.info(f"OBS_TIMING: Total={total_observer_time:.3f}ms, DTCalc={dt_calc_time:.3f}ms, "
-                           f"StateUpdate={state_update_time:.3f}ms, GPSTrack={gps_tracking_time:.3f}ms, "
+                           f"StateUpdate={state_update_time:.3f}ms, "
                            f"FleetUpdate={fleet_update_time:.3f}ms, Logging={logging_time:.3f}ms")
             
             # Log observer state and method information

@@ -3,8 +3,8 @@
 speed:
   v_ref: 0.6  # Desired velocity in m/s
   K_p: 0.1     # Proportional gain
-  K_i: 1.0     # Integral gain
-  max_throttle: 0.3
+  K_i: 0.1     # Integral gain
+  max_throttle: 0.1
 
 steering:
   K_stanley: 0.7
@@ -26,7 +26,7 @@ yolo:
   pulse_length_multiplier: 3
 
 network:
-  host_ip: 192.168.2.200  # Set to host PC IP for remote control
+  host_ip: 192.168.137.1  # Set to host PC IP for remote control
   base_port: 5000
   car_id: 0
   connection_timeout: 10

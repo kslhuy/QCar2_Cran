@@ -25,16 +25,14 @@ from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
 from hal.content.qcar_functions import QCarEKF
 PHYSICAL_QCAR_AVAILABLE = True
 
-# Controller imports
-from src.Controller.CACC import CACC
-from src.Controller.idm_control import IDMControl
-from src.Controller.DummyController import DummyController, DummyVehicle
+
 
 # Other imports
 from CommHandler import CommHandler
+# from CommHandler_Clean import CommHandler
+
 from VehicleLeaderController_RTmodel import VehicleLeaderController_RTmodel
 from VehicleFollowerController import VehicleFollowerController
-from StateQueue import StateQueue
 from VehicleObserver import VehicleObserver
 from src.Trust.TriPTrustModel import TriPTrustModel
 from GraphBasedTrust import GraphBasedTrustEvaluator
@@ -112,8 +110,8 @@ def vehicle_process_main(vehicle_config: Dict , stop_event: multiprocessing.Even
             print(f"Vehicle {vehicle_id}: Unexpected error during run: {e}")
         finally:
             # EMERGENCY STOP: Ensure vehicle is stopped before process exits
-            # vehicle.physical_qcar.write(0, 0)
-            vehicle.physical_qcar.read_write_std(throttle= 0, steering= 0)
+            vehicle.physical_qcar.write(0, 0)
+            # vehicle.physical_qcar.read_write_std(throttle= 0, steering= 0)
 
             
         # After run() exits, call cleanup to clean up
@@ -165,17 +163,24 @@ class VehicleProcess:
         self.start_event = start_event
 
         # Initialize Vehicle Postion
+        self.road_type = vehicle_config.get('road_type', 'OpenRoad')
+
         spawn_location = vehicle_config.get('spawn_location', [0, 0, 0])
+        if self.road_type == 'OpenRoad':  # GPS give scale 0.1
+            spawn_location = np.array(spawn_location) * 0.1
+
         spawn_rotation = vehicle_config.get('spawn_rotation', [0, 0, 0])
-        initial_pose = np.array([spawn_location[0], spawn_location[1], np.deg2rad(spawn_rotation[2])])
+        # CSV config files now contain rotation values in radians
+        initial_pose = np.array([spawn_location[0], spawn_location[1], spawn_rotation[2]])
         
 
         self.update_rate = vehicle_config.get('general_update_rate', 100)
         self.controller_rate = vehicle_config.get('controller_rate', 100)
         self.observer_rate = vehicle_config.get('observer_rate', 100)
+        self.fleet_observer_rate = vehicle_config.get('fleet_observer_rate', 50)  # NEW: Separate fleet observer rate
         self.gps_update_rate = vehicle_config.get('gps_update_rate', 5)
 
-        print(f"Vehicle {self.vehicle_id}: Update rate: {vehicle_config.get('general_update_rate')}, Control rate: {vehicle_config.get('controller_rate')}, Observer rate: {vehicle_config.get('observer_rate')}, GPS update rate: {self.gps_update_rate}")
+        print(f"Vehicle {self.vehicle_id}: Update rate: {vehicle_config.get('general_update_rate')}, Control rate: {vehicle_config.get('controller_rate')}, Local observer rate: {vehicle_config.get('observer_rate')}, Fleet observer rate: {self.fleet_observer_rate}, GPS update rate: {self.gps_update_rate}")
 
         # QCar mode configuration - check if we should use physical QCar API for leader
         # TODO : instead of use is_leader , depend on config file if we need to use that 
@@ -200,17 +205,13 @@ class VehicleProcess:
             calibrate =  'y' in input('do you want to recalibrate?(y/n)')
         # Initialize physical QCar interface for leader
 
-        print(Car_rt_config["actorNumber"], Car_rt_config["gpsPort"], Car_rt_config["lidarIdealPort"])
+        # print(Car_rt_config["actorNumber"], Car_rt_config["gpsPort"], Car_rt_config["lidarIdealPort"])
 
         self.physical_qcar = QCar(readMode=1, frequency=self.controller_rate , hilPort=Car_rt_config["hilPort"])
         # # Initialize GPS for EKF if steering control is enabled
-        if self.enable_steering_control or calibrate:
-            self.gps = QCarGPS(initialPose=initial_pose,calibrate=calibrate, 
-                gpsPort=Car_rt_config["gpsPort"], lidarIdealPort=Car_rt_config["lidarIdealPort"])
-        else:
-            self.gps = memoryview(b'')
-            print(f"Vehicle {self.vehicle_id}: Physical QCar initialized without GPS/EKF")
-        
+        self.gps = QCarGPS(initialPose=initial_pose,calibrate=calibrate, 
+            gpsPort=Car_rt_config["gpsPort"], lidarIdealPort=Car_rt_config["lidarIdealPort"])
+
         # -------------- Multiprocessing-safe running flag
         self.running = multiprocessing.Event()
         self.running.set()
@@ -228,7 +229,7 @@ class VehicleProcess:
         self.num_connections = vehicle_config.get('num_connections', 0)  # Number of connections
         
         print(f"Vehicle {self.vehicle_id}: Fleet graph connections: {self.connected_vehicles}")
-        print(f"Vehicle {self.vehicle_id}: Number of connections: {self.num_connections}")
+        # print(f"Vehicle {self.vehicle_id}: Number of connections: {self.num_connections}")
 
         # NEW: Chain-following configuration
         self.following_target = vehicle_config.get('following_target', None)
@@ -238,10 +239,9 @@ class VehicleProcess:
             print(f"Vehicle {self.vehicle_id}: Leader vehicle (no following target)")
         
         # Vehicle state - initialize with spawn location and rotation
-        spawn_location = vehicle_config.get('spawn_location', [0, 0, 0])
-        spawn_rotation = vehicle_config.get('spawn_rotation', [0, 0, 0])
-        self.current_pos = list(spawn_location)
-        self.current_rot = list(spawn_rotation)
+        # Ensure both are lists for consistency
+        self.current_pos = list(spawn_location)  # Convert numpy array to list if needed
+        self.current_rot = list(spawn_rotation)  # Ensure it's a list
         self.velocity = 0.0
         self.prev_pos = None
         self.prev_time = None
@@ -258,21 +258,9 @@ class VehicleProcess:
         gps_server_ip = vehicle_config.get('gps_server_ip', '127.0.0.1')
         gps_server_port = vehicle_config.get('gps_server_port', 8001)
         self.gps_sync = GPSSync(gps_server_ip, gps_server_port, vehicle_id)
-        self.sync_interval = 5.0
-        self.last_sync_attempt = time.time()
+
         
-        # State Queue for managing received states
-        self.state_queue = StateQueue(
-            max_queue_size=64,
-            max_age_seconds=0.5,  # Increased from 0.2s for local network reliability
-            max_delay_threshold=0.4,
-            logger=self.logger
-        )
-        # World transform timeout & metrics (configurable)
-        self.world_tf_timeout = vehicle_config.get('world_tf_timeout', 0.05)  # seconds
-        self.world_tf_timeouts = 0
-        self.world_tf_errors = 0
-        self.world_tf_last_warning = 0.0
+
         self._prev_time_monotonic = None  # For velocity dt stability
 
         # Initialize communication handler
@@ -321,6 +309,7 @@ class VehicleProcess:
                 self.follower_controller = None
                 print(f"Vehicle {self.vehicle_id}: Leader controller initialized")
             else:
+                print(f"Vehicle {self.vehicle_id}: Creating follower controller with type={self.controller_type}")
                 self.follower_controller = VehicleFollowerController(
                     vehicle_id=self.vehicle_id,
                     controller_type=self.controller_type,
@@ -328,9 +317,13 @@ class VehicleProcess:
                     logger=self.control_logger
                 )
                 self.leader_controller = None
-                print(f"Vehicle {self.vehicle_id}: Follower controller ({self.controller_type}) initialized")
+                print(f"Vehicle {self.vehicle_id}: ✅ Follower controller ({self.controller_type}) initialized")
+                # print(f"Vehicle {self.vehicle_id}: Follower controller initialized: {self.follower_controller is not None}")
+                print(f"Vehicle {self.vehicle_id}: Follower controller mode: {getattr(self.follower_controller, 'follower_mode', 'UNKNOWN')}")
         except Exception as e:
-            print(f"Vehicle {self.vehicle_id}: Controller initialization failed: {e}")
+            import traceback
+            print(f"Vehicle {self.vehicle_id}: ❌ Controller initialization failed: {e}")
+            traceback.print_exc()
             self.logger.error(f"Vehicle {self.vehicle_id}: Controller initialization failed: {e}")
             self.leader_controller = None
             self.follower_controller = None
@@ -554,7 +547,7 @@ class VehicleProcess:
         self.trust_logger = get_trust_logger(self.vehicle_id)
 
         """Configure logging settings for optimal performance."""
-        disable_all_logging()
+        # disable_all_logging()
         set_module_logging('control', True)
         set_module_logging('observer', True)
         set_module_logging('communication', True)
@@ -563,12 +556,14 @@ class VehicleProcess:
         # set_module_logging('weight', True)  # Enable weight logging
         
         # # Set fleet observer logger to INFO level to see the velocity debug messages
-        self.fleet_observer_logger.setLevel(logging.INFO)
+        self.fleet_observer_logger.setLevel(logging.DEBUG)
         # self.comm_logger.setLevel(logging.DEBUG)  # Already set to INFO - this enables info messages
         self.comm_logger.setLevel(logging.INFO)  
-        self.observer_logger.setLevel(logging.INFO)
+        self.observer_logger.setLevel(logging.DEBUG)
         self.trust_logger.setLevel(logging.INFO)  # Enable trust logging at INFO level
         self.control_logger.setLevel(logging.DEBUG)  # Enable control logging at DEBUG level
+        self.gps_logger.setLevel(logging.DEBUG)  # Enable GPS logging at DEBUG level
+
 
         # self.weight_logger.setLevel(logging.INFO)  # Enable weight logging at INFO level
 
@@ -577,21 +572,15 @@ class VehicleProcess:
     def readData_Qcar(self):
         """Update GPS data from QCar sensors (supports both virtual and physical QCar modes)."""
         try:
-            gps_start_time = time.perf_counter()
             current_time = time.time()
             self._update_physical_qcar_data(current_time)
 
-
-                
-            # gps_duration = (time.perf_counter() - gps_start_time) * 1000
-            # if gps_duration > 2.0:  # Log if GPS update takes >2ms
-            #     self.gps_logger.warning(f"Vehicle {self.vehicle_id}: GPS update took {gps_duration:.4f}ms")
-                
         except Exception as e:
             self.logger.error(f"Vehicle {self.vehicle_id}: GPS update error: {e}")
             self.gps_data_cache['available'] = False
             print(f"Vehicle {self.vehicle_id}: GPS update exception: {e}")
 
+        return self.gps_data_cache
 
 
 
@@ -606,10 +595,14 @@ class VehicleProcess:
         
         available = False  # Initialize available flag
         
-        if self.enable_steering_control and hasattr(self, 'gps') and self.gps is not None:
+        if hasattr(self, 'gps') and self.gps is not None:
             # GPS and EKF update
             if self.gps.readGPS():
-                # GPS data available
+                # GPS data available - THIS IS THE RIGHT TIME TO SYNC GPS TIME!
+                # Sync GPS time when we get fresh GPS data
+                self.gps_sync.sync_with_gps()
+
+                
                 y_gps = np.array([
                     self.gps.position[0],
                     self.gps.position[1], 
@@ -627,6 +620,10 @@ class VehicleProcess:
                     'timestamp': current_time,
                     'last_update': current_time
                 })
+
+                self.gps_logger.debug(f"V{self.vehicle_id}: GPS time synced with fresh GPS data")
+                self.gps_logger.debug(f"V{self.vehicle_id}: GPS data updated: pos={self.current_pos}, rot={self.current_rot}")
+                
             else:
                 available = False
 
@@ -769,91 +766,57 @@ class VehicleProcess:
 
 
     def follower_control_logic(self):
-        """Follower control logic that delegates to VehicleFollowerController."""
+        """Simplified follower control logic using unified controller interface."""
         if self.is_leader or self.follower_controller is None:
             print(f"Vehicle {self.vehicle_id}: Skipping follower control - is_leader={self.is_leader}, controller_exists={self.follower_controller is not None}")
             return
         
-        # print(f"Vehicle {self.vehicle_id}: Executing follower control logic")
         try:
-            # Use GPS-synchronized time for better prediction
-            current_gps_time = self.gps_sync.get_synced_time()
-            self.comm_logger.debug(f"Vehicle {self.vehicle_id}: Follower control - GPS time: {current_gps_time}")
-            
-            # Get latest valid target state directly (simplified approach)
-            target_data = None
-            
-            if self.leader_state is not None:
-                # Check if the state is recent enough (within 2 seconds for 3+ vehicle fleets)
-                state_age = current_gps_time - self.leader_state.get('timestamp', 0)
-                if state_age <= 2.0:  # Increased threshold for multi-vehicle fleets
-                    target_data = {
-                        'pos': self.leader_state.get('pos', [0, 0, 0]),
-                        'rot': self.leader_state.get('rot', [0, 0, 0]),
-                        'vel': self.leader_state.get('v', 0.0),
-                        'timestamp': self.leader_state.get('timestamp', current_gps_time),
-                        'state_age': state_age
-                    }
-                    # print(f"Vehicle {self.vehicle_id}: Using target data from vehicle {self.following_target}, age={state_age:.3f}s")
-                    # self.comm_logger.info(f"Vehicle {self.vehicle_id}: Using target data from vehicle {self.following_target}, age={state_age:.3f}s")
-                else:
-                    self.comm_logger.info(f"Vehicle {self.vehicle_id}: Target state too old ({state_age:.3f}s) from vehicle {self.following_target}")
-            
-            # No valid target data available
-            if target_data is None:
-                self.comm_logger.info(f"Vehicle {self.vehicle_id}: No valid target data available from vehicle {self.following_target}, stopping vehicle")
-                self.current_control_input = np.array([0.0, 0.0])
-                # Stop vehicle if no target data
-                self.physical_qcar.write(0.0, 0.0)
-
-                return
-            
-            # Get current vehicle local state for control
+            # Get current vehicle state and timing
             current_state = self.get_state_for_control()
-            
-            # Calculate real dt using helper method (use GPS time for follower)
+            current_gps_time = self.gps_sync.get_synced_time()
             dt = self.calculate_real_dt('control', self.controller_rate, use_gps_time=True)
             
-            # Log timing performance with extra follower-specific info
-            target_dt = 1.0 / self.controller_rate
-            extra_info = f"following=V{self.following_target}, state_age={target_data['state_age']:.3f}s"
-            self.log_timing_performance('FOLLOWER_DT', dt, target_dt, self.control_logger, extra_info)
+            # Get leader data (if available and recent enough)
+            leader_pos = leader_rot = leader_velocity = leader_timestamp = None
+            if self.leader_state is not None:
+                state_age = current_gps_time - self.leader_state.get('timestamp', 0)
+                
+                # DIAGNOSTIC: Log state age issues for analysis
+                if state_age > 1.0:  # Log if state is older than 1 second
+                    self.comm_logger.warning(
+                        f"[TIMING_DIAGNOSTIC] V{self.vehicle_id}: Stale leader state! "
+                        f"Age={state_age:.3f}s, GPS_time={current_gps_time:.3f}, "
+                        f"Leader_timestamp={self.leader_state.get('timestamp', 0):.3f}"
+                    )
+                if state_age <= 2.0:  # Use data if recent enough
+                    leader_pos = self.leader_state.get('pos', [0, 0, 0])
+                    leader_rot = self.leader_state.get('rot', [0, 0, 0])
+                    leader_velocity = self.leader_state.get('v', 0.0)
+                    leader_timestamp = self.leader_state.get('timestamp', current_gps_time)
             
-            # Compute control commands that follow the target vehicle
-            forward_speed, steering_angle = self.follower_controller.compute_vehicle_following_control(
+            # Let the controller handle all the mode logic internally
+            forward_speed, steering_angle = self.follower_controller.compute_control(
                 current_pos=current_state['pos'],
                 current_rot=current_state['rot'],
                 current_velocity=current_state['vel'],
-                leader_pos=target_data['pos'],  # Position of the target vehicle to follow
-                leader_rot=target_data['rot'],  # Rotation of the target vehicle to follow
-                leader_velocity=target_data['vel'],  # Velocity of the target vehicle to follow
-                leader_timestamp=target_data['timestamp'],
-                dt=dt  # Use actual elapsed time instead of nominal
+                leader_pos=leader_pos,
+                leader_rot=leader_rot,
+                leader_velocity=leader_velocity,
+                leader_timestamp=leader_timestamp,
+                dt=dt
             )
-
-            # # Compute control commands that follow a trajectory
-            # forward_speed_trj, steering_angle_trj = self.follower_controller.compute_trajectory_following_control(
-            #     current_pos=current_state['pos'],
-            #     current_rot=current_state['rot'],
-            #     current_velocity=current_state['vel'])
-
-            # Optional: Fusion 2 control commands 
             
-            
-            # Debug logging for control commands
+            # Debug logging
             if self.control_logger.isEnabledFor(logging.DEBUG):
+                mode = getattr(self.follower_controller, 'follower_mode', 'unknown')
                 self.control_logger.debug(
-                    f"V{self.vehicle_id} FOLLOWER_CMD: fwd={forward_speed:.3f}, steer={steering_angle:.3f}"
+                    f"V{self.vehicle_id} FOLLOWER[{mode}]: fwd={forward_speed:.3f}, steer={steering_angle:.3f}"
                 )
             
-            # Update control input for observer
+            # Update control input for observer and apply to vehicle
             self.current_control_input = np.array([steering_angle, forward_speed])
-            
-            # Apply control commands to vehicle
             self.physical_qcar.write(forward_speed, steering_angle)
-
-            # self.physical_qcar.write(forward_speed_trj, steering_angle_trj)
-
 
         except Exception as e:
             self.comm_logger.error(f"Vehicle {self.vehicle_id}: Follower control error: {e}")
@@ -869,54 +832,53 @@ class VehicleProcess:
         """Main run loop for the vehicle process."""
         self.logger.info(f"Vehicle {self.vehicle_id}: Starting main run loop")
         
-        # Initialize timing
+        # Initialize timing - OPTIMIZED: Separate local and fleet observer rates
         general_update_dt = 1.0 / self.update_rate
         control_dt = 1.0 / self.controller_rate
-        observer_dt = 1.0 / self.observer_rate
+        local_observer_dt = 1.0 / self.observer_rate  # 120Hz for local observer
+        fleet_observer_dt = 1.0 / self.fleet_observer_rate  # Configurable fleet observer rate
         gps_dt = 1.0 / self.gps_update_rate
         
-        last_control_time = time.time()
-        last_observer_time = time.time()
-        last_gps_time = time.time()
-        last_status_time = time.time()
-        last_send_communication_time = time.time()
-        last_trust_summary_time = time.time()  # For periodic trust logging
-        last_trust_update_time = time.time()   # For periodic trust calculation
-        last_cam_lidar_time = time.time()  # For CamLidarFusion updates
-        last_gps_sync_time = time.time()  # For GPS time synchronization
+        last_control_time = self.gps_sync.get_synced_time()
+        last_local_observer_time = self.gps_sync.get_synced_time()
+        last_fleet_observer_time = self.gps_sync.get_synced_time()
+        last_gps_time = self.gps_sync.get_synced_time()
+        last_status_time = self.gps_sync.get_synced_time()
+        last_send_communication_time = self.gps_sync.get_synced_time()
+        last_trust_summary_time = self.gps_sync.get_synced_time()  # For periodic trust logging
+        last_trust_update_time = self.gps_sync.get_synced_time()   # For periodic trust calculation
+        last_cam_lidar_time = self.gps_sync.get_synced_time()  # For CamLidarFusion updates
+        last_gps_sync_time = self.gps_sync.get_synced_time()  # For GPS time synchronization
         
-        # CRITICAL: Perform initial GPS sync before starting
-        try:
-            self.gps_sync.sync_with_gps()
-            self.gps_logger.info(f"Vehicle {self.vehicle_id}: Initial GPS sync completed, offset={self.gps_sync.gps_time_offset:.3f}s")
-        except Exception as e:
-            self.gps_logger.error(f"Vehicle {self.vehicle_id}: Initial GPS sync failed: {e}")
-
         
         try:
             while self.running.is_set() and not self.stop_event.is_set():
-                current_time = time.time()
-
-                # GPS time synchronization (every 5 seconds)
-                if current_time - last_gps_sync_time >= self.sync_interval:
-                    try:
-                        self.gps_sync.sync_with_gps()
-                        last_gps_sync_time = current_time
-                    except Exception as e:
-                        self.gps_logger.error(f"Vehicle {self.vehicle_id}: GPS sync failed: {e}")
+                current_time = self.gps_sync.get_synced_time()  # Use synced time for all timing
 
 
-                # Observer update
-                if current_time - last_observer_time >= observer_dt:
-                    observer_start = time.time()
-                    self.observer_update()
-                    observer_duration = time.time() - observer_start
-                    if observer_duration > observer_dt:
+                # Local Observer update (high frequency - 120Hz)
+                if current_time - last_local_observer_time >= local_observer_dt:
+                    local_observer_start = time.time()
+                    estimated_state = self.local_observer_update()
+                    local_observer_duration = time.time() - local_observer_start
+                    if local_observer_duration > local_observer_dt:
                         self.observer_logger.warning(
-                            f"[TIMING] V{self.vehicle_id}: Observer update took {observer_duration*1000:.1f}ms "
-                            f"(exceeds {observer_dt*1000:.1f}ms interval) - may cause broadcast delays!"
+                            f"[TIMING] V{self.vehicle_id}: Local observer update took {local_observer_duration*1000:.1f}ms "
+                            f"(exceeds {local_observer_dt*1000:.1f}ms interval)"
                         )
-                    last_observer_time = current_time
+                    last_local_observer_time = current_time
+                
+                # Fleet Observer update (lower frequency - 50Hz)
+                if current_time - last_fleet_observer_time >= fleet_observer_dt:
+                    fleet_observer_start = time.time()
+                    self.fleet_observer_update()
+                    fleet_observer_duration = time.time() - fleet_observer_start
+                    if fleet_observer_duration > fleet_observer_dt:
+                        self.fleet_observer_logger.warning(
+                            f"[TIMING] V{self.vehicle_id}: Fleet observer update took {fleet_observer_duration*1000:.1f}ms "
+                            f"(exceeds {fleet_observer_dt*1000:.1f}ms interval)"
+                        )
+                    last_fleet_observer_time = current_time
                 
                 # CamLidarFusion update (moved from separate thread to avoid multiprocessing issues)
                 if current_time - last_cam_lidar_time >= general_update_dt:
@@ -966,8 +928,11 @@ class VehicleProcess:
                     last_status_time = current_time
                 
                 
-                # Small sleep to prevent excessive CPU usage
-                time.sleep(0.001)  # 1ms
+                # Minimal sleep to prevent excessive CPU usage - OPTIMIZED FOR FAST COMMUNICATION
+                # Only sleep if no critical work was done in this iteration
+                if (current_time - last_control_time < control_dt and 
+                    current_time - last_local_observer_time < local_observer_dt):
+                    time.sleep(0.0001)  # 0.1ms - much smaller sleep
                 
         except Exception as e:
             print(f"Vehicle {self.vehicle_id}: Main loop error: {e}")
@@ -978,29 +943,26 @@ class VehicleProcess:
 
     # CamLidarFusion thread method removed (moved to main loop)
 
-    def observer_update(self):
+    def local_observer_update(self):
         """
-        Update observer with current GPS data, sensor data, and control inputs.
-        Similar to Vehicle.py observer_loop but simplified for process context.
+        Update LOCAL observer only - runs at high frequency (120Hz).
+        
+        This handles:
+        - GPS data reading
+        - Local state estimation (EKF)
+        - Individual vehicle state tracking
         """
         if self.observer is None:
-            return
+            return None
             
         try:
             current_time = self.gps_sync.get_synced_time()
             
-            # Optional: Calculate and log observer update timing
-            # dt = self.calculate_real_dt('observer', self.observer_rate, use_gps_time=True)
-            # target_dt = 1.0 / self.observer_rate
-            # self.log_timing_performance('OBSERVER_DT', dt, target_dt, self.observer_logger)
-            
-            self.readData_Qcar()
-            # Get GPS data
-            gps_data = self.get_cached_gps_data()
+            # Read GPS/sensor data
+            gps_data = self.readData_Qcar()
             measured_state = None
             if gps_data['available']:
                 # Convert GPS data to numpy array format expected by observer
-                # Observer expects [x, y, theta, v] format
                 measured_state = np.array([
                     gps_data['pos'][0],  # x
                     gps_data['pos'][1],  # y
@@ -1008,8 +970,7 @@ class VehicleProcess:
                     gps_data['vel']      # velocity
                 ])
 
-            
-            # -------- Update observer local state
+            # Update LOCAL observer state only
             estimated_state = self.observer.update_local_state(
                 measured_state=measured_state,
                 control_input=self.current_control_input,
@@ -1019,62 +980,79 @@ class VehicleProcess:
                 acceleration=self.acceleration_IMU
             )
 
-            # -------- Update distributed observer with received states from other vehicles
-            try:
-                # Get distributed fleet state estimates
-                fleet_states = self.observer.update_distributed_estimates(self.current_control_input ,estimated_state, current_time )
+            # Debug log for local observer
+            if estimated_state is not None and len(estimated_state) >= 4:
+                self.observer_logger.debug(f"Local observer updated: pos=({estimated_state[0]:.3f}, {estimated_state[1]:.3f}), "
+                                         f"vel={estimated_state[3]:.3f}")
+                return estimated_state
+            else:
+                self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Invalid local state from observer: {estimated_state}")
+                return None
                 
-                # Log distributed observer status
+        except Exception as e:
+            self.observer_logger.error(f"Vehicle {self.vehicle_id}: Local observer update error: {e}")
+            return None
+
+    def fleet_observer_update(self):
+        """
+        Update FLEET observer and communication - runs at lower frequency (50Hz).
+        
+        This handles:
+        - Distributed observer estimation
+        - Fleet state broadcasting 
+        - Inter-vehicle communication
+        """
+        if self.observer is None:
+            return
+            
+        try:
+            current_time = self.gps_sync.get_synced_time()
+            
+            # Get current local state for distributed observer
+            local_state = self.observer.get_local_state() if self.observer else None
+            if local_state is None:
+                return
+            
+            # Update distributed observer with received states from other vehicles
+            try:
+                fleet_states = self.observer.update_distributed_estimates(
+                    self.current_control_input, local_state, current_time
+                )
+                
                 if fleet_states is not None:
-                    self.observer_logger.debug(f"Vehicle {self.vehicle_id}: Distributed observer updated - "
-                                             f"Fleet size: {fleet_states.shape[1]}, "
-                                             f"State dim: {fleet_states.shape[0]}")
+                    self.fleet_observer_logger.debug(f"Vehicle {self.vehicle_id}: Fleet observer updated - "
+                                                   f"Fleet size: {fleet_states.shape[1]}")
                     
-                    # Update fleet state estimates cache using helper
+                    # Update fleet state estimates cache
                     for vehicle_idx in range(fleet_states.shape[1]):
                         vehicle_state = fleet_states[:, vehicle_idx]
                         self._set_fleet_vehicle_estimate(vehicle_idx, vehicle_state, current_time)
                         if vehicle_idx != self.vehicle_id:
-                            self.observer_logger.debug(
-                                f"Vehicle {self.vehicle_id}: Estimated vehicle {vehicle_idx} - "
+                            self.fleet_observer_logger.debug(
+                                f"Vehicle {self.vehicle_id}: Fleet estimate V{vehicle_idx} - "
                                 f"pos=({vehicle_state[0]:.3f}, {vehicle_state[1]:.3f}), vel={vehicle_state[3]:.3f}")
                 
             except Exception as dist_error:
-                self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Distributed observer error: {dist_error}")
+                self.fleet_observer_logger.warning(f"Vehicle {self.vehicle_id}: Distributed observer error: {dist_error}")
             
-            # Use the returned estimated_state directly instead of making redundant call
-            if estimated_state is not None and len(estimated_state) >= 4:
-                # Convert numpy array [x, y, theta, v] to our cache format
-                # Debug log to verify observer update
-                self.observer_logger.debug(f"Observer updated: pos=({estimated_state[0]:.3f}, {estimated_state[1]:.3f}), "
-                                         f"vel={estimated_state[3]:.3f}, "
-                                         f"ekf_init={getattr(self.observer, 'ekf_initialized', False)}")
-                
-                # # EVENT-DRIVEN BROADCASTING: Only broadcast when new state data is available
-                # # or when maximum time interval exceeded (for stationary vehicles)
-                # if self.observer.should_broadcast_state():
-                #     self.broadcast_own_state()
-                #     self.observer.mark_state_broadcasted()  # Clear the flag and update timestamp
-                    
-                #     # Also broadcast fleet estimates when we have new state
-                #     if hasattr(self, 'fleet_state_estimates') and len(self.fleet_state_estimates) > 1:
-                #         self.broadcast_fleet_estimates()
-                # # No else clause - we silently skip broadcasts when not needed (rate limiting working)
-
-
-                # This is the logical place since observer maintains the most accurate state estimate
-                self.broadcast_own_state()
-                
-                # NEW: Broadcast fleet estimates if distributed observer is working
-                if hasattr(self, 'fleet_state_estimates') and len(self.fleet_state_estimates) > 1:
-                    self.broadcast_fleet_estimates()
-
-                
-            else:
-                self.observer_logger.warning(f"Vehicle {self.vehicle_id}: Invalid estimated state from observer: {estimated_state}")
+            # Broadcast own state to other vehicles
+            self.broadcast_own_state()
+            
+            # Broadcast fleet estimates if available
+            if hasattr(self, 'fleet_state_estimates') and len(self.fleet_state_estimates) > 1:
+                self.broadcast_fleet_estimates()
                 
         except Exception as e:
-            self.observer_logger.error(f"Vehicle {self.vehicle_id}: Observer update error: {e}")
+            self.fleet_observer_logger.error(f"Vehicle {self.vehicle_id}: Fleet observer update error: {e}")
+
+    # Legacy method for backward compatibility
+    def observer_update(self):
+        """
+        DEPRECATED: Combined observer update method.
+        Use local_observer_update() and fleet_observer_update() separately instead.
+        """
+        self.local_observer_update()
+        self.fleet_observer_update()
 
     # --------------------- Communication Methods ---------------------
     #region Communication Methods
@@ -1093,10 +1071,10 @@ class VehicleProcess:
         while self.comm_thread_running and self.running.is_set():
             try:
                 self.handle_communication()
-                time.sleep(0.005)  # Small sleep to prevent excessive CPU usage
+                time.sleep(0.01)  # Small sleep to prevent excessive CPU usage
             except Exception as e:
                 self.comm_logger.error(f"Vehicle {self.vehicle_id}: Communication thread error: {e}")
-                time.sleep(0.005)  # Longer sleep on error
+                time.sleep(0.01)  # Longer sleep on error
 
     def broadcast_fleet_estimates(self):
         """
@@ -1162,24 +1140,21 @@ class VehicleProcess:
                 self.comm_logger.warning(f"[VERIFY] V{self.vehicle_id}: Failed to get covariance: {e}")
                 cov_trace = 1.0
             
-            # FIXED: Use GPS synchronized time instead of system time for consistency
-            gps_timestamp = self.gps_sync.get_synced_time()
+            # Use GPS-synchronized time for consistent fleet timestamps
             system_timestamp = time.time()
+            gps_timestamp = self.gps_sync.get_synced_time()
             
             # CRITICAL DEBUG: Check if observer's last update time matches current GPS time
             observer_last_update = getattr(self.observer, 'last_update_time', None) if self.observer else None
-            time_since_observer_update = gps_timestamp - observer_last_update if observer_last_update else None
+            time_since_observer_update = system_timestamp - observer_last_update if observer_last_update else None
             
-            # CRITICAL DEBUG: Log all timestamps to diagnose 3-second delay
-            obs_update_str = f"{observer_last_update:.3f}" if observer_last_update is not None else "None"
-            time_since_str = f"{time_since_observer_update:.3f}" if time_since_observer_update is not None else "None"
-            
-            # self.comm_logger.warning(
-            #     f"[BROADCAST_TIMING] V{self.vehicle_id}: gps_timestamp={gps_timestamp:.3f}, "
-            #     f"system_time={system_timestamp:.3f}, diff={gps_timestamp-system_timestamp:.3f}s, "
-            #     f"observer_last_update={obs_update_str}, "
-            #     f"time_since_obs_update={time_since_str}s"
-            # )
+            # DIAGNOSTIC: Log GPS vs system time difference
+            gps_system_diff = gps_timestamp - system_timestamp
+            if abs(gps_system_diff) > 0.1:  # Log if difference is significant
+                self.comm_logger.warning(
+                    f"[GPS_DRIFT] V{self.vehicle_id}: GPS-System time diff={gps_system_diff:.3f}s "
+                    f"(GPS={gps_timestamp:.3f}, System={system_timestamp:.3f})"
+                )
             
             # Add only necessary fields for network transmission
             broadcast_state = {
@@ -1187,7 +1162,7 @@ class VehicleProcess:
                 'pos': [float(x) for x in current_state['pos']],
                 'rot': [float(r) for r in current_state['rot']],
                 'vel': float(current_state['vel']),
-                'timestamp': gps_timestamp,  # FIXED: Use GPS synchronized time
+                'timestamp': gps_timestamp,  # Use GPS-synchronized time for fleet coordination
                 'ctrl_u': [float(x) for x in self.current_control_input],
                 'covariance_trace': cov_trace  # TASK 1.1: NEW - uncertainty metric for adaptive weighting
             }
@@ -1238,7 +1213,7 @@ class VehicleProcess:
                     self._process_communication_data_direct(received_data)
                 else:
                     # Only log this occasionally to avoid spam
-                    if not hasattr(self, '_last_no_data_log') or time.time() - self._last_no_data_log > 1.0:
+                    if not hasattr(self, '_last_no_data_log') or time.time() - self._last_no_data_log > 2.0:
                         self.comm_logger.debug(f"Vehicle {self.vehicle_id}: No data received from peers")
                         self._last_no_data_log = time.time()
             else:
@@ -1341,6 +1316,12 @@ class VehicleProcess:
             gps_offset = self.gps_sync.gps_time_offset
             system_vs_gps = current_system_time - current_gps_time
             
+            # TIMING DIAGNOSTIC: Log if message age seems unreasonable
+            if message_age > 0.5 or message_age < -0.1:  # Flag unusual timing
+                self.comm_logger.warning(f"[TIMING] V{self.vehicle_id} unusual message age: {message_age:.3f}s "
+                                       f"(sys={current_system_time:.3f}, ts={timestamp:.3f}, "
+                                       f"gps={current_gps_time:.3f}, offset={gps_offset:.3f})")
+            
             # Extract state data directly without conversion
             pos = received_state.get('pos', received_state.get('position', [0, 0, 0]))
             rot = received_state.get('rot', received_state.get('rotation', [0, 0, 0]))
@@ -1356,9 +1337,9 @@ class VehicleProcess:
             self.comm_logger.info(f"STATE_RECV From=V{sender_id} Seq={seq} T={timestamp:.3f} "
                                 f"Pos=({pos[0]:.4f},{pos[1]:.4f}) Rot={rot[2]:.4f} Vel={vel:.4f} "
                                 f"Control=({control[0]:.3f},{control[1]:.3f}) "
-                                f"[VERIFY] has_cov={has_covariance} cov={cov_value} "
-                                f"[AGE] {message_age:.3f}s (recv_at={current_gps_time:.3f}) "
-                                f"[GPS_OFFSET] {gps_offset:.3f}s [SYS_VS_GPS] {system_vs_gps:.3f}s")
+                                f"[AGE] {message_age:.3f}s (recv_at={current_gps_time:.3f}) ")
+                                # f"[VERIFY] has_cov={has_covariance} cov={cov_value} "
+                                # f"[GPS_OFFSET] {gps_offset:.3f}s [SYS_VS_GPS] {system_vs_gps:.3f}s")
             
             # # Add to state queue with original data structure preserved
             # success = self.state_queue.add_state(received_state, self.gps_sync)
@@ -1654,8 +1635,6 @@ class VehicleProcess:
         Returns:
             Observer state dictionary with essential fields only: pos, rot, vel
         """
-        if self.observer is None:
-            return None
             
         try:
             # Get the local state directly from observer (more efficient)
@@ -1666,9 +1645,6 @@ class VehicleProcess:
                     'rot': [0.0, 0.0, local_state[2]],  # [roll, pitch, yaw] format
                     'vel': local_state[3]
                 }
-            else:
-                # Fallback to the formatted method if local state is not available
-                return self.observer.get_estimated_state_for_control()
         except Exception as e:
             self.logger.error(f"Vehicle {self.vehicle_id}: Failed to get observer state: {e}")
             return None
@@ -1684,7 +1660,7 @@ class VehicleProcess:
         # Try observer first (check if EKF is initialized through observer attributes)
         if self.observer is not None:
             observer_state = self.get_observer_state_direct()
-            if observer_state and hasattr(self.observer, 'ekf_initialized') and self.observer.ekf_initialized:
+            if observer_state :
                 return observer_state
         
         # Fallback to raw GPS if observer not available or EKF not initialized
@@ -1887,6 +1863,8 @@ class VehicleProcess:
 
             # Stop communication thread
             self.stop_communication_thread()
+
+            self.gps_sync.cleanup()
             
             # Clean up communication
             if hasattr(self, 'comm') and self.comm is not None:
@@ -1898,25 +1876,6 @@ class VehicleProcess:
             if not IS_PHYSICAL_QCAR:
                 cmd = QLabsRealTime().terminate_all_real_time_models()
                 time.sleep(1)
-
-            # if self.qcar is not None:
-            #     # Send zero velocity command to stop the vehicle
-            #     self.qcar.set_velocity_and_request_state(
-            #             forward=0.0, 
-            #             turn=0.0,
-            #             headlights=False,
-            #             leftTurnSignal=False,
-            #             rightTurnSignal=False,
-            #             brakeSignal=False,
-            #             reverseSignal=False
-            #         )            
-            # # Close QLabs connection
-            # try:
-            #     if self.qlabs is not None:
-            #         self.qlabs.close()
-            #         print(f"Vehicle {self.vehicle_id}: QLabs connection closed")
-            # except Exception as e:
-            #     print(f"Vehicle {self.vehicle_id}: Error closing QLabs: {e}")
 
             # Clean up logging handlers to ensure async threads are properly closed
             from md_logging_config import cleanup_all_logging

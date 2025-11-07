@@ -33,7 +33,6 @@ except ImportError:
 # Controller imports
 from src.Controller.CACC import CACC
 from src.Controller.idm_control import IDMControl
-from src.Controller.DummyController import DummyController, DummyVehicle
 
 # Other imports
 from CommHandler import CommHandler
@@ -229,7 +228,8 @@ class VehicleProcess:
         # Initialize Vehicle Postion
         spawn_location = vehicle_config.get('spawn_location', [0, 0, 0])
         spawn_rotation = vehicle_config.get('spawn_rotation', [0, 0, 0])
-        initial_pose = np.array([spawn_location[0], spawn_location[1], np.deg2rad(spawn_rotation[2])])
+        # CSV config files now contain rotation values in radians
+        initial_pose = np.array([spawn_location[0], spawn_location[1], spawn_rotation[2]])
         
         # Control parameters (needed early for physical QCar initialization)
         # self.max_steering = vehicle_config.get('max_steering', 0.6)
@@ -1054,15 +1054,15 @@ class VehicleProcess:
         observer_dt = 1.0 / self.observer_rate
         gps_dt = 1.0 / self.gps_update_rate
         
-        last_control_time = time.time()
-        last_observer_time = time.time()
-        last_gps_time = time.time()
-        last_status_time = time.time()
-        last_send_communication_time = time.time()
-        last_trust_summary_time = time.time()  # For periodic trust logging
-        last_trust_update_time = time.time()   # For periodic trust calculation
-        last_cam_lidar_time = time.time()  # For CamLidarFusion updates
-        last_gps_sync_time = time.time()  # For GPS time synchronization
+        last_control_time = self.gps_sync.get_synced_time()
+        last_observer_time = self.gps_sync.get_synced_time()
+        last_gps_time = self.gps_sync.get_synced_time()
+        last_status_time = self.gps_sync.get_synced_time()
+        last_send_communication_time = self.gps_sync.get_synced_time()
+        last_trust_summary_time = self.gps_sync.get_synced_time()  # For periodic trust logging
+        last_trust_update_time = self.gps_sync.get_synced_time()   # For periodic trust calculation
+        last_cam_lidar_time = self.gps_sync.get_synced_time()  # For CamLidarFusion updates
+        last_gps_sync_time = self.gps_sync.get_synced_time()  # For GPS time synchronization
         
         # CRITICAL: Perform initial GPS sync before starting
         try:
@@ -1074,7 +1074,7 @@ class VehicleProcess:
         
         try:
             while self.running.is_set() and not self.stop_event.is_set():
-                current_time = time.time()
+                current_time = self.gps_sync.get_synced_time()
 
                 # GPS time synchronization (every 5 seconds)
                 if current_time - last_gps_sync_time >= self.sync_interval:
@@ -1574,9 +1574,9 @@ class VehicleProcess:
             self.comm_logger.info(f"STATE_RECV From=V{sender_id} Seq={seq} T={timestamp:.3f} "
                                 f"Pos=({pos[0]:.4f},{pos[1]:.4f}) Rot={rot[2]:.4f} Vel={vel:.4f} "
                                 f"Control=({control[0]:.3f},{control[1]:.3f}) "
-                                f"[VERIFY] has_cov={has_covariance} cov={cov_value} "
-                                f"[AGE] {message_age:.3f}s (recv_at={current_gps_time:.3f}) "
-                                f"[GPS_OFFSET] {gps_offset:.3f}s [SYS_VS_GPS] {system_vs_gps:.3f}s")
+                                f"[AGE] {message_age:.3f}s (recv_at={current_gps_time:.3f}) ")
+                                # f"[VERIFY] has_cov={has_covariance} cov={cov_value} "
+                                # f"[GPS_OFFSET] {gps_offset:.3f}s [SYS_VS_GPS] {system_vs_gps:.3f}s")
             
             # # Add to state queue with original data structure preserved
             # success = self.state_queue.add_state(received_state, self.gps_sync)

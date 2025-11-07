@@ -1,9 +1,9 @@
 import numpy as np
 import time
 import cv2
-from pit.YOLO.nets import YOLOv8
 from pit.YOLO.utils import QCar2DepthAligned
 from pal.utilities.probe import Probe
+from pit.YOLO.nets import YOLOv8
 
 from utils import YOLOPublisher
 import argparse
@@ -15,11 +15,13 @@ parser.add_argument('-i','--ip_host', default='192.168.2.10')
 parser.add_argument('-p','--probing', default="False")
 parser.add_argument('-w','--width', default=320, help="wide of to image to be displayed in the observer")
 parser.add_argument('-ht','--height', default=200, help="height of to image to be displayed in the observer")
+parser.add_argument('idx','--caridx', type=int, default=0, help="Car ID for port assignment")
 args = parser.parse_args()
 ipHost = args.ip_host
 probing = args.probing=="True"
 width = int(args.width)
 height = int(args.height)
+car_id = args.caridx
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
 # Instantiate YOLOv8 model
@@ -32,11 +34,23 @@ myYolo  = YOLOv8(
                 )
 
 # Initialize Depth/RGB alignment RT model, YOLO server, and probe
-QCarImg = QCar2DepthAligned(port='18777')
-YOLOserver = YOLOPublisher(port='18666')
+# Use different ports for each car to avoid conflicts
+camera_port = f'1877{car_id}'  # Car 0: 18770, Car 1: 18771, etc.
+yolo_port = f'1866{car_id}'    # Car 0: 18660, Car 1: 18661, etc.
+
+QCarImg = QCar2DepthAligned(port=camera_port)
+YOLOserver = YOLOPublisher(port=yolo_port)
+
 if probing:
     probe = Probe(ip = ipHost)
-    probe.add_display(imageSize = [height, width, 3], name='YOLO Image',scalingFactor =1)
+    # Use car_id + 1 as display ID to avoid port conflicts
+    # Car 0 → display ID 1 → port 18801
+    # Car 1 → display ID 2 → port 18802, etc.
+    probe.numDisplays = car_id  # Set the counter to car_id
+    probe.add_display(imageSize = [height, width, 3], name=f'YOLO Car {car_id}', scalingFactor=1)
+else:
+    probe = None
+    
 probe_count = 0
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
