@@ -27,7 +27,7 @@ A complete refactoring of the QCar vehicle control system has been implemented w
    - Helper methods for state queries
 
 4. **`network_client.py`** (277 lines)
-   - Robust NetworkClient with retry logic
+   - Robust NetworkClient2GS with retry logic
    - Message framing and JSON protocol
    - Automatic reconnection
    - Network statistics tracking
@@ -45,14 +45,14 @@ A complete refactoring of the QCar vehicle control system has been implemented w
    - StateEstimator wrapper
    - Thread-safe implementations
 
-7. **`vehicle_controller.py`** (537 lines)
-   - Main VehicleController class
+7. **`vehicle_logic.py`** (537 lines)
+   - Main VehicleLogic class
    - Integrates all components
    - Initialization sequence
    - Main control loop
    - Graceful shutdown
 
-8. **`vehicle_control_refactored.py`** (218 lines)
+8. **`vehicle_main.py`** (218 lines)
    - Entry point with CLI
    - Configuration loading
    - Thread management
@@ -98,7 +98,7 @@ A complete refactoring of the QCar vehicle control system has been implemented w
 **Implementation:**
 - Modular design with 8 main components
 - Clear interfaces between modules
-- VehicleController as main orchestrator
+- VehicleLogic as main orchestrator
 - Each component has single responsibility
 
 **Benefits:**
@@ -278,8 +278,8 @@ ERROR
 | network_client.py | 277 | ⚠️ |
 | safety.py | 255 | ✅ |
 | controllers.py | 249 | ✅ |
-| vehicle_controller.py | 537 | ⚠️ |
-| vehicle_control_refactored.py | 218 | - |
+| vehicle_logic.py | 537 | ⚠️ |
+| vehicle_main.py | 218 | - |
 
 ✅ = Fully tested | ⚠️ = Partially tested | - = Integration only
 
@@ -325,26 +325,26 @@ ERROR
 
 ### Basic Usage
 ```powershell
-python vehicle_control_refactored.py --car-id 0
+python vehicle_main.py --car-id 0
 ```
 
 ### With Configuration
 ```powershell
-python vehicle_control_refactored.py --config my_config.yaml
+python vehicle_main.py --config my_config.yaml
 ```
 
 ### Multi-Vehicle
 ```powershell
 # Car 0
-python vehicle_control_refactored.py --car-id 0 --port 5000
+python vehicle_main.py --car-id 0 --port 5000
 
 # Car 1
-python vehicle_control_refactored.py --car-id 1 --port 5001
+python vehicle_main.py --car-id 1 --port 5001
 ```
 
 ### With Remote Control
 ```powershell
-python vehicle_control_refactored.py --host 192.168.1.100 --car-id 0
+python vehicle_main.py --host 192.168.1.100 --car-id 0
 ```
 
 ## Migration Path

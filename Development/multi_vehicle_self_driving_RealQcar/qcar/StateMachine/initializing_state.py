@@ -1,0 +1,390 @@
+"""
+Initializing State - Simplified Event-Driven Implementation
+
+Handles system initialization and setup.
+Transitions to WAITING_FOR_START when initialization is complete.
+"""
+import time
+from typing import Dict, Any, Tuple, Optional
+from .state_base import StateBase
+from .vehicle_state import VehicleState, StateTransitionReason
+
+# Import CommandType once at module level
+import sys
+import os
+
+# Add parent directory to sys.path for imports
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
+try:
+    from command_handler import CommandType
+    COMMAND_TYPE_AVAILABLE = True
+except ImportError as e:
+    print(f"ERROR: Cannot import CommandType: {e}")
+    COMMAND_TYPE_AVAILABLE = False
+    CommandType = None
+
+
+class InitializingState(StateBase):
+    """Handler for INITIALIZING state with simplified event handling"""
+    
+    def enter(self) -> bool:
+        """Initialize system components"""
+        super().enter()
+        self.logger.logger.info("Entering INITIALIZING state")
+        
+        # Reset any previous state
+        self.state_data = {
+            'initialization_start': time.time(),
+            'components_initialized': False,
+            'initial_position_checked': False,
+            'ready_to_start': False
+        }
+        
+        return True
+    
+    def update(self, dt: float, sensor_data: Dict[str, Any]) -> Tuple[float, float, Optional[Tuple[VehicleState, StateTransitionReason]]]:
+        """Handle initialization process"""
+        
+        # No control commands during initialization
+        throttle, steering = 0.0, 0.0
+        
+        # Check if emergency stop requested
+        if self.should_transition_to_stopped(sensor_data):
+            return throttle, steering, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
+        
+        # === INITIALIZATION SEQUENCE ===
+        
+        # Step 1: Check if all components are ready
+        if not self.state_data['components_initialized']:
+            components_ready = self._check_components_ready()
+            if components_ready:
+                self.state_data['components_initialized'] = True
+                self.logger.logger.info(" All components initialized")
+        
+        # Step 2: Check initial position (if path following enabled)
+        if (self.state_data['components_initialized'] and 
+            not self.state_data['initial_position_checked']):
+            
+            if self.config.steering.enable_steering_control:
+                position_ok = self._check_initial_position(sensor_data)
+                if position_ok:
+                    self.state_data['initial_position_checked'] = True
+                    self.logger.logger.info(" Initial position verified")
+            else:
+                # Skip position check if steering control disabled
+                self.state_data['initial_position_checked'] = True
+                self.logger.logger.info(" Position check skipped (steering disabled)")
+
+        # Step 3: Mark as ready to start
+        if (self.state_data['components_initialized'] and 
+            self.state_data['initial_position_checked'] and
+            not self.state_data['ready_to_start']):
+            
+            self.state_data['ready_to_start'] = True
+            self.logger.logger.info("System ready to start")
+        
+        # Transition to WAITING_FOR_START when ready
+        if self.state_data['ready_to_start']:
+            return throttle, steering, (VehicleState.WAITING_FOR_START, StateTransitionReason.INITIALIZATION_COMPLETE)
+        
+        # Check for timeout (safety measure)
+        initialization_time = time.time() - self.state_data['initialization_start']
+        if initialization_time > 30.0:  # 30 second timeout
+            self.logger.log_warning("[!] Initialization timeout, proceeding anyway")
+            return throttle, steering, (VehicleState.WAITING_FOR_START, StateTransitionReason.INITIALIZATION_COMPLETE)
+        
+        return throttle, steering, None
+    
+    def handle_event(self, command_type, data: Dict[str, Any] = None) -> Optional[Tuple[VehicleState, StateTransitionReason]]:
+        """
+        Handle commands during initialization
+        
+        Args:
+            command_type: CommandType enum
+            data: Optional event data
+            
+        Returns:
+            Optional state transition
+        """
+        # Check if CommandType import was successful
+        if not COMMAND_TYPE_AVAILABLE:
+            # Fallback to base class if CommandType not available
+            return super().handle_event(command_type, data)
+        
+        # During initialization, only accept emergency stop
+        if command_type == CommandType.EMERGENCY_STOP:
+            self.logger.logger.warning("[!] Emergency stop during initialization")
+            return (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
+        
+        # Ignore all other commands during initialization
+        if self.logger:
+            self.logger.logger.info(f"🚫 Ignoring '{command_type}' command during initialization")
+        return None
+    
+    def _check_components_ready(self) -> bool:
+        """Initialize and check if all required components are ready"""
+        try:
+            # Initialize path planning
+            if not self._initialize_path_planning():
+                self.logger.log_error("Path planning initialization failed")
+                return False
+            
+            # # Initialize network (if enabled)
+            # if not self._initialize_network_2_GroundStation():
+            #     self.logger.log_error("Network initialization failed")
+            #     return False
+            
+            # Initialize QCar hardware
+            if not self._initialize_qcar():
+                self.logger.log_error("QCar hardware initialization failed")
+                return False
+            
+            # Initialize controllers
+            if not self._initialize_controllers():
+                self.logger.log_error("Controllers initialization failed")
+                return False
+            
+            # Initialize perception
+            if not self._initialize_perception():
+                self.logger.log_error("Perception initialization failed")
+                return False
+            
+            # Setup telemetry logging
+            if self.config.logging.enable_telemetry_logging:
+                self.vehicle_logic.logger.setup_telemetry_logging(self.config.logging.data_log_dir)
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("Component initialization failed", e)
+            return False
+    
+    def _check_initial_position(self, sensor_data: Dict[str, Any]) -> bool:
+        """Check if vehicle is at appropriate starting position"""
+        try:
+            # Get current position
+            x = sensor_data.get('x', 0.0)
+            y = sensor_data.get('y', 0.0)
+            theta = sensor_data.get('theta', 0.0)
+            
+            # For now, just check if we have valid position data
+            # In a full implementation, this would check against start nodes
+            if abs(x) > 100 or abs(y) > 100:  # Sanity check for valid coordinates
+                self.logger.log_warning(f"Position seems invalid: ({x:.2f}, {y:.2f})")
+                return False
+            
+            self.logger.logger.info(f"Initial position: ({x:.2f}, {y:.2f}, {theta:.2f})")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("Position check failed", e)
+            return False
+    
+    def exit(self):
+        """Clean up initialization state"""
+        self.logger.logger.info("[INIT] Exiting INITIALIZING state")
+        
+        # Log initialization summary
+        init_time = self.get_time_in_state()
+        self.logger.logger.info(f"Initialization completed in {init_time:.1f}s")
+        
+        super().exit()
+    
+    # ========== INITIALIZATION METHODS ==========
+    # These methods are moved from VehicleLogic to the state machine
+    
+    def _initialize_path_planning(self) -> bool:
+        """Initialize path planning system"""
+        try:
+            if self.config.steering.enable_steering_control:
+                from hal.products.mats import SDCSRoadMap
+                import numpy as np
+                
+                self.vehicle_logic.roadmap = SDCSRoadMap(
+                    leftHandTraffic=self.config.path.left_hand_traffic,
+                    useSmallMap=True
+                )
+                
+                # Get valid nodes for current configuration
+                valid_nodes = self.config.path.valid_nodes
+                self.vehicle_logic.node_sequence = valid_nodes
+                self.logger.logger.info(f"Selected node sequence ({len(self.vehicle_logic.node_sequence)} nodes): {self.vehicle_logic.node_sequence}")
+                
+                # Generate waypoint sequence
+                try:
+                    self.vehicle_logic.waypoint_sequence = self.vehicle_logic.roadmap.generate_path(self.vehicle_logic.node_sequence)
+                except Exception as path_error:
+                    self.logger.log_error(
+                        f"Roadmap.generate_path() failed for nodes {self.vehicle_logic.node_sequence}",
+                        path_error
+                    )
+                    return False
+                
+                # Validate waypoint sequence
+                if self.vehicle_logic.waypoint_sequence is None:
+                    self.logger.log_error(
+                        f"Failed to generate path for node sequence: {self.vehicle_logic.node_sequence}. "
+                        f"Check if these nodes exist in your roadmap and can be connected."
+                    )
+                    return False
+                
+                if not isinstance(self.vehicle_logic.waypoint_sequence, np.ndarray):
+                    self.logger.log_error(
+                        f"Waypoint sequence has wrong type: {type(self.vehicle_logic.waypoint_sequence)}"
+                    )
+                    return False
+                
+                if self.vehicle_logic.waypoint_sequence.shape[0] < 2 or self.vehicle_logic.waypoint_sequence.shape[1] < 2:
+                    self.logger.log_error(
+                        f"Waypoint sequence has invalid shape: {self.vehicle_logic.waypoint_sequence.shape}"
+                    )
+                    return False
+                
+                self.logger.logger.info(
+                    f"Generated path with {self.vehicle_logic.waypoint_sequence.shape[1]} waypoints"
+                )
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("Path planning initialization failed", e)
+            return False
+    
+    def _initialize_network_2_GroundStation(self) -> bool:
+        """Initialize network communication"""
+        try:
+            from ground_station_client import GroundStationClient
+            
+            # Create Ground Station client
+            self.vehicle_logic.client_Ground_Station = GroundStationClient(
+                config=self.config,
+                logger=self.vehicle_logic.logger,
+                kill_event=self.vehicle_logic.kill_event
+            )
+            
+            # Initialize network connection
+            if not self.vehicle_logic.client_Ground_Station.initialize_network():
+                return False
+            
+            # Start network threads
+            if not self.vehicle_logic.client_Ground_Station.start_threads():
+                return False
+            
+            self.logger.logger.info("Ground Station communication initialized")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("Ground Station initialization failed", e)
+            return False
+    
+    def _initialize_qcar(self) -> bool:
+        """Initialize QCar hardware"""
+        try:
+            import time
+            import numpy as np
+            from pal.products.qcar import QCar, QCarGPS
+            from controllers import StateEstimator
+            
+            self.vehicle_logic.qcar = QCar(
+                readMode=1,
+                frequency=self.config.timing.controller_update_rate
+            )
+
+            self.vehicle_logic.gps = QCarGPS(
+                initialPose=self.config.path.calibration_pose, 
+                calibrate=self.config.path.calibrate
+            )
+
+            # Wait for initial GPS reading
+            self.logger.logger.info("Waiting for initial GPS reading...")
+            gps_received = False
+            timeout = 10.0
+            start = time.time()
+            
+            while not gps_received and (time.time() - start) < timeout:
+                gps_received = self.vehicle_logic.gps.readGPS()
+                time.sleep(0.1)
+            
+            if not gps_received:
+                self.logger.log_error("Failed to receive initial GPS reading")
+                return False
+            
+            # Get initial pose for EKF
+            initial_pose = None
+            if self.config.steering.enable_steering_control:
+                initial_pose = np.array([
+                    self.vehicle_logic.gps.position[0],
+                    self.vehicle_logic.gps.position[1],
+                    self.vehicle_logic.gps.orientation[2]
+                ])
+                self.logger.logger.info(f"Initial pose: x={initial_pose[0]:.2f}, y={initial_pose[1]:.2f}, theta={initial_pose[2]:.2f}")
+            
+            # Initialize state estimator with EKF
+            self.vehicle_logic.state_estimator = StateEstimator(
+                gps=self.vehicle_logic.gps,
+                initial_pose=initial_pose,
+                logger=self.vehicle_logic.logger,
+                use_ekf=self.config.steering.enable_steering_control
+            )
+            
+            self.logger.logger.info("QCar hardware initialized with EKF fusion")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("QCar initialization failed", e)
+            return False
+    
+    def _initialize_controllers(self) -> bool:
+        """Initialize control systems"""
+        try:
+            from controllers import SpeedController, SteeringController
+            
+            # Speed controller
+            self.vehicle_logic.speed_controller = SpeedController(
+                config=self.config,
+                logger=self.vehicle_logic.logger
+            )
+            
+            # Steering controller
+            if self.config.steering.enable_steering_control:
+                self.vehicle_logic.steering_controller = SteeringController(
+                    waypoints=self.vehicle_logic.waypoint_sequence,
+                    config=self.config,
+                    logger=self.vehicle_logic.logger
+                )
+            
+            self.logger.logger.info("Controllers initialized")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("Controller initialization failed", e)
+            return False
+    
+    def _initialize_perception(self) -> bool:
+        """Initialize perception systems"""
+        try:
+            from utils import YOLOReceiver, YOLODriveLogic
+            
+            # Use different YOLO port for each car
+            # yolo_port = f"1866{self.config.network.car_id}"
+            self.vehicle_logic.yolo = YOLOReceiver()
+            
+            pulse_length = (
+                self.config.timing.controller_update_rate *
+                self.config.yolo.pulse_length_multiplier
+            )
+            
+            self.vehicle_logic.yolo_drive = YOLODriveLogic(
+                pulse_length=pulse_length,
+                logger=self.vehicle_logic.logger
+            )
+            
+            self.logger.logger.info("Perception systems initialized")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("Perception initialization failed", e)
+            return False

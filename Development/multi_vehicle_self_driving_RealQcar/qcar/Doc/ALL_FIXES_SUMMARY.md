@@ -10,7 +10,7 @@
 When vehicle is not at start position, no detailed information about where it is.
 
 ### Fix Applied:
-Added comprehensive logging in `vehicle_controller.py`:
+Added comprehensive logging in `vehicle_logic.py`:
 
 ```python
 if not start_node_reached:
@@ -74,7 +74,7 @@ message_json + '\n'
 ### Answer: **YES! That's correct.**
 
 ### Implementation:
-Enhanced command processing in `vehicle_controller.py`:
+Enhanced command processing in `vehicle_logic.py`:
 
 ```python
 Command: 'stop'  → State: FOLLOWING_PATH → STOPPED
@@ -283,7 +283,7 @@ WAITING_FOR_START
 
 ## 🔧 Files Modified
 
-1. `vehicle_controller.py` - Main fixes
+1. `vehicle_logic.py` - Main fixes
 2. `network_client.py` - Protocol fix
 3. `state_machine.py` - EMERGENCY_STOP fix
 4. `config.py` - Loop time threshold

@@ -39,7 +39,7 @@ HEIGHT=200
 1. **`start_refactored.py`** - Start all vehicles
    - Reads config.txt automatically
    - Uploads all files to QCars
-   - Starts vehicle_control_refactored.py with proper parameters
+   - Starts vehicle_main.py with proper parameters
    - Starts YOLO servers
    - Starts observer on probing QCar
 
@@ -97,7 +97,7 @@ For each QCar in `QCAR_IPS`:
    - All `.txt` files (requirements, etc.)
    - All `.md` documentation files
 3. **Stop** any existing processes
-4. **Start vehicle_control_refactored.py** with:
+4. **Start vehicle_main.py** with:
    - `--host <LOCAL_IP>` (host PC IP)
    - `--port <BASE_PORT>` (5000)
    - `--car-id <index>` (0, 1, 2, ...)
@@ -278,8 +278,8 @@ This startup system is designed for the refactored vehicle control:
 
 ### Files Uploaded
 
-- `vehicle_control_refactored.py` - Main entry point
-- `vehicle_controller.py` - Controller class
+- `vehicle_main.py` - Main entry point
+- `vehicle_logic.py` - Controller class
 - `config.py` - Configuration management
 - `controllers.py` - Speed/steering controllers
 - `state_machine.py` - State management
@@ -292,10 +292,10 @@ This startup system is designed for the refactored vehicle control:
 
 ### Command Line Arguments
 
-The startup script passes these arguments to `vehicle_control_refactored.py`:
+The startup script passes these arguments to `vehicle_main.py`:
 
 ```bash
-python vehicle_control_refactored.py \
+python vehicle_main.py \
   --host 192.168.2.200 \
   --port 5000 \
   --car-id 0

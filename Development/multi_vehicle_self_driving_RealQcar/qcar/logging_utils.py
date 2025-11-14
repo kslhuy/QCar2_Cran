@@ -3,6 +3,7 @@ Logging utilities for QCar Vehicle Control System
 """
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Optional
 import csv
@@ -76,7 +77,7 @@ class VehicleLogger:
         os.makedirs(run_dir, exist_ok=True)
         
         telemetry_file = os.path.join(run_dir, f"telemetry_vehicle_{self.car_id}.csv")
-        self.telemetry_file = open(telemetry_file, 'w', newline='', buffering=1)  # Line buffering
+        self.telemetry_file = open(telemetry_file, 'w', newline='', buffering=8192)  # 8KB buffer for better performance
         
         fieldnames = [
             'timestamp', 'time', 'x', 'y', 'th', 'v', 
@@ -105,6 +106,7 @@ class VehicleLogger:
     
     def _logging_worker(self):
         """Background thread worker for non-blocking logging"""
+        flush_counter = 0
         while self.logging_active:
             try:
                 # Get log entry from queue (timeout to check if we should stop)
@@ -113,18 +115,31 @@ class VehicleLogger:
                 if log_entry is None:  # Poison pill to stop thread
                     break
                 
-                # Write to CSV
+                # Write to CSV (buffered)
                 if self.telemetry_writer:
                     self.telemetry_writer.writerow(log_entry)
-                    # Flush every 10 entries to balance performance and data safety
-                    if self.log_queue.qsize() == 0:
-                        self.telemetry_file.flush()
+                    flush_counter += 1
+                    
+                    # Periodic flush (every 50 entries or when queue is empty)
+                    # This reduces blocking flush() calls while maintaining data safety
+                    if flush_counter >= 50 or self.log_queue.qsize() == 0:
+                        try:
+                            self.telemetry_file.flush()
+                            flush_counter = 0
+                        except (OSError, IOError) as e:
+                            # Non-blocking: if flush fails (disk full, etc), just continue
+                            print(f"[Logging Worker] Flush failed: {e}")
                 
             except queue.Empty:
                 continue
             except Exception as e:
                 # Use basic print to avoid recursion
                 print(f"[Logging Worker] Error: {e}")
+                # Brief pause on error to prevent tight error loop
+                try:
+                    time.sleep(0.01)
+                except:
+                    pass
     
     def log_telemetry(self, data: dict):
         """Log telemetry data to CSV (non-blocking via queue)"""
@@ -222,6 +237,12 @@ class PerformanceMonitor:
         self._iteration_count = 0
         self._last_report_time = datetime.now()
         self.report_interval = 10.0  # Report every 10 seconds
+        
+        # Blocking detection
+        self.blocking_threshold = 0.010  # 10ms threshold for potential blocking
+        self.severe_blocking_threshold = 0.025  # 25ms threshold for severe blocking
+        self.blocking_incidents = 0
+        self.severe_blocking_incidents = 0
     
     def log_loop_time(self, dt: float):
         """Log control loop execution time"""
@@ -230,6 +251,21 @@ class PerformanceMonitor:
             self.loop_times.pop(0)
         
         self._iteration_count += 1
+        
+        # Blocking detection
+        if dt > self.severe_blocking_threshold:
+            self.severe_blocking_incidents += 1
+            self.logger.log_warning(
+                f"WARNING: SEVERE BLOCKING detected: Loop time {dt*1000:.2f}ms "
+                f"(threshold: {self.severe_blocking_threshold*1000:.2f}ms)"
+            )
+        elif dt > self.blocking_threshold:
+            self.blocking_incidents += 1
+            if self.blocking_incidents % 50 == 1:  # Log every 50th incident
+                self.logger.log_warning(
+                    f"WARNING: Potential blocking: Loop time {dt*1000:.2f}ms "
+                    f"(incident #{self.blocking_incidents})"
+                )
         
         # Periodic reporting
         now = datetime.now()
@@ -254,7 +290,9 @@ class PerformanceMonitor:
         import numpy as np
         
         stats = {
-            'iteration_count': self._iteration_count
+            'iteration_count': self._iteration_count,
+            'blocking_incidents': self.blocking_incidents,
+            'severe_blocking_incidents': self.severe_blocking_incidents
         }
         
         if self.loop_times:
@@ -263,7 +301,8 @@ class PerformanceMonitor:
                 'max': np.max(self.loop_times),
                 'min': np.min(self.loop_times),
                 'std': np.std(self.loop_times),
-                'frequency': 1.0 / np.mean(self.loop_times) if np.mean(self.loop_times) > 0 else 0
+                'frequency': 1.0 / np.mean(self.loop_times) if np.mean(self.loop_times) > 0 else 0,
+                'blocking_percentage': (self.blocking_incidents / self._iteration_count * 100) if self._iteration_count > 0 else 0
             }
         
         if self.network_latencies:
@@ -289,8 +328,16 @@ class PerformanceMonitor:
             lt = stats['loop_time']
             self.logger.logger.info(
                 f"Performance: Loop time avg={lt['mean']*1000:.2f}ms, "
-                f"max={lt['max']*1000:.2f}ms, freq={lt['frequency']:.1f}Hz"
+                f"max={lt['max']*1000:.2f}ms, freq={lt['frequency']:.1f}Hz, "
+                f"blocking={lt['blocking_percentage']:.1f}%"
             )
+            
+            # Alert on concerning blocking levels
+            if lt['blocking_percentage'] > 5.0:
+                self.logger.log_warning(
+                    f"WARNING: High blocking percentage: {lt['blocking_percentage']:.1f}% "
+                    f"({stats['blocking_incidents']} incidents)"
+                )
         
         if 'network_latency' in stats:
             nl = stats['network_latency']
@@ -298,3 +345,8 @@ class PerformanceMonitor:
                 f"Performance: Network latency avg={nl['mean']*1000:.2f}ms, "
                 f"max={nl['max']*1000:.2f}ms"
             )
+        
+        # Reset counters periodically to prevent overflow
+        if self._iteration_count > 10000:
+            self.blocking_incidents = max(0, self.blocking_incidents - 100)
+            self.severe_blocking_incidents = max(0, self.severe_blocking_incidents - 10)

@@ -1,7 +1,7 @@
 # Performance Fixes - Vehicle Controller
 
 ## Problem Summary
-The new `vehicle_controller.py` was running too aggressively compared to the original `vehicle_control.py`. The vehicle was behaving erratically with sudden movements.
+The new `vehicle_logic.py` was running too aggressively compared to the original `vehicle_control.py`. The vehicle was behaving erratically with sudden movements.
 
 ## Root Causes Identified
 
@@ -71,7 +71,7 @@ Main Control Loop (200 Hz)
 ## Implementation Details
 
 ### 1. Actual dt Calculation
-Located in `vehicle_controller.py`, line ~410:
+Located in `vehicle_logic.py`, line ~410:
 ```python
 target_dt = 1.0 / self.config.timing.controller_update_rate
 last_loop_time = time.time()
@@ -117,13 +117,13 @@ Located in `logging_utils.py`:
    ```
 
 3. **Compare with Original:**
-   - Run both `vehicle_control.py` and `vehicle_controller.py`
+   - Run both `vehicle_control.py` and `vehicle_logic.py`
    - Compare velocities, control inputs, and trajectories
    - Should now behave identically
 
 ## Related Files Modified
 
-1. `vehicle_controller.py`:
+1. `vehicle_logic.py`:
    - Lines ~410-430: Changed to actual dt calculation
    
 2. `logging_utils.py`:
@@ -134,7 +134,7 @@ Located in `logging_utils.py`:
    - Modified `log_telemetry()`: Non-blocking queue put
    - Modified `close()`: Graceful thread shutdown
 
-3. `vehicle_controller.py` (telemetry keys):
+3. `vehicle_logic.py` (telemetry keys):
    - Changed 'theta' → 'th'
    - Changed 'velocity' → 'v'
    - Changed 'throttle' → 'u'

@@ -51,9 +51,9 @@ class NetworkConfig:
     host_ip: Optional[str] = None
     base_port: int = 5000
     car_id: int = 0
-    connection_timeout: int = 5
-    max_reconnect_attempts: int = 10
-    reconnect_delay: float = 2.0
+    connection_timeout: int = 15  # Increased from 5 to 15 seconds
+    max_reconnect_attempts: int = 5  # Reduced from 10 to 5
+    reconnect_delay: float = 3.0  # Increased from 2.0 to 3.0 seconds
     telemetry_buffer_size: int = 100
     
     @property

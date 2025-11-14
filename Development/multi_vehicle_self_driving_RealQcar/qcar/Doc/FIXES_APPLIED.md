@@ -157,7 +157,7 @@ State transitions: Valid ✅
 
 ## What Changed in Code
 
-### File: `vehicle_controller.py`
+### File: `vehicle_logic.py`
 
 #### 1. `check_initial_position()` method:
 ```python

@@ -17,7 +17,7 @@ import time
 from threading import Event, Thread
 
 from config import VehicleControlConfig
-from vehicle_controller import VehicleController
+from vehicle_logic import VehicleLogic
 
 
 # Global kill event for clean shutdown
@@ -145,7 +145,7 @@ def load_configuration(args) -> VehicleControlConfig:
     return config
 
 
-def wait_for_yolo_server(timeout: float = 15.0):
+def wait_for_yolo_server(timeout: float = 10.0):
     """Wait for YOLO server to start"""
     print("Waiting for YOLO server to start...")
     print(f"  (Timeout: {timeout}s)")
@@ -166,10 +166,10 @@ def wait_for_yolo_server(timeout: float = 15.0):
     return True
 
 
-def run_control_thread(controller: VehicleController):
+def run_control_thread(vehicle_logic: VehicleLogic):
     """Run the control loop in a thread"""
     try:
-        controller.run()
+        vehicle_logic.run()
     except Exception as e:
         print(f"\n[ERROR] Control thread exception: {e}")
         import traceback
@@ -207,24 +207,18 @@ def main():
         print("\n[SHUTDOWN] Cancelled by user")
         return 0
     
-    # Create controller
+    # Create vehicle logic controller
     print("\n[INIT] Creating vehicle controller...")
-    controller = VehicleController(config, kill_event)
+    vehicle_logic = VehicleLogic(config, kill_event)
     
-    # Initialize systems
-    print("[INIT] Initializing vehicle systems...")
-    if not controller.initialize():
-        print("\n[ERROR] Initialization failed!")
-        return 1
-    
-    print("\n[READY] All systems initialized")
+    print("\n[READY] Vehicle controller created and ready")
     print("="*70)
     print("Starting control loop... (Press Ctrl+C to stop)")
     print("="*70)
     print()
     
     # Start control thread
-    control_thread = Thread(target=run_control_thread, args=(controller,), daemon=False)
+    control_thread = Thread(target=run_control_thread, args=(vehicle_logic,), daemon=False)
     control_thread.start()
     
     # Wait for completion or interrupt

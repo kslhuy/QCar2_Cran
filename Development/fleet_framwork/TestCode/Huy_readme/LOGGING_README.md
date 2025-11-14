@@ -105,7 +105,7 @@ class GPSSync:
 ### Control Logging Example
 
 ```python
-# In VehicleController classes
+# In VehicleLogic classes
 class VehicleFollowerController:
     def __init__(self, vehicle_id, ...):
         self.control_logger = get_control_logger(vehicle_id)

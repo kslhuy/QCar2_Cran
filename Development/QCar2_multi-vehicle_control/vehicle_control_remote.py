@@ -131,7 +131,7 @@ def sig_handler(signum, frame):
 signal.signal(signal.SIGINT, sig_handler)
 #endregion
 
-class NetworkClient:
+class NetworkClient2GS:
     """Handles communication with the host PC"""
     
     def __init__(self, host_ip: str, port: int, car_id: int):
@@ -288,7 +288,7 @@ def controlLoop():
     telemetry_send_counter = 0
     
     # Initialize network client
-    network = NetworkClient(HOST_PC_IP, BASE_PORT + CAR_ID, CAR_ID)
+    network = NetworkClient2GS(HOST_PC_IP, BASE_PORT + CAR_ID, CAR_ID)
     
     # Wait for connection to host PC
     print(f"[Car {CAR_ID}] Waiting for connection to host PC...")

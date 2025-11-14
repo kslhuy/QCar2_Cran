@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any
 from threading import Lock
 
 
-class NetworkClient:
+class NetworkClient2GS:
     """Handles communication with the host PC with robust error handling"""
     
     def __init__(self, host_ip: str, port: int, car_id: int, logger=None, config=None):

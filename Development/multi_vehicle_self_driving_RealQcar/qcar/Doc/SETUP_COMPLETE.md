@@ -3,16 +3,16 @@
 ## What Changed
 
 ### 1. **Automatic Config Loading**
-`vehicle_control_refactored.py` now **automatically loads `config_example.yaml`** from the script directory.
+`vehicle_main.py` now **automatically loads `config_example.yaml`** from the script directory.
 
 **Before:**
 ```bash
-python vehicle_control_refactored.py  # Used hardcoded defaults
+python vehicle_main.py  # Used hardcoded defaults
 ```
 
 **After:**
 ```bash
-python vehicle_control_refactored.py  # Automatically loads config_example.yaml
+python vehicle_main.py  # Automatically loads config_example.yaml
 ```
 
 ### 2. **GUI Controller Fixed**
@@ -53,7 +53,7 @@ You should see:
 ### Step 3: Start Vehicle (On QCar)
 ```bash
 cd Development/multi_vehicle_self_driving_RealQcar/qcar
-python vehicle_control_refactored.py
+python vehicle_main.py
 ```
 
 Or use the quick start script:
@@ -95,22 +95,22 @@ python test_config.py
 
 ### Start Vehicle with Default Config
 ```bash
-python vehicle_control_refactored.py
+python vehicle_main.py
 ```
 
 ### Start Vehicle with Custom Car ID
 ```bash
-python vehicle_control_refactored.py --car-id 1
+python vehicle_main.py --car-id 1
 ```
 
 ### Start Vehicle with Different Host
 ```bash
-python vehicle_control_refactored.py --host 192.168.1.100 --car-id 0
+python vehicle_main.py --host 192.168.1.100 --car-id 0
 ```
 
 ### Start Vehicle with Custom Velocity
 ```bash
-python vehicle_control_refactored.py --v-ref 0.9
+python vehicle_main.py --v-ref 0.9
 ```
 
 ## 🐛 Troubleshooting
@@ -150,7 +150,7 @@ qcar2/Development/
 │   └── gui_controller.py          ← GUI (Host PC)
 │
 └── multi_vehicle_self_driving_RealQcar/qcar/
-    ├── vehicle_control_refactored.py  ← Main vehicle script
+    ├── vehicle_main.py  ← Main vehicle script
     ├── config_example.yaml            ← Configuration (auto-loaded)
     ├── test_config.py                 ← Test config loading
     ├── start_vehicle.bat              ← Quick start script
@@ -172,7 +172,7 @@ Before running your vehicle:
 
 1. **Test config:** `python test_config.py`
 2. **Start GUI** (on host PC)
-3. **Start vehicle:** `python vehicle_control_refactored.py`
+3. **Start vehicle:** `python vehicle_main.py`
 4. **Check logs** for "Connected" status
 5. **Control from GUI** - Start/Stop buttons should work!
 

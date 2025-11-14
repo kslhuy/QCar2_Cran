@@ -85,7 +85,7 @@ if role == 'follower':
 Additional protection at vehicle level:
 
 ```python
-# In vehicle_controller.py _process_commands()
+# In vehicle_logic.py _process_commands()
 if cmd_type == 'enable_platoon' and role == 'follower':
     # Query fleet for leader status
     if not self.network.leader_exists():

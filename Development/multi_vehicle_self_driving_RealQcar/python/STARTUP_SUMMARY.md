@@ -10,7 +10,7 @@
    - Assigns Car IDs automatically (0, 1, 2, ...)
    - Assigns ports automatically (5000, 5001, 5002, ...)
    - Uploads .py, .yaml, .txt, .md files
-   - Starts vehicle_control_refactored.py with proper arguments
+   - Starts vehicle_main.py with proper arguments
    - Starts YOLO servers with correct parameters
    - Starts observer on probing QCar
    - Comprehensive error handling
@@ -58,9 +58,9 @@
 - Markdown documentation (.md)
 
 ### ✅ Proper Integration with Refactored System
-Starts `vehicle_control_refactored.py` with:
+Starts `vehicle_main.py` with:
 ```bash
-python vehicle_control_refactored.py \
+python vehicle_main.py \
   --host 192.168.2.200 \
   --port 5000 \
   --car-id 0
@@ -113,13 +113,13 @@ LOCAL_IP=192.168.2.200
 
 **QCar 0 (192.168.2.108):**
 - Uploads all files
-- Starts: `vehicle_control_refactored.py --host 192.168.2.200 --port 5000 --car-id 0`
+- Starts: `vehicle_main.py --host 192.168.2.200 --port 5000 --car-id 0`
 - Starts: `yolo_server.py -p True -i 192.168.2.200 -w 320 -ht 200`
 - Starts observer locally (probing mode)
 
 **QCar 1 (192.168.2.30):**
 - Uploads all files
-- Starts: `vehicle_control_refactored.py --host 192.168.2.200 --port 5000 --car-id 1`
+- Starts: `vehicle_main.py --host 192.168.2.200 --port 5000 --car-id 1`
 - Starts: `yolo_server.py -p False -i 192.168.2.200 -w 320 -ht 200`
 
 ## Benefits Over Original
@@ -148,8 +148,8 @@ python/
 └── STARTUP_README.md          # Documentation
 
 qcar/
-├── vehicle_control_refactored.py  # Entry point (created earlier)
-├── vehicle_controller.py          # Main controller
+├── vehicle_main.py  # Entry point (created earlier)
+├── vehicle_logic.py          # Main controller
 ├── config.py                      # Configuration
 ├── controllers.py                 # Speed/steering
 ├── state_machine.py               # States

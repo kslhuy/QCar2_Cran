@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Multi-Observer for Multiple QCar YOLO Streams
+multi-probing for Multiple QCar YOLO Streams
 
 Creates separate observer windows for each QCar that is probing.
 Each observer listens on a different port to avoid conflicts.

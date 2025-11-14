@@ -40,7 +40,7 @@ This is a comprehensive refactoring of the QCar vehicle control system with impr
 - Improved Stanley steering controller
 - State estimation wrapper
 
-### 7. **Main Controller** (`vehicle_controller.py`)
+### 7. **Main Controller** (`vehicle_logic.py`)
 - Modular architecture with clear separation of concerns
 - Graceful initialization and shutdown
 - Exception handling at all levels
@@ -56,8 +56,8 @@ qcar/
 ├── network_client.py              # Network communication
 ├── safety.py                      # Safety systems and validation
 ├── controllers.py                 # Speed and steering controllers
-├── vehicle_controller.py          # Main controller class
-├── vehicle_control_refactored.py  # Entry point
+├── vehicle_logic.py          # Main controller class
+├── vehicle_main.py  # Entry point
 ├── config_example.yaml            # Example configuration file
 ├── utils.py                       # YOLO utilities (existing)
 └── vehicle_control_real.py        # Original implementation (backup)
@@ -69,16 +69,16 @@ qcar/
 
 ```bash
 # Run with default settings
-python vehicle_control_refactored.py
+python vehicle_main.py
 
 # Specify car ID
-python vehicle_control_refactored.py --car-id 0
+python vehicle_main.py --car-id 0
 
 # Use custom configuration file
-python vehicle_control_refactored.py --config my_config.yaml
+python vehicle_main.py --config my_config.yaml
 
 # Enable remote control
-python vehicle_control_refactored.py --host 192.168.1.100 --port 5000 --car-id 0
+python vehicle_main.py --host 192.168.1.100 --port 5000 --car-id 0
 ```
 
 ### Command Line Arguments
@@ -116,7 +116,7 @@ network:
 Then run:
 
 ```bash
-python vehicle_control_refactored.py --config my_config.yaml
+python vehicle_main.py --config my_config.yaml
 ```
 
 ## Architecture
@@ -124,11 +124,11 @@ python vehicle_control_refactored.py --config my_config.yaml
 ### Component Interaction
 
 ```
-VehicleController (Main)
+VehicleLogic (Main)
 ├── VehicleLogger (Logging)
 ├── PerformanceMonitor (Metrics)
 ├── VehicleStateMachine (States)
-├── NetworkClient (Communication)
+├── NetworkClient2GS (Communication)
 ├── SpeedController (Control)
 ├── SteeringController (Control)
 ├── StateEstimator (State)
@@ -262,7 +262,7 @@ To migrate from `vehicle_control_real.py`:
 
 1. **No code changes needed** - The refactored version maintains API compatibility
 2. **Optional**: Create a configuration file for your parameters
-3. **Run**: Use `vehicle_control_refactored.py` instead
+3. **Run**: Use `vehicle_main.py` instead
 
 ### Comparison
 
