@@ -155,6 +155,8 @@ class CommandHandler:
         'set_velocity': CommandType.SET_VELOCITY,
         'set_path': CommandType.SET_PATH,
         'enable_platoon': CommandType.ENABLE_PLATOON_FOLLOWER,  # Default to follower
+        'enable_platoon_leader': CommandType.ENABLE_PLATOON_LEADER,
+        'enable_platoon_follower': CommandType.ENABLE_PLATOON_FOLLOWER,
         'disable_platoon': CommandType.DISABLE_PLATOON,
         'activate_v2v': CommandType.ACTIVATE_V2V,
         'disable_v2v': CommandType.DISABLE_V2V,
@@ -216,6 +218,21 @@ class CommandHandler:
             self.state_machine._transition_to(new_state, reason)
             return True
         
+        # For commands that don't trigger transitions but are valid, return True to avoid "not handled" warning
+        # This assumes the state logged any specific errors if the command failed
+        NON_TRANSITION_COMMANDS = [
+            CommandType.SET_VELOCITY, 
+            CommandType.SET_PATH, 
+            CommandType.ACTIVATE_V2V, 
+            CommandType.DISABLE_V2V,
+            CommandType.SET_PARAMS,
+            CommandType.ENABLE_PLATOON_FOLLOWER, # In waiting state, this configures but doesn't transition
+            CommandType.ENABLE_PLATOON_LEADER
+        ]
+        
+        if command_type in NON_TRANSITION_COMMANDS:
+            return True
+        
         return False
     
     def process_command(self, raw_command: Dict[str, Any]) -> bool:
@@ -264,10 +281,14 @@ class CommandHandler:
             # Cache timestamp for better performance
             timestamp = time.time()
             
-            # Handle new command format
+            # Handle command format (support both 'type' and 'command' keys)
+            cmd_type_str = None
             if 'type' in raw_command:
                 cmd_type_str = raw_command['type']
-                
+            elif 'command' in raw_command:
+                cmd_type_str = raw_command['command']
+            
+            if cmd_type_str:
                 # Use class-level mapping for better performance
                 command_type = self.TYPE_MAPPING.get(cmd_type_str)
                 if not command_type:
@@ -288,8 +309,8 @@ class CommandHandler:
                 return CommandInfo(
                     command_type=command_type,
                     timestamp=timestamp,
-                    data=raw_command,
-                    source="ground_station"
+                    data={**raw_command, 'source': raw_command.get('source', 'Ground Station')},  # Add source to data
+                    source=raw_command.get('source', 'Ground Station')  # Also keep in CommandInfo source field
                 )
             
             else:

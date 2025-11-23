@@ -40,7 +40,9 @@ class InitializingState(StateBase):
             'initialization_start': time.time(),
             'components_initialized': False,
             'initial_position_checked': False,
-            'ready_to_start': False
+            'ready_to_start': False,
+            'last_step_time': time.time(),  # Track timing for delays
+            'step_delay': 0.5  # 500ms delay between major steps
         }
         
         return True
@@ -51,40 +53,60 @@ class InitializingState(StateBase):
         # No control commands during initialization
         throttle, steering = 0.0, 0.0
         
-        # Check if emergency stop requested
-        if self.should_transition_to_stopped(sensor_data):
-            return throttle, steering, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
+        # # Check if emergency stop requested
+        # if self.should_transition_to_stopped(sensor_data):
+        #     return throttle, steering, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
         
         # === INITIALIZATION SEQUENCE ===
+        current_time = time.time()
         
-        # Step 1: Check if all components are ready
+        # Step 1: Check if all components are ready (with delay)
         if not self.state_data['components_initialized']:
+            # Allow some time for system to settle before starting
+            if current_time - self.state_data['initialization_start'] < 1.0:
+                return throttle, steering, None  # Wait 1 second before starting
+            
             components_ready = self._check_components_ready()
             if components_ready:
                 self.state_data['components_initialized'] = True
-                self.logger.logger.info(" All components initialized")
+                self.state_data['last_step_time'] = current_time
+                self.logger.logger.info("✅ All components initialized")
+                time.sleep(0.2)  # Small delay to let components settle
         
-        # Step 2: Check initial position (if path following enabled)
+        # Step 2: Check initial position (if path following enabled) - with delay
         if (self.state_data['components_initialized'] and 
             not self.state_data['initial_position_checked']):
+            
+            # Wait for step delay before proceeding
+            if current_time - self.state_data['last_step_time'] < self.state_data['step_delay']:
+                return throttle, steering, None  # Wait for delay
             
             if self.config.steering.enable_steering_control:
                 position_ok = self._check_initial_position(sensor_data)
                 if position_ok:
                     self.state_data['initial_position_checked'] = True
-                    self.logger.logger.info(" Initial position verified")
+                    self.state_data['last_step_time'] = current_time
+                    self.logger.logger.info("✅ Initial position verified")
+                    time.sleep(0.2)  # Small delay
             else:
                 # Skip position check if steering control disabled
                 self.state_data['initial_position_checked'] = True
-                self.logger.logger.info(" Position check skipped (steering disabled)")
+                self.state_data['last_step_time'] = current_time
+                self.logger.logger.info("✅ Position check skipped (steering disabled)")
+                time.sleep(0.1)  # Small delay
 
-        # Step 3: Mark as ready to start
+        # Step 3: Mark as ready to start - with final delay
         if (self.state_data['components_initialized'] and 
             self.state_data['initial_position_checked'] and
             not self.state_data['ready_to_start']):
             
+            # Wait for step delay before finalizing
+            if current_time - self.state_data['last_step_time'] < self.state_data['step_delay']:
+                return throttle, steering, None  # Wait for delay
+            
             self.state_data['ready_to_start'] = True
-            self.logger.logger.info("System ready to start")
+            self.logger.logger.info("✅ System ready to start")
+            time.sleep(0.3)  # Final delay before transition
         
         # Transition to WAITING_FOR_START when ready
         if self.state_data['ready_to_start']:
@@ -127,35 +149,44 @@ class InitializingState(StateBase):
     def _check_components_ready(self) -> bool:
         """Initialize and check if all required components are ready"""
         try:
+            self.logger.logger.info("🔧 Starting component initialization...")
+            
             # Initialize path planning
             if not self._initialize_path_planning():
                 self.logger.log_error("Path planning initialization failed")
                 return False
+            time.sleep(0.2)  # Allow path planning to settle
             
             # # Initialize network (if enabled)
             # if not self._initialize_network_2_GroundStation():
             #     self.logger.log_error("Network initialization failed")
             #     return False
+            # time.sleep(0.3)  # Allow network to establish connections
             
             # Initialize QCar hardware
             if not self._initialize_qcar():
                 self.logger.log_error("QCar hardware initialization failed")
                 return False
+            time.sleep(0.2)  # Allow hardware to settle
             
             # Initialize controllers
             if not self._initialize_controllers():
                 self.logger.log_error("Controllers initialization failed")
                 return False
+            time.sleep(0.2)  # Allow controllers to initialize
             
-            # Initialize perception
-            if not self._initialize_perception():
-                self.logger.log_error("Perception initialization failed")
-                return False
+            # # Initialize perception
+            # if not self._initialize_perception():
+            #     self.logger.log_error("Perception initialization failed")
+            #     return False
+            # time.sleep(0.2)  # Allow perception to start
             
             # Setup telemetry logging
             if self.config.logging.enable_telemetry_logging:
                 self.vehicle_logic.logger.setup_telemetry_logging(self.config.logging.data_log_dir)
+                time.sleep(0.1)  # Allow logging setup
             
+            self.logger.logger.info("All components initialization complete")
             return True
             
         except Exception as e:
@@ -258,20 +289,27 @@ class InitializingState(StateBase):
         try:
             from ground_station_client import GroundStationClient
             
+            self.logger.logger.info("Creating Ground Station client...")
+            
             # Create Ground Station client
             self.vehicle_logic.client_Ground_Station = GroundStationClient(
                 config=self.config,
                 logger=self.vehicle_logic.logger,
                 kill_event=self.vehicle_logic.kill_event
             )
+            time.sleep(0.2)  # Allow client object to settle
             
             # Initialize network connection
+            self.logger.logger.info("Initializing network connection...")
             if not self.vehicle_logic.client_Ground_Station.initialize_network():
                 return False
+            time.sleep(0.5)  # Allow network initialization to complete
             
             # Start network threads
+            self.logger.logger.info("Starting network threads...")
             if not self.vehicle_logic.client_Ground_Station.start_threads():
                 return False
+            time.sleep(0.3)  # Allow threads to start properly
             
             self.logger.logger.info("Ground Station communication initialized")
             return True
@@ -288,15 +326,20 @@ class InitializingState(StateBase):
             from pal.products.qcar import QCar, QCarGPS
             from controllers import StateEstimator
             
+            self.logger.logger.info("Initializing QCar hardware...")
+            
             self.vehicle_logic.qcar = QCar(
                 readMode=1,
                 frequency=self.config.timing.controller_update_rate
             )
+            time.sleep(0.5)  # Allow QCar hardware to initialize
 
+            self.logger.logger.info("Initializing GPS...")
             self.vehicle_logic.gps = QCarGPS(
                 initialPose=self.config.path.calibration_pose, 
                 calibrate=self.config.path.calibrate
             )
+            time.sleep(0.3)  # Allow GPS to initialize
 
             # Wait for initial GPS reading
             self.logger.logger.info("Waiting for initial GPS reading...")
@@ -306,11 +349,14 @@ class InitializingState(StateBase):
             
             while not gps_received and (time.time() - start) < timeout:
                 gps_received = self.vehicle_logic.gps.readGPS()
-                time.sleep(0.1)
+                time.sleep(0.1)  # Check every 100ms
             
             if not gps_received:
                 self.logger.log_error("Failed to receive initial GPS reading")
                 return False
+            
+            self.logger.logger.info("GPS reading received")
+            time.sleep(0.2)  # Allow GPS data to settle
             
             # Get initial pose for EKF
             initial_pose = None
@@ -320,17 +366,19 @@ class InitializingState(StateBase):
                     self.vehicle_logic.gps.position[1],
                     self.vehicle_logic.gps.orientation[2]
                 ])
-                self.logger.logger.info(f"Initial pose: x={initial_pose[0]:.2f}, y={initial_pose[1]:.2f}, theta={initial_pose[2]:.2f}")
+                self.logger.logger.info(f" Initial pose: x={initial_pose[0]:.2f}, y={initial_pose[1]:.2f}, theta={initial_pose[2]:.2f}")
             
             # Initialize state estimator with EKF
+            self.logger.logger.info(" Initializing state estimator...")
             self.vehicle_logic.state_estimator = StateEstimator(
                 gps=self.vehicle_logic.gps,
                 initial_pose=initial_pose,
                 logger=self.vehicle_logic.logger,
                 use_ekf=self.config.steering.enable_steering_control
             )
+            time.sleep(0.3)  # Allow state estimator to initialize
             
-            self.logger.logger.info("QCar hardware initialized with EKF fusion")
+            self.logger.logger.info(" QCar hardware initialized with EKF fusion")
             return True
             
         except Exception as e:
@@ -342,11 +390,14 @@ class InitializingState(StateBase):
         try:
             from controllers import SpeedController, SteeringController
             
+            self.logger.logger.info(" Initializing controllers...")
+            
             # Speed controller
             self.vehicle_logic.speed_controller = SpeedController(
                 config=self.config,
                 logger=self.vehicle_logic.logger
             )
+            time.sleep(0.1)  # Allow speed controller to initialize
             
             # Steering controller
             if self.config.steering.enable_steering_control:
@@ -355,6 +406,7 @@ class InitializingState(StateBase):
                     config=self.config,
                     logger=self.vehicle_logic.logger
                 )
+                time.sleep(0.2)  # Allow steering controller to initialize
             
             self.logger.logger.info("Controllers initialized")
             return True

@@ -74,23 +74,29 @@ class FakeInitializingState(StateBase):
         # No control commands during initialization
         throttle, steering = 0.0, 0.0
         
-        # Check if emergency stop requested
+        # Check if emergency stop requested - but use our overridden version
         if self.should_transition_to_stopped(sensor_data):
             return throttle, steering, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
         
         # Quick fake initialization
         if not self.state_data['quick_init_done']:
-            # Simulate quick component initialization
-            
-            if init_time > 0.5:  # 0.5 second fake initialization (faster for testing)
-                self.state_data['quick_init_done'] = True
-                self.logger.logger.info("Fake components initialized quickly for testing")
-                print(f"DEBUG Car init: Fake initialization complete after {init_time:.1f}s")
+            # Simulate quick component initialization by injecting mock hardware
+            if init_time > 0.5:  # 0.5 second fake initialization (allow time for system to settle)
+                # Inject mock hardware now
+                if self._check_components_ready():
+                    self.state_data['quick_init_done'] = True
+                    self.logger.logger.info("Fake components initialized quickly for testing")
+                    print(f"DEBUG Car init: Fake initialization complete after {init_time:.1f}s")
+                    time.sleep(0.2)  # Small delay to let everything settle
+                else:
+                    print(f"DEBUG Car init: Component initialization failed, retrying...")
         
-        # Transition to WAITING_FOR_START when ready
+        # Transition to WAITING_FOR_START when ready (with small delay)
         if self.state_data['quick_init_done']:
-            print(f"DEBUG Car init: Transitioning to WAITING_FOR_START")
-            return throttle, steering, (VehicleState.WAITING_FOR_START, StateTransitionReason.INITIALIZATION_COMPLETE)
+            # Add small delay before transition for stability
+            if init_time > 1.0:  # Total minimum initialization time
+                print(f"DEBUG Car init: Transitioning to WAITING_FOR_START")
+                return throttle, steering, (VehicleState.WAITING_FOR_START, StateTransitionReason.INITIALIZATION_COMPLETE)
         
         return throttle, steering, None
     
@@ -106,13 +112,63 @@ class FakeInitializingState(StateBase):
         return None
     
     def _check_components_ready(self) -> bool:
-        """Override real hardware initialization - fake vehicle components are always ready"""
-        print(f"[*] FakeInitializingState: Skipping real hardware initialization")
-        print(f"   [+] Mock hardware already injected")
-        print(f"   [+] Ground Station connection handled separately")
-        print(f"   [+] Fake components ready")
-        return True
+        """Override real hardware initialization - inject fake vehicle components"""
+        print(f"[*] FakeInitializingState: Injecting mock hardware components...")
+        
+        try:
+            # Get the parent fake vehicle instance to access mock components
+            parent_fake_vehicle = getattr(self.vehicle_logic, '_parent_fake_vehicle', None)
+            if parent_fake_vehicle:
+                # Inject mock hardware from the fake vehicle
+                self.vehicle_logic.qcar = parent_fake_vehicle.mock_qcar
+                self.vehicle_logic.gps = parent_fake_vehicle.mock_gps  
+                self.vehicle_logic.yolo = parent_fake_vehicle.mock_yolo
+                
+                # Create mock controllers and state estimator
+                from fake_vehicle_real_logic import MockStateEstimator, MockSpeedController, MockSteeringController, MockYOLODrive
+                self.vehicle_logic.state_estimator = MockStateEstimator(parent_fake_vehicle.mock_qcar, parent_fake_vehicle.mock_gps)
+                self.vehicle_logic.speed_controller = MockSpeedController(self.config.network.car_id)
+                self.vehicle_logic.steering_controller = MockSteeringController(self.config.network.car_id)
+                self.vehicle_logic.yolo_drive = MockYOLODrive(self.config.network.car_id)
+                
+                print(f"   [+] Mock QCar hardware injected")
+                print(f"   [+] Mock GPS injected")
+                print(f"   [+] Mock YOLO injected")
+                print(f"   [+] Mock controllers created")
+            else:
+                print(f"   [!] Parent fake vehicle not found, using basic mocks")
+                # Fallback to creating basic mocks
+                from fake_vehicle_real_logic import MockQCar, MockQCarGPS, MockYOLOReceiver
+                from fake_vehicle_real_logic import MockStateEstimator, MockSpeedController, MockSteeringController, MockYOLODrive
+                car_id = self.config.network.car_id
+                
+                self.vehicle_logic.qcar = MockQCar(car_id)
+                self.vehicle_logic.gps = MockQCarGPS(self.vehicle_logic.qcar)
+                self.vehicle_logic.yolo = MockYOLOReceiver()
+                self.vehicle_logic.state_estimator = MockStateEstimator(self.vehicle_logic.qcar, self.vehicle_logic.gps)
+                self.vehicle_logic.speed_controller = MockSpeedController(car_id)
+                self.vehicle_logic.steering_controller = MockSteeringController(car_id)
+                self.vehicle_logic.yolo_drive = MockYOLODrive(car_id)
+                
+                print(f"   [+] Basic mock components created")
+            
+            # Skip real hardware initialization completely
+            print(f"   [+] Ground Station connection handled by VehicleLogic")
+            print(f"   [+] Fake components ready")
+            return True
+            
+        except Exception as e:
+            print(f"   [!] Mock hardware injection failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
     
+    def should_transition_to_stopped(self, sensor_data: Dict[str, Any]) -> bool:
+        """Override emergency stop checks during fake initialization"""
+        # During fake initialization, never trigger emergency stops
+        # This allows the system to initialize properly with mock hardware
+        return False
+        
     def _check_initial_position(self, sensor_data: Dict[str, Any]) -> bool:
         """Override position check - fake vehicles start at valid positions"""
         print(f"[*] FakeInitializingState: Skipping position check for fake vehicle")

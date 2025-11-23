@@ -95,8 +95,12 @@ class WaitingForStartState(StateBase):
             return None
         
         # Handle start command - DIRECT TRANSITION!
+        # if command_type == CommandType.ACTIVATE_V2V:
+
+        
+        # Handle start command - DIRECT TRANSITION!
         if command_type == CommandType.START:
-            self.logger.logger.info("🚀 Start command received - transitioning immediately!")
+            self.logger.logger.info("Start command received - transitioning immediately!")
             
             # Check if we should start in platoon mode
             if self.state_data['platoon_mode_requested']:
@@ -116,7 +120,7 @@ class WaitingForStartState(StateBase):
                 return None
             
             leader_id = data.get('leader_id')
-            self.logger.logger.info(f"🔗 Platoon follower mode configured (leader: {leader_id})")
+            self.logger.logger.info(f"Platoon follower mode configured (leader: {leader_id})")
             
             # Setup platoon configuration but don't start yet - wait for start command
             self.state_data['platoon_mode_requested'] = True
@@ -126,7 +130,7 @@ class WaitingForStartState(StateBase):
             if hasattr(self.vehicle_logic, 'platoon_controller'):
                 self.vehicle_logic.platoon_controller.configure_follower(leader_id)
             
-            self.logger.logger.info("📋 Platoon mode configured - waiting for start command")
+            self.logger.logger.info("Platoon mode configured - waiting for start command")
             return None  # No transition, just configuration
         
         # Handle velocity updates - store for when we start
@@ -146,9 +150,9 @@ class WaitingForStartState(StateBase):
             if node_sequence and isinstance(node_sequence, list):
                 if hasattr(self.vehicle_logic, 'path_controller'):
                     self.vehicle_logic.path_controller.update_path(node_sequence)
-                    self.logger.logger.info(f"✅ Path updated with {len(node_sequence)} nodes")
+                    self.logger.logger.info(f"Path updated with {len(node_sequence)} nodes")
                     return None
-            self.logger.logger.warning("⚠️ Invalid path update while waiting")
+            self.logger.logger.warning("Invalid path update while waiting")
             return None
         
         # Let base class handle common events (stop, emergency_stop)

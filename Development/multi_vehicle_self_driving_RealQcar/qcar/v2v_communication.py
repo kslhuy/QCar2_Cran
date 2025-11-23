@@ -1,15 +1,27 @@
 """
 Vehicle-to-Vehicle (V2V) Communication Module
-Handles P2P communication between vehicles for cooperative driving
+High-performance UDP-based communication system for cooperative driving
 """
 import socket
 import threading
-import json
 import time
 import logging
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Set
 from queue import Queue, Empty
 from dataclasses import dataclass, asdict
+from contextlib import contextmanager
+from enum import Enum
+
+import json
+
+
+class MessageType(Enum):
+    """Predefined message types for V2V communication"""
+    IDENTIFICATION = "identification"
+    TELEMETRY = "telemetry"
+    INTENT = "intent"
+    WARNING = "warning"
+    HEARTBEAT = "heartbeat"
 
 
 @dataclass
@@ -20,325 +32,345 @@ class V2VMessage:
     timestamp: float
     data: dict
     
-    def to_dict(self):
+    def to_dict(self) -> dict:
         return asdict(self)
     
     @classmethod
-    def from_dict(cls, data: dict):
-        return cls(**data)
+    def from_dict(cls, data: dict) -> 'V2VMessage':
+        # Filter out extra fields like 'seq' that aren't part of the dataclass
+        valid_fields = {'sender_id', 'message_type', 'timestamp', 'data'}
+        filtered_data = {k: v for k, v in data.items() if k in valid_fields}
+        return cls(**filtered_data)
+
+
+class ConnectionState(Enum):
+    """Connection states for peer vehicles"""
+    DISCONNECTED = "disconnected"
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    FAILED = "failed"
 
 
 class V2VCommunication:
-    """Vehicle-to-Vehicle communication handler"""
+    """High-performance UDP-based Vehicle-to-Vehicle communication handler"""
     
-    def __init__(self, vehicle_id: int, logger: logging.Logger, base_port: int = 6000):
+    # Performance constants
+    SEND_INTERVAL = 0.05  # 50ms = 20Hz
+    RECV_TIMEOUT = 0.01   # 10ms timeout for non-blocking receive
+    MAX_PACKET_SIZE = 1024
+    
+    def __init__(self, vehicle_id: int, logger: logging.Logger, 
+                 base_port: int = 7000, status_callback: Optional[Callable] = None):
         self.vehicle_id = vehicle_id
         self.logger = logger
         self.base_port = base_port
         self.my_port = base_port + vehicle_id
+        self.status_callback = status_callback
         
-        # Communication state
-        self.is_active = False
-        self.peer_vehicles = []
-        self.peer_ips = {}  # {vehicle_id: ip_address}
-        self.connections = {}  # {vehicle_id: socket}
+        # Core state
+        self._running = False
+        self._is_active = False
+        self._lock = threading.RLock()
         
-        # Server socket for incoming connections
-        self.server_socket = None
-        self.server_thread = None
+        # Peer management
+        self.peer_vehicles: List[int] = []
+        self.peer_ips: Dict[int, str] = {}
+        self.peer_ports: Dict[int, int] = {}  # UDP ports for each peer
+        self.connection_states: Dict[int, ConnectionState] = {}
+        
+        # UDP Networking (simplified)
+        self.send_socket: Optional[socket.socket] = None
+        self.recv_socket: Optional[socket.socket] = None
+        self.recv_thread: Optional[threading.Thread] = None
+        
+        # Performance tracking
+        self.last_send_time = 0.0
+        self.sequence_number = 0
         
         # Message handling
-        self.message_queue = Queue(maxsize=100)
-        self.message_handlers = {}
+        self.message_queue = Queue(maxsize=200)  # Larger queue for high frequency
+        self.message_handlers: Dict[str, Callable[[V2VMessage], None]] = {}
         self.stats = {
             'messages_sent': 0,
             'messages_received': 0,
-            'connection_attempts': 0,
-            'active_connections': 0
+            'packets_dropped': 0,
+            'send_rate': 0.0
         }
         
-        # Threading
-        self.running = False
-        self.connection_threads = []
+        # Simplified thread management (only 1 receive thread)
+        self._recv_thread_active = False
         
+    @property
+    def is_active(self) -> bool:
+        """Check if V2V communication is active"""
+        return self._is_active
+    
     def activate(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
-        """Activate V2V communication with specified peers"""
-        try:
-            self.logger.info(f"V2V: Activating communication for vehicle {self.vehicle_id}")
+        """Activate high-performance UDP V2V communication"""
+        with self._lock:
+            if self._is_active:
+                self.logger.warning(f"V2V already active for vehicle {self.vehicle_id}")
+                return True
             
-            # Store peer information
-            self.peer_vehicles = peer_vehicles.copy()
-            self.peer_ips = {vid: ip for vid, ip in zip(peer_vehicles, peer_ips)}
-            
-            # Start server for incoming connections
-            if not self._start_server():
-                self.logger.error("V2V: Failed to start server")
+            try:
+                self.logger.info(f"Activating UDP V2V for vehicle {self.vehicle_id} with peers {peer_vehicles}")
+                
+                # Initialize peer information
+                self.peer_vehicles = [pid for pid in peer_vehicles if pid != self.vehicle_id]
+                self.peer_ips = {pid: ip for pid, ip in zip(peer_vehicles, peer_ips) if pid != self.vehicle_id}
+                self.peer_ports = {pid: self.base_port + pid for pid in self.peer_vehicles}
+                
+                # Initialize connection states (all start as connected for UDP)
+                for peer_id in self.peer_vehicles:
+                    self.connection_states[peer_id] = ConnectionState.CONNECTED
+                
+                # Setup UDP sockets
+                if not self._setup_udp_sockets():
+                    return False
+                
+                self._running = True
+                self._is_active = True
+                
+                # Start single receive thread
+                self._start_receive_thread()
+                
+                self.logger.info(f"UDP V2V activated successfully for {len(self.peer_vehicles)} peers at 20Hz")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"UDP V2V activation failed: {e}")
+                self._cleanup()
                 return False
-            
-            # Give server time to start
-            time.sleep(0.5)
-            
-            # Connect to peer vehicles
-            self._connect_to_peers()
-            
-            self.is_active = True
-            self.running = True
-            
-            self.logger.info(f"V2V: Communication activated with peers: {peer_vehicles}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"V2V: Activation failed - {e}")
-            return False
     
     def deactivate(self):
-        """Deactivate V2V communication"""
-        try:
-            self.logger.info("V2V: Deactivating communication")
-            self.is_active = False
-            self.running = False
+        """Cleanly deactivate V2V communication"""
+        with self._lock:
+            if not self._is_active:
+                return
             
-            # Close all peer connections
-            for vehicle_id, sock in self.connections.items():
-                try:
-                    sock.close()
-                except:
-                    pass
-            self.connections.clear()
+            self.logger.info(f"Deactivating V2V for vehicle {self.vehicle_id}")
             
-            # Close server socket
-            if self.server_socket:
-                try:
-                    self.server_socket.close()
-                except:
-                    pass
+            self._running = False
+            self._is_active = False
             
-            # Wait for threads to finish
-            for thread in self.connection_threads:
-                if thread.is_alive():
-                    thread.join(timeout=1.0)
-            
-            if self.server_thread and self.server_thread.is_alive():
-                self.server_thread.join(timeout=1.0)
-            
-            self.connection_threads.clear()
-            self.peer_vehicles.clear()
-            self.peer_ips.clear()
-            
-            self.logger.info("V2V: Communication deactivated")
-            
-        except Exception as e:
-            self.logger.error(f"V2V: Deactivation error - {e}")
+            self._cleanup()
+            self.logger.info("V2V deactivated successfully")
     
-    def _start_server(self) -> bool:
-        """Start server to listen for incoming connections"""
+    def _setup_udp_sockets(self) -> bool:
+        """Setup optimized UDP sockets for high-performance communication"""
         try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('0.0.0.0', self.my_port))
-            self.server_socket.listen(10)
+            # Send socket with broadcast capability
+            self.send_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            self.send_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 16384)  # 16KB send buffer
             
-            self.server_thread = threading.Thread(target=self._server_loop, daemon=True)
-            self.server_thread.start()
+            # Receive socket with optimized buffer
+            self.recv_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.recv_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32768)  # 32KB receive buffer
+            self.recv_socket.bind(('0.0.0.0', self.my_port))
+            self.recv_socket.settimeout(self.RECV_TIMEOUT)
             
-            self.logger.info(f"V2V: Server listening on port {self.my_port}")
+            self.logger.info(f"UDP sockets setup - port {self.my_port}")
             return True
             
         except Exception as e:
-            self.logger.error(f"V2V: Server start failed - {e}")
+            self.logger.error(f"Failed to setup UDP sockets: {e}")
             return False
     
-    def _server_loop(self):
-        """Server loop to handle incoming connections"""
-        while self.running and self.server_socket:
+    def _start_receive_thread(self):
+        """Start single optimized UDP receive thread"""
+        self.recv_thread = threading.Thread(
+            target=self._udp_receive_loop,
+            name=f"V2V-UDP-Recv-{self.vehicle_id}",
+            daemon=True
+        )
+        self._recv_thread_active = True
+        self.recv_thread.start()
+    
+    def _udp_receive_loop(self):
+        """High-performance UDP receive loop"""
+        while self._running and self._recv_thread_active:
             try:
-                client_socket, addr = self.server_socket.accept()
-                self.logger.info(f"V2V: Incoming connection from {addr}")
-                
-                # Handle connection in separate thread
-                thread = threading.Thread(
-                    target=self._handle_incoming_connection,
-                    args=(client_socket, addr),
-                    daemon=True
-                )
-                thread.start()
-                self.connection_threads.append(thread)
-                
-            except socket.error:
-                if self.running:
-                    self.logger.error("V2V: Server socket error")
-                break
+                data, addr = self.recv_socket.recvfrom(self.MAX_PACKET_SIZE)
+                if data and self._running:
+                    self._process_udp_message(data, addr)
+                    
+            except socket.timeout:
+                continue  # Normal timeout, keep listening
+            except socket.error as e:
+                if self._running:
+                    self.logger.debug(f"UDP receive error: {e}")
+                continue
             except Exception as e:
-                self.logger.error(f"V2V: Server loop error - {e}")
+                if self._running:
+                    self.logger.error(f"UDP receive loop error: {e}")
                 break
     
-    def _handle_incoming_connection(self, client_socket: socket.socket, addr):
-        """Handle incoming connection from peer vehicle"""
+    def _process_udp_message(self, data: bytes, addr):
+        """Process incoming UDP message with fast JSON parsing"""
         try:
-            # Receive identification message
-            data = client_socket.recv(1024).decode('utf-8')
-            if data:
-                msg_data = json.loads(data)
-                peer_id = msg_data.get('sender_id')
-                
-                if peer_id in self.peer_vehicles:
-                    self.connections[peer_id] = client_socket
-                    self.stats['active_connections'] += 1
-                    self.logger.info(f"V2V: Connected to vehicle {peer_id}")
-                    
-                    # Start message receiving for this connection
-                    recv_thread = threading.Thread(
-                        target=self._receive_messages,
-                        args=(client_socket, peer_id),
-                        daemon=True
-                    )
-                    recv_thread.start()
-                    self.connection_threads.append(recv_thread)
-                    
-                else:
-                    self.logger.warning(f"V2V: Unknown vehicle ID {peer_id}")
-                    client_socket.close()
-            else:
-                client_socket.close()
-                
-        except Exception as e:
-            self.logger.error(f"V2V: Incoming connection error - {e}")
+            # Fast JSON decode
+            msg_data = json.loads(data.decode('utf-8'))
+            sender_id = msg_data.get('sender_id')
+            
+            # Quick validation
+            if sender_id == self.vehicle_id or sender_id not in self.peer_vehicles:
+                return
+            
+            # Create message object
+            message = V2VMessage.from_dict(msg_data)
+            self.stats['messages_received'] += 1
+            
+            # Queue for external processing (non-blocking)
             try:
-                client_socket.close()
+                self.message_queue.put_nowait(message)
             except:
-                pass
-    
-    def _connect_to_peers(self):
-        """Connect to all peer vehicles"""
-        for vehicle_id in self.peer_vehicles:
-            if vehicle_id != self.vehicle_id:
-                thread = threading.Thread(
-                    target=self._connect_to_peer,
-                    args=(vehicle_id,),
-                    daemon=True
-                )
-                thread.start()
-                self.connection_threads.append(thread)
-    
-    def _connect_to_peer(self, peer_id: int):
-        """Connect to a specific peer vehicle"""
-        if peer_id not in self.peer_ips:
-            return
-        
-        peer_ip = self.peer_ips[peer_id]
-        peer_port = self.base_port + peer_id
-        
-        max_attempts = 5
-        attempt = 0
-        
-        while attempt < max_attempts and self.running:
-            try:
-                self.stats['connection_attempts'] += 1
-                
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(3.0)
-                sock.connect((peer_ip, peer_port))
-                
-                # Send identification
-                ident_msg = V2VMessage(
-                    sender_id=self.vehicle_id,
-                    message_type='identification',
-                    timestamp=time.time(),
-                    data={}
-                )
-                
-                sock.send(json.dumps(ident_msg.to_dict()).encode('utf-8'))
-                
-                self.connections[peer_id] = sock
-                self.stats['active_connections'] += 1
-                self.logger.info(f"V2V: Connected to vehicle {peer_id} at {peer_ip}:{peer_port}")
-                
-                # Start message receiving
-                recv_thread = threading.Thread(
-                    target=self._receive_messages,
-                    args=(sock, peer_id),
-                    daemon=True
-                )
-                recv_thread.start()
-                self.connection_threads.append(recv_thread)
-                break
-                
-            except Exception as e:
-                attempt += 1
-                if attempt < max_attempts:
-                    self.logger.warning(f"V2V: Connection attempt {attempt} to vehicle {peer_id} failed, retrying...")
-                    time.sleep(1.0 * attempt)  # Exponential backoff
-                else:
-                    self.logger.error(f"V2V: Failed to connect to vehicle {peer_id} after {max_attempts} attempts")
-    
-    def _receive_messages(self, sock: socket.socket, peer_id: int):
-        """Receive messages from a peer vehicle"""
-        try:
-            while self.running:
-                data = sock.recv(4096)
-                if not data:
-                    break
-                
+                # Queue full, drop oldest and add new
                 try:
-                    msg_data = json.loads(data.decode('utf-8'))
-                    message = V2VMessage.from_dict(msg_data)
-                    
-                    self.stats['messages_received'] += 1
-                    
-                    # Queue message for processing
-                    if not self.message_queue.full():
-                        self.message_queue.put(message)
-                    
-                    # Call registered handlers
-                    handler = self.message_handlers.get(message.message_type)
-                    if handler:
-                        handler(message)
-                        
-                except json.JSONDecodeError:
-                    self.logger.warning(f"V2V: Invalid JSON from vehicle {peer_id}")
-                except Exception as e:
-                    self.logger.error(f"V2V: Message processing error - {e}")
-                    
-        except Exception as e:
-            self.logger.error(f"V2V: Receive error from vehicle {peer_id} - {e}")
-        finally:
-            # Clean up connection
-            if peer_id in self.connections:
-                try:
-                    self.connections[peer_id].close()
+                    self.message_queue.get_nowait()
+                    self.message_queue.put_nowait(message)
+                    self.stats['packets_dropped'] += 1
                 except:
                     pass
-                del self.connections[peer_id]
-                self.stats['active_connections'] -= 1
+            
+            # Call registered handler if available
+            handler = self.message_handlers.get(message.message_type)
+            if handler:
+                try:
+                    handler(message)
+                except Exception as e:
+                    self.logger.error(f"Handler error for {message.message_type}: {e}")
+                    
+        except json.JSONDecodeError:
+            self.logger.debug(f"Invalid JSON from {addr}")
+        except Exception as e:
+            self.logger.error(f"UDP message processing error: {e}")
     
-    def send_message(self, message_type: str, data: dict, target_vehicles: Optional[List[int]] = None) -> bool:
-        """Send message to peer vehicles"""
-        if not self.is_active:
+    # UDP-specific helper methods
+    def send_high_frequency_telemetry(self, vehicle_state: dict) -> bool:
+        """Optimized method for high-frequency telemetry sending"""
+        if not self._is_active:
             return False
+        
+        # Only send if enough time has passed (rate limiting)
+        current_time = time.time()
+        if current_time - self.last_send_time < self.SEND_INTERVAL:
+            return False
+        
+        # Create comprehensive telemetry message with all vehicle state data
+        telemetry_data = {
+            'position': [vehicle_state.get('x', 0), vehicle_state.get('y', 0)],  # Changed from 'pos' to 'position' to match receiver
+            'heading': vehicle_state.get('theta', 0),
+            'velocity': vehicle_state.get('velocity', 0),
+            'state': vehicle_state.get('state', 'UNKNOWN'),  # Added missing state field
+            # 'v_ref': vehicle_state.get('v_ref', 0),  # Added v_ref for speed reference
+            # 'yolo_gain': vehicle_state.get('yolo_gain', 1.0),  # Added yolo gain
+            # 'waypoint_index': vehicle_state.get('waypoint_index', 0),  # Added waypoint tracking
+            # 'gps_valid': vehicle_state.get('gps_valid', False),  # Added GPS status
+            'timestamp': current_time
+        }
+        
+        return self.send_message(MessageType.TELEMETRY.value, telemetry_data)
+    
+    def _cleanup(self):
+        """Clean up UDP resources"""
+        # Stop receive thread
+        self._recv_thread_active = False
+        
+        # Close UDP sockets
+        if self.send_socket:
+            try:
+                self.send_socket.close()
+            except:
+                pass
+            self.send_socket = None
+        
+        if self.recv_socket:
+            try:
+                self.recv_socket.close()
+            except:
+                pass
+            self.recv_socket = None
+        
+        # Wait for receive thread to finish
+        if self.recv_thread and self.recv_thread.is_alive():
+            self.recv_thread.join(timeout=0.5)
+        
+        # Reset state
+        self.peer_vehicles.clear()
+        self.peer_ips.clear()
+        self.peer_ports.clear()
+        self.connection_states.clear()
+        self.sequence_number = 0
+        self.last_send_time = 0.0
+    
+    def _notify_status_change(self, event: str, peer_id: int):
+        """Notify status callback of connection changes"""
+        if self.status_callback:
+            try:
+                self.status_callback(event, peer_id)
+            except Exception as e:
+                self.logger.error(f"Status callback error: {e}")
+    
+    def send_message(self, message_type: str, data: dict, 
+                    target_vehicles: Optional[List[int]] = None) -> bool:
+        """Send message via optimized UDP broadcast"""
+        if not self._is_active or not self.send_socket:
+            return False
+        
+        # Rate limiting for high performance
+        current_time = time.time()
+        if current_time - self.last_send_time < self.SEND_INTERVAL:
+            return False  # Skip this send to maintain 20Hz rate
         
         message = V2VMessage(
             sender_id=self.vehicle_id,
             message_type=message_type,
-            timestamp=time.time(),
+            timestamp=current_time,
             data=data
         )
         
-        targets = target_vehicles if target_vehicles else list(self.connections.keys())
-        success_count = 0
+        # Add sequence number for packet tracking
+        msg_dict = message.to_dict()
+        msg_dict['seq'] = self.sequence_number
         
-        for target_id in targets:
-            if target_id in self.connections:
-                try:
-                    sock = self.connections[target_id]
-                    msg_json = json.dumps(message.to_dict()).encode('utf-8')
-                    sock.send(msg_json)
-                    success_count += 1
-                    self.stats['messages_sent'] += 1
-                    
-                except Exception as e:
-                    self.logger.error(f"V2V: Send error to vehicle {target_id} - {e}")
-        
-        return success_count > 0
+        try:
+            # Fast JSON encode
+            msg_bytes = json.dumps(msg_dict).encode('utf-8')
+            
+            if len(msg_bytes) > self.MAX_PACKET_SIZE:
+                self.logger.warning(f"Message too large: {len(msg_bytes)} bytes")
+                return False
+            
+            # Send to specific targets or broadcast
+            targets = target_vehicles or self.peer_vehicles
+            success_count = 0
+            
+            for target_id in targets:
+                if target_id in self.peer_ips:
+                    target_ip = self.peer_ips[target_id]
+                    target_port = self.peer_ports[target_id]
+                    try:
+                        self.send_socket.sendto(msg_bytes, (target_ip, target_port))
+                        success_count += 1
+                    except Exception as e:
+                        self.logger.debug(f"Send failed to {target_id}: {e}")
+            
+            if success_count > 0:
+                self.stats['messages_sent'] += 1
+                self.sequence_number += 1
+                self.last_send_time = current_time
+                
+                # Update send rate statistics
+                if self.stats['messages_sent'] % 20 == 0:  # Every second at 20Hz
+                    self.stats['send_rate'] = 20.0 / max(1, current_time - (self.last_send_time - 1.0))
+            
+            return success_count > 0
+            
+        except Exception as e:
+            self.logger.error(f"UDP send error: {e}")
+            return False
     
     def register_message_handler(self, message_type: str, handler: Callable[[V2VMessage], None]):
         """Register a handler for specific message types"""
@@ -349,49 +381,68 @@ class V2VCommunication:
         messages = []
         for _ in range(max_count):
             try:
-                msg = self.message_queue.get_nowait()
-                messages.append(msg)
+                messages.append(self.message_queue.get_nowait())
             except Empty:
                 break
         return messages
     
     def get_connected_peers(self) -> List[int]:
-        """Get list of currently connected peer vehicles"""
-        return list(self.connections.keys())
+        """Get list of peer vehicles (UDP assumes all are reachable)"""
+        with self._lock:
+            return self.peer_vehicles.copy()
+    
+    def is_fully_connected(self) -> bool:
+        """Check if UDP communication is active (no connection state needed)"""
+        with self._lock:
+            return self._is_active and len(self.peer_vehicles) > 0
     
     def get_statistics(self) -> dict:
-        """Get communication statistics"""
-        stats = self.stats.copy()
-        stats['is_active'] = self.is_active
-        stats['connected_peers'] = len(self.connections)
-        stats['peer_vehicles'] = self.peer_vehicles.copy()
+        """Get comprehensive UDP communication statistics"""
+        with self._lock:
+            stats = self.stats.copy()
+            stats.update({
+                'is_active': self._is_active,
+                'peer_count': len(self.peer_vehicles),
+                'expected_peers': len(self.peer_vehicles),
+                'is_fully_connected': self.is_fully_connected(),
+                'sequence_number': self.sequence_number,
+                'target_rate_hz': 1.0 / self.SEND_INTERVAL,
+                'actual_rate_hz': self.stats.get('send_rate', 0.0),
+            })
         return stats
     
-    def send_telemetry(self, vehicle_state: dict):
-        """Send vehicle telemetry to all connected peers"""
-        if self.is_active:
-            self.send_message('telemetry', {
-                'position': [vehicle_state.get('x', 0), vehicle_state.get('y', 0)],
-                'heading': vehicle_state.get('theta', 0),
-                'velocity': vehicle_state.get('velocity', 0),
-                'timestamp': time.time()
-            })
+    def get_connection_summary(self) -> str:
+        """Get human-readable UDP communication summary"""
+        if not self._is_active:
+            return "V2V-UDP: Inactive"
+        
+        peer_count = len(self.peer_vehicles)
+        rate = self.stats.get('send_rate', 0.0)
+        
+        if peer_count > 0:
+            return f"V2V-UDP: Active ({peer_count} peers) @ {rate:.1f}Hz"
+        else:
+            return "V2V-UDP: Active (no peers)"
     
-    def send_intent(self, intention: str, parameters: dict):
-        """Send driving intent to other vehicles"""
-        if self.is_active:
-            self.send_message('intent', {
-                'intention': intention,
-                'parameters': parameters,
-                'timestamp': time.time()
-            })
+    # High-performance convenience methods for common message types
+    def send_telemetry(self, vehicle_state: dict) -> bool:
+        """Send optimized vehicle telemetry via UDP"""
+        # Use the high-frequency optimized method
+        return self.send_high_frequency_telemetry(vehicle_state)
     
-    def send_warning(self, warning_type: str, urgency: str, data: dict):
-        """Send warning message to other vehicles"""
-        if self.is_active:
-            self.send_message('warning', {
-                'warning_type': warning_type,
-                'urgency': urgency,
-                'data': data,
-                'timestamp': time.time()
-            })
+    def send_intent(self, intention: str, parameters: dict) -> bool:
+        """Send driving intent to other vehicles via UDP"""
+        return self.send_message(MessageType.INTENT.value, {
+            'intention': intention,
+            'parameters': parameters,
+            'timestamp': time.time()
+        })
+    
+    def send_warning(self, warning_type: str, urgency: str, data: dict) -> bool:
+        """Send warning message to other vehicles via UDP"""
+        return self.send_message(MessageType.WARNING.value, {
+            'warning_type': warning_type,
+            'urgency': urgency,
+            'data': data,
+            'timestamp': time.time()
+        })

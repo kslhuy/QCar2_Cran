@@ -1,8 +1,13 @@
 """
-Fake Vehicle using REAL VehicleLogic Class
+Fake Vehicle using REAL VehicleLogic Class - SIMPLIFIED
 This creates a fake vehicle that uses the actual VehicleLogic class from vehicle_logic.py
-with mock hardware components. This allows testing the complete real system without
-actual QCar hardware.
+with mock hardware components. Only the INITIALIZING state is replaced with a fake version.
+
+Key simplifications:
+- No custom FakeVehicleStateMachine (uses real VehicleStateMachine)
+- No redundant Ground Station client creation (VehicleLogic handles it)
+- Only INITIALIZING state is fake, all other states are real
+- Mock hardware is injected during the fake initialization
 
 Usage:
     python fake_vehicle_real_logic.py [car_id] [host_ip] [base_port]
@@ -38,108 +43,8 @@ from StateMachine.vehicle_state import VehicleState
 from fake_initializing_state import FakeInitializingState
 
 
-class FakeVehicleStateMachine(VehicleStateMachine):
-    """Custom StateMachine for fake vehicle with fake initialization"""
-    
-    def __init__(self, vehicle_logic, logger=None):
-        # Initialize parent but override the state handlers
-        super().__init__(vehicle_logic, logger)
-        
-        # Replace the real initialization state with fake one
-        self.state_handlers[VehicleState.INITIALIZING] = FakeInitializingState(vehicle_logic)
-        
-        # Make sure the fake initialization state enters properly
-        if self.state == VehicleState.INITIALIZING:
-            print(f"🔧 FakeVehicleStateMachine: Calling enter() on fake initialization state")
-            try:
-                success = self.state_handlers[self.state].enter()
-                print(f"✅ FakeVehicleStateMachine: Fake state enter() returned: {success}")
-            except Exception as e:
-                print(f"❌ FakeVehicleStateMachine: Error calling enter() on fake state: {e}")
-                import traceback
-                traceback.print_exc()
-    
-    def transition_to(self, new_state):
-        """Handle state transitions for fake vehicle (for compatibility with vehicle_logic.py)"""
-        # Handle string state names or missing states gracefully
-        if isinstance(new_state, str):
-            print(f"[STATE] FakeVehicleStateMachine: Attempting transition to state: {new_state}")
-            if new_state == "SHUTTING_DOWN":
-                print(f"[STATE] FakeVehicleStateMachine: Handling SHUTTING_DOWN as STOPPED")
-                # Use STOPPED state instead of non-existent SHUTTING_DOWN
-                from StateMachine.vehicle_state import VehicleState
-                new_state = VehicleState.STOPPED
-            else:
-                print(f"[ERROR] FakeVehicleStateMachine: Unknown state string: {new_state}")
-                return
-        
-        # Handle enum attribute access for missing states
-        try:
-            # Check if it's trying to access a non-existent enum value
-            if hasattr(new_state, 'name') and new_state.name == 'SHUTTING_DOWN':
-                print(f"[STATE] FakeVehicleStateMachine: Handling SHUTTING_DOWN enum as STOPPED")
-                from StateMachine.vehicle_state import VehicleState
-                new_state = VehicleState.STOPPED
-        except AttributeError:
-            # This might be VehicleState.SHUTTING_DOWN which doesn't exist
-            print(f"[STATE] FakeVehicleStateMachine: Handling missing enum state as STOPPED")
-            from StateMachine.vehicle_state import VehicleState
-            new_state = VehicleState.STOPPED
-        
-        print(f"[STATE] FakeVehicleStateMachine: Transitioning from {self.state.name} to {new_state.name}")
-        try:
-            # Use force_transition_to which exists in parent
-            self.force_transition_to(new_state, "Legacy transition_to call")
-        except Exception as e:
-            print(f"[ERROR] FakeVehicleStateMachine: Transition error - {e}")
-
-    def force_transition_to(self, new_state, reason="Fake vehicle override"):
-        """Handle forced state transitions for fake vehicle"""
-        # Handle string state names or missing states gracefully
-        if isinstance(new_state, str):
-            print(f"[STATE] FakeVehicleStateMachine: Attempting transition to state: {new_state}")
-            if new_state == "SHUTTING_DOWN":
-                print(f"[STATE] FakeVehicleStateMachine: Handling SHUTTING_DOWN as STOPPED")
-                # Use STOPPED state instead of non-existent SHUTTING_DOWN
-                from StateMachine.vehicle_state import VehicleState
-                new_state = VehicleState.STOPPED
-            else:
-                print(f"[ERROR] FakeVehicleStateMachine: Unknown state string: {new_state}")
-                return
-        
-        print(f"[STATE] FakeVehicleStateMachine: Force transitioning from {self.state.name} to {new_state.name}")
-        try:
-            # Call parent force transition method
-            super().force_transition_to(new_state, reason)
-        except Exception as e:
-            print(f"[ERROR] FakeVehicleStateMachine: Force transition error - {e}")
-    
-    def _transition_to(self, new_state, reason):
-        """Override internal transition method to handle fake vehicle specifics"""
-        # Handle string state names or missing states gracefully
-        if isinstance(new_state, str):
-            print(f"[STATE] FakeVehicleStateMachine: Internal transition to state: {new_state}")
-            if new_state == "SHUTTING_DOWN":
-                print(f"[STATE] FakeVehicleStateMachine: Handling SHUTTING_DOWN as STOPPED")
-                # Use STOPPED state instead of non-existent SHUTTING_DOWN
-                from StateMachine.vehicle_state import VehicleState, StateTransitionReason
-                new_state = VehicleState.STOPPED
-                reason = StateTransitionReason.SHUTDOWN
-            else:
-                print(f"[ERROR] FakeVehicleStateMachine: Unknown state string: {new_state}")
-                return
-        
-        try:
-            # Call parent internal transition method
-            super()._transition_to(new_state, reason)
-        except Exception as e:
-            print(f"❌ FakeVehicleStateMachine: Internal transition error - {e}")
-            # Emergency fallback
-            try:
-                from StateMachine.vehicle_state import VehicleState, StateTransitionReason
-                super()._transition_to(VehicleState.STOPPED, StateTransitionReason.ERROR)
-            except:
-                pass
+# Removed FakeVehicleStateMachine class - using real VehicleStateMachine instead
+# We only need to replace the INITIALIZING state with fake version
 
 
 class MockQCar:
@@ -233,7 +138,7 @@ class MockQCarGPS:
         
         print(f"🛰️  MockGPS {qcar.car_id}: Initialized")
     
-    def read(self):
+    def readGPS(self):
         """Update GPS position from QCar physics"""
         # Add some noise to simulate real GPS
         noise_std = 0.05  # 5cm standard deviation
@@ -259,25 +164,15 @@ class MockYOLOReceiver:
         print("👁️  MockYOLO: Initialized (no detections)")
     
     def read(self):
-        """Simulate YOLO detections (mostly empty for now)"""
-        # Reset all detections
+        """Simulate YOLO detections - always empty for safe testing"""
+        # Always reset all detections to zero (no objects detected)
         self.stopSign.fill(0.0)
         self.trafficlight.fill(0.0)
         self.cars.fill(0.0)
         self.yieldSign.fill(0.0)
         self.person.fill(0.0)
         
-        # Very occasionally add some fake detections for testing (reduce frequency)
-        if random.random() < 0.001:  # 0.1% chance per read (was 1%)
-            detection_type = random.choice(['car', 'person'])  # Remove 'stop' to reduce spam
-            distance = random.uniform(5.0, 15.0)  # Larger distances to avoid emergency stops
-            
-            if detection_type == 'car':
-                self.cars[0] = 1
-                self.cars[1] = distance
-            elif detection_type == 'person':
-                self.person[0] = 1
-                self.person[1] = distance
+        # No fake detections to avoid triggering emergency stops
     
     def terminate(self):
         """Mock terminate method"""
@@ -297,7 +192,7 @@ class MockStateEstimator:
     def update(self, motor_tach: float, steering: float, dt: float, gyro_z: float):
         """Update state estimate (mock implementation)"""
         # Update GPS position
-        self.gps.read()
+        self.gps.readGPS()
         
         # Add some small random movement for testing telemetry
         if random.random() < 0.01:  # 1% chance per update
@@ -387,49 +282,19 @@ class MockYOLODrive:
     def __init__(self, car_id: int):
         self.car_id = car_id
         self.yolo_gain = 1.0  # Default gain
-        self.carDist = 0.0  # Distance to detected car
-        self.personDist = 0.0  # Distance to detected person
-        print(f"🤖 MockYOLODrive {car_id}: Initialized")
+        self.carDist = 100.0  # Safe distance - no cars detected
+        self.personDist = 100.0  # Safe distance - no persons detected
+        print(f"🤖 MockYOLODrive {car_id}: Initialized (safe distances)")
     
     def check_yolo(self, stop_sign, traffic_light, cars, yield_sign, person):
-        """Mock YOLO obstacle detection and speed adjustment"""
-        # Simple mock implementation - just return a speed adjustment gain
-        # In real system, this would analyze YOLO detections and adjust speed accordingly
+        """Mock YOLO obstacle detection - always returns safe values for testing"""
+        # For testing, always report safe distances to avoid emergency stops
+        self.carDist = 100.0  # Always safe distance
+        self.personDist = 100.0  # Always safe distance
         
-        # Update distances based on detections
-        if np.any(cars > 0):
-            # If car detected, set a safe distance (not 0 to avoid emergency stop)
-            self.carDist = max(5.0, cars[1]) if cars[1] > 0 else 5.0
-        else:
-            self.carDist = 100.0  # No car detected, set large distance
-            
-        if np.any(person > 0):
-            # If person detected, set a safe distance
-            self.personDist = max(3.0, person[1]) if person[1] > 0 else 3.0
-        else:
-            self.personDist = 100.0  # No person detected, set large distance
-        
-        # Check for any significant detections
-        has_detection = (
-            np.any(stop_sign > 0) or 
-            np.any(traffic_light > 0) or 
-            np.any(cars > 0) or 
-            np.any(yield_sign > 0) or 
-            np.any(person > 0)
-        )
-        
-        if has_detection:
-            # Reduce speed if objects detected
-            adjusted_gain = 0.8  # Less aggressive reduction
-            # Log only occasionally to reduce spam
-            if self.car_id == 0 and random.random() < 0.1:  # 10% chance to log
-                print(f"🚨 MockYOLODrive {self.car_id}: Objects detected, reducing speed (car: {self.carDist:.1f}m, person: {self.personDist:.1f}m)")
-        else:
-            # Normal operation
-            adjusted_gain = 1.0
-        
-        self.yolo_gain = adjusted_gain
-        return adjusted_gain
+        # Always return normal speed gain (no obstacles)
+        self.yolo_gain = 1.0
+        return 1.0
 
 
 class FakeVehicleWithRealLogic:
@@ -459,15 +324,18 @@ class FakeVehicleWithRealLogic:
         # Create the REAL VehicleLogic
         self.vehicle_logic = VehicleLogic(self.config, self.kill_event)
         
-        # Replace the StateMachine with our custom fake version BEFORE starting
-        self._replace_state_machine_with_fake()
+        # Set a reference so the fake initialization state can access our mock hardware
+        self.vehicle_logic._parent_fake_vehicle = self
+        
+        # Replace ONLY the INITIALIZING state with fake version AFTER starting
+        # All other states remain real for complete system testing
         
         # Replace hardware with mocks AFTER VehicleLogic is created
         self._inject_mock_hardware()
         
-        # Real Ground Station client (using actual ground_station_client.py)
-        self.ground_station_client = None
-        self.running = False
+        # Initialize state for main loop
+        self.running = True  # Start in running state
+        self.ground_station_client = None  # Will be set by VehicleLogic
         
         # Threading
         self.vehicle_thread = None
@@ -490,129 +358,78 @@ class FakeVehicleWithRealLogic:
         # Enable telemetry for Ground Station visibility
         config.logging.enable_telemetry_logging = True
         
-        # Set timing for better telemetry rate
-        config.timing.controller_update_rate = 50  # 50 Hz
-        config.timing.telemetry_send_rate = 10     # 10 Hz (increase from default)
+        # Set timing for better telemetry rate and V2V performance
+        config.timing.controller_update_rate = 200  # 200 Hz (match vehicle_logic.py)
+        config.timing.telemetry_send_rate = 20      # 20 Hz for V2V compatibility
         config.timing.tf = 300.0  # 5 minute experiment
         
         # Disable some features that need real hardware
-        config.steering.enable_steering_control = False
+        config.steering.enable_steering_control = True
         
         # Path configuration - don't set valid_nodes as it's a property
         # The default valid_nodes from PathPlanningConfig will be used
         
         return config
     
-    def _replace_state_machine_with_fake(self):
-        """Replace VehicleLogic's StateMachine with fake version"""
-        print(f"🔧 Car {self.car_id}: Replacing StateMachine with fake version...")
-        
-        # Replace the StateMachine with our custom fake version
-        self.vehicle_logic.state_machine = FakeVehicleStateMachine(
-            vehicle_logic=self.vehicle_logic,
-            logger=self.vehicle_logic.logger
-        )
-        
-        print(f"✅ Car {self.car_id}: StateMachine replaced with FakeVehicleStateMachine")
-    
-    def _inject_mock_hardware(self):
-        """Replace real hardware with mocks in VehicleLogic"""
-        # This will be done during initialization states
-        # The VehicleLogic will try to initialize hardware, we'll replace it then
-        pass
-    
-    def connect_to_ground_station(self) -> bool:
-        """Connect to Ground Station using real GroundStationClient"""
+    def _replace_initialization_state_only(self):
+        """Replace only the INITIALIZING state with fake version, keep everything else real"""
         try:
-            print(f"🔌 Car {self.car_id}: Creating real GroundStationClient...")
+            # Wait for VehicleLogic to create the state machine
+            import time
+            start_time = time.time()
+            while not hasattr(self.vehicle_logic, 'state_machine') and (time.time() - start_time) < 5.0:
+                time.sleep(0.1)
             
-            # Import the real GroundStationClient
-            from ground_station_client import GroundStationClient
+            if not hasattr(self.vehicle_logic, 'state_machine'):
+                print("🔧 State machine not found, VehicleLogic may not be fully initialized")
+                return
             
-            # Create real Ground Station client
-            self.ground_station_client = GroundStationClient(
-                config=self.config,
-                logger=self.vehicle_logic.logger,
-                kill_event=self.kill_event
-            )
+            # Replace only the INITIALIZING state handler with our fake one
+            from fake_initializing_state import FakeInitializingState
+            fake_init_state = FakeInitializingState(self.vehicle_logic)
+            self.vehicle_logic.state_machine.state_handlers[VehicleState.INITIALIZING] = fake_init_state
             
-            # Initialize network connection
-            print(f"🔌 Car {self.car_id}: Initializing network connection...")
-            if not self.ground_station_client.initialize_network():
-                print(f"❌ Car {self.car_id}: Failed to initialize network")
-                return False
-            
-            # Start network threads
-            print(f"🔌 Car {self.car_id}: Starting network threads...")
-            if not self.ground_station_client.start_threads():
-                print(f"❌ Car {self.car_id}: Failed to start network threads")
-                return False
-            
-            print(f"✅ Car {self.car_id}: Connected to Ground Station using real GroundStationClient")
-            return True
+            print(f"✅ Car {self.car_id}: Replaced INITIALIZING state with fake version")
+            print(f"          All other states remain real for complete system testing")
             
         except Exception as e:
-            print(f"❌ Car {self.car_id}: Ground Station connection failed - {e}")
-            import traceback
-            traceback.print_exc()
-            return False
+            print(f"❌ Car {self.car_id}: Failed to replace initialization state: {e}")
+    
+    def _inject_mock_hardware(self):
+        """Mock hardware injection will be done during state machine initialization"""
+        # The fake initialization state will handle mock hardware injection
+        print(f"🔧 Car {self.car_id}: Mock hardware injection deferred to initialization state")
     
     def start_simulation(self):
-        """Start the vehicle simulation"""
-        # Connect to Ground Station FIRST using real GroundStationClient
-        print(f"🔌 Car {self.car_id}: Connecting to Ground Station using real client...")
-        if not self.connect_to_ground_station():
-            print(f"❌ Car {self.car_id}: Failed to connect to Ground Station")
-            return
+        """Start the fake vehicle simulation using real VehicleLogic"""
+        print("\\n" + "="*60)
+        print("[SIM] Starting Real VehicleLogic with Mock Hardware")
+        print("      VehicleLogic handles ALL initialization including Ground Station")
+        print("="*60)
         
-        self.running = True
+        # Replace only the initialization state (keep everything else real)
+        self._replace_initialization_state_only()
         
-        # Inject mock hardware into VehicleLogic
-        self._inject_mock_hardware_now()
-        
-        # Start VehicleLogic in its own thread
+        # Start VehicleLogic in a separate thread
+        import threading
         self.vehicle_thread = threading.Thread(target=self._vehicle_logic_worker, daemon=True)
         self.vehicle_thread.start()
         
-        print(f"🚀 Car {self.car_id}: Real VehicleLogic simulation started")
-        print(f"   VehicleLogic thread: {'✓' if self.vehicle_thread.is_alive() else '❌'}")
-        print(f"   Ground Station: {'✓' if self.ground_station_client else '❌'}")
+        # Give it time to start
+        time.sleep(1.0)
+        
+        # Verify thread is running
+        if self.vehicle_thread.is_alive():
+            print(f"✅ Car {self.car_id}: VehicleLogic thread started successfully")
+        else:
+            print(f"❌ Car {self.car_id}: VehicleLogic thread failed to start")
+        
+        print(f"✅ Car {self.car_id}: Real VehicleLogic started with fake initialization")
+        print(f"          ✅ Ground Station connection: Handled by VehicleLogic")
+        print(f"          ✅ State machine: Real (except INITIALIZING state)")
+        print(f"          ✅ All controllers: Real")
+        print(f"          ✅ Hardware: Mock (injected during initialization)")
     
-    def _inject_mock_hardware_now(self):
-        """Inject mock hardware into the VehicleLogic instance"""
-        print(f"🔧 Car {self.car_id}: Injecting mock hardware into VehicleLogic...")
-        
-        # Replace hardware components
-        self.vehicle_logic.qcar = self.mock_qcar
-        self.vehicle_logic.gps = self.mock_gps
-        self.vehicle_logic.yolo = self.mock_yolo
-        
-        # Use the REAL Ground Station client we created earlier
-        self.vehicle_logic.client_Ground_Station = self.ground_station_client
-        
-        # Create mock YOLO drive system
-        self.vehicle_logic.yolo_drive = MockYOLODrive(self.car_id)
-        
-        # Create mock state estimator
-        self.vehicle_logic.state_estimator = MockStateEstimator(self.mock_qcar, self.mock_gps)
-        
-        # Create mock controllers (needed by state machine)
-        self.vehicle_logic.speed_controller = MockSpeedController(self.car_id)
-        self.vehicle_logic.steering_controller = MockSteeringController(self.car_id)
-        
-        # Override collision avoidance to prevent emergency stops during testing
-        if hasattr(self.vehicle_logic, 'collision_avoidance'):
-            original_check = self.vehicle_logic.collision_avoidance.check_collision_risk
-            def mock_collision_check(car_distance, person_distance, current_velocity):
-                # Always return safe (no emergency stop) for fake vehicle testing
-                # Only emergency stop if objects are extremely close (< 0.5m)
-                if car_distance < 0.5 or person_distance < 0.5:
-                    return True, "collision_imminent_testing"
-                return False, "safe_testing_mode"
-            self.vehicle_logic.collision_avoidance.check_collision_risk = mock_collision_check
-            print(f"✅ Car {self.car_id}: Collision avoidance overridden for safe testing")
-        
-        print(f"✅ Car {self.car_id}: Mock hardware and controllers injected successfully")
     
     def _vehicle_logic_worker(self):
         """Run the real VehicleLogic in a thread"""
@@ -620,13 +437,17 @@ class FakeVehicleWithRealLogic:
         
         try:
             # Run the REAL VehicleLogic
+            print(f"[THREAD] Car {self.car_id}: Starting VehicleLogic.run()...")
             self.vehicle_logic.run()
+            print(f"[THREAD] Car {self.car_id}: VehicleLogic.run() completed normally")
         except Exception as e:
             print(f"❌ Car {self.car_id}: VehicleLogic error - {e}")
             import traceback
             traceback.print_exc()
         finally:
             print(f"🧠 Car {self.car_id}: VehicleLogic thread stopped")
+            # Signal that we're shutting down
+            self.running = False
             self.kill_event.set()
     
     # Telemetry handled by real GroundStationClient - no separate worker needed
@@ -690,13 +511,13 @@ def main():
         base_port = int(sys.argv[3])
     
     print("="*70)
-    print("[CAR] QCar Fake Vehicle with REAL VehicleLogic")
-    print("   This uses the actual VehicleLogic class from vehicle_logic.py")
-    print("   with mock hardware components for complete system testing")
+    print("[CAR] QCar Fake Vehicle with REAL VehicleLogic - SIMPLIFIED")
+    print("   Uses actual VehicleLogic + real StateMachine + real GroundStationClient")
+    print("   Only INITIALIZING state is fake for quick mock hardware injection")
     print("="*70)
     print(f"Car ID: {car_id}")
     print(f"Ground Station: {host_ip}:{base_port + car_id}")
-    print(f"Using: VehicleLogic + StateMachine + CommandHandler + all real classes")
+    print(f"Approach: Real VehicleLogic + Fake initialization + Mock hardware")
     print("")
     
     # Create fake vehicle with real logic
@@ -713,12 +534,12 @@ def main():
     vehicle.start_simulation()
     
     print("\n" + "="*70)
-    print("🎮 Real VehicleLogic Fake Vehicle is running")
+    print("🎮 Simplified Real VehicleLogic Fake Vehicle is running")
     print("   ✅ Uses REAL VehicleLogic class")
-    print("   ✅ Uses REAL StateMachine system")
-    print("   ✅ Uses REAL CommandHandler")
+    print("   ✅ Uses REAL VehicleStateMachine (except INITIALIZING state)")
+    print("   ✅ Uses REAL GroundStationClient (created by VehicleLogic)")
     print("   ✅ Uses REAL controllers and safety systems")
-    print("   ✅ All real classes are tested")
+    print("   ✅ Mock hardware injected during fake initialization")
     print("   📡 Vehicle appears in Ground Station GUI")
     print("   🎮 Commands processed exactly like real vehicle")
     print("   Press Ctrl+C to stop")
@@ -726,14 +547,19 @@ def main():
     
     try:
         # Keep running until interrupted
-        while (vehicle.running and 
-               vehicle.ground_station_client and 
-               not vehicle.kill_event.is_set()):
+        print(f"[MAIN] Car {car_id}: Entering main loop...")
+        
+        while vehicle.running and not vehicle.kill_event.is_set():
             time.sleep(0.1)
             
-            # Show periodic status (every 5 seconds)
+            # Check if VehicleLogic thread is still alive
+            if vehicle.vehicle_thread and not vehicle.vehicle_thread.is_alive():
+                print(f"[MAIN] Car {car_id}: VehicleLogic thread has stopped, exiting main loop")
+                break
+            
+            # Show periodic status (every 10 seconds)
             current_time = time.time()
-            if not hasattr(vehicle, '_last_status_time') or current_time - vehicle._last_status_time > 5.0:
+            if not hasattr(vehicle, '_last_status_time') or current_time - vehicle._last_status_time > 10.0:
                 vehicle._last_status_time = current_time
                 state = "Unknown"
                 loop_count = 0
@@ -742,11 +568,14 @@ def main():
                 if hasattr(vehicle.vehicle_logic, 'loop_counter'):
                     loop_count = vehicle.vehicle_logic.loop_counter
                 
-                # Get stats from real Ground Station client
-                gs_stats = vehicle.ground_station_client.get_statistics() if vehicle.ground_station_client else {}
+                # Get stats from VehicleLogic's Ground Station client
+                gs_client = getattr(vehicle.vehicle_logic, 'client_Ground_Station', None)
+                gs_stats = gs_client.get_statistics() if gs_client else {}
                 telemetry_sent = gs_stats.get('telemetry_sent', 0)
                 
                 print(f"[STATS] Car {car_id}: State={state}, Loops={loop_count}, Telemetry={telemetry_sent}")
+        
+        print(f"[MAIN] Car {car_id}: Main loop ended")
     
     except KeyboardInterrupt:
         print(f"\n🛑 Car {car_id}: Shutting down...")

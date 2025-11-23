@@ -16,7 +16,7 @@ except ImportError:
     PERFORMANCE_MONITORING = False
     perf_monitor = None
 
-class CommHandler:
+class V2VComm:
     """
     Handles UDP communication for vehicle fleet coordination.
     

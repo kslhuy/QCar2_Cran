@@ -14,7 +14,7 @@ import sys
 import argparse
 import signal
 import time
-from threading import Event, Thread
+from threading import Event
 
 from config import VehicleControlConfig
 from vehicle_logic import VehicleLogic
@@ -22,14 +22,11 @@ from vehicle_logic import VehicleLogic
 
 # Global kill event for clean shutdown
 kill_event = Event()
-KILL_THREAD = False
 
 
 def signal_handler(*args):
     """Handle Ctrl+C and other signals"""
-    global KILL_THREAD
     print("\n[SIGNAL] Shutdown signal received")
-    KILL_THREAD = True
     kill_event.set()
 
 
@@ -166,17 +163,6 @@ def wait_for_yolo_server(timeout: float = 10.0):
     return True
 
 
-def run_control_thread(vehicle_logic: VehicleLogic):
-    """Run the control loop in a thread"""
-    try:
-        vehicle_logic.run()
-    except Exception as e:
-        print(f"\n[ERROR] Control thread exception: {e}")
-        import traceback
-        traceback.print_exc()
-        kill_event.set()
-
-
 def main():
     """Main entry point"""
     # Setup signal handler
@@ -217,26 +203,17 @@ def main():
     print("="*70)
     print()
     
-    # Start control thread
-    control_thread = Thread(target=run_control_thread, args=(vehicle_logic,), daemon=False)
-    control_thread.start()
-    
-    # Wait for completion or interrupt
+    # Start control loop directly
     try:
-        while control_thread.is_alive() and not kill_event.is_set():
-            time.sleep(0.1)
+        vehicle_logic.run()
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Keyboard interrupt received")
         kill_event.set()
-    
-    # Wait for thread to finish
-    print("\n[SHUTDOWN] Waiting for control thread to finish...")
-    control_thread.join(timeout=5.0)
-    
-    if control_thread.is_alive():
-        print("[WARNING] Control thread did not terminate cleanly")
-    else:
-        print("[SHUTDOWN] Control thread terminated cleanly")
+    except Exception as e:
+        print(f"\n[ERROR] Control loop exception: {e}")
+        import traceback
+        traceback.print_exc()
+        kill_event.set()
     
     print("\n" + "="*70)
     print(" Shutdown complete")

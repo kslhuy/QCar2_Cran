@@ -55,13 +55,8 @@ class VehicleStateMachine:
                 logger.logger.info(f" State machine initialized in {self.state.name} state")
         except Exception as e:
             if logger:
-                logger.log_error("Failed to enter initial INITIALIZING state", e)
-            # Fallback to STOPPED state for safety
-            self.state = VehicleState.STOPPED
-            try:
-                self.state_handlers[VehicleState.STOPPED].enter()
-            except:
-                pass  # Last resort
+                logger.log_error("Failed to enter INITIALIZING state", e)
+
     
     def initialize_event_system(self):
         """
@@ -141,7 +136,22 @@ class VehicleStateMachine:
             self.state = new_state
             self.state_entry_time = time.time()
             
-            # Enter new state
+            # Enter new state with special handling for STOPPED state
+            if new_state == VehicleState.STOPPED:
+                # Set stop reason based on transition reason
+                stopped_handler = self.state_handlers[VehicleState.STOPPED]
+                if hasattr(stopped_handler, 'set_stop_reason'):
+                    stop_reason_map = {
+                        StateTransitionReason.STOP_COMMAND: "Ground Station stop command",
+                        StateTransitionReason.EMERGENCY_STOP: "Emergency stop triggered",
+                        StateTransitionReason.COLLISION_RISK: "Collision avoidance activated",
+                        StateTransitionReason.ERROR: "System error detected",
+                        StateTransitionReason.SHUTDOWN: "System shutdown"
+                    }
+                    stop_reason = stop_reason_map.get(reason, f"State transition: {reason.name}")
+                    stop_type = "emergency" if reason in [StateTransitionReason.EMERGENCY_STOP, StateTransitionReason.COLLISION_RISK] else "manual"
+                    stopped_handler.set_stop_reason(stop_reason, stop_type)
+            
             success = self.state_handlers[new_state].enter()
             
             if not success:
@@ -151,6 +161,9 @@ class VehicleStateMachine:
                 # Force transition to STOPPED for safety
                 if new_state != VehicleState.STOPPED:
                     self.state = VehicleState.STOPPED
+                    stopped_handler = self.state_handlers[VehicleState.STOPPED]
+                    if hasattr(stopped_handler, 'set_stop_reason'):
+                        stopped_handler.set_stop_reason("State initialization failure", "emergency")
                     self.state_handlers[VehicleState.STOPPED].enter()
             
             # Update statistics
@@ -197,12 +210,7 @@ class VehicleStateMachine:
         if self.logger:
             self.logger.log_warning(f"[!] Emergency stop: {reason}")
         
-        # Set emergency stop flag if state supports it
-        if VehicleState.STOPPED in self.state_handlers:
-            stopped_handler = self.state_handlers[VehicleState.STOPPED]
-            if hasattr(stopped_handler, 'set_stop_reason'):
-                stopped_handler.set_stop_reason(reason, 'emergency')
-        
+        # The stop reason will be set during the transition process
         self._transition_to(VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
     
     def dispatch_event_to_current_state(self, command_type, data: Dict[str, Any] = None, source: str = "manual"):

@@ -141,13 +141,16 @@ class StateBase:
         
         # Handle common events that most states should support
         if command_type == CommandType.STOP:
+            # Get the source/reason from the data if available
+            source = data.get('source', 'Ground Station')
             if self.logger:
-                self.logger.logger.info(f"[STOP] Stop command accepted in {self.__class__.__name__}")
+                self.logger.logger.info(f"[STOP] Stop command from {source} accepted in {self.__class__.__name__}")
             return (VehicleState.STOPPED, StateTransitionReason.STOP_COMMAND)
         
         elif command_type == CommandType.EMERGENCY_STOP:
+            reason = data.get('reason', 'Emergency command')
             if self.logger:
-                self.logger.logger.warning(f"[!] Emergency stop accepted in {self.__class__.__name__}")
+                self.logger.logger.warning(f"[!] Emergency stop ({reason}) accepted in {self.__class__.__name__}")
             return (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
         
         elif command_type == CommandType.SET_VELOCITY:

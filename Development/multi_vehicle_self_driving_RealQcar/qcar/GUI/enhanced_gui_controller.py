@@ -48,6 +48,9 @@ class EnhancedQCarGUIController:
         # Start the remote controller
         self.controller.start_server(self.num_cars)
         
+        # Store reference to this GUI in controller for V2V status forwarding
+        self.controller.gui_controller = self
+        
         # Build GUI
         self.build_gui()
         
@@ -381,6 +384,19 @@ class EnhancedQCarGUIController:
                                  cursor='hand2',
                                  padx=20)
         conn_indicator.pack(side='right', padx=20, pady=20)
+        
+        # V2V Status Indicator (New)
+        v2v_indicator = tk.Label(header,
+                                text="📡 V2V: Off",
+                                bg='#1a1a1a',
+                                fg='#888888', # Gray initially
+                                font=('Segoe UI', 12, 'bold'),
+                                padx=10)
+        v2v_indicator.pack(side='right', padx=(0, 10), pady=20)
+        
+        if not hasattr(self, 'v2v_indicators'):
+            self.v2v_indicators = {}
+        self.v2v_indicators[car_id] = v2v_indicator
         
         # Store reference
         if not hasattr(self, 'conn_indicators'):
@@ -772,7 +788,7 @@ class EnhancedQCarGUIController:
                               pady=6)
         convoy_btn.pack(side='left', expand=True, fill='x', padx=(0, 3))
         
-        v2v_btn = tk.Button(platoon_row,
+        self.v2v_btn = tk.Button(platoon_row,
                            text="📡 V2V Active",
                            bg='#ff9800',
                            fg='white',
@@ -782,7 +798,7 @@ class EnhancedQCarGUIController:
                            relief='flat',
                            padx=15,
                            pady=6)
-        v2v_btn.pack(side='left', expand=True, fill='x', padx=(3, 0))
+        self.v2v_btn.pack(side='left', expand=True, fill='x', padx=(3, 0))
         
         # Platoon controls - Second row
         platoon_row2 = tk.Frame(row2, bg='#2d2d2d')
@@ -800,7 +816,7 @@ class EnhancedQCarGUIController:
                                            pady=6)
         disable_all_platoons_btn.pack(side='left', expand=True, fill='x', padx=(0, 3))
         
-        disable_v2v_btn = tk.Button(platoon_row2,
+        self.disable_v2v_btn = tk.Button(platoon_row2,
                                    text="📡 Disable V2V",
                                    bg='#795548',
                                    fg='white',
@@ -810,7 +826,8 @@ class EnhancedQCarGUIController:
                                    relief='flat',
                                    padx=15,
                                    pady=6)
-        disable_v2v_btn.pack(side='left', expand=True, fill='x', padx=(3, 0))
+        self.disable_v2v_btn.pack(side='left', expand=True, fill='x', padx=(3, 0))
+        self.disable_v2v_btn.config(state='disabled', bg='#4d4d4d') # Disabled initially
         
         return frame
     
@@ -1046,6 +1063,9 @@ class EnhancedQCarGUIController:
     
     def activate_v2v_with_feedback(self):
         """Activate V2V communication for all connected vehicles"""
+        # Disable button immediately to prevent double-clicking
+        self.v2v_btn.config(state='disabled', bg='#4d4d4d', text="📡 Activating...")
+        
         self.log("📡 Activating V2V communication for all vehicles...", 'INFO')
         
         # Get list of connected vehicles
@@ -1065,12 +1085,24 @@ class EnhancedQCarGUIController:
         # Send V2V activation command with list of all connected vehicle IPs
         success_count = 0
         for car_id in connected_cars:
-            # Get vehicle IP addresses (assuming they follow a pattern or are stored)
-            vehicle_ips = [f"192.168.1.{100 + cid}" for cid in connected_cars if cid != car_id]
+            # Filter out self from peer list to ensure correct mapping
+            peers = [cid for cid in connected_cars if cid != car_id]
+            
+            # Get REAL vehicle IP addresses for the peers from the controller
+            vehicle_ips = []
+            for peer_id in peers:
+                status = self.controller.get_car_status(peer_id)
+                if status and status.get('address'):
+                    # address is a tuple (ip, port), we need the IP
+                    vehicle_ips.append(status['address'][0])
+                else:
+                    # Fallback if address not found (should not happen for connected cars)
+                    self.log(f"Warning: Could not find IP for peer {peer_id}, using default", 'WARNING')
+                    vehicle_ips.append(f"192.168.1.{100 + peer_id}")
             
             command = {
                 'command': 'activate_v2v',
-                'peer_vehicles': connected_cars,
+                'peer_vehicles': peers,
                 'peer_ips': vehicle_ips,
                 'my_id': car_id
             }
@@ -1087,8 +1119,23 @@ class EnhancedQCarGUIController:
             self.log(f"V2V activation sent to {success_count}/{len(connected_cars)} vehicles", 'SUCCESS')
             self.log(f"Expected vehicles: {connected_cars}", 'INFO')
             self.log(f"Waiting for V2V connection reports...", 'INFO')
+            
+            # Start timeout timer to re-enable button if no response
+            # Set timeout to re-enable button if no response
+            self._v2v_timeout_id = self.root.after(10000, self._v2v_activation_timeout)  # 10 second timeout for better reliability
         else:
             self.log("Failed to send V2V activation to any vehicle", 'ERROR')
+            # Re-enable button on failure
+            self.v2v_btn.config(state='normal', bg='#ff9800', text="📡 V2V Active")
+    
+    def _v2v_activation_timeout(self):
+        """Handle V2V activation timeout"""
+        if self.v2v_btn['text'] == '📡 Activating...':
+            self.v2v_btn.config(state='normal', bg='#ff9800', text='📡 V2V Active')
+            self.log('⏰ V2V activation timeout after 15 seconds - button re-enabled', 'WARNING')
+            # Clear timeout reference
+            if hasattr(self, '_v2v_timeout_id'):
+                delattr(self, '_v2v_timeout_id')
     
     def disable_v2v_with_feedback(self):
         """Disable V2V communication for all vehicles"""
@@ -1106,6 +1153,13 @@ class EnhancedQCarGUIController:
         
         if success_count > 0:
             self.log(f"✅ V2V disabled for {success_count} vehicles", 'SUCCESS')
+            # Reset button states
+            self.v2v_btn.config(state='normal', bg='#ff9800', text='📡 V2V Active')
+            self.disable_v2v_btn.config(state='disabled', bg='#4d4d4d')
+            # Reset status tracking
+            self.v2v_status = {}
+            if hasattr(self, '_v2v_success_logged'):
+                delattr(self, '_v2v_success_logged')
         else:
             self.log("❌ Failed to disable V2V", 'ERROR')
     
@@ -1230,6 +1284,72 @@ class EnhancedQCarGUIController:
                     text=f"Commands: {total_sent} sent, {total_failed} failed | Uptime: {uptime:.0f}s"
                 )
                 
+                # Check V2V status across fleet using both telemetry and status reports
+                v2v_fully_connected = False
+                if self.connected_cars and len(self.connected_cars) >= 2:
+                    cars_with_v2v = 0
+                    debug_info = []
+                    
+                    for car_id in self.connected_cars:
+                        # Check both telemetry data and V2V status reports
+                        telemetry = self.controller.get_telemetry(car_id)
+                        v2v_status = self.v2v_status.get(car_id, {})
+                        
+                        # Use telemetry if available, fallback to status reports
+                        v2v_active = False
+                        v2v_peers = 0
+                        
+                        if telemetry and telemetry.get('v2v_active', False):
+                            v2v_active = True
+                            v2v_peers = telemetry.get('v2v_peers', 0)
+                        elif v2v_status.get('status') == 'connected':
+                            v2v_active = True
+                            v2v_peers = v2v_status.get('peers', 0)
+                        
+                        debug_info.append(f"Car {car_id}: active={v2v_active}, peers={v2v_peers}")
+                        
+                        if v2v_active and v2v_peers >= len(self.connected_cars) - 1:
+                            cars_with_v2v += 1
+                    
+                    # Debug: Log V2V status every 30 seconds
+                    if hasattr(self, '_debug_counter'):
+                        self._debug_counter += 1
+                    else:
+                        self._debug_counter = 0
+                        
+                    if self._debug_counter % 30 == 0:  # Every 30 seconds
+                        self.log(f"[DEBUG] V2V Status Check: {'; '.join(debug_info)} | Fully connected: {cars_with_v2v}/{len(self.connected_cars)}", 'INFO')
+                    
+                    if cars_with_v2v == len(self.connected_cars):
+                        v2v_fully_connected = True
+                
+                # Update V2V buttons based on status
+                if v2v_fully_connected:
+                    if self.disable_v2v_btn['state'] == 'disabled':
+                        self.disable_v2v_btn.config(state='normal', bg='#795548')
+                        self.v2v_btn.config(state='disabled', bg='#4d4d4d', text="📡 V2V Connected")
+                        if not hasattr(self, '_v2v_success_logged'):
+                            self.log("✅ V2V Network Fully Established - All cars connected", 'SUCCESS')
+                            self.log("🔘 Disable V2V button is now available", 'INFO')
+                            self._v2v_success_logged = True
+                            
+                            # Cancel pending timeout since V2V succeeded
+                            if hasattr(self, '_v2v_timeout_id'):
+                                try:
+                                    self.root.after_cancel(self._v2v_timeout_id)
+                                    delattr(self, '_v2v_timeout_id')
+                                except:
+                                    pass
+                else:
+                    if self.disable_v2v_btn['state'] == 'normal':
+                        self.disable_v2v_btn.config(state='disabled', bg='#4d4d4d')
+                        self.log("🔘 Disable V2V button hidden - not fully connected", 'INFO')
+                        if hasattr(self, '_v2v_success_logged'):
+                            delattr(self, '_v2v_success_logged')
+                    # Only re-enable V2V button if not currently activating
+                    if self.v2v_btn['text'] != '📡 Activating...' and self.v2v_btn['state'] != 'normal':
+                        self.v2v_btn.config(state='normal', bg='#ff9800', text="📡 V2V Active")
+                
                 time.sleep(1.0)  # Slower update rate to reduce panel flickering
                 
             except Exception as e:
@@ -1240,6 +1360,13 @@ class EnhancedQCarGUIController:
         """Process V2V status reports from vehicles"""
         try:
             status = v2v_data.get('status', 'unknown')
+            self.log(f"📡 Car {car_id}: V2V status update - {status}", 'INFO')
+            
+            # Debug: Log detailed V2V data
+            if status in ['connected', 'disconnected']:
+                peers = v2v_data.get('connected_peers', 0)
+                expected = v2v_data.get('expected_peers', 0)
+                self.log(f"[DEBUG] Car {car_id} V2V details: {peers}/{expected} peers, status={status}", 'INFO')
             
             if status == 'connected':
                 expected_peers = v2v_data.get('expected_peers', 0)
@@ -1253,6 +1380,10 @@ class EnhancedQCarGUIController:
                     'expected': expected_peers,
                     'peer_list': peer_list
                 }
+                
+                # Update GUI indicator
+                if hasattr(self, 'v2v_indicators') and car_id in self.v2v_indicators:
+                     self.v2v_indicators[car_id].config(text="📡 V2V: ON", fg='#4caf50')
                 
                 self.log(f"Car {car_id}: V2V connected to {connected_peers}/{expected_peers} peers: {peer_list}", 'SUCCESS')
                 
@@ -1270,13 +1401,25 @@ class EnhancedQCarGUIController:
                     self.v2v_status[car_id]['msg_sent'] = messages_sent
                     self.v2v_status[car_id]['msg_recv'] = messages_received
                 
+                # Update GUI indicator for active state too if connected
+                if connected_peers > 0 and hasattr(self, 'v2v_indicators') and car_id in self.v2v_indicators:
+                     self.v2v_indicators[car_id].config(text="📡 V2V: ON", fg='#4caf50')
+                
             elif status == 'failed':
                 error = v2v_data.get('error', 'unknown')
                 self.v2v_status[car_id] = {'status': 'failed', 'error': error}
+                
+                if hasattr(self, 'v2v_indicators') and car_id in self.v2v_indicators:
+                     self.v2v_indicators[car_id].config(text="📡 V2V: Err", fg='#f44336')
+                     
                 self.log(f"Car {car_id}: V2V connection failed - {error}", 'ERROR')
                 
             elif status == 'disconnected':
                 self.v2v_status[car_id] = {'status': 'disconnected', 'peers': 0}
+                
+                if hasattr(self, 'v2v_indicators') and car_id in self.v2v_indicators:
+                     self.v2v_indicators[car_id].config(text="📡 V2V: Off", fg='#888888')
+                     
                 self.log(f"Car {car_id}: V2V disconnected", 'WARNING')
                 
         except Exception as e:
@@ -1296,16 +1439,15 @@ class EnhancedQCarGUIController:
             expected_peers = len(connected_vehicles) - 1  # Each car should connect to all others
             
             if all(count == expected_peers for count in peer_counts):
-                self.log(f" V2V NETWORK SUCCESS! All {len(connected_vehicles)} vehicles connected", 'SUCCESS')
-                self.log(f"Network topology: Each vehicle connected to {expected_peers} peers", 'SUCCESS')
-                
-                # Show success message
-                messagebox.showinfo("V2V Success", 
-                                  f"V2V network established successfully!\n\n"
-                                  f"Vehicles: {connected_vehicles}\n"
-                                  f"Connections: {expected_peers} per vehicle")
+                # Only log if this is a new success (not duplicate)
+                if not hasattr(self, '_last_v2v_success_vehicles') or self._last_v2v_success_vehicles != set(connected_vehicles):
+                    self.log(f" V2V NETWORK SUCCESS! All {len(connected_vehicles)} vehicles connected", 'SUCCESS')
+                    self.log(f"Network topology: Each vehicle connected to {expected_peers} peers", 'SUCCESS')
+                    self._last_v2v_success_vehicles = set(connected_vehicles)
             else:
                 self.log(f"V2V network incomplete - peer counts: {dict(zip(connected_vehicles, peer_counts))}", 'WARNING')
+                if hasattr(self, '_last_v2v_success_vehicles'):
+                    delattr(self, '_last_v2v_success_vehicles')
                 
         except Exception as e:
             self.log(f"Error checking V2V network status: {e}", 'ERROR')

@@ -114,7 +114,15 @@ class QCarRemoteController:
                         try:
                             telemetry = json.loads(line)
                             self.cars[car_id]['last_data'] = telemetry
-                            # Optional: Log telemetry for debugging
+                            
+                            # Check for V2V status reports
+                            if telemetry.get('type') == 'v2v_status':
+                                print(f"[Ground Station] Car {car_id} V2V status: {telemetry.get('data', {}).get('status', 'unknown')}")
+                                # Forward V2V status to GUI if available
+                                if hasattr(self, 'gui_controller') and self.gui_controller:
+                                    self.gui_controller.process_v2v_status(car_id, telemetry.get('data', {}))
+                                else:
+                                    print(f"[Ground Station] GUI controller not available for V2V forwarding")
                             # print(f"[Car {car_id}] Telemetry: x={telemetry.get('x', 0):.2f}, y={telemetry.get('y', 0):.2f}")
                         except json.JSONDecodeError as e:
                             print(f"[Car {car_id}] JSON decode error: {e}")
@@ -211,7 +219,7 @@ class QCarRemoteController:
     
     def stop_car(self, car_id: int) -> bool:
         """Send stop command to a car"""
-        return self.send_command(car_id, {'type': 'stop'})
+        return self.send_command(car_id, {'type': 'stop', 'source': 'Ground Station'})
     
     def start_car(self, car_id: int) -> bool:
         """Send start command to a car"""
@@ -219,7 +227,7 @@ class QCarRemoteController:
     
     def emergency_stop_car(self, car_id: int) -> bool:
         """Send emergency stop command to a car"""
-        return self.send_command(car_id, {'type': 'emergency_stop'})
+        return self.send_command(car_id, {'type': 'emergency_stop', 'source': 'Ground Station', 'reason': 'Emergency command from operator'})
     
     def shutdown_car(self, car_id: int) -> bool:
         """Send shutdown command to a car"""

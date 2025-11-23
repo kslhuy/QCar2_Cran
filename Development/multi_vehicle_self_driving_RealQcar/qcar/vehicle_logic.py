@@ -45,21 +45,21 @@ class VehicleLogic:
         # Performance monitoring
         self.perf_monitor = PerformanceMonitor(self.logger)
         
-        # State machine - use simplified version with internal transition logic
-        self.state_machine = VehicleStateMachine(self, self.logger)
+
         
         # Platoon controller
         platoon_config = PlatoonConfig()
-        self.platoon_controller = PlatoonController(platoon_config, self.logger)
+        # self.platoon_controller = PlatoonController(platoon_config, self.logger)
         
         # Command handler for centralized command processing
         self.command_handler = CommandHandler(self.logger, config)
         
-        # V2V Communication system
+        # V2V Communication system - High-performance UDP
         self.v2v_communication = V2VCommunication(
             vehicle_id=config.network.car_id,
             logger=self.logger.logger,
-            base_port=config.network.base_port + 1000  # Use separate port range for V2V
+            base_port=8000,  # Dedicated V2V port range (8000+ for better separation)
+            status_callback=self._handle_v2v_status_change  # Add callback for immediate status reporting
         )
         
         # Setup V2V message handlers
@@ -72,7 +72,14 @@ class VehicleLogic:
         self.watchdog = WatchdogTimer(config.safety.watchdog_timeout, self.logger)
         
         # Components (initialized later)
-        self.client_Ground_Station = None
+        self.logger.logger.info("Creating Ground Station client...")
+        # # Create Ground Station client
+        # self.client_Ground_Station = GroundStationClient(
+        #     config=self.config,
+        #     logger=self.logger,
+        #     kill_event=self.kill_event
+        # )
+        self._initialize_network_2_GroundStation()
         self.qcar = None
         self.gps = None
         self.yolo = None
@@ -89,6 +96,9 @@ class VehicleLogic:
         # Control state
         self.v_ref = config.speed.v_ref
         self.yolo_gain = 1.0
+
+        # State machine - use simplified version with internal transition logic
+        self.state_machine = VehicleStateMachine(self, self.logger)
         
         # Timing
         self.start_time = time.time()
@@ -237,6 +247,7 @@ class VehicleLogic:
                 }
             else:
                 # No YOLO available
+                
                 self.yolo_gain = 1.0
                 yolo_data = {
                     'stop_sign': [0]*7, 'traffic_light': [0]*7, 'cars': [0]*7,
@@ -266,8 +277,12 @@ class VehicleLogic:
                 self.qcar.write(throttle=u, steering=delta)
             
             # Send telemetry (non-blocking via queue)
-            if self.loop_counter % 20 == 0:  # Send every 20 iterations = 10Hz at 200Hz loop
+            if self.loop_counter % 10 == 0:  # Send telemetry every 10 iterations (20Hz at 200Hz loop for better V2V)
                 self._queue_telemetry(x, y, theta, velocity, u, delta)
+            
+            # Process V2V messages (separate from telemetry sending)
+            if self.loop_counter % 5 == 0:  # Process V2V messages every 5 iterations = 40Hz
+                self._process_v2v_messages()
             
             # Receive commands (non-blocking via queue)
             if self.loop_counter % 10 == 0:  # Check every 10 iterations = 20Hz
@@ -296,8 +311,13 @@ class VehicleLogic:
             'waypoint_index': self.steering_controller.get_waypoint_index() if self.steering_controller else 0,
             'cross_track_error': float(self.steering_controller.get_errors()[0]) if self.steering_controller else 0.0,
             'heading_error': float(self.steering_controller.get_errors()[1]) if self.steering_controller else 0.0,
-            'state': self.state_machine.state.name,
+            'state': self.state_machine.state.name if hasattr(self.state_machine, 'state') and self.state_machine.state else 'UNKNOWN',
             'gps_valid': self.state_estimator.state_valid if self.state_estimator else False,
+            # V2V UDP status in telemetry for GUI updates
+            'v2v_active': self.v2v_communication.is_active if hasattr(self, 'v2v_communication') else False,
+            'v2v_peers': len(self.v2v_communication.get_connected_peers()) if hasattr(self, 'v2v_communication') else 0,
+            'v2v_protocol': 'UDP' if hasattr(self, 'v2v_communication') and self.v2v_communication.is_active else 'None',
+            'v2v_rate_hz': self.v2v_communication.get_statistics().get('actual_rate_hz', 0.0) if hasattr(self, 'v2v_communication') and self.v2v_communication.is_active else 0.0
             # Platoon telemetry
             # **self.platoon_controller.get_telemetry()
         }
@@ -319,31 +339,200 @@ class VehicleLogic:
                 if self.loop_counter % 100 == 0:  # Log error only occasionally to avoid spam
                     self.logger.log_error("Telemetry transmission error", e)
         
-            # Send telemetry via V2V communication
-            if hasattr(self, 'v2v_communication') and self.v2v_communication.is_active:
-                try:
-                    if self.telemetry_counter % 40 == 0:  # Send V2V telemetry at 5Hz (200/40)
-                        self.v2v_communication.send_telemetry({
-                            'x': x, 'y': y, 'theta': theta, 'velocity': velocity
-                        })
-                        
-                        # Periodically report V2V statistics to Ground Station
-                        if self.telemetry_counter % 200 == 0:  # Every 10 seconds
-                            v2v_stats = self.v2v_communication.get_statistics()
-                            self._report_v2v_status_to_gs({
-                                'status': 'active',
-                                'vehicle_id': self.config.network.car_id,
-                                'connected_peers': v2v_stats.get('connected_peers', 0),
-                                'messages_sent': v2v_stats.get('messages_sent', 0),
-                                'messages_received': v2v_stats.get('messages_received', 0),
-                                'timestamp': time.time()
-                            })
-                            
-                except Exception as e:
-                    if self.loop_counter % 100 == 0:
-                        self.logger.log_error("V2V telemetry error", e)
+            # Send V2V telemetry separately and simplified
+            self._send_v2v_telemetry(x, y, theta, velocity)
         
         self.telemetry_counter += 1
+    
+    def _send_v2v_telemetry(self, x: float, y: float, theta: float, velocity: float):
+        """Send V2V telemetry data - optimized for UDP high-frequency"""
+        try:
+            if not hasattr(self, 'v2v_communication') or not self.v2v_communication.is_active:
+                return
+            
+            # Send V2V telemetry using optimized high-frequency method (20Hz rate-limited)
+            if self.telemetry_counter % 10 == 0:  # Try every 10 iterations, but V2V will rate-limit to 20Hz
+                vehicle_state = {
+                    'x': x, 
+                    'y': y, 
+                    'theta': theta, 
+                    'velocity': velocity,
+                    'v_ref': self.v_ref * self.yolo_gain,
+                    'state': self.state_machine.state.name if hasattr(self.state_machine, 'state') and self.state_machine.state else 'UNKNOWN',
+                    'waypoint_index': self.steering_controller.get_waypoint_index() if self.steering_controller else 0,
+                    'gps_valid': self.state_estimator.state_valid if self.state_estimator else False
+                }
+                
+                # Use high-frequency optimized V2V telemetry method (UDP rate-limited to 20Hz)
+                success = self.v2v_communication.send_telemetry(vehicle_state)
+                
+                # Log performance stats occasionally
+                if success and self.telemetry_counter % 100 == 0:  # Every 100 tries
+                    v2v_stats = self.v2v_communication.get_statistics()
+                    self.logger.logger.info(f"[V2V UDP] {v2v_stats['actual_rate_hz']:.1f}Hz to {v2v_stats['peer_count']} peers (Sent: {v2v_stats['messages_sent']}, Recv: {v2v_stats['messages_received']})")
+            
+            # Report V2V status to Ground Station every 5 seconds (more frequent for UDP monitoring)
+            if self.telemetry_counter % 100 == 0:
+                self._report_v2v_status()
+                
+        except Exception as e:
+            self.logger.log_error("V2V telemetry sending error", e)
+    
+    def _report_v2v_status(self):
+        """Report V2V connection status - simplified"""
+        try:
+            if not hasattr(self, 'v2v_communication') or not self.v2v_communication.is_active:
+                return
+            
+            v2v_stats = self.v2v_communication.get_statistics()
+            connected_peers = self.v2v_communication.get_connected_peers()
+            is_fully_connected = self.v2v_communication.is_fully_connected()
+            connection_summary = self.v2v_communication.get_connection_summary()
+            
+            # Report to Ground Station with UDP performance metrics
+            status_data = {
+                'status': 'connected' if is_fully_connected else 'active',
+                'vehicle_id': self.config.network.car_id,
+                'connected_peers': len(connected_peers),
+                'expected_peers': len([v for v in self.v2v_communication.peer_vehicles if v != self.config.network.car_id]),
+                'peer_list': connected_peers,
+                'messages_sent': v2v_stats.get('messages_sent', 0),
+                'messages_received': v2v_stats.get('messages_received', 0),
+                'packets_dropped': v2v_stats.get('packets_dropped', 0),
+                'send_rate_hz': v2v_stats.get('actual_rate_hz', 0.0),
+                'target_rate_hz': v2v_stats.get('target_rate_hz', 20.0),
+                'protocol': 'UDP',
+                'is_fully_connected': is_fully_connected,
+                'timestamp': time.time()
+            }
+            
+            self._report_v2v_status_to_gs(status_data)
+            
+            # Log status
+            if is_fully_connected:
+                self.logger.logger.info(
+                    f"V2V STATUS: {connection_summary} | "
+                    f"Sent: {v2v_stats.get('messages_sent', 0)}, Received: {v2v_stats.get('messages_received', 0)}"
+                )
+            else:
+                expected_count = len([v for v in self.v2v_communication.peer_vehicles if v != self.config.network.car_id])
+                self.logger.logger.warning(
+                    f"V2V STATUS: {connection_summary} | "
+                    f"Connected: {len(connected_peers)}/{expected_count} | Peers: {connected_peers}"
+                )
+                
+        except Exception as e:
+            self.logger.log_error("V2V status reporting error", e)
+    
+    def _process_v2v_messages(self):
+        """Process incoming V2V messages - called frequently for responsive communication"""
+        try:
+            if not hasattr(self, 'v2v_communication') or not self.v2v_communication.is_active:
+                return
+            
+            # Get and process pending messages (higher throughput for UDP)
+            messages = self.v2v_communication.get_messages(max_count=20)  # Process more messages per iteration
+            
+            # Debug: Print when we actually get messages (less frequent for UDP performance)
+            if messages and len(messages) > 5:  # Only log when significant message volume
+                self.logger.logger.debug(f"[V2V-UDP] Car {self.config.network.car_id} processing {len(messages)} V2V messages")
+            
+            # Process each message immediately
+            for message in messages:
+                if message.message_type == 'telemetry':
+                    # Initialize storage if needed
+                    if not hasattr(self, 'peer_data_storage'):
+                        self.peer_data_storage = {}
+                        self.peer_message_counts = {}
+                    
+                    # Store peer data for analysis
+                    self.peer_data_storage[message.sender_id] = {
+                        'position': message.data.get('position', [0, 0]),
+                        'velocity': message.data.get('velocity', 0),
+                        'heading': message.data.get('heading', 0),
+                        'state': message.data.get('state', 'UNKNOWN'),
+                        'last_update': time.time(),
+                        'v_ref': message.data.get('v_ref', 0),
+                        'yolo_gain': message.data.get('yolo_gain', 1.0)
+                    }
+                    
+                    self.peer_message_counts[message.sender_id] = self.peer_message_counts.get(message.sender_id, 0) + 1
+                    
+                    # # Debug: Print every received message for troubleshooting
+                    # print(f"[V2V] Car {self.config.network.car_id} PROCESSED telemetry from Car {message.sender_id} (#{self.peer_message_counts[message.sender_id]})")
+            
+            # Log message processing every 2 seconds
+            if messages and self.loop_counter % 400 == 0:
+                total_received = sum(self.peer_message_counts.values()) if hasattr(self, 'peer_message_counts') else 0
+                self.logger.logger.info(
+                    f"V2V MESSAGES: Processed {len(messages)} messages | "
+                    f"Total received: {total_received} | "
+                    f"Peers: {list(self.peer_message_counts.keys()) if hasattr(self, 'peer_message_counts') else []}"
+                )
+                
+        except Exception as e:
+            self.logger.log_error("V2V message processing error", e)
+            print(f"[V2V ERROR] Car {self.config.network.car_id} message processing error: {e}")
+    
+    def _analyze_peer_data(self):
+        """Analyze collected peer data for safety and coordination insights"""
+        try:
+            if not hasattr(self, 'peer_data_storage') or not self.peer_data_storage:
+                return
+            
+            current_time = time.time()
+            my_x, my_y, my_theta, my_velocity, _ = self.state_estimator.get_state() if self.state_estimator else (0, 0, 0, 0, True)
+            
+            analysis_summary = []
+            close_peers = []
+            
+            for peer_id, peer_data in self.peer_data_storage.items():
+                # Check if data is recent (within last 5 seconds)
+                data_age = current_time - peer_data.get('last_update', 0)
+                if data_age > 5.0:
+                    continue
+                
+                # Calculate relative position and distance
+                peer_pos = peer_data.get('position', [0, 0])
+                distance = ((my_x - peer_pos[0])**2 + (my_y - peer_pos[1])**2)**0.5
+                
+                peer_vel = peer_data.get('velocity', 0)
+                peer_state = peer_data.get('state', 'UNKNOWN')
+                msg_count = self.peer_message_counts.get(peer_id, 0)
+                
+                analysis_summary.append(
+                    f"Car {peer_id}: Dist={distance:.1f}m, Vel={peer_vel:.1f}m/s, "
+                    f"State={peer_state}, Msgs={msg_count}, Age={data_age:.1f}s"
+                )
+                
+                # Track close peers for safety
+                if distance < 10.0:  # Within 10 meters
+                    close_peers.append((peer_id, distance, peer_vel))
+            
+            # Log comprehensive analysis
+            if analysis_summary:
+                self.logger.logger.info(
+                    f"V2V PEER ANALYSIS: {len(analysis_summary)} active peers | " + 
+                    " | ".join(analysis_summary)
+                )
+            
+            # Log close peers for safety awareness
+            if close_peers:
+                close_summary = ", ".join([f"Car {pid}({dist:.1f}m@{vel:.1f}m/s)" for pid, dist, vel in close_peers])
+                self.logger.logger.warning(f"V2V CLOSE PEERS: {close_summary}")
+            
+            # Report fleet status when fully connected - only if we have active peer data
+            if analysis_summary:
+                connected_peers = self.v2v_communication.get_connected_peers()
+                if len(connected_peers) >= len(self.v2v_communication.peer_vehicles) - 1:
+                    self.logger.logger.info(
+                        f"V2V FLEET STATUS: FULLY CONNECTED | "
+                        f"Car {self.config.network.car_id} coordinating with {len(connected_peers)} peers | "
+                        f"Active data from {len(analysis_summary)} vehicles | Summary: " + " | ".join(analysis_summary)
+                    )
+            
+        except Exception as e:
+            self.logger.log_error("V2V peer data analysis error", e)
     
     def _process_queued_commands(self):
         """Process commands from queue (non-blocking)"""
@@ -428,25 +617,95 @@ class VehicleLogic:
             self.logger.log_error("Initial position check failed", e)
             return False
     
+    def _initialize_network_2_GroundStation(self) -> bool:
+        """Initialize network communication"""
+        try:
+            self.logger.logger.info("Creating Ground Station client...")
+            
+            # Create Ground Station client
+            self.client_Ground_Station = GroundStationClient(
+                config=self.config,
+                logger=self.logger,
+                kill_event=self.kill_event
+            )
+            time.sleep(0.2)  # Allow client object to settle
+            
+            # Initialize network connection
+            self.logger.logger.info("Initializing network connection...")
+            if not self.client_Ground_Station.initialize_network():
+                return False
+            time.sleep(0.5)  # Allow network initialization to complete
+            
+            # Start network threads
+            self.logger.logger.info("Starting network threads...")
+            if not self.client_Ground_Station.start_threads():
+                return False
+            time.sleep(0.3)  # Allow threads to start properly
+            
+            self.logger.logger.info("Ground Station communication initialized")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("Ground Station initialization failed", e)
+            return False
+    
     def _setup_v2v_handlers(self):
         """Setup V2V message handlers for cooperative driving"""
         try:
+            # Initialize peer data storage
+            if not hasattr(self, 'peer_data_storage'):
+                self.peer_data_storage = {}
+                self.peer_message_counts = {}
+            
             # Handler for receiving telemetry from other vehicles
             def handle_peer_telemetry(message):
                 peer_id = message.sender_id
                 peer_data = message.data
+                current_time = time.time()
                 
-                # Log peer vehicle information occasionally
-                if self.loop_counter % 200 == 0:  # Every second at 200Hz
+                # Store peer data for analysis
+                self.peer_data_storage[peer_id] = {
+                    'position': peer_data.get('position', [0, 0]),
+                    'heading': peer_data.get('heading', 0),
+                    'velocity': peer_data.get('velocity', 0),
+                    'v_ref': peer_data.get('v_ref', 0),
+                    'yolo_gain': peer_data.get('yolo_gain', 1.0),
+                    'state': peer_data.get('state', 'UNKNOWN'),
+                    'waypoint_index': peer_data.get('waypoint_index', 0),
+                    'cross_track_error': peer_data.get('cross_track_error', 0.0),
+                    'heading_error': peer_data.get('heading_error', 0.0),
+                    'gps_valid': peer_data.get('gps_valid', False),
+                    'is_fully_connected': peer_data.get('is_fully_connected', False),
+                    'last_update': current_time,
+                    'timestamp': peer_data.get('timestamp', current_time)
+                }
+                
+                # Count messages from each peer
+                self.peer_message_counts[peer_id] = self.peer_message_counts.get(peer_id, 0) + 1
+                msg_count = self.peer_message_counts.get(peer_id, 0)
+                
+                # Enhanced logging of received telemetry - log every 5 messages (independent of loop counter)
+                if msg_count % 5 == 0:
+                    position = peer_data.get('position', [0, 0])
+                    velocity = peer_data.get('velocity', 0)
+                    state = peer_data.get('state', 'UNKNOWN')
+                    
                     self.logger.logger.info(
-                        f"V2V: Peer {peer_id} at ({peer_data.get('position', [0,0])[0]:.1f}, "
-                        f"{peer_data.get('position', [0,0])[1]:.1f}), "
-                        f"vel={peer_data.get('velocity', 0):.1f}m/s"
+                        f"V2V TELEMETRY RECEIVED: From Car {peer_id} | "
+                        f"Position: ({position[0]:.2f}, {position[1]:.2f}), "
+                        f"Vel: {velocity:.2f}m/s, State: {state} | "
+                        f"Messages: {msg_count}, Latency: {(current_time - peer_data.get('timestamp', current_time)) * 1000:.1f}ms"
                     )
                 
-                # TODO: Use peer data for collision avoidance, coordination, etc.
-                # if hasattr(self, 'collision_avoidance'):
-                #     self.collision_avoidance.update_peer_vehicle(peer_id, peer_data)
+                # Use peer data for collision avoidance, coordination, etc.
+                if hasattr(self, 'collision_avoidance'):
+                    try:
+                        # Only call if method exists
+                        if hasattr(self.collision_avoidance, 'update_peer_vehicle'):
+                            self.collision_avoidance.update_peer_vehicle(peer_id, peer_data)
+                    except Exception as e:
+                        # Silently ignore collision avoidance update errors
+                        pass
             
             # Handler for receiving driving intents from other vehicles
             def handle_peer_intent(message):
@@ -489,27 +748,25 @@ class VehicleLogic:
         try:
             success = self.v2v_communication.activate(peer_vehicles, peer_ips)
             if success:
-                # Wait a moment for connections to establish
-                time.sleep(2.0)
+                # Don't block the main loop waiting for connections
+                # Just report that activation started
                 
-                # Get actual connected peers
-                connected_peers = self.v2v_communication.get_connected_peers()
                 total_expected = len([v for v in peer_vehicles if v != self.config.network.car_id])
                 
-                self.logger.logger.info(f"V2V communication activated: {len(connected_peers)}/{total_expected} peers connected")
-                self.logger.logger.info(f"V2V connected to vehicles: {connected_peers}")
+                self.logger.logger.info(f"V2V service started. Waiting for {total_expected} peers...")
                 
-                # Report V2V success to Ground Station
+                # Report V2V activation to Ground Station (status='activating')
                 self._report_v2v_status_to_gs({
-                    'status': 'connected',
+                    'status': 'activating',
                     'expected_peers': total_expected,
-                    'connected_peers': len(connected_peers),
-                    'peer_list': connected_peers,
+                    'connected_peers': 0,
+                    'peer_list': [],
                     'vehicle_id': self.config.network.car_id,
                     'timestamp': time.time()
                 })
                 
-                return len(connected_peers) > 0  # Success if at least one connection
+                # Return True if service started successfully
+                return True
             else:
                 self.logger.logger.error("Failed to activate V2V communication")
                 # Report failure to Ground Station
@@ -546,6 +803,43 @@ class VehicleLogic:
             
         except Exception as e:
             self.logger.log_error("V2V disable error", e)
+    
+    def _handle_v2v_status_change(self, event_type: str, peer_id: int):
+        """Handle immediate V2V status changes from the communication module"""
+        try:
+            connected_peers = len(self.v2v_communication.get_connected_peers())
+            total_expected = len([v for v in self.v2v_communication.peer_vehicles if v != self.config.network.car_id])
+            
+            if event_type == 'connection_established':
+                self.logger.logger.info(f"V2V: Peer {peer_id} connected ({connected_peers}/{total_expected} peers)")
+                
+                # Check if we're fully connected
+                if connected_peers >= total_expected and total_expected > 0:
+                    status = 'connected'
+                    self.logger.logger.info("V2V: All peers connected - mesh is fully established!")
+                else:
+                    status = 'active'
+                    
+            elif event_type == 'connection_lost':
+                self.logger.logger.info(f"V2V: Peer {peer_id} disconnected ({connected_peers}/{total_expected} peers)")
+                status = 'active' if connected_peers > 0 else 'disconnected'
+            else:
+                return  # Unknown event type
+            
+            # Report status change immediately to Ground Station
+            self._report_v2v_status_to_gs({
+                'status': status,
+                'vehicle_id': self.config.network.car_id,
+                'connected_peers': connected_peers,
+                'expected_peers': total_expected,
+                'peer_list': self.v2v_communication.get_connected_peers(),
+                'event': event_type,
+                'affected_peer': peer_id,
+                'timestamp': time.time()
+            })
+            
+        except Exception as e:
+            self.logger.log_error(f"Error handling V2V status change: {event_type}", e)
     
     def _report_v2v_status_to_gs(self, status_data: dict):
         """Report V2V connection status to Ground Station"""
