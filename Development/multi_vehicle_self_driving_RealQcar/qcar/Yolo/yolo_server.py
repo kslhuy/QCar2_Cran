@@ -5,7 +5,7 @@ from pit.YOLO.utils import QCar2DepthAligned
 from pal.utilities.probe import Probe
 from pit.YOLO.nets import YOLOv8
 
-from utils import YOLOPublisher
+from Yolo.YoLo import YOLOPublisher
 import argparse
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 

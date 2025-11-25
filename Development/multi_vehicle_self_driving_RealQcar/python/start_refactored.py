@@ -121,35 +121,40 @@ def upload_files(ip, scp):
         scp.put(file, REMOTE_PATH)
     print(f"  [✓] Uploaded {len(txt_files)} text files")
     
-    # Upload markdown documentation (optional)
-    md_files = glob.glob(os.path.join(SCRIPTS_PATH, "*.md"))
-    for file in md_files:
-        scp.put(file, REMOTE_PATH)
-    if md_files:
-        print(f"  [✓] Uploaded {len(md_files)} documentation files")
+    # # Upload markdown documentation (optional)
+    # md_files = glob.glob(os.path.join(SCRIPTS_PATH, "*.md"))
+    # for file in md_files:
+    #     scp.put(file, REMOTE_PATH)
+    # if md_files:
+    #     print(f"  [✓] Uploaded {len(md_files)} documentation files")
     
-    # Upload StateMachine folder and its contents
-    state_machine_path = os.path.join(SCRIPTS_PATH, "StateMachine")
-    if os.path.exists(state_machine_path):
-        try:
-            # Upload the entire StateMachine directory recursively
-            scp.put(state_machine_path, REMOTE_PATH, recursive=True)
-            
-            # Count files for reporting
-            state_machine_files = []
-            for root, dirs, files in os.walk(state_machine_path):
-                for file in files:
-                    if not file.endswith('.pyc') and '__pycache__' not in root:
-                        state_machine_files.append(file)
-            
-            print(f"  [✓] Uploaded StateMachine folder with {len(state_machine_files)} files")
-        except Exception as e:
-            print(f"  [⚠] Error uploading StateMachine folder: {e}")
-    else:
-        print(f"  [⚠] StateMachine folder not found at {state_machine_path}")
+    ########## UPDATED Folder BELOW ##########
+
+    
+    # Upload additional folders: Yolo, Observer, V2V, Controller
+    additional_folders = ["StateMachine" , "Yolo", "Observer", "V2V", "Controller"]
+    for folder_name in additional_folders:
+        folder_path = os.path.join(SCRIPTS_PATH, folder_name)
+        if os.path.exists(folder_path):
+            try:
+                # Upload the entire folder directory recursively
+                scp.put(folder_path, REMOTE_PATH, recursive=True)
+                
+                # Count files for reporting
+                folder_files = []
+                for root, dirs, files in os.walk(folder_path):
+                    for file in files:
+                        if not file.endswith('.pyc') and '__pycache__' not in root:
+                            folder_files.append(file)
+                
+                print(f"  [✓] Uploaded {folder_name} folder with {len(folder_files)} files")
+            except Exception as e:
+                print(f"  [⚠] Error uploading {folder_name} folder: {e}")
+        else:
+            print(f"  [⚠] {folder_name} folder not found at {folder_path}")
 
 # --- Start observer process locally ---
-observer_process = None
+probing_process = None
 
 # --- Main startup sequence ---
 try:
@@ -175,22 +180,22 @@ try:
             else:
                 print(f"  [⊘] Skipped file upload")
             
-            # Start multi-probing locally if we have probing vehicles
-            if is_probing and observer_process is None:
+            # Start multi-probing locally if we have probing vehicles (Client Side (Ground Station))
+            if is_probing and probing_process is None:
                 print(f"  [→] Starting multi-probing.py locally...")
                 # Count how many vehicles are probing
                 # probing_count = sum(1 for ip in QCAR_IPS if ip in PROBING_IPS)
-                observer_script = os.path.join(CURRENT_DIR, "multi_probing.py")
-                if os.path.exists(observer_script):
-                    observer_process = subprocess.Popen([
-                        "python", observer_script, 
+                probing_script = os.path.join(CURRENT_DIR, "multi_probing.py")
+                if os.path.exists(probing_script):
+                    probing_process = subprocess.Popen([
+                        "python", probing_script, 
                         "--cars", str(idx),
                         "--width", WIDTH, 
                         "--height", HEIGHT
                     ])
                     print(f"  [✓] multi-probing started for {idx} vehicle")
                 else:
-                    print(f"  [⚠] multi-probing script not found: {observer_script}")
+                    print(f"  [⚠] multi-probing script not found: {probing_script}")
             
             # Kill any existing processes on the QCar
             print(f"  [→] Stopping any existing processes...")
@@ -223,7 +228,7 @@ try:
             
             time.sleep(2)  # Give vehicle control time to initialize
             
-            # Start yolo_server.py remotely
+            # Start yolo_server.py remotely (Run the YOLO server on the QCar)
             print(f"  [→] Starting yolo_server.py...")
             probing_flag = "True" if is_probing else "False"
             if args.no_logs:
@@ -296,6 +301,6 @@ except Exception as e:
 finally:
     # Cleanup
     print("\nCleaning up...")
-    if observer_process:
-        print("  Stopping observer process...")
-        observer_process.terminate()
+    if probing_process:
+        print("  Stopping probing process...")
+        probing_process.terminate()

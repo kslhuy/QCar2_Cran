@@ -117,12 +117,21 @@ class QCarRemoteController:
                             
                             # Check for V2V status reports
                             if telemetry.get('type') == 'v2v_status':
-                                print(f"[Ground Station] Car {car_id} V2V status: {telemetry.get('data', {}).get('status', 'unknown')}")
+                                status = telemetry.get('data', {}).get('status', 'unknown')
+                                print(f"[Ground Station] Car {car_id} V2V status: {status}")
+                                print(f"[Ground Station] V2V data: {telemetry.get('data', {})}")
+                                
                                 # Forward V2V status to GUI if available
                                 if hasattr(self, 'gui_controller') and self.gui_controller:
                                     self.gui_controller.process_v2v_status(car_id, telemetry.get('data', {}))
+                                    print(f"[Ground Station] Forwarded V2V status to GUI for Car {car_id}")
                                 else:
                                     print(f"[Ground Station] GUI controller not available for V2V forwarding")
+                            else:
+                                # Debug: Show telemetry type for non-v2v messages
+                                msg_type = telemetry.get('type', 'telemetry')
+                                if msg_type != 'telemetry' and car_id == 0:  # Only debug for car 0 to avoid spam
+                                    print(f"[Ground Station] Car {car_id} message type: {msg_type}")
                             # print(f"[Car {car_id}] Telemetry: x={telemetry.get('x', 0):.2f}, y={telemetry.get('y', 0):.2f}")
                         except json.JSONDecodeError as e:
                             print(f"[Car {car_id}] JSON decode error: {e}")

@@ -122,14 +122,15 @@ class FakeInitializingState(StateBase):
                 # Inject mock hardware from the fake vehicle
                 self.vehicle_logic.qcar = parent_fake_vehicle.mock_qcar
                 self.vehicle_logic.gps = parent_fake_vehicle.mock_gps  
-                self.vehicle_logic.yolo = parent_fake_vehicle.mock_yolo
+                # Initialize YOLOManager with parent's mock components
+                from fake_vehicle_real_logic import MockStateEstimator, MockSpeedController, MockSteeringController, MockYOLODrive
+                mock_yolo_drive = MockYOLODrive(self.config.network.car_id)
+                self.vehicle_logic.yolo_manager.initialize(parent_fake_vehicle.mock_yolo, mock_yolo_drive)
                 
                 # Create mock controllers and state estimator
-                from fake_vehicle_real_logic import MockStateEstimator, MockSpeedController, MockSteeringController, MockYOLODrive
                 self.vehicle_logic.state_estimator = MockStateEstimator(parent_fake_vehicle.mock_qcar, parent_fake_vehicle.mock_gps)
                 self.vehicle_logic.speed_controller = MockSpeedController(self.config.network.car_id)
                 self.vehicle_logic.steering_controller = MockSteeringController(self.config.network.car_id)
-                self.vehicle_logic.yolo_drive = MockYOLODrive(self.config.network.car_id)
                 
                 print(f"   [+] Mock QCar hardware injected")
                 print(f"   [+] Mock GPS injected")
@@ -144,11 +145,15 @@ class FakeInitializingState(StateBase):
                 
                 self.vehicle_logic.qcar = MockQCar(car_id)
                 self.vehicle_logic.gps = MockQCarGPS(self.vehicle_logic.qcar)
-                self.vehicle_logic.yolo = MockYOLOReceiver()
+                
+                # Initialize YOLOManager with mock components
+                mock_yolo_receiver = MockYOLOReceiver()
+                mock_yolo_drive = MockYOLODrive()
+                self.vehicle_logic.yolo_manager.initialize(mock_yolo_receiver, mock_yolo_drive)
+                
                 self.vehicle_logic.state_estimator = MockStateEstimator(self.vehicle_logic.qcar, self.vehicle_logic.gps)
                 self.vehicle_logic.speed_controller = MockSpeedController(car_id)
                 self.vehicle_logic.steering_controller = MockSteeringController(car_id)
-                self.vehicle_logic.yolo_drive = MockYOLODrive(car_id)
                 
                 print(f"   [+] Basic mock components created")
             

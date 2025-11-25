@@ -87,6 +87,17 @@ class V2VCommunication:
         self.last_send_time = 0.0
         self.sequence_number = 0
         
+        # Per-message-type rate limiting
+        self.message_send_times = {
+            'local_state': 0.0,
+            'fleet_state': 0.0,
+            'heartbeat': 0.0,
+            'telemetry': 0.0,
+            'intent': 0.0,
+            'warning': 0.0
+        }
+        
+        
         # Message handling
         self.message_queue = Queue(maxsize=200)  # Larger queue for high frequency
         self.message_handlers: Dict[str, Callable[[V2VMessage], None]] = {}
@@ -113,7 +124,15 @@ class V2VCommunication:
                 return True
             
             try:
-                self.logger.info(f"Activating UDP V2V for vehicle {self.vehicle_id} with peers {peer_vehicles}")
+                # Validate input parameters
+                if len(peer_vehicles) != len(peer_ips):
+                    self.logger.error(f"Mismatch: {len(peer_vehicles)} peer vehicles but {len(peer_ips)} IP addresses")
+                    return False
+                
+                fleet_size = len(peer_vehicles) + 1  # peers + self
+                self.logger.info(f"Activating UDP V2V for vehicle {self.vehicle_id} with {len(peer_vehicles)} peers (fleet size: {fleet_size})")
+                self.logger.info(f"Peer vehicles: {peer_vehicles}")
+                self.logger.info(f"Peer IPs: {peer_ips}")
                 
                 # Initialize peer information
                 self.peer_vehicles = [pid for pid in peer_vehicles if pid != self.vehicle_id]
@@ -134,7 +153,7 @@ class V2VCommunication:
                 # Start single receive thread
                 self._start_receive_thread()
                 
-                self.logger.info(f"UDP V2V activated successfully for {len(self.peer_vehicles)} peers at 20Hz")
+                self.logger.info(f"UDP V2V activated successfully for fleet of {fleet_size} vehicles at 20Hz")
                 return True
                 
             except Exception as e:
@@ -304,6 +323,15 @@ class V2VCommunication:
         self.connection_states.clear()
         self.sequence_number = 0
         self.last_send_time = 0.0
+        # Reset per-message-type tracking
+        for msg_type in self.message_send_times:
+            self.message_send_times[msg_type] = 0.0
+        # Reset per-message-type tracking
+        for msg_type in self.message_send_times:
+            self.message_send_times[msg_type] = 0.0
+        # Reset per-message-type tracking
+        for msg_type in self.message_send_times:
+            self.message_send_times[msg_type] = 0.0
     
     def _notify_status_change(self, event: str, peer_id: int):
         """Notify status callback of connection changes"""
@@ -319,10 +347,13 @@ class V2VCommunication:
         if not self._is_active or not self.send_socket:
             return False
         
-        # Rate limiting for high performance
+        # Per-message-type rate limiting for better performance
         current_time = time.time()
-        if current_time - self.last_send_time < self.SEND_INTERVAL:
-            return False  # Skip this send to maintain 20Hz rate
+        
+        # Check rate limit for this specific message type
+        last_send_for_type = self.message_send_times.get(message_type, 0.0)
+        if current_time - last_send_for_type < self.SEND_INTERVAL:
+            return False  # Skip this send to maintain per-type rate limit
         
         message = V2VMessage(
             sender_id=self.vehicle_id,
@@ -361,6 +392,8 @@ class V2VCommunication:
                 self.stats['messages_sent'] += 1
                 self.sequence_number += 1
                 self.last_send_time = current_time
+                # Update per-message-type send time
+                self.message_send_times[message_type] = current_time
                 
                 # Update send rate statistics
                 if self.stats['messages_sent'] % 20 == 0:  # Every second at 20Hz

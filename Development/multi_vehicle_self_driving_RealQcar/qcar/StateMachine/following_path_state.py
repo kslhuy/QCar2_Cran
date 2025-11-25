@@ -29,7 +29,7 @@ except ImportError as e:
 
 # Import SteeringController
 try:
-    from controllers import SteeringController, SpeedController
+    from Controller.controllers import SteeringController, SpeedController
     STEERING_CONTROLLER_AVAILABLE = True
     SPEED_CONTROLLER_AVAILABLE = True
 except ImportError as e:

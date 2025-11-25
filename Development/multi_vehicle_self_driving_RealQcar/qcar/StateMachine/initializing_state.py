@@ -175,11 +175,11 @@ class InitializingState(StateBase):
                 return False
             time.sleep(0.2)  # Allow controllers to initialize
             
-            # # Initialize perception
-            # if not self._initialize_perception():
-            #     self.logger.log_error("Perception initialization failed")
-            #     return False
-            # time.sleep(0.2)  # Allow perception to start
+            # Initialize perception
+            if not self._initialize_perception():
+                self.logger.log_error("Perception initialization failed")
+                return False
+            time.sleep(0.2)  # Allow perception to start
             
             # Setup telemetry logging
             if self.config.logging.enable_telemetry_logging:
@@ -324,7 +324,7 @@ class InitializingState(StateBase):
             import time
             import numpy as np
             from pal.products.qcar import QCar, QCarGPS
-            from controllers import StateEstimator
+            from Controller.controllers import StateEstimator
             
             self.logger.logger.info("Initializing QCar hardware...")
             
@@ -332,7 +332,7 @@ class InitializingState(StateBase):
                 readMode=1,
                 frequency=self.config.timing.controller_update_rate
             )
-            time.sleep(0.5)  # Allow QCar hardware to initialize
+            # time.sleep(0.5)  # Allow QCar hardware to initialize
 
             self.logger.logger.info("Initializing GPS...")
             self.vehicle_logic.gps = QCarGPS(
@@ -373,7 +373,7 @@ class InitializingState(StateBase):
             self.vehicle_logic.state_estimator = StateEstimator(
                 gps=self.vehicle_logic.gps,
                 initial_pose=initial_pose,
-                logger=self.vehicle_logic.logger,
+                logger=self.vehicle_logic.logger.logger,
                 use_ekf=self.config.steering.enable_steering_control
             )
             time.sleep(0.3)  # Allow state estimator to initialize
@@ -418,21 +418,23 @@ class InitializingState(StateBase):
     def _initialize_perception(self) -> bool:
         """Initialize perception systems"""
         try:
-            from utils import YOLOReceiver, YOLODriveLogic
+            from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
             
-            # Use different YOLO port for each car
-            # yolo_port = f"1866{self.config.network.car_id}"
-            self.vehicle_logic.yolo = YOLOReceiver()
+            # Create YOLO components
+            yolo_receiver = YOLOReceiver()
             
             pulse_length = (
                 self.config.timing.controller_update_rate *
                 self.config.yolo.pulse_length_multiplier
             )
             
-            self.vehicle_logic.yolo_drive = YOLODriveLogic(
-                pulse_length=pulse_length,
+            yolo_drive = YOLODriveLogic(
+                pulseLength=pulse_length,
                 logger=self.vehicle_logic.logger
             )
+            
+            # Initialize YOLOManager with components
+            self.vehicle_logic.yolo_manager.initialize(yolo_receiver, yolo_drive)
             
             self.logger.logger.info("Perception systems initialized")
             return True

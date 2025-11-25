@@ -14,12 +14,14 @@ from config import VehicleControlConfig
 from logging_utils import VehicleLogger, PerformanceMonitor
 from StateMachine import VehicleState, VehicleStateMachine
 from ground_station_client import GroundStationClient
-from controllers import SpeedController, SteeringController, StateEstimator
+from Controller.controllers import SpeedController, SteeringController, StateEstimator
 from safety import ControlValidator, SensorHealthMonitor, CollisionAvoidance, WatchdogTimer
-from utils import YOLOReceiver, YOLODriveLogic
+from Yolo.YoLo import YOLOReceiver, YOLODriveLogic, YOLOManager
 from platoon_controller import PlatoonController, PlatoonConfig
 from command_handler import CommandHandler
-from v2v_communication import V2VCommunication
+from V2V.v2v_communication import V2VCommunication
+from V2V.v2v_manager import V2VManager, V2VBroadcastConfig
+from Observer.VehicleObserverSimple import VehicleObserver
 
 
 class VehicleLogic:
@@ -62,8 +64,19 @@ class VehicleLogic:
             status_callback=self._handle_v2v_status_change  # Add callback for immediate status reporting
         )
         
-        # Setup V2V message handlers
-        self._setup_v2v_handlers()
+        # V2V Manager - High-level V2V logic and message handling
+        v2v_config = V2VBroadcastConfig(
+            local_state_frequency=20.0,  # 20Hz for local states
+            fleet_state_frequency=5.0,   # 5Hz for fleet states
+            heartbeat_frequency=1.0      # 1Hz for heartbeats
+        )
+        self.v2v_manager = V2VManager(
+            vehicle_id=config.network.car_id,
+            v2v_communication=self.v2v_communication,
+            vehicle_observer=None,  # Will be set later
+            logger=self.logger.logger,
+            config=v2v_config
+        )
         
         # Safety systems
         # self.validator = ControlValidator(config, self.logger)
@@ -82,11 +95,12 @@ class VehicleLogic:
         self._initialize_network_2_GroundStation()
         self.qcar = None
         self.gps = None
-        self.yolo = None
-        self.yolo_drive = None
         self.state_estimator = None
         self.speed_controller = None
         self.steering_controller = None
+        
+        # YOLO Manager - handles all YOLO-related functionality
+        self.yolo_manager = YOLOManager(self.logger)
         
         # Path planning
         self.roadmap = None
@@ -95,7 +109,6 @@ class VehicleLogic:
         
         # Control state
         self.v_ref = config.speed.v_ref
-        self.yolo_gain = 1.0
 
         # State machine - use simplified version with internal transition logic
         self.state_machine = VehicleStateMachine(self, self.logger)
@@ -104,6 +117,55 @@ class VehicleLogic:
         self.start_time = time.time()
         self.loop_counter = 0
         self.telemetry_counter = 0
+        
+        # Component update rates and timing
+        self.controller_rate = config.timing.controller_update_rate
+        self.observer_rate = getattr(config.timing, 'observer_rate', 100)
+        self.communication_rate = getattr(config.timing, 'communication_rate', 20)
+        
+        # Timing trackers for different update rates
+        self._last_observer_time = 0.0
+        self._last_communication_time = 0.0
+        self._last_control_time = 0.0
+        
+        # Vehicle state tracking
+        self.current_pos = [0.0, 0.0, 0.0]  # [x, y, theta]
+        self.velocity = 0.0
+        self.prev_pos = None
+        self.prev_time = None
+        
+        # Initialize Vehicle Observer for local and fleet state estimation
+        # Determine fleet size from config or default to 2 vehicles
+        fleet_size = getattr(config.network, 'fleet_size', 2)
+        initial_pose = getattr(config, 'initial_pose', [0.0, 0.0, 0.0])
+        
+        self.vehicle_observer = VehicleObserver(
+            vehicle_id=config.network.car_id,
+            fleet_size=fleet_size,
+            config={
+                'observer_rate': self.observer_rate,
+                'fleet_observer_rate': getattr(config.timing, 'fleet_observer_rate', 50),
+                'observer': {
+                    'local_observer_type': 'ekf',
+                    'enable_distributed': True,
+                    'consensus_gain': 0.3
+                }
+            },
+            logger=self.logger.logger,
+            initial_pose=np.array(initial_pose),
+            state_estimator=None  # Will be set later during initialization
+        )
+        
+        # Connect VehicleObserver to V2VManager
+        self.v2v_manager.vehicle_observer = self.vehicle_observer
+        
+        # Sensor data caching (now handled by observer)
+        self.sensor_data_cache = {
+            'motor_tach': 0.0,
+            'gyro_z': 0.0,
+            'state_valid': False,
+            'timestamp': 0.0
+        }
         
     def elapsed_time(self) -> float:
         """Get elapsed time since start"""
@@ -136,10 +198,22 @@ class VehicleLogic:
                 if hasattr(self, 'watchdog'):
                     self.watchdog.reset()
                 
-                # Run one control iteration
-                if not self._control_iteration(actual_dt):
-                    self.logger.log_error("Control iteration failed")
-                    break
+                # 1. Sensor Data Reading and GPS Update
+                self._update_sensor_data(actual_dt)
+                
+                # 2. Observer Update (handles both local and fleet internally)
+                if self._should_update_observer(loop_start):
+                    self._observer_update(actual_dt)
+                
+                # 3. Control Logic (high frequency)
+                if self._should_update_control(loop_start):
+                    if not self._control_logic_update(actual_dt):
+                        self.logger.log_error("Control logic failed")
+                        break
+                
+                # 4. Communication Handling (medium frequency)
+                if self._should_update_communication(loop_start):
+                    self._handle_communication()
                 
                 # Performance monitoring
                 loop_time = time.time() - loop_start
@@ -165,134 +239,228 @@ class VehicleLogic:
         finally:
             self._shutdown()
                 
-    def _control_iteration(self, dt: float) -> bool:
-        """Single control iteration"""
+    # ===== Component Update Rate Control Methods =====
+    def _should_update_observer(self, current_time: float) -> bool:
+        """Check if local observer should update based on rate"""
+        if current_time - self._last_observer_time >= 1.0 / self.observer_rate:
+            self._last_observer_time = current_time
+            return True
+        return False
+    
+    def _should_update_communication(self, current_time: float) -> bool:
+        """Check if communication should update based on rate"""
+        if current_time - self._last_communication_time >= 1.0 / self.communication_rate:
+            self._last_communication_time = current_time
+            return True
+        return False
+    
+    def _should_update_control(self, current_time: float) -> bool:
+        """Check if control should update based on rate"""
+        if current_time - self._last_control_time >= 1.0 / self.controller_rate:
+            self._last_control_time = current_time
+            return True
+        return False
+    
+    # ===== Sensor Data Reading Methods =====
+    def _update_sensor_data(self, dt: float):
+        """Update sensor data using VehicleObserver - called every loop iteration"""
         try:
-            # Check if components are initialized
-            if self.qcar is None or self.state_estimator is None:
-                # During initialization, just update state machine without sensor readings
-                if self.state_machine.state == VehicleState.INITIALIZING:
-                    # Minimal sensor data for initialization
-                    sensor_data = {
-                        'x': 0.0, 'y': 0.0, 'theta': 0.0, 'velocity': 0.0,
-                        'motor_tach': 0.0, 'gyro_z': 0.0,
-                        'yolo_data': {
-                            'stop_sign': [0]*7, 'traffic_light': [0]*7, 'cars': [0]*7,
-                            'yield_sign': [0]*7, 'person': [0]*7, 'car_dist': 0.0, 'person_dist': 0.0
-                        },
-                        'state_valid': False
-                    }
-                    
-                    # Update state machine - this will handle initialization
-                    u, delta = self.state_machine.update(dt, sensor_data)
-                    
-                    # Don't send commands during initialization
-                    return True
-                else:
-                    self.logger.log_error("Components not initialized but not in INITIALIZING state")
-                    return False
-            
-            # Normal operation - all components should be ready
-            # Read QCar sensors
-            self.qcar.read()
-            
-            # Get current steering (for EKF prediction)
-            motor_tach = self.qcar.motorTach
-            gyro_z = self.qcar.gyroscope[2] if hasattr(self.qcar, 'gyroscope') else 0.0
+            if self.qcar is not None:
+                # Use VehicleObserver to update sensor data
+                self.vehicle_observer.update_sensor_data(self.qcar)
+                
+                # Handle YOLO logic using YOLOManager
+                self.yolo_manager.update_yolo_data(self.loop_counter)
+                
+                # Update sensor cache for compatibility
+                sensor_data = self.vehicle_observer.get_sensor_data()
+                self.sensor_data_cache.update(sensor_data)
+                
+        except Exception as e:
+            self.logger.log_error("Sensor data update error", e)
+    
+
+    
+    # ===== Observer Update Methods =====
+    def _observer_update(self, dt: float):
+        """Unified observer update - handles both local and fleet observer internally"""
+        try:
+            # Ensure state_estimator is set in VehicleObserver
+            if self.vehicle_observer.get_state_estimator() is None and self.state_estimator is not None:
+                self.vehicle_observer.set_state_estimator(self.state_estimator)
             
             # Get last steering command for EKF
             last_steering = getattr(self, '_last_steering', 0.0)
             
-            # Update state estimate with EKF fusion (GPS + IMU + odometry) 
-            # EKF stays outside the state machine as requested
-            self.state_estimator.update(
-                motor_tach=motor_tach,
-                steering=last_steering,
-                dt=dt,
-                gyro_z=gyro_z
+            # Update observer (internally handles local and fleet timing)
+            state_info = self.vehicle_observer.update_observer(
+                dt, 
+                last_steering
             )
             
-            x, y, theta, velocity, state_valid = self.state_estimator.get_state()
+            # Update current position and velocity for compatibility
+            self.current_pos = [state_info['x'], state_info['y'], state_info['theta']]
+            self.velocity = state_info['velocity']
+            self.sensor_data_cache['state_valid'] = state_info['state_valid']
             
-            # Read YOLO detections (with safety check)
-            if self.yolo is not None:
-                self.yolo.read()
+            
+            # Log observer state occasionally
+            if self.loop_counter % 200 == 0:  # Every 2 seconds at 100Hz
+                self.logger.logger.debug(
+                    f"Observer: Pos=({state_info['x']:.2f}, {state_info['y']:.2f}, {state_info['theta']:.2f}), "
+                    f"Vel={state_info['velocity']:.2f}, Valid={state_info['state_valid']}"
+                )
                 
-                # Process YOLO and get velocity gain
-                if self.yolo_drive is not None:
-                    try:
-                        self.yolo_gain = self.yolo_drive.check_yolo(
-                            self.yolo.stopSign,
-                            self.yolo.trafficlight,
-                            self.yolo.cars,
-                            self.yolo.yieldSign,
-                            self.yolo.person
-                        )
-                    except Exception as e:
-                        if self.loop_counter % 100 == 0:  # Log occasionally
-                            self.logger.log_error("YOLO drive error", e)
-                        self.yolo_gain = 1.0  # Default gain
-                else:
-                    self.yolo_gain = 1.0
-                    
-                # Prepare YOLO data
-                yolo_data = {
-                    'stop_sign': self.yolo.stopSign,
-                    'traffic_light': self.yolo.trafficlight,
-                    'cars': self.yolo.cars,
-                    'yield_sign': self.yolo.yieldSign,
-                    'person': self.yolo.person,
-                    'car_dist': getattr(self.yolo_drive, 'carDist', 0.0),
-                    'person_dist': getattr(self.yolo_drive, 'personDist', 0.0)
-                }
-            else:
-                # No YOLO available
+                # Log fleet observer status
+                fleet_states = self.vehicle_observer.get_fleet_states()
+                active_vehicles = np.sum(np.any(fleet_states != 0, axis=0))
+                self.logger.logger.debug(f"Fleet Observer: {active_vehicles} active vehicles in fleet")
                 
-                self.yolo_gain = 1.0
-                yolo_data = {
-                    'stop_sign': [0]*7, 'traffic_light': [0]*7, 'cars': [0]*7,
-                    'yield_sign': [0]*7, 'person': [0]*7, 'car_dist': 0.0, 'person_dist': 0.0
-                }
+        except Exception as e:
+            self.logger.log_error("Observer update error", e)
+    
+    # ===== Control Logic Methods =====
+    def _control_logic_update(self, dt: float) -> bool:
+        """Control logic update - state machine and vehicle commands"""
+        try:
+            # Check if components are initialized
+            if self.qcar is None or self.state_estimator is None:
+                return self._handle_initialization_control(dt)
+            
+            # Get current state from VehicleObserver
+            state_info = self.vehicle_observer.get_estimated_state_for_control()
+            x, y, theta, velocity = state_info['x'], state_info['y'], state_info['theta'], state_info['velocity']
+            state_valid = state_info['state_valid']
+            
+            # Prepare YOLO data
+            yolo_data = self.yolo_manager.get_yolo_data()
             
             # Prepare sensor data for state machine
             sensor_data = {
-                'x': x,
-                'y': y,
-                'theta': theta,
-                'velocity': velocity,
-                'motor_tach': motor_tach,
-                'gyro_z': gyro_z,
+                'x': x, 'y': y, 'theta': theta, 'velocity': velocity,
+                'motor_tach': state_info['motor_tach'],
+                'gyro_z': state_info['gyro_z'],
                 'yolo_data': yolo_data,
                 'state_valid': state_valid
             }
             
-            # Update state machine - it handles all state logic and transitions internally
+            # Update state machine - it handles all state logic and transitions
             u, delta = self.state_machine.update(dt, sensor_data)
             
-            # Store steering for next EKF update
+            # Store steering and throttle for next EKF update and telemetry
             self._last_steering = delta
+            self._last_u = u
             
             # Send commands to vehicle hardware
             if self.qcar is not None:
                 self.qcar.write(throttle=u, steering=delta)
             
-            # Send telemetry (non-blocking via queue)
-            if self.loop_counter % 10 == 0:  # Send telemetry every 10 iterations (20Hz at 200Hz loop for better V2V)
-                self._queue_telemetry(x, y, theta, velocity, u, delta)
-            
-            # Process V2V messages (separate from telemetry sending)
-            if self.loop_counter % 5 == 0:  # Process V2V messages every 5 iterations = 40Hz
-                self._process_v2v_messages()
-            
-            # Receive commands (non-blocking via queue)
-            if self.loop_counter % 10 == 0:  # Check every 10 iterations = 20Hz
-                self._process_queued_commands()
-            
             return True
             
         except Exception as e:
-            self.logger.log_error("Control iteration error", e)
+            self.logger.log_error("Control logic update error", e)
             return False
+    
+    def _handle_initialization_control(self, dt: float) -> bool:
+        """Handle control during initialization phase"""
+        try:
+            # During initialization, just update state machine without sensor readings
+            if hasattr(self.state_machine, 'state') and self.state_machine.state == VehicleState.INITIALIZING:
+                # Minimal sensor data for initialization
+                sensor_data = {
+                    'x': 0.0, 'y': 0.0, 'theta': 0.0, 'velocity': 0.0,
+                    'motor_tach': 0.0, 'gyro_z': 0.0,
+                    'yolo_data': self.yolo_manager.get_default_yolo_data(),
+                    'state_valid': False
+                }
+                
+                # Update state machine - this will handle initialization
+                u, delta = self.state_machine.update(dt, sensor_data)
+                
+                # Don't send commands during initialization
+                return True
+            else:
+                self.logger.log_error("Components not initialized but not in INITIALIZING state")
+                return False
+                
+        except Exception as e:
+            self.logger.log_error("Initialization control error", e)
+            return False
+    
+
+    
+    # ===== Communication Handling Methods =====
+    def _handle_communication(self):
+        """Handle all communication tasks"""
+        try:
+            current_time = time.time()
+            
+            # 1. Send telemetry
+            self._send_telemetry()
+            
+            # 2. Process ground station commands
+            self._process_queued_commands()
+            
+            # 3. Broadcast own state for V2V
+            self._broadcast_v2v_state()
+            
+            # V2V status is now reported only when it changes (event-driven)
+            # Removed periodic reporting since TCP/IP ensures reliable delivery
+            
+        except Exception as e:
+            self.logger.log_error("Communication handling error", e)
+    
+    def _send_telemetry(self):
+        """Send telemetry data to ground station"""
+        try:
+            if not hasattr(self, 'vehicle_observer') or self.vehicle_observer is None:
+                return
+                
+            # Get state from VehicleObserver
+            state_info = self.vehicle_observer.get_estimated_state_for_control()
+            x, y, theta, velocity = state_info['x'], state_info['y'], state_info['theta'], state_info['velocity']
+            u = getattr(self, '_last_u', 0.0)
+            delta = getattr(self, '_last_steering', 0.0)
+            
+            self._queue_telemetry(x, y, theta, velocity, u, delta)
+            
+        except Exception as e:
+            self.logger.log_error("Telemetry sending error", e)
+    
+    def _broadcast_v2v_state(self):
+        """Broadcast vehicle state to V2V network using V2VManager"""
+        try:
+            if not hasattr(self, 'v2v_manager') or self.v2v_manager is None:
+                return
+                
+            # V2VManager handles all broadcast logic with different frequencies
+            # Local state: 20Hz, Fleet state: 5Hz, Heartbeat: 1Hz
+            broadcast_sent = self.v2v_manager.update_broadcast()
+            
+            # Periodic logging of V2V activity (every 5 seconds)
+            if hasattr(self, '_last_v2v_log_time'):
+                if time.time() - self._last_v2v_log_time > 5.0:
+                    self._log_v2v_activity()
+                    self._last_v2v_log_time = time.time()
+            else:
+                self._last_v2v_log_time = time.time()
+                
+        except Exception as e:
+            self.logger.log_error("V2V state broadcast error", e)
+    
+    def _log_v2v_activity(self):
+        """Log V2V communication activity summary"""
+        try:
+            if hasattr(self, 'v2v_manager') and self.v2v_manager:
+                stats = self.v2v_manager.get_statistics()
+                comm_stats = self.v2v_communication.get_statistics() if hasattr(self, 'v2v_communication') else {}
+                
+                self.logger.logger.info(f"[V2V] Activity Summary - Broadcasts: Local={stats.get('local_broadcasts', 0)}, Fleet={stats.get('fleet_broadcasts', 0)}")
+                self.logger.logger.info(f"[V2V] Messages: Sent={comm_stats.get('messages_sent', 0)}, Recv={comm_stats.get('messages_received', 0)}")
+                self.logger.logger.info(f"[V2V] Peers: {len(self.v2v_communication.get_connected_peers()) if hasattr(self, 'v2v_communication') else 0} connected")
+                
+        except Exception as e:
+            self.logger.log_error("V2V activity logging error", e)
     
     def _queue_telemetry(self, x: float, y: float, theta: float, velocity: float, u: float, delta: float):
         """Queue telemetry data for non-blocking transmission"""
@@ -306,18 +474,19 @@ class VehicleLogic:
             'v': float(velocity),         # Changed from 'velocity' to 'v' for GUI compatibility
             'u': float(u),                # Changed from 'throttle' to 'u' for GUI compatibility
             'delta': float(delta),        # Changed from 'steering' to 'delta' for compatibility
-            'v_ref': float(self.v_ref * self.yolo_gain),
-            'yolo_gain': float(self.yolo_gain),
+            'v_ref': float(self.v_ref * self.yolo_manager.get_yolo_gain()),
+            'yolo_gain': float(self.yolo_manager.get_yolo_gain()),
             'waypoint_index': self.steering_controller.get_waypoint_index() if self.steering_controller else 0,
             'cross_track_error': float(self.steering_controller.get_errors()[0]) if self.steering_controller else 0.0,
             'heading_error': float(self.steering_controller.get_errors()[1]) if self.steering_controller else 0.0,
             'state': self.state_machine.state.name if hasattr(self.state_machine, 'state') and self.state_machine.state else 'UNKNOWN',
-            'gps_valid': self.state_estimator.state_valid if self.state_estimator else False,
-            # V2V UDP status in telemetry for GUI updates
-            'v2v_active': self.v2v_communication.is_active if hasattr(self, 'v2v_communication') else False,
-            'v2v_peers': len(self.v2v_communication.get_connected_peers()) if hasattr(self, 'v2v_communication') else 0,
-            'v2v_protocol': 'UDP' if hasattr(self, 'v2v_communication') and self.v2v_communication.is_active else 'None',
-            'v2v_rate_hz': self.v2v_communication.get_statistics().get('actual_rate_hz', 0.0) if hasattr(self, 'v2v_communication') and self.v2v_communication.is_active else 0.0
+            'gps_valid': self.vehicle_observer.is_state_valid() if hasattr(self, 'vehicle_observer') and self.vehicle_observer else False,
+            # V2V Manager status in telemetry for GUI updates
+            'v2v_active': (hasattr(self, 'v2v_communication') and self.v2v_communication.is_active) if hasattr(self, 'v2v_communication') else False,
+            'v2v_peers': len(self.v2v_communication.get_connected_peers()) if (hasattr(self, 'v2v_communication') and self.v2v_communication.is_active) else 0,
+            'v2v_protocol': 'UDP-Manager' if (hasattr(self, 'v2v_manager') and self.v2v_manager.is_active()) else 'None',
+            'v2v_local_rate': self.v2v_manager.config.local_state_frequency if hasattr(self, 'v2v_manager') else 0.0,
+            'v2v_fleet_rate': self.v2v_manager.config.fleet_state_frequency if hasattr(self, 'v2v_manager') else 0.0
             # Platoon telemetry
             # **self.platoon_controller.get_telemetry()
         }
@@ -339,49 +508,21 @@ class VehicleLogic:
                 if self.loop_counter % 100 == 0:  # Log error only occasionally to avoid spam
                     self.logger.log_error("Telemetry transmission error", e)
         
-            # Send V2V telemetry separately and simplified
-            self._send_v2v_telemetry(x, y, theta, velocity)
-        
         self.telemetry_counter += 1
-    
-    def _send_v2v_telemetry(self, x: float, y: float, theta: float, velocity: float):
-        """Send V2V telemetry data - optimized for UDP high-frequency"""
-        try:
-            if not hasattr(self, 'v2v_communication') or not self.v2v_communication.is_active:
-                return
-            
-            # Send V2V telemetry using optimized high-frequency method (20Hz rate-limited)
-            if self.telemetry_counter % 10 == 0:  # Try every 10 iterations, but V2V will rate-limit to 20Hz
-                vehicle_state = {
-                    'x': x, 
-                    'y': y, 
-                    'theta': theta, 
-                    'velocity': velocity,
-                    'v_ref': self.v_ref * self.yolo_gain,
-                    'state': self.state_machine.state.name if hasattr(self.state_machine, 'state') and self.state_machine.state else 'UNKNOWN',
-                    'waypoint_index': self.steering_controller.get_waypoint_index() if self.steering_controller else 0,
-                    'gps_valid': self.state_estimator.state_valid if self.state_estimator else False
-                }
-                
-                # Use high-frequency optimized V2V telemetry method (UDP rate-limited to 20Hz)
-                success = self.v2v_communication.send_telemetry(vehicle_state)
-                
-                # Log performance stats occasionally
-                if success and self.telemetry_counter % 100 == 0:  # Every 100 tries
-                    v2v_stats = self.v2v_communication.get_statistics()
-                    self.logger.logger.info(f"[V2V UDP] {v2v_stats['actual_rate_hz']:.1f}Hz to {v2v_stats['peer_count']} peers (Sent: {v2v_stats['messages_sent']}, Recv: {v2v_stats['messages_received']})")
-            
-            # Report V2V status to Ground Station every 5 seconds (more frequent for UDP monitoring)
-            if self.telemetry_counter % 100 == 0:
-                self._report_v2v_status()
-                
-        except Exception as e:
-            self.logger.log_error("V2V telemetry sending error", e)
     
     def _report_v2v_status(self):
         """Report V2V connection status - simplified"""
         try:
             if not hasattr(self, 'v2v_communication') or not self.v2v_communication.is_active:
+                # Report inactive status
+                self._report_v2v_status_to_gs({
+                    'status': 'inactive',
+                    'vehicle_id': self.config.network.car_id,
+                    'connected_peers': 0,
+                    'expected_peers': 0,
+                    'peer_list': [],
+                    'timestamp': time.time()
+                })
                 return
             
             v2v_stats = self.v2v_communication.get_statistics()
@@ -389,12 +530,23 @@ class VehicleLogic:
             is_fully_connected = self.v2v_communication.is_fully_connected()
             connection_summary = self.v2v_communication.get_connection_summary()
             
+            # Calculate expected peers
+            expected_peers = len([v for v in self.v2v_communication.peer_vehicles if v != self.config.network.car_id])
+            
+            # Determine status
+            if is_fully_connected and expected_peers > 0:
+                status = 'active'  # Use 'active' instead of 'connected' for periodic updates
+            elif len(connected_peers) > 0:
+                status = 'active'
+            else:
+                status = 'disconnected'
+            
             # Report to Ground Station with UDP performance metrics
             status_data = {
-                'status': 'connected' if is_fully_connected else 'active',
+                'status': status,
                 'vehicle_id': self.config.network.car_id,
                 'connected_peers': len(connected_peers),
-                'expected_peers': len([v for v in self.v2v_communication.peer_vehicles if v != self.config.network.car_id]),
+                'expected_peers': expected_peers,
                 'peer_list': connected_peers,
                 'messages_sent': v2v_stats.get('messages_sent', 0),
                 'messages_received': v2v_stats.get('messages_received', 0),
@@ -408,131 +560,31 @@ class VehicleLogic:
             
             self._report_v2v_status_to_gs(status_data)
             
-            # Log status
-            if is_fully_connected:
-                self.logger.logger.info(
-                    f"V2V STATUS: {connection_summary} | "
-                    f"Sent: {v2v_stats.get('messages_sent', 0)}, Received: {v2v_stats.get('messages_received', 0)}"
-                )
+            # Log status occasionally
+            if hasattr(self, '_v2v_log_counter'):
+                self._v2v_log_counter += 1
             else:
-                expected_count = len([v for v in self.v2v_communication.peer_vehicles if v != self.config.network.car_id])
-                self.logger.logger.warning(
-                    f"V2V STATUS: {connection_summary} | "
-                    f"Connected: {len(connected_peers)}/{expected_count} | Peers: {connected_peers}"
-                )
+                self._v2v_log_counter = 1
+                
+            if self._v2v_log_counter % 10 == 0:  # Every 20 seconds (10 * 2 second interval)
+                if is_fully_connected:
+                    self.logger.logger.debug(
+                        f"V2V STATUS: {connection_summary} | "
+                        f"Sent: {v2v_stats.get('messages_sent', 0)}, Received: {v2v_stats.get('messages_received', 0)}"
+                    )
+                else:
+                    self.logger.logger.debug(
+                        f"V2V STATUS: {connection_summary} | "
+                        f"Connected: {len(connected_peers)}/{expected_peers} | Peers: {connected_peers}"
+                    )
                 
         except Exception as e:
             self.logger.log_error("V2V status reporting error", e)
     
-    def _process_v2v_messages(self):
-        """Process incoming V2V messages - called frequently for responsive communication"""
-        try:
-            if not hasattr(self, 'v2v_communication') or not self.v2v_communication.is_active:
-                return
-            
-            # Get and process pending messages (higher throughput for UDP)
-            messages = self.v2v_communication.get_messages(max_count=20)  # Process more messages per iteration
-            
-            # Debug: Print when we actually get messages (less frequent for UDP performance)
-            if messages and len(messages) > 5:  # Only log when significant message volume
-                self.logger.logger.debug(f"[V2V-UDP] Car {self.config.network.car_id} processing {len(messages)} V2V messages")
-            
-            # Process each message immediately
-            for message in messages:
-                if message.message_type == 'telemetry':
-                    # Initialize storage if needed
-                    if not hasattr(self, 'peer_data_storage'):
-                        self.peer_data_storage = {}
-                        self.peer_message_counts = {}
-                    
-                    # Store peer data for analysis
-                    self.peer_data_storage[message.sender_id] = {
-                        'position': message.data.get('position', [0, 0]),
-                        'velocity': message.data.get('velocity', 0),
-                        'heading': message.data.get('heading', 0),
-                        'state': message.data.get('state', 'UNKNOWN'),
-                        'last_update': time.time(),
-                        'v_ref': message.data.get('v_ref', 0),
-                        'yolo_gain': message.data.get('yolo_gain', 1.0)
-                    }
-                    
-                    self.peer_message_counts[message.sender_id] = self.peer_message_counts.get(message.sender_id, 0) + 1
-                    
-                    # # Debug: Print every received message for troubleshooting
-                    # print(f"[V2V] Car {self.config.network.car_id} PROCESSED telemetry from Car {message.sender_id} (#{self.peer_message_counts[message.sender_id]})")
-            
-            # Log message processing every 2 seconds
-            if messages and self.loop_counter % 400 == 0:
-                total_received = sum(self.peer_message_counts.values()) if hasattr(self, 'peer_message_counts') else 0
-                self.logger.logger.info(
-                    f"V2V MESSAGES: Processed {len(messages)} messages | "
-                    f"Total received: {total_received} | "
-                    f"Peers: {list(self.peer_message_counts.keys()) if hasattr(self, 'peer_message_counts') else []}"
-                )
-                
-        except Exception as e:
-            self.logger.log_error("V2V message processing error", e)
-            print(f"[V2V ERROR] Car {self.config.network.car_id} message processing error: {e}")
+    # V2V messages are now processed automatically via V2VManager
+    # No need for manual polling - this eliminates duplicate processing
     
-    def _analyze_peer_data(self):
-        """Analyze collected peer data for safety and coordination insights"""
-        try:
-            if not hasattr(self, 'peer_data_storage') or not self.peer_data_storage:
-                return
-            
-            current_time = time.time()
-            my_x, my_y, my_theta, my_velocity, _ = self.state_estimator.get_state() if self.state_estimator else (0, 0, 0, 0, True)
-            
-            analysis_summary = []
-            close_peers = []
-            
-            for peer_id, peer_data in self.peer_data_storage.items():
-                # Check if data is recent (within last 5 seconds)
-                data_age = current_time - peer_data.get('last_update', 0)
-                if data_age > 5.0:
-                    continue
-                
-                # Calculate relative position and distance
-                peer_pos = peer_data.get('position', [0, 0])
-                distance = ((my_x - peer_pos[0])**2 + (my_y - peer_pos[1])**2)**0.5
-                
-                peer_vel = peer_data.get('velocity', 0)
-                peer_state = peer_data.get('state', 'UNKNOWN')
-                msg_count = self.peer_message_counts.get(peer_id, 0)
-                
-                analysis_summary.append(
-                    f"Car {peer_id}: Dist={distance:.1f}m, Vel={peer_vel:.1f}m/s, "
-                    f"State={peer_state}, Msgs={msg_count}, Age={data_age:.1f}s"
-                )
-                
-                # Track close peers for safety
-                if distance < 10.0:  # Within 10 meters
-                    close_peers.append((peer_id, distance, peer_vel))
-            
-            # Log comprehensive analysis
-            if analysis_summary:
-                self.logger.logger.info(
-                    f"V2V PEER ANALYSIS: {len(analysis_summary)} active peers | " + 
-                    " | ".join(analysis_summary)
-                )
-            
-            # Log close peers for safety awareness
-            if close_peers:
-                close_summary = ", ".join([f"Car {pid}({dist:.1f}m@{vel:.1f}m/s)" for pid, dist, vel in close_peers])
-                self.logger.logger.warning(f"V2V CLOSE PEERS: {close_summary}")
-            
-            # Report fleet status when fully connected - only if we have active peer data
-            if analysis_summary:
-                connected_peers = self.v2v_communication.get_connected_peers()
-                if len(connected_peers) >= len(self.v2v_communication.peer_vehicles) - 1:
-                    self.logger.logger.info(
-                        f"V2V FLEET STATUS: FULLY CONNECTED | "
-                        f"Car {self.config.network.car_id} coordinating with {len(connected_peers)} peers | "
-                        f"Active data from {len(analysis_summary)} vehicles | Summary: " + " | ".join(analysis_summary)
-                    )
-            
-        except Exception as e:
-            self.logger.log_error("V2V peer data analysis error", e)
+    
     
     def _process_queued_commands(self):
         """Process commands from queue (non-blocking)"""
@@ -573,7 +625,12 @@ class VehicleLogic:
                 gyro_z=gyro_z
             )
             
-            x, y, theta, _, _ = self.state_estimator.get_state()
+            # Get current position from VehicleObserver
+            if hasattr(self, 'vehicle_observer') and self.vehicle_observer:
+                state_info = self.vehicle_observer.get_estimated_state_for_control()
+                x, y, theta = state_info['x'], state_info['y'], state_info['theta']
+            else:
+                x, y, theta = 0, 0, 0
             init_pose = np.array([x, y, theta])
             
             self.logger.logger.info(f"Initial pose: x={x:.2f}, y={y:.2f}, theta={theta:.2f}")
@@ -649,143 +706,60 @@ class VehicleLogic:
             self.logger.log_error("Ground Station initialization failed", e)
             return False
     
-    def _setup_v2v_handlers(self):
-        """Setup V2V message handlers for cooperative driving"""
-        try:
-            # Initialize peer data storage
-            if not hasattr(self, 'peer_data_storage'):
-                self.peer_data_storage = {}
-                self.peer_message_counts = {}
-            
-            # Handler for receiving telemetry from other vehicles
-            def handle_peer_telemetry(message):
-                peer_id = message.sender_id
-                peer_data = message.data
-                current_time = time.time()
-                
-                # Store peer data for analysis
-                self.peer_data_storage[peer_id] = {
-                    'position': peer_data.get('position', [0, 0]),
-                    'heading': peer_data.get('heading', 0),
-                    'velocity': peer_data.get('velocity', 0),
-                    'v_ref': peer_data.get('v_ref', 0),
-                    'yolo_gain': peer_data.get('yolo_gain', 1.0),
-                    'state': peer_data.get('state', 'UNKNOWN'),
-                    'waypoint_index': peer_data.get('waypoint_index', 0),
-                    'cross_track_error': peer_data.get('cross_track_error', 0.0),
-                    'heading_error': peer_data.get('heading_error', 0.0),
-                    'gps_valid': peer_data.get('gps_valid', False),
-                    'is_fully_connected': peer_data.get('is_fully_connected', False),
-                    'last_update': current_time,
-                    'timestamp': peer_data.get('timestamp', current_time)
-                }
-                
-                # Count messages from each peer
-                self.peer_message_counts[peer_id] = self.peer_message_counts.get(peer_id, 0) + 1
-                msg_count = self.peer_message_counts.get(peer_id, 0)
-                
-                # Enhanced logging of received telemetry - log every 5 messages (independent of loop counter)
-                if msg_count % 5 == 0:
-                    position = peer_data.get('position', [0, 0])
-                    velocity = peer_data.get('velocity', 0)
-                    state = peer_data.get('state', 'UNKNOWN')
-                    
-                    self.logger.logger.info(
-                        f"V2V TELEMETRY RECEIVED: From Car {peer_id} | "
-                        f"Position: ({position[0]:.2f}, {position[1]:.2f}), "
-                        f"Vel: {velocity:.2f}m/s, State: {state} | "
-                        f"Messages: {msg_count}, Latency: {(current_time - peer_data.get('timestamp', current_time)) * 1000:.1f}ms"
-                    )
-                
-                # Use peer data for collision avoidance, coordination, etc.
-                if hasattr(self, 'collision_avoidance'):
-                    try:
-                        # Only call if method exists
-                        if hasattr(self.collision_avoidance, 'update_peer_vehicle'):
-                            self.collision_avoidance.update_peer_vehicle(peer_id, peer_data)
-                    except Exception as e:
-                        # Silently ignore collision avoidance update errors
-                        pass
-            
-            # Handler for receiving driving intents from other vehicles
-            def handle_peer_intent(message):
-                peer_id = message.sender_id
-                intent_data = message.data
-                intention = intent_data.get('intention', 'unknown')
-                
-                self.logger.logger.info(f"V2V: Peer {peer_id} intent: {intention}")
-                
-                # TODO: React to peer intentions (lane change, merge, etc.)
-            
-            # Handler for receiving warnings from other vehicles
-            def handle_peer_warning(message):
-                peer_id = message.sender_id
-                warning_data = message.data
-                warning_type = warning_data.get('warning_type', 'unknown')
-                urgency = warning_data.get('urgency', 'low')
-                
-                self.logger.logger.warning(
-                    f"V2V: Warning from peer {peer_id}: {warning_type} (urgency: {urgency})"
-                )
-                
-                # TODO: React to warnings (emergency brake, route change, etc.)
-                if urgency == 'critical' and hasattr(self, 'state_machine'):
-                    # Example: trigger emergency response for critical warnings
-                    pass
-            
-            # Register message handlers
-            self.v2v_communication.register_message_handler('telemetry', handle_peer_telemetry)
-            self.v2v_communication.register_message_handler('intent', handle_peer_intent)
-            self.v2v_communication.register_message_handler('warning', handle_peer_warning)
-            
-            self.logger.logger.info("V2V message handlers registered")
-            
-        except Exception as e:
-            self.logger.log_error("V2V handler setup failed", e)
     
     def activate_v2v(self, peer_vehicles: list, peer_ips: list) -> bool:
         """Activate V2V communication with specified peers"""
         try:
-            success = self.v2v_communication.activate(peer_vehicles, peer_ips)
-            if success:
-                # Don't block the main loop waiting for connections
-                # Just report that activation started
-                
-                total_expected = len([v for v in peer_vehicles if v != self.config.network.car_id])
-                
-                self.logger.logger.info(f"V2V service started. Waiting for {total_expected} peers...")
-                
-                # Report V2V activation to Ground Station (status='activating')
-                self._report_v2v_status_to_gs({
-                    'status': 'activating',
-                    'expected_peers': total_expected,
-                    'connected_peers': 0,
-                    'peer_list': [],
-                    'vehicle_id': self.config.network.car_id,
-                    'timestamp': time.time()
-                })
-                
-                # Return True if service started successfully
-                return True
-            else:
-                self.logger.logger.error("Failed to activate V2V communication")
-                # Report failure to Ground Station
-                self._report_v2v_status_to_gs({
-                    'status': 'failed',
-                    'error': 'activation_failed',
-                    'vehicle_id': self.config.network.car_id,
-                    'timestamp': time.time()
-                })
+            if not self.v2v_communication or not self.v2v_manager:
+                self.logger.log_error("V2V communication not initialized")
                 return False
+            
+            self.logger.logger.info(f"Activating V2V communication with peers: {peer_vehicles} at IPs: {peer_ips}")
+            
+            # Calculate actual fleet size: peers + this vehicle
+            actual_fleet_size = len(peer_vehicles) + 1
+            
+            # Reinitialize VehicleObserver fleet estimation with actual fleet information
+            if self.vehicle_observer:
+                self.logger.logger.info(f"Reinitializing fleet estimation for {actual_fleet_size} vehicles")
+                self.vehicle_observer.reinitialize_fleet_estimation(actual_fleet_size, peer_vehicles)
+            
+            # Activate V2V communication layer
+            comm_success = self.v2v_communication.activate(peer_vehicles, peer_ips)
+            
+            if comm_success:
+                # Activate V2V manager (which uses the communication layer)
+                manager_success = self.v2v_manager.activate(peer_vehicles, peer_ips)
+                
+                if manager_success:
+                    self.logger.logger.info(f"V2V communication activated successfully for fleet of {actual_fleet_size} vehicles")
+                    total_expected = len([v for v in peer_vehicles if v != self.config.network.car_id])
+
+                    # Report activation status immediately
+                    self._report_v2v_status_to_gs({
+                        'status': 'activated',
+                        'peer_count': len(peer_vehicles),
+                        'peer_vehicles': peer_vehicles,                    
+                        'expected_peers': total_expected,
+                        'peer_list': [],
+                        'vehicle_id': self.config.network.car_id,
+                        'timestamp': time.time(),
+                        'fleet_size': actual_fleet_size,
+                        'protocol': 'UDP-Manager'
+                    })
+                    
+                    return True
+                else:
+                    self.logger.log_error("V2V manager activation failed")
+                    # Clean up communication if manager failed
+                    self.v2v_communication.deactivate()
+                    return False
+            else:
+                self.logger.log_error("V2V communication layer activation failed")
+                return False
+                
         except Exception as e:
-            self.logger.log_error("V2V activation error", e)
-            # Report error to Ground Station
-            self._report_v2v_status_to_gs({
-                'status': 'error',
-                'error': str(e),
-                'vehicle_id': self.config.network.car_id,
-                'timestamp': time.time()
-            })
+            self.logger.log_error("V2V activation failed", e)
             return False
     
     def disable_v2v(self):
@@ -882,12 +856,18 @@ class VehicleLogic:
         if self.client_Ground_Station:
             self.client_Ground_Station.close()
         
-        # Shutdown V2V communication
+        # Shutdown V2V Manager and communication
+        if hasattr(self, 'v2v_manager'):
+            try:
+                self.v2v_manager.deactivate()
+            except Exception as e:
+                self.logger.logger.error(f"V2V manager shutdown error: {e}")
+        
         if hasattr(self, 'v2v_communication'):
             try:
                 self.v2v_communication.deactivate()
             except Exception as e:
-                self.logger.log_error("V2V shutdown error", e)
+                self.logger.logger.error(f"V2V communication shutdown error: {e}")
         
         # Log final statistics
         self.logger.logger.info("="*60)

@@ -387,7 +387,7 @@ class EnhancedQCarGUIController:
         
         # V2V Status Indicator (New)
         v2v_indicator = tk.Label(header,
-                                text="📡 V2V: Off",
+                                text="📡 V2V: OFF",
                                 bg='#1a1a1a',
                                 fg='#888888', # Gray initially
                                 font=('Segoe UI', 12, 'bold'),
@@ -1251,6 +1251,44 @@ class EnhancedQCarGUIController:
                             # State
                             state = telemetry.get('state', 'Unknown')
                             labels['state'].config(text=state)
+                        
+                        # Update V2V indicator from telemetry data (throttled to avoid rapid flickering)
+                        if car_id in self.v2v_indicators:
+                            v2v_active = telemetry.get('v2v_active', False) if telemetry else False
+                            v2v_peers = telemetry.get('v2v_peers', 0) if telemetry else 0
+                            
+                            # Throttle V2V indicator updates to prevent frequent changes
+                            if not hasattr(self, '_v2v_update_counters'):
+                                self._v2v_update_counters = {}
+                            if car_id not in self._v2v_update_counters:
+                                self._v2v_update_counters[car_id] = 0
+                            
+                            self._v2v_update_counters[car_id] += 1
+                            
+                            # Only update V2V indicator every 5 seconds (5 updates at 2Hz) and only when status changes
+                            if self._v2v_update_counters[car_id] % 10 == 0:  # Every 10 updates (20 seconds at 2Hz)
+                                if v2v_active and v2v_peers > 0:
+                                    new_text = f"📡 V2V: ON ({v2v_peers})"
+                                    new_color = '#4caf50'
+                                else:
+                                    new_text = "📡 V2V: OFF"
+                                    new_color = '#888888'
+                                
+                                # Only update if text actually changed to prevent unnecessary redraws
+                                current_text = self.v2v_indicators[car_id]['text']
+                                if current_text != new_text:
+                                    self.v2v_indicators[car_id].config(text=new_text, fg=new_color)
+                            
+                            # Debug: Log V2V indicator updates (only occasionally)
+                            if car_id == 0 and self._v2v_update_counters[car_id] % 50 == 0:  # Every 50 updates (50 seconds)
+                                self.log(f"[DEBUG] Car {car_id} V2V status: active={v2v_active}, peers={v2v_peers}", 'INFO')
+                        else:
+                            # Debug: Log missing V2V indicator
+                            if car_id == 0 and hasattr(self, '_missing_indicator_logged'):
+                                pass  # Don't log repeatedly
+                            elif car_id == 0:
+                                self.log(f"[DEBUG] Car {car_id} V2V indicator missing from self.v2v_indicators", 'WARNING')
+                                self._missing_indicator_logged = True
                 
                 # Update fleet status
                 fleet_stats = self.controller.get_fleet_status()
@@ -1305,6 +1343,10 @@ class EnhancedQCarGUIController:
                         elif v2v_status.get('status') == 'connected':
                             v2v_active = True
                             v2v_peers = v2v_status.get('peers', 0)
+                        else:
+                            # Either disconnected or not active
+                            v2v_active = False
+                            v2v_peers = 0
                         
                         debug_info.append(f"Car {car_id}: active={v2v_active}, peers={v2v_peers}")
                         
@@ -1317,7 +1359,7 @@ class EnhancedQCarGUIController:
                     else:
                         self._debug_counter = 0
                         
-                    if self._debug_counter % 30 == 0:  # Every 30 seconds
+                    if self._debug_counter % 60 == 0:  # Every 120 seconds (2 minutes)
                         self.log(f"[DEBUG] V2V Status Check: {'; '.join(debug_info)} | Fully connected: {cars_with_v2v}/{len(self.connected_cars)}", 'INFO')
                     
                     if cars_with_v2v == len(self.connected_cars):
@@ -1350,11 +1392,11 @@ class EnhancedQCarGUIController:
                     if self.v2v_btn['text'] != '📡 Activating...' and self.v2v_btn['state'] != 'normal':
                         self.v2v_btn.config(state='normal', bg='#ff9800', text="📡 V2V Active")
                 
-                time.sleep(1.0)  # Slower update rate to reduce panel flickering
+                time.sleep(2.0)  # Slower update rate to reduce panel flickering and V2V indicator changes
                 
             except Exception as e:
                 print(f"Update loop error: {e}")
-                time.sleep(1.0)
+                time.sleep(2.0)
     
     def process_v2v_status(self, car_id: int, v2v_data: dict):
         """Process V2V status reports from vehicles"""
@@ -1381,9 +1423,9 @@ class EnhancedQCarGUIController:
                     'peer_list': peer_list
                 }
                 
-                # Update GUI indicator
+                # Update GUI indicator - show peer count
                 if hasattr(self, 'v2v_indicators') and car_id in self.v2v_indicators:
-                     self.v2v_indicators[car_id].config(text="📡 V2V: ON", fg='#4caf50')
+                     self.v2v_indicators[car_id].config(text=f"📡 V2V: ON ({connected_peers})", fg='#4caf50')
                 
                 self.log(f"Car {car_id}: V2V connected to {connected_peers}/{expected_peers} peers: {peer_list}", 'SUCCESS')
                 
@@ -1403,14 +1445,14 @@ class EnhancedQCarGUIController:
                 
                 # Update GUI indicator for active state too if connected
                 if connected_peers > 0 and hasattr(self, 'v2v_indicators') and car_id in self.v2v_indicators:
-                     self.v2v_indicators[car_id].config(text="📡 V2V: ON", fg='#4caf50')
+                     self.v2v_indicators[car_id].config(text=f"📡 V2V: ON ({connected_peers})", fg='#4caf50')
                 
             elif status == 'failed':
                 error = v2v_data.get('error', 'unknown')
                 self.v2v_status[car_id] = {'status': 'failed', 'error': error}
                 
                 if hasattr(self, 'v2v_indicators') and car_id in self.v2v_indicators:
-                     self.v2v_indicators[car_id].config(text="📡 V2V: Err", fg='#f44336')
+                     self.v2v_indicators[car_id].config(text="📡 V2V: ERROR", fg='#f44336')
                      
                 self.log(f"Car {car_id}: V2V connection failed - {error}", 'ERROR')
                 
@@ -1418,7 +1460,7 @@ class EnhancedQCarGUIController:
                 self.v2v_status[car_id] = {'status': 'disconnected', 'peers': 0}
                 
                 if hasattr(self, 'v2v_indicators') and car_id in self.v2v_indicators:
-                     self.v2v_indicators[car_id].config(text="📡 V2V: Off", fg='#888888')
+                     self.v2v_indicators[car_id].config(text="📡 V2V: OFF", fg='#888888')
                      
                 self.log(f"Car {car_id}: V2V disconnected", 'WARNING')
                 
