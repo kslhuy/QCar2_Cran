@@ -210,7 +210,7 @@ t=3.0s:  velocity=0.75, throttle=0.005 (steady state, minimal integral)
 
 ## Files Modified
 
-1. **vehicle_controller.py**
+1. **vehicle_logic.py**
    - `_compute_control()`: Added 1-second startup delay
    - Multiple locations: Added `self.speed_controller.ei = 0` before motion states
 

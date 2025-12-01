@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Multi-Observer for Multiple QCar YOLO Streams
+multi-probing for Multiple QCar YOLO Streams
 
 Creates separate observer windows for each QCar that is probing.
 Each observer listens on a different port to avoid conflicts.
@@ -28,8 +28,11 @@ def launch_observer(observer, car_id):
     print(f"Launching observer for QCar {car_id}...")
     try:
         observer.launch()
+        print(f"Observer for QCar {car_id} started successfully")
     except Exception as e:
         print(f"Error in QCar {car_id} observer: {e}")
+        import traceback
+        traceback.print_exc()
 
 def main():
     parser = argparse.ArgumentParser(description="Multi-QCar Observer")

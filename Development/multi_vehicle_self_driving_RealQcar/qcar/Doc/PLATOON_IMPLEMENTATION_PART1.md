@@ -143,7 +143,7 @@ After 3 seconds:
 
 ## Integration Points
 
-### In vehicle_controller.py (next step):
+### In vehicle_logic.py (next step):
 ```python
 # 1. Initialize platoon controller
 self.platoon_controller = PlatoonController(config, logger)
@@ -197,7 +197,7 @@ telemetry = {
 
 ## Next Steps
 
-1. **Integrate into vehicle_controller.py**:
+1. **Integrate into vehicle_logic.py**:
    - Add platoon controller initialization
    - Add platoon state logic in control loop
    - Handle platoon velocity commands
@@ -213,4 +213,4 @@ telemetry = {
    - Monitor formation status
    - Display spacing & readiness
 
-Would you like me to proceed with vehicle_controller.py integration next?
+Would you like me to proceed with vehicle_logic.py integration next?

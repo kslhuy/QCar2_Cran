@@ -20,7 +20,7 @@ from pal.utilities.math import wrap_to_pi
 from hal.content.qcar_functions import QCarEKF
 from hal.products.mats import SDCSRoadMap
 import argparse
-from utils import YOLOReceiver, YOLODriveLogic
+from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
 
 parser = argparse.ArgumentParser(prog='Vehicle control')
 parser.add_argument('-c','--calibrate', default=False)

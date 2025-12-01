@@ -209,7 +209,7 @@ class StateEstimator:
     
     def __init__(self, gps, initial_pose=None, logger=None, use_ekf=True):
         self.gps = gps
-        self.logger = logger
+        self.vehicle_logger = logger
         self.use_ekf = use_ekf
         
         # Initialize EKF if using state estimation
@@ -309,8 +309,8 @@ class StateEstimator:
                 return self.state_valid
                 
             except Exception as e:
-                if self.logger:
-                    self.logger.log_error("State estimation failed", e)
+                if self.vehicle_logger:
+                    self.vehicle_logger.log_error("State estimation failed", e)
                 self.state_valid = False
                 return False
     

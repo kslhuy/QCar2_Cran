@@ -17,7 +17,7 @@
 ### Option 1: Basic Run (Single Car)
 ```powershell
 cd qcar
-python vehicle_control_refactored.py --car-id 0
+python vehicle_main.py --car-id 0
 ```
 
 ### Option 2: With Custom Configuration
@@ -25,24 +25,24 @@ python vehicle_control_refactored.py --car-id 0
 # Copy and edit the example config
 cp config_example.yaml my_config.yaml
 # Edit my_config.yaml with your parameters
-python vehicle_control_refactored.py --config my_config.yaml
+python vehicle_main.py --config my_config.yaml
 ```
 
 ### Option 3: Multi-Vehicle Setup
 ```powershell
 # Terminal 1 - Car 0
-python vehicle_control_refactored.py --car-id 0 --port 5000
+python vehicle_main.py --car-id 0 --port 5000
 
 # Terminal 2 - Car 1
-python vehicle_control_refactored.py --car-id 1 --port 5001
+python vehicle_main.py --car-id 1 --port 5001
 
 # Terminal 3 - Car 2
-python vehicle_control_refactored.py --car-id 2 --port 5002
+python vehicle_main.py --car-id 2 --port 5002
 ```
 
 ### Option 4: With Remote Control
 ```powershell
-python vehicle_control_refactored.py --host 192.168.1.100 --car-id 0
+python vehicle_main.py --host 192.168.1.100 --car-id 0
 ```
 
 ## Common Use Cases
@@ -50,7 +50,7 @@ python vehicle_control_refactored.py --host 192.168.1.100 --car-id 0
 ### 1. Quick Test Run
 ```powershell
 # Run for 60 seconds with low speed
-python vehicle_control_refactored.py --v-ref 0.5
+python vehicle_main.py --v-ref 0.5
 ```
 
 ### 2. Debug Mode
@@ -66,13 +66,13 @@ timing:
 
 Run:
 ```powershell
-python vehicle_control_refactored.py --config debug_config.yaml
+python vehicle_main.py --config debug_config.yaml
 ```
 
 ### 3. Performance Testing
 ```powershell
 # High frequency control
-python vehicle_control_refactored.py --config high_perf_config.yaml
+python vehicle_main.py --config high_perf_config.yaml
 ```
 
 `high_perf_config.yaml`:
@@ -207,7 +207,7 @@ speed:
 ### Step 3: Test
 ```powershell
 # Test with new system
-python vehicle_control_refactored.py --config my_config.yaml
+python vehicle_main.py --config my_config.yaml
 
 # Compare logs with original
 ```

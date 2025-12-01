@@ -38,10 +38,10 @@ echo Starting Vehicle Control...
 echo   Car ID: %CAR_ID%
 if not "%HOST_IP%"=="" (
     echo   Host IP: %HOST_IP%
-    python vehicle_control_refactored.py --car-id %CAR_ID% --host %HOST_IP%
+    python vehicle_main.py --car-id %CAR_ID% --host %HOST_IP%
 ) else (
     echo   Host IP: (from config)
-    python vehicle_control_refactored.py --car-id %CAR_ID%
+    python vehicle_main.py --car-id %CAR_ID%
 )
 
 pause

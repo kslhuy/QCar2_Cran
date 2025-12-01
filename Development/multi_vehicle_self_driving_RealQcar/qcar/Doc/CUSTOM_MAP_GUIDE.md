@@ -36,7 +36,7 @@ else:
     return [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]   # ✅ Alternative
 ```
 
-### 2. Fixed `vehicle_controller.py` 
+### 2. Fixed `vehicle_logic.py` 
 
 **Changed `num_nodes` back to original:**
 ```python
@@ -170,7 +170,7 @@ python test_roadmap_nodes.py
 
 ### Test 2: Dry Run
 ```bash
-python vehicle_control_refactored.py --config config_custom_map.yaml
+python vehicle_main.py --config config_custom_map.yaml
 ```
 
 Watch the logs for:

@@ -24,7 +24,7 @@ REMOTE_PATH = args.remote_path
 USERNAME = "nvidia"
 PASSWORD = "nvidia"
 LOCAL_SCRIPTS_PATH = "../qcar"
-LOCAL_OBSERVER_PATH = "python/observer.py"
+LOCAL_OBSERVER_PATH = "python/one_probing.py"
 CURRENT_DIR = os.path.dirname(os.path.realpath(__file__))
 SCRIPTS_PATH = os.path.normpath(os.path.join(CURRENT_DIR,LOCAL_SCRIPTS_PATH))
 
@@ -51,9 +51,9 @@ for ip in QCAR_IPS:
     is_probing = (ip == PROBING_IP)
     probing_flag = "True" if is_probing else "False"
 
-    # Start observer.py locally if this is the probing QCar
+    # Start one_probing.py locally if this is the probing QCar
     if is_probing:
-        print(f"[{ip}] Starting observer.py locally (probing mode).")
+        print(f"[{ip}] Starting one_probing.py locally (probing mode).")
         subprocess.Popen(["python", LOCAL_OBSERVER_PATH])
 
     # Start vehicle_control.py remotely

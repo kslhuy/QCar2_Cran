@@ -56,7 +56,7 @@ Main methods:
 - Velocity limits (0.1 - 2.0 m/s)
 - Timeout detection for lost leader
 
-### 3. Vehicle Controller Integration (`vehicle_controller.py`)
+### 3. Vehicle Controller Integration (`vehicle_logic.py`)
 Enhanced main controller with platoon logic.
 
 #### New Methods
@@ -339,7 +339,7 @@ if 'node_sequence' in command:
 
 1. **state_machine.py**: Added 5 platoon states and helper methods
 2. **platoon_controller.py**: New file with PI spacing controller
-3. **vehicle_controller.py**: Integrated platoon logic into control loop
+3. **vehicle_logic.py**: Integrated platoon logic into control loop
 4. **gui_controller.py**: Added platoon UI controls and status display
 5. **remote_controller.py**: No changes needed (handles new commands automatically)
 

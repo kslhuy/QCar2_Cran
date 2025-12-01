@@ -14,23 +14,68 @@ import sys
 import argparse
 import signal
 import time
-from threading import Event, Thread
+from threading import Event
 
 from config import VehicleControlConfig
-from vehicle_controller import VehicleController
+from vehicle_logic import VehicleLogic
 
 
 # Global kill event for clean shutdown
 kill_event = Event()
-KILL_THREAD = False
 
 
 def signal_handler(*args):
     """Handle Ctrl+C and other signals"""
-    global KILL_THREAD
     print("\n[SIGNAL] Shutdown signal received")
-    KILL_THREAD = True
     kill_event.set()
+
+def stop_quarc_models():
+    """Stop QUARC models as a fallback"""
+    try:
+        import subprocess
+        import socket
+        
+        print("\n[CLEANUP] Stopping QUARC models...")
+        
+        # Try to stop QUARC models using quarc_run command
+        quarc_target = "tcpip://localhost:17000"
+        cmd = ["quarc_run", "-q", "-Q", "-t", quarc_target, "*.rt-linux_qcar2"]
+        
+        try:
+            result = subprocess.run(cmd, 
+                                  capture_output=True, 
+                                  text=True, 
+                                  timeout=5)
+            
+            if result.returncode == 0:
+                print("  [✓] QUARC models stopped successfully")
+            else:
+                print(f"  [⚠] QUARC stop returned code {result.returncode}")
+                
+        except subprocess.TimeoutExpired:
+            print("  [⚠] QUARC stop command timed out")
+        except FileNotFoundError:
+            print("  [⚠] quarc_run not found - hardware may still be active")
+        except Exception as e:
+            print(f"  [⚠] Error running quarc_run: {e}")
+            
+        # Test if QUARC is still running
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(("localhost", 17000))
+            sock.close()
+            
+            if result == 0:
+                print("  [⚠] QUARC service still accessible - hardware may still be active")
+            else:
+                print("  [✓] QUARC service stopped - hardware should be inactive")
+                
+        except Exception as e:
+            print(f"  [i] Cannot test QUARC connection: {e}")
+            
+    except Exception as e:
+        print(f"  [✗] Error stopping QUARC models: {e}")
 
 
 def parse_arguments():
@@ -145,7 +190,7 @@ def load_configuration(args) -> VehicleControlConfig:
     return config
 
 
-def wait_for_yolo_server(timeout: float = 15.0):
+def wait_for_yolo_server(timeout: float = 10.0):
     """Wait for YOLO server to start"""
     print("Waiting for YOLO server to start...")
     print(f"  (Timeout: {timeout}s)")
@@ -164,17 +209,6 @@ def wait_for_yolo_server(timeout: float = 15.0):
     
     print("\n  YOLO server ready (timeout reached, proceeding)")
     return True
-
-
-def run_control_thread(controller: VehicleController):
-    """Run the control loop in a thread"""
-    try:
-        controller.run()
-    except Exception as e:
-        print(f"\n[ERROR] Control thread exception: {e}")
-        import traceback
-        traceback.print_exc()
-        kill_event.set()
 
 
 def main():
@@ -207,42 +241,33 @@ def main():
         print("\n[SHUTDOWN] Cancelled by user")
         return 0
     
-    # Create controller
+    # Create vehicle logic controller
     print("\n[INIT] Creating vehicle controller...")
-    controller = VehicleController(config, kill_event)
+    vehicle_logic = VehicleLogic(config, kill_event)
     
-    # Initialize systems
-    print("[INIT] Initializing vehicle systems...")
-    if not controller.initialize():
-        print("\n[ERROR] Initialization failed!")
-        return 1
-    
-    print("\n[READY] All systems initialized")
+    print("\n[READY] Vehicle controller created and ready")
     print("="*70)
     print("Starting control loop... (Press Ctrl+C to stop)")
     print("="*70)
     print()
     
-    # Start control thread
-    control_thread = Thread(target=run_control_thread, args=(controller,), daemon=False)
-    control_thread.start()
-    
-    # Wait for completion or interrupt
+    # Start control loop directly
     try:
-        while control_thread.is_alive() and not kill_event.is_set():
-            time.sleep(0.1)
+        vehicle_logic.run()
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Keyboard interrupt received")
         kill_event.set()
+    except Exception as e:
+        print(f"\n[ERROR] Control loop exception: {e}")
+        import traceback
+        traceback.print_exc()
+        kill_event.set()
     
-    # Wait for thread to finish
-    print("\n[SHUTDOWN] Waiting for control thread to finish...")
-    control_thread.join(timeout=5.0)
-    
-    if control_thread.is_alive():
-        print("[WARNING] Control thread did not terminate cleanly")
-    else:
-        print("[SHUTDOWN] Control thread terminated cleanly")
+    # Ensure QUARC models are stopped even if vehicle_logic shutdown fails
+    try:
+        stop_quarc_models()
+    except Exception as e:
+        print(f"[WARNING] Error during QUARC cleanup: {e}")
     
     print("\n" + "="*70)
     print(" Shutdown complete")

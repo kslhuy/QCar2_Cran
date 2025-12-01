@@ -41,25 +41,25 @@ path:
 ### Method 1: Use Default Config (Recommended)
 ```bash
 cd qcar
-python vehicle_control_refactored.py
+python vehicle_main.py
 ```
 This will automatically load `config_example.yaml`
 
 ### Method 2: Override Config File
 ```bash
-python vehicle_control_refactored.py --config my_custom_config.yaml
+python vehicle_main.py --config my_custom_config.yaml
 ```
 
 ### Method 3: Override Specific Parameters
 ```bash
 # Override network settings
-python vehicle_control_refactored.py --host 192.168.2.200 --car-id 0
+python vehicle_main.py --host 192.168.2.200 --car-id 0
 
 # Override velocity
-python vehicle_control_refactored.py --v-ref 0.9
+python vehicle_main.py --v-ref 0.9
 
 # Multiple overrides
-python vehicle_control_refactored.py --host 192.168.2.200 --car-id 1 --v-ref 0.8
+python vehicle_main.py --host 192.168.2.200 --car-id 1 --v-ref 0.8
 ```
 
 ### Common Command Line Options
@@ -90,19 +90,19 @@ This will display all loaded configuration values.
 
 ### Car 0 (First Vehicle)
 ```bash
-python vehicle_control_refactored.py --host 192.168.2.200 --car-id 0
+python vehicle_main.py --host 192.168.2.200 --car-id 0
 ```
 - Connects to port 5000
 
 ### Car 1 (Second Vehicle)
 ```bash
-python vehicle_control_refactored.py --host 192.168.2.200 --car-id 1
+python vehicle_main.py --host 192.168.2.200 --car-id 1
 ```
 - Connects to port 5001
 
 ### Car 2 (Third Vehicle)
 ```bash
-python vehicle_control_refactored.py --host 192.168.2.200 --car-id 2
+python vehicle_main.py --host 192.168.2.200 --car-id 2
 ```
 - Connects to port 5002
 
@@ -160,15 +160,15 @@ network:
 Create `car0_config.yaml`, `car1_config.yaml`, etc., then:
 ```bash
 # Terminal 1 (Car 0)
-python vehicle_control_refactored.py --config car0_config.yaml
+python vehicle_main.py --config car0_config.yaml
 
 # Terminal 2 (Car 1)
-python vehicle_control_refactored.py --config car1_config.yaml
+python vehicle_main.py --config car1_config.yaml
 ```
 
 ## Next Steps
 
 1. **Test Config:** `python test_config.py`
 2. **Start GUI:** (on host PC) `python gui_controller.py`
-3. **Start Vehicle:** `python vehicle_control_refactored.py`
+3. **Start Vehicle:** `python vehicle_main.py`
 4. Watch logs for connection status

@@ -20,9 +20,12 @@ for /f "usebackq tokens=1,* delims==" %%A in (!configFile!) do (
     set "!key!=!value!"
 )
 
-@REM Remove [ and ]
+@REM Remove [ and ] and spaces around commas
 set "QCAR_IPS=%QCAR_IPS:[=%"
 set "QCAR_IPS=%QCAR_IPS:]=%"
+set "QCAR_IPS=%QCAR_IPS: =%"
+
+set "PROBING_IP=%PROBING_IP: =%"
 
 
 @REM Turn command echo back on

@@ -795,10 +795,9 @@ class CommHandler:
     
     def initialize_sockets(self):
         """Initialize sockets for non-blocking mode (compatibility method)."""
-        if self.mode == 'non_blocking':
-            self._setup_sockets_non_blocking()
-        else:
-            self._setup_sockets_threaded()
+
+        self._setup_sockets_non_blocking()
+
 
     def cleanup(self):
         """

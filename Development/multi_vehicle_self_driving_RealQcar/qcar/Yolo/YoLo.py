@@ -119,6 +119,97 @@ class YOLOPublisher():
         """ Used for with statement. Terminates the YOLO publisher. """
         self.terminate()
 
+class YOLOManager:
+    """
+    YOLOManager class manages YOLO components and provides high-level interface
+    for vehicle_logic.py to reduce YOLO-related code in the main controller.
+    """
+    
+    def __init__(self, logger=None):
+        self.logger = logger
+        self.yolo = None
+        self.yolo_drive = None
+        self.yolo_gain = 1.0
+        self.loop_counter = 0
+        
+    def initialize(self, yolo_receiver: 'YOLOReceiver', yolo_drive_logic: 'YOLODriveLogic'):
+        """Initialize YOLO components"""
+        self.yolo = yolo_receiver
+        self.yolo_drive = yolo_drive_logic
+        
+    def update_yolo_data(self, loop_counter: int = 0):
+        """Update YOLO detection data and return velocity gain"""
+        self.loop_counter = loop_counter
+        try:
+            if self.yolo is not None:
+                self.yolo.read()
+                
+                # Process YOLO and get velocity gain
+                if self.yolo_drive is not None:
+                    try:
+                        self.yolo_gain = self.yolo_drive.check_yolo(
+                            self.yolo.stopSign,
+                            self.yolo.trafficlight,
+                            self.yolo.cars,
+                            self.yolo.yieldSign,
+                            self.yolo.person
+                        )
+                    except Exception as e:
+                        if self.loop_counter % 100 == 0:  # Log occasionally
+                            if self.logger:
+                                self.logger.log_error("YOLO drive error", e)
+                        self.yolo_gain = 1.0  # Default gain
+                else:
+                    self.yolo_gain = 1.0
+            else:
+                if self.loop_counter % 100 == 0:  # Log occasionally
+                    if self.logger:
+                        self.logger.log_error("YOLO drive is None")
+                self.yolo_gain = 1.0
+                
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error("YOLO data update error", e)
+            self.yolo_gain = 1.0
+            
+        return self.yolo_gain
+    
+    def get_yolo_data(self) -> dict:
+        """Get current YOLO detection data"""
+        try:
+            if self.yolo is not None:
+                return {
+                    'stop_sign': self.yolo.stopSign,
+                    'traffic_light': self.yolo.trafficlight,
+                    'cars': self.yolo.cars,
+                    'yield_sign': self.yolo.yieldSign,
+                    'person': self.yolo.person,
+                    'car_dist': getattr(self.yolo_drive, 'carDist', 0.0),
+                    'person_dist': getattr(self.yolo_drive, 'personDist', 0.0)
+                }
+            else:
+                return self.get_default_yolo_data()
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error("YOLO data retrieval error", e)
+            return self.get_default_yolo_data()
+    
+    def get_default_yolo_data(self) -> dict:
+        """Get default YOLO data when YOLO is not available"""
+        return {
+            'stop_sign': [0]*7, 'traffic_light': [0]*7, 'cars': [0]*7,
+            'yield_sign': [0]*7, 'person': [0]*7, 'car_dist': 0.0, 'person_dist': 0.0
+        }
+        
+    def get_yolo_gain(self) -> float:
+        """Get current YOLO velocity gain"""
+        return self.yolo_gain
+        
+    def is_yolo_active(self) -> bool:
+        """Check if YOLO components are active"""
+        return self.yolo is not None and self.yolo_drive is not None
+
+
 class YOLODriveLogic():
     """
     YOLODriveLogic class implements the logic for processing YOLO predictions

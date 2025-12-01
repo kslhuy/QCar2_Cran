@@ -17,6 +17,8 @@ parser.add_argument('-c', '--config', type=str, default='../config.txt',
                     help="Path to config.txt file (default: ../config.txt)")
 parser.add_argument('--skip-upload', action='store_true', 
                     help="Skip uploading files (useful for quick restart)")
+parser.add_argument('--no-logs', action='store_true', 
+                    help="Disable log file creation on vehicles")
 args = parser.parse_args()
 
 # --- Read configuration from config.txt ---
@@ -85,6 +87,7 @@ print(f"  Remote Path: {REMOTE_PATH}")
 print(f"  Base Port: {BASE_PORT}")
 print(f"  Observer Size: {WIDTH}x{HEIGHT}")
 print(f"  Skip Upload: {args.skip_upload}")
+print(f"  Remote Logging: {'Disabled' if args.no_logs else 'Enabled'}")
 print("="*70)
 
 # --- Helper to create SSH + SCP connections ---
@@ -98,7 +101,7 @@ def create_ssh_and_scp(ip):
 
 # --- Upload files to QCar ---
 def upload_files(ip, scp):
-    """Upload Python, YAML, and text files to QCar"""
+    """Upload Python, YAML, text files, and StateMachine folder to QCar"""
     # Upload Python files
     py_files = glob.glob(os.path.join(SCRIPTS_PATH, "*.py"))
     for file in py_files:
@@ -118,15 +121,40 @@ def upload_files(ip, scp):
         scp.put(file, REMOTE_PATH)
     print(f"  [✓] Uploaded {len(txt_files)} text files")
     
-    # Upload markdown documentation (optional)
-    md_files = glob.glob(os.path.join(SCRIPTS_PATH, "*.md"))
-    for file in md_files:
-        scp.put(file, REMOTE_PATH)
-    if md_files:
-        print(f"  [✓] Uploaded {len(md_files)} documentation files")
+    # # Upload markdown documentation (optional)
+    # md_files = glob.glob(os.path.join(SCRIPTS_PATH, "*.md"))
+    # for file in md_files:
+    #     scp.put(file, REMOTE_PATH)
+    # if md_files:
+    #     print(f"  [✓] Uploaded {len(md_files)} documentation files")
+    
+    ########## UPDATED Folder BELOW ##########
+
+    
+    # Upload additional folders: Yolo, Observer, V2V, Controller
+    additional_folders = ["StateMachine" , "Yolo", "Observer", "V2V", "Controller"]
+    for folder_name in additional_folders:
+        folder_path = os.path.join(SCRIPTS_PATH, folder_name)
+        if os.path.exists(folder_path):
+            try:
+                # Upload the entire folder directory recursively
+                scp.put(folder_path, REMOTE_PATH, recursive=True)
+                
+                # Count files for reporting
+                folder_files = []
+                for root, dirs, files in os.walk(folder_path):
+                    for file in files:
+                        if not file.endswith('.pyc') and '__pycache__' not in root:
+                            folder_files.append(file)
+                
+                print(f"  [✓] Uploaded {folder_name} folder with {len(folder_files)} files")
+            except Exception as e:
+                print(f"  [⚠] Error uploading {folder_name} folder: {e}")
+        else:
+            print(f"  [⚠] {folder_name} folder not found at {folder_path}")
 
 # --- Start observer process locally ---
-observer_process = None
+probing_process = None
 
 # --- Main startup sequence ---
 try:
@@ -152,22 +180,22 @@ try:
             else:
                 print(f"  [⊘] Skipped file upload")
             
-            # Start multi-observer locally if we have probing vehicles
-            if is_probing and observer_process is None:
-                print(f"  [→] Starting multi-observer.py locally...")
+            # Start multi-probing locally if we have probing vehicles (Client Side (Ground Station))
+            if is_probing and probing_process is None:
+                print(f"  [→] Starting multi-probing.py locally...")
                 # Count how many vehicles are probing
                 # probing_count = sum(1 for ip in QCAR_IPS if ip in PROBING_IPS)
-                observer_script = os.path.join(CURRENT_DIR, "multi_observer.py")
-                if os.path.exists(observer_script):
-                    observer_process = subprocess.Popen([
-                        "python", observer_script, 
-                        "--cars" , idx,
+                probing_script = os.path.join(CURRENT_DIR, "multi_probing.py")
+                if os.path.exists(probing_script):
+                    probing_process = subprocess.Popen([
+                        "python", probing_script, 
+                        "--cars", str(idx),
                         "--width", WIDTH, 
                         "--height", HEIGHT
                     ])
-                    print(f"  [✓] Multi-observer started for {idx} vehicle")
+                    print(f"  [✓] multi-probing started for {idx} vehicle")
                 else:
-                    print(f"  [⚠] Multi-observer script not found: {observer_script}")
+                    print(f"  [⚠] multi-probing script not found: {probing_script}")
             
             # Kill any existing processes on the QCar
             print(f"  [→] Stopping any existing processes...")
@@ -175,34 +203,56 @@ try:
             ssh.exec_command(f"pkill -f yolo_server")
             time.sleep(1)
             
-            # Start vehicle_control_refactored.py remotely
-            print(f"  [→] Starting vehicle_control_refactored.py...")
-            cmd_vehicle = (
-                f"cd {REMOTE_PATH} && "
-                f"nohup python vehicle_control_refactored.py "
-                f"--host {LOCAL_IP} "
-                f"--port {BASE_PORT} "
-                f"--car-id {car_id} "
-                f"> vehicle_{car_id}.log 2>&1 &"
-            )
+            # Start vehicle_main.py remotely
+            print(f"  [→] Starting vehicle_main.py...")
+            if args.no_logs:
+                cmd_vehicle = (
+                    f"cd {REMOTE_PATH} && "
+                    f"nohup python vehicle_main.py "
+                    f"--host {LOCAL_IP} "
+                    f"--port {BASE_PORT} "
+                    f"--car-id {car_id} "
+                    f"> /dev/null 2>&1 &"
+                )
+            else:
+                cmd_vehicle = (
+                    f"cd {REMOTE_PATH} && "
+                    f"nohup python vehicle_main.py "
+                    f"--host {LOCAL_IP} "
+                    f"--port {BASE_PORT} "
+                    f"--car-id {car_id} "
+                    f"> vehicle_{car_id}.log 2>&1 &"
+                )
             ssh.exec_command(cmd_vehicle)
             print(f"  [✓] Vehicle control started (Car ID: {car_id})")
             
             time.sleep(2)  # Give vehicle control time to initialize
             
-            # Start yolo_server.py remotely
+            # Start yolo_server.py remotely (Run the YOLO server on the QCar)
             print(f"  [→] Starting yolo_server.py...")
             probing_flag = "True" if is_probing else "False"
-            cmd_yolo = (
-                f"cd {REMOTE_PATH} && "
-                f"nohup python yolo_server.py "
-                f"-p {probing_flag} "
-                f"-i {LOCAL_IP} "
-                f"-w {WIDTH} "
-                f"-ht {HEIGHT} "
-                f"--car-id {car_id} "
-                f"> yolo_{car_id}.log 2>&1 &"
-            )
+            if args.no_logs:
+                cmd_yolo = (
+                    f"cd {REMOTE_PATH} && "
+                    f"nohup python yolo_server.py "
+                    f"-p {probing_flag} "
+                    f"-i {LOCAL_IP} "
+                    f"-w {WIDTH} "
+                    f"-ht {HEIGHT} "
+                    f"--caridx {car_id} "
+                    f"> /dev/null 2>&1 &"
+                )
+            else:
+                cmd_yolo = (
+                    f"cd {REMOTE_PATH} && "
+                    f"nohup python yolo_server.py "
+                    f"-p {probing_flag} "
+                    f"-i {LOCAL_IP} "
+                    f"-w {WIDTH} "
+                    f"-ht {HEIGHT} "
+                    f"--caridx {car_id} "
+                    f"> yolo_{car_id}.log 2>&1 &"
+                )
             ssh.exec_command(cmd_yolo)
             print(f"  [✓] YOLO server started (Probing: {is_probing}, Car ID: {car_id})")
             
@@ -251,6 +301,6 @@ except Exception as e:
 finally:
     # Cleanup
     print("\nCleaning up...")
-    if observer_process:
-        print("  Stopping observer process...")
-        observer_process.terminate()
+    if probing_process:
+        print("  Stopping probing process...")
+        probing_process.terminate()
