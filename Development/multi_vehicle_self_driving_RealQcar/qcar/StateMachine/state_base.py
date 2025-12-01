@@ -57,7 +57,7 @@ class StateBase:
             vehicle_logic: Reference to main VehicleLogic instance
         """
         self.vehicle_logic = vehicle_logic
-        self.logger = vehicle_logic.logger
+        self.logger = vehicle_logic.vehicle_logger
         self.config = vehicle_logic.config
         
         # State-specific data

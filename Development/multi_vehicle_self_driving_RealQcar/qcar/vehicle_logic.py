@@ -34,32 +34,32 @@ class VehicleLogic:
         # calibrationPose = [0,2,-np.pi/2]
         
         # Setup logging
-        self.logger = VehicleLogger(
+        self.vehicle_logger = VehicleLogger(
             car_id=config.network.car_id,
             log_dir=config.logging.log_dir,
             log_level=config.logging.log_level
         )
         
-        self.logger.logger.info("="*60)
-        self.logger.logger.info(f"Vehicle Controller Initialized - Car ID: {config.network.car_id}")
-        self.logger.logger.info("="*60)
+        self.vehicle_logger.logger.info("="*60)
+        self.vehicle_logger.logger.info(f"Vehicle Controller Initialized - Car ID: {config.network.car_id}")
+        self.vehicle_logger.logger.info("="*60)
         
         # Performance monitoring
-        self.perf_monitor = PerformanceMonitor(self.logger)
+        self.perf_monitor = PerformanceMonitor(self.vehicle_logger)
         
 
         
         # Platoon controller
         platoon_config = PlatoonConfig()
-        # self.platoon_controller = PlatoonController(platoon_config, self.logger)
+        # self.platoon_controller = PlatoonController(platoon_config, self.vehicle_logger)
         
         # Command handler for centralized command processing
-        self.command_handler = CommandHandler(self.logger, config)
+        self.command_handler = CommandHandler(self.vehicle_logger, config)
         
         # V2V Communication system - High-performance UDP
         self.v2v_communication = V2VCommunication(
             vehicle_id=config.network.car_id,
-            logger=self.logger.logger,
+            logger=self.vehicle_logger.logger,
             base_port=8000,  # Dedicated V2V port range (8000+ for better separation)
             status_callback=self._handle_v2v_status_change  # Add callback for immediate status reporting
         )
@@ -74,33 +74,41 @@ class VehicleLogic:
             vehicle_id=config.network.car_id,
             v2v_communication=self.v2v_communication,
             vehicle_observer=None,  # Will be set later
-            logger=self.logger.logger,
+            logger=self.vehicle_logger.logger,
             config=v2v_config
         )
         
         # Safety systems
-        # self.validator = ControlValidator(config, self.logger)
-        # self.sensor_health = SensorHealthMonitor(config, self.logger)
-        self.collision_avoidance = CollisionAvoidance(config, self.logger)
-        self.watchdog = WatchdogTimer(config.safety.watchdog_timeout, self.logger)
+        # self.validator = ControlValidator(config, self.vehicle_logger)
+        # self.sensor_health = SensorHealthMonitor(config, self.vehicle_logger)
+        self.collision_avoidance = CollisionAvoidance(config, self.vehicle_logger)
+        self.watchdog = WatchdogTimer(config.safety.watchdog_timeout, self.vehicle_logger)
         
         # Components (initialized later)
-        self.logger.logger.info("Creating Ground Station client...")
+        self.vehicle_logger.logger.info("Creating Ground Station client...")
         # # Create Ground Station client
         # self.client_Ground_Station = GroundStationClient(
         #     config=self.config,
-        #     logger=self.logger,
+        #     logger=self.vehicle_logger,
         #     kill_event=self.kill_event
         # )
         self._initialize_network_2_GroundStation()
+        self.logger.logger.info("Initializing QCar hardware...")
+            
+        # self.qcar = QCar(
+        #     readMode=1,
+        #     frequency=self.config.timing.controller_update_rate
+        # )
         self.qcar = None
         self.gps = None
-        self.state_estimator = None
+        
+        # StateEstimator is now managed by VehicleObserver
+
         self.speed_controller = None
         self.steering_controller = None
         
         # YOLO Manager - handles all YOLO-related functionality
-        self.yolo_manager = YOLOManager(self.logger)
+        self.yolo_manager = YOLOManager(self.vehicle_logger)
         
         # Path planning
         self.roadmap = None
@@ -111,7 +119,7 @@ class VehicleLogic:
         self.v_ref = config.speed.v_ref
 
         # State machine - use simplified version with internal transition logic
-        self.state_machine = VehicleStateMachine(self, self.logger)
+        self.state_machine = VehicleStateMachine(self, self.vehicle_logger)
         
         # Timing
         self.start_time = time.time()
@@ -151,7 +159,7 @@ class VehicleLogic:
                     'consensus_gain': 0.3
                 }
             },
-            logger=self.logger.logger,
+            logger=self.vehicle_logger,
             initial_pose=np.array(initial_pose),
             state_estimator=None  # Will be set later during initialization
         )
@@ -170,11 +178,16 @@ class VehicleLogic:
     def elapsed_time(self) -> float:
         """Get elapsed time since start"""
         return time.time() - self.start_time
+    
+    @property
+    def logger(self):
+        """Backward compatibility property for accessing the vehicle logger"""
+        return self.vehicle_logger
        
     
     def run(self):
         """Main control loop"""
-        self.logger.logger.info("Starting control loop...")
+        self.vehicle_logger.logger.info("Starting control loop...")
         
         # Start the state machine in INITIALIZING state
         # The state machine will handle all initialization through its states
@@ -208,7 +221,7 @@ class VehicleLogic:
                 # 3. Control Logic (high frequency)
                 if self._should_update_control(loop_start):
                     if not self._control_logic_update(actual_dt):
-                        self.logger.log_error("Control logic failed")
+                        self.vehicle_logger.log_error("Control logic failed")
                         break
                 
                 # 4. Communication Handling (medium frequency)
@@ -229,13 +242,13 @@ class VehicleLogic:
                 
                 # Check if experiment time exceeded
                 if self.elapsed_time() > self.config.timing.tf:
-                    self.logger.logger.info("Experiment time limit reached")
+                    self.vehicle_logger.logger.info("Experiment time limit reached")
                     break
         
         except KeyboardInterrupt:
-            self.logger.logger.info("Control loop interrupted by user")
+            self.vehicle_logger.logger.info("Control loop interrupted by user")
         except Exception as e:
-            self.logger.log_error("Control loop error", e)
+            self.vehicle_logger.log_error("Control loop error", e)
         finally:
             self._shutdown()
                 
@@ -277,7 +290,7 @@ class VehicleLogic:
                 self.sensor_data_cache.update(sensor_data)
                 
         except Exception as e:
-            self.logger.log_error("Sensor data update error", e)
+            self.vehicle_logger.log_error("Sensor data update error", e)
     
 
     
@@ -285,9 +298,8 @@ class VehicleLogic:
     def _observer_update(self, dt: float):
         """Unified observer update - handles both local and fleet observer internally"""
         try:
-            # Ensure state_estimator is set in VehicleObserver
-            if self.vehicle_observer.get_state_estimator() is None and self.state_estimator is not None:
-                self.vehicle_observer.set_state_estimator(self.state_estimator)
+            # StateEstimator is now managed directly by VehicleObserver during initialization
+            # No need for manual setting here
             
             # Get last steering command for EKF
             last_steering = getattr(self, '_last_steering', 0.0)
@@ -306,7 +318,7 @@ class VehicleLogic:
             
             # Log observer state occasionally
             if self.loop_counter % 200 == 0:  # Every 2 seconds at 100Hz
-                self.logger.logger.debug(
+                self.vehicle_logger.logger.debug(
                     f"Observer: Pos=({state_info['x']:.2f}, {state_info['y']:.2f}, {state_info['theta']:.2f}), "
                     f"Vel={state_info['velocity']:.2f}, Valid={state_info['state_valid']}"
                 )
@@ -314,17 +326,17 @@ class VehicleLogic:
                 # Log fleet observer status
                 fleet_states = self.vehicle_observer.get_fleet_states()
                 active_vehicles = np.sum(np.any(fleet_states != 0, axis=0))
-                self.logger.logger.debug(f"Fleet Observer: {active_vehicles} active vehicles in fleet")
+                self.vehicle_logger.logger.debug(f"Fleet Observer: {active_vehicles} active vehicles in fleet")
                 
         except Exception as e:
-            self.logger.log_error("Observer update error", e)
+            self.vehicle_logger.log_error("Observer update error", e)
     
     # ===== Control Logic Methods =====
     def _control_logic_update(self, dt: float) -> bool:
         """Control logic update - state machine and vehicle commands"""
         try:
             # Check if components are initialized
-            if self.qcar is None or self.state_estimator is None:
+            if self.qcar is None or (hasattr(self, 'vehicle_observer') and self.vehicle_observer.get_state_estimator() is None):
                 return self._handle_initialization_control(dt)
             
             # Get current state from VehicleObserver
@@ -358,7 +370,7 @@ class VehicleLogic:
             return True
             
         except Exception as e:
-            self.logger.log_error("Control logic update error", e)
+            self.vehicle_logger.log_error("Control logic update error", e)
             return False
     
     def _handle_initialization_control(self, dt: float) -> bool:
@@ -380,11 +392,11 @@ class VehicleLogic:
                 # Don't send commands during initialization
                 return True
             else:
-                self.logger.log_error("Components not initialized but not in INITIALIZING state")
+                self.vehicle_logger.log_error("Components not initialized but not in INITIALIZING state")
                 return False
                 
         except Exception as e:
-            self.logger.log_error("Initialization control error", e)
+            self.vehicle_logger.log_error("Initialization control error", e)
             return False
     
 
@@ -408,7 +420,7 @@ class VehicleLogic:
             # Removed periodic reporting since TCP/IP ensures reliable delivery
             
         except Exception as e:
-            self.logger.log_error("Communication handling error", e)
+            self.vehicle_logger.log_error("Communication handling error", e)
     
     def _send_telemetry(self):
         """Send telemetry data to ground station"""
@@ -425,7 +437,7 @@ class VehicleLogic:
             self._queue_telemetry(x, y, theta, velocity, u, delta)
             
         except Exception as e:
-            self.logger.log_error("Telemetry sending error", e)
+            self.vehicle_logger.log_error("Telemetry sending error", e)
     
     def _broadcast_v2v_state(self):
         """Broadcast vehicle state to V2V network using V2VManager"""
@@ -446,7 +458,7 @@ class VehicleLogic:
                 self._last_v2v_log_time = time.time()
                 
         except Exception as e:
-            self.logger.log_error("V2V state broadcast error", e)
+            self.vehicle_logger.log_error("V2V state broadcast error", e)
     
     def _log_v2v_activity(self):
         """Log V2V communication activity summary"""
@@ -455,12 +467,12 @@ class VehicleLogic:
                 stats = self.v2v_manager.get_statistics()
                 comm_stats = self.v2v_communication.get_statistics() if hasattr(self, 'v2v_communication') else {}
                 
-                self.logger.logger.info(f"[V2V] Activity Summary - Broadcasts: Local={stats.get('local_broadcasts', 0)}, Fleet={stats.get('fleet_broadcasts', 0)}")
-                self.logger.logger.info(f"[V2V] Messages: Sent={comm_stats.get('messages_sent', 0)}, Recv={comm_stats.get('messages_received', 0)}")
-                self.logger.logger.info(f"[V2V] Peers: {len(self.v2v_communication.get_connected_peers()) if hasattr(self, 'v2v_communication') else 0} connected")
+                self.vehicle_logger.logger.info(f"[V2V] Activity Summary - Broadcasts: Local={stats.get('local_broadcasts', 0)}, Fleet={stats.get('fleet_broadcasts', 0)}")
+                self.vehicle_logger.logger.info(f"[V2V] Messages: Sent={comm_stats.get('messages_sent', 0)}, Recv={comm_stats.get('messages_received', 0)}")
+                self.vehicle_logger.logger.info(f"[V2V] Peers: {len(self.v2v_communication.get_connected_peers()) if hasattr(self, 'v2v_communication') else 0} connected")
                 
         except Exception as e:
-            self.logger.log_error("V2V activity logging error", e)
+            self.vehicle_logger.log_error("V2V activity logging error", e)
     
     def _queue_telemetry(self, x: float, y: float, theta: float, velocity: float, u: float, delta: float):
         """Queue telemetry data for non-blocking transmission"""
@@ -493,7 +505,7 @@ class VehicleLogic:
         
         # Log to file
         if self.config.logging.enable_telemetry_logging:
-            self.logger.log_telemetry(telemetry)
+            self.vehicle_logger.log_telemetry(telemetry)
         
         # Queue for network transmission (non-blocking)
         if self.client_Ground_Station:
@@ -506,7 +518,7 @@ class VehicleLogic:
                         self.client_Ground_Station.queue_telemetry(telemetry)
             except Exception as e:
                 if self.loop_counter % 100 == 0:  # Log error only occasionally to avoid spam
-                    self.logger.log_error("Telemetry transmission error", e)
+                    self.vehicle_logger.log_error("Telemetry transmission error", e)
         
         self.telemetry_counter += 1
     
@@ -568,18 +580,18 @@ class VehicleLogic:
                 
             if self._v2v_log_counter % 10 == 0:  # Every 20 seconds (10 * 2 second interval)
                 if is_fully_connected:
-                    self.logger.logger.debug(
+                    self.vehicle_logger.logger.debug(
                         f"V2V STATUS: {connection_summary} | "
                         f"Sent: {v2v_stats.get('messages_sent', 0)}, Received: {v2v_stats.get('messages_received', 0)}"
                     )
                 else:
-                    self.logger.logger.debug(
+                    self.vehicle_logger.logger.debug(
                         f"V2V STATUS: {connection_summary} | "
                         f"Connected: {len(connected_peers)}/{expected_peers} | Peers: {connected_peers}"
                     )
                 
         except Exception as e:
-            self.logger.log_error("V2V status reporting error", e)
+            self.vehicle_logger.log_error("V2V status reporting error", e)
     
     # V2V messages are now processed automatically via V2VManager
     # No need for manual polling - this eliminates duplicate processing
@@ -598,112 +610,48 @@ class VehicleLogic:
                         # Use centralized command handler instead of direct processing
                         success = self.command_handler.process_command(commands)
                         if not success:
-                            self.logger.log_warning("Failed to process command")
+                            self.vehicle_logger.log_warning("Failed to process command")
             except Exception as e:
                 if self.loop_counter % 100 == 0:  # Log error only occasionally
-                    self.logger.log_error("Command processing error", e)
+                    self.vehicle_logger.log_error("Command processing error", e)
     
     def _process_commands(self, commands: dict):
         """Legacy method - now redirects to command handler"""
         self.command_handler.process_command(commands)
     
 
-    def check_initial_position(self) -> bool:
-        """Check if vehicle is at start position"""
-        try:
-            # Read QCar sensors first
-            self.qcar.read()
-            
-            # Update state with current sensor readings
-            motor_tach = self.qcar.motorTach
-            gyro_z = self.qcar.gyroscope[2] if hasattr(self.qcar, 'gyroscope') else 0.0
-            
-            self.state_estimator.update(
-                motor_tach=motor_tach,
-                steering=0.0,
-                dt=0.005,
-                gyro_z=gyro_z
-            )
-            
-            # Get current position from VehicleObserver
-            if hasattr(self, 'vehicle_observer') and self.vehicle_observer:
-                state_info = self.vehicle_observer.get_estimated_state_for_control()
-                x, y, theta = state_info['x'], state_info['y'], state_info['theta']
-            else:
-                x, y, theta = 0, 0, 0
-            init_pose = np.array([x, y, theta])
-            
-            self.logger.logger.info(f"Initial pose: x={x:.2f}, y={y:.2f}, theta={theta:.2f}")
-            
-            # For simplified state machine, we don't need complex transitions
-            # Just check if we're at the start position
-            if hasattr(self, 'roadmap') and self.roadmap and hasattr(self, 'node_sequence'):
-                start_node_reached, init_waypoint_seq = self.roadmap.initial_check(
-                    init_pose,
-                    self.node_sequence,
-                    self.waypoint_sequence
-                )
-                
-                if not start_node_reached:
-                    # Log detailed information about position mismatch
-                    target_node = self.node_sequence[0]
-                    target_pose = self.roadmap.get_node_pose(target_node).squeeze()
-                    current_dist = np.linalg.norm(init_pose[:2] - target_pose[:2])
-                    
-                    self.logger.log_warning("="*60)
-                    self.logger.log_warning("NOT AT START POSITION")
-                    self.logger.log_warning(f"  Current position: ({init_pose[0]:.2f}, {init_pose[1]:.2f}, {init_pose[2]:.2f})")
-                    self.logger.log_warning(f"  Target node: {target_node}")
-                    self.logger.log_warning(f"  Target position: ({target_pose[0]:.2f}, {target_pose[1]:.2f}, {target_pose[2]:.2f})")
-                    self.logger.log_warning(f"  Distance to start: {current_dist:.2f}m")
-                    self.logger.log_warning("="*60)
-                    
-                    # Update waypoint sequence to navigate to start
-                    self.waypoint_sequence = init_waypoint_seq
-                    if hasattr(self, 'steering_controller') and self.steering_controller:
-                        self.steering_controller.reset(self.waypoint_sequence)
-                    return False
-                else:
-                    self.logger.logger.info("✅ Vehicle is at start position")
-                    return True
-            else:
-                # If no roadmap/steering, assume position is OK
-                return True
-            
-        except Exception as e:
-            self.logger.log_error("Initial position check failed", e)
-            return False
+    
     
     def _initialize_network_2_GroundStation(self) -> bool:
         """Initialize network communication"""
         try:
-            self.logger.logger.info("Creating Ground Station client...")
+            self.vehicle_logger.logger.info("Creating Ground Station client...")
             
             # Create Ground Station client
             self.client_Ground_Station = GroundStationClient(
                 config=self.config,
-                logger=self.logger,
+                logger=self.vehicle_logger,
                 kill_event=self.kill_event
             )
             time.sleep(0.2)  # Allow client object to settle
             
             # Initialize network connection
-            self.logger.logger.info("Initializing network connection...")
+            self.vehicle_logger.logger.info("Initializing network connection...")
             if not self.client_Ground_Station.initialize_network():
                 return False
             time.sleep(0.5)  # Allow network initialization to complete
             
             # Start network threads
-            self.logger.logger.info("Starting network threads...")
+            self.vehicle_logger.logger.info("Starting network threads...")
             if not self.client_Ground_Station.start_threads():
                 return False
             time.sleep(0.3)  # Allow threads to start properly
             
-            self.logger.logger.info("Ground Station communication initialized")
+            self.vehicle_logger.logger.info("Ground Station communication initialized")
             return True
             
         except Exception as e:
-            self.logger.log_error("Ground Station initialization failed", e)
+            self.vehicle_logger.log_error("Ground Station initialization failed", e)
             return False
     
     
@@ -711,17 +659,17 @@ class VehicleLogic:
         """Activate V2V communication with specified peers"""
         try:
             if not self.v2v_communication or not self.v2v_manager:
-                self.logger.log_error("V2V communication not initialized")
+                self.vehicle_logger.log_error("V2V communication not initialized")
                 return False
             
-            self.logger.logger.info(f"Activating V2V communication with peers: {peer_vehicles} at IPs: {peer_ips}")
+            self.vehicle_logger.logger.info(f"Activating V2V communication with peers: {peer_vehicles} at IPs: {peer_ips}")
             
             # Calculate actual fleet size: peers + this vehicle
             actual_fleet_size = len(peer_vehicles) + 1
             
             # Reinitialize VehicleObserver fleet estimation with actual fleet information
             if self.vehicle_observer:
-                self.logger.logger.info(f"Reinitializing fleet estimation for {actual_fleet_size} vehicles")
+                self.vehicle_logger.logger.info(f"Reinitializing fleet estimation for {actual_fleet_size} vehicles")
                 self.vehicle_observer.reinitialize_fleet_estimation(actual_fleet_size, peer_vehicles)
             
             # Activate V2V communication layer
@@ -732,7 +680,7 @@ class VehicleLogic:
                 manager_success = self.v2v_manager.activate(peer_vehicles, peer_ips)
                 
                 if manager_success:
-                    self.logger.logger.info(f"V2V communication activated successfully for fleet of {actual_fleet_size} vehicles")
+                    self.vehicle_logger.logger.info(f"V2V communication activated successfully for fleet of {actual_fleet_size} vehicles")
                     total_expected = len([v for v in peer_vehicles if v != self.config.network.car_id])
 
                     # Report activation status immediately
@@ -750,23 +698,23 @@ class VehicleLogic:
                     
                     return True
                 else:
-                    self.logger.log_error("V2V manager activation failed")
+                    self.vehicle_logger.log_error("V2V manager activation failed")
                     # Clean up communication if manager failed
                     self.v2v_communication.deactivate()
                     return False
             else:
-                self.logger.log_error("V2V communication layer activation failed")
+                self.vehicle_logger.log_error("V2V communication layer activation failed")
                 return False
                 
         except Exception as e:
-            self.logger.log_error("V2V activation failed", e)
+            self.vehicle_logger.log_error("V2V activation failed", e)
             return False
     
     def disable_v2v(self):
         """Disable V2V communication"""
         try:
             self.v2v_communication.deactivate()
-            self.logger.logger.info("V2V communication disabled")
+            self.vehicle_logger.logger.info("V2V communication disabled")
             
             # Report V2V disconnect to Ground Station
             self._report_v2v_status_to_gs({
@@ -776,7 +724,7 @@ class VehicleLogic:
             })
             
         except Exception as e:
-            self.logger.log_error("V2V disable error", e)
+            self.vehicle_logger.log_error("V2V disable error", e)
     
     def _handle_v2v_status_change(self, event_type: str, peer_id: int):
         """Handle immediate V2V status changes from the communication module"""
@@ -785,17 +733,17 @@ class VehicleLogic:
             total_expected = len([v for v in self.v2v_communication.peer_vehicles if v != self.config.network.car_id])
             
             if event_type == 'connection_established':
-                self.logger.logger.info(f"V2V: Peer {peer_id} connected ({connected_peers}/{total_expected} peers)")
+                self.vehicle_logger.logger.info(f"V2V: Peer {peer_id} connected ({connected_peers}/{total_expected} peers)")
                 
                 # Check if we're fully connected
                 if connected_peers >= total_expected and total_expected > 0:
                     status = 'connected'
-                    self.logger.logger.info("V2V: All peers connected - mesh is fully established!")
+                    self.vehicle_logger.logger.info("V2V: All peers connected - mesh is fully established!")
                 else:
                     status = 'active'
                     
             elif event_type == 'connection_lost':
-                self.logger.logger.info(f"V2V: Peer {peer_id} disconnected ({connected_peers}/{total_expected} peers)")
+                self.vehicle_logger.logger.info(f"V2V: Peer {peer_id} disconnected ({connected_peers}/{total_expected} peers)")
                 status = 'active' if connected_peers > 0 else 'disconnected'
             else:
                 return  # Unknown event type
@@ -813,7 +761,7 @@ class VehicleLogic:
             })
             
         except Exception as e:
-            self.logger.log_error(f"Error handling V2V status change: {event_type}", e)
+            self.vehicle_logger.log_error(f"Error handling V2V status change: {event_type}", e)
     
     def _report_v2v_status_to_gs(self, status_data: dict):
         """Report V2V connection status to Ground Station"""
@@ -829,28 +777,86 @@ class VehicleLogic:
                 # Send immediately (high priority)
                 self.client_Ground_Station.queue_telemetry(v2v_report)
                 
-                self.logger.logger.info(f"V2V status reported to GS: {status_data['status']}")
+                self.vehicle_logger.logger.info(f"V2V status reported to GS: {status_data['status']}")
             else:
-                self.logger.logger.warning("Cannot report V2V status - no Ground Station connection")
+                self.vehicle_logger.logger.warning("Cannot report V2V status - no Ground Station connection")
                 
         except Exception as e:
-            self.logger.log_error("Failed to report V2V status to Ground Station", e)
+            self.vehicle_logger.log_error("Failed to report V2V status to Ground Station", e)
+    
+    def _stop_quarc_models(self):
+        """Stop QUARC models controlling hardware components"""
+        try:
+            import subprocess
+            import socket
+            
+            self.vehicle_logger.logger.info("Stopping QUARC models (hardware control)...")
+            
+            # Get local IP or use localhost for QUARC models running locally
+            quarc_target = "tcpip://localhost:17000"
+            
+            # Try to stop QUARC models using quarc_run command
+            cmd = ["quarc_run", "-q", "-Q", "-t", quarc_target, "*.rt-linux_qcar2"]
+            
+            try:
+                result = subprocess.run(cmd, 
+                                      capture_output=True, 
+                                      text=True, 
+                                      timeout=5)
+                
+                if result.returncode == 0:
+                    self.vehicle_logger.logger.info("QUARC models stopped successfully")
+                else:
+                    self.vehicle_logger.logger.warning(f"QUARC stop returned code {result.returncode}")
+                    if result.stderr:
+                        self.vehicle_logger.logger.warning(f"QUARC error: {result.stderr.strip()}")
+                        
+            except subprocess.TimeoutExpired:
+                self.vehicle_logger.logger.warning("QUARC stop command timed out")
+            except FileNotFoundError:
+                self.vehicle_logger.logger.warning("quarc_run not found - QUARC models may still be running")
+                self.vehicle_logger.logger.warning("Hardware (LiDAR, GPS) may need manual shutdown")
+            except Exception as e:
+                self.vehicle_logger.logger.error(f"Error running quarc_run: {e}")
+                
+            # Test if QUARC is still running
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(("localhost", 17000))
+                sock.close()
+                
+                if result == 0:
+                    self.vehicle_logger.logger.warning("QUARC service still accessible - hardware may still be active")
+                else:
+                    self.vehicle_logger.logger.info("QUARC service stopped - hardware should be inactive")
+                    
+            except Exception as e:
+                self.vehicle_logger.logger.debug(f"Cannot test QUARC connection: {e}")
+                
+        except Exception as e:
+            self.vehicle_logger.logger.error(f"Error stopping QUARC models: {e}")
+    
     def _shutdown(self):
         """Shutdown all systems"""
-        self.logger.logger.info("Shutting down...")
+        self.vehicle_logger.logger.info("Shutting down...")
         
         # Use emergency_stop method instead of non-existent SHUTTING_DOWN state
         try:
             self.state_machine.emergency_stop("System shutdown requested")
         except Exception as e:
-            self.logger.log_error("Error during state machine shutdown", e)
+            self.vehicle_logger.log_error("Error during state machine shutdown", e)
         
-        # Stop vehicle
+        # Stop vehicle hardware
         if self.qcar:
             try:
                 self.qcar.write(throttle=0, steering=0)
+                self.vehicle_logger.logger.info("Vehicle stopped (throttle=0, steering=0)")
             except Exception as e:
-                self.logger.log_error("Error stopping vehicle", e)
+                self.vehicle_logger.log_error("Error stopping vehicle", e)
+        
+        # Stop QUARC models controlling hardware (LiDAR, GPS, etc.)
+        self._stop_quarc_models()
         
         # Close network handler and stop threads
         if self.client_Ground_Station:
@@ -861,34 +867,34 @@ class VehicleLogic:
             try:
                 self.v2v_manager.deactivate()
             except Exception as e:
-                self.logger.logger.error(f"V2V manager shutdown error: {e}")
+                self.vehicle_logger.logger.error(f"V2V manager shutdown error: {e}")
         
         if hasattr(self, 'v2v_communication'):
             try:
                 self.v2v_communication.deactivate()
             except Exception as e:
-                self.logger.logger.error(f"V2V communication shutdown error: {e}")
+                self.vehicle_logger.logger.error(f"V2V communication shutdown error: {e}")
         
         # Log final statistics
-        self.logger.logger.info("="*60)
-        self.logger.logger.info("Final Statistics:")
-        self.logger.logger.info(f"Total iterations: {self.loop_counter}")
-        self.logger.logger.info(f"Total time: {self.elapsed_time():.2f}s")
+        self.vehicle_logger.logger.info("="*60)
+        self.vehicle_logger.logger.info("Final Statistics:")
+        self.vehicle_logger.logger.info(f"Total iterations: {self.loop_counter}")
+        self.vehicle_logger.logger.info(f"Total time: {self.elapsed_time():.2f}s")
         
         # Log network statistics
         if self.client_Ground_Station:
             net_stats = self.client_Ground_Station.get_statistics()
-            self.logger.logger.info(f"Network - Telemetry sent: {net_stats['telemetry_sent']}, Commands received: {net_stats['commands_received']}")
+            self.vehicle_logger.logger.info(f"Network - Telemetry sent: {net_stats['telemetry_sent']}, Commands received: {net_stats['commands_received']}")
             if net_stats['queue_overflows'] > 0:
-                self.logger.logger.info(f"Network queue overflows: {net_stats['queue_overflows']}")
+                self.vehicle_logger.logger.info(f"Network queue overflows: {net_stats['queue_overflows']}")
         
         perf_stats = self.perf_monitor.get_statistics()
         if 'loop_time' in perf_stats:
-            self.logger.logger.info(
+            self.vehicle_logger.logger.info(
                 f"Average loop frequency: {perf_stats['loop_time']['frequency']:.1f} Hz"
             )
         
-        self.logger.logger.info("="*60)
+        self.vehicle_logger.logger.info("="*60)
         
         # Close logger
-        self.logger.close()
+        self.vehicle_logger.close()

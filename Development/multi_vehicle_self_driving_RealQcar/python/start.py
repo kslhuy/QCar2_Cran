@@ -5,6 +5,7 @@ import subprocess
 import os
 import glob
 import time
+import traceback
 
 parser = argparse.ArgumentParser(description="Run a demo script on a remote server.")
 parser.add_argument('-ip', '--qcar_ips', type=str, required=True, help="IP addresses of QCars")
@@ -15,9 +16,9 @@ parser.add_argument('-w','--width', default=320, help="width of to image to be d
 parser.add_argument('-ht','--height', default=200, help="height of to image to be displayed in the observer")
 args = parser.parse_args()
 
-QCAR_IPS = args.qcar_ips.split(",")  # Comma-separated list of IPs
+QCAR_IPS = [ip.strip() for ip in args.qcar_ips.split(",")]  # Comma-separated list of IPs, remove spaces
 LOCAL_IP = args.local_ip
-PROBING_IP = args.probing_ip
+PROBING_IP = args.probing_ip.strip()
 WIDTH = args.width
 HEIGHT = args.height
 REMOTE_PATH = args.remote_path
@@ -36,6 +37,12 @@ def create_ssh_and_scp(ip):
     scp = SCPClient(ssh.get_transport())
     return ssh, scp
 
+
+print(f"Starting QCars: {QCAR_IPS}")
+print(f"Probing IP: {PROBING_IP}")
+print(f"Local IP: {LOCAL_IP}")
+print(f"Remote Path: {REMOTE_PATH}")
+    
 for ip in QCAR_IPS:
     print(f"\n Starting QCar: {ip}")
 
@@ -75,5 +82,6 @@ for ip in QCAR_IPS:
     scp.close()
 
     time.sleep(3) 
+
 
 input("\n All QCars started, press Enter to exit...")  # Wait for user input before exiting

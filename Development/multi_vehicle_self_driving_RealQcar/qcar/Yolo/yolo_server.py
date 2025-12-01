@@ -44,9 +44,9 @@ YOLOserver = YOLOPublisher(port='18666')
 
 if probing:
     probe = Probe(ip = ipHost)
-    # Use car_id + 1 as display ID to avoid port conflicts
-    # Car 0 → display ID 1 → port 18801
-    # Car 1 → display ID 2 → port 18802, etc.
+    # Use car_id as display ID to avoid port conflicts
+    # Car 0 → display ID 0 → port 18800
+    # Car 1 → display ID 1 → port 18801, etc.
     probe.numDisplays = car_id  # Set the counter to car_id
     probe.add_display(imageSize = [height, width, 3], name=f'YOLO Car {car_id}', scalingFactor=1)
 else:

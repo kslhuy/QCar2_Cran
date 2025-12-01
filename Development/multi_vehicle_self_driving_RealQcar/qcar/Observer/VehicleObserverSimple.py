@@ -31,7 +31,7 @@ class VehicleObserver:
         self.vehicle_id = vehicle_id
         self.fleet_size = fleet_size
         self.config = config
-        self.logger = logger
+        self.vehicle_logger = logger
         
         # State estimator as child component
         self.state_estimator = state_estimator
@@ -89,8 +89,7 @@ class VehicleObserver:
         self._last_local_observer_time = 0.0
         self._last_fleet_observer_time = 0.0
         
-        if self.logger:
-            self.logger.info(f"VehicleObserver initialized for vehicle {vehicle_id} (Fleet size: {fleet_size})")
+        self.vehicle_logger.logger.info(f"VehicleObserver initialized for vehicle {vehicle_id} (Fleet size: {fleet_size})")
 
     def _should_update_local_observer(self, current_time: float) -> bool:
         """Check if local observer should update based on its rate"""
@@ -133,11 +132,7 @@ class VehicleObserver:
                     if "readTask" in str(read_error):
                         # QCar object doesn't have readTask, try alternative approach
                         # or skip reading if hardware is not properly initialized
-                        if self.logger:
-                            if hasattr(self.logger, 'log_warning'):
-                                self.logger.log_warning("QCar readTask not available, skipping sensor read")
-                            else:
-                                self.logger.warning("QCar readTask not available, skipping sensor read")
+                        self.vehicle_logger.log_warning("QCar readTask not available, skipping sensor read")
                         return False
                     else:
                         raise  # Re-raise if it's a different attribute error
@@ -153,12 +148,7 @@ class VehicleObserver:
                 return True
                 
         except Exception as e:
-            if self.logger:
-                # Handle different logger types - VehicleLogger vs standard Python logger
-                if hasattr(self.logger, 'log_error'):
-                    self.logger.log_error("Sensor data update error", e)
-                else:
-                    self.logger.error(f"Sensor data update error: {e}")
+            self.vehicle_logger.log_error("Sensor data update error", e)
             return False
 
     def update_observer(self, dt: float, last_steering: float = 0.0) -> dict:
@@ -188,11 +178,7 @@ class VehicleObserver:
             return state_info
             
         except Exception as e:
-            if self.logger:
-                if hasattr(self.logger, 'log_error'):
-                    self.logger.log_error("Observer update error", e)
-                else:
-                    self.logger.error(f"Observer update error: {e}")
+            self.vehicle_logger.log_error("Observer update error", e)
             return self._get_default_state()
 
     def _update_local_observer(self, dt: float, last_steering: float = 0.0) -> dict:
@@ -241,11 +227,7 @@ class VehicleObserver:
             }
             
         except Exception as e:
-            if self.logger:
-                if hasattr(self.logger, 'log_error'):
-                    self.logger.log_error("Local observer update error", e)
-                else:
-                    self.logger.error(f"Local observer update error: {e}")
+            self.vehicle_logger.log_error("Local observer update error", e)
             return self._get_default_state()
 
     def _update_fleet_observer_internal(self, dt: float):
@@ -287,11 +269,7 @@ class VehicleObserver:
             self._cleanup_old_data(current_time)
             
         except Exception as e:
-            if self.logger:
-                if hasattr(self.logger, 'log_error'):
-                    self.logger.log_error("Fleet observer update error", e)
-                else:
-                    self.logger.error(f"Fleet observer update error: {e}")
+            self.vehicle_logger.log_error("Fleet observer update error", e)
 
     def set_state_estimator(self, state_estimator):
         """
@@ -302,8 +280,42 @@ class VehicleObserver:
             state_estimator: StateEstimator instance (EKF, UKF, etc.)
         """
         self.state_estimator = state_estimator
-        if self.logger:
-            self.logger.info(f"State estimator set for vehicle {self.vehicle_id}: {type(state_estimator).__name__}")
+        self.vehicle_logger.logger.info(f"State estimator set for vehicle {self.vehicle_id}: {type(state_estimator).__name__}")
+
+    def initialize_state_estimator(self, gps, initial_pose=None, logger=None, use_ekf=True):
+        """
+        Initialize StateEstimator within VehicleObserver for better encapsulation.
+        
+        State Estimator could be any types (EKF, UKF , UIO , custom)...
+
+        Args:
+            gps: GPS instance
+            initial_pose: Initial pose [x, y, theta] 
+            logger: Logger instance
+            use_ekf: Whether to use EKF
+        
+        Returns:
+            bool: True if initialization successful
+        """
+        try:
+            from Controller.controllers import StateEstimator
+            
+            state_estimator = StateEstimator(
+                gps=gps,
+                initial_pose=initial_pose,
+                logger=self.vehicle_logger,
+                use_ekf=use_ekf
+            )
+            
+            self.set_state_estimator(state_estimator)
+            
+            self.vehicle_logger.logger.info(f"StateEstimator initialized within VehicleObserver for vehicle {self.vehicle_id}")
+            
+            return True
+            
+        except Exception as e:
+            self.vehicle_logger.log_error("StateEstimator initialization failed in VehicleObserver", e)
+            return False
 
     def get_state_estimator(self):
         """
@@ -342,11 +354,7 @@ class VehicleObserver:
             return True
             
         except Exception as e:
-            if self.logger:
-                if hasattr(self.logger, 'log_error'):
-                    self.logger.log_error("Add received state error", e)
-                else:
-                    self.logger.error(f"Add received state error: {e}")
+            self.vehicle_logger.log_error("Add received state error", e)
             return False
 
     def get_local_state(self) -> np.ndarray:
@@ -419,11 +427,7 @@ class VehicleObserver:
                     del self.received_states[vehicle_id]
                     
         except Exception as e:
-            if self.logger:
-                if hasattr(self.logger, 'log_error'):
-                    self.logger.log_error("Data cleanup error", e)
-                else:
-                    self.logger.error(f"Data cleanup error: {e}")
+            self.vehicle_logger.log_error("Data cleanup error", e)
 
     def _get_default_state(self) -> dict:
         """Get default state when estimation fails."""
@@ -527,10 +531,9 @@ class VehicleObserver:
                 if peer_id in self.received_states:
                     del self.received_states[peer_id]
             
-            if self.logger:
-                self.logger.info(f"VehicleObserver fleet estimation reinitialized: "
-                               f"Fleet size: {old_fleet_size} -> {self.fleet_size}, "
-                               f"Peer IDs: {peer_vehicle_ids}")
+            self.vehicle_logger.logger.info(f"VehicleObserver fleet estimation reinitialized: "
+                           f"Fleet size: {old_fleet_size} -> {self.fleet_size}, "
+                           f"Peer IDs: {peer_vehicle_ids}")
 
     def reset_observer(self, initial_pose: Optional[np.ndarray] = None):
         """Reset observer state."""

@@ -13,6 +13,10 @@ from .vehicle_state import VehicleState, StateTransitionReason
 import sys
 import os
 
+# import time
+import numpy as np
+from pal.products.qcar import QCar, QCarGPS
+
 # Add parent directory to sys.path for imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
@@ -73,27 +77,27 @@ class InitializingState(StateBase):
                 self.logger.logger.info("✅ All components initialized")
                 time.sleep(0.2)  # Small delay to let components settle
         
-        # Step 2: Check initial position (if path following enabled) - with delay
-        if (self.state_data['components_initialized'] and 
-            not self.state_data['initial_position_checked']):
+        # # Step 2: Check initial position (if path following enabled) - with delay
+        # if (self.state_data['components_initialized'] and 
+        #     not self.state_data['initial_position_checked']):
             
-            # Wait for step delay before proceeding
-            if current_time - self.state_data['last_step_time'] < self.state_data['step_delay']:
-                return throttle, steering, None  # Wait for delay
+        #     # Wait for step delay before proceeding
+        #     if current_time - self.state_data['last_step_time'] < self.state_data['step_delay']:
+        #         return throttle, steering, None  # Wait for delay
             
-            if self.config.steering.enable_steering_control:
-                position_ok = self._check_initial_position(sensor_data)
-                if position_ok:
-                    self.state_data['initial_position_checked'] = True
-                    self.state_data['last_step_time'] = current_time
-                    self.logger.logger.info("✅ Initial position verified")
-                    time.sleep(0.2)  # Small delay
-            else:
-                # Skip position check if steering control disabled
-                self.state_data['initial_position_checked'] = True
-                self.state_data['last_step_time'] = current_time
-                self.logger.logger.info("✅ Position check skipped (steering disabled)")
-                time.sleep(0.1)  # Small delay
+        #     if self.config.steering.enable_steering_control:
+        #         position_ok = self._check_initial_position(sensor_data)
+        #         if position_ok:
+        #             self.state_data['initial_position_checked'] = True
+        #             self.state_data['last_step_time'] = current_time
+        #             self.logger.logger.info("✅ Initial position verified")
+        #             time.sleep(0.2)  # Small delay
+        #     else:
+        #         # Skip position check if steering control disabled
+        #         self.state_data['initial_position_checked'] = True
+        #         self.state_data['last_step_time'] = current_time
+        #         self.logger.logger.info("✅ Position check skipped (steering disabled)")
+        #         time.sleep(0.1)  # Small delay
 
         # Step 3: Mark as ready to start - with final delay
         if (self.state_data['components_initialized'] and 
@@ -193,25 +197,68 @@ class InitializingState(StateBase):
             self.logger.log_error("Component initialization failed", e)
             return False
     
-    def _check_initial_position(self, sensor_data: Dict[str, Any]) -> bool:
-        """Check if vehicle is at appropriate starting position"""
+    # def _check_initial_position(self, sensor_data: Dict[str, Any]) -> bool:
+    #     """Check if vehicle is at appropriate starting position"""
+    #     try:
+    #         # Get current position
+    #         x = sensor_data.get('x', 0.0)
+    #         y = sensor_data.get('y', 0.0)
+    #         theta = sensor_data.get('theta', 0.0)
+            
+    #         # For now, just check if we have valid position data
+    #         # In a full implementation, this would check against start nodes
+    #         if abs(x) > 100 or abs(y) > 100:  # Sanity check for valid coordinates
+    #             self.logger.log_warning(f"Position seems invalid: ({x:.2f}, {y:.2f})")
+    #             return False
+            
+    #         self.logger.logger.info(f"Initial position: ({x:.2f}, {y:.2f}, {theta:.2f})")
+    #         return True
+            
+    #     except Exception as e:
+    #         self.logger.log_error("Position check failed", e)
+    #         return False
+        
+    def check_initial_position(self) -> bool:
+        import numpy as np
+        """Check if vehicle is at start position"""
         try:
-            # Get current position
-            x = sensor_data.get('x', 0.0)
-            y = sensor_data.get('y', 0.0)
-            theta = sensor_data.get('theta', 0.0)
-            
-            # For now, just check if we have valid position data
-            # In a full implementation, this would check against start nodes
-            if abs(x) > 100 or abs(y) > 100:  # Sanity check for valid coordinates
-                self.logger.log_warning(f"Position seems invalid: ({x:.2f}, {y:.2f})")
-                return False
-            
-            self.logger.logger.info(f"Initial position: ({x:.2f}, {y:.2f}, {theta:.2f})")
-            return True
+            # For simplified state machine, we don't need complex transitions
+            # Just check if we're at the start position
+            if hasattr(self, 'roadmap') and self.roadmap and hasattr(self, 'node_sequence'):
+                start_node_reached, init_waypoint_seq = self.roadmap.initial_check(
+                    self.init_pose,
+                    self.node_sequence,
+                    self.waypoint_sequence
+                )
+                
+                if not start_node_reached:
+                    # Log detailed information about position mismatch
+                    target_node = self.node_sequence[0]
+                    target_pose = self.roadmap.get_node_pose(target_node).squeeze()
+                    current_dist = np.linalg.norm(self.init_pose[:2] - target_pose[:2])
+                    
+                    self.vehicle_logger.log_warning("="*60)
+                    self.vehicle_logger.log_warning("NOT AT START POSITION")
+                    self.vehicle_logger.log_warning(f"  Current position: ({self.init_pose[0]:.2f}, {self.init_pose[1]:.2f}, {self.init_pose[2]:.2f})")
+                    self.vehicle_logger.log_warning(f"  Target node: {target_node}")
+                    self.vehicle_logger.log_warning(f"  Target position: ({target_pose[0]:.2f}, {target_pose[1]:.2f}, {target_pose[2]:.2f})")
+                    self.vehicle_logger.log_warning(f"  Distance to start: {current_dist:.2f}m")
+                    self.vehicle_logger.log_warning("="*60)
+                    
+                    # Update waypoint sequence to navigate to start
+                    self.waypoint_sequence = init_waypoint_seq
+                    if hasattr(self, 'steering_controller') and self.steering_controller:
+                        self.steering_controller.reset(self.waypoint_sequence)
+                    return False
+                else:
+                    self.vehicle_logger.logger.info("Vehicle is at start position")
+                    return True
+            else:
+                # If no roadmap/steering, assume position is OK
+                return True
             
         except Exception as e:
-            self.logger.log_error("Position check failed", e)
+            self.vehicle_logger.log_error("Initial position check failed", e)
             return False
     
     def exit(self):
@@ -321,17 +368,17 @@ class InitializingState(StateBase):
     def _initialize_qcar(self) -> bool:
         """Initialize QCar hardware"""
         try:
-            import time
-            import numpy as np
-            from pal.products.qcar import QCar, QCarGPS
+          
             from Controller.controllers import StateEstimator
             
             self.logger.logger.info("Initializing QCar hardware...")
             
             self.vehicle_logic.qcar = QCar(
                 readMode=1,
-                frequency=self.config.timing.controller_update_rate
+                frequency=200
             )
+            self.logger.logger.info(self.vehicle_logic.qcar)
+            
             # time.sleep(0.5)  # Allow QCar hardware to initialize
 
             self.logger.logger.info("Initializing GPS...")
@@ -353,32 +400,37 @@ class InitializingState(StateBase):
             
             if not gps_received:
                 self.logger.log_error("Failed to receive initial GPS reading")
+                self.init_pose = None
                 return False
             
             self.logger.logger.info("GPS reading received")
-            time.sleep(0.2)  # Allow GPS data to settle
             
             # Get initial pose for EKF
-            initial_pose = None
-            if self.config.steering.enable_steering_control:
-                initial_pose = np.array([
-                    self.vehicle_logic.gps.position[0],
-                    self.vehicle_logic.gps.position[1],
-                    self.vehicle_logic.gps.orientation[2]
-                ])
-                self.logger.logger.info(f" Initial pose: x={initial_pose[0]:.2f}, y={initial_pose[1]:.2f}, theta={initial_pose[2]:.2f}")
+            self.init_pose = np.array([
+                self.vehicle_logic.gps.position[0],
+                self.vehicle_logic.gps.position[1],
+                self.vehicle_logic.gps.orientation[2]
+            ])
+            self.logger.logger.info(f" Initial pose: x={self.init_pose[0]:.2f}, y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}")
             
-            # Initialize state estimator with EKF
-            self.logger.logger.info(" Initializing state estimator...")
-            self.vehicle_logic.state_estimator = StateEstimator(
+            # Initialize state estimator through VehicleObserver
+            self.logger.logger.info(" Initializing state estimator via VehicleObserver...")
+            
+            # Let VehicleObserver handle StateEstimator creation and management
+            success = self.vehicle_logic.vehicle_observer.initialize_state_estimator(
                 gps=self.vehicle_logic.gps,
-                initial_pose=initial_pose,
-                logger=self.vehicle_logic.logger.logger,
+                initial_pose=self.init_pose,
+                logger=self.logger,
                 use_ekf=self.config.steering.enable_steering_control
             )
+            
+            if not success:
+                self.logger.log_error("Failed to initialize StateEstimator via VehicleObserver")
+                return False
+                
             time.sleep(0.3)  # Allow state estimator to initialize
             
-            self.logger.logger.info(" QCar hardware initialized with EKF fusion")
+            self.logger.logger.info(" QCar hardware initialized with EKF fusion via VehicleObserver")
             return True
             
         except Exception as e:
@@ -388,14 +440,14 @@ class InitializingState(StateBase):
     def _initialize_controllers(self) -> bool:
         """Initialize control systems"""
         try:
-            from controllers import SpeedController, SteeringController
+            from Controller.controllers import SpeedController, SteeringController
             
             self.logger.logger.info(" Initializing controllers...")
             
             # Speed controller
             self.vehicle_logic.speed_controller = SpeedController(
                 config=self.config,
-                logger=self.vehicle_logic.logger
+                logger=self.vehicle_logic.vehicle_logger
             )
             time.sleep(0.1)  # Allow speed controller to initialize
             
@@ -404,9 +456,10 @@ class InitializingState(StateBase):
                 self.vehicle_logic.steering_controller = SteeringController(
                     waypoints=self.vehicle_logic.waypoint_sequence,
                     config=self.config,
-                    logger=self.vehicle_logic.logger
+                    logger=self.vehicle_logic.vehicle_logger
                 )
                 time.sleep(0.2)  # Allow steering controller to initialize
+                self.check_initial_position()  # Ensure initial position is set in steering controller
             
             self.logger.logger.info("Controllers initialized")
             return True
@@ -430,7 +483,6 @@ class InitializingState(StateBase):
             
             yolo_drive = YOLODriveLogic(
                 pulseLength=pulse_length,
-                logger=self.vehicle_logic.logger
             )
             
             # Initialize YOLOManager with components

@@ -128,7 +128,8 @@ class FakeInitializingState(StateBase):
                 self.vehicle_logic.yolo_manager.initialize(parent_fake_vehicle.mock_yolo, mock_yolo_drive)
                 
                 # Create mock controllers and state estimator
-                self.vehicle_logic.state_estimator = MockStateEstimator(parent_fake_vehicle.mock_qcar, parent_fake_vehicle.mock_gps)
+                mock_state_estimator = MockStateEstimator(parent_fake_vehicle.mock_qcar, parent_fake_vehicle.mock_gps)
+                self.vehicle_logic.vehicle_observer.set_state_estimator(mock_state_estimator)
                 self.vehicle_logic.speed_controller = MockSpeedController(self.config.network.car_id)
                 self.vehicle_logic.steering_controller = MockSteeringController(self.config.network.car_id)
                 
@@ -151,7 +152,8 @@ class FakeInitializingState(StateBase):
                 mock_yolo_drive = MockYOLODrive()
                 self.vehicle_logic.yolo_manager.initialize(mock_yolo_receiver, mock_yolo_drive)
                 
-                self.vehicle_logic.state_estimator = MockStateEstimator(self.vehicle_logic.qcar, self.vehicle_logic.gps)
+                mock_state_estimator = MockStateEstimator(self.vehicle_logic.qcar, self.vehicle_logic.gps)
+                self.vehicle_logic.vehicle_observer.set_state_estimator(mock_state_estimator)
                 self.vehicle_logic.speed_controller = MockSpeedController(car_id)
                 self.vehicle_logic.steering_controller = MockSteeringController(car_id)
                 

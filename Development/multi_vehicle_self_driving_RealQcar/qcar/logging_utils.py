@@ -88,7 +88,9 @@ class VehicleLogger:
             'platoon_enabled', 'platoon_id', 'platoon_role', 'platoon_active',
             'leader_id', 'leader_detected', 'leader_distance', 
             'spacing_stable', 'followers_ready', 'all_ready',
-            'formation_ready', 'desired_speed', 'spacing_error'
+            'formation_ready', 'desired_speed', 'spacing_error',
+            # V2V communication fields
+            'v2v_protocol', 'v2v_fleet_rate', 'v2v_local_rate', 'v2v_peers', 'v2v_active'
         ]
         
         self.telemetry_writer = csv.DictWriter(self.telemetry_file, fieldnames=fieldnames)
