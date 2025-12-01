@@ -82,51 +82,14 @@ INITIALIZING → WAITING_FOR_START → FOLLOWING_PATH ⇄ FOLLOWING_LEADER
                       ←──────────── STOPPED ←─────────────┘
 ```
 
-## 🔧 Troubleshooting
-
-### Connection Issues
-```powershell
-# Test connectivity
-ping 192.168.137.102
-
-# Check SSH
-ssh nvidia@192.168.137.102
-```
-
-### YOLO Server Problems
-```powershell
-# Check dependencies on QCar
-ssh nvidia@192.168.137.102 "python -c 'import torch, cv2; print(\"OK\")'"
-
-# Manual YOLO start for debugging
-ssh nvidia@192.168.137.102
-cd /home/nvidia/Documents/multi_vehicle_RealCar
-python yolo_server.py -i 192.168.137.1 -p True
-```
-
-### Stop All Processes
-```powershell
-# Emergency stop
-.\stop_refactored.bat
-
-# Manual cleanup
-taskkill /F /IM python.exe
-```
-
-## 📚 Documentation
-
-- **Startup System**: `python/STARTUP_README.md`
-- **Complete Guide**: `qcar/Doc/REFACTORING_README.md`
-- **Quick Start**: `qcar/Doc/QUICKSTART.md`
-- **State Machine**: `qcar/StateMachine/README.md`
 
 ## 🚀 Next Steps
-
-1. ✅ Edit `config.txt` with your IPs
-2. ✅ Run `.\start_refactored.bat`
-3. ✅ Monitor logs for errors
-4. ✅ Tune parameters in YAML configs
-5. ✅ Scale to multiple vehicles
+0. Fix multiproing class to see all the cameras of each vehicle conntected
+1. Refactory the code 
+2. Use platoon controller 
+3. Can connected to Qlabs
+4. Implement the observer developed 
+5. 
 
 ---
 
