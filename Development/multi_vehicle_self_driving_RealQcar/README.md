@@ -1,10 +1,6 @@
-# QCar Multi-Vehicle Self-Driving System - Refactored
+# QCar Multi-Vehicle Self-Driving System 
 
-## 🚀 Quick Start
-
-Refactored multi-vehicle autonomous driving system for QCar platforms with improved architecture and automated deployment.
-
-### ⚡ Run the System
+### ⚡ For real Qcar 
 
 ```powershell
 
@@ -14,32 +10,62 @@ Edit `config.txt` with your IPs , and the real car
 python .\enhanced_gui_controller.py
 
 # Start all vehicles (in another terminal)
+cd .\Development\multi_vehicle_self_driving_RealQcar      
+
+.\start_refactored.bat 
+
+
+(Wait its will run automatique)
+
+# To Stop all vehicles (in same terminal of the start)
+cd .\Development\multi_vehicle_self_driving_RealQcar      
+
+.\stop_enhanced.bat
+```
+
+### For Simulation Qlabs
+ 
+```powershell
+
+# Start GUI 
+
+(In Simulator)
+cd .\Development\QCar2_multi-vehicle_control\
+python .\initCars.py // For spawn 2 Qcar    
+
+(another cmd)
+cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
+python .\enhanced_gui_controller.py
+
+(another cmd)
+cd .\Development\multi_vehicle_self_driving_RealQcar\qcar      
+python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 0
+
+(another cmd)
+cd .\Development\multi_vehicle_self_driving_RealQcar\qcar      
+python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
+
+
+# Start all vehicles (in another terminal)
 .\start_refactored.bat
 
 # Stop all vehicles (in same terminal of the start)
 .\stop_enhanced.bat
 ```
 
-## 📁 Project Structure
 
+### Development Quick Test Mode (UI)
+```powershell
+# Start GUI 
+
+cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
+python .\enhanced_gui_controller.py
+
+# Test with fake vehicles (no hardware)
+cd qcar/GUI
+python fake_vehicle_real_logic.py 0
 ```
-multi_vehicle_self_driving_RealQcar/
-├── config.txt                    # Main configuration
-├── start_refactored.bat         # Start all vehicles
-├── stop_enhanced.bat          # Stop all vehicles
-├── python/                      # Startup scripts → See python/STARTUP_README.md
-├── qcar/                        # Core system
-│   ├── vehicle_main.py         # Main entry point
-│   ├── vehicle_logic.py        # Core controller
-│   ├── StateMachine/           # State management → See StateMachine/README.md
-│   ├── Controller/             # Speed/steering control → See Controller/README.md
-│   ├── Observer/               # Vehicle observer → See Observer/README.md
-│   ├── V2V/                    # Vehicle communication → See V2V/README.md
-│   ├── Yolo/                   # Object detection → See Yolo/README.md
-│   ├── GUI/                    # Testing tools
-│   └── Doc/                    # Detailed documentation
-└── reference_scan/             # Calibration data
-```
+
 
 ## 🔧 Configuration
 
@@ -54,15 +80,6 @@ REMOTE_PATH=/home/nvidia/Documents/multi_vehicle_RealCar
 
 
 
-### Development Mode
-```powershell
-# Run with debug logging
-python vehicle_main.py --config debug_config.yaml
-
-# Test with fake vehicles (no hardware)
-cd qcar/GUI
-python fake_vehicle_real_logic.py 0
-```
 
 
 ## 🛠️ System Architecture
