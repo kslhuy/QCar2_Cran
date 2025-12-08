@@ -113,7 +113,7 @@ INITIALIZING → WAITING_FOR_START → FOLLOWING_PATH ⇄ FOLLOWING_LEADER
 ![alt text](image-1.png)
 ---
 
-**Version**: Refactored System (December 2024)  
+
 **Platform**: Windows + QCar Hardware
 
 
