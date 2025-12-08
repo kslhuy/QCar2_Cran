@@ -74,7 +74,7 @@ class FollowingLeaderState(StateBase):
         # Longitudinal options: 'cacc', 'pi', 'hybrid'
         # Lateral options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'path'
         self.longitudinal_controller_type = getattr(self.config, 'longitudinal_controller_type', 'cacc')
-        self.lateral_controller_type = getattr(self.config, 'lateral_controller_type', 'path')
+        self.lateral_controller_type = getattr(self.config, 'lateral_controller_type', 'pure_pursuit')
         
         self.longitudinal_controller = None
         self.lateral_controller = None
