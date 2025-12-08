@@ -46,11 +46,7 @@ cd .\Development\multi_vehicle_self_driving_RealQcar\qcar
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
 
 
-# Start all vehicles (in another terminal)
-.\start_refactored.bat
 
-# Stop all vehicles (in same terminal of the start)
-.\stop_enhanced.bat
 ```
 
 
