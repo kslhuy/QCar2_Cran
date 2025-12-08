@@ -109,8 +109,8 @@ INITIALIZING → WAITING_FOR_START → FOLLOWING_PATH ⇄ FOLLOWING_LEADER
 2. Use platoon controller 
 3. Can connected to Qlabs
 4. Implement the observer developed 
-5. 
-
+5. New GUI ?? 
+![alt text](image-1.png)
 ---
 
 **Version**: Refactored System (December 2024)  
