@@ -40,9 +40,7 @@ class WaitingForStartState(StateBase):
         self.state_data = {
             'ready_for_commands': True,
             'auto_start_delay': self.config.timing.start_delay if hasattr(self.config, 'timing') else 1.0,
-            'auto_start_enabled': False,  # Can be enabled for testing
-            'platoon_mode_requested': False,
-            'platoon_leader_id': None
+            'auto_start_enabled': False  # Can be enabled for testing
         }
         
 
@@ -65,7 +63,7 @@ class WaitingForStartState(StateBase):
         if self.state_data['auto_start_enabled']:
             wait_time = self.get_time_in_state()
             if wait_time > self.state_data['auto_start_delay']:
-                self.logger.logger.info("🤖 Auto-start triggered")
+                self.logger.logger.info(" Auto-start triggered")
                 return throttle, steering, (VehicleState.FOLLOWING_PATH, StateTransitionReason.START_COMMAND)
         
         # Stay in waiting state
@@ -98,40 +96,58 @@ class WaitingForStartState(StateBase):
         # if command_type == CommandType.ACTIVATE_V2V:
 
         
-        # Handle start command - DIRECT TRANSITION!
+        # Handle start command - DIRECT TRANSITION (Normal start only)!
         if command_type == CommandType.START:
-            self.logger.logger.info("Start command received - transitioning immediately!")
-            
-            # Check if we should start in platoon mode
-            if self.state_data['platoon_mode_requested']:
-                # Setup platoon mode
-                if hasattr(self.vehicle_logic, 'platoon_controller'):
-                    self.vehicle_logic.platoon_controller.enable_follower_mode(
-                        self.state_data['platoon_leader_id']
-                    )
-                return (VehicleState.FOLLOWING_LEADER, StateTransitionReason.START_COMMAND)
-            else:
-                # Start in regular path following mode
-                return (VehicleState.FOLLOWING_PATH, StateTransitionReason.START_COMMAND)
+            self.logger.logger.info(" Normal start command received - transitioning to FOLLOWING_PATH state!")
+            return (VehicleState.FOLLOWING_PATH, StateTransitionReason.START_COMMAND)
         
-        # Handle platoon follower setup
-        elif command_type == CommandType.ENABLE_PLATOON_FOLLOWER:
+        # Handle start platoon command - DIRECT TRANSITION BASED ON FORMATION ROLE!
+        elif command_type == CommandType.START_PLATOON:
+            # Debug: Log received data
+            self.logger.logger.info(f"[START_PLATOON] Received data: {data}")
+            
             if not self.validate_event_data(data, ['leader_id']):
+                self.logger.logger.error("[START_PLATOON] Missing 'leader_id' in command data!")
+                return None
+            
+            # ✅ CRITICAL: Check if platoon setup was completed first
+            if not (hasattr(self.vehicle_logic, 'platoon_controller') and 
+                    self.vehicle_logic.platoon_controller and
+                    self.vehicle_logic.platoon_controller.setup_complete):
+                self.logger.logger.warning(
+                    "START_PLATOON rejected - SETUP_PLATOON_FORMATION has not been received yet! "
+                    "Please send SETUP_PLATOON_FORMATION command first before starting platoon."
+                )
                 return None
             
             leader_id = data.get('leader_id')
-            self.logger.logger.info(f"Platoon follower mode configured (leader: {leader_id})")
             
-            # Setup platoon configuration but don't start yet - wait for start command
-            self.state_data['platoon_mode_requested'] = True
-            self.state_data['platoon_leader_id'] = leader_id
+            # ✅ Check formation to determine role and state transition
+            is_leader = self.vehicle_logic.platoon_controller.is_leader
+            my_position = getattr(self.vehicle_logic.platoon_controller, 'my_position', None)
             
-            # Configure platoon controller if available
-            if hasattr(self.vehicle_logic, 'platoon_controller'):
-                self.vehicle_logic.platoon_controller.configure_follower(leader_id)
+            self.logger.logger.info(f"[START_PLATOON] Start platoon command received (setup_complete=True)")
+            self.logger.logger.info(f"[START_PLATOON] My formation: is_leader={is_leader}, position={my_position}, target_leader={leader_id}")
             
-            self.logger.logger.info("Platoon mode configured - waiting for start command")
-            return None  # No transition, just configuration
+            if is_leader:
+                # Leaders go to FOLLOWING_PATH state and follow their predefined path
+                self.logger.logger.info("[START_PLATOON] I am LEADER - transitioning to FOLLOWING_PATH state (path following as leader)")
+                # Enable platoon mode for leader
+                self.vehicle_logic.platoon_controller.enabled = True
+                return (VehicleState.FOLLOWING_PATH, StateTransitionReason.START_COMMAND)
+            else:
+                # Followers transition to FOLLOWING_LEADER state
+                self.logger.logger.info(f"[START_PLATOON] I am FOLLOWER-{my_position} - transitioning to FOLLOWING_LEADER state (following vehicle {leader_id})")
+                
+                # Enable platoon controller for follower mode
+                self.vehicle_logic.platoon_controller.enable_as_follower()
+                self.vehicle_logic.platoon_controller.leader_car_id = leader_id
+                self.vehicle_logic.platoon_controller.enabled = True
+                
+
+                
+                # Direct transition to following leader state
+                return (VehicleState.FOLLOWING_LEADER, StateTransitionReason.START_COMMAND)
         
         # Handle velocity updates - store for when we start
         elif command_type == CommandType.SET_VELOCITY:
@@ -163,7 +179,6 @@ class WaitingForStartState(StateBase):
         self.logger.logger.info("Exiting WAITING_FOR_START state")
         
         wait_time = self.get_time_in_state()
-        mode = "platoon" if self.state_data['platoon_mode_requested'] else "autonomous"
-        self.logger.logger.info(f"Waited for {wait_time:.1f}s before starting in {mode} mode")
+        self.logger.logger.info(f"Waited for {wait_time:.1f}s before starting")
         
         super().exit()

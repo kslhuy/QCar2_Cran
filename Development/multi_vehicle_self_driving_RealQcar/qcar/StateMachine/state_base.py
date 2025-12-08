@@ -11,39 +11,15 @@ transitions without needing pending_transition mechanisms.
 from typing import Dict, Any, Tuple, Optional
 from .vehicle_state import VehicleState, StateTransitionReason
 import time
+import sys
+import os
 
+# Add parent directory to sys.path to import command_types
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
-# Import CommandType enum - use a local import to avoid circular dependencies
-def get_command_type():
-    import sys
-    import os
-    
-    # Add parent directory to sys.path for imports
-    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if parent_dir not in sys.path:
-        sys.path.append(parent_dir)
-    
-    try:
-        from command_handler import CommandType
-        return CommandType
-    except ImportError:
-        # Fallback if import fails - create minimal enum
-        from enum import Enum
-        class CommandType(Enum):
-            STOP = "stop"
-            START = "start" 
-            EMERGENCY_STOP = "emergency_stop"
-            SET_VELOCITY = "set_velocity"
-            SET_PATH = "set_path"
-            SET_PARAMS = "set_params"
-            ENABLE_PLATOON_LEADER = "enable_platoon_leader"
-            ENABLE_PLATOON_FOLLOWER = "enable_platoon_follower"
-            DISABLE_PLATOON = "disable_platoon"
-            ACTIVATE_V2V = "activate_v2v"
-            DISABLE_V2V = "disable_v2v"
-            SHUTDOWN = "shutdown"
-            RESET = "reset"
-        return CommandType
+from command_types import CommandType
 
 
 class StateBase:
@@ -132,9 +108,6 @@ class StateBase:
         """
         data = data or {}
         
-        # Get CommandType enum for comparisons
-        CommandType = get_command_type()
-        
         # Log the event
         if self.logger:
             self.logger.logger.info(f"[CMD] State {self.__class__.__name__} received command: {command_type}")
@@ -187,8 +160,8 @@ class StateBase:
             peer_ips = data.get('peer_ips', [])
             
             if peer_vehicles and peer_ips:
-                if hasattr(self.vehicle_logic, 'activate_v2v'):
-                    success = self.vehicle_logic.activate_v2v(peer_vehicles, peer_ips)
+                if hasattr(self.vehicle_logic, 'v2v_manager'):
+                    success = self.vehicle_logic.v2v_manager.activate_v2v(peer_vehicles, peer_ips)
                     if success and self.logger:
                         self.logger.logger.info(f"[OK] V2V activated in {self.__class__.__name__}")
                     elif self.logger:
@@ -199,18 +172,105 @@ class StateBase:
                     self.logger.logger.warning(f"[!] Invalid V2V activation data")
             return None
         
+        elif command_type == CommandType.SETUP_PLATOON_FORMATION:
+            # Handle global platoon formation setup (available in any state)
+            print(f"\n[DEBUG] ===== SETUP_PLATOON_FORMATION RECEIVED =====\n")
+            print(f"[DEBUG] Formation setup command received in {self.__class__.__name__}")
+            print(f"[DEBUG] Data: {data}")
+            
+            if not self.validate_event_data(data, ['formation', 'leader_id']):
+                print(f"[DEBUG] Formation setup failed validation")
+                return None
+            
+            formation = data.get('formation')  # Dict[vehicle_id, position]
+            leader_id = data.get('leader_id')
+            my_vehicle_id = getattr(self.vehicle_logic, 'vehicle_id', 0)
+            
+            if self.logger:
+                self.logger.logger.info(f"Global platoon formation received:")
+                for vehicle_id, position in formation.items():
+                    role = "LEADER" if position == 1 else f"FOLLOWER-{position}"
+                    marker = " ← ME" if vehicle_id == my_vehicle_id else ""
+                    self.logger.logger.info(f"  Vehicle ID {vehicle_id}: Position {position} ({role}){marker}")
+            
+            # Update vehicle_logic with new position (handle JSON string keys)
+            vehicle_found = False
+            new_position = None
+            
+            # Try both integer and string keys due to JSON conversion
+            if my_vehicle_id in formation:
+                new_position = formation[my_vehicle_id]
+                vehicle_found = True
+            elif str(my_vehicle_id) in formation:
+                new_position = formation[str(my_vehicle_id)]
+                vehicle_found = True
+            
+            if vehicle_found and new_position is not None:
+                if hasattr(self.vehicle_logic, 'vehicle_position'):
+                    self.vehicle_logic.vehicle_position = new_position
+                    if self.logger:
+                        self.logger.logger.info(f"Updated vehicle position to {new_position}")
+                else:
+                    if self.logger:
+                        self.logger.logger.info(f"No vehicle_position attribute - using formation position {new_position}")
+            else:
+                if self.logger:
+                    self.logger.logger.warning(f"Vehicle ID {my_vehicle_id} not found in formation: {formation}")
+            
+            # Update V2V manager with formation mapping
+            if hasattr(self.vehicle_logic, 'v2v_manager') and self.vehicle_logic.v2v_manager:
+                self.vehicle_logic.v2v_manager.update_platoon_formation(formation)
+            
+            # Configure platoon controller from global formation
+            if hasattr(self.vehicle_logic, 'platoon_controller'):
+                print(f"[DEBUG] Calling setup_from_global_formation: car_id={my_vehicle_id}, formation={formation}, leader_id={leader_id}")
+                
+                # Use the proper setup_from_global_formation method
+                setup_success = self.vehicle_logic.platoon_controller.setup_from_global_formation(
+                    my_vehicle_id, formation, leader_id
+                )
+                
+                if setup_success:
+                    if self.logger:
+                        self.logger.logger.info(f"Formation configured successfully in {self.__class__.__name__}")
+                        self.logger.logger.info(f"Vehicle {my_vehicle_id} position: {getattr(self.vehicle_logic.platoon_controller, 'my_position', 'unknown')}")
+                        self.logger.logger.info(f"Is leader: {self.vehicle_logic.platoon_controller.is_leader}")
+                        self.logger.logger.info(f"Leader car ID: {self.vehicle_logic.platoon_controller.leader_car_id}")
+                    
+                    # Send platoon setup confirmation to Ground Station
+                    self._send_platoon_setup_confirmation(my_vehicle_id, formation, leader_id)
+                else:
+                    if self.logger:
+                        self.logger.logger.error(f"Failed to configure formation for vehicle {my_vehicle_id}")
+            else:
+                if self.logger:
+                    self.logger.logger.warning("No platoon controller available")
+            
+            return None  # No transition, just configuration
+        
+        elif command_type == CommandType.DISABLE_PLATOON:
+            # Handle platoon disable - NOTE: This only pauses platoon operation
+            # Formation/position/role data is PRESERVED so platoon can restart
+            if hasattr(self.vehicle_logic, 'platoon_controller'):
+                self.vehicle_logic.platoon_controller.disable()
+                if self.logger:
+                    self.logger.logger.info(f"[OK] Platoon paused (configuration preserved) in {self.__class__.__name__}")
+            return None
+        
         elif command_type == CommandType.DISABLE_V2V:
             # Handle V2V deactivation
-            if hasattr(self.vehicle_logic, 'disable_v2v'):
-                self.vehicle_logic.disable_v2v()
-                if self.logger:
+            if hasattr(self.vehicle_logic, 'v2v_manager'):
+                success = self.vehicle_logic.v2v_manager.disable_v2v()
+                if success and self.logger:
                     self.logger.logger.info(f"[OK] V2V disabled in {self.__class__.__name__}")
+                elif self.logger:
+                    self.logger.logger.warning(f"[!] V2V disable failed in {self.__class__.__name__}")
                 return None  # No state transition
             return None
         
         # Default: Event not handled by this state
         if self.logger:
-            self.logger.logger.info(f"🚫 Command '{command_type}' ignored in {self.__class__.__name__}")
+            self.logger.logger.info(f"Command '{command_type}' ignored in {self.__class__.__name__}")
         return None
     
     # === Helper Methods ===
@@ -219,19 +279,112 @@ class StateBase:
         """
         Common check for emergency stop conditions
         All states can use this to check for safety stops
+        Works with or without camera/YOLO system
         """
-        # Check collision avoidance system
-        if hasattr(self.vehicle_logic, 'collision_avoidance'):
-            yolo_data = sensor_data.get('yolo_data', {})
-            emergency_stop, _ = self.vehicle_logic.collision_avoidance.check_collision_risk(
-                car_distance=yolo_data.get('car_dist'),
-                person_distance=yolo_data.get('person_dist'),
-                current_velocity=sensor_data.get('velocity', 0.0)
-            )
-            if emergency_stop:
-                return True
+        # Check collision avoidance system (YOLO/Camera-based) - only if enabled
+        yolo_enabled = getattr(self.vehicle_logic.yolo_manager, 'yolo_enabled', False)
+        if yolo_enabled and hasattr(self.vehicle_logic, 'collision_avoidance'):
+            try:
+                yolo_data = sensor_data.get('yolo_data', {})
+                emergency_stop, _ = self.vehicle_logic.collision_avoidance.check_collision_risk(
+                    car_distance=yolo_data.get('car_dist'),
+                    person_distance=yolo_data.get('person_dist'),
+                    current_velocity=sensor_data.get('velocity', 0.0)
+                )
+                if emergency_stop:
+                    if self.logger:
+                        self.logger.log_warning("Emergency stop triggered by collision avoidance system")
+                    return True
+            except Exception as e:
+                # Log but continue if collision check fails
+                if self.logger:
+                    self.logger.logger.debug(f"Collision check failed (ignored): {e}")
+        
+        # If YOLO not enabled, skip collision checks
+        if not yolo_enabled:
+            return False
+        
+        # # Check LIDAR-based emergency stops (if available)
+        # if hasattr(self.vehicle_logic, 'gps') and self.vehicle_logic.gps:
+        #     lidar_data = sensor_data.get('lidar_data', {})
+        #     if lidar_data:
+        #         # Check for very close obstacles
+        #         min_distance = lidar_data.get('min_distance', float('inf'))
+        #         if min_distance < 0.5:  # Less than 50cm
+        #             if self.logger:
+        #                 self.logger.log_warning(f"Emergency stop: LIDAR detected obstacle at {min_distance:.2f}m")
+        #             return True
+        
+        # # Check velocity limits
+        # current_velocity = sensor_data.get('velocity', 0.0)
+        # max_safe_velocity = getattr(self.config.speed, 'max_velocity', 2.0) * 1.2  # 20% over max
+        # if abs(current_velocity) > max_safe_velocity:
+        #     if self.logger:
+        #         self.logger.log_warning(f"Emergency stop: Velocity {current_velocity:.2f} exceeds safe limits")
+        #     return True
+        
+        # # Check if vehicle is going too far off-road (if GPS and steering available)
+        # if (hasattr(self.vehicle_logic, 'roadmap') and self.vehicle_logic.roadmap and
+        #     hasattr(self.vehicle_logic, 'steering_controller') and self.vehicle_logic.steering_controller and
+        #     hasattr(self.config, 'steering') and self.config.steering.enable_steering_control):
+        #     try:
+        #         if hasattr(self.vehicle_logic.steering_controller, 'get_cross_track_error'):
+        #             cross_track_error = self.vehicle_logic.steering_controller.get_cross_track_error()
+        #             if abs(cross_track_error) > 3.0:  # More than 3m off path
+        #                 if self.logger:
+        #                     self.logger.log_warning(f"Emergency stop: Vehicle too far off path ({cross_track_error:.2f}m)")
+        #                 return True
+        #     except Exception:
+        #         pass  # Ignore errors in path checking
+        
+        # # Check system health - kill event
+        # if hasattr(self.vehicle_logic, 'kill_event') and self.vehicle_logic.kill_event and self.vehicle_logic.kill_event.is_set():
+        #     if self.logger:
+        #         self.logger.log_warning("Emergency stop: Kill event triggered")
+        #     return True
+        
+        # # Check communication timeout (if using network)
+        # if (hasattr(self.vehicle_logic, 'client_Ground_Station') and 
+        #     self.vehicle_logic.client_Ground_Station and
+        #     hasattr(self.vehicle_logic.client_Ground_Station, 'is_connection_alive')):
+        #     try:
+        #         if not self.vehicle_logic.client_Ground_Station.is_connection_alive():
+        #             if self.logger:
+        #                 self.logger.log_warning("Emergency stop: Lost communication with ground station")
+        #             return True
+        #     except Exception:
+        #         pass  # Ignore connection check errors
         
         return False
+    
+    def _send_platoon_setup_confirmation(self, my_vehicle_id: int, formation: Dict, leader_id: int):
+        """Send platoon setup confirmation to Ground Station"""
+        try:
+            if hasattr(self.vehicle_logic, 'client_Ground_Station') and self.vehicle_logic.client_Ground_Station:
+                platoon_ctrl = self.vehicle_logic.platoon_controller
+                confirmation = {
+                    'type': 'platoon_setup_confirm',
+                    'car_id': my_vehicle_id,
+                    'data': {
+                        'position': getattr(platoon_ctrl, 'my_position', None),
+                        'is_leader': platoon_ctrl.is_leader,
+                        'leader_id': platoon_ctrl.leader_car_id,
+                        'setup_complete': getattr(platoon_ctrl, 'setup_complete', False),
+                        'formation': formation
+                    }
+                }
+                
+                self.vehicle_logic.client_Ground_Station.queue_telemetry(confirmation)
+                
+                if self.logger:
+                    role = "LEADER" if platoon_ctrl.is_leader else f"FOLLOWER-{getattr(platoon_ctrl, 'my_position', '?')}"
+                    self.logger.logger.info(f"Sent platoon setup confirmation to GS: Role={role}, Leader ID={platoon_ctrl.leader_car_id}")
+            else:
+                if self.logger:
+                    self.logger.logger.warning("Cannot send platoon confirmation - no Ground Station connection")
+        except Exception as e:
+            if self.logger:
+                self.logger.logger.error(f"Failed to send platoon setup confirmation: {e}")
     
     def validate_event_data(self, data: Dict[str, Any], required_fields: list) -> bool:
         """
@@ -247,6 +400,6 @@ class StateBase:
         for field in required_fields:
             if field not in data:
                 if self.logger:
-                    self.logger.logger.warning(f"Missing required field '{field}' in event data")
+                    self.logger.logger.warning(f"Event data missing required field: {field}")
                 return False
         return True

@@ -131,9 +131,12 @@ class YOLOManager:
         self.yolo_drive = None
         self.yolo_gain = 1.0
         self.loop_counter = 0
+        self.yolo_enabled = False
         
     def initialize(self, yolo_receiver: 'YOLOReceiver', yolo_drive_logic: 'YOLODriveLogic'):
         """Initialize YOLO components"""
+        if yolo_receiver is None or yolo_drive_logic is None:
+            self.yolo_enabled = True
         self.yolo = yolo_receiver
         self.yolo_drive = yolo_drive_logic
         
@@ -162,7 +165,7 @@ class YOLOManager:
                 else:
                     self.yolo_gain = 1.0
             else:
-                if self.loop_counter % 100 == 0:  # Log occasionally
+                if self.loop_counter % 1000 == 0:  # Log occasionally
                     if self.logger:
                         self.logger.log_error("YOLO drive is None")
                 self.yolo_gain = 1.0
@@ -198,7 +201,7 @@ class YOLOManager:
         """Get default YOLO data when YOLO is not available"""
         return {
             'stop_sign': [0]*7, 'traffic_light': [0]*7, 'cars': [0]*7,
-            'yield_sign': [0]*7, 'person': [0]*7, 'car_dist': 0.0, 'person_dist': 0.0
+            'yield_sign': [0]*7, 'person': [0]*7, 'car_dist': None, 'person_dist': None
         }
         
     def get_yolo_gain(self) -> float:

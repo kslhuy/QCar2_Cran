@@ -2,6 +2,7 @@
 Logging utilities for QCar Vehicle Control System
 """
 import logging
+import logging.handlers
 import os
 import time
 from datetime import datetime
@@ -46,9 +47,18 @@ class VehicleLogger:
         # Remove existing handlers
         logger.handlers.clear()
         
-        # File handler
-        file_handler = logging.FileHandler(log_file)
+        # File handler with larger buffer to reduce I/O blocking
+        file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8', delay=False)
         file_handler.setLevel(logging.DEBUG)
+        
+        # Configure handler to use memory buffering (reduces disk I/O)
+        # Wrap with MemoryHandler to buffer log records in memory
+        memory_handler = logging.handlers.MemoryHandler(
+            capacity=100,  # Buffer 100 log records before flushing
+            flushLevel=logging.ERROR,  # Auto-flush on ERROR or higher
+            target=file_handler
+        )
+        
         file_formatter = logging.Formatter(
             '%(asctime)s - [Car %(name)s] - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
@@ -63,8 +73,12 @@ class VehicleLogger:
         )
         console_handler.setFormatter(console_formatter)
         
-        logger.addHandler(file_handler)
+        # Use memory handler instead of direct file handler to reduce blocking
+        logger.addHandler(memory_handler)
         logger.addHandler(console_handler)
+        
+        # Store reference to force flush on close
+        self._memory_handler = memory_handler
         
         return logger
     
@@ -86,6 +100,7 @@ class VehicleLogger:
             'state', 'gps_valid',
             # Platoon telemetry fields
             'platoon_enabled', 'platoon_id', 'platoon_role', 'platoon_active',
+            'platoon_is_leader', 'platoon_position', 'platoon_leader_id', 'platoon_setup_complete',
             'leader_id', 'leader_detected', 'leader_distance', 
             'spacing_stable', 'followers_ready', 'all_ready',
             'formation_ready', 'desired_speed', 'spacing_error',
@@ -122,11 +137,13 @@ class VehicleLogger:
                     self.telemetry_writer.writerow(log_entry)
                     flush_counter += 1
                     
-                    # Periodic flush (every 50 entries or when queue is empty)
-                    # This reduces blocking flush() calls while maintaining data safety
-                    if flush_counter >= 50 or self.log_queue.qsize() == 0:
+                    # Periodic flush (every 100 entries for better performance, or when queue is empty)
+                    # Increased from 50 to 100 to reduce flush frequency
+                    if flush_counter >= 100 or (self.log_queue.qsize() == 0 and flush_counter > 0):
                         try:
+                            # Use os.fsync for guaranteed write (prevents data loss)
                             self.telemetry_file.flush()
+                            os.fsync(self.telemetry_file.fileno())
                             flush_counter = 0
                         except (OSError, IOError) as e:
                             # Non-blocking: if flush fails (disk full, etc), just continue
@@ -209,9 +226,20 @@ class VehicleLogger:
             if self.logging_thread and self.logging_thread.is_alive():
                 self.logging_thread.join(timeout=2.0)
         
+        # Flush memory handler before closing
+        if hasattr(self, '_memory_handler'):
+            try:
+                self._memory_handler.flush()
+            except:
+                pass
+        
         # Close file
         if self.telemetry_file:
-            self.telemetry_file.close()
+            try:
+                self.telemetry_file.flush()
+                self.telemetry_file.close()
+            except:
+                pass
         
         # Close logger handlers
         for handler in self.logger.handlers:

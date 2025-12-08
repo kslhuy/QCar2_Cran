@@ -18,6 +18,8 @@ from threading import Event
 
 from config import VehicleControlConfig
 from vehicle_logic import VehicleLogic
+from pal.products.qcar import  IS_PHYSICAL_QCAR
+
 
 
 # Global kill event for clean shutdown
@@ -99,11 +101,11 @@ def parse_arguments():
         choices=[0, 1],
         help='Node configuration (0 or 1 for different traffic patterns)'
     )
-    
+    # Auto compute port based on car_id (just keep base port here)
     parser.add_argument(
         '--host',
         type=str,
-        default=None,
+        default="127.0.0.1",
         help='Host PC IP address for remote control (optional)'
     )
     
@@ -227,9 +229,11 @@ def main():
     print("\n[INIT] Loading configuration...")
     config = load_configuration(args)
     
+    Control_rate = config.timing.controller_update_rate if IS_PHYSICAL_QCAR else 100
+    print("\n[CONFIG] Vehicle Configuration:")
     print(f"  Car ID: {config.network.car_id}")
     print(f"  Reference velocity: {config.speed.v_ref} m/s")
-    print(f"  Controller rate: {config.timing.controller_update_rate} Hz")
+    print(f"  Controller rate: {Control_rate} Hz")
     print(f"  Steering control: {'Enabled' if config.steering.enable_steering_control else 'Disabled'}")
     print(f"  Remote control: {'Enabled' if config.network.is_remote_enabled else 'Disabled'}")
     
@@ -237,7 +241,7 @@ def main():
         print(f"    Host: {config.network.host_ip}:{config.network.port}")
     
     # Wait for YOLO server
-    if not wait_for_yolo_server():
+    if IS_PHYSICAL_QCAR and not wait_for_yolo_server():
         print("\n[SHUTDOWN] Cancelled by user")
         return 0
     
@@ -265,7 +269,14 @@ def main():
     
     # Ensure QUARC models are stopped even if vehicle_logic shutdown fails
     try:
-        stop_quarc_models()
+        if IS_PHYSICAL_QCAR:
+            stop_quarc_models()
+        else:
+            # CamLidarFusion thread cleanup removed (moved to main loop)
+            from qvl.real_time import QLabsRealTime
+
+            cmd = QLabsRealTime().terminate_all_real_time_models()
+            time.sleep(1)
     except Exception as e:
         print(f"[WARNING] Error during QUARC cleanup: {e}")
     

@@ -201,18 +201,18 @@ def stop_processes(ip, car_id):
             print(f"      (SSH may not be available or configured)")
             python_stopped = False
         
-        # Now stop QUARC models (hardware control) using Windows quarc_run
-        quarc_stopped = stop_quarc_models(ip, car_id)
+        # # Now stop QUARC models (hardware control) using Windows quarc_run
+        # quarc_stopped = stop_quarc_models(ip, car_id)
         
-        if python_stopped and quarc_stopped:
-            print(f"  [✓] QCar {car_id} ({ip}) fully stopped (software + hardware)")
-        elif python_stopped:
-            print(f"  [⚠] QCar {car_id} ({ip}) software stopped, QUARC status unclear")
-        elif quarc_stopped:
-            print(f"  [⚠] QCar {car_id} ({ip}) hardware stopped, Python status unclear")
-        else:
-            print(f"  [⚠] QCar {car_id} ({ip}) stopping had issues")
-            print(f"      You may need to check manually")
+        # if python_stopped and quarc_stopped:
+        #     print(f"  [✓] QCar {car_id} ({ip}) fully stopped (software + hardware)")
+        # elif python_stopped:
+        #     print(f"  [⚠] QCar {car_id} ({ip}) software stopped, QUARC status unclear")
+        # elif quarc_stopped:
+        #     print(f"  [⚠] QCar {car_id} ({ip}) hardware stopped, Python status unclear")
+        # else:
+        #     print(f"  [⚠] QCar {car_id} ({ip}) stopping had issues")
+        #     print(f"      You may need to check manually")
         
         return True
         

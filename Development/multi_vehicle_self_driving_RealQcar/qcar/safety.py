@@ -214,13 +214,23 @@ class CollisionAvoidance:
         Check for collision risk
         
         Args:
-            car_distance: Distance to nearest car
-            person_distance: Distance to nearest person
+            car_distance: Distance to nearest car (None or 0 = no detection)
+            person_distance: Distance to nearest person (None or 0 = no detection)
             current_velocity: Current vehicle velocity
             
         Returns:
             (should_emergency_stop, reason)
         """
+        # Ignore if YOLO data is missing or invalid (None, 0, or negative distances)
+        if car_distance is None or car_distance <= 0:
+            car_distance = float('inf')
+        if person_distance is None or person_distance <= 0:
+            person_distance = float('inf')
+        
+        # If both distances are invalid, no valid detection - return safe
+        if car_distance == float('inf') and person_distance == float('inf'):
+            return False, "no_yolo_detection"
+        
         # Check car collision
         if car_distance < self.emergency_stop_distance:
             self.emergency_stops += 1

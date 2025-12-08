@@ -1,8 +1,18 @@
 """
-Following Leader State - Simplified Event-Driven Implementation
+Following Leader State - Clean and Simple Implementation
 
 Handles following another vehicle (platoon/convoy mode).
-Uses single handle_event method for command processing.
+Delegates all platoon logic to PlatoonController.
+
+LATERAL CONTROL MODES:
+  - 'pure_pursuit', 'stanley', 'lookahead', 'hybrid': Follow leader's position directly
+  - 'path': Follow predefined waypoints (like FOLLOWING_PATH state) while maintaining
+            longitudinal spacing with leader
+            
+USAGE:
+  Set lateral_controller_type in config:
+    - For leader tracking: lateral_controller_type = 'pure_pursuit' (or other)
+    - For path following: lateral_controller_type = 'path'
 """
 import time
 import numpy as np
@@ -10,11 +20,9 @@ from typing import Dict, Any, Tuple, Optional
 from .state_base import StateBase
 from .vehicle_state import VehicleState, StateTransitionReason
 
-# Import CommandType once at module level
+# Import CommandType
 import sys
 import os
-
-# Add parent directory to sys.path for imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.append(parent_dir)
@@ -27,227 +35,379 @@ except ImportError as e:
     COMMAND_TYPE_AVAILABLE = False
     CommandType = None
 
+# Import modular longitudinal controllers
+try:
+    from Controller.longitudinal_controllers import ControllerFactory
+    LONGITUDINAL_CONTROLLER_AVAILABLE = True
+except ImportError as e:
+    print(f"WARNING: Cannot import longitudinal_controllers: {e}")
+    LONGITUDINAL_CONTROLLER_AVAILABLE = False
+    ControllerFactory = None
+
+# Import modular lateral controllers
+try:
+    from Controller.lateral_controllers import LateralControllerFactory
+    LATERAL_CONTROLLER_AVAILABLE = True
+except ImportError as e:
+    print(f"WARNING: Cannot import lateral_controllers: {e}")
+    LATERAL_CONTROLLER_AVAILABLE = False
+    LateralControllerFactory = None
+
+# Import SteeringController for path-following mode
+try:
+    from Controller.controllers import SteeringController
+    STEERING_CONTROLLER_AVAILABLE = True
+except ImportError as e:
+    print(f"WARNING: Cannot import SteeringController: {e}")
+    STEERING_CONTROLLER_AVAILABLE = False
+    SteeringController = None
+
 
 class FollowingLeaderState(StateBase):
-    """Handler for FOLLOWING_LEADER state with simplified event handling"""
+    """Handler for FOLLOWING_LEADER state - simplified to use PlatoonController"""
     
+    def __init__(self, vehicle_logic):
+        """Initialize with configurable controller types"""
+        super().__init__(vehicle_logic)
+        
+        # Configure which controllers to use
+        # Longitudinal options: 'cacc', 'pi', 'hybrid'
+        # Lateral options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'path'
+        self.longitudinal_controller_type = getattr(self.config, 'longitudinal_controller_type', 'cacc')
+        self.lateral_controller_type = getattr(self.config, 'lateral_controller_type', 'path')
+        
+        self.longitudinal_controller = None
+        self.lateral_controller = None
+        self.steering_controller = None  # For path-following lateral mode
+        
     def enter(self) -> bool:
         """Initialize leader following mode"""
         super().enter()
+        print("[DEBUG] ===============================")
+        print("[DEBUG] ENTERING FOLLOWING_LEADER STATE")
+        print("[DEBUG] ===============================")
         self.logger.logger.info("[FOLLOW] Entering FOLLOWING_LEADER state")
         
-        # Initialize state data
-        self.state_data = {
-            'session_start_time': time.time(),
-            'leader_detected': True,
-            'leader_distance': None,
-            'target_distance': 2.0,  # Default following distance in meters
-            'formation_stable': False,
-            'last_leader_detection_time': time.time(),
-            'leader_lost_timeout': 3.0,  # Time before giving up on leader
-            'formation_timeout': 10.0,  # Time to establish formation
-            'spacing_stable_threshold': 0.5,  # Distance tolerance for stable spacing
-            'speed_adjustment_factor': 0.3  # How aggressively to adjust speed for spacing
-        }
-        
-        # Reset speed controller integral to prevent windup
-        if hasattr(self.vehicle_logic, 'speed_controller'):
-            self.vehicle_logic.speed_controller.ei = 0
-            self.logger.logger.info("Speed controller integral reset for leader following")
-        
-        # Configure platoon controller if available
+        # Check if formation data exists and set up if missing
         if hasattr(self.vehicle_logic, 'platoon_controller'):
             self.vehicle_logic.platoon_controller.enable_as_follower()
             self.logger.logger.info("Platoon controller configured as follower")
         
-        self.logger.logger.info(f"Target following distance: {self.state_data['target_distance']:.1f}m")
+        # Initialize controllers
+        self._initialize_longitudinal_controller()
+        self._initialize_lateral_controller()
+        
+        # Initialize path-following steering controller if in path mode
+        if self.lateral_controller_type == 'path':
+            self._initialize_steering_controller()
+        
         return True
     
-    def update(self, dt: float, sensor_data: Dict[str, Any]) -> Tuple[float, float, Optional[Tuple[VehicleState, StateTransitionReason]]]:
-        """Update leader following control"""
+    def _initialize_longitudinal_controller(self):
+        """Initialize the selected longitudinal controller"""
+        # Controller parameters based on type
+        if self.longitudinal_controller_type == 'cacc':
+            params = {
+                's0': 1.5,  # Minimum spacing (meters)
+                'h': 0.5,   # Time headway (seconds)
+                'K': np.array([[0.2, 0.05]]),  # [spacing_gain, velocity_gain]
+                'acc_to_throttle_gain': 0.5,
+                'max_throttle': 0.3
+            }
+        elif self.longitudinal_controller_type == 'pi':
+            params = {
+                'kp': 0.1,
+                'ki': 1.0,
+                'max_throttle': 0.3
+            }
+        elif self.longitudinal_controller_type == 'hybrid':
+            params = {
+                'cacc_params': {
+                    's0': 1.5,
+                    'h': 0.5,
+                    'K': np.array([[0.2, 0.05]]),
+                    'acc_to_throttle_gain': 0.5,
+                    'max_throttle': 0.3
+                },
+                'pi_params': {
+                    'kp': 0.1,
+                    'ki': 1.0,
+                    'max_throttle': 0.3
+                }
+            }
+        else:
+            raise ValueError(f"Unknown longitudinal controller type: {self.longitudinal_controller_type}")
         
-        # Extract sensor data
-        x = sensor_data['x']
-        y = sensor_data['y']
-        theta = sensor_data['theta']
-        velocity = sensor_data['velocity']
-        yolo_data = sensor_data.get('yolo_data', {})
+        self.longitudinal_controller = ControllerFactory.create(
+            self.longitudinal_controller_type,
+            params,
+            logger=self.logger.logger
+        )
+        self.logger.logger.info(f"Initialized {self.longitudinal_controller_type.upper()} longitudinal controller")
+    
+    def _initialize_lateral_controller(self):
+        """Initialize the selected lateral controller"""
+        # Skip factory creation if using path mode (uses SteeringController instead)
+        if self.lateral_controller_type == 'path':
+            self.logger.logger.info("Using path-following lateral control mode (SteeringController)")
+            return
+        
+        # Controller parameters based on type
+        if self.lateral_controller_type == 'pure_pursuit':
+            params = {
+                'lookahead_distance': 0.9,
+                'k_steering': 1.0,
+                'max_steering': 0.55,
+                'adaptive_lookahead': False
+            }
+        elif self.lateral_controller_type == 'stanley':
+            params = {
+                'k_e': 0.5,
+                'k_soft': 1.0,
+                'max_steering': 0.55
+            }
+        elif self.lateral_controller_type == 'lookahead':
+            params = {
+                'ri': 1.0,
+                'hi': 0.3,
+                'l_r': 0.141,
+                'l_f': 0.115,
+                'k1': 1.0,
+                'k2': 1.0,
+                'max_steering': 0.55
+            }
+        elif self.lateral_controller_type == 'hybrid':
+            params = {
+                'primary_controller': LateralControllerFactory.create(
+                    'pure_pursuit',
+                    {'lookahead_distance': 2.0, 'k_steering': 1.0, 'max_steering': 0.55},
+                    logger=self.logger.logger
+                ),
+                'secondary_controller': LateralControllerFactory.create(
+                    'stanley',
+                    {'k_e': 0.5, 'k_soft': 1.0, 'max_steering': 0.55},
+                    logger=self.logger.logger
+                ),
+                'switch_distance': 1.5
+            }
+        else:
+            raise ValueError(f"Unknown lateral controller type: {self.lateral_controller_type}")
+        
+        self.lateral_controller = LateralControllerFactory.create(
+            self.lateral_controller_type,
+            params,
+            logger=self.logger.logger
+        )
+        self.logger.logger.info(f"Initialized {self.lateral_controller_type.upper()} lateral controller")
+    
+    def _initialize_steering_controller(self):
+        """Initialize SteeringController for path-following lateral mode"""
+        if not STEERING_CONTROLLER_AVAILABLE:
+            self.logger.logger.error("SteeringController not available for path mode")
+            return
+        
+        # Check if we have waypoint sequence available
+        if not hasattr(self.vehicle_logic, 'waypoint_sequence') or self.vehicle_logic.waypoint_sequence is None:
+            self.logger.logger.warning("[FOLLOW] Cannot initialize steering controller - no waypoint sequence")
+            return
+        
+        try:
+            # Initialize steering controller with current waypoint sequence
+            self.steering_controller = SteeringController(
+                waypoints=self.vehicle_logic.waypoint_sequence,
+                config=self.config,
+                logger=self.logger,
+                cyclic=True
+            )
+            self.logger.logger.info("[FOLLOW] Path-following steering controller initialized successfully")
+        except Exception as e:
+            self.logger.log_error("Failed to initialize path-following steering controller", e)
+    
+    def update(self, dt: float, sensor_data: Dict[str, Any]) -> Tuple[float, float, Optional[Tuple[VehicleState, StateTransitionReason]]]:
+        """Update leader following control using PlatoonController"""
+        
+        # Debug to see if this state is being called
+        if hasattr(self.vehicle_logic, 'loop_counter') and self.vehicle_logic.loop_counter % 1000 == 0:
+            print(f"[DEBUG] FollowingLeaderState.update called - loop_counter: {getattr(self.vehicle_logic, 'loop_counter', 'N/A')}")
         
         # Check if emergency stop requested
         if self.should_transition_to_stopped(sensor_data):
             return 0.0, 0.0, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
         
-        # Check for stop command - now handled via events
-        # NOTE: Stop commands now come through handle_event
-        
-        # Update leader detection status
-        self._update_leader_detection(yolo_data)
-        
-        # Check if leader is lost
-        if self._is_leader_lost():
-            self.logger.log_warning("👻 Leader lost, returning to path following")
-            return 0.0, 0.0, (VehicleState.FOLLOWING_PATH, StateTransitionReason.LEADER_LOST)
-        
-        # Check formation timeout
-        if self._is_formation_timeout():
-            self.logger.log_warning("⏰ Formation timeout, returning to path following")
-            return 0.0, 0.0, (VehicleState.FOLLOWING_PATH, StateTransitionReason.LEADER_LOST)
-        
         # Check startup delay
         if self.vehicle_logic.elapsed_time() < self.config.timing.start_delay:
             return 0.0, 0.0, None
         
-        # === CONTROL COMPUTATION ===
+        # Extract basic sensor data
+        x, y, theta = sensor_data['x'], sensor_data['y'], sensor_data['theta']
+        velocity = sensor_data['velocity']
+        yolo_data = sensor_data.get('yolo_data', {})
         
-        # Compute following control
-        u, delta = self._compute_following_control(x, y, theta, velocity, dt)
+        # Update PlatoonController with perception data
+        self._update_platoon_controller(yolo_data)
         
-        # Monitor formation status
-        self._monitor_formation_status()
+        # Get V2V leader data
+        v2v_data = self._get_v2v_leader_data()
         
-        # Periodic logging
-        self._periodic_logging(velocity)
+        # Compute control using PlatoonController
+        u, delta = self._compute_control(dt , x, y, theta, velocity, v2v_data)
+        
+        # Enhanced periodic logging for debugging
+        self._log_status(velocity, u, v2v_data)
         
         return u, delta, None
     
-    def handle_event(self, command_type, data: Dict[str, Any] = None) -> Optional[Tuple[VehicleState, StateTransitionReason]]:
-        """
-        Handle events while following leader
-        
-        Args:
-            command_type: CommandType enum (e.g., CommandType.STOP, CommandType.DISABLE_PLATOON)
-            data: Optional event data
+    # ===== SIMPLIFIED HELPER METHODS =====
+    
+    def _update_platoon_controller(self, yolo_data: Dict[str, Any]):
+        """Update PlatoonController with perception data"""
+        if not hasattr(self.vehicle_logic, 'platoon_controller'):
+            return
             
-        Returns:
-            Optional state transition
-        """
+        pc = self.vehicle_logic.platoon_controller
+        
+        # Update with YOLO perception data
+        if self.vehicle_logic.yolo_manager.yolo_enabled:
+            cars_detected = yolo_data.get('cars', False)
+            car_distance = yolo_data.get('car_dist')
+            pc.update_leader_info(
+                detected=cars_detected and car_distance is not None,
+                distance=car_distance,
+                velocity=None  # Velocity comes from V2V
+            )
+        
+        # Update with V2V velocity data
+        if hasattr(self.vehicle_logic, 'v2v_manager'):
+            pc.update_leader_velocity_from_v2v(
+                self.vehicle_logic.v2v_manager, 
+                self.vehicle_logic.vehicle_id
+            )
+    
+    def _get_v2v_leader_data(self) -> Optional[Dict[str, Any]]:
+        """Get leader data from V2V"""
+        if not hasattr(self.vehicle_logic, 'platoon_controller'):
+            return None
+        
+        # Check if platoon controller is properly configured
+        pc = self.vehicle_logic.platoon_controller
+        
+        # If this vehicle is actually the leader, it shouldn't be following anyone
+        if hasattr(pc, 'is_leader') and pc.is_leader:
+            self.logger.logger.warning("Leader vehicle trying to get V2V leader data")
+            return None
+        
+        v2v_data = self.vehicle_logic.platoon_controller.get_direct_leader_data_from_v2v(
+            getattr(self.vehicle_logic, 'v2v_manager', None),
+            self.vehicle_logic.vehicle_id
+        )
+        
+        # Log V2V data status occasionally for debugging
+        if (hasattr(self.vehicle_logic, 'loop_counter') and 
+            self.vehicle_logic.loop_counter % 1000 == 0):
+            if v2v_data is not None:
+                self.logger.logger.debug(f"[FOLLOW] V2V Leader data available")
+            else:
+                self.logger.logger.debug(f"[FOLLOW] No V2V leader data received")
+        
+        return v2v_data
+    
+    def _compute_control(self, dt: float, x: float, y: float, theta: float, velocity: float, v2v_data: Optional[Dict[str, Any]]) -> Tuple[float, float]:
+        """Compute control commands using modular longitudinal and lateral controllers"""
+        base_velocity = self.vehicle_logic.v_ref
+        
+        # No V2V data - stop
+        if v2v_data is None:
+            return 0.0, 0.0
+        
+        # Prepare follower state
+        follower_state = {
+            'x': x,
+            'y': y,
+            'theta': theta,
+            'velocity': velocity,
+            'target_velocity': base_velocity
+        }
+        
+        # Prepare leader state from V2V data
+        leader_state = {
+            'x': v2v_data.get('x', 0.0),
+            'y': v2v_data.get('y', 0.0),
+            'theta': v2v_data.get('theta', 0.0),
+            'velocity': v2v_data.get('velocity', 0.0)
+        }
+        
+        # Compute throttle using modular longitudinal controller
+        u = self.longitudinal_controller.compute_throttle(follower_state, leader_state, dt)
+        
+        # Compute steering based on lateral control mode
+        if self.lateral_controller_type == 'path':
+            # Path-following mode: use steering controller with waypoints
+            delta = self._compute_path_steering(x, y, theta, velocity)
+        else:
+            # Leader-following mode: use lateral controller to follow leader position
+            delta = self.lateral_controller.compute_steering(follower_state, leader_state, dt)
+        
+        return u, delta
+    
+    def _compute_path_steering(self, x: float, y: float, theta: float, velocity: float) -> float:
+        """Compute steering control using path-following (like in FOLLOWING_PATH state)"""
+        if not self.config.steering.enable_steering_control or not self.steering_controller:
+            return 0.0
+        
+        # Use look-ahead point (0.2m forward from vehicle center)
+        p = np.array([x, y]) + np.array([np.cos(theta), np.sin(theta)]) * 0.2
+        return self.steering_controller.update(p, theta, max(velocity, 0.1))
+    
+    def _log_status(self, velocity: float, throttle_cmd: float = None, v2v_data: Optional[Dict[str, Any]] = None):
+        """Enhanced periodic logging for debugging"""
+        if (hasattr(self.vehicle_logic, 'loop_counter') and
+            self.vehicle_logic.loop_counter % 200 == 0):  # Every second at 200Hz
+            
+            status = "unknown"
+            leader_info = ""
+            
+            if hasattr(self.vehicle_logic, 'platoon_controller'):
+                pc = self.vehicle_logic.platoon_controller
+                
+                # Check for V2V leader data first (preferred for followers)
+                if v2v_data is not None:
+                    leader_velocity = v2v_data.get('velocity', 0.0)
+                    leader_distance = v2v_data.get('distance', 0.0)
+                    status = "following_v2v"
+                    leader_info = f"L_vel: {leader_velocity:.2f}m/s, L_dist: {leader_distance:.2f}m"
+                elif pc.is_spacing_stable():
+                    status = "stable"
+                elif pc.leader_detected:
+                    status = f"following_yolo (dist: {pc.leader_distance:.2f}m)"
+                else:
+                    status = "no_leader"
+            
+            # Enhanced logging with control command details
+            if throttle_cmd is not None:
+                self.logger.logger.info(
+                    f"[FOLLOW] {status} | Current_vel: {velocity:.2f}m/s | "
+                    f"Throttle_cmd: {throttle_cmd:.3f} | {leader_info}"
+                )
+            else:
+                self.logger.logger.info(f"[FOLLOW] Status: {status}, velocity: {velocity:.2f}m/s")
+    
+    def handle_event(self, command_type, data: Dict[str, Any] = None) -> Optional[Tuple[VehicleState, StateTransitionReason]]:
+        """Handle events while following leader"""
         data = data or {}
         
         # Check if CommandType import was successful
         if not COMMAND_TYPE_AVAILABLE:
-            # Fallback to base class if CommandType not available
             return super().handle_event(command_type, data)
         
         # Handle platoon disable command
         if command_type == CommandType.DISABLE_PLATOON:
-            self.logger.logger.info("🔗 Disabling platoon mode - returning to path following")
+            self.logger.logger.info("Disabling platoon mode - returning to path following")
             if hasattr(self.vehicle_logic, 'platoon_controller'):
                 self.vehicle_logic.platoon_controller.disable()
             return (VehicleState.FOLLOWING_PATH, StateTransitionReason.PLATOON_COMMAND)
         
-        # Handle velocity updates immediately (no state change) - handled by base class
-        
         # Let base class handle common events (stop, emergency_stop, set_velocity, etc.)
         return super().handle_event(command_type, data)
-    
-    def _check_stop_command(self) -> bool:
-        """Check if stop command has been received"""
-        return self.check_stop_command()
-    
-    def _update_leader_detection(self, yolo_data: Dict[str, Any]):
-        """Update leader detection status and distance"""
-        cars_detected = yolo_data.get('cars', False)
-        car_distance = yolo_data.get('car_dist')
-        
-        if cars_detected and car_distance is not None:
-            # Leader is visible
-            self.state_data['leader_detected'] = True
-            self.state_data['leader_distance'] = car_distance
-            self.state_data['last_leader_detection_time'] = time.time()
-        else:
-            # No leader detected
-            self.state_data['leader_detected'] = False
-            self.state_data['leader_distance'] = None
-    
-    def _is_leader_lost(self) -> bool:
-        """Check if leader has been lost for too long"""
-        if not self.state_data['leader_detected']:
-            time_since_detection = time.time() - self.state_data['last_leader_detection_time']
-            return time_since_detection > self.state_data['leader_lost_timeout']
-        return False
-    
-    def _is_formation_timeout(self) -> bool:
-        """Check if formation establishment has timed out"""
-        formation_time = self.get_time_in_state()
-        return formation_time > self.state_data['formation_timeout'] and not self.state_data['formation_stable']
-    
-    def _compute_following_control(self, x: float, y: float, theta: float, velocity: float, dt: float) -> Tuple[float, float]:
-        """Compute control commands for leader following"""
-        
-        # Speed control with spacing adjustment
-        u = self._compute_speed_with_spacing(velocity, dt)
-        
-        # Steering control - use path following as base if available
-        delta = self._compute_steering_control(x, y, theta, velocity)
-        
-        return u, delta
-    
-    def _compute_speed_with_spacing(self, velocity: float, dt: float) -> float:
-        """Compute speed control with spacing adjustment"""
-        if not hasattr(self.vehicle_logic, 'speed_controller'):
-            return 0.0
-        
-        # Base speed reference
-        base_v_ref = self.vehicle_logic.v_ref
-        
-        # Apply YOLO adjustments
-        yolo_gain = getattr(self.vehicle_logic, 'yolo_gain', 1.0)
-        v_ref_adjusted = base_v_ref * yolo_gain
-        
-        # Spacing adjustment
-        if self.state_data['leader_distance'] is not None:
-            distance_error = self.state_data['leader_distance'] - self.state_data['target_distance']
-            
-            # If too close, slow down; if too far, speed up
-            spacing_adjustment = distance_error * self.state_data['speed_adjustment_factor']
-            v_ref_adjusted += spacing_adjustment
-            
-            # Limit speed adjustments
-            v_ref_adjusted = max(0.1, min(v_ref_adjusted, base_v_ref * 1.2))
-        
-        return self.vehicle_logic.speed_controller.update(velocity, v_ref_adjusted, dt)
-    
-    def _compute_steering_control(self, x: float, y: float, theta: float, velocity: float) -> float:
-        """Compute steering control for leader following"""
-        
-        # For now, use the same path following steering if available
-        # In a more advanced implementation, this could include leader tracking
-        if (self.config.steering.enable_steering_control and
-            hasattr(self.vehicle_logic, 'steering_controller') and
-            self.vehicle_logic.steering_controller):
-            
-            # Use look-ahead point
-            p = np.array([x, y]) + np.array([np.cos(theta), np.sin(theta)]) * 0.2
-            return self.vehicle_logic.steering_controller.update(p, theta, max(velocity, 0.1))
-        
-        return 0.0
-    
-    def _monitor_formation_status(self):
-        """Monitor and update formation status"""
-        if self.state_data['leader_distance'] is not None:
-            distance_error = abs(self.state_data['leader_distance'] - self.state_data['target_distance'])
-            
-            # Check if spacing is stable
-            if distance_error < self.state_data['spacing_stable_threshold']:
-                if not self.state_data['formation_stable']:
-                    self.state_data['formation_stable'] = True
-                    self.logger.logger.info(f"[OK] Formation stable at {self.state_data['leader_distance']:.2f}m")
-            else:
-                self.state_data['formation_stable'] = False
-    
-    def _periodic_logging(self, velocity: float):
-        """Log leader following performance periodically"""
-        if (hasattr(self.vehicle_logic, 'loop_counter') and
-            self.vehicle_logic.loop_counter % 200 == 0):  # Every second at 200Hz
-            
-            leader_dist_str = f"{self.state_data['leader_distance']:.2f}m" if self.state_data['leader_distance'] else "N/A"
-            formation_status = "[OK] STABLE" if self.state_data['formation_stable'] else "[STATE] FORMING"
-            
-            self.logger.logger.debug(
-                f"Leader following - Distance: {leader_dist_str}, "
-                f"Target: {self.state_data['target_distance']:.1f}m, "
-                f"Status: {formation_status}, V: {velocity:.2f}m/s"
-            )
     
     def exit(self):
         """Clean up when leaving leader following state"""
@@ -257,14 +417,18 @@ class FollowingLeaderState(StateBase):
         session_time = self.get_time_in_state()
         self.logger.logger.info(f"Leader following session duration: {session_time:.1f}s")
         
-        if self.state_data['formation_stable']:
-            self.logger.logger.info("Formation was established successfully")
-        else:
-            self.logger.logger.info("Formation was not fully established")
-        
         # Disable platoon controller if available
         if hasattr(self.vehicle_logic, 'platoon_controller'):
+            if self.vehicle_logic.platoon_controller.is_spacing_stable():
+                self.logger.logger.info("Formation was established successfully")
+            else:
+                self.logger.logger.info("Formation was not fully established")
             self.vehicle_logic.platoon_controller.disable()
-            self.logger.logger.info("Platoon controller disabled")
+        
+        # Reset controllers
+        self.longitudinal_controller.reset()
+        if self.lateral_controller:
+            self.lateral_controller.reset()
+        self.logger.logger.info("Controllers reset")
         
         super().exit()

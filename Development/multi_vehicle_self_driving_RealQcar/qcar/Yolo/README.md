@@ -45,8 +45,13 @@ The YOLO system provides:
 # Basic startup
 python yolo_server.py
 
-# With specific configuration
+# With specific configuration run in Qcar
 python yolo_server.py -i 192.168.1.100 -p True -w 320 -ht 200 -idx 0
+
+# In PC Ground station 
+python multi_probing.py --cars [0,1] --width WIDTH --height HEIGHT
+
+
 ```
 
 ### Command Line Arguments

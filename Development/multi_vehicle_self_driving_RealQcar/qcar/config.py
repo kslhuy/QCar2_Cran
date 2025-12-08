@@ -60,6 +60,7 @@ class NetworkConfig:
     def is_remote_enabled(self) -> bool:
         return self.host_ip is not None
     
+    # Auto compute port based on car_id
     @property
     def port(self) -> int:
         return self.base_port + self.car_id
@@ -76,9 +77,9 @@ class PathPlanningConfig:
     @property
     def valid_nodes(self) -> List[int]:
         if self.node_configuration == 0:
-            return [10, 4, 6, 8, 1]
+            return [10, 2, 4, 6, 8, 10]
         else:
-            return [10, 4, 6, 8, 1]
+            return [10, 2, 4, 6, 8, 10]
 
 
 @dataclass
