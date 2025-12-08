@@ -27,25 +27,24 @@ cd .\Development\multi_vehicle_self_driving_RealQcar
  
 ```powershell
 
-# Start GUI 
 
-(In Simulator)
+# (In Simulator) # For spawn 2 Qcar
 cd .\Development\QCar2_multi-vehicle_control\
-python .\initCars.py // For spawn 2 Qcar    
+python .\initCars.py     
 
-(another cmd)
+#  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\enhanced_gui_controller.py
 
-(another cmd)
+# Run the real logic of vehicle 0   (another cmd)
+
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar      
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 0
 
-(another cmd)
+# Run the real logic of vehicle 1 (another cmd) 
+
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar      
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
-
-
 
 ```
 
@@ -61,7 +60,15 @@ python .\enhanced_gui_controller.py
 cd qcar/GUI
 python fake_vehicle_real_logic.py 0
 ```
+![alt text](image.png)
 
+Start All : If the vehicle is in state Waiting for start , you will run in Following path mode .
+Stop All : Stop the car , go in Stop state
+V2V Active : To activate the Comunication . Should see V2V On in each panel (2 Cars min)
+
+Setup Platoon : You set up who leader , who follower in Platoon Panel , after click Setup Platoon button to send to all vehicle connected 
+
+Trigger platoon : Leader will keep in state "Following path mode" , Followers will go to "Follwoer Leader mode" 
 
 ## 🔧 Configuration
 
