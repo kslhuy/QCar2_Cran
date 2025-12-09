@@ -96,6 +96,16 @@ class WaitingForStartState(StateBase):
         # if command_type == CommandType.ACTIVATE_V2V:
 
         
+        # Handle calibrate command - GPS-only recalibration without full reinitialization
+        if command_type == CommandType.CALIBRATE:
+            self.logger.logger.info("GPS Calibration command received - performing GPS-only recalibration")
+            if self._recalibrate_gps_only():
+                self.logger.logger.info("GPS recalibration completed successfully")
+            else:
+                self.logger.log_error("GPS recalibration failed")
+            # Stay in WAITING_FOR_START state - no transition needed
+            return None
+        
         # Handle start command - DIRECT TRANSITION (Normal start only)!
         if command_type == CommandType.START:
             self.logger.logger.info(" Normal start command received - transitioning to FOLLOWING_PATH state!")
@@ -159,6 +169,12 @@ class WaitingForStartState(StateBase):
                     return None
             self.logger.logger.warning(f"[WARN] Invalid velocity update while waiting: {v_ref}")
             return None
+        
+        # Handle manual mode activation - DIRECT TRANSITION!
+        elif command_type == CommandType.ENABLE_MANUAL_MODE:
+            control_type = data.get('control_type', 'unknown')
+            self.logger.logger.info(f" Manual mode activated with control_type: {control_type}")
+            return (VehicleState.MANUAL_MODE, StateTransitionReason.MANUAL_MODE_ACTIVATED)
         
         # Handle path updates - store for when we start  
         elif command_type == CommandType.SET_PATH:

@@ -31,9 +31,15 @@ class CommandType(Enum):
     ACTIVATE_V2V = "activate_v2v"
     DISABLE_V2V = "disable_v2v"
     
+    # Manual control commands
+    ENABLE_MANUAL_MODE = "enable_manual_mode"
+    MANUAL_CONTROL = "manual_control"
+    DISABLE_MANUAL_MODE = "disable_manual_mode"
+    
     # System commands
     SHUTDOWN = "shutdown"
     RESET = "reset"
+    CALIBRATE = "calibrate"
 
 
 # Convenience functions for command type checking
@@ -58,6 +64,15 @@ def is_v2v_command(cmd_type: CommandType) -> bool:
     return cmd_type in [CommandType.ACTIVATE_V2V, CommandType.DISABLE_V2V]
 
 
+def is_manual_control_command(cmd_type: CommandType) -> bool:
+    """Check if a command is manual control-related"""
+    return cmd_type in [
+        CommandType.ENABLE_MANUAL_MODE,
+        CommandType.MANUAL_CONTROL,
+        CommandType.DISABLE_MANUAL_MODE
+    ]
+
+
 def is_system_command(cmd_type: CommandType) -> bool:
     """Check if a command is system-related"""
     return cmd_type in [CommandType.SHUTDOWN, CommandType.RESET]
@@ -71,6 +86,8 @@ def get_command_category(cmd_type: CommandType) -> str:
         return "platoon"
     elif is_v2v_command(cmd_type):
         return "v2v"
+    elif is_manual_control_command(cmd_type):
+        return "manual_control"
     elif is_system_command(cmd_type):
         return "system"
     elif cmd_type in [CommandType.SET_VELOCITY, CommandType.SET_PATH, CommandType.SET_PARAMS]:

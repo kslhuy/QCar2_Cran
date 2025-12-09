@@ -282,10 +282,11 @@ class InitializingState(StateBase):
         """Initialize QCar hardware and GPS"""
         try:
             from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
-            from qvl.multi_agent import readRobots
             
             # Initialize QCar and GPS based on physical/simulation mode
             if not IS_PHYSICAL_QCAR:
+                self.logger.logger.info("QCar Simulation mode detected")
+                from qvl.multi_agent import readRobots
                 self._initialize_simulated_qcar(readRobots)
             else:
                 self._initialize_physical_qcar()
@@ -318,9 +319,15 @@ class InitializingState(StateBase):
             hilPort=car_config["hilPort"]
         )
         
+        # Check if calibration was requested
+        calibrate_gps = getattr(self.vehicle_logic, 'calibration_requested', False)
+        if calibrate_gps:
+            self.logger.logger.info("📍 GPS calibration requested - calibrating GPS")
+            self.vehicle_logic.calibration_requested = False  # Reset flag
+        
         self.vehicle_logic.gps = QCarGPS(
             initialPose=self.config.path.calibration_pose,
-            calibrate=False,
+            calibrate=calibrate_gps,
             gpsPort=car_config["gpsPort"],
             lidarIdealPort=car_config["lidarIdealPort"]
         )
@@ -332,9 +339,15 @@ class InitializingState(StateBase):
         self.vehicle_logic.qcar = QCar(readMode=1, frequency=200)
         time.sleep(0.3)
         
+        # Check if calibration was requested, otherwise use config setting
+        calibrate_gps = getattr(self.vehicle_logic, 'calibration_requested', self.config.path.calibrate)
+        if getattr(self.vehicle_logic, 'calibration_requested', False):
+            self.logger.logger.info("GPS calibration requested - calibrating GPS")
+            self.vehicle_logic.calibration_requested = False  # Reset flag
+        
         self.vehicle_logic.gps = QCarGPS(
             initialPose=self.config.path.calibration_pose,
-            calibrate=self.config.path.calibrate
+            calibrate=calibrate_gps
         )
         time.sleep(0.3)
     

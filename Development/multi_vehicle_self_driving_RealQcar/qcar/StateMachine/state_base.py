@@ -403,3 +403,78 @@ class StateBase:
                     self.logger.logger.warning(f"Event data missing required field: {field}")
                 return False
         return True
+    
+    def _recalibrate_gps_only(self) -> bool:
+        """Recalibrate GPS without reinitializing other components"""
+        try:
+            # Check if this is a fake/mock vehicle - skip recalibration for fake vehicles
+            if hasattr(self.vehicle_logic, '_parent_fake_vehicle'):
+                self.logger.logger.info("Skipping GPS recalibration for fake/mock vehicle")
+                return True  # Return success for fake vehicles without doing anything
+            
+            from pal.products.qcar import QCarGPS, IS_PHYSICAL_QCAR
+            import numpy as np
+            import time
+            
+            self.logger.logger.info("Starting GPS-only recalibration...")
+            
+            # Close existing GPS if it exists
+            if hasattr(self.vehicle_logic, 'gps') and self.vehicle_logic.gps:
+                try:
+                    self.vehicle_logic.gps.terminate()
+                except:
+                    pass
+            
+            # Reinitialize GPS with calibration
+            if not IS_PHYSICAL_QCAR:
+                # Simulated QCar - need car config
+                from qvl.multi_agent import readRobots
+                robotsDir = readRobots()
+                name = f"QC2_{self.vehicle_logic.vehicle_id}"
+                car_config = robotsDir[name]
+                
+                self.vehicle_logic.gps = QCarGPS(
+                    initialPose=self.config.path.calibration_pose,
+                    calibrate=True,
+                    gpsPort=car_config["gpsPort"],
+                    lidarIdealPort=car_config["lidarIdealPort"]
+                )
+            else:
+                # Physical QCar
+                self.vehicle_logic.gps = QCarGPS(
+                    initialPose=self.config.path.calibration_pose,
+                    calibrate=True
+                )
+            
+            time.sleep(0.5)
+            
+            # Wait for new GPS reading
+            self.logger.logger.info("Waiting for GPS reading after calibration...")
+            start = time.time()
+            timeout = 5.0
+            
+            while (time.time() - start) < timeout:
+                if self.vehicle_logic.gps.readGPS():
+                    new_pose = np.array([
+                        self.vehicle_logic.gps.position[0],
+                        self.vehicle_logic.gps.position[1],
+                        self.vehicle_logic.gps.orientation[2]
+                    ])
+                    self.logger.logger.info(
+                        f"✅ GPS recalibrated - New pose: x={new_pose[0]:.2f}, "
+                        f"y={new_pose[1]:.2f}, theta={new_pose[2]:.2f}"
+                    )
+                    
+                    # Update state estimator with new GPS
+                    if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
+                        self.vehicle_logic.vehicle_observer.update_gps_reference(self.vehicle_logic.gps)
+                    
+                    return True
+                time.sleep(0.1)
+            
+            self.logger.log_error("GPS recalibration timeout - no reading received")
+            return False
+            
+        except Exception as e:
+            self.logger.log_error("GPS recalibration failed", e)
+            return False

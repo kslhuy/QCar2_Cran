@@ -16,6 +16,14 @@ import threading
 import time
 import json
 from datetime import datetime
+
+try:
+    import pygame  # For steering wheel support
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
+    print("Warning: pygame not available. Steering wheel support disabled.")
+
 from enhanced_remote_controller import QCarRemoteController
 
 
@@ -35,6 +43,10 @@ class EnhancedQCarGUIController:
         # Platoon configuration tracking
         self.platoon_config = {}  # car_id -> {'position': int, 'is_leader': bool, 'setup_complete': bool}
         self.platoon_indicators = {}  # car_id -> Label widget for platoon status display
+        
+        # Manual mode control type tracking
+        self.manual_control_types = {}  # car_id -> 'keyboard' or 'wheel'
+        self.control_type_vars = {}  # car_id -> tkinter StringVar for control type selection
         
         # Statistics tracking
         self.commands_sent_gui = 0
@@ -525,6 +537,19 @@ class EnhancedQCarGUIController:
                              pady=6)  # Smaller padding
         start_btn.pack(side='left', expand=True, fill='x', padx=(0, 5))
         
+        # Calibrate button
+        calibrate_btn = tk.Button(main_buttons,
+                                 text="🔧 Calibrate",
+                                 bg='#ff9800',
+                                 fg='white',
+                                 font=('Segoe UI', 11, 'bold'),
+                                 command=lambda: self.calibrate_car_with_feedback(car_id),
+                                 cursor='hand2',
+                                 relief='flat',
+                                 padx=15,
+                                 pady=6)
+        calibrate_btn.pack(side='left', expand=True, fill='x', padx=(5, 5))
+        
         stop_btn = tk.Button(main_buttons,
                             text="⬛ STOP",
                             bg='#f44336',
@@ -536,6 +561,73 @@ class EnhancedQCarGUIController:
                             padx=20,
                             pady=6)  # Smaller padding
         stop_btn.pack(side='left', expand=True, fill='x', padx=(5, 0))
+        
+        # Manual Mode Control Panel
+        manual_frame = tk.LabelFrame(left_section,
+                                    text="🎮 Manual Control",
+                                    bg='#2d2d2d',
+                                    fg='white',
+                                    font=('Segoe UI', 11, 'bold'))
+        manual_frame.pack(fill='x', pady=(8, 0))
+        
+        manual_content = tk.Frame(manual_frame, bg='#2d2d2d')
+        manual_content.pack(fill='x', padx=8, pady=6)
+        
+        # Control type selection
+        control_type_frame = tk.Frame(manual_content, bg='#2d2d2d')
+        control_type_frame.pack(fill='x', pady=(0, 5))
+        
+        tk.Label(control_type_frame,
+                text="Control:",
+                bg='#2d2d2d',
+                fg='#cccccc',
+                font=('Segoe UI', 10)).pack(side='left', padx=(0, 8))
+        
+        # Store control type variable
+        control_type_var = tk.StringVar(value='keyboard')
+        self.control_type_vars[car_id] = control_type_var
+        self.manual_control_types[car_id] = 'keyboard'
+        
+        # Radio buttons for control type
+        keyboard_radio = tk.Radiobutton(control_type_frame,
+                                       text="⌨️ Keyboard",
+                                       variable=control_type_var,
+                                       value='keyboard',
+                                       bg='#2d2d2d',
+                                       fg='white',
+                                       selectcolor='#3d3d3d',
+                                       font=('Segoe UI', 9),
+                                       command=lambda: self._update_control_type(car_id, 'keyboard'))
+        keyboard_radio.pack(side='left', padx=(0, 10))
+        
+        wheel_radio = tk.Radiobutton(control_type_frame,
+                                    text="🎡 Wheel",
+                                    variable=control_type_var,
+                                    value='wheel',
+                                    bg='#2d2d2d',
+                                    fg='white',
+                                    selectcolor='#3d3d3d',
+                                    font=('Segoe UI', 9),
+                                    command=lambda: self._update_control_type(car_id, 'wheel'))
+        wheel_radio.pack(side='left')
+        
+        # Manual mode toggle button
+        manual_btn = tk.Button(manual_content,
+                              text="🎮 Manual Mode",
+                              bg='#9c27b0',
+                              fg='white',
+                              font=('Segoe UI', 10, 'bold'),
+                              command=lambda: self.toggle_manual_mode_with_feedback(car_id),
+                              cursor='hand2',
+                              relief='flat',
+                              padx=15,
+                              pady=5)
+        manual_btn.pack(fill='x', pady=(5, 0))
+        
+        # Store manual mode button reference for updating state
+        if not hasattr(self, 'manual_mode_buttons'):
+            self.manual_mode_buttons = {}
+        self.manual_mode_buttons[car_id] = manual_btn
         
         # RIGHT SECTION: Velocity + Path + Platoon controls (flexible width)
         right_section = tk.Frame(main_layout, bg='#2d2d2d')
@@ -1032,6 +1124,16 @@ class EnhancedQCarGUIController:
             self.commands_failed_gui += 1
             self.log(f"❌ Failed to stop Car {car_id}", 'ERROR')
     
+    def calibrate_car_with_feedback(self, car_id):
+        """Calibrate GPS with enhanced feedback"""
+        success = self.controller.send_command(car_id, {'type': 'calibrate'})
+        if success:
+            self.commands_sent_gui += 1
+            self.log(f"📍 GPS Calibration started for Car {car_id}", 'INFO')
+        else:
+            self.commands_failed_gui += 1
+            self.log(f"❌ Failed to send calibrate command to Car {car_id}", 'ERROR')
+    
     def set_velocity_with_feedback(self, car_id, velocity_str):
         """Set velocity with enhanced validation and feedback"""
         try:
@@ -1052,7 +1154,7 @@ class EnhancedQCarGUIController:
     def set_path_with_feedback(self, car_id, path_str):
         """Set path with enhanced validation and feedback"""
         try:
-            nodes = [int(n) for n in path_str.split()]
+            nodes = [int(n.strip()) for n in path_str.replace(',', ' ').split()]
             if len(nodes) >= 2:
                 success = self.controller.set_path(car_id, nodes)
                 if success:
@@ -1669,6 +1771,12 @@ class EnhancedQCarGUIController:
         """Enhanced cleanup on window close"""
         self.running = False
         
+        # Stop manual mode if active
+        if hasattr(self, 'manual_mode_active'):
+            for car_id in list(self.manual_mode_active.keys()):
+                if self.manual_mode_active.get(car_id, False):
+                    self.disable_manual_mode(car_id)
+        
         # Log shutdown
         self.log("🛑 Shutting down Ground Station...", 'INFO')
         
@@ -1677,6 +1785,274 @@ class EnhancedQCarGUIController:
         
         # Destroy window
         self.root.destroy()
+    
+    # ===== MANUAL MODE CONTROL METHODS =====
+    
+    def _update_control_type(self, car_id: int, control_type: str):
+        """Update the control type for a specific car"""
+        self.manual_control_types[car_id] = control_type
+        self.log(f"Car {car_id}: Manual control type set to {control_type.upper()}", 'INFO')
+    
+    def toggle_manual_mode_with_feedback(self, car_id: int):
+        """Toggle manual mode on/off for a specific car"""
+        if not hasattr(self, 'manual_mode_active'):
+            self.manual_mode_active = {}
+        
+        is_active = self.manual_mode_active.get(car_id, False)
+        
+        if is_active:
+            # Disable manual mode
+            self.disable_manual_mode(car_id)
+        else:
+            # Enable manual mode
+            self.enable_manual_mode(car_id)
+    
+    def enable_manual_mode(self, car_id: int):
+        """Enable manual mode for a car"""
+        try:
+            if not hasattr(self, 'manual_mode_active'):
+                self.manual_mode_active = {}
+            
+            # Get selected control type
+            control_type = self.manual_control_types.get(car_id, 'keyboard')
+            
+            # Send enable manual mode command with control type
+            success = self.controller.enable_manual_mode(car_id, control_type=control_type)
+            
+            if success:
+                self.manual_mode_active[car_id] = True
+                
+                # Update button appearance
+                if hasattr(self, 'manual_mode_buttons') and car_id in self.manual_mode_buttons:
+                    self.manual_mode_buttons[car_id].config(
+                        text="🎮 Manual: ON",
+                        bg='#4caf50'  # Green when active
+                    )
+                
+                # Setup input controls based on control type
+                if not hasattr(self, 'manual_control_setup'):
+                    if control_type == 'keyboard':
+                        self.setup_keyboard_controls()
+                    elif control_type == 'wheel':
+                        self.setup_wheel_controls()
+                    self.manual_control_setup = True
+                    self.active_manual_car = car_id
+                    # Start the control loop now that manual mode is active
+                    self.manual_control_loop()
+                else:
+                    self.active_manual_car = car_id
+                
+                control_msg = "Use WASD keys" if control_type == 'keyboard' else "Use steering wheel"
+                self.log(f"Car {car_id}: Manual mode ENABLED ({control_type.upper()}) - {control_msg}", 'SUCCESS')
+                self.commands_sent_gui += 1
+            else:
+                self.log(f"Car {car_id}: Failed to enable manual mode", 'ERROR')
+                self.commands_failed_gui += 1
+                
+        except Exception as e:
+            self.log(f"Car {car_id}: Error enabling manual mode - {e}", 'ERROR')
+            self.commands_failed_gui += 1
+    
+    def disable_manual_mode(self, car_id: int):
+        """Disable manual mode for a car"""
+        try:
+            if not hasattr(self, 'manual_mode_active'):
+                self.manual_mode_active = {}
+            
+            # Send disable manual mode command
+            success = self.controller.disable_manual_mode(car_id)
+            
+            if success:
+                self.manual_mode_active[car_id] = False
+                
+                # Update button appearance
+                if hasattr(self, 'manual_mode_buttons') and car_id in self.manual_mode_buttons:
+                    self.manual_mode_buttons[car_id].config(
+                        text="🎮 Manual Mode",
+                        bg='#9c27b0'  # Purple when inactive
+                    )
+                
+                # Stop sending commands for this car
+                if hasattr(self, 'active_manual_car') and self.active_manual_car == car_id:
+                    self.active_manual_car = None
+                    # Note: control loop continues running but won't send commands when active_manual_car is None
+                
+                self.log(f"Car {car_id}: Manual mode DISABLED", 'INFO')
+                self.commands_sent_gui += 1
+            else:
+                self.log(f"Car {car_id}: Failed to disable manual mode", 'ERROR')
+                self.commands_failed_gui += 1
+                
+        except Exception as e:
+            self.log(f"Car {car_id}: Error disabling manual mode - {e}", 'ERROR')
+            self.commands_failed_gui += 1
+    
+    def setup_keyboard_controls(self):
+        """Setup keyboard event handlers for manual control"""
+        self.current_throttle = 0.0
+        self.current_steering = 0.0
+        self.keys_pressed = set()
+        
+        # Gradual steering parameters
+        self.max_steering = 0.5          # Maximum steering angle
+        self.steering_increment = 0.015  # Steering increase per update (at 50Hz)
+        self.steering_decay = 0.95       # Decay rate when no input (smooth return to center)
+        
+        # Bind keyboard events
+        self.root.bind('<KeyPress>', self.on_key_press)
+        self.root.bind('<KeyRelease>', self.on_key_release)
+        
+        # Note: manual_control_loop will be started when manual mode is enabled
+        
+        self.log("Keyboard controls: W=Forward, S=Backward, A=Left, D=Right, Space=Stop", 'INFO')
+        self.log("Steering: Hold A/D to gradually increase steering angle", 'INFO')
+    
+    def setup_wheel_controls(self):
+        """Setup steering wheel support using pygame"""
+        if not PYGAME_AVAILABLE:
+            self.log("ERROR: pygame not available - cannot use steering wheel", 'ERROR')
+            return False
+        
+        try:
+            # Initialize pygame
+            pygame.init()
+            pygame.joystick.init()
+            
+            # Check for connected joysticks/wheels
+            if pygame.joystick.get_count() == 0:
+                self.log("ERROR: No steering wheel or gamepad detected!", 'ERROR')
+                self.log("Please connect your steering wheel and try again.", 'WARNING')
+                return False
+            
+            # Initialize the first joystick (steering wheel)
+            self.wheel = pygame.joystick.Joystick(0)
+            self.wheel.init()
+            
+            self.log(f"Steering wheel connected: {self.wheel.get_name()}", 'SUCCESS')
+            self.log(f"Axes: {self.wheel.get_numaxes()}, Buttons: {self.wheel.get_numbuttons()}", 'INFO')
+            
+            # Steering wheel configuration (from Vehicle_wheel.py)
+            self.STEERING_AXIS = 0         # Axis for steering wheel rotation
+            self.ACCELERATOR_AXIS = 5      # Axis for accelerator pedal
+            self.BRAKE_AXIS = 4            # Axis for brake pedal
+            self.STEERING_SCALE = 0.5      # Maximum steering angle
+            self.THROTTLE_SCALE = 0.3      # Maximum throttle
+            self.DEADZONE = 0.05           # Deadzone for steering and pedals
+            
+            # Note: manual_control_loop will be started when manual mode is enabled
+            
+            self.log("Steering wheel controls: Rotate for steering, Pedals for throttle/brake", 'INFO')
+            return True
+            
+        except Exception as e:
+            self.log(f"ERROR: Failed to initialize steering wheel - {e}", 'ERROR')
+            return False
+    
+    def on_key_press(self, event):
+        """Handle key press events"""
+        key = event.keysym.lower()
+        self.keys_pressed.add(key)
+    
+    def on_key_release(self, event):
+        """Handle key release events"""
+        key = event.keysym.lower()
+        if key in self.keys_pressed:
+            self.keys_pressed.remove(key)
+    
+    def manual_control_loop(self):
+        """Continuous loop to send manual control commands based on keyboard or wheel input"""
+        if not self.running:
+            return
+        
+        # Only send commands if manual mode is active for at least one car
+        if hasattr(self, 'active_manual_car') and self.active_manual_car is not None:
+            car_id = self.active_manual_car
+            control_type = self.manual_control_types.get(car_id, 'keyboard')
+            
+            throttle = 0.0
+            steering = 0.0
+            
+            if control_type == 'keyboard':
+                # Keyboard control (WASD) with gradual steering
+                if 'w' in self.keys_pressed:
+                    throttle = 0.05  # Forward
+                if 's' in self.keys_pressed:
+                    throttle = -0.05  # Backward
+                
+                # Gradual steering increase
+                if 'a' in self.keys_pressed:
+                    # Increase steering to the left (positive direction)
+                    self.current_steering = min(self.current_steering + self.steering_increment, self.max_steering)
+                elif 'd' in self.keys_pressed:
+                    # Increase steering to the right (negative direction)
+                    self.current_steering = max(self.current_steering - self.steering_increment, -self.max_steering)
+                else:
+                    # No steering input - gradually return to center
+                    self.current_steering *= self.steering_decay
+                    if abs(self.current_steering) < 0.01:
+                        self.current_steering = 0.0
+                
+                steering = self.current_steering
+                
+                # Emergency stop overrides everything
+                if 'space' in self.keys_pressed:
+                    throttle = 0.0
+                    steering = 0.0
+                    self.current_steering = 0.0
+            
+            elif control_type == 'wheel' and hasattr(self, 'wheel'):
+                # Steering wheel control (pygame)
+                try:
+                    # Process pygame events (required for pygame to work)
+                    pygame.event.pump()
+                    
+                    # Read steering from wheel rotation
+                    if self.wheel.get_numaxes() > self.STEERING_AXIS:
+                        steering_input = self.wheel.get_axis(self.STEERING_AXIS)
+                        # Apply deadzone
+                        if abs(steering_input) < self.DEADZONE:
+                            steering_input = 0
+                        steering = steering_input * self.STEERING_SCALE
+                    
+                    # Read accelerator pedal
+                    if self.wheel.get_numaxes() > self.ACCELERATOR_AXIS:
+                        accelerator_input = self.wheel.get_axis(self.ACCELERATOR_AXIS)
+                        # Normalize to 0 to 1 range (pedals report -1 to 1)
+                        accelerator_value = (accelerator_input + 1) / 2
+                        if accelerator_value < self.DEADZONE:
+                            accelerator_value = 0
+                    else:
+                        accelerator_value = 0
+                    
+                    # Read brake pedal
+                    if self.wheel.get_numaxes() > self.BRAKE_AXIS:
+                        brake_input = self.wheel.get_axis(self.BRAKE_AXIS)
+                        # Normalize to 0 to 1 range
+                        brake_value = (brake_input + 1) / 2
+                        if brake_value < self.DEADZONE:
+                            brake_value = 0
+                    else:
+                        brake_value = 0
+                    
+                    # Calculate throttle (forward from accelerator, backward from brake)
+                    throttle = (accelerator_value - brake_value) * self.THROTTLE_SCALE
+                    
+                    # Emergency stop with Button 0
+                    if self.wheel.get_numbuttons() > 0 and self.wheel.get_button(0):
+                        throttle = 0.0
+                        steering = 0.0
+                    
+                except Exception as e:
+                    # Fallback to stopped if wheel fails
+                    throttle = 0.0
+                    steering = 0.0
+            
+            # Send manual control command
+            if hasattr(self, 'manual_mode_active') and self.manual_mode_active.get(car_id, False):
+                self.controller.send_manual_control(car_id, throttle, steering)
+        
+        # Schedule next update (50 Hz for smooth control)
+        self.root.after(20, self.manual_control_loop)
 
 
 # Configuration

@@ -86,8 +86,23 @@ class StoppedState(StateBase):
             # Fallback to base class if CommandType not available
             return super().handle_event(command_type, data)
         
+        # Handle manual control commands - transition to manual mode
+        if command_type == CommandType.MANUAL_CONTROL:
+            self.logger.logger.info("[STOP] Manual control command received - transitioning to MANUAL_MODE")
+            return (VehicleState.MANUAL_MODE, StateTransitionReason.START_COMMAND)
+        
+        # Handle calibrate command - GPS-only recalibration without full reinitialization
+        elif command_type == CommandType.CALIBRATE:
+            self.logger.logger.info("GPS Calibration command received - performing GPS-only recalibration")
+            if self._recalibrate_gps_only():
+                self.logger.logger.info(" GPS recalibration completed successfully")
+            else:
+                self.logger.log_error(" GPS recalibration failed")
+            # Stay in STOPPED state - no transition needed
+            return None
+        
         # Handle start/resume command
-        if command_type == CommandType.START or command_type == CommandType.START_PLATOON:
+        elif command_type == CommandType.START or command_type == CommandType.START_PLATOON:
             self.logger.logger.info(" Start/Resume command received")
             
             # NOTE: Platoon configuration (formation, position, role) is PRESERVED during stop.
@@ -95,8 +110,6 @@ class StoppedState(StateBase):
             # Only the 'enabled' flag is toggled - formation data stays intact.
             
             return (VehicleState.WAITING_FOR_START, StateTransitionReason.START_COMMAND)
-
-
 
         # Handle repeated stop commands (acknowledge but stay stopped)
         elif command_type in [CommandType.STOP, CommandType.EMERGENCY_STOP]:

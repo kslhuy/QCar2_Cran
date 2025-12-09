@@ -239,7 +239,7 @@ class QCarRemoteController:
             self.cars[car_id]['commands_sent'] += 1
             self.cars[car_id]['last_command_time'] = time.time()
             
-            print(f"[Ground Station] ✅ Sent to Car {car_id}: {command}")
+            # print(f"[Ground Station] ✅ Sent to Car {car_id}: {command}")
             return True
             
         except Exception as e:
@@ -295,6 +295,22 @@ class QCarRemoteController:
         elif cmd_type == 'set_path':
             node_sequence = command.get('node_sequence')
             if not node_sequence or not isinstance(node_sequence, list):
+                return False
+        
+        elif cmd_type == 'manual_control':
+            # Validate manual control command
+            throttle = command.get('throttle')
+            steering = command.get('steering')
+            if throttle is None or steering is None:
+                return False
+            # Check ranges
+            if not (-1.0 <= throttle <= 1.0) or not (-1.0 <= steering <= 1.0):
+                return False
+        
+        elif cmd_type == 'enable_manual_mode':
+            # Validate control type
+            control_type = command.get('control_type', 'keyboard')
+            if control_type not in ['keyboard', 'wheel', 'joystick']:
                 return False
         
         return True
@@ -484,6 +500,60 @@ class QCarRemoteController:
         for car_id in self.cars.keys():
             results[car_id] = self.disable_platoon(car_id)
         return results
+    
+    # ===== MANUAL CONTROL COMMANDS =====
+    
+    def enable_manual_mode(self, car_id: int, control_type: str = 'keyboard') -> bool:
+        """
+        Enable manual control mode for a car
+        
+        Args:
+            car_id: ID of the car
+            control_type: Type of manual control ('keyboard', 'joystick', etc.)
+            
+        Returns:
+            True if command was sent successfully
+        """
+        return self.send_command(car_id, {
+            'type': 'enable_manual_mode',
+            'control_type': control_type
+        })
+    
+    def send_manual_control(self, car_id: int, throttle: float, steering: float) -> bool:
+        """
+        Send manual control commands to a car
+        
+        Args:
+            car_id: ID of the car
+            throttle: Throttle value (-1.0 to 1.0)
+            steering: Steering value (-1.0 to 1.0, negative=right, positive=left)
+            
+        Returns:
+            True if command was sent successfully
+        """
+        # Clamp values to valid range
+        throttle = max(-1.0, min(1.0, throttle))
+        steering = max(-1.0, min(1.0, steering))
+        
+        return self.send_command(car_id, {
+            'type': 'manual_control',
+            'throttle': throttle,
+            'steering': steering
+        }, validate=False)  # Skip validation for high-frequency commands
+    
+    def disable_manual_mode(self, car_id: int) -> bool:
+        """
+        Disable manual control mode for a car
+        
+        Args:
+            car_id: ID of the car
+            
+        Returns:
+            True if command was sent successfully
+        """
+        return self.send_command(car_id, {
+            'type': 'disable_manual_mode'
+        })
     
     # ===== STATUS AND TELEMETRY =====
     

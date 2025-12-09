@@ -45,7 +45,7 @@ lateral_controller_type: 'pure_pursuit'
 
 # Pure Pursuit Controller Parameters
 pure_pursuit:
-  lookahead_distance: 0.4    # Base lookahead distance (meters)
+  lookahead_distance: 0.2    # Base lookahead distance (meters)
   k_steering: 0.4            # Proportional steering gain
   max_steering: 0.55         # Maximum steering angle (radians)
   adaptive_lookahead: true   # Enable adaptive lookahead based on distance

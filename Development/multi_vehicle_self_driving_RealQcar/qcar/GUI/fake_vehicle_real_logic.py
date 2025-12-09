@@ -93,6 +93,10 @@ class MockQCar:
         """Receive control commands"""
         self._throttle = np.clip(throttle, -1.0, 1.0)
         self._steering = np.clip(steering, -1.0, 1.0)
+    def read_write_std(self, throttle: float, steering: float, LEDs=None):
+        """Receive control commands"""
+        self._throttle = np.clip(throttle, -1.0, 1.0)
+        self._steering = np.clip(steering, -1.0, 1.0)
     
     def _update_physics(self, dt: float):
         """Simple physics simulation"""

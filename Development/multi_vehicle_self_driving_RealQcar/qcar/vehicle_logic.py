@@ -115,6 +115,9 @@ class VehicleLogic:
         
         # Control state (Can be set by Ground Station commands)
         self.v_ref = config.speed.v_ref
+        
+        # Calibration state flag (set by CALIBRATE command)
+        self.calibration_requested = False
 
         # State machine - use simplified version with internal transition logic
         self.state_machine = VehicleStateMachine(self, self.vehicle_logger)
@@ -674,58 +677,6 @@ class VehicleLogic:
         except Exception as e:
             self.vehicle_logger.logger.error(f"Failed to report V2V status to Ground Station: {e}")
     
-    def _stop_quarc_models(self):
-        """Stop QUARC models controlling hardware components"""
-        try:
-            import subprocess
-            import socket
-            
-            self.vehicle_logger.logger.info("Stopping QUARC models (hardware control)...")
-            
-            # Get local IP or use localhost for QUARC models running locally
-            quarc_target = "tcpip://localhost:17000"
-            
-            # Try to stop QUARC models using quarc_run command
-            cmd = ["quarc_run", "-q", "-Q", "-t", quarc_target, "*.rt-linux_qcar2"]
-            
-            try:
-                result = subprocess.run(cmd, 
-                                      capture_output=True, 
-                                      text=True, 
-                                      timeout=5)
-                
-                if result.returncode == 0:
-                    self.vehicle_logger.logger.info("QUARC models stopped successfully")
-                else:
-                    self.vehicle_logger.logger.warning(f"QUARC stop returned code {result.returncode}")
-                    if result.stderr:
-                        self.vehicle_logger.logger.warning(f"QUARC error: {result.stderr.strip()}")
-                        
-            except subprocess.TimeoutExpired:
-                self.vehicle_logger.logger.warning("QUARC stop command timed out")
-            except FileNotFoundError:
-                self.vehicle_logger.logger.warning("quarc_run not found - QUARC models may still be running")
-                self.vehicle_logger.logger.warning("Hardware (LiDAR, GPS) may need manual shutdown")
-            except Exception as e:
-                self.vehicle_logger.logger.error(f"Error running quarc_run: {e}")
-                
-            # Test if QUARC is still running
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)
-                result = sock.connect_ex(("localhost", 17000))
-                sock.close()
-                
-                if result == 0:
-                    self.vehicle_logger.logger.warning("QUARC service still accessible - hardware may still be active")
-                else:
-                    self.vehicle_logger.logger.info("QUARC service stopped - hardware should be inactive")
-                    
-            except Exception as e:
-                self.vehicle_logger.logger.debug(f"Cannot test QUARC connection: {e}")
-                
-        except Exception as e:
-            self.vehicle_logger.logger.error(f"Error stopping QUARC models: {e}")
     
     def _shutdown(self):
         """Shutdown all systems"""
@@ -745,9 +696,9 @@ class VehicleLogic:
             except Exception as e:
                 self.vehicle_logger.log_error("Error stopping vehicle", e)
         
-        if IS_PHYSICAL_QCAR:
-            # Stop QUARC models controlling hardware (LiDAR, GPS, etc.)
-            self._stop_quarc_models()
+        # if IS_PHYSICAL_QCAR:
+        #     # Stop QUARC models controlling hardware (LiDAR, GPS, etc.)
+        #     self._stop_quarc_models()
         
         # Close network handler and stop threads
         if self.client_Ground_Station:

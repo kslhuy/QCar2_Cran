@@ -136,8 +136,12 @@ class CommandHandler:
         'start_platoon': CommandType.START_PLATOON,  # New platoon trigger
         'activate_v2v': CommandType.ACTIVATE_V2V,
         'disable_v2v': CommandType.DISABLE_V2V,
+        'enable_manual_mode': CommandType.ENABLE_MANUAL_MODE,
+        'manual_control': CommandType.MANUAL_CONTROL,
+        'disable_manual_mode': CommandType.DISABLE_MANUAL_MODE,
         'shutdown': CommandType.SHUTDOWN,
-        'reset': CommandType.RESET
+        'reset': CommandType.RESET,
+        'calibrate': CommandType.CALIBRATE
     }
     
     def __init__(self, logger, config=None):
@@ -205,7 +209,9 @@ class CommandHandler:
             CommandType.ENABLE_PLATOON_FOLLOWER, # In waiting state, this configures but doesn't transition
             CommandType.ENABLE_PLATOON_LEADER,
             CommandType.SETUP_PLATOON_FORMATION,  # New: global formation setup
-            CommandType.DISABLE_PLATOON  # Pause platoon without transition
+            CommandType.DISABLE_PLATOON,  # Pause platoon without transition
+            CommandType.MANUAL_CONTROL,  # Manual control commands update state but don't transition
+            CommandType.CALIBRATE  # GPS recalibration without state transition
         ]
         
         if command_type in NON_TRANSITION_COMMANDS:

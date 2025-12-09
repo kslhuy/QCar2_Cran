@@ -248,7 +248,8 @@ def main():
     # Ensure QUARC models are stopped even if vehicle_logic shutdown fails
     try:
         if IS_PHYSICAL_QCAR:
-            stop_quarc_models()
+            # stop_quarc_models()
+            pass
         else:
             # CamLidarFusion thread cleanup removed (moved to main loop)
             from qvl.real_time import QLabsRealTime

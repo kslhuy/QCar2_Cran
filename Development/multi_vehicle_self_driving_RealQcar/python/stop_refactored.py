@@ -167,30 +167,38 @@ def stop_processes(ip, car_id):
             
             # Check what processes are running
             print(f"  [→] Stopping Python processes...")
-            stdin, stdout, stderr = ssh.exec_command("pgrep -f 'vehicle_main.py|yolo_server|python.*vehicle|python.*yolo'")
+            stdin, stdout, stderr = ssh.exec_command("pgrep -f 'vehicle_main|yolo_server'")
             running_pids = stdout.read().decode().strip()
             if running_pids:
                 print(f"  [i] Found processes: PIDs {running_pids.replace(chr(10), ', ')}")
             else:
                 print(f"  [i] No relevant processes found")
             
-            # Kill vehicle control processes
-            ssh.exec_command("pkill -f vehicle_main.py")
-            ssh.exec_command("pkill -f yolo_server")
+            # Kill vehicle control and YOLO processes with SIGTERM first
+            print(f"  [→] Sending SIGTERM to vehicle_main and yolo_server processes...")
+            ssh.exec_command("pkill -15 -f 'vehicle_main'")
+            ssh.exec_command("pkill -15 -f 'yolo_server'")
+            time.sleep(2)
             
-            # Fallback - kill all Python processes (like original stop.py)
-            ssh.exec_command("pkill -2 python ; pkill -15 python")
-            time.sleep(3)
-            
-            # Final check
-            stdin, stdout, stderr = ssh.exec_command("pgrep -f 'vehicle_main.py|yolo_server'")
+            # Check if processes are still running
+            stdin, stdout, stderr = ssh.exec_command("pgrep -f 'vehicle_main|yolo_server'")
             remaining = stdout.read().decode().strip()
             
             if remaining:
-                print(f"  [→] Force killing remaining processes...")
-                ssh.exec_command("pkill -9 -f vehicle_main.py")
-                ssh.exec_command("pkill -9 -f yolo_server")
-                time.sleep(2)
+                print(f"  [→] Force killing remaining processes with SIGKILL...")
+                ssh.exec_command("pkill -9 -f 'vehicle_main'")
+                ssh.exec_command("pkill -9 -f 'yolo_server'")
+                time.sleep(1)
+                
+                # Final verification
+                stdin, stdout, stderr = ssh.exec_command("pgrep -f 'vehicle_main|yolo_server'")
+                still_remaining = stdout.read().decode().strip()
+                if still_remaining:
+                    print(f"  [⚠] Warning: Some processes still running: PIDs {still_remaining.replace(chr(10), ', ')}")
+                else:
+                    print(f"  [✓] All processes stopped (forced)")
+            else:
+                print(f"  [✓] All processes stopped gracefully")
             
             ssh.close()
             print(f"  [✓] Python processes stopped")
