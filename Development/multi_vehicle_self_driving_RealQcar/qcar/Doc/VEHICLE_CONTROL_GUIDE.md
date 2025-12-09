@@ -1,12 +1,12 @@
 # QCar Vehicle Control - Quick Start Guide
 
 ## Overview
-The vehicle control system now automatically loads `config_example.yaml` by default.
+The vehicle control system now automatically loads `config_vehicle_main.yaml` by default.
 
 ## Configuration
 
 ### Default Configuration File
-The system will automatically use `config_example.yaml` from the script directory if no config file is specified.
+The system will automatically use `config_vehicle_main.yaml` from the script directory if no config file is specified.
 
 ### Important Settings to Check
 
@@ -43,7 +43,7 @@ path:
 cd qcar
 python vehicle_main.py
 ```
-This will automatically load `config_example.yaml`
+This will automatically load `config_vehicle_main.yaml`
 
 ### Method 2: Override Config File
 ```bash
@@ -70,7 +70,7 @@ python vehicle_main.py --host 192.168.2.200 --car-id 1 --v-ref 0.8
 | `--port PORT` | Base port number | 5000 |
 | `--car-id ID` | Car ID (0, 1, 2, ...) | 0 |
 | `--v-ref SPEED` | Reference velocity (m/s) | From config |
-| `--config FILE` | Custom config file | config_example.yaml |
+| `--config FILE` | Custom config file | config_vehicle_main.yaml |
 | `-c`, `--calibrate` | Recalibrate GPS | false |
 | `-n`, `--node_configuration` | Path config (0 or 1) | 0 |
 | `--no-steering` | Disable steering control | false |
@@ -109,12 +109,12 @@ python vehicle_main.py --host 192.168.2.200 --car-id 2
 ## Troubleshooting
 
 ### Configuration Not Loading
-1. Verify `config_example.yaml` exists in the `qcar` directory
+1. Verify `config_vehicle_main.yaml` exists in the `qcar` directory
 2. Run `python test_config.py` to check for errors
 3. Check YAML syntax is correct (no tabs, proper indentation)
 
 ### Vehicle Not Connecting to GUI
-1. Check `host_ip` in `config_example.yaml` matches GUI PC's IP
+1. Check `host_ip` in `config_vehicle_main.yaml` matches GUI PC's IP
 2. Verify GUI is running and shows "Listening on port..."
 3. Check firewall allows connections on port 5000+
 4. Test network: `ping 192.168.2.200` (replace with your GUI IP)
@@ -137,20 +137,20 @@ Command line arguments override config file values:
 
 1. **Highest Priority:** Command line arguments (e.g., `--host`, `--v-ref`)
 2. **Medium Priority:** Custom config file (if `--config` specified)
-3. **Lowest Priority:** Default `config_example.yaml`
+3. **Lowest Priority:** Default `config_vehicle_main.yaml`
 
 ## Examples
 
 ### Autonomous Mode (No Remote Control)
 ```yaml
-# In config_example.yaml
+# In config_vehicle_main.yaml
 network:
   host_ip: null  # or comment out
 ```
 
 ### Remote Control Mode
 ```yaml
-# In config_example.yaml
+# In config_vehicle_main.yaml
 network:
   host_ip: 192.168.2.200  # GUI controller IP
   car_id: 0

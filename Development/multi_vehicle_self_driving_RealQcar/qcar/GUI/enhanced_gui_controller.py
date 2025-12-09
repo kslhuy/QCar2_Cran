@@ -16,6 +16,14 @@ import threading
 import time
 import json
 from datetime import datetime
+
+try:
+    import pygame  # For steering wheel support
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
+    print("Warning: pygame not available. Steering wheel support disabled.")
+
 from enhanced_remote_controller import QCarRemoteController
 
 
@@ -31,6 +39,14 @@ class EnhancedQCarGUIController:
         self.car_expanded = {}
         self.connected_cars = set()  # Track connected cars
         self.v2v_status = {}  # Track V2V status for each car
+        
+        # Platoon configuration tracking
+        self.platoon_config = {}  # car_id -> {'position': int, 'is_leader': bool, 'setup_complete': bool}
+        self.platoon_indicators = {}  # car_id -> Label widget for platoon status display
+        
+        # Manual mode control type tracking
+        self.manual_control_types = {}  # car_id -> 'keyboard' or 'wheel'
+        self.control_type_vars = {}  # car_id -> tkinter StringVar for control type selection
         
         # Statistics tracking
         self.commands_sent_gui = 0
@@ -151,9 +167,9 @@ class EnhancedQCarGUIController:
                          style='Title.TLabel')
         title.pack(pady=10)
         
-        # Statistics bar
+        # Statistics bar with telemetry rate
         self.stats_label = tk.Label(title_frame,
-                                   text="Commands: 0 sent, 0 failed | Uptime: 0s",
+                                   text="Commands: 0 sent, 0 failed | Uptime: 0s | Telemetry: 0.0 Hz",
                                    bg='#0d0d0d',
                                    fg='#888888',
                                    font=('Segoe UI', 10))
@@ -167,10 +183,7 @@ class EnhancedQCarGUIController:
         left_panel = tk.Frame(main_frame, bg='#1e1e1e')
         left_panel.pack(side='left', fill='both', expand=True, padx=(0, 10))
         
-        # Enhanced car count control
-        self.create_car_count_panel(left_panel)
-        
-        # Scrollable car panels area
+        # Scrollable car panels area (car panels spawn automatically when vehicles connect)
         canvas_frame = tk.Frame(left_panel, bg='#1e1e1e')
         canvas_frame.pack(fill='both', expand=True, pady=(10, 0))
         
@@ -213,55 +226,55 @@ class EnhancedQCarGUIController:
         """Enhanced mouse wheel scrolling"""
         self.car_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
     
-    def create_car_count_panel(self, parent):
-        """Enhanced car count control panel"""
-        frame = tk.Frame(parent, bg='#2d2d2d', relief='raised', bd=2)
-        frame.pack(fill='x', pady=(0, 5))
+    # def create_car_count_panel(self, parent):
+    #     """Enhanced car count control panel"""
+    #     frame = tk.Frame(parent, bg='#2d2d2d', relief='raised', bd=2)
+    #     frame.pack(fill='x', pady=(0, 5))
         
-        content = tk.Frame(frame, bg='#2d2d2d')
-        content.pack(fill='x', padx=15, pady=10)
+    #     content = tk.Frame(frame, bg='#2d2d2d')
+    #     content.pack(fill='x', padx=15, pady=10)
         
-        tk.Label(content,
-                text="Fleet Size:",
-                bg='#2d2d2d',
-                fg='white',
-                font=('Segoe UI', 12, 'bold')).pack(side='left', padx=(0, 10))
+    #     tk.Label(content,
+    #             text="Fleet Size:",
+    #             bg='#2d2d2d',
+    #             fg='white',
+    #             font=('Segoe UI', 12, 'bold')).pack(side='left', padx=(0, 10))
         
-        # Enhanced car count spinbox
-        self.car_count_var = tk.StringVar(value=str(self.num_cars))
-        spinbox = tk.Spinbox(content,
-                            from_=1,
-                            to=self.max_cars,
-                            textvariable=self.car_count_var,
-                            width=5,
-                            bg='#3d3d3d',
-                            fg='white',
-                            font=('Segoe UI', 11),
-                            buttonbackground='#4d4d4d',
-                            relief='flat',
-                            insertbackground='white')
-        spinbox.pack(side='left', padx=(0, 15))
+    #     # Enhanced car count spinbox
+    #     self.car_count_var = tk.StringVar(value=str(self.num_cars))
+    #     spinbox = tk.Spinbox(content,
+    #                         from_=1,
+    #                         to=self.max_cars,
+    #                         textvariable=self.car_count_var,
+    #                         width=5,
+    #                         bg='#3d3d3d',
+    #                         fg='white',
+    #                         font=('Segoe UI', 11),
+    #                         buttonbackground='#4d4d4d',
+    #                         relief='flat',
+    #                         insertbackground='white')
+    #     spinbox.pack(side='left', padx=(0, 15))
         
-        # Enhanced apply button
-        apply_btn = tk.Button(content,
-                             text="Apply",
-                             bg='#2196f3',
-                             fg='white',
-                             font=('Segoe UI', 10, 'bold'),
-                             command=self.apply_car_count,
-                             cursor='hand2',
-                             relief='flat',
-                             padx=20,
-                             pady=5)
-        apply_btn.pack(side='left', padx=(0, 15))
+    #     # Enhanced apply button
+    #     apply_btn = tk.Button(content,
+    #                          text="Apply",
+    #                          bg='#2196f3',
+    #                          fg='white',
+    #                          font=('Segoe UI', 10, 'bold'),
+    #                          command=self.apply_car_count,
+    #                          cursor='hand2',
+    #                          relief='flat',
+    #                          padx=20,
+    #                          pady=5)
+    #     apply_btn.pack(side='left', padx=(0, 15))
         
-        # Enhanced info label
-        self.car_count_info = tk.Label(content,
-                                       text=f"Active: {self.num_cars} cars",
-                                       bg='#2d2d2d',
-                                       fg='#4caf50',
-                                       font=('Segoe UI', 10, 'bold'))
-        self.car_count_info.pack(side='left')
+    #     # Enhanced info label
+    #     self.car_count_info = tk.Label(content,
+    #                                    text=f"Active: {self.num_cars} cars",
+    #                                    bg='#2d2d2d',
+    #                                    fg='#4caf50',
+    #                                    font=('Segoe UI', 10, 'bold'))
+    #     self.car_count_info.pack(side='left')
     
     def apply_car_count(self):
         """Apply the new car count with enhanced validation"""
@@ -385,7 +398,7 @@ class EnhancedQCarGUIController:
                                  padx=20)
         conn_indicator.pack(side='right', padx=20, pady=20)
         
-        # V2V Status Indicator (New)
+        # V2V Status Indicator
         v2v_indicator = tk.Label(header,
                                 text="📡 V2V: OFF",
                                 bg='#1a1a1a',
@@ -397,6 +410,19 @@ class EnhancedQCarGUIController:
         if not hasattr(self, 'v2v_indicators'):
             self.v2v_indicators = {}
         self.v2v_indicators[car_id] = v2v_indicator
+        
+        # Platoon Status Indicator (New)
+        platoon_indicator = tk.Label(header,
+                                     text="🚗 Solo",
+                                     bg='#1a1a1a',
+                                     fg='#888888', # Gray initially
+                                     font=('Segoe UI', 12, 'bold'),
+                                     padx=10)
+        platoon_indicator.pack(side='right', padx=(0, 10), pady=20)
+        
+        if not hasattr(self, 'platoon_indicators'):
+            self.platoon_indicators = {}
+        self.platoon_indicators[car_id] = platoon_indicator
         
         # Store reference
         if not hasattr(self, 'conn_indicators'):
@@ -511,6 +537,19 @@ class EnhancedQCarGUIController:
                              pady=6)  # Smaller padding
         start_btn.pack(side='left', expand=True, fill='x', padx=(0, 5))
         
+        # Calibrate button
+        calibrate_btn = tk.Button(main_buttons,
+                                 text="🔧 Calibrate",
+                                 bg='#ff9800',
+                                 fg='white',
+                                 font=('Segoe UI', 11, 'bold'),
+                                 command=lambda: self.calibrate_car_with_feedback(car_id),
+                                 cursor='hand2',
+                                 relief='flat',
+                                 padx=15,
+                                 pady=6)
+        calibrate_btn.pack(side='left', expand=True, fill='x', padx=(5, 5))
+        
         stop_btn = tk.Button(main_buttons,
                             text="⬛ STOP",
                             bg='#f44336',
@@ -522,6 +561,73 @@ class EnhancedQCarGUIController:
                             padx=20,
                             pady=6)  # Smaller padding
         stop_btn.pack(side='left', expand=True, fill='x', padx=(5, 0))
+        
+        # Manual Mode Control Panel
+        manual_frame = tk.LabelFrame(left_section,
+                                    text="🎮 Manual Control",
+                                    bg='#2d2d2d',
+                                    fg='white',
+                                    font=('Segoe UI', 11, 'bold'))
+        manual_frame.pack(fill='x', pady=(8, 0))
+        
+        manual_content = tk.Frame(manual_frame, bg='#2d2d2d')
+        manual_content.pack(fill='x', padx=8, pady=6)
+        
+        # Control type selection
+        control_type_frame = tk.Frame(manual_content, bg='#2d2d2d')
+        control_type_frame.pack(fill='x', pady=(0, 5))
+        
+        tk.Label(control_type_frame,
+                text="Control:",
+                bg='#2d2d2d',
+                fg='#cccccc',
+                font=('Segoe UI', 10)).pack(side='left', padx=(0, 8))
+        
+        # Store control type variable
+        control_type_var = tk.StringVar(value='keyboard')
+        self.control_type_vars[car_id] = control_type_var
+        self.manual_control_types[car_id] = 'keyboard'
+        
+        # Radio buttons for control type
+        keyboard_radio = tk.Radiobutton(control_type_frame,
+                                       text="⌨️ Keyboard",
+                                       variable=control_type_var,
+                                       value='keyboard',
+                                       bg='#2d2d2d',
+                                       fg='white',
+                                       selectcolor='#3d3d3d',
+                                       font=('Segoe UI', 9),
+                                       command=lambda: self._update_control_type(car_id, 'keyboard'))
+        keyboard_radio.pack(side='left', padx=(0, 10))
+        
+        wheel_radio = tk.Radiobutton(control_type_frame,
+                                    text="🎡 Wheel",
+                                    variable=control_type_var,
+                                    value='wheel',
+                                    bg='#2d2d2d',
+                                    fg='white',
+                                    selectcolor='#3d3d3d',
+                                    font=('Segoe UI', 9),
+                                    command=lambda: self._update_control_type(car_id, 'wheel'))
+        wheel_radio.pack(side='left')
+        
+        # Manual mode toggle button
+        manual_btn = tk.Button(manual_content,
+                              text="🎮 Manual Mode",
+                              bg='#9c27b0',
+                              fg='white',
+                              font=('Segoe UI', 10, 'bold'),
+                              command=lambda: self.toggle_manual_mode_with_feedback(car_id),
+                              cursor='hand2',
+                              relief='flat',
+                              padx=15,
+                              pady=5)
+        manual_btn.pack(fill='x', pady=(5, 0))
+        
+        # Store manual mode button reference for updating state
+        if not hasattr(self, 'manual_mode_buttons'):
+            self.manual_mode_buttons = {}
+        self.manual_mode_buttons[car_id] = manual_btn
         
         # RIGHT SECTION: Velocity + Path + Platoon controls (flexible width)
         right_section = tk.Frame(main_layout, bg='#2d2d2d')
@@ -594,7 +700,7 @@ class EnhancedQCarGUIController:
                              font=('Segoe UI', 10),  # Smaller font
                              insertbackground='white',
                              relief='flat')
-        path_entry.insert(0, "10 4 20 10" if car_id == 0 else "4 13 9 4")
+        path_entry.insert(0, "10, 2, 4, 6, 8, 10" if car_id == 0 else "10, 2, 4, 6, 8, 10")
         path_entry.pack(side='left', padx=(0, 8))
         
         path_btn = tk.Button(path_content,
@@ -620,88 +726,38 @@ class EnhancedQCarGUIController:
         platoon_content = tk.Frame(platoon_frame, bg='#2d2d2d')
         platoon_content.pack(fill='x', padx=8, pady=6)
         
-        # Role selection - more compact
-        role_frame = tk.Frame(platoon_content, bg='#2d2d2d')
-        role_frame.pack(fill='x', pady=(0, 5))
+        # Position selection - simplified
+        position_frame = tk.Frame(platoon_content, bg='#2d2d2d')
+        position_frame.pack(fill='x', pady=(0, 5))
         
-        tk.Label(role_frame,
-                text="Role:",
+        tk.Label(position_frame,
+                text="Position:",
                 bg='#2d2d2d',
                 fg='#cccccc',
                 font=('Segoe UI', 10)).pack(side='left', padx=(0, 8))
         
-        role_var = tk.StringVar(value="follower")
-        leader_radio = tk.Radiobutton(role_frame,
-                                     text="Leader",
-                                     variable=role_var,
-                                     value="leader",
-                                     bg='#2d2d2d',
-                                     fg='white',
-                                     selectcolor='#3d3d3d',
-                                     activebackground='#2d2d2d',
-                                     activeforeground='white',
-                                     font=('Segoe UI', 9))  # Smaller font
-        leader_radio.pack(side='left', padx=(0, 15))
+        position_var = tk.StringVar(value=str(car_id + 1))  # Default: Car 0 is position 1, Car 1 is position 2, etc.
+        position_entry = tk.Entry(position_frame,
+                                 textvariable=position_var,
+                                 width=3,
+                                 bg='#3d3d3d',
+                                 fg='white',
+                                 font=('Segoe UI', 10),
+                                 insertbackground='white',
+                                 relief='flat')
+        position_entry.pack(side='left', padx=(0, 8))
+        position_entry.bind('<KeyRelease>', lambda e: self.update_platoon_config(car_id, position_var.get()))
         
-        follower_radio = tk.Radiobutton(role_frame,
-                                       text="Follower",
-                                       variable=role_var,
-                                       value="follower",
-                                       bg='#2d2d2d',
-                                       fg='white',
-                                       selectcolor='#3d3d3d',
-                                       activebackground='#2d2d2d',
-                                       activeforeground='white',
-                                       font=('Segoe UI', 9))  # Smaller font
-        follower_radio.pack(side='left')
+        # Role indicator - shows what position 1 means
+        role_indicator = tk.Label(position_frame,
+                                 text="(1=Leader, 2,3...=Followers)",
+                                 bg='#2d2d2d',
+                                 fg='#888888',
+                                 font=('Segoe UI', 9))
+        role_indicator.pack(side='left', padx=(8, 0))
         
-        # Leader ID for follower mode - more compact
-        leader_id_frame = tk.Frame(platoon_content, bg='#2d2d2d')
-        leader_id_frame.pack(fill='x', pady=(0, 5))
-        
-        tk.Label(leader_id_frame,
-                text="Follow ID:",
-                bg='#2d2d2d',
-                fg='#cccccc',
-                font=('Segoe UI', 10)).pack(side='left', padx=(0, 8))
-        
-        leader_id_entry = tk.Entry(leader_id_frame,
-                                  width=4,
-                                  bg='#3d3d3d',
-                                  fg='white',
-                                  font=('Segoe UI', 10),  # Smaller font
-                                  insertbackground='white',
-                                  relief='flat')
-        leader_id_entry.insert(0, "0" if car_id != 0 else "1")
-        leader_id_entry.pack(side='left')
-        
-        # Compact platoon buttons
-        platoon_btn_frame = tk.Frame(platoon_content, bg='#2d2d2d')
-        platoon_btn_frame.pack(fill='x', pady=(5, 0))
-        
-        enable_platoon_btn = tk.Button(platoon_btn_frame,
-                                      text="Enable",
-                                      bg='#9c27b0',
-                                      fg='white',
-                                      font=('Segoe UI', 9, 'bold'),  # Smaller font
-                                      command=lambda: self.enable_platoon_with_feedback(car_id, role_var.get(), leader_id_entry.get()),
-                                      cursor='hand2',
-                                      relief='flat',
-                                      padx=12,
-                                      pady=4)
-        enable_platoon_btn.pack(side='left', expand=True, fill='x', padx=(0, 4))
-        
-        disable_platoon_btn = tk.Button(platoon_btn_frame,
-                                       text="Disable",
-                                       bg='#607d8b',
-                                       fg='white',
-                                       font=('Segoe UI', 9, 'bold'),  # Smaller font
-                                       command=lambda: self.disable_platoon_with_feedback(car_id),
-                                       cursor='hand2',
-                                       relief='flat',
-                                       padx=12,
-                                       pady=4)
-        disable_platoon_btn.pack(side='left', expand=True, fill='x', padx=(4, 0))
+        # Initialize platoon config for this car
+        self.update_platoon_config(car_id, position_var.get())
         
         return frame
     
@@ -760,33 +816,45 @@ class EnhancedQCarGUIController:
         row2 = tk.Frame(content, bg='#2d2d2d')
         row2.pack(fill='x', pady=(8, 0))
         
-        emergency_all_btn = tk.Button(row2,
-                                     text="🚨 EMERGENCY STOP ALL",
-                                     bg='#ff5722',
-                                     fg='white',
-                                     font=('Segoe UI', 11, 'bold'),
-                                     command=self.emergency_stop_all_with_feedback,
-                                     cursor='hand2',
-                                     relief='flat',
-                                     padx=20,
-                                     pady=8)
-        emergency_all_btn.pack(fill='x', pady=(0, 8))
+        # emergency_all_btn = tk.Button(row2,
+        #                              text="🚨 EMERGENCY STOP ALL",
+        #                              bg='#ff5722',
+        #                              fg='white',
+        #                              font=('Segoe UI', 11, 'bold'),
+        #                              command=self.emergency_stop_all_with_feedback,
+        #                              cursor='hand2',
+        #                              relief='flat',
+        #                              padx=20,
+        #                              pady=8)
+        # emergency_all_btn.pack(fill='x', pady=(0, 8))
         
         # Platoon controls - First row
         platoon_row = tk.Frame(row2, bg='#2d2d2d')
         platoon_row.pack(fill='x', pady=(0, 5))
         
-        convoy_btn = tk.Button(platoon_row,
-                              text="🚗🚗 Setup Convoy",
-                              bg='#9c27b0',
-                              fg='white',
-                              font=('Segoe UI', 10, 'bold'),
-                              command=self.setup_convoy_with_feedback,
-                              cursor='hand2',
-                              relief='flat',
-                              padx=15,
-                              pady=6)
-        convoy_btn.pack(side='left', expand=True, fill='x', padx=(0, 3))
+        setup_platoon_btn = tk.Button(platoon_row,
+                                     text="⚙️ Setup Platoon",
+                                     bg='#2196f3',
+                                     fg='white',
+                                     font=('Segoe UI', 10, 'bold'),
+                                     command=self.setup_platoon_formation_with_feedback,
+                                     cursor='hand2',
+                                     relief='flat',
+                                     padx=15,
+                                     pady=6)
+        setup_platoon_btn.pack(side='left', expand=True, fill='x', padx=(0, 2))
+        
+        trigger_platoon_btn = tk.Button(platoon_row,
+                                       text="🚗🚗 Trigger Platoon",
+                                       bg='#9c27b0',
+                                       fg='white',
+                                       font=('Segoe UI', 10, 'bold'),
+                                       command=self.trigger_platoon_start_with_feedback,
+                                       cursor='hand2',
+                                       relief='flat',
+                                       padx=15,
+                                       pady=6)
+        trigger_platoon_btn.pack(side='left', expand=True, fill='x', padx=(2, 0))
         
         self.v2v_btn = tk.Button(platoon_row,
                            text="📡 V2V Active",
@@ -913,6 +981,127 @@ class EnhancedQCarGUIController:
         
         return frame
     
+    def update_platoon_config(self, car_id: int, position_str: str):
+        """Update platoon configuration for a car"""
+        try:
+            position = int(position_str) if position_str.strip() else car_id + 1
+            if position < 1:
+                position = 1
+        except ValueError:
+            position = car_id + 1
+        
+        self.platoon_config[car_id] = {
+            'position': position
+        }
+        
+        # Determine role based on position
+        role = "LEADER" if position == 1 else "FOLLOWER"
+        
+        # Log configuration change
+        self.log(f"Car {car_id} platoon config: Position {position} ({role})", 'CONFIG')
+    
+    def setup_platoon_formation_with_feedback(self):
+        """Send global platoon formation to all vehicles (setup only, no start)"""
+        if not self.platoon_config:
+            self.log("❌ No platoon positions configured. Please set positions first.", 'ERROR')
+            return
+        
+        # Validate positions - must start from 1 and be sequential
+        positions = sorted([pos['position'] for pos in self.platoon_config.values() if pos.get('position') is not None])
+        if not positions or positions[0] != 1:
+            self.log("❌ Position 1 (leader) must be assigned", 'ERROR')
+            return
+        
+        # Check for gaps in positions
+        for i in range(len(positions) - 1):
+            if positions[i + 1] - positions[i] > 1:
+                self.log(f"❌ Gap in positions: missing position {positions[i] + 1}", 'ERROR')
+                return
+        
+        # Create formation mapping: car_id -> position
+        formation = {}
+        leader_id = None
+        
+        for car_id, config in self.platoon_config.items():
+            if config.get('position') is not None:
+                formation[car_id] = config['position']
+                if config['position'] == 1:
+                    leader_id = car_id
+        
+        if leader_id is None:
+            self.log("❌ No leader assigned", 'ERROR')
+            return
+        
+        # Send global formation command to all vehicles
+        self.log(f"📊 Setting up platoon formation: {formation}", 'INFO')
+        self.log(f"👑 Leader: Car {leader_id}", 'INFO')
+        
+        # Send formation using the existing method
+        results = self.controller.setup_global_platoon_formation(formation)
+        
+        # Count successes and log results
+        success_count = 0
+        for car_id, success in results.items():
+            position = formation.get(car_id, 0)
+            role_name = "LEADER" if position == 1 else f"FOLLOWER (pos {position})"
+            
+            if success:
+                success_count += 1
+                self.log(f"✅ Car {car_id}: Formation configured as {role_name}", 'SUCCESS')
+            else:
+                self.log(f"❌ Car {car_id}: Failed to configure {role_name}", 'ERROR')
+        
+        if success_count == len(formation):
+            self.log(f"🎉 Platoon formation setup complete! {success_count}/{len(formation)} vehicles configured", 'SUCCESS')
+            self.log(f"✅ Formation configured successfully! Leader: Car {leader_id}, Followers: {len(formation)-1} vehicles", 'SUCCESS')
+            # Store setup state for trigger button
+            self.platoon_setup_complete = True
+            self.platoon_formation = formation
+            self.platoon_leader_id = leader_id
+        else:
+            self.log(f"⚠️ Partial setup: {success_count}/{len(formation)} vehicles configured", 'WARNING')
+            self.log(f"⚠️ Only {success_count}/{len(formation)} vehicles configured successfully. Check connections and try again.", 'WARNING')
+            self.platoon_setup_complete = False
+
+    def trigger_platoon_start_with_feedback(self):
+        """Trigger platoon start after formation has been set up"""
+        if not hasattr(self, 'platoon_setup_complete') or not self.platoon_setup_complete:
+            self.log("❌ Platoon not set up - run Setup Platoon first", 'ERROR')
+            return
+        
+        if not hasattr(self, 'platoon_formation') or not self.platoon_formation:
+            self.log("❌ No platoon formation data available. Please setup platoon first", 'ERROR')
+            return
+        
+        formation = self.platoon_formation
+        leader_id = self.platoon_leader_id
+        
+        self.log(f"🚀 Triggering platoon start with formation: {formation}", 'INFO')
+        self.log(f"👑 Leader: Car {leader_id}", 'INFO')
+        
+        # Send start platoon command to all vehicles in formation
+        success_count = 0
+        for car_id in formation.keys():
+            try:
+                # Send START_PLATOON command to trigger transition to following_leader_state
+                result = self.controller.start_platoon_mode(car_id, leader_id)
+                if result.get('status') == 'success':
+                    role = "LEADER" if car_id == leader_id else "FOLLOWER"
+                    self.log(f"✅ Car {car_id}: Platoon started ({role})", 'SUCCESS')
+                    success_count += 1
+                else:
+                    self.log(f"❌ Car {car_id}: {result.get('message', 'Failed to start platoon')}", 'ERROR')
+            except Exception as e:
+                self.log(f"❌ Car {car_id}: Error starting platoon - {str(e)}", 'ERROR')
+        
+        if success_count == len(formation):
+            self.log(f"🎉 Platoon started successfully! {success_count}/{len(formation)} vehicles active", 'SUCCESS')
+            self.log(f"🚗🚗 Platoon is now active! {success_count}/{len(formation)} vehicles started, Leader: Car {leader_id}", 'SUCCESS')
+            self.log(f"Vehicles should transition to following_leader_state", 'INFO')
+        else:
+            self.log(f"⚠️ Partial start: {success_count}/{len(formation)} vehicles started", 'WARNING')
+            self.log(f"⚠️ Only {success_count}/{len(formation)} vehicles started successfully. Check vehicle status and connections.", 'WARNING')
+    
     # ===== ENHANCED COMMAND METHODS WITH FEEDBACK =====
     
     def start_car_with_feedback(self, car_id):
@@ -935,6 +1124,16 @@ class EnhancedQCarGUIController:
             self.commands_failed_gui += 1
             self.log(f"❌ Failed to stop Car {car_id}", 'ERROR')
     
+    def calibrate_car_with_feedback(self, car_id):
+        """Calibrate GPS with enhanced feedback"""
+        success = self.controller.send_command(car_id, {'type': 'calibrate'})
+        if success:
+            self.commands_sent_gui += 1
+            self.log(f"📍 GPS Calibration started for Car {car_id}", 'INFO')
+        else:
+            self.commands_failed_gui += 1
+            self.log(f"❌ Failed to send calibrate command to Car {car_id}", 'ERROR')
+    
     def set_velocity_with_feedback(self, car_id, velocity_str):
         """Set velocity with enhanced validation and feedback"""
         try:
@@ -955,7 +1154,7 @@ class EnhancedQCarGUIController:
     def set_path_with_feedback(self, car_id, path_str):
         """Set path with enhanced validation and feedback"""
         try:
-            nodes = [int(n) for n in path_str.split()]
+            nodes = [int(n.strip()) for n in path_str.replace(',', ' ').split()]
             if len(nodes) >= 2:
                 success = self.controller.set_path(car_id, nodes)
                 if success:
@@ -1252,6 +1451,36 @@ class EnhancedQCarGUIController:
                             state = telemetry.get('state', 'Unknown')
                             labels['state'].config(text=state)
                         
+                        # Update platoon indicator from telemetry (if available)
+                        if car_id in self.platoon_indicators and telemetry:
+                            platoon_enabled = telemetry.get('platoon_enabled', False)
+                            platoon_is_leader = telemetry.get('platoon_is_leader', False)
+                            platoon_position = telemetry.get('platoon_position')
+                            platoon_setup_complete = telemetry.get('platoon_setup_complete', False)
+                            
+                            if platoon_enabled and platoon_setup_complete and platoon_position is not None:
+                                if platoon_is_leader:
+                                    indicator_text = "🚗 LEADER"
+                                    indicator_color = '#ffa726'  # Orange
+                                else:
+                                    indicator_text = f"🚗 FOLLOWER-{platoon_position}"
+                                    indicator_color = '#42a5f5'  # Blue
+                                
+                                self.platoon_indicators[car_id].config(
+                                    text=indicator_text,
+                                    fg=indicator_color
+                                )
+                            elif platoon_enabled and not platoon_setup_complete:
+                                self.platoon_indicators[car_id].config(
+                                    text="🚗 Setup...",
+                                    fg='#ff9800'
+                                )
+                            else:
+                                self.platoon_indicators[car_id].config(
+                                    text="🚗 Solo",
+                                    fg='#888888'
+                                )
+                        
                         # Update V2V indicator from telemetry data (throttled to avoid rapid flickering)
                         if car_id in self.v2v_indicators:
                             v2v_active = telemetry.get('v2v_active', False) if telemetry else False
@@ -1265,8 +1494,8 @@ class EnhancedQCarGUIController:
                             
                             self._v2v_update_counters[car_id] += 1
                             
-                            # Only update V2V indicator every 5 seconds (5 updates at 2Hz) and only when status changes
-                            if self._v2v_update_counters[car_id] % 10 == 0:  # Every 10 updates (20 seconds at 2Hz)
+                            # Only update V2V indicator every 2 seconds (40 updates at 20Hz) to reduce flickering
+                            if self._v2v_update_counters[car_id] % 40 == 0:  # Every 40 updates (2 seconds at 20Hz)
                                 if v2v_active and v2v_peers > 0:
                                     new_text = f"📡 V2V: ON ({v2v_peers})"
                                     new_color = '#4caf50'
@@ -1280,7 +1509,7 @@ class EnhancedQCarGUIController:
                                     self.v2v_indicators[car_id].config(text=new_text, fg=new_color)
                             
                             # Debug: Log V2V indicator updates (only occasionally)
-                            if car_id == 0 and self._v2v_update_counters[car_id] % 50 == 0:  # Every 50 updates (50 seconds)
+                            if car_id == 0 and self._v2v_update_counters[car_id] % 200 == 0:  # Every 200 updates (10 seconds at 20Hz)
                                 self.log(f"[DEBUG] Car {car_id} V2V status: active={v2v_active}, peers={v2v_peers}", 'INFO')
                         else:
                             # Debug: Log missing V2V indicator
@@ -1316,10 +1545,11 @@ class EnhancedQCarGUIController:
                         fg=color
                     )
                 
-                # Update header statistics
+                # Update header statistics with telemetry rate
                 uptime = time.time() - self.start_time
+                avg_rate = fleet_stats.get('avg_telemetry_rate_hz', 0.0)
                 self.stats_label.config(
-                    text=f"Commands: {total_sent} sent, {total_failed} failed | Uptime: {uptime:.0f}s"
+                    text=f"Commands: {total_sent} sent, {total_failed} failed | Uptime: {uptime:.0f}s | Telemetry: {avg_rate:.1f} Hz"
                 )
                 
                 # Check V2V status across fleet using both telemetry and status reports
@@ -1359,7 +1589,7 @@ class EnhancedQCarGUIController:
                     else:
                         self._debug_counter = 0
                         
-                    if self._debug_counter % 60 == 0:  # Every 120 seconds (2 minutes)
+                    if self._debug_counter % 400 == 0:  # Every 400 updates (20 seconds at 20Hz)
                         self.log(f"[DEBUG] V2V Status Check: {'; '.join(debug_info)} | Fully connected: {cars_with_v2v}/{len(self.connected_cars)}", 'INFO')
                     
                     if cars_with_v2v == len(self.connected_cars):
@@ -1392,11 +1622,54 @@ class EnhancedQCarGUIController:
                     if self.v2v_btn['text'] != '📡 Activating...' and self.v2v_btn['state'] != 'normal':
                         self.v2v_btn.config(state='normal', bg='#ff9800', text="📡 V2V Active")
                 
-                time.sleep(2.0)  # Slower update rate to reduce panel flickering and V2V indicator changes
+                time.sleep(0.05)  # 20 Hz GUI update rate - fast enough for smooth display, efficient for 50Hz telemetry
                 
             except Exception as e:
                 print(f"Update loop error: {e}")
-                time.sleep(2.0)
+                time.sleep(0.1)
+    
+    def process_platoon_setup_confirmation(self, car_id: int, platoon_data: dict):
+        """Process platoon setup confirmation from vehicles"""
+        try:
+            position = platoon_data.get('position')
+            is_leader = platoon_data.get('is_leader', False)
+            leader_id = platoon_data.get('leader_id')
+            setup_complete = platoon_data.get('setup_complete', False)
+            
+            # Update platoon config
+            self.platoon_config[car_id] = {
+                'position': position,
+                'is_leader': is_leader,
+                'leader_id': leader_id,
+                'setup_complete': setup_complete
+            }
+            
+            # Update platoon indicator
+            if car_id in self.platoon_indicators:
+                if setup_complete:
+                    if is_leader:
+                        indicator_text = f"🚗 LEADER"
+                        indicator_color = '#ffa726'  # Orange for leader
+                    else:
+                        indicator_text = f"🚗 FOLLOWER-{position}"
+                        indicator_color = '#42a5f5'  # Blue for followers
+                    
+                    self.platoon_indicators[car_id].config(
+                        text=indicator_text,
+                        fg=indicator_color
+                    )
+                    
+                    role_str = "LEADER" if is_leader else f"FOLLOWER-{position}"
+                    self.log(f"✅ Car {car_id} platoon setup confirmed: {role_str} (Leader ID: {leader_id})", 'SUCCESS')
+                else:
+                    self.platoon_indicators[car_id].config(
+                        text="🚗 Setup...",
+                        fg='#ff9800'
+                    )
+                    self.log(f"⏳ Car {car_id} platoon setup in progress...", 'INFO')
+            
+        except Exception as e:
+            self.log(f"Error processing platoon confirmation for Car {car_id}: {e}", 'ERROR')
     
     def process_v2v_status(self, car_id: int, v2v_data: dict):
         """Process V2V status reports from vehicles"""
@@ -1498,6 +1771,12 @@ class EnhancedQCarGUIController:
         """Enhanced cleanup on window close"""
         self.running = False
         
+        # Stop manual mode if active
+        if hasattr(self, 'manual_mode_active'):
+            for car_id in list(self.manual_mode_active.keys()):
+                if self.manual_mode_active.get(car_id, False):
+                    self.disable_manual_mode(car_id)
+        
         # Log shutdown
         self.log("🛑 Shutting down Ground Station...", 'INFO')
         
@@ -1506,6 +1785,274 @@ class EnhancedQCarGUIController:
         
         # Destroy window
         self.root.destroy()
+    
+    # ===== MANUAL MODE CONTROL METHODS =====
+    
+    def _update_control_type(self, car_id: int, control_type: str):
+        """Update the control type for a specific car"""
+        self.manual_control_types[car_id] = control_type
+        self.log(f"Car {car_id}: Manual control type set to {control_type.upper()}", 'INFO')
+    
+    def toggle_manual_mode_with_feedback(self, car_id: int):
+        """Toggle manual mode on/off for a specific car"""
+        if not hasattr(self, 'manual_mode_active'):
+            self.manual_mode_active = {}
+        
+        is_active = self.manual_mode_active.get(car_id, False)
+        
+        if is_active:
+            # Disable manual mode
+            self.disable_manual_mode(car_id)
+        else:
+            # Enable manual mode
+            self.enable_manual_mode(car_id)
+    
+    def enable_manual_mode(self, car_id: int):
+        """Enable manual mode for a car"""
+        try:
+            if not hasattr(self, 'manual_mode_active'):
+                self.manual_mode_active = {}
+            
+            # Get selected control type
+            control_type = self.manual_control_types.get(car_id, 'keyboard')
+            
+            # Send enable manual mode command with control type
+            success = self.controller.enable_manual_mode(car_id, control_type=control_type)
+            
+            if success:
+                self.manual_mode_active[car_id] = True
+                
+                # Update button appearance
+                if hasattr(self, 'manual_mode_buttons') and car_id in self.manual_mode_buttons:
+                    self.manual_mode_buttons[car_id].config(
+                        text="🎮 Manual: ON",
+                        bg='#4caf50'  # Green when active
+                    )
+                
+                # Setup input controls based on control type
+                if not hasattr(self, 'manual_control_setup'):
+                    if control_type == 'keyboard':
+                        self.setup_keyboard_controls()
+                    elif control_type == 'wheel':
+                        self.setup_wheel_controls()
+                    self.manual_control_setup = True
+                    self.active_manual_car = car_id
+                    # Start the control loop now that manual mode is active
+                    self.manual_control_loop()
+                else:
+                    self.active_manual_car = car_id
+                
+                control_msg = "Use WASD keys" if control_type == 'keyboard' else "Use steering wheel"
+                self.log(f"Car {car_id}: Manual mode ENABLED ({control_type.upper()}) - {control_msg}", 'SUCCESS')
+                self.commands_sent_gui += 1
+            else:
+                self.log(f"Car {car_id}: Failed to enable manual mode", 'ERROR')
+                self.commands_failed_gui += 1
+                
+        except Exception as e:
+            self.log(f"Car {car_id}: Error enabling manual mode - {e}", 'ERROR')
+            self.commands_failed_gui += 1
+    
+    def disable_manual_mode(self, car_id: int):
+        """Disable manual mode for a car"""
+        try:
+            if not hasattr(self, 'manual_mode_active'):
+                self.manual_mode_active = {}
+            
+            # Send disable manual mode command
+            success = self.controller.disable_manual_mode(car_id)
+            
+            if success:
+                self.manual_mode_active[car_id] = False
+                
+                # Update button appearance
+                if hasattr(self, 'manual_mode_buttons') and car_id in self.manual_mode_buttons:
+                    self.manual_mode_buttons[car_id].config(
+                        text="🎮 Manual Mode",
+                        bg='#9c27b0'  # Purple when inactive
+                    )
+                
+                # Stop sending commands for this car
+                if hasattr(self, 'active_manual_car') and self.active_manual_car == car_id:
+                    self.active_manual_car = None
+                    # Note: control loop continues running but won't send commands when active_manual_car is None
+                
+                self.log(f"Car {car_id}: Manual mode DISABLED", 'INFO')
+                self.commands_sent_gui += 1
+            else:
+                self.log(f"Car {car_id}: Failed to disable manual mode", 'ERROR')
+                self.commands_failed_gui += 1
+                
+        except Exception as e:
+            self.log(f"Car {car_id}: Error disabling manual mode - {e}", 'ERROR')
+            self.commands_failed_gui += 1
+    
+    def setup_keyboard_controls(self):
+        """Setup keyboard event handlers for manual control"""
+        self.current_throttle = 0.0
+        self.current_steering = 0.0
+        self.keys_pressed = set()
+        
+        # Gradual steering parameters
+        self.max_steering = 0.5          # Maximum steering angle
+        self.steering_increment = 0.015  # Steering increase per update (at 50Hz)
+        self.steering_decay = 0.95       # Decay rate when no input (smooth return to center)
+        
+        # Bind keyboard events
+        self.root.bind('<KeyPress>', self.on_key_press)
+        self.root.bind('<KeyRelease>', self.on_key_release)
+        
+        # Note: manual_control_loop will be started when manual mode is enabled
+        
+        self.log("Keyboard controls: W=Forward, S=Backward, A=Left, D=Right, Space=Stop", 'INFO')
+        self.log("Steering: Hold A/D to gradually increase steering angle", 'INFO')
+    
+    def setup_wheel_controls(self):
+        """Setup steering wheel support using pygame"""
+        if not PYGAME_AVAILABLE:
+            self.log("ERROR: pygame not available - cannot use steering wheel", 'ERROR')
+            return False
+        
+        try:
+            # Initialize pygame
+            pygame.init()
+            pygame.joystick.init()
+            
+            # Check for connected joysticks/wheels
+            if pygame.joystick.get_count() == 0:
+                self.log("ERROR: No steering wheel or gamepad detected!", 'ERROR')
+                self.log("Please connect your steering wheel and try again.", 'WARNING')
+                return False
+            
+            # Initialize the first joystick (steering wheel)
+            self.wheel = pygame.joystick.Joystick(0)
+            self.wheel.init()
+            
+            self.log(f"Steering wheel connected: {self.wheel.get_name()}", 'SUCCESS')
+            self.log(f"Axes: {self.wheel.get_numaxes()}, Buttons: {self.wheel.get_numbuttons()}", 'INFO')
+            
+            # Steering wheel configuration (from Vehicle_wheel.py)
+            self.STEERING_AXIS = 0         # Axis for steering wheel rotation
+            self.ACCELERATOR_AXIS = 5      # Axis for accelerator pedal
+            self.BRAKE_AXIS = 4            # Axis for brake pedal
+            self.STEERING_SCALE = 0.5      # Maximum steering angle
+            self.THROTTLE_SCALE = 0.3      # Maximum throttle
+            self.DEADZONE = 0.05           # Deadzone for steering and pedals
+            
+            # Note: manual_control_loop will be started when manual mode is enabled
+            
+            self.log("Steering wheel controls: Rotate for steering, Pedals for throttle/brake", 'INFO')
+            return True
+            
+        except Exception as e:
+            self.log(f"ERROR: Failed to initialize steering wheel - {e}", 'ERROR')
+            return False
+    
+    def on_key_press(self, event):
+        """Handle key press events"""
+        key = event.keysym.lower()
+        self.keys_pressed.add(key)
+    
+    def on_key_release(self, event):
+        """Handle key release events"""
+        key = event.keysym.lower()
+        if key in self.keys_pressed:
+            self.keys_pressed.remove(key)
+    
+    def manual_control_loop(self):
+        """Continuous loop to send manual control commands based on keyboard or wheel input"""
+        if not self.running:
+            return
+        
+        # Only send commands if manual mode is active for at least one car
+        if hasattr(self, 'active_manual_car') and self.active_manual_car is not None:
+            car_id = self.active_manual_car
+            control_type = self.manual_control_types.get(car_id, 'keyboard')
+            
+            throttle = 0.0
+            steering = 0.0
+            
+            if control_type == 'keyboard':
+                # Keyboard control (WASD) with gradual steering
+                if 'w' in self.keys_pressed:
+                    throttle = 0.05  # Forward
+                if 's' in self.keys_pressed:
+                    throttle = -0.05  # Backward
+                
+                # Gradual steering increase
+                if 'a' in self.keys_pressed:
+                    # Increase steering to the left (positive direction)
+                    self.current_steering = min(self.current_steering + self.steering_increment, self.max_steering)
+                elif 'd' in self.keys_pressed:
+                    # Increase steering to the right (negative direction)
+                    self.current_steering = max(self.current_steering - self.steering_increment, -self.max_steering)
+                else:
+                    # No steering input - gradually return to center
+                    self.current_steering *= self.steering_decay
+                    if abs(self.current_steering) < 0.01:
+                        self.current_steering = 0.0
+                
+                steering = self.current_steering
+                
+                # Emergency stop overrides everything
+                if 'space' in self.keys_pressed:
+                    throttle = 0.0
+                    steering = 0.0
+                    self.current_steering = 0.0
+            
+            elif control_type == 'wheel' and hasattr(self, 'wheel'):
+                # Steering wheel control (pygame)
+                try:
+                    # Process pygame events (required for pygame to work)
+                    pygame.event.pump()
+                    
+                    # Read steering from wheel rotation
+                    if self.wheel.get_numaxes() > self.STEERING_AXIS:
+                        steering_input = self.wheel.get_axis(self.STEERING_AXIS)
+                        # Apply deadzone
+                        if abs(steering_input) < self.DEADZONE:
+                            steering_input = 0
+                        steering = steering_input * self.STEERING_SCALE
+                    
+                    # Read accelerator pedal
+                    if self.wheel.get_numaxes() > self.ACCELERATOR_AXIS:
+                        accelerator_input = self.wheel.get_axis(self.ACCELERATOR_AXIS)
+                        # Normalize to 0 to 1 range (pedals report -1 to 1)
+                        accelerator_value = (accelerator_input + 1) / 2
+                        if accelerator_value < self.DEADZONE:
+                            accelerator_value = 0
+                    else:
+                        accelerator_value = 0
+                    
+                    # Read brake pedal
+                    if self.wheel.get_numaxes() > self.BRAKE_AXIS:
+                        brake_input = self.wheel.get_axis(self.BRAKE_AXIS)
+                        # Normalize to 0 to 1 range
+                        brake_value = (brake_input + 1) / 2
+                        if brake_value < self.DEADZONE:
+                            brake_value = 0
+                    else:
+                        brake_value = 0
+                    
+                    # Calculate throttle (forward from accelerator, backward from brake)
+                    throttle = (accelerator_value - brake_value) * self.THROTTLE_SCALE
+                    
+                    # Emergency stop with Button 0
+                    if self.wheel.get_numbuttons() > 0 and self.wheel.get_button(0):
+                        throttle = 0.0
+                        steering = 0.0
+                    
+                except Exception as e:
+                    # Fallback to stopped if wheel fails
+                    throttle = 0.0
+                    steering = 0.0
+            
+            # Send manual control command
+            if hasattr(self, 'manual_mode_active') and self.manual_mode_active.get(car_id, False):
+                self.controller.send_manual_control(car_id, throttle, steering)
+        
+        # Schedule next update (50 Hz for smooth control)
+        self.root.after(20, self.manual_control_loop)
 
 
 # Configuration

@@ -13,23 +13,14 @@ import socket
 import json
 import time
 import threading
-from typing import Dict, List, Tuple, Optional
-from enum import Enum
+from typing import Dict, List, Tuple, Optional, Deque
+from collections import deque
+import sys
+import os
 
-
-class CommandType(Enum):
-    """Mirror of CommandType enum from command_handler.py"""
-    STOP = "stop"
-    START = "start" 
-    EMERGENCY_STOP = "emergency_stop"
-    SET_VELOCITY = "set_velocity"
-    SET_PATH = "set_path"
-    SET_PARAMS = "set_params"
-    ENABLE_PLATOON_LEADER = "enable_platoon_leader"
-    ENABLE_PLATOON_FOLLOWER = "enable_platoon_follower"
-    DISABLE_PLATOON = "disable_platoon"
-    SHUTDOWN = "shutdown"
-    RESET = "reset"
+# Add the parent directory to sys.path to import command_types
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from command_types import CommandType
 
 
 class QCarRemoteController:
@@ -48,6 +39,11 @@ class QCarRemoteController:
         self.cars: Dict[int, Dict] = {}  # car_id -> {socket, address, status, last_command_time}
         self.server_sockets: Dict[int, socket.socket] = {}
         self.running = False
+        
+        # Telemetry buffering for high-frequency data (50Hz support)
+        self.telemetry_buffer_size = 100  # Keep last 100 messages (2 seconds at 50Hz)
+        self.telemetry_buffers: Dict[int, Deque] = {}  # car_id -> deque of telemetry
+        self.telemetry_stats: Dict[int, Dict] = {}  # car_id -> {msg_count, last_print_time}
         
         # Statistics
         self.commands_sent = 0
@@ -90,12 +86,33 @@ class QCarRemoteController:
                     'connection_time': time.time()
                 }
                 
+                # Initialize telemetry buffer and stats for this car
+                self.telemetry_buffers[car_id] = deque(maxlen=self.telemetry_buffer_size)
+                self.telemetry_stats[car_id] = {
+                    'msg_count': 0,
+                    'last_print_time': time.time(),
+                    'msg_rate': 0.0
+                }
+                
                 # Start receiving thread for this car
                 thread = threading.Thread(target=self._receive_data, args=(car_id, conn))
                 thread.daemon = True
                 thread.start()
         except Exception as e:
             print(f"[Ground Station] Error accepting connection for Car {car_id}: {e}")
+    
+    def _process_special_message(self, car_id: int, data: dict):
+        """Process special messages like platoon_setup_confirm and v2v_status"""
+        msg_type = data.get('type', '')
+        
+        if msg_type == 'platoon_setup_confirm':
+            # Forward platoon setup confirmation to GUI if available
+            if hasattr(self, 'gui_controller') and self.gui_controller:
+                self.gui_controller.process_platoon_setup_confirmation(car_id, data.get('data', {}))
+        elif msg_type == 'v2v_status':
+            # Forward V2V status to GUI if available
+            if hasattr(self, 'gui_controller') and self.gui_controller:
+                self.gui_controller.process_v2v_status(car_id, data.get('data', {}))
     
     def _receive_data(self, car_id: int, conn: socket.socket):
         """Receive telemetry data from a car"""
@@ -113,10 +130,37 @@ class QCarRemoteController:
                     if line:
                         try:
                             telemetry = json.loads(line)
+                            
+                            # Update last_data (most recent message)
                             self.cars[car_id]['last_data'] = telemetry
                             
-                            # Check for V2V status reports
-                            if telemetry.get('type') == 'v2v_status':
+                            # Add to telemetry buffer for high-frequency data retention
+                            if car_id in self.telemetry_buffers:
+                                self.telemetry_buffers[car_id].append({
+                                    'data': telemetry,
+                                    'timestamp': time.time()
+                                })
+                            
+                            # Update telemetry statistics
+                            if car_id in self.telemetry_stats:
+                                stats = self.telemetry_stats[car_id]
+                                stats['msg_count'] += 1
+                                
+                                # Calculate message rate every second (rate-limited debug print)
+                                current_time = time.time()
+                                time_elapsed = current_time - stats['last_print_time']
+                                if time_elapsed >= 1.0:  # Print stats every 1 second
+                                    stats['msg_rate'] = stats['msg_count'] / time_elapsed
+                                    # Only print for car 0 to reduce spam, or every 5 seconds for other cars
+                                    if car_id == 0 or time_elapsed >= 5.0:
+                                        print(f"[Ground Station] Car {car_id} telemetry rate: {stats['msg_rate']:.1f} Hz (buffer: {len(self.telemetry_buffers[car_id])}/{self.telemetry_buffer_size})")
+                                    stats['msg_count'] = 0
+                                    stats['last_print_time'] = current_time
+                            
+                            # Check for special message types (platoon confirmations, V2V status)
+                            msg_type = telemetry.get('type', 'telemetry')
+                            
+                            if msg_type == 'v2v_status':
                                 status = telemetry.get('data', {}).get('status', 'unknown')
                                 print(f"[Ground Station] Car {car_id} V2V status: {status}")
                                 print(f"[Ground Station] V2V data: {telemetry.get('data', {})}")
@@ -127,12 +171,28 @@ class QCarRemoteController:
                                     print(f"[Ground Station] Forwarded V2V status to GUI for Car {car_id}")
                                 else:
                                     print(f"[Ground Station] GUI controller not available for V2V forwarding")
+                            
+                            elif msg_type == 'platoon_setup_confirm':
+                                platoon_data = telemetry.get('data', {})
+                                position = platoon_data.get('position')
+                                is_leader = platoon_data.get('is_leader', False)
+                                role = "LEADER" if is_leader else f"FOLLOWER-{position}"
+                                print(f"[Ground Station] ✅ Car {car_id} platoon setup confirmed: {role}")
+                                
+                                # Forward to GUI if available
+                                if hasattr(self, 'gui_controller') and self.gui_controller:
+                                    self.gui_controller.process_platoon_setup_confirmation(car_id, platoon_data)
+                                    print(f"[Ground Station] Forwarded platoon confirmation to GUI for Car {car_id}")
+                            
                             else:
-                                # Debug: Show telemetry type for non-v2v messages
-                                msg_type = telemetry.get('type', 'telemetry')
+                                # Debug: Show non-standard telemetry types (rate-limited)
                                 if msg_type != 'telemetry' and car_id == 0:  # Only debug for car 0 to avoid spam
-                                    print(f"[Ground Station] Car {car_id} message type: {msg_type}")
-                            # print(f"[Car {car_id}] Telemetry: x={telemetry.get('x', 0):.2f}, y={telemetry.get('y', 0):.2f}")
+                                    # Rate limit to once every 5 seconds
+                                    if not hasattr(self, '_last_type_print'):
+                                        self._last_type_print = {}
+                                    if car_id not in self._last_type_print or (time.time() - self._last_type_print.get(car_id, 0)) >= 5.0:
+                                        print(f"[Ground Station] Car {car_id} message type: {msg_type}")
+                                        self._last_type_print[car_id] = time.time()
                         except json.JSONDecodeError as e:
                             print(f"[Car {car_id}] JSON decode error: {e}")
                         except Exception as e:
@@ -179,7 +239,7 @@ class QCarRemoteController:
             self.cars[car_id]['commands_sent'] += 1
             self.cars[car_id]['last_command_time'] = time.time()
             
-            print(f"[Ground Station] ✅ Sent to Car {car_id}: {command}")
+            # print(f"[Ground Station] ✅ Sent to Car {car_id}: {command}")
             return True
             
         except Exception as e:
@@ -217,9 +277,40 @@ class QCarRemoteController:
             if role == 'follower' and 'leader_id' not in command:
                 return False
         
+        elif cmd_type == 'setup_platoon_formation':
+            # Validate formation data structure
+            formation = command.get('formation')
+            if not formation or not isinstance(formation, dict):
+                return False
+            # Basic validation - should have car positions
+            if not all(isinstance(pos, int) and pos >= 1 for pos in formation.values()):
+                return False
+        
+        elif cmd_type == 'start_platoon':
+            # Validate start platoon command
+            leader_id = command.get('leader_id')
+            if leader_id is None or not isinstance(leader_id, int):
+                return False
+        
         elif cmd_type == 'set_path':
             node_sequence = command.get('node_sequence')
             if not node_sequence or not isinstance(node_sequence, list):
+                return False
+        
+        elif cmd_type == 'manual_control':
+            # Validate manual control command
+            throttle = command.get('throttle')
+            steering = command.get('steering')
+            if throttle is None or steering is None:
+                return False
+            # Check ranges
+            if not (-1.0 <= throttle <= 1.0) or not (-1.0 <= steering <= 1.0):
+                return False
+        
+        elif cmd_type == 'enable_manual_mode':
+            # Validate control type
+            control_type = command.get('control_type', 'keyboard')
+            if control_type not in ['keyboard', 'wheel', 'joystick']:
                 return False
         
         return True
@@ -286,6 +377,80 @@ class QCarRemoteController:
         """Disable platoon mode for a car"""
         return self.send_command(car_id, {'type': 'disable_platoon'})
     
+    def setup_global_platoon_formation(self, formation: Dict[int, int]) -> Dict[int, bool]:
+        """
+        Send global platoon formation to all vehicles
+        
+        Args:
+            formation: Dict mapping car_id (vehicle_id) -> position in platoon (e.g., {0: 1, 1: 2, 2: 3})
+                      Position 1 = Leader, Position 2+ = Followers
+                      
+        Returns:
+            Dict[car_id, success] results
+        """
+        results = {}
+        
+        # Create formation command with global data
+        formation_command = {
+            'type': 'setup_platoon_formation',
+            'formation': formation,  # Global formation data
+            'leader_id': None,  # Will be determined from formation
+            'timestamp': time.time()
+        }
+        
+        # Find leader (position 1)
+        leader_id = None
+        for car_id, position in formation.items():
+            if position == 1:
+                leader_id = car_id
+                break
+        
+        formation_command['leader_id'] = leader_id
+        
+        print(f"[Ground Station] 🚗🚗 Setting up global platoon formation:")
+        for car_id, position in formation.items():
+            role = "LEADER" if position == 1 else "FOLLOWER"
+            print(f"  Car {car_id}: Position {position} ({role})")
+        
+        # Send to all vehicles in the formation
+        for car_id in formation.keys():
+            success = self.send_command(car_id, formation_command)
+            results[car_id] = success
+            if success:
+                print(f"✅ Car {car_id}: Formation data sent")
+            else:
+                print(f"❌ Car {car_id}: Failed to send formation data")
+        
+        return results
+    
+    def start_platoon_mode(self, car_id: int, leader_id: int) -> dict:
+        """Start platoon mode after formation has been set up"""
+        if car_id not in self.cars:
+            return {'status': 'error', 'message': f'Car {car_id} not found'}
+        
+        if not self.is_car_connected(car_id):
+            return {'status': 'error', 'message': f'Car {car_id} not connected'}
+        
+        # Create start platoon command
+        command = {
+            'type': 'start_platoon',
+            'leader_id': leader_id,
+            'timestamp': time.time()
+        }
+        
+        try:
+            # Send command to vehicle using the proper send_command method
+            print(f"[Ground Station] 🚀 Starting platoon mode for Car {car_id} (Leader: {leader_id})")
+            success = self.send_command(car_id, command)
+            if success:
+                print(f"✅ Car {car_id}: Start platoon command sent")
+                return {'status': 'success', 'message': 'Platoon start command sent'}
+            else:
+                return {'status': 'error', 'message': 'Failed to send start platoon command'}
+        except Exception as e:
+            print(f"❌ Car {car_id}: Error sending start platoon command - {str(e)}")
+            return {'status': 'error', 'message': f'Failed to send command: {str(e)}'}
+    
     # ===== FLEET OPERATIONS =====
     
     def stop_all_cars(self) -> Dict[int, bool]:
@@ -336,6 +501,60 @@ class QCarRemoteController:
             results[car_id] = self.disable_platoon(car_id)
         return results
     
+    # ===== MANUAL CONTROL COMMANDS =====
+    
+    def enable_manual_mode(self, car_id: int, control_type: str = 'keyboard') -> bool:
+        """
+        Enable manual control mode for a car
+        
+        Args:
+            car_id: ID of the car
+            control_type: Type of manual control ('keyboard', 'joystick', etc.)
+            
+        Returns:
+            True if command was sent successfully
+        """
+        return self.send_command(car_id, {
+            'type': 'enable_manual_mode',
+            'control_type': control_type
+        })
+    
+    def send_manual_control(self, car_id: int, throttle: float, steering: float) -> bool:
+        """
+        Send manual control commands to a car
+        
+        Args:
+            car_id: ID of the car
+            throttle: Throttle value (-1.0 to 1.0)
+            steering: Steering value (-1.0 to 1.0, negative=right, positive=left)
+            
+        Returns:
+            True if command was sent successfully
+        """
+        # Clamp values to valid range
+        throttle = max(-1.0, min(1.0, throttle))
+        steering = max(-1.0, min(1.0, steering))
+        
+        return self.send_command(car_id, {
+            'type': 'manual_control',
+            'throttle': throttle,
+            'steering': steering
+        }, validate=False)  # Skip validation for high-frequency commands
+    
+    def disable_manual_mode(self, car_id: int) -> bool:
+        """
+        Disable manual control mode for a car
+        
+        Args:
+            car_id: ID of the car
+            
+        Returns:
+            True if command was sent successfully
+        """
+        return self.send_command(car_id, {
+            'type': 'disable_manual_mode'
+        })
+    
     # ===== STATUS AND TELEMETRY =====
     
     def get_telemetry(self, car_id: int) -> Optional[Dict]:
@@ -343,6 +562,31 @@ class QCarRemoteController:
         if car_id in self.cars:
             return self.cars[car_id].get('last_data')
         return None
+    
+    def get_telemetry_buffer(self, car_id: int, max_count: int = None) -> List[Dict]:
+        """Get buffered telemetry data from a car (for high-frequency analysis)
+        
+        Args:
+            car_id: ID of the car
+            max_count: Maximum number of recent messages to return (None = all)
+            
+        Returns:
+            List of telemetry messages with timestamps, most recent first
+        """
+        if car_id not in self.telemetry_buffers:
+            return []
+        
+        buffer = list(self.telemetry_buffers[car_id])
+        if max_count:
+            buffer = buffer[-max_count:]  # Get last N messages
+        
+        return list(reversed(buffer))  # Most recent first
+    
+    def get_telemetry_rate(self, car_id: int) -> float:
+        """Get current telemetry message rate for a car (in Hz)"""
+        if car_id in self.telemetry_stats:
+            return self.telemetry_stats[car_id].get('msg_rate', 0.0)
+        return 0.0
     
     def get_all_telemetry(self) -> Dict[int, Dict]:
         """Get telemetry from all cars"""
@@ -366,8 +610,14 @@ class QCarRemoteController:
         }
     
     def get_fleet_status(self) -> Dict:
-        """Get overall fleet status"""
+        """Get overall fleet status with telemetry statistics"""
         connected_cars = [car_id for car_id, data in self.cars.items() if data['status'] == 'connected']
+        
+        # Calculate average telemetry rate across fleet
+        avg_telemetry_rate = 0.0
+        if connected_cars:
+            total_rate = sum(self.get_telemetry_rate(car_id) for car_id in connected_cars)
+            avg_telemetry_rate = total_rate / len(connected_cars)
         
         return {
             'total_cars': len(self.cars),
@@ -376,7 +626,8 @@ class QCarRemoteController:
             'commands_sent_total': self.commands_sent,
             'commands_failed_total': self.commands_failed,
             'uptime_seconds': time.time() - self.start_time,
-            'success_rate': self.commands_sent / max(1, self.commands_sent + self.commands_failed) * 100
+            'success_rate': self.commands_sent / max(1, self.commands_sent + self.commands_failed) * 100,
+            'avg_telemetry_rate_hz': avg_telemetry_rate
         }
     
     def is_car_connected(self, car_id: int) -> bool:

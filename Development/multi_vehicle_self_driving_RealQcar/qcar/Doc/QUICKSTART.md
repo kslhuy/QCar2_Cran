@@ -23,7 +23,7 @@ python vehicle_main.py --car-id 0
 ### Option 2: With Custom Configuration
 ```powershell
 # Copy and edit the example config
-cp config_example.yaml my_config.yaml
+cp config_vehicle_main.yaml my_config.yaml
 # Edit my_config.yaml with your parameters
 python vehicle_main.py --config my_config.yaml
 ```
@@ -256,7 +256,7 @@ print(f"Loop frequency: {stats['loop_time']['frequency']:.1f} Hz")
 ## Support
 
 - **Documentation**: See REFACTORING_README.md
-- **Example Config**: config_example.yaml
+- **Example Config**: config_vehicle_main.yaml
 - **Test Suite**: test_components.py
 - **Original Code**: vehicle_control_real.py (reference)
 

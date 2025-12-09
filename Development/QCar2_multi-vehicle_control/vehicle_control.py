@@ -62,7 +62,7 @@ nodeSequence = [10, 4, 20, 10]
 
 #region : Initial setup
 if enableSteeringControl:
-    roadmap = SDCSRoadMap(leftHandTraffic=False)
+    roadmap = SDCSRoadMap(leftHandTraffic=False , useSmallMap=True)
     waypointSequence = roadmap.generate_path(nodeSequence)
     initialPose = roadmap.get_node_pose(nodeSequence[0]).squeeze()
     print (initialPose)

@@ -1,6 +1,6 @@
 @echo off
 REM Quick start script for QCar vehicle control
-REM This script automatically uses config_example.yaml
+REM This script automatically uses config_vehicle_main.yaml
 
 echo ========================================
 echo QCar Vehicle Control Startup
@@ -10,15 +10,15 @@ echo.
 REM Change to the qcar directory
 cd /d "%~dp0"
 
-REM Check if config_example.yaml exists
-if not exist "config_example.yaml" (
-    echo ERROR: config_example.yaml not found!
-    echo Please ensure config_example.yaml is in the same directory as this script.
+REM Check if config_vehicle_main.yaml exists
+if not exist "config_vehicle_main.yaml" (
+    echo ERROR: config_vehicle_main.yaml not found!
+    echo Please ensure config_vehicle_main.yaml is in the same directory as this script.
     pause
     exit /b 1
 )
 
-echo Configuration file: config_example.yaml
+echo Configuration file: config_vehicle_main.yaml
 echo.
 
 REM Parse command line arguments or prompt

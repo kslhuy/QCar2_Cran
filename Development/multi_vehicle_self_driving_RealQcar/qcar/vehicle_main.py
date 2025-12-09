@@ -18,6 +18,8 @@ from threading import Event
 
 from config import VehicleControlConfig
 from vehicle_logic import VehicleLogic
+from pal.products.qcar import  IS_PHYSICAL_QCAR
+
 
 
 # Global kill event for clean shutdown
@@ -99,11 +101,11 @@ def parse_arguments():
         choices=[0, 1],
         help='Node configuration (0 or 1 for different traffic patterns)'
     )
-    
+    # Auto compute port based on car_id (just keep base port here)
     parser.add_argument(
         '--host',
         type=str,
-        default=None,
+        default="127.0.0.1",
         help='Host PC IP address for remote control (optional)'
     )
     
@@ -125,7 +127,7 @@ def parse_arguments():
         '--config',
         type=str,
         default=None,
-        help='Path to configuration file (JSON or YAML). Default: config_example.yaml in script directory'
+        help='Path to configuration file (JSON or YAML). Default: config_vehicle_main.yaml in script directory'
     )
     
     parser.add_argument(
@@ -154,9 +156,9 @@ def load_configuration(args) -> VehicleControlConfig:
     if args.config:
         config_path = args.config
     else:
-        # Use config_example.yaml from same directory as this script
+        # Use config_vehicle_main.yaml from same directory as this script
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(script_dir, 'config_example.yaml')
+        config_path = os.path.join(script_dir, 'config_vehicle_main.yaml')
     
     # Load from file if it exists
     if os.path.exists(config_path):
@@ -173,7 +175,7 @@ def load_configuration(args) -> VehicleControlConfig:
             print(f"Error: Config file not found: {config_path}")
             sys.exit(1)
         else:
-            print(f"Warning: config_example.yaml not found at {config_path}")
+            print(f"Warning: config_vehicle_main.yaml not found at {config_path}")
             print("Using default configuration values")
             config = VehicleControlConfig()
     
@@ -190,25 +192,7 @@ def load_configuration(args) -> VehicleControlConfig:
     return config
 
 
-def wait_for_yolo_server(timeout: float = 10.0):
-    """Wait for YOLO server to start"""
-    print("Waiting for YOLO server to start...")
-    print(f"  (Timeout: {timeout}s)")
-    
-    start_time = time.time()
-    dots = 0
-    
-    while time.time() - start_time < timeout:
-        if kill_event.is_set():
-            return False
-        
-        # Simple progress indicator
-        dots = (dots + 1) % 4
-        print(f"\r  Waiting{'.' * dots}{' ' * (3 - dots)}", end='', flush=True)
-        time.sleep(0.5)
-    
-    print("\n  YOLO server ready (timeout reached, proceeding)")
-    return True
+
 
 
 def main():
@@ -227,19 +211,17 @@ def main():
     print("\n[INIT] Loading configuration...")
     config = load_configuration(args)
     
+    Control_rate = config.timing.controller_update_rate if IS_PHYSICAL_QCAR else 100
+    print("\n[CONFIG] Vehicle Configuration:")
     print(f"  Car ID: {config.network.car_id}")
     print(f"  Reference velocity: {config.speed.v_ref} m/s")
-    print(f"  Controller rate: {config.timing.controller_update_rate} Hz")
+    print(f"  Controller rate: {Control_rate} Hz")
     print(f"  Steering control: {'Enabled' if config.steering.enable_steering_control else 'Disabled'}")
     print(f"  Remote control: {'Enabled' if config.network.is_remote_enabled else 'Disabled'}")
     
     if config.network.is_remote_enabled:
         print(f"    Host: {config.network.host_ip}:{config.network.port}")
     
-    # Wait for YOLO server
-    if not wait_for_yolo_server():
-        print("\n[SHUTDOWN] Cancelled by user")
-        return 0
     
     # Create vehicle logic controller
     print("\n[INIT] Creating vehicle controller...")
@@ -265,7 +247,15 @@ def main():
     
     # Ensure QUARC models are stopped even if vehicle_logic shutdown fails
     try:
-        stop_quarc_models()
+        if IS_PHYSICAL_QCAR:
+            # stop_quarc_models()
+            pass
+        else:
+            # CamLidarFusion thread cleanup removed (moved to main loop)
+            from qvl.real_time import QLabsRealTime
+
+            cmd = QLabsRealTime().terminate_all_real_time_models()
+            time.sleep(1)
     except Exception as e:
         print(f"[WARNING] Error during QUARC cleanup: {e}")
     

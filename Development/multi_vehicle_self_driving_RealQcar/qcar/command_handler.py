@@ -11,33 +11,7 @@ import time
 import threading
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
-from enum import Enum
-
-
-class CommandType(Enum):
-    """Standard command types"""
-    # Basic movement commands
-    STOP = "stop"
-    START = "start" 
-    EMERGENCY_STOP = "emergency_stop"
-    
-    # Parameter commands
-    SET_VELOCITY = "set_velocity"
-    SET_PATH = "set_path"
-    SET_PARAMS = "set_params"
-    
-    # Platoon commands
-    ENABLE_PLATOON_LEADER = "enable_platoon_leader"
-    ENABLE_PLATOON_FOLLOWER = "enable_platoon_follower"
-    DISABLE_PLATOON = "disable_platoon"
-    
-    # V2V commands
-    ACTIVATE_V2V = "activate_v2v"
-    DISABLE_V2V = "disable_v2v"
-    
-    # System commands
-    SHUTDOWN = "shutdown"
-    RESET = "reset"
+from command_types import CommandType
 
 
 @dataclass
@@ -158,10 +132,16 @@ class CommandHandler:
         'enable_platoon_leader': CommandType.ENABLE_PLATOON_LEADER,
         'enable_platoon_follower': CommandType.ENABLE_PLATOON_FOLLOWER,
         'disable_platoon': CommandType.DISABLE_PLATOON,
+        'setup_platoon_formation': CommandType.SETUP_PLATOON_FORMATION,  # New global formation
+        'start_platoon': CommandType.START_PLATOON,  # New platoon trigger
         'activate_v2v': CommandType.ACTIVATE_V2V,
         'disable_v2v': CommandType.DISABLE_V2V,
+        'enable_manual_mode': CommandType.ENABLE_MANUAL_MODE,
+        'manual_control': CommandType.MANUAL_CONTROL,
+        'disable_manual_mode': CommandType.DISABLE_MANUAL_MODE,
         'shutdown': CommandType.SHUTDOWN,
-        'reset': CommandType.RESET
+        'reset': CommandType.RESET,
+        'calibrate': CommandType.CALIBRATE
     }
     
     def __init__(self, logger, config=None):
@@ -227,7 +207,11 @@ class CommandHandler:
             CommandType.DISABLE_V2V,
             CommandType.SET_PARAMS,
             CommandType.ENABLE_PLATOON_FOLLOWER, # In waiting state, this configures but doesn't transition
-            CommandType.ENABLE_PLATOON_LEADER
+            CommandType.ENABLE_PLATOON_LEADER,
+            CommandType.SETUP_PLATOON_FORMATION,  # New: global formation setup
+            CommandType.DISABLE_PLATOON,  # Pause platoon without transition
+            CommandType.MANUAL_CONTROL,  # Manual control commands update state but don't transition
+            CommandType.CALIBRATE  # GPS recalibration without state transition
         ]
         
         if command_type in NON_TRANSITION_COMMANDS:

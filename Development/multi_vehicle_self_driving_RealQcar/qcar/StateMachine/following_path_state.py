@@ -221,24 +221,55 @@ class FollowingPathState(StateBase):
         # Check if CommandType import was successful
         if not COMMAND_TYPE_AVAILABLE:
             # Fallback to base class if CommandType not available
+            self.logger.logger.warning(f"CommandType not available in FollowingPathState - using base handler for {command_type}")
             return super().handle_event(command_type, data)
         
-        # Handle platoon commands
-        if command_type == CommandType.ENABLE_PLATOON_LEADER:
-            self.logger.logger.info("👑 Enabling platoon leader mode")
-            if hasattr(self.vehicle_logic, 'platoon_controller'):
-                self.vehicle_logic.platoon_controller.enable_leader_mode()
-            return (VehicleState.FOLLOWING_LEADER, StateTransitionReason.PLATOON_COMMAND)
-        
-        elif command_type == CommandType.ENABLE_PLATOON_FOLLOWER:
+        # Handle START_PLATOON command - check formation to decide state transition
+        if command_type == CommandType.START_PLATOON:
+            # Debug: Log received data
+            self.logger.logger.info(f"[PLATOON] START_PLATOON received with data: {data}")
+            
             if not self.validate_event_data(data, ['leader_id']):
+                self.logger.logger.error("[PLATOON] Missing 'leader_id' in command data!")
+                return None
+            
+            # ✅ CRITICAL: Check if platoon setup was completed first
+            if not (hasattr(self.vehicle_logic, 'platoon_controller') and 
+                    self.vehicle_logic.platoon_controller and
+                    self.vehicle_logic.platoon_controller.setup_complete):
+                self.logger.logger.warning(
+                    "[PLATOON] START_PLATOON rejected - SETUP_PLATOON_FORMATION has not been received yet! "
+                    "Please send SETUP_PLATOON_FORMATION command first before starting platoon."
+                )
                 return None
             
             leader_id = data.get('leader_id')
-            self.logger.logger.info(f"🔗 Enabling platoon follower mode (leader: {leader_id})")
-            if hasattr(self.vehicle_logic, 'platoon_controller'):
-                self.vehicle_logic.platoon_controller.enable_follower_mode(leader_id)
-            return (VehicleState.FOLLOWING_LEADER, StateTransitionReason.PLATOON_COMMAND)
+            
+            # ✅ Check formation to determine if this vehicle should follow a leader
+            is_leader = self.vehicle_logic.platoon_controller.is_leader
+            my_position = getattr(self.vehicle_logic.platoon_controller, 'my_position', None)
+            
+            self.logger.logger.info(f"[PLATOON] START_PLATOON received (leader_id={leader_id})")
+            self.logger.logger.info(f"[PLATOON] My formation: is_leader={is_leader}, position={my_position}")
+            
+            if is_leader:
+                # Leaders stay in FOLLOWING_PATH state (they follow their path, not another vehicle)
+                self.logger.logger.info(f"[PLATOON] I am LEADER - staying in FOLLOWING_PATH state")
+                # Just enable platoon mode for leader
+                self.vehicle_logic.platoon_controller.enabled = True
+                return None  # No state transition - continue path following as leader
+            
+            else:
+                # Followers transition to FOLLOWING_LEADER state
+                self.logger.logger.info(f"[PLATOON] I am FOLLOWER-{my_position} - transitioning to FOLLOWING_LEADER state (following vehicle {leader_id})")
+                
+                # Enable platoon controller for follower mode
+                self.vehicle_logic.platoon_controller.enable_as_follower()
+                self.vehicle_logic.platoon_controller.leader_car_id = leader_id
+                self.vehicle_logic.platoon_controller.enabled = True
+                
+                # Transition to following leader state
+                return (VehicleState.FOLLOWING_LEADER, StateTransitionReason.START_COMMAND)
         
         # Handle path updates specific to this state
         elif command_type == CommandType.SET_PATH:

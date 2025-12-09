@@ -31,6 +31,7 @@ class TimingConfig:
     tf: float = 6000  # Experiment duration in seconds
     start_delay: float = 1  # Delay before starting control
     controller_update_rate: int = 200  # Hz
+    observer_rate: int = 200  # Hz
     telemetry_send_rate: int = 10  # Hz
 
 
@@ -60,6 +61,7 @@ class NetworkConfig:
     def is_remote_enabled(self) -> bool:
         return self.host_ip is not None
     
+    # Auto compute port based on car_id
     @property
     def port(self) -> int:
         return self.base_port + self.car_id
@@ -76,9 +78,9 @@ class PathPlanningConfig:
     @property
     def valid_nodes(self) -> List[int]:
         if self.node_configuration == 0:
-            return [10, 4, 6, 8, 1]
+            return [10, 2, 4, 6, 8, 10]
         else:
-            return [10, 4, 6, 8, 1]
+            return [10, 2, 4, 6, 8, 10]
 
 
 @dataclass

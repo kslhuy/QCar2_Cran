@@ -56,9 +56,9 @@ class StoppedState(StateBase):
         # Always send zero commands while stopped
         throttle, steering = 0.0, 0.0
         
-        # Check if we should resume operation (automatic safety checks)
-        if self._should_auto_resume(sensor_data):
-            return throttle, steering, (VehicleState.FOLLOWING_PATH, StateTransitionReason.START_COMMAND)
+        # # Check if we should resume operation (automatic safety checks)
+        # if self._should_auto_resume(sensor_data):
+        #     return throttle, steering, (VehicleState.FOLLOWING_PATH, StateTransitionReason.START_COMMAND)
         
         # Manual resume is now handled via handle_event method
         
@@ -86,21 +86,31 @@ class StoppedState(StateBase):
             # Fallback to base class if CommandType not available
             return super().handle_event(command_type, data)
         
-        # Handle start/resume command
-        if command_type == CommandType.START:
-            self.logger.logger.info("🚀 Start/Resume command received")
-            
-            # Check if it's safe to resume
-            if self.state_data.get('emergency_stop') and not self._is_emergency_cleared_now():
-                self.logger.logger.warning("[!] Cannot resume - emergency conditions still present")
-                return None
-            
-            # Determine which state to resume to
-            if self._should_resume_to_leader_following():
-                return (VehicleState.FOLLOWING_LEADER, StateTransitionReason.START_COMMAND)
-            else:
-                return (VehicleState.FOLLOWING_PATH, StateTransitionReason.START_COMMAND)
+        # Handle manual control commands - transition to manual mode
+        if command_type == CommandType.MANUAL_CONTROL:
+            self.logger.logger.info("[STOP] Manual control command received - transitioning to MANUAL_MODE")
+            return (VehicleState.MANUAL_MODE, StateTransitionReason.START_COMMAND)
         
+        # Handle calibrate command - GPS-only recalibration without full reinitialization
+        elif command_type == CommandType.CALIBRATE:
+            self.logger.logger.info("GPS Calibration command received - performing GPS-only recalibration")
+            if self._recalibrate_gps_only():
+                self.logger.logger.info(" GPS recalibration completed successfully")
+            else:
+                self.logger.log_error(" GPS recalibration failed")
+            # Stay in STOPPED state - no transition needed
+            return None
+        
+        # Handle start/resume command
+        elif command_type == CommandType.START or command_type == CommandType.START_PLATOON:
+            self.logger.logger.info(" Start/Resume command received")
+            
+            # NOTE: Platoon configuration (formation, position, role) is PRESERVED during stop.
+            # The vehicle will resume with the same platoon setup it had before stopping.
+            # Only the 'enabled' flag is toggled - formation data stays intact.
+            
+            return (VehicleState.WAITING_FOR_START, StateTransitionReason.START_COMMAND)
+
         # Handle repeated stop commands (acknowledge but stay stopped)
         elif command_type in [CommandType.STOP, CommandType.EMERGENCY_STOP]:
             self.logger.logger.info(f"[i] Already stopped - acknowledging {command_type}")
@@ -111,7 +121,7 @@ class StoppedState(StateBase):
             v_ref = data.get('v_ref')
             if v_ref is not None and 0 <= v_ref <= 2.0:
                 self.vehicle_logic.v_ref = v_ref
-                self.logger.logger.info(f"✅ Velocity preset to {v_ref} m/s for when movement resumes")
+                self.logger.logger.info(f"Velocity preset to {v_ref} m/s for when movement resumes")
             return None
         
         # Use base class handler for other commands
@@ -131,7 +141,7 @@ class StoppedState(StateBase):
             return True  # If no collision avoidance, assume clear
         
         # This would need current sensor data - simplified for now
-        return False  # Conservative: require manual resume
+        return True  # Placeholder: Assume emergency cleared for demo purposes
     
     def _ensure_vehicle_stopped(self):
         """Ensure the vehicle hardware is actually stopped"""
@@ -142,15 +152,6 @@ class StoppedState(StateBase):
                 pass  # Hardware might not be available
         
         
-    
-    def _should_resume_to_leader_following(self) -> bool:
-        """Check if we should resume to leader following mode"""
-        # Check if platoon mode is active
-        if (hasattr(self.vehicle_logic, 'platoon_controller') and
-            self.vehicle_logic.platoon_controller and
-            getattr(self.vehicle_logic.platoon_controller, 'enabled', False)):
-            return True
-        return False
     
     def _periodic_status_logging(self):
         """Log stopped status periodically"""
@@ -174,7 +175,7 @@ class StoppedState(StateBase):
     
     def exit(self):
         """Clean up when leaving stopped state"""
-        self.logger.logger.info("🚀 Exiting STOPPED state")
+        self.logger.logger.info("Exiting STOPPED state")
         
         # Log stop statistics
         stop_time = self.get_time_in_state()

@@ -21,6 +21,7 @@ from .waiting_for_start_state import WaitingForStartState
 from .following_path_state import FollowingPathState
 from .following_leader_state import FollowingLeaderState
 from .stopped_state import StoppedState
+from .manual_mode_state import ManualModeState
 
 
 class VehicleStateMachine:
@@ -41,6 +42,7 @@ class VehicleStateMachine:
             VehicleState.WAITING_FOR_START: WaitingForStartState(vehicle_logic),
             VehicleState.FOLLOWING_PATH: FollowingPathState(vehicle_logic),
             VehicleState.FOLLOWING_LEADER: FollowingLeaderState(vehicle_logic),
+            VehicleState.MANUAL_MODE: ManualModeState(vehicle_logic),
             VehicleState.STOPPED: StoppedState(vehicle_logic)
         }
         

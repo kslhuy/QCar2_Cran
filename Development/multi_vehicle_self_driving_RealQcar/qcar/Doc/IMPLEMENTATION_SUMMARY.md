@@ -75,7 +75,7 @@ A complete refactoring of the QCar vehicle control system has been implemented w
     - Configuration tips
     - Performance benchmarks
 
-11. **`config_example.yaml`** (43 lines)
+11. **`config_vehicle_main.yaml`** (43 lines)
     - Example configuration file
     - All parameters documented
     - Ready to customize

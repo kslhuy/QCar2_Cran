@@ -20,6 +20,9 @@ class VehicleState(Enum):
     FOLLOWING_PATH = auto()       # Following predefined waypoint path
     FOLLOWING_LEADER = auto()     # Following another vehicle (platoon/convoy mode)
     
+    # Manual control
+    MANUAL_MODE = auto()          # Direct manual control from Ground Station
+    
     # Stopped state
     STOPPED = auto()              # Vehicle stopped (manual stop, safety stop, etc.)
 
@@ -36,6 +39,9 @@ class StateTransitionReason(Enum):
     PATH_READY = auto()
     LEADER_DETECTED = auto()
     LEADER_LOST = auto()
+    
+    # Manual control
+    MANUAL_MODE_ACTIVATED = auto()
     
     # Safety events
     EMERGENCY_STOP = auto()

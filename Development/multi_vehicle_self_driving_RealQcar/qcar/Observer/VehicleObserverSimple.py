@@ -16,20 +16,24 @@ class VehicleObserver:
     Handles sensor data reading and state estimation in one place.
     """
 
-    def __init__(self, vehicle_id: int, fleet_size: int, config=None, logger=None, initial_pose=None, state_estimator=None):
+    def __init__(self, vehicle_id: int, config=None, logger=None, state_estimator=None):
         """
         Initialize the simplified Vehicle Observer.
         
         Args:
             vehicle_id: ID of the host vehicle
-            fleet_size: Total number of vehicles in the fleet
             config: Configuration object
             logger: Logger instance
-            initial_pose: Initial pose [x, y, theta] for the vehicle
             state_estimator: StateEstimator instance (child component)
+            
+        Note:
+            - Fleet size is initially 1 (just this vehicle)
+            - Fleet will be reinitialized when V2V activates via reinitialize_fleet_estimation()
+            - Initial pose will be set by StateEstimator during initialization
         """
         self.vehicle_id = vehicle_id
-        self.fleet_size = fleet_size
+        # Fleet size must be at least large enough to include this vehicle's ID
+        self.fleet_size = max(vehicle_id + 1, 1)
         self.config = config
         self.vehicle_logger = logger
         
@@ -43,20 +47,12 @@ class VehicleObserver:
         self.observer_config = self._get_observer_config()
         
         # Current estimated state [x, y, theta, velocity]
+        # Will be set by StateEstimator during initialization
         self.local_state = np.zeros(self.state_dim)
-        if initial_pose is not None:
-            self.local_state[:3] = initial_pose  # Set x, y, theta
-            self.local_state[3] = 0.0  # Initialize velocity to 0
         
-        # Fleet state estimates - estimates for all vehicles
+        # Fleet state estimates - initially sized to accommodate this vehicle
+        # Will be expanded when V2V activates if more vehicles join
         self.fleet_states = np.zeros((self.state_dim, self.fleet_size))
-        
-        # Initialize fleet states
-        for i in range(self.fleet_size):
-            if i == self.vehicle_id:
-                self.fleet_states[:, i] = self.local_state.copy()
-            else:
-                self.fleet_states[:, i] = np.zeros(self.state_dim)
         
         # Sensor data cache
         self.sensor_data = {
@@ -89,7 +85,7 @@ class VehicleObserver:
         self._last_local_observer_time = 0.0
         self._last_fleet_observer_time = 0.0
         
-        self.vehicle_logger.logger.info(f"VehicleObserver initialized for vehicle {vehicle_id} (Fleet size: {fleet_size})")
+        self.vehicle_logger.logger.info(f"VehicleObserver initialized for vehicle {vehicle_id} (Fleet will be initialized when V2V activates)")
 
     def _should_update_local_observer(self, current_time: float) -> bool:
         """Check if local observer should update based on its rate"""
@@ -217,6 +213,7 @@ class VehicleObserver:
                 self.sensor_data['state_valid'] = state_valid
             
             # Update own state in fleet estimates
+            # TODO : Consider to use vehicle_postion insead of vehicle_id
             self.fleet_states[:, self.vehicle_id] = self.local_state.copy()
             
             return {

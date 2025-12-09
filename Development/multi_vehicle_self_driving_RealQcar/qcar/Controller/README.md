@@ -1,90 +1,88 @@
 # Vehicle Controllers
 
-Speed and steering control systems for QCar vehicles.
+Modular control systems for QCar vehicles supporting waypoint tracking and platoon formation.
 
-## Files
+## Core Files
 
-- `controllers.py` - Speed and steering controller implementations
-- `__init__.py` - Package initialization
+- `controllers.py` - Basic speed (PI) and steering (Stanley) controllers
+- `lateral_controllers.py` - Lateral control strategies (Pure Pursuit, Stanley, LQR)
+- `longitudinal_controllers.py` - Longitudinal control strategies (PI, CACC, IDM)
+- `platoon_controller.py` - Platoon formation and coordination logic
+- `idm_control.py` - Intelligent Driver Model implementation
+- `CACC.py` - Cooperative Adaptive Cruise Control implementation
 
-## Controllers
+## Controller Types
 
-### SpeedController
-PI controller with anti-windup for velocity tracking.
+### Lateral Controllers
+Control steering for path following:
+- **Pure Pursuit** - Tracks a lookahead point ahead of the leader
+- **Stanley** - Path tracking using cross-track and heading error
+- **LQR** - Optimal control for smooth trajectory tracking
 
-**Configuration:**
-```yaml
-speed:
-  K_p: 0.1           # Proportional gain
-  K_i: 1.0           # Integral gain
-  max_throttle: 0.3  # Maximum throttle output
-```
+### Longitudinal Controllers
+Control throttle for speed/spacing:
+- **PI Velocity** - Simple speed tracking with PI feedback
+- **CACC** - Cooperative spacing control for platoons (spacing + velocity error)
+- **IDM** - Intelligent Driver Model for natural car-following behavior
+- **Hybrid** - Auto-switches between CACC (with leader) and PI (without leader)
 
-**Usage:**
+### Platoon Controller
+Manages multi-vehicle formation:
+- Formation states (IDLE, SEARCHING, FORMING, ACTIVE, LOST)
+- Automatic spacing control between vehicles
+- Leader detection and following
+- Safe distance maintenance
+
+## Quick Start
+
+**Switch Controllers:**
 ```python
-from Controller.controllers import SpeedController
-
-speed_controller = SpeedController(config, logger)
-throttle = speed_controller.update(current_velocity, target_velocity, dt)
+# In your vehicle configuration
+longitudinal_controller_type = 'cacc'  # Options: 'pi', 'cacc', 'idm', 'hybrid'
+lateral_controller_type = 'pure_pursuit'  # Options: 'pure_pursuit', 'stanley', 'lqr'
 ```
 
-### SteeringController
-Stanley controller for path tracking.
-
-**Configuration:**
-```yaml
-steering:
-  K_stanley: 0.7                    # Stanley gain
-  enable_steering_control: true     # Enable/disable steering
-```
-
-**Usage:**
+**Basic Usage:**
 ```python
-from Controller.controllers import SteeringController
+from Controller.longitudinal_controllers import ControllerFactory
+from Controller.lateral_controllers import PurePursuitController
 
-steering_controller = SteeringController(config, logger)
-steering = steering_controller.update(state, waypoints, dt)
+# Create controllers
+throttle_ctrl = ControllerFactory.create('cacc', params, logger)
+steering_ctrl = PurePursuitController(lookahead_distance=1.0)
+
+# Compute control commands
+throttle = throttle_ctrl.compute_throttle(follower_state, leader_state, dt)
+steering = steering_ctrl.compute_steering(follower_state, leader_state, dt)
 ```
 
-## Features
+## Controller Parameters
 
-### Speed Control
-- PI controller with integral anti-windup
-- Configurable gains and limits
-- Thread-safe implementation
-- Performance monitoring
-
-### Steering Control
-- Stanley controller for path following
-- Look-ahead distance calculation
-- Cross-track error minimization
-- Smooth steering commands
-
-## Tuning Guidelines
-
-### Speed Controller
-- **K_p too high**: Oscillations around target speed
-- **K_p too low**: Slow response to speed changes
-- **K_i too high**: Overshoot and instability
-- **K_i too low**: Steady-state error
-
-### Steering Controller
-- **K_stanley too high**: Aggressive steering, oscillations
-- **K_stanley too low**: Wide turns, cutting corners
-- **Typical range**: 0.3 - 1.5
-
-## Integration
-
-Controllers are integrated into `vehicle_logic.py`:
-
+**CACC (Platoon Following):**
 ```python
-# Initialize controllers
-self.speed_controller = SpeedController(self.config, self.logger)
-self.steering_controller = SteeringController(self.config, self.logger)
-
-# Use in control loop
-throttle = self.speed_controller.update(v, v_ref, dt)
-steering = self.steering_controller.update(state, waypoints, dt)
+s0 = 1.5              # Minimum spacing (m)
+h = 0.5               # Time headway (s)
+K = [[0.2, 0.05]]     # [spacing_gain, velocity_gain]
+max_throttle = 0.3
 ```
 
-See `../Doc/REFACTORING_README.md` for complete system documentation.
+**Pure Pursuit (Lateral):**
+```python
+lookahead_distance = 1.0  # Lookahead distance (m)
+k_steering = 1.0          # Steering gain
+max_steering = 0.55       # Max steering angle (rad)
+```
+
+**PI Velocity:**
+```python
+kp = 0.1              # Proportional gain
+ki = 1.0              # Integral gain
+max_throttle = 0.3
+```
+
+## Documentation
+
+- `docs/ARCHITECTURE.md` - System architecture and data flow
+- `docs/README_CONTROLLERS.md` - Detailed controller documentation
+- `docs/QUICK_START.txt` - Quick start guide
+- `docs/IMPLEMENTATION_SUMMARY.md` - Implementation details

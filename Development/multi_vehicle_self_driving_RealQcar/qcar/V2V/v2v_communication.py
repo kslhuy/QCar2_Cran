@@ -55,17 +55,32 @@ class V2VCommunication:
     """High-performance UDP-based Vehicle-to-Vehicle communication handler"""
     
     # Performance constants
-    SEND_INTERVAL = 0.05  # 50ms = 20Hz
     RECV_TIMEOUT = 0.01   # 10ms timeout for non-blocking receive
     MAX_PACKET_SIZE = 1024
     
+    # Default send intervals per message type (in seconds)
+    DEFAULT_SEND_INTERVALS = {
+        'local_state': 0.05,    # 20 Hz - high frequency for position updates
+        'fleet_state': 0.20,    # 5 Hz - medium frequency for fleet consensus
+        'heartbeat': 1.00,      # 1 Hz - low frequency for health checks
+        'telemetry': 0.05,      # 20 Hz - high frequency (legacy)
+        'intent': 0.10,         # 10 Hz - medium frequency for intentions
+        'warning': 0.05,        # 20 Hz - high frequency for safety
+    }
+    
     def __init__(self, vehicle_id: int, logger: logging.Logger, 
-                 base_port: int = 7000, status_callback: Optional[Callable] = None):
+                 base_port: int = 7000, status_callback: Optional[Callable] = None,
+                 send_intervals: Optional[Dict[str, float]] = None):
         self.vehicle_id = vehicle_id
         self.logger = logger
         self.base_port = base_port
         self.my_port = base_port + vehicle_id
         self.status_callback = status_callback
+        
+        # Configure send intervals per message type
+        self.send_intervals = self.DEFAULT_SEND_INTERVALS.copy()
+        if send_intervals:
+            self.send_intervals.update(send_intervals)
         
         # Core state
         self._running = False
@@ -87,15 +102,8 @@ class V2VCommunication:
         self.last_send_time = 0.0
         self.sequence_number = 0
         
-        # Per-message-type rate limiting
-        self.message_send_times = {
-            'local_state': 0.0,
-            'fleet_state': 0.0,
-            'heartbeat': 0.0,
-            'telemetry': 0.0,
-            'intent': 0.0,
-            'warning': 0.0
-        }
+        # Per-message-type rate limiting - initialize with all possible types
+        self.message_send_times = {msg_type: 0.0 for msg_type in self.send_intervals.keys()}
         
         
         # Message handling
@@ -274,7 +282,9 @@ class V2VCommunication:
         
         # Only send if enough time has passed (rate limiting)
         current_time = time.time()
-        if current_time - self.last_send_time < self.SEND_INTERVAL:
+        telemetry_interval = self.send_intervals.get('telemetry', 0.05)
+        last_telemetry_time = self.message_send_times.get('telemetry', 0.0)
+        if current_time - last_telemetry_time < telemetry_interval:
             return False
         
         # Create comprehensive telemetry message with all vehicle state data
@@ -350,9 +360,12 @@ class V2VCommunication:
         # Per-message-type rate limiting for better performance
         current_time = time.time()
         
+        # Get interval for this message type (default to 0.05s if not configured)
+        message_interval = self.send_intervals.get(message_type, 0.05)
+        
         # Check rate limit for this specific message type
         last_send_for_type = self.message_send_times.get(message_type, 0.0)
-        if current_time - last_send_for_type < self.SEND_INTERVAL:
+        if current_time - last_send_for_type < message_interval:
             return False  # Skip this send to maintain per-type rate limit
         
         message = V2VMessage(
@@ -439,7 +452,7 @@ class V2VCommunication:
                 'expected_peers': len(self.peer_vehicles),
                 'is_fully_connected': self.is_fully_connected(),
                 'sequence_number': self.sequence_number,
-                'target_rate_hz': 1.0 / self.SEND_INTERVAL,
+                'send_intervals': self.send_intervals.copy(),
                 'actual_rate_hz': self.stats.get('send_rate', 0.0),
             })
         return stats
