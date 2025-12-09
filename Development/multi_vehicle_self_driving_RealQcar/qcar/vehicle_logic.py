@@ -267,8 +267,9 @@ class VehicleLogic:
                 # Use VehicleObserver to update sensor data
                 self.vehicle_observer.update_sensor_data(self.qcar)
                 
-                # Handle YOLO logic using YOLOManager
-                self.yolo_manager.update_yolo_data(self.loop_counter)
+                # Handle YOLO logic using YOLOManager (only if enabled)
+                if self.yolo_manager.yolo_enabled:
+                    self.yolo_manager.update_yolo_data(self.loop_counter)
                 
         except Exception as e:
             self.vehicle_logger.log_error("Sensor data update error", e)
@@ -292,7 +293,7 @@ class VehicleLogic:
             
             
             # Log observer state occasionally
-            if self.loop_counter % 200 == 0:  # Every 2 seconds at 100Hz
+            if self.loop_counter % 300 == 0:  # Every 3 seconds at 100Hz (reduced logging)
                 self.vehicle_logger.logger.debug(
                     f"Observer: Pos=({state_info['x']:.2f}, {state_info['y']:.2f}, {state_info['theta']:.2f}), "
                     f"Vel={state_info['velocity']:.2f}, Valid={state_info['state_valid']}"
