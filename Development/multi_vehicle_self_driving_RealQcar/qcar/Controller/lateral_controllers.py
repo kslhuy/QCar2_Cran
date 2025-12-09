@@ -8,7 +8,22 @@ import numpy as np
 import math
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
-from pal.utilities.math import wrap_to_pi
+
+
+def wrap_to_pi(angle: float) -> float:
+    """
+    Wrap angle to [-pi, pi) range.
+    
+    This is a corrected version that properly handles all angles.
+    Uses the standard normalization formula: (angle + pi) % (2*pi) - pi
+    
+    Args:
+        angle: Angle in radians
+        
+    Returns:
+        Wrapped angle in range [-pi, pi)
+    """
+    return (angle + np.pi) % (2 * np.pi) - np.pi
 
 
 class LateralControllerBase(ABC):
@@ -96,9 +111,10 @@ class PurePursuitController(LateralControllerBase):
 
         
         # Target point ahead of leader in its heading direction
-        motion_direction = 1  # Assume forward motion
-        target_x = x_j - motion_direction * lookahead * math.cos(theta_j)
-        target_y = y_j - motion_direction * lookahead * math.sin(theta_j)
+        # Use PLUS to place target ahead of leader 
+        # Use MINUS to place target behind leader 
+        target_x = x_j - lookahead * math.cos(theta_j)
+        target_y = y_j - lookahead * math.sin(theta_j)
         
         # Compute heading error to target point
         dx = target_x - x

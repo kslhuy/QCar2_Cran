@@ -31,6 +31,7 @@ class TimingConfig:
     tf: float = 6000  # Experiment duration in seconds
     start_delay: float = 1  # Delay before starting control
     controller_update_rate: int = 200  # Hz
+    observer_rate: int = 200  # Hz
     telemetry_send_rate: int = 10  # Hz
 
 

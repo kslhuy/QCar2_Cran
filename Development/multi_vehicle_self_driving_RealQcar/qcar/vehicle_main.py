@@ -127,7 +127,7 @@ def parse_arguments():
         '--config',
         type=str,
         default=None,
-        help='Path to configuration file (JSON or YAML). Default: config_example.yaml in script directory'
+        help='Path to configuration file (JSON or YAML). Default: config_vehicle_main.yaml in script directory'
     )
     
     parser.add_argument(
@@ -156,9 +156,9 @@ def load_configuration(args) -> VehicleControlConfig:
     if args.config:
         config_path = args.config
     else:
-        # Use config_example.yaml from same directory as this script
+        # Use config_vehicle_main.yaml from same directory as this script
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(script_dir, 'config_example.yaml')
+        config_path = os.path.join(script_dir, 'config_vehicle_main.yaml')
     
     # Load from file if it exists
     if os.path.exists(config_path):
@@ -175,7 +175,7 @@ def load_configuration(args) -> VehicleControlConfig:
             print(f"Error: Config file not found: {config_path}")
             sys.exit(1)
         else:
-            print(f"Warning: config_example.yaml not found at {config_path}")
+            print(f"Warning: config_vehicle_main.yaml not found at {config_path}")
             print("Using default configuration values")
             config = VehicleControlConfig()
     
@@ -192,25 +192,7 @@ def load_configuration(args) -> VehicleControlConfig:
     return config
 
 
-def wait_for_yolo_server(timeout: float = 10.0):
-    """Wait for YOLO server to start"""
-    print("Waiting for YOLO server to start...")
-    print(f"  (Timeout: {timeout}s)")
-    
-    start_time = time.time()
-    dots = 0
-    
-    while time.time() - start_time < timeout:
-        if kill_event.is_set():
-            return False
-        
-        # Simple progress indicator
-        dots = (dots + 1) % 4
-        print(f"\r  Waiting{'.' * dots}{' ' * (3 - dots)}", end='', flush=True)
-        time.sleep(0.5)
-    
-    print("\n  YOLO server ready (timeout reached, proceeding)")
-    return True
+
 
 
 def main():
@@ -240,10 +222,6 @@ def main():
     if config.network.is_remote_enabled:
         print(f"    Host: {config.network.host_ip}:{config.network.port}")
     
-    # Wait for YOLO server
-    if IS_PHYSICAL_QCAR and not wait_for_yolo_server():
-        print("\n[SHUTDOWN] Cancelled by user")
-        return 0
     
     # Create vehicle logic controller
     print("\n[INIT] Creating vehicle controller...")

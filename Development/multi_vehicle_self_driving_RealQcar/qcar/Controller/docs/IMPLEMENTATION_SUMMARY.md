@@ -35,7 +35,7 @@ I've successfully integrated your CACC controller into a **modular, easy-to-swit
    - Compare performance
    - Verify integration
 
-6. **`controller_config_example.yaml`** - Configuration template
+6. **`controller_config_vehicle_main.yaml`** - Configuration template
    - Parameter examples
    - Quick presets
 
@@ -302,7 +302,7 @@ Development/multi_vehicle_self_driving_RealQcar/qcar/
 │   ├── ARCHITECTURE.md                  ← System diagrams
 │   ├── QUICK_SWITCH_GUIDE.py            ← Copy-paste examples
 │   ├── test_controllers.py              ← Test script
-│   ├── controller_config_example.yaml   ← Config template
+│   ├── controller_config_vehicle_main.yaml   ← Config template
 │   └── IMPLEMENTATION_SUMMARY.md        ← This file!
 │
 └── StateMachine/

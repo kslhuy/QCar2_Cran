@@ -53,6 +53,15 @@ except ImportError as e:
     LATERAL_CONTROLLER_AVAILABLE = False
     LateralControllerFactory = None
 
+# Import controller config loader
+try:
+    from Controller.config_loader import get_controller_config
+    CONFIG_LOADER_AVAILABLE = True
+except ImportError as e:
+    print(f"WARNING: Cannot import config_loader: {e}")
+    CONFIG_LOADER_AVAILABLE = False
+    get_controller_config = None
+
 # Import SteeringController for path-following mode
 try:
     from Controller.controllers import SteeringController
@@ -70,11 +79,11 @@ class FollowingLeaderState(StateBase):
         """Initialize with configurable controller types"""
         super().__init__(vehicle_logic)
         
-        # Configure which controllers to use
-        # Longitudinal options: 'cacc', 'pi', 'hybrid'
-        # Lateral options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'path'
-        self.longitudinal_controller_type = getattr(self.config, 'longitudinal_controller_type', 'cacc')
-        self.lateral_controller_type = getattr(self.config, 'lateral_controller_type', 'pure_pursuit')
+        # Load controller configuration from YAML (required)
+        self.controller_config = get_controller_config()
+        self.longitudinal_controller_type = self.controller_config.get_longitudinal_controller_type()
+        self.lateral_controller_type = self.controller_config.get_lateral_controller_type()
+        self.logger.logger.info(f"Loaded controller config: Long={self.longitudinal_controller_type}, Lat={self.lateral_controller_type}")
         
         self.longitudinal_controller = None
         self.lateral_controller = None
@@ -104,101 +113,31 @@ class FollowingLeaderState(StateBase):
         return True
     
     def _initialize_longitudinal_controller(self):
-        """Initialize the selected longitudinal controller"""
-        # Controller parameters based on type
-        if self.longitudinal_controller_type == 'cacc':
-            params = {
-                's0': 1.5,  # Minimum spacing (meters)
-                'h': 0.5,   # Time headway (seconds)
-                'K': np.array([[0.2, 0.05]]),  # [spacing_gain, velocity_gain]
-                'acc_to_throttle_gain': 0.5,
-                'max_throttle': 0.3
-            }
-        elif self.longitudinal_controller_type == 'pi':
-            params = {
-                'kp': 0.1,
-                'ki': 1.0,
-                'max_throttle': 0.3
-            }
-        elif self.longitudinal_controller_type == 'hybrid':
-            params = {
-                'cacc_params': {
-                    's0': 1.5,
-                    'h': 0.5,
-                    'K': np.array([[0.2, 0.05]]),
-                    'acc_to_throttle_gain': 0.5,
-                    'max_throttle': 0.3
-                },
-                'pi_params': {
-                    'kp': 0.1,
-                    'ki': 1.0,
-                    'max_throttle': 0.3
-                }
-            }
-        else:
-            raise ValueError(f"Unknown longitudinal controller type: {self.longitudinal_controller_type}")
+        """Initialize the selected longitudinal controller from YAML config"""
+        params = self.controller_config.get_longitudinal_params()
         
         self.longitudinal_controller = ControllerFactory.create(
             self.longitudinal_controller_type,
             params,
             logger=self.logger.logger
         )
-        self.logger.logger.info(f"Initialized {self.longitudinal_controller_type.upper()} longitudinal controller")
+        self.logger.logger.info(f"Initialized {self.longitudinal_controller_type.upper()} longitudinal controller from config")
     
     def _initialize_lateral_controller(self):
-        """Initialize the selected lateral controller"""
+        """Initialize the selected lateral controller from YAML config"""
         # Skip factory creation if using path mode (uses SteeringController instead)
         if self.lateral_controller_type == 'path':
             self.logger.logger.info("Using path-following lateral control mode (SteeringController)")
             return
         
-        # Controller parameters based on type
-        if self.lateral_controller_type == 'pure_pursuit':
-            params = {
-                'lookahead_distance': 0.9,
-                'k_steering': 1.0,
-                'max_steering': 0.55,
-                'adaptive_lookahead': False
-            }
-        elif self.lateral_controller_type == 'stanley':
-            params = {
-                'k_e': 0.5,
-                'k_soft': 1.0,
-                'max_steering': 0.55
-            }
-        elif self.lateral_controller_type == 'lookahead':
-            params = {
-                'ri': 1.0,
-                'hi': 0.3,
-                'l_r': 0.141,
-                'l_f': 0.115,
-                'k1': 1.0,
-                'k2': 1.0,
-                'max_steering': 0.55
-            }
-        elif self.lateral_controller_type == 'hybrid':
-            params = {
-                'primary_controller': LateralControllerFactory.create(
-                    'pure_pursuit',
-                    {'lookahead_distance': 2.0, 'k_steering': 1.0, 'max_steering': 0.55},
-                    logger=self.logger.logger
-                ),
-                'secondary_controller': LateralControllerFactory.create(
-                    'stanley',
-                    {'k_e': 0.5, 'k_soft': 1.0, 'max_steering': 0.55},
-                    logger=self.logger.logger
-                ),
-                'switch_distance': 1.5
-            }
-        else:
-            raise ValueError(f"Unknown lateral controller type: {self.lateral_controller_type}")
+        params = self.controller_config.get_lateral_params()
         
         self.lateral_controller = LateralControllerFactory.create(
             self.lateral_controller_type,
             params,
             logger=self.logger.logger
         )
-        self.logger.logger.info(f"Initialized {self.lateral_controller_type.upper()} lateral controller")
+        self.logger.logger.info(f"Initialized {self.lateral_controller_type.upper()} lateral controller from config")
     
     def _initialize_steering_controller(self):
         """Initialize SteeringController for path-following lateral mode"""

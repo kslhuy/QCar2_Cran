@@ -294,7 +294,7 @@ WAITING_FOR_START
 ## 📞 If Problems Persist
 
 ### Vehicle still aggressive:
-1. Check `config_example.yaml`:
+1. Check `config_vehicle_main.yaml`:
    ```yaml
    speed:
      v_ref: 0.75  # Should be reasonable

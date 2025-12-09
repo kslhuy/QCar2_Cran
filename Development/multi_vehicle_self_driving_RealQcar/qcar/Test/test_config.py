@@ -1,5 +1,5 @@
 """
-Quick test script to verify config_example.yaml loads correctly
+Quick test script to verify config_vehicle_main.yaml loads correctly
 """
 import os
 import sys
@@ -10,15 +10,15 @@ def main():
     print("Testing Configuration Loading")
     print("=" * 70)
     
-    # Get path to config_example.yaml
+    # Get path to config_vehicle_main.yaml
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(script_dir, 'config_example.yaml')
+    config_path = os.path.join(script_dir, 'config_vehicle_main.yaml')
     
     print(f"\nLooking for config at: {config_path}")
     print(f"File exists: {os.path.exists(config_path)}")
     
     if not os.path.exists(config_path):
-        print("\n❌ ERROR: config_example.yaml not found!")
+        print("\n❌ ERROR: config_vehicle_main.yaml not found!")
         return 1
     
     # Try to load config

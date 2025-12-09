@@ -7,7 +7,7 @@ speed:
   max_throttle: 0.1
 
 steering:
-  K_stanley: 0.7
+  K_stanley: 0.2 # Stanley controller gain
   max_steering_angle: 0.5236  # pi/6 radians (30 degrees)
   enable_steering_control: true
 

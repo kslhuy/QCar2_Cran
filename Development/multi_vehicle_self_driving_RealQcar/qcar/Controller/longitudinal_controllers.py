@@ -86,7 +86,10 @@ class CACCLongitudinalController(LongitudinalControllerBase):
     
     def __init__(self, s0=1.5, h=0.5, K=None, 
                  acc_to_throttle_gain=0.5,
-                 max_throttle=0.3, 
+                 max_throttle=0.3,
+                 alpha_filter=0.3,
+                 ki_velocity=0.1,
+                 brake_smoothing=0.3,
                  logger=None):
         """
         Initialize CACC longitudinal controller
@@ -97,6 +100,9 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             K: Control gains [spacing_gain, velocity_gain]
             acc_to_throttle_gain: Gain to convert acceleration to throttle
             max_throttle: Maximum throttle output
+            alpha_filter: Low-pass filter coefficient (0-1)
+            ki_velocity: Velocity integral gain for additional stability
+            brake_smoothing: Smoothing factor for negative throttle (0-1, higher = smoother)
             logger: Logger instance
         """
         self.s0 = s0
@@ -108,11 +114,15 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         
         # State for filtering
         self.prev_acc = 0.0
-        self.alpha_filter = 0.3  # Low-pass filter coefficient
+        self.alpha_filter = alpha_filter
         
         # Velocity integral for additional stability (optional)
         self.velocity_integral = 0.0
-        self.ki_velocity = 0.1
+        self.ki_velocity = ki_velocity
+        
+        # Brake smoothing
+        self.brake_smoothing = brake_smoothing
+        self.prev_throttle = 0.0
         
     def compute_throttle(self, follower_state: Dict[str, float], 
                         leader_state: Optional[Dict[str, float]], 
@@ -152,31 +162,19 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         # CACC control law: acc = K[0] * e_spacing + K[1] * e_velocity
         error_vector = np.array([spacing_error, velocity_error])
         acc_desired = (self.K @ error_vector)[0]
-        
-        # Apply low-pass filter for smoothness
-        acc_filtered = (self.alpha_filter * acc_desired + 
-                       (1 - self.alpha_filter) * self.prev_acc)
-        self.prev_acc = acc_filtered
-        
-        # Convert acceleration to throttle
-        # Positive acc -> positive throttle, negative acc -> negative throttle (brake)
-        throttle = self.acc_to_throttle_gain * acc_filtered
-        
-        # Add small integral term for velocity tracking
-        self.velocity_integral += dt * velocity_error
-        self.velocity_integral = np.clip(self.velocity_integral, -1.0, 1.0)
-        throttle += self.ki_velocity * self.velocity_integral
+        throttle = acc_desired
         
         # Clamp to limits
         throttle = np.clip(throttle, -self.max_throttle, self.max_throttle)
         
-        # # Debug logging
-        # if self.logger and hasattr(self.logger, 'debug'):
-        #     self.logger.debug(
-        #         f"[CACC] spacing={spacing:.2f}m, target={spacing_target:.2f}m, "
-        #         f"e_s={spacing_error:.2f}m, e_v={velocity_error:.2f}m/s, "
-        #         f"acc={acc_filtered:.3f}m/s², throttle={throttle:.3f}"
-        #     )
+        # Apply smooth deceleration when throttle is negative
+        if throttle < 0:
+            # Smooth transition: blend between previous and current throttle
+            throttle = (self.brake_smoothing * self.prev_throttle + 
+                       (1 - self.brake_smoothing) * throttle)
+        
+        # Store for next iteration
+        self.prev_throttle = throttle
         
         return throttle
     
@@ -184,6 +182,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         """Reset controller state"""
         self.prev_acc = 0.0
         self.velocity_integral = 0.0
+        self.prev_throttle = 0.0
 
 
 class HybridController(LongitudinalControllerBase):

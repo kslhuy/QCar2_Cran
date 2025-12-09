@@ -62,8 +62,8 @@ class VehicleLogic:
         
         # V2V Manager - Complete V2V system (handles communication internally)
         v2v_config = V2VBroadcastConfig(
-            local_state_frequency=20.0,  # Hz - High frequency for local states
-            fleet_state_frequency=5.0,   # Hz - Lower frequency for fleet states
+            local_state_frequency=25.0,  # Hz - High frequency for local states
+            fleet_state_frequency=10.0,   # Hz - Lower frequency for fleet states
             heartbeat_frequency=1.0      # Hz - Very low frequency for heartbeats
         )
         self.v2v_manager = V2VManager(
@@ -113,7 +113,7 @@ class VehicleLogic:
         self.waypoint_sequence = None
         self.node_sequence = None
         
-        # Control state
+        # Control state (Can be set by Ground Station commands)
         self.v_ref = config.speed.v_ref
 
         # State machine - use simplified version with internal transition logic
@@ -125,8 +125,8 @@ class VehicleLogic:
         self.telemetry_counter = 0
         
         # Component update rates and timing
-        self.controller_rate = config.timing.controller_update_rate if IS_PHYSICAL_QCAR else 100  # Use higher rate for fake vehicles
-        self.observer_rate = getattr(config.timing, 'observer_rate', 100)
+        self.controller_rate = config.timing.controller_update_rate if IS_PHYSICAL_QCAR else 100  # 200 for real vehicle, 100 for sim
+        self.observer_rate = config.timing.observer_rate if IS_PHYSICAL_QCAR else 100  # 200 for real vehicle, 100 for sim
         self.telemetry_send_rate = getattr(config.timing, 'telemetry_send_rate', 10)
         
         # Timing trackers for different update rates
@@ -138,20 +138,11 @@ class VehicleLogic:
         self._v2v_status_cache = {}
         self._v2v_status_cache_time = 0.0
         
-        # Vehicle state tracking
-        self.current_pos = [0.0, 0.0, 0.0]  # [x, y, theta]
-        self.velocity = 0.0
-        self.prev_pos = None
-        self.prev_time = None
-        
         # Initialize Vehicle Observer for local and fleet state estimation
-        # Determine fleet size from config or default to 2 vehicles
-        fleet_size = getattr(config.network, 'fleet_size', 2)
-        initial_pose = getattr(config, 'initial_pose', [0.0, 0.0, 0.0])
-        
+        # Fleet size starts at 1 and will be expanded when V2V activates
+        # Initial pose will be set by StateEstimator during initialization
         self.vehicle_observer = VehicleObserver(
             vehicle_id=config.network.car_id,
-            fleet_size=fleet_size,
             config={
                 'observer_rate': self.observer_rate,
                 'fleet_observer_rate': getattr(config.timing, 'fleet_observer_rate', 50),
@@ -162,20 +153,11 @@ class VehicleLogic:
                 }
             },
             logger=self.vehicle_logger,
-            initial_pose=np.array(initial_pose),
             state_estimator=None  # Will be set later during initialization
         )
         
         # Connect VehicleObserver to V2VManager
         self.v2v_manager.update_vehicle_observer(self.vehicle_observer)
-        
-        # Sensor data caching (now handled by observer)
-        self.sensor_data_cache = {
-            'motor_tach': 0.0,
-            'gyro_z': 0.0,
-            'state_valid': False,
-            'timestamp': 0.0
-        }
         
         # Initialize the event system to connect command_handler to state_machine
         # This allows ground station commands to be properly routed to the current state
@@ -285,10 +267,6 @@ class VehicleLogic:
                 # Handle YOLO logic using YOLOManager
                 self.yolo_manager.update_yolo_data(self.loop_counter)
                 
-                # Update sensor cache for compatibility
-                sensor_data = self.vehicle_observer.get_sensor_data()
-                self.sensor_data_cache.update(sensor_data)
-                
         except Exception as e:
             self.vehicle_logger.log_error("Sensor data update error", e)
     
@@ -299,7 +277,6 @@ class VehicleLogic:
         """Unified observer update - handles both local and fleet observer internally"""
         try:
             # StateEstimator is now managed directly by VehicleObserver during initialization
-            # No need for manual setting here
             
             # Get last steering command for EKF
             last_steering = getattr(self, '_last_steering', 0.0)
@@ -309,11 +286,6 @@ class VehicleLogic:
                 dt, 
                 last_steering
             )
-            
-            # Update current position and velocity for compatibility
-            self.current_pos = [state_info['x'], state_info['y'], state_info['theta']]
-            self.velocity = state_info['velocity']
-            self.sensor_data_cache['state_valid'] = state_info['state_valid']
             
             
             # Log observer state occasionally

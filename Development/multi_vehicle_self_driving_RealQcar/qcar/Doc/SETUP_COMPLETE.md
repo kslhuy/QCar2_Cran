@@ -3,7 +3,7 @@
 ## What Changed
 
 ### 1. **Automatic Config Loading**
-`vehicle_main.py` now **automatically loads `config_example.yaml`** from the script directory.
+`vehicle_main.py` now **automatically loads `config_vehicle_main.yaml`** from the script directory.
 
 **Before:**
 ```bash
@@ -12,7 +12,7 @@ python vehicle_main.py  # Used hardcoded defaults
 
 **After:**
 ```bash
-python vehicle_main.py  # Automatically loads config_example.yaml
+python vehicle_main.py  # Automatically loads config_vehicle_main.yaml
 ```
 
 ### 2. **GUI Controller Fixed**
@@ -31,7 +31,7 @@ HOST_IP = '0.0.0.0'  # Listens on ALL interfaces - vehicles can connect!
 ## 🚀 Quick Start Guide
 
 ### Step 1: Configure Your Vehicle
-Edit `config_example.yaml`:
+Edit `config_vehicle_main.yaml`:
 ```yaml
 network:
   host_ip: 192.168.2.200  # ← Change this to YOUR GUI PC's IP address
@@ -70,7 +70,7 @@ start_vehicle.bat 0 192.168.2.200
 
 **On Vehicle:** You should see:
 ```
-[INIT] Loading configuration from: config_example.yaml
+[INIT] Loading configuration from: config_vehicle_main.yaml
   Remote control: Enabled
     Host: 192.168.2.200:5000
 [READY] Network connection established
@@ -78,7 +78,7 @@ start_vehicle.bat 0 192.168.2.200
 
 ## 📝 Configuration Summary
 
-Your `config_example.yaml` currently has:
+Your `config_vehicle_main.yaml` currently has:
 - **Host IP:** `192.168.2.200` (GUI controller location)
 - **Base Port:** `5000` (Car 0 = 5000, Car 1 = 5001, etc.)
 - **Car ID:** `0` (can be overridden with `--car-id`)
@@ -116,7 +116,7 @@ python vehicle_main.py --v-ref 0.9
 ## 🐛 Troubleshooting
 
 ### Problem: "Remote control disabled"
-**Solution:** Check `config_example.yaml` has `host_ip` set:
+**Solution:** Check `config_vehicle_main.yaml` has `host_ip` set:
 ```yaml
 network:
   host_ip: 192.168.2.200  # Must be set, not null
@@ -139,7 +139,7 @@ network:
 **Solution:** Verify file exists:
 ```bash
 cd qcar
-dir config_example.yaml
+dir config_vehicle_main.yaml
 ```
 
 ## 📂 File Locations
@@ -151,7 +151,7 @@ qcar2/Development/
 │
 └── multi_vehicle_self_driving_RealQcar/qcar/
     ├── vehicle_main.py  ← Main vehicle script
-    ├── config_example.yaml            ← Configuration (auto-loaded)
+    ├── config_vehicle_main.yaml            ← Configuration (auto-loaded)
     ├── test_config.py                 ← Test config loading
     ├── start_vehicle.bat              ← Quick start script
     └── VEHICLE_CONTROL_GUIDE.md       ← Full documentation
@@ -161,7 +161,7 @@ qcar2/Development/
 
 Before running your vehicle:
 
-- [ ] `config_example.yaml` exists in `qcar` directory
+- [ ] `config_vehicle_main.yaml` exists in `qcar` directory
 - [ ] `host_ip` in config matches your GUI PC's IP address
 - [ ] GUI controller is running and shows "Listening on port..."
 - [ ] Both GUI PC and vehicle are on same network

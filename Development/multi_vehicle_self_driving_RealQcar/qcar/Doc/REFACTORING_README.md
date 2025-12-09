@@ -58,7 +58,7 @@ qcar/
 ├── controllers.py                 # Speed and steering controllers
 ├── vehicle_logic.py          # Main controller class
 ├── vehicle_main.py  # Entry point
-├── config_example.yaml            # Example configuration file
+├── config_vehicle_main.yaml            # Example configuration file
 ├── utils.py                       # YOLO utilities (existing)
 └── vehicle_control_real.py        # Original implementation (backup)
 ```
@@ -96,7 +96,7 @@ python vehicle_main.py --host 192.168.1.100 --port 5000 --car-id 0
 
 ### Configuration File
 
-Create a YAML configuration file (see `config_example.yaml`):
+Create a YAML configuration file (see `config_vehicle_main.yaml`):
 
 ```yaml
 speed:

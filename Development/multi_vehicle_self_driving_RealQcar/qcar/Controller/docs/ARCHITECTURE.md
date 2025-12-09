@@ -180,7 +180,7 @@ qcar/
 │   ├── README_CONTROLLERS.md        # ✨ NEW: Detailed documentation
 │   ├── QUICK_SWITCH_GUIDE.py        # ✨ NEW: Copy-paste examples
 │   ├── test_controllers.py          # ✨ NEW: Test script
-│   └── controller_config_example.yaml # ✨ NEW: Config template
+│   └── controller_config_vehicle_main.yaml # ✨ NEW: Config template
 │
 └── StateMachine/
     └── following_leader_state.py    # ✨ UPDATED: Uses modular controllers

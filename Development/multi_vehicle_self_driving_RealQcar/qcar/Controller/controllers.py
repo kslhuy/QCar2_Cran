@@ -75,12 +75,8 @@ class SteeringController:
     def __init__(self, waypoints: np.ndarray, config=None, logger=None, cyclic: bool = True):
         self.logger = logger
         
-        if config:
-            self.k = config.steering.K_stanley
-            self.max_steering_angle = config.steering.max_steering_angle
-        else:
-            self.k = 0.7
-            self.max_steering_angle = np.pi / 6
+        self.k = config.steering.K_stanley
+        self.max_steering_angle = config.steering.max_steering_angle # radians
         
         self.wp = waypoints
         self.N = len(waypoints[0, :])
