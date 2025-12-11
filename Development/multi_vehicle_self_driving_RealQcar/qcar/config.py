@@ -78,9 +78,13 @@ class PathPlanningConfig:
     @property
     def valid_nodes(self) -> List[int]:
         if self.node_configuration == 0:
-            return [10, 2, 4, 6, 8, 10]
+            return [0, 2, 4, 6, 8, 10 , 2]
         else:
-            return [10, 2, 4, 6, 8, 10]
+            return [0, 2, 4, 6, 8, 10 , 2]
+        # if self.node_configuration == 0:
+        #     return [10, 2, 4, 6, 8, 10]
+        # else:
+        #     return [10, 2, 4, 6, 8, 10]
 
 
 @dataclass

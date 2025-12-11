@@ -19,6 +19,7 @@ class CommandType(Enum):
     SET_VELOCITY = "set_velocity"
     SET_PATH = "set_path"
     SET_PARAMS = "set_params"
+    SET_INITIAL_POSITION = "set_initial_position"
     
     # Platoon commands
     ENABLE_PLATOON_LEADER = "enable_platoon_leader"

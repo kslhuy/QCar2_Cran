@@ -286,6 +286,14 @@ class FollowingLeaderState(StateBase):
             # Leader-following mode: use lateral controller to follow leader position
             delta = self.lateral_controller.compute_steering(follower_state, leader_state, dt)
         
+        # Log following leader control data
+        self.logger.log_following_leader_control(
+            follower_state=follower_state,
+            leader_state=leader_state,
+            u=u,
+            delta=delta
+        )
+        
         return u, delta
     
     def _compute_path_steering(self, x: float, y: float, theta: float, velocity: float) -> float:

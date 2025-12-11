@@ -42,27 +42,28 @@ class V2VManager:
     - Status monitoring and reporting
     """
     
-    def __init__(self, vehicle_id: int, logger, config: Optional[V2VBroadcastConfig] = None, 
+    def __init__(self, vehicle_id: int, vehicle_logger, config: Optional[V2VBroadcastConfig] = None, 
                  vehicle_observer=None, base_port: int = 8000, status_callback: Optional[Callable] = None,
                  vehicle_logic=None):
         self.vehicle_id = vehicle_id
-        self.logger = logger
+        self.vehicle_logger = vehicle_logger
+        self.logger = vehicle_logger.logger
         self.config = config or V2VBroadcastConfig()
         self.vehicle_observer = vehicle_observer
         self.status_callback = status_callback
         self.vehicle_logic = vehicle_logic  # Reference to main vehicle logic for Ground Station reporting
         
-        # Prepare send intervals from config for V2VCommunication
+        # Prepare send intervals from config for V2VCommunication (convert to nanoseconds)
         send_intervals = {
-            'local_state': 1.0 / self.config.local_state_frequency,
-            'fleet_state': 1.0 / self.config.fleet_state_frequency,
-            'heartbeat': 1.0 / self.config.heartbeat_frequency,
+            'local_state': int((1.0 / self.config.local_state_frequency) * 1e9),  # Convert Hz to nanoseconds
+            'fleet_state': int((1.0 / self.config.fleet_state_frequency) * 1e9),
+            'heartbeat': int((1.0 / self.config.heartbeat_frequency) * 1e9),
         }
         
         # Initialize V2V Communication system internally with configured intervals
         self.v2v_communication = V2VCommunication(
             vehicle_id=vehicle_id,
-            logger=logger,
+            logger=self.logger,
             base_port=base_port,
             status_callback=self._handle_v2v_status_change,
             send_intervals=send_intervals
@@ -202,9 +203,15 @@ class V2VManager:
             fleet_state = self.vehicle_observer.get_fleet_state_for_broadcast()
             
             # # Periodically log what we're broadcasting
-            # if self.stats['fleet_broadcasts'] % 25 == 0 and self.logger:  # Every 25 broadcasts (every 5 seconds at 5Hz)
-            #     self.logger.info(f"V2VManager: Broadcasting fleet state #{self.stats['fleet_broadcasts']} from vehicle {self.vehicle_id}:")
-            #     self.logger.info(f"  Data: {fleet_state}")
+            # self._fleet_state_log_counter += 1
+            # if self._fleet_state_log_counter % 25 == 0 and self.logger:  # Every 25 broadcasts (every 5 seconds at 5Hz)
+            #     self.logger.info(f"V2VManager: Broadcasting fleet state #{self._fleet_state_log_counter} from vehicle {self.vehicle_id}:")
+            #     if 'fleet_states' in fleet_state:
+            #         for vid, vstate in fleet_state['fleet_states'].items():
+            #             self.logger.info(
+            #                 f"  vehicle_{vid}: x={vstate['x']:.3f}, y={vstate['y']:.3f}, "
+            #                 f"theta={vstate['theta']:.3f}, v={vstate['velocity']:.3f}, conf={vstate['confidence']:.2f}"
+            #             )
             
             success = self.v2v_communication.send_message(
                 message_type="fleet_state",
@@ -279,7 +286,8 @@ class V2VManager:
         {
             'vehicle_id': int,
             'x': float, 'y': float, 'theta': float, 'velocity': float,
-            'timestamp': float,
+            'acceleration': float,  # Optional for future use
+            'control_input': {'steering': float, 'throttle': float},  # Optional for future use
             'state_valid': bool,
             'source': 'local_sensors'
         }
@@ -287,10 +295,10 @@ class V2VManager:
         try:
             sender_id = message.sender_id
             data = message.data
-            timestamp = message.timestamp
+            send_time_ns = message.send_time_ns
             
-            # Validate required fields for local state
-            required_fields = ['vehicle_id', 'x', 'y', 'theta', 'velocity', 'timestamp', 'state_valid']
+            # Validate required fields for local state (acceleration and control_input are optional)
+            required_fields = ['vehicle_id', 'x', 'y', 'theta', 'velocity']
             missing_fields = [field for field in required_fields if field not in data]
             
             if missing_fields:
@@ -313,14 +321,39 @@ class V2VManager:
                     self.logger.info(f"  position: ({data.get('x'):.3f}, {data.get('y'):.3f}) (float)")
                     self.logger.info(f"  theta: {data.get('theta'):.3f} rad (float)")
                     self.logger.info(f"  velocity: {data.get('velocity'):.3f} m/s (float)")
-                    self.logger.info(f"  state_valid: {data.get('state_valid')} (bool)")
+                    self.logger.info(f"  acceleration: {data.get('acceleration', 0.0):.3f} m/s² (float)")
+                    control_input = data.get('control_input', {})
+                    if isinstance(control_input, dict):
+                        self.logger.info(f"  control_input: steering={control_input.get('steering', 0.0):.3f}, throttle={control_input.get('throttle', 0.0):.3f}")
                     self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
-                    self.logger.info(f"  data_timestamp: {data.get('timestamp'):.3f} (float)")
-                    self.logger.info(f"  message_timestamp: {timestamp:.3f} (float)")
+                    self.logger.info(f"  send_time_ns: {send_time_ns} (nanoseconds)")
             
             with self._lock:
-                # Add to received local states with timestamp
-                self.received_local_states[sender_id].append((timestamp, data))
+                # Add to received local states with send time in nanoseconds
+                self.received_local_states[sender_id].append((send_time_ns, data))
+                
+                # Log received local estimation to dedicated CSV file
+                if hasattr(self.vehicle_logger, 'log_local_estimation'):
+                    try:
+                        state_dict = {
+                            'x': data.get('x', 0.0),
+                            'y': data.get('y', 0.0),
+                            'theta': data.get('theta', 0.0),
+                            'v': data.get('velocity', 0.0),
+                            'confidence': data.get('confidence', 1.0),  # Default confidence if not present
+                            'acceleration': data.get('acceleration', 0.0),  # Include acceleration
+                            'control_input': data.get('control_input', {})  # Include control inputs
+                        }
+                        self.vehicle_logger.log_local_estimation(
+                            sender_id=sender_id,
+                            state=state_dict,
+                            source=data.get('source', 'local_sensors'),
+                            seq_id=message.seq_id,
+                            send_time_ns=send_time_ns
+                        )
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.logger.warning(f"Failed to log local estimation: {e}")
                 
                 # Add to VehicleObserver if available and data is valid
                 if (self.vehicle_observer and 
@@ -330,7 +363,7 @@ class V2VManager:
                     try:
                         import numpy as np
                         state_vector = np.array([data['x'], data['y'], data['theta'], data['velocity']])
-                        self.vehicle_observer.add_received_state(sender_id, state_vector, timestamp)
+                        self.vehicle_observer.add_received_state(sender_id, state_vector, send_time_ns)
                     except Exception as e:
                         if self.logger:
                             self.logger.warning(f"Failed to add state to VehicleObserver: {e}")
@@ -355,17 +388,17 @@ class V2VManager:
                 },
                 ...
             },
-            'timestamp': float,
             'source': 'fleet_consensus'
         }
+        Note: Timestamp comes from message.send_time_ns (not in data payload)
         """
         try:
             sender_id = message.sender_id
             data = message.data
-            timestamp = message.timestamp
+            send_time_ns = message.send_time_ns
             
-            # Validate required fields for fleet state
-            required_fields = ['sender_id', 'fleet_states', 'timestamp']
+            # Validate required fields for fleet state 
+            required_fields = ['sender_id', 'fleet_states']
             missing_fields = [field for field in required_fields if field not in data]
             
             if missing_fields:
@@ -392,8 +425,22 @@ class V2VManager:
             #     return
             
             with self._lock:
-                # Add to received fleet states with timestamp
-                self.received_fleet_states[sender_id].append((timestamp, data))
+                # Add to received fleet states with send time in nanoseconds
+                self.received_fleet_states[sender_id].append((send_time_ns, data))
+                
+                # Log received fleet estimation to dedicated CSV file
+                if hasattr(self.vehicle_logger, 'log_fleet_estimation'):
+                    try:
+                        self.vehicle_logger.log_fleet_estimation(
+                            sender_id=sender_id,
+                            fleet_states=fleet_states,
+                            source=data.get('source', 'unknown'),
+                            seq_id=message.seq_id,
+                            send_time_ns=send_time_ns
+                        )
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.logger.warning(f"Failed to log fleet estimation: {e}")
                 
                 # Periodically log the fleet state data structure for debugging
                 self._fleet_state_log_counter += 1

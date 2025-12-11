@@ -89,7 +89,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
                  max_throttle=0.3,
                  alpha_filter=0.3,
                  ki_velocity=0.1,
-                 brake_smoothing=0.3,
+                 brake_smoothing=0.5,
                  logger=None):
         """
         Initialize CACC longitudinal controller
@@ -165,7 +165,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         throttle = acc_desired
         
         # Clamp to limits
-        throttle = np.clip(throttle, -self.max_throttle, self.max_throttle)
+        throttle = np.clip(throttle, 0, self.max_throttle)
         
         # Apply smooth deceleration when throttle is negative
         if throttle < 0:

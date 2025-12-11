@@ -95,11 +95,55 @@ class StoppedState(StateBase):
         elif command_type == CommandType.CALIBRATE:
             self.logger.logger.info("GPS Calibration command received - performing GPS-only recalibration")
             if self._recalibrate_gps_only():
-                self.logger.logger.info(" GPS recalibration completed successfully")
+                self.logger.logger.info("✓ GPS recalibration completed successfully")
             else:
-                self.logger.log_error(" GPS recalibration failed")
+                self.logger.log_error("GPS recalibration failed")
             # Stay in STOPPED state - no transition needed
             return None
+        
+        # Handle initial position updates - set the vehicle's starting position (with optional GPS recalibration)
+        elif command_type == CommandType.SET_INITIAL_POSITION:
+            import numpy as np
+            x = data.get('x')
+            y = data.get('y')
+            theta = data.get('theta', 0.0)
+            calibrate = data.get('calibrate', False)  # Default to False for backward compatibility
+            
+            if x is not None and y is not None:
+                try:
+                    # Create initial pose array [x, y, theta]
+                    initial_pose = np.array([float(x), float(y), float(theta)])
+                    
+                    if calibrate:
+                        # Full GPS recalibration with new position
+                        self.logger.logger.info(f"Setting initial position WITH GPS recalibration: ({x:.2f}, {y:.2f}, theta={theta:.2f})")
+                        
+                        if self._recalibrate_gps_only(initial_pose):
+                            self.logger.logger.info("GPS recalibrated and observer reset successfully")
+                        else:
+                            self.logger.log_error("GPS recalibration with initial position failed")
+                            return None
+                    else:
+                        # Just reset observer without GPS recalibration
+                        self.logger.logger.info(f"Setting initial position WITHOUT GPS recalibration: ({x:.2f}, {y:.2f}, theta={theta:.2f})")
+                        
+                        if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
+                            self.vehicle_logic.vehicle_observer.reset_observer(initial_pose)
+                            self.logger.logger.info("Observer reset successfully (no GPS recalibration)")
+                            
+                            # For fake vehicles: Update mock hardware positions even without GPS recalibration
+                            self._update_fake_vehicle_position(initial_pose)
+                        else:
+                            self.logger.logger.warning("Vehicle observer not available for position update")
+                    
+                    return None
+                    
+                except Exception as e:
+                    self.logger.log_error(f"Failed to set initial position ({x}, {y}, {theta})", e)
+                    return None
+            else:
+                self.logger.logger.warning(f"Invalid initial position data: x={x}, y={y}")
+                return None
         
         # Handle start/resume command
         elif command_type == CommandType.START or command_type == CommandType.START_PLATOON:
