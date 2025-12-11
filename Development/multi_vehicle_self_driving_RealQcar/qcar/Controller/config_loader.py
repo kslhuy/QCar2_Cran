@@ -8,6 +8,7 @@ import yaml
 import os
 import numpy as np
 from typing import Dict, Any, Optional
+from pal.products.qcar import  IS_PHYSICAL_QCAR
 
 
 class ControllerConfig:
@@ -23,7 +24,10 @@ class ControllerConfig:
         if config_path is None:
             # Default to controller_config.yaml in the same directory
             config_dir = os.path.dirname(os.path.abspath(__file__))
-            config_path = os.path.join(config_dir, 'controller_config.yaml')
+            if IS_PHYSICAL_QCAR:
+                config_path = os.path.join(config_dir, 'config_controller_real.yaml')
+            else:
+                config_path = os.path.join(config_dir, 'config_controller_sim.yaml')
         
         self.config_path = config_path
         self.config = self._load_config()
@@ -33,7 +37,7 @@ class ControllerConfig:
         if not os.path.exists(self.config_path):
             raise FileNotFoundError(
                 f"Controller config file not found: {self.config_path}\n"
-                f"Please create a controller_config.yaml file or use controller_config_vehicle_main.yaml as template"
+                f"Please create a config_controller.yaml file or use config_controller_sim.yaml as template"
             )
         
         with open(self.config_path, 'r') as f:

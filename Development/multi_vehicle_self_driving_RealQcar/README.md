@@ -6,7 +6,8 @@
 
 Edit `config.txt` with your IPs , and the real car
 
-# Start GUI 
+# Start GUI (in another terminal)
+cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\enhanced_gui_controller.py
 
 # Start all vehicles (in another terminal)
@@ -20,7 +21,9 @@ cd .\Development\multi_vehicle_self_driving_RealQcar
 # To Stop all vehicles (in same terminal of the start)
 cd .\Development\multi_vehicle_self_driving_RealQcar      
 
-.\stop_enhanced.bat
+.\stop_enhanced.bat   ## Stop all the python process (logic is shutdown) = stop_refactored
+.\stop_all_cars.bat   ## Stop all physical part ( lidars  )
+
 ```
 
 ### For Simulation Qlabs
@@ -56,8 +59,8 @@ python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\enhanced_gui_controller.py
 
-# Test with fake vehicles (no hardware)
-cd qcar/GUI
+# Test with fake vehicles (no hardware , no Qlabs)
+cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\    
 python fake_vehicle_real_logic.py 0
 ```
 ![alt text](image.png)

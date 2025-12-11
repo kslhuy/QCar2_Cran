@@ -179,16 +179,122 @@ class WaitingForStartState(StateBase):
         # Handle path updates - store for when we start  
         elif command_type == CommandType.SET_PATH:
             node_sequence = data.get('node_sequence')
+            self.logger.logger.info(f"Received SET_PATH command with node_sequence: {node_sequence}")
+            
             if node_sequence and isinstance(node_sequence, list):
-                if hasattr(self.vehicle_logic, 'path_controller'):
-                    self.vehicle_logic.path_controller.update_path(node_sequence)
-                    self.logger.logger.info(f"Path updated with {len(node_sequence)} nodes")
-                    return None
-            self.logger.logger.warning("Invalid path update while waiting")
+                # Generate waypoints from node sequence using roadmap
+                if hasattr(self.vehicle_logic, 'roadmap') and self.vehicle_logic.roadmap:
+                    try:
+                        new_waypoints = self.vehicle_logic.roadmap.generate_path(node_sequence)
+                        self.vehicle_logic.waypoint_sequence = new_waypoints
+                        
+                        # Update steering controller if it exists (though it shouldn't in waiting state)
+                        if hasattr(self.vehicle_logic, 'steering_controller') and self.vehicle_logic.steering_controller:
+                            self.vehicle_logic.steering_controller.reset(new_waypoints)
+                        
+                        self.logger.logger.info(f"Path updated with {len(node_sequence)} nodes, generated {new_waypoints.shape[1]} waypoints")
+                        return None
+                    except Exception as e:
+                        self.logger.log_error("Failed to generate path from nodes", e)
+                else:
+                    self.logger.logger.warning("No roadmap available for path generation")
+            else:
+                self.logger.logger.warning(f"Invalid path data: {node_sequence}")
             return None
+        
+        # Handle initial position updates - set the vehicle's starting position (with optional GPS recalibration)
+        elif command_type == CommandType.SET_INITIAL_POSITION:
+            x = data.get('x')
+            y = data.get('y')
+            theta = data.get('theta', 0.0)
+            calibrate = data.get('calibrate', False)  # Default to False for backward compatibility
+            
+            if x is not None and y is not None:
+                try:
+                    # Create initial pose array [x, y, theta]
+                    import numpy as np
+                    initial_pose = np.array([float(x), float(y), float(theta)])
+                    
+                    if calibrate:
+                        # Full GPS recalibration with new position
+                        self.logger.logger.info(f"Setting initial position WITH GPS recalibration: ({x:.2f}, {y:.2f}, theta={theta:.2f})")
+                        
+                        if self._recalibrate_gps_only(initial_pose):
+                            self.logger.logger.info("✓ GPS recalibrated and observer reset successfully")
+                        else:
+                            self.logger.log_error("GPS recalibration with initial position failed")
+                            return None
+                    else:
+                        # Just reset observer without GPS recalibration
+                        self.logger.logger.info(f"Setting initial position WITHOUT GPS recalibration: ({x:.2f}, {y:.2f}, theta={theta:.2f})")
+                        
+                        if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
+                            self.vehicle_logic.vehicle_observer.reset_observer(initial_pose)
+                            self.logger.logger.info("✓ Observer reset successfully (no GPS recalibration)")
+                            
+                            # For fake vehicles: Update mock hardware positions even without GPS recalibration
+                            self._update_fake_vehicle_position(initial_pose)
+                        else:
+                            self.logger.logger.warning("Vehicle observer not available for position update")
+                    
+                    return None
+                    
+                except Exception as e:
+                    self.logger.log_error(f"Failed to set initial position ({x}, {y}, {theta})", e)
+                    return None
+            else:
+                self.logger.logger.warning(f"Invalid initial position data: x={x}, y={y}")
+                return None
         
         # Let base class handle common events (stop, emergency_stop)
         return super().handle_event(command_type, data)
+    #     """
+    #     Perform GPS-only recalibration without full reinitialization.
+    #     Reads current GPS position and resets the observer with it.
+        
+    #     Returns:
+    #         bool: True if recalibration successful
+    #     """
+    #     try:
+    #         # Check if GPS is available
+    #         if not hasattr(self.vehicle_logic, 'gps') or self.vehicle_logic.gps is None:
+    #             self.logger.logger.warning("GPS not available for recalibration")
+    #             return False
+            
+    #         # Read current GPS position
+    #         gps_updated = self.vehicle_logic.gps.readGPS()
+            
+    #         if not gps_updated:
+    #             self.logger.logger.warning("Failed to read GPS data for recalibration")
+    #             return False
+            
+    #         # Get GPS position and orientation
+    #         import numpy as np
+    #         gps_position = self.vehicle_logic.gps.position  # [x, y, z]
+    #         gps_orientation = self.vehicle_logic.gps.orientation  # [roll, pitch, yaw]
+            
+    #         # Create initial pose [x, y, theta]
+    #         initial_pose = np.array([
+    #             float(gps_position[0]),
+    #             float(gps_position[1]),
+    #             float(gps_orientation[2])  # yaw
+    #         ])
+            
+    #         # Reset vehicle observer with GPS position
+    #         if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
+    #             self.vehicle_logic.vehicle_observer.reset_observer(initial_pose)
+    #             self.logger.logger.info(
+    #                 f"✓ GPS recalibration successful: position=({initial_pose[0]:.2f}, {initial_pose[1]:.2f}), "
+    #                 f"heading={np.rad2deg(initial_pose[2]):.1f}°"
+    #             )
+    #             return True
+    #         else:
+    #             self.logger.logger.warning("Vehicle observer not available for GPS recalibration")
+    #             return False
+                
+    #     except Exception as e:
+    #         self.logger.log_error("GPS recalibration failed", e)
+    #         return False
     
     def exit(self):
         """Clean up waiting state"""

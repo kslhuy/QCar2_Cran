@@ -279,7 +279,17 @@ class InitializingState(StateBase):
             return False
     
     def _initialize_qcar(self) -> bool:
-        """Initialize QCar hardware and GPS"""
+        """
+        Initialize QCar hardware and GPS
+        
+        Initialization Flow:
+        1. Create QCar and GPS instances (hardware/simulation)
+        2. Wait for first GPS reading to get initial pose
+        3. Initialize VehicleObserver's local estimator with GPS and initial pose
+        
+        Note: VehicleObserver already exists (created in vehicle_logic.__init__),
+              but its local estimator needs GPS data to initialize properly.
+        """
         try:
             from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
             
@@ -336,7 +346,7 @@ class InitializingState(StateBase):
         """Initialize physical QCar"""
         from pal.products.qcar import QCar, QCarGPS
         
-        self.vehicle_logic.qcar = QCar(readMode=1, frequency=200)
+        self.vehicle_logic.qcar = QCar(readMode=1, frequency=self.config.timing.controller_update_rate)
         time.sleep(0.3)
         
         # Check if calibration was requested, otherwise use config setting
@@ -374,17 +384,31 @@ class InitializingState(StateBase):
         return False
     
     def _initialize_state_estimator(self) -> bool:
-        """Initialize state estimator through VehicleObserver"""
-        success = self.vehicle_logic.vehicle_observer.initialize_state_estimator(
-            gps=self.vehicle_logic.gps,
-            initial_pose=self.init_pose,
-            logger=self.logger,
-            use_ekf=self.config.steering.enable_steering_control
-        )
-        
-        if success:
-            time.sleep(0.3)
-        return success
+        """Initialize local state estimator through VehicleObserver"""
+        try:
+            # Use refactored VehicleObserver API
+            # Estimator type is already set in VehicleObserver constructor
+            # We just need to initialize it with GPS and initial pose
+            success = self.vehicle_logic.vehicle_observer.initialize_local_estimator(
+                gps=self.vehicle_logic.gps,
+                initial_pose=self.init_pose,
+                estimator_params={'use_qcar_ekf': self.config.steering.enable_steering_control}
+            )
+            
+            if success:
+                self.logger.logger.info(
+                    f"Local estimator initialized at pose: "
+                    f"x={self.init_pose[0]:.2f}, y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}"
+                )
+                time.sleep(0.1)
+            else:
+                self.logger.log_error("Local estimator initialization failed")
+            
+            return success
+            
+        except Exception as e:
+            self.logger.log_error("State estimator initialization failed", e)
+            return False
     
     def _initialize_controllers(self) -> bool:
         """Initialize speed and steering controllers"""

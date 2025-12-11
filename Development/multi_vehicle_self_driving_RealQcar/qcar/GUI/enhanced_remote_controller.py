@@ -349,6 +349,26 @@ class QCarRemoteController:
             'node_sequence': node_sequence
         })
     
+    def set_initial_position(self, car_id: int, x: float, y: float, theta: float = 0.0, calibrate: bool = True) -> bool:
+        """Set initial position for a specific car
+        
+        Args:
+            car_id: ID of the car
+            x: X coordinate
+            y: Y coordinate
+            theta: Heading angle in radians (default: 0.0)
+            calibrate: Whether to perform GPS recalibration (default: True)
+                      True = Full GPS recalibration + observer reset
+                      False = Observer reset only (faster, no GPS hardware reset)
+        """
+        return self.send_command(car_id, {
+            'type': 'set_initial_position',
+            'x': x,
+            'y': y,
+            'theta': theta,
+            'calibrate': calibrate
+        })
+    
     def set_params(self, car_id: int, **params) -> bool:
         """Set multiple parameters for a car"""
         command = {'type': 'set_params'}

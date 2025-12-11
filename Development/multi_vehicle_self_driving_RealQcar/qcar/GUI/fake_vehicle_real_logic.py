@@ -140,18 +140,36 @@ class MockQCarGPS:
         self.longitude = 0.0
         self.valid = True
         
+        # Match real QCarGPS interface - position array [x, y, z]
+        self.position = np.array([self.x, self.y, 0.0])
+        # Match real QCarGPS interface - orientation array [roll, pitch, yaw]
+        self.orientation = np.array([0.0, 0.0, qcar.heading])
+        
         print(f"🛰️  MockGPS {qcar.car_id}: Initialized")
     
     def readGPS(self):
-        """Update GPS position from QCar physics"""
+        """Update GPS position from QCar physics - returns True on success"""
         # Add some noise to simulate real GPS
         noise_std = 0.05  # 5cm standard deviation
         self.x = self.qcar.x + random.gauss(0, noise_std)
         self.y = self.qcar.y + random.gauss(0, noise_std)
         
+        # Update position array (match real QCarGPS interface)
+        self.position[0] = self.x
+        self.position[1] = self.y
+        self.position[2] = 0.0  # z (altitude)
+        
+        # Update orientation array (match real QCarGPS interface)
+        self.orientation[0] = 0.0  # roll
+        self.orientation[1] = 0.0  # pitch
+        self.orientation[2] = self.qcar.heading  # yaw
+        
         # Convert to lat/lon (fake conversion)
         self.latitude = self.y * 0.00001 + 43.0  # Fake latitude around 43°N
         self.longitude = self.x * 0.00001 + -80.0  # Fake longitude around 80°W
+        
+        # Return True to indicate successful reading (match real QCarGPS)
+        return True
 
 
 class MockYOLOReceiver:
@@ -341,9 +359,6 @@ class FakeVehicleWithRealLogic:
         self.running = True  # Start in running state
         self.ground_station_client = None  # Will be set by VehicleLogic
         
-        # Threading
-        self.vehicle_thread = None
-        
         # Statistics
         self.start_time = time.time()
         
@@ -393,12 +408,49 @@ class FakeVehicleWithRealLogic:
             fake_init_state = FakeInitializingState(self.vehicle_logic)
             self.vehicle_logic.state_machine.state_handlers[VehicleState.INITIALIZING] = fake_init_state
             
+            # IMPORTANT: If state machine is already in INITIALIZING state, we need to call enter()
+            # to trigger telemetry logging setup
+            if self.vehicle_logic.state_machine.state == VehicleState.INITIALIZING:
+                print(f"[!] State machine already in INITIALIZING - calling fake enter() now")
+                fake_init_state.enter()
+            
+            from hal.products.mats import SDCSRoadMap
+        
+            # Create roadmap
+            self.vehicle_logic.roadmap = SDCSRoadMap(
+                leftHandTraffic=False,
+                useSmallMap=True
+            )
+             # Set node sequence
+            self.vehicle_logic.node_sequence = self.config.path.valid_nodes
+
+            
+            # Generate and validate waypoint sequence
+            waypoints = self.vehicle_logic.roadmap.generate_path(self.vehicle_logic.node_sequence)
+            if not self._validate_waypoint_sequence(waypoints):
+                print(f"   [!] Invalid waypoint sequence generated")
+                return False
+            
+            self.vehicle_logic.waypoint_sequence = waypoints
+
             print(f"✅ Car {self.car_id}: Replaced INITIALIZING state with fake version")
             print(f"          All other states remain real for complete system testing")
             
         except Exception as e:
             print(f"❌ Car {self.car_id}: Failed to replace initialization state: {e}")
-    
+
+    def _validate_waypoint_sequence(self, waypoints) -> bool:
+        """Validate generated waypoint sequence"""
+        if waypoints is None:
+            return False
+        
+        if not isinstance(waypoints, np.ndarray):
+            return False
+        
+        if waypoints.shape[0] < 2 or waypoints.shape[1] < 2:
+            return False
+        
+        return True
     def _inject_mock_hardware(self):
         """Mock hardware injection will be done during state machine initialization"""
         # The fake initialization state will handle mock hardware injection
@@ -414,42 +466,27 @@ class FakeVehicleWithRealLogic:
         # Replace only the initialization state (keep everything else real)
         self._replace_initialization_state_only()
         
-        # Start VehicleLogic in a separate thread
-        import threading
-        self.vehicle_thread = threading.Thread(target=self._vehicle_logic_worker, daemon=True)
-        self.vehicle_thread.start()
-        
-        # Give it time to start
-        time.sleep(1.0)
-        
-        # Verify thread is running
-        if self.vehicle_thread.is_alive():
-            print(f"✅ Car {self.car_id}: VehicleLogic thread started successfully")
-        else:
-            print(f"❌ Car {self.car_id}: VehicleLogic thread failed to start")
-        
-        print(f"✅ Car {self.car_id}: Real VehicleLogic started with fake initialization")
+        print(f"✅ Car {self.car_id}: Real VehicleLogic ready with fake initialization")
         print(f"          ✅ Ground Station connection: Handled by VehicleLogic")
         print(f"          ✅ State machine: Real (except INITIALIZING state)")
         print(f"          ✅ All controllers: Real")
         print(f"          ✅ Hardware: Mock (injected during initialization)")
     
     
-    def _vehicle_logic_worker(self):
-        """Run the real VehicleLogic in a thread"""
-        print(f"🧠 Car {self.car_id}: VehicleLogic thread started")
+    def run(self):
+        """Run the real VehicleLogic directly (no thread)"""
+        print(f"🧠 Car {self.car_id}: Starting VehicleLogic.run()...")
         
         try:
-            # Run the REAL VehicleLogic
-            print(f"[THREAD] Car {self.car_id}: Starting VehicleLogic.run()...")
+            # Run the REAL VehicleLogic directly
             self.vehicle_logic.run()
-            print(f"[THREAD] Car {self.car_id}: VehicleLogic.run() completed normally")
+            print(f"[RUN] Car {self.car_id}: VehicleLogic.run() completed normally")
         except Exception as e:
             print(f"❌ Car {self.car_id}: VehicleLogic error - {e}")
             import traceback
             traceback.print_exc()
         finally:
-            print(f"🧠 Car {self.car_id}: VehicleLogic thread stopped")
+            print(f"🧠 Car {self.car_id}: VehicleLogic stopped")
             # Signal that we're shutting down
             self.running = False
             self.kill_event.set()
@@ -465,13 +502,6 @@ class FakeVehicleWithRealLogic:
         # Signal shutdown
         self.running = False
         self.kill_event.set()
-        
-        # Wait for VehicleLogic to finish
-        if self.vehicle_thread and self.vehicle_thread.is_alive():
-            print(f"⏳ Car {self.car_id}: Waiting for VehicleLogic to finish...")
-            self.vehicle_thread.join(timeout=5.0)
-            if self.vehicle_thread.is_alive():
-                print(f"WARNING: Car {self.car_id}: VehicleLogic thread did not stop cleanly")
         
         # Close Ground Station client
         if self.ground_station_client:
@@ -537,49 +567,13 @@ def main():
     # Start simulation (includes Ground Station connection)
     vehicle.start_simulation()
     
-    print("\n" + "="*70)
-    print("🎮 Simplified Real VehicleLogic Fake Vehicle is running")
-    print("   ✅ Uses REAL VehicleLogic class")
-    print("   ✅ Uses REAL VehicleStateMachine (except INITIALIZING state)")
-    print("   ✅ Uses REAL GroundStationClient (created by VehicleLogic)")
-    print("   ✅ Uses REAL controllers and safety systems")
-    print("   ✅ Mock hardware injected during fake initialization")
-    print("   📡 Vehicle appears in Ground Station GUI")
-    print("   🎮 Commands processed exactly like real vehicle")
-    print("   Press Ctrl+C to stop")
-    print("="*70)
+
     
     try:
-        # Keep running until interrupted
-        print(f"[MAIN] Car {car_id}: Entering main loop...")
-        
-        while vehicle.running and not vehicle.kill_event.is_set():
-            time.sleep(0.1)
-            
-            # Check if VehicleLogic thread is still alive
-            if vehicle.vehicle_thread and not vehicle.vehicle_thread.is_alive():
-                print(f"[MAIN] Car {car_id}: VehicleLogic thread has stopped, exiting main loop")
-                break
-            
-            # Show periodic status (every 10 seconds)
-            current_time = time.time()
-            if not hasattr(vehicle, '_last_status_time') or current_time - vehicle._last_status_time > 10.0:
-                vehicle._last_status_time = current_time
-                state = "Unknown"
-                loop_count = 0
-                if hasattr(vehicle.vehicle_logic, 'state_machine') and vehicle.vehicle_logic.state_machine:
-                    state = vehicle.vehicle_logic.state_machine.state.name
-                if hasattr(vehicle.vehicle_logic, 'loop_counter'):
-                    loop_count = vehicle.vehicle_logic.loop_counter
-                
-                # Get stats from VehicleLogic's Ground Station client
-                gs_client = getattr(vehicle.vehicle_logic, 'client_Ground_Station', None)
-                gs_stats = gs_client.get_statistics() if gs_client else {}
-                telemetry_sent = gs_stats.get('telemetry_sent', 0)
-                
-                print(f"[STATS] Car {car_id}: State={state}, Loops={loop_count}, Telemetry={telemetry_sent}")
-        
-        print(f"[MAIN] Car {car_id}: Main loop ended")
+        # Run VehicleLogic directly (no thread)
+        print(f"[MAIN] Car {car_id}: Starting VehicleLogic.run()...")
+        vehicle.run()
+        print(f"[MAIN] Car {car_id}: VehicleLogic.run() completed")
     
     except KeyboardInterrupt:
         print(f"\n🛑 Car {car_id}: Shutting down...")

@@ -26,9 +26,33 @@ class VehicleLogger:
         # Setup logger
         self.logger = self._setup_logger(log_level)
         
+        # Reference start time for relative timestamps (set by vehicle_logic)
+        self.start_time = None
+        
         # Telemetry logging
         self.telemetry_file = None
         self.telemetry_writer = None
+        
+        # Fleet estimation logging (received from other vehicles)
+        self.fleet_estimation_file = None
+        self.fleet_estimation_writer = None
+        self.fleet_estimation_queue = queue.Queue(maxsize=1000)
+        self.fleet_estimation_thread = None
+        self.fleet_estimation_active = False
+        
+        # Local estimation logging (received from other vehicles)
+        self.local_estimation_file = None
+        self.local_estimation_writer = None
+        self.local_estimation_queue = queue.Queue(maxsize=1000)
+        self.local_estimation_thread = None
+        self.local_estimation_active = False
+        
+        # Following leader state logging
+        self.following_leader_file = None
+        self.following_leader_writer = None
+        self.following_leader_queue = queue.Queue(maxsize=1000)
+        self.following_leader_thread = None
+        self.following_leader_active = False
         
         # Non-blocking logging queue and thread
         self.log_queue = queue.Queue(maxsize=1000)  # Buffer up to 1000 log entries
@@ -82,6 +106,16 @@ class VehicleLogger:
         
         return logger
     
+    def set_start_time(self, start_time: float):
+        """Set the reference start time for relative timestamps"""
+        self.start_time = start_time
+    
+    def get_relative_time(self) -> float:
+        """Get time in seconds since start (0.0 if not set)"""
+        if self.start_time is None:
+            return 0.0
+        return time.time() - self.start_time
+    
     def setup_telemetry_logging(self, data_log_dir: str = "data_logs"):
         """Setup CSV telemetry logging with async thread"""
         os.makedirs(data_log_dir, exist_ok=True)
@@ -94,21 +128,20 @@ class VehicleLogger:
         self.telemetry_file = open(telemetry_file, 'w', newline='', buffering=8192)  # 8KB buffer for better performance
         
         fieldnames = [
+            # Core telemetry
             'timestamp', 'time', 'x', 'y', 'th', 'v', 
             'u', 'delta', 'v_ref', 'yolo_gain',
             'waypoint_index', 'cross_track_error', 'heading_error',
             'state', 'gps_valid',
-            # Platoon telemetry fields
-            'platoon_enabled', 'platoon_id', 'platoon_role', 'platoon_active',
-            'platoon_is_leader', 'platoon_position', 'platoon_leader_id', 'platoon_setup_complete',
-            'leader_id', 'leader_detected', 'leader_distance', 
-            'spacing_stable', 'followers_ready', 'all_ready',
-            'formation_ready', 'desired_speed', 'spacing_error',
-            # V2V communication fields
-            'v2v_protocol', 'v2v_fleet_rate', 'v2v_local_rate', 'v2v_peers', 'v2v_active'
+            # Platoon status (only fields actually returned by _get_platoon_status)
+            'platoon_enabled', 'platoon_is_leader', 'platoon_position', 
+            'platoon_leader_id', 'platoon_setup_complete',
+            # V2V communication status
+            'v2v_active', 'v2v_peers', 'v2v_protocol', 
+            'v2v_local_rate', 'v2v_fleet_rate'
         ]
         
-        self.telemetry_writer = csv.DictWriter(self.telemetry_file, fieldnames=fieldnames)
+        self.telemetry_writer = csv.DictWriter(self.telemetry_file, fieldnames=fieldnames, extrasaction='ignore')
         self.telemetry_writer.writeheader()
         self.telemetry_file.flush()
         
@@ -118,6 +151,15 @@ class VehicleLogger:
         self.logging_thread.start()
         
         self.logger.info(f"Telemetry logging initialized (async): {telemetry_file}")
+        
+        # Setup fleet estimation logging
+        self._setup_fleet_estimation_logging(run_dir)
+        
+        # Setup local estimation logging
+        self._setup_local_estimation_logging(run_dir)
+        
+        # Setup following leader state logging
+        self._setup_following_leader_logging(run_dir)
         
         return run_dir
     
@@ -160,6 +202,172 @@ class VehicleLogger:
                 except:
                     pass
     
+    def _setup_fleet_estimation_logging(self, run_dir: str):
+        """Setup CSV logging for received fleet estimations from other vehicles"""
+        fleet_est_file = os.path.join(run_dir, f"received_fleet_estimations_vehicle_{self.car_id}.csv")
+        self.fleet_estimation_file = open(fleet_est_file, 'w', newline='', buffering=8192)
+        
+        fieldnames = [
+            'timestamp', 'sender_id', 'source',  # timestamp=relative_time
+            'seq_id', 'latency_ns',  # Sequence ID and latency in nanoseconds
+            'vehicle_id', 'x', 'y', 'theta', 'v', 'confidence'
+        ]
+        
+        self.fleet_estimation_writer = csv.DictWriter(self.fleet_estimation_file, fieldnames=fieldnames)
+        self.fleet_estimation_writer.writeheader()
+        self.fleet_estimation_file.flush()
+        
+        # Start async logging thread
+        self.fleet_estimation_active = True
+        self.fleet_estimation_thread = threading.Thread(target=self._fleet_estimation_worker, daemon=True)
+        self.fleet_estimation_thread.start()
+        
+        self.logger.info(f"Fleet estimation logging initialized: {fleet_est_file}")
+    
+    def _setup_local_estimation_logging(self, run_dir: str):
+        """Setup CSV logging for received local estimations from other vehicles"""
+        local_est_file = os.path.join(run_dir, f"received_local_estimations_vehicle_{self.car_id}.csv")
+        self.local_estimation_file = open(local_est_file, 'w', newline='', buffering=8192)
+        
+        fieldnames = [
+            'timestamp', 'data_age', 'sender_id', 'source',  # timestamp=relative_time, data_age=latency_in_seconds
+            'seq_id',  # Sequence ID
+            'x', 'y', 'theta', 'v', 'acceleration', 
+            'steering', 'throttle','confidence'  # New fields for dynamics and control
+        ]
+        
+        self.local_estimation_writer = csv.DictWriter(self.local_estimation_file, fieldnames=fieldnames)
+        self.local_estimation_writer.writeheader()
+        self.local_estimation_file.flush()
+        
+        # Start async logging thread
+        self.local_estimation_active = True
+        self.local_estimation_thread = threading.Thread(target=self._local_estimation_worker, daemon=True)
+        self.local_estimation_thread.start()
+        
+        self.logger.info(f"Local estimation logging initialized: {local_est_file}")
+    
+    def _fleet_estimation_worker(self):
+        """Background thread worker for fleet estimation logging"""
+        flush_counter = 0
+        while self.fleet_estimation_active:
+            try:
+                log_entry = self.fleet_estimation_queue.get(timeout=0.1)
+                
+                if log_entry is None:  # Poison pill
+                    break
+                
+                if self.fleet_estimation_writer:
+                    self.fleet_estimation_writer.writerow(log_entry)
+                    flush_counter += 1
+                    
+                    if flush_counter >= 100 or (self.fleet_estimation_queue.qsize() == 0 and flush_counter > 0):
+                        try:
+                            self.fleet_estimation_file.flush()
+                            os.fsync(self.fleet_estimation_file.fileno())
+                            flush_counter = 0
+                        except (OSError, IOError) as e:
+                            print(f"[Fleet Estimation Logger] Flush failed: {e}")
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[Fleet Estimation Logger] Error: {e}")
+                try:
+                    time.sleep(0.01)
+                except:
+                    pass
+    
+    def _local_estimation_worker(self):
+        """Background thread worker for local estimation logging"""
+        flush_counter = 0
+        while self.local_estimation_active:
+            try:
+                log_entry = self.local_estimation_queue.get(timeout=0.1)
+                
+                if log_entry is None:  # Poison pill
+                    break
+                
+                if self.local_estimation_writer:
+                    self.local_estimation_writer.writerow(log_entry)
+                    flush_counter += 1
+                    
+                    if flush_counter >= 100 or (self.local_estimation_queue.qsize() == 0 and flush_counter > 0):
+                        try:
+                            self.local_estimation_file.flush()
+                            os.fsync(self.local_estimation_file.fileno())
+                            flush_counter = 0
+                        except (OSError, IOError) as e:
+                            print(f"[Local Estimation Logger] Flush failed: {e}")
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[Local Estimation Logger] Error: {e}")
+                try:
+                    time.sleep(0.01)
+                except:
+                    pass
+    
+    def _setup_following_leader_logging(self, run_dir: str):
+        """Setup CSV logging for following leader state control data"""
+        following_leader_file = os.path.join(run_dir, f"following_leader_control_vehicle_{self.car_id}.csv")
+        self.following_leader_file = open(following_leader_file, 'w', newline='', buffering=8192)
+        
+        fieldnames = [
+            'timestamp',  # Relative time in seconds
+            # Follower state
+            'follower_x', 'follower_y', 'follower_theta', 'follower_velocity', 'follower_target_velocity',
+            # Leader state
+            'leader_x', 'leader_y', 'leader_theta', 'leader_velocity',
+            # Control commands
+            'throttle_u', 'steering_delta',
+            # Derived metrics
+            'distance_to_leader', 'velocity_difference'
+        ]
+        
+        self.following_leader_writer = csv.DictWriter(self.following_leader_file, fieldnames=fieldnames)
+        self.following_leader_writer.writeheader()
+        self.following_leader_file.flush()
+        
+        # Start async logging thread
+        self.following_leader_active = True
+        self.following_leader_thread = threading.Thread(target=self._following_leader_worker, daemon=True)
+        self.following_leader_thread.start()
+        
+        self.logger.info(f"Following leader state logging initialized: {following_leader_file}")
+    
+    def _following_leader_worker(self):
+        """Background thread worker for following leader state logging"""
+        flush_counter = 0
+        while self.following_leader_active:
+            try:
+                log_entry = self.following_leader_queue.get(timeout=0.1)
+                
+                if log_entry is None:  # Poison pill
+                    break
+                
+                if self.following_leader_writer:
+                    self.following_leader_writer.writerow(log_entry)
+                    flush_counter += 1
+                    
+                    if flush_counter >= 100 or (self.following_leader_queue.qsize() == 0 and flush_counter > 0):
+                        try:
+                            self.following_leader_file.flush()
+                            os.fsync(self.following_leader_file.fileno())
+                            flush_counter = 0
+                        except (OSError, IOError) as e:
+                            print(f"[Following Leader Logger] Flush failed: {e}")
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[Following Leader Logger] Error: {e}")
+                try:
+                    time.sleep(0.01)
+                except:
+                    pass
+    
     def log_telemetry(self, data: dict):
         """Log telemetry data to CSV (non-blocking via queue)"""
         if self.telemetry_writer and self.logging_active:
@@ -172,6 +380,147 @@ class VehicleLogger:
             except Exception as e:
                 # Use basic print to avoid recursion
                 print(f"[Telemetry Logger] Error queuing data: {e}")
+    
+    def log_fleet_estimation(self, sender_id: int, fleet_states: dict, source: str, seq_id: int = 0, send_time_ns: int = 0):
+        """Log received fleet estimation from another vehicle (non-blocking via queue)
+        
+        Args:
+            sender_id: ID of the vehicle that sent the fleet estimation
+            fleet_states: Dictionary of fleet states {vehicle_id: {x, y, theta, v, confidence}}
+            source: Source of estimation (e.g., 'fleet_consensus', 'local_observer')
+            seq_id: Sequence ID of the message
+            send_time_ns: Send time in nanoseconds for precise latency measurement
+        """
+        if self.fleet_estimation_writer and self.fleet_estimation_active:
+            receive_time_ns = time.time_ns()
+            
+            # Calculate precise latency in nanoseconds
+            latency_ns = receive_time_ns - send_time_ns if send_time_ns > 0 else 0
+            
+            # Log each vehicle in the fleet estimation as a separate row
+            for vehicle_key, state in fleet_states.items():
+                # Extract vehicle ID from key (e.g., 'vehicle_0' -> 0)
+                if isinstance(vehicle_key, str) and vehicle_key.startswith('vehicle_'):
+                    vehicle_id = int(vehicle_key.split('_')[1])
+                else:
+                    vehicle_id = vehicle_key
+                
+                try:
+                    log_entry = {
+                        'timestamp': self.get_relative_time(),  # Relative time in seconds
+                        # 'receive_time_ns': receive_time_ns,  # When we received it (relative time in ns)
+                        'sender_id': sender_id,
+                        'source': source,
+                        'seq_id': seq_id,
+                        'latency_ns': latency_ns,
+                        'vehicle_id': vehicle_id,
+                        'x': state.get('x', 0.0),
+                        'y': state.get('y', 0.0),
+                        'theta': state.get('theta', 0.0),
+                        'v': state.get('v', 0.0),
+                        'confidence': state.get('confidence', 0.0)
+                    }
+                    self.fleet_estimation_queue.put_nowait(log_entry)
+                except queue.Full:
+                    pass
+                except Exception as e:
+                    print(f"[Fleet Estimation Logger] Error queuing data: {e}")
+    
+    def log_local_estimation(self, sender_id: int, state: dict, source: str, seq_id: int = 0, send_time_ns: int = 0):
+        """Log received local estimation from another vehicle (non-blocking via queue)
+        
+        Args:
+            sender_id: ID of the vehicle that sent the local estimation
+            state: State dictionary {x, y, theta, v, confidence}
+            source: Source of estimation (e.g., 'gps', 'ekf', 'observer')
+            timestamp: Timestamp from sender (Unix timestamp - will calculate age)
+            seq_id: Sequence ID of the message
+            send_time_ns: Send time in nanoseconds for precise latency measurement
+        """
+        if self.local_estimation_writer and self.local_estimation_active:
+            # receive_time = self.get_relative_time()
+            receive_time_ns = time.time_ns()
+            
+            
+            # Calculate precise latency in nanoseconds # Age in seconds
+            latency_ns = receive_time_ns - send_time_ns if send_time_ns > 0 else 0
+            data_age = latency_ns / 1e9  # Convert to seconds
+
+            try:
+                # Extract control inputs if available
+                control_input = state.get('control_input', {})
+                
+                log_entry = {
+                    'timestamp': self.get_relative_time(),  # Relative time in seconds
+                    # 'receive_time_ns': receive_time_ns,  # When we received it (relative time in ns)
+                    'data_age': data_age,
+                    'sender_id': sender_id,
+                    'source': source,
+                    'seq_id': seq_id,
+                    'x': state.get('x', 0.0),
+                    'y': state.get('y', 0.0),
+                    'theta': state.get('theta', 0.0),
+                    'v': state.get('v', 0.0),
+                    'confidence': state.get('confidence', 0.0),
+                    'acceleration': state.get('acceleration', 0.0),
+                    'steering': control_input.get('steering', 0.0) if isinstance(control_input, dict) else 0.0,
+                    'throttle': control_input.get('throttle', 0.0) if isinstance(control_input, dict) else 0.0
+                }
+                self.local_estimation_queue.put_nowait(log_entry)
+            except queue.Full:
+                pass
+            except Exception as e:
+                print(f"[Local Estimation Logger] Error queuing data: {e}")
+    
+    def log_following_leader_control(self, follower_state: dict, leader_state: dict, u: float, delta: float):
+        """Log following leader state control data (non-blocking via queue)
+        
+        Args:
+            follower_state: Dictionary with follower state {x, y, theta, velocity, target_velocity}
+            leader_state: Dictionary with leader state {x, y, theta, velocity}
+            u: Throttle control command
+            delta: Steering control command
+            # relative_time: Time in seconds since vehicle logic started (optional, uses 0.0 if None)
+        """
+        if self.following_leader_writer and self.following_leader_active:
+            current_time = time.time()
+            
+            # Calculate derived metrics
+            import numpy as np
+            distance_to_leader = np.sqrt(
+                (leader_state.get('x', 0.0) - follower_state.get('x', 0.0))**2 +
+                (leader_state.get('y', 0.0) - follower_state.get('y', 0.0))**2
+            )
+            velocity_difference = leader_state.get('velocity', 0.0) - follower_state.get('velocity', 0.0)
+            
+            try:
+                entry = {
+                    # 'timestamp': current_time,  # Unix timestamp
+                    'timestamp': self.get_relative_time(),  # Unix timestamp
+                    
+                    # Follower state
+                    'follower_x': follower_state.get('x', 0.0),
+                    'follower_y': follower_state.get('y', 0.0),
+                    'follower_theta': follower_state.get('theta', 0.0),
+                    'follower_velocity': follower_state.get('velocity', 0.0),
+                    'follower_target_velocity': follower_state.get('target_velocity', 0.0),
+                    # Leader state
+                    'leader_x': leader_state.get('x', 0.0),
+                    'leader_y': leader_state.get('y', 0.0),
+                    'leader_theta': leader_state.get('theta', 0.0),
+                    'leader_velocity': leader_state.get('velocity', 0.0),
+                    # Control commands
+                    'throttle_u': u,
+                    'steering_delta': delta,
+                    # Derived metrics
+                    'distance_to_leader': distance_to_leader,
+                    'velocity_difference': velocity_difference
+                }
+                self.following_leader_queue.put_nowait(entry)
+            except queue.Full:
+                pass  # Drop data if queue is full
+            except Exception as e:
+                print(f"[Following Leader Logger] Error queuing data: {e}")
     
     def log_network_event(self, event: str, details: Optional[dict] = None):
         """Log network-related events"""
@@ -212,8 +561,8 @@ class VehicleLogger:
             self.logger.debug(msg)
     
     def close(self):
-        """Close all logging handlers and stop async thread"""
-        # Stop logging thread
+        """Close all logging handlers and stop async threads"""
+        # Stop telemetry logging thread
         if self.logging_active:
             self.logging_active = False
             # Send poison pill to stop thread
@@ -226,6 +575,39 @@ class VehicleLogger:
             if self.logging_thread and self.logging_thread.is_alive():
                 self.logging_thread.join(timeout=2.0)
         
+        # Stop fleet estimation logging thread
+        if self.fleet_estimation_active:
+            self.fleet_estimation_active = False
+            try:
+                self.fleet_estimation_queue.put(None, timeout=1.0)
+            except:
+                pass
+            
+            if self.fleet_estimation_thread and self.fleet_estimation_thread.is_alive():
+                self.fleet_estimation_thread.join(timeout=2.0)
+        
+        # Stop local estimation logging thread
+        if self.local_estimation_active:
+            self.local_estimation_active = False
+            try:
+                self.local_estimation_queue.put(None, timeout=1.0)
+            except:
+                pass
+            
+            if self.local_estimation_thread and self.local_estimation_thread.is_alive():
+                self.local_estimation_thread.join(timeout=2.0)
+        
+        # Stop following leader logging thread
+        if self.following_leader_active:
+            self.following_leader_active = False
+            try:
+                self.following_leader_queue.put(None, timeout=1.0)
+            except:
+                pass
+            
+            if self.following_leader_thread and self.following_leader_thread.is_alive():
+                self.following_leader_thread.join(timeout=2.0)
+        
         # Flush memory handler before closing
         if hasattr(self, '_memory_handler'):
             try:
@@ -233,11 +615,35 @@ class VehicleLogger:
             except:
                 pass
         
-        # Close file
+        # Close telemetry file
         if self.telemetry_file:
             try:
                 self.telemetry_file.flush()
                 self.telemetry_file.close()
+            except:
+                pass
+        
+        # Close fleet estimation file
+        if self.fleet_estimation_file:
+            try:
+                self.fleet_estimation_file.flush()
+                self.fleet_estimation_file.close()
+            except:
+                pass
+        
+        # Close local estimation file
+        if self.local_estimation_file:
+            try:
+                self.local_estimation_file.flush()
+                self.local_estimation_file.close()
+            except:
+                pass
+        
+        # Close following leader file
+        if self.following_leader_file:
+            try:
+                self.following_leader_file.flush()
+                self.following_leader_file.close()
             except:
                 pass
         

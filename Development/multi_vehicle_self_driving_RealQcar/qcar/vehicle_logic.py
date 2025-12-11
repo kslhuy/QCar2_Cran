@@ -68,7 +68,7 @@ class VehicleLogic:
         )
         self.v2v_manager = V2VManager(
             vehicle_id=config.network.car_id,
-            logger=self.vehicle_logger.logger,
+            vehicle_logger=self.vehicle_logger,
             config=v2v_config,
             vehicle_observer=None,  # Will be set later when vehicle_observer is created
             base_port=8000,
@@ -142,21 +142,17 @@ class VehicleLogic:
         self._v2v_status_cache_time = 0.0
         
         # Initialize Vehicle Observer for local and fleet state estimation
+        # VehicleObserver is a manager class that coordinates:
+        #   - LocalStateEstimator: Pluggable local state estimation (EKF, Luenberger, etc.)
+        #   - FleetStateEstimator: Pluggable fleet estimation (Consensus, Distributed Kalman, etc.)
         # Fleet size starts at 1 and will be expanded when V2V activates
-        # Initial pose will be set by StateEstimator during initialization
+        # Local estimator will be initialized later in INITIALIZING state with GPS data
         self.vehicle_observer = VehicleObserver(
             vehicle_id=config.network.car_id,
-            config={
-                'observer_rate': self.observer_rate,
-                'fleet_observer_rate': getattr(config.timing, 'fleet_observer_rate', 50),
-                'observer': {
-                    'local_observer_type': 'ekf',
-                    'enable_distributed': True,
-                    'consensus_gain': 0.3
-                }
-            },
+            config=config,
             logger=self.vehicle_logger,
-            state_estimator=None  # Will be set later during initialization
+            local_estimator_type='ekf',  # Can be: 'ekf', 'luenberger', 'dead_reckoning'
+            fleet_estimator_type='consensus'  # Can be: 'consensus', 'distributed_kalman'
         )
         
         # Connect VehicleObserver to V2VManager
@@ -185,6 +181,7 @@ class VehicleLogic:
         
         # CRITICAL: Reset start_time NOW
         self.start_time = time.time()
+        self.vehicle_logger.set_start_time(self.start_time)  # Set reference for relative timestamps
         self.loop_counter = 0
         self.telemetry_counter = 0
         
@@ -280,7 +277,9 @@ class VehicleLogic:
     def _observer_update(self, dt: float):
         """Unified observer update - handles both local and fleet observer internally"""
         try:
-            # StateEstimator is now managed directly by VehicleObserver during initialization
+            # Skip observer update if local estimator not initialized yet
+            if self.vehicle_observer.get_local_estimator() is None:
+                return  # Observer not ready yet (still in INITIALIZING state)
             
             # Get last steering command for EKF
             last_steering = getattr(self, '_last_steering', 0.0)
@@ -296,7 +295,7 @@ class VehicleLogic:
             if self.loop_counter % 300 == 0:  # Every 3 seconds at 100Hz (reduced logging)
                 self.vehicle_logger.logger.debug(
                     f"Observer: Pos=({state_info['x']:.2f}, {state_info['y']:.2f}, {state_info['theta']:.2f}), "
-                    f"Vel={state_info['velocity']:.2f}, Valid={state_info['state_valid']}"
+                    f"Vel={state_info['velocity']:.2f}, GPS_Valid={state_info['gps_valid']}"
                 )
                 
                 # Log fleet observer status
@@ -312,13 +311,14 @@ class VehicleLogic:
         """Control logic update - state machine and vehicle commands"""
         try:
             # Check if components are initialized
-            if self.qcar is None or (hasattr(self, 'vehicle_observer') and self.vehicle_observer.get_state_estimator() is None):
+            # Use new API: get_local_estimator() instead of get_state_estimator()
+            if self.qcar is None or (hasattr(self, 'vehicle_observer') and self.vehicle_observer.get_local_estimator() is None):
                 return self._handle_initialization_control(dt)
             
             # Get current state from VehicleObserver
             state_info = self.vehicle_observer.get_estimated_state_for_control()
             x, y, theta, velocity = state_info['x'], state_info['y'], state_info['theta'], state_info['velocity']
-            state_valid = state_info['state_valid']
+            gps_valid = state_info['gps_valid']
             
             # Prepare YOLO data
             yolo_data = self.yolo_manager.get_yolo_data()
@@ -329,7 +329,7 @@ class VehicleLogic:
                 'motor_tach': state_info['motor_tach'],
                 'gyro_z': state_info['gyro_z'],
                 'yolo_data': yolo_data,
-                'state_valid': state_valid
+                'gps_valid': gps_valid
             }
             
             # Update state machine - it handles all state logic and transitions
@@ -359,7 +359,7 @@ class VehicleLogic:
                     'x': 0.0, 'y': 0.0, 'theta': 0.0, 'velocity': 0.0,
                     'motor_tach': 0.0, 'gyro_z': 0.0,
                     'yolo_data': self.yolo_manager.get_default_yolo_data(),
-                    'state_valid': False
+                    'gps_valid': False
                 }
                 
                 # Update state machine - this will handle initialization
@@ -444,7 +444,7 @@ class VehicleLogic:
             'cross_track_error': float(errors[0]),
             'heading_error': float(errors[1]),
             'state': self.state_machine.state.name if hasattr(self.state_machine, 'state') and self.state_machine.state else 'UNKNOWN',
-            'gps_valid': self.vehicle_observer.is_state_valid() if hasattr(self, 'vehicle_observer') and self.vehicle_observer else False,
+            'gps_valid': self.vehicle_observer.is_gps_valid() if hasattr(self, 'vehicle_observer') and self.vehicle_observer else False,
             # V2V status from cache
             **v2v_status,
             # Platoon status
@@ -586,7 +586,7 @@ class VehicleLogic:
     
     
     def _initialize_network_2_GroundStation(self) -> bool:
-        """Initialize network communication"""
+        """Initialize network communication - simplified with 8s timeout handled in client"""
         try:
             self.vehicle_logger.logger.info("Creating Ground Station client...")
             
@@ -596,21 +596,19 @@ class VehicleLogic:
                 logger=self.vehicle_logger,
                 kill_event=self.kill_event
             )
-            time.sleep(0.2)  # Allow client object to settle
             
-            # Initialize network connection
-            self.vehicle_logger.logger.info("Initializing network connection...")
-            if not self.client_Ground_Station.initialize_network():
-                return False
-            time.sleep(0.5)  # Allow network initialization to complete
+            # Initialize network connection (handles 8s timeout internally)
+            self.client_Ground_Station.initialize_network()
             
-            # Start network threads
-            self.vehicle_logger.logger.info("Starting network threads...")
-            if not self.client_Ground_Station.start_threads():
-                return False
-            time.sleep(0.3)  # Allow threads to start properly
+            # Start network threads (only if connected)
+            self.client_Ground_Station.start_threads()
             
-            self.vehicle_logger.logger.info("Ground Station communication initialized")
+            # Log final connection status
+            if self.client_Ground_Station.is_connected():
+                self.vehicle_logger.logger.info("Ground Station communication established")
+            else:
+                self.vehicle_logger.logger.info("Continuing without Ground Station connection")
+            
             return True
             
         except Exception as e:

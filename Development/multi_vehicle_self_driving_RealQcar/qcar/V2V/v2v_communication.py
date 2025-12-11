@@ -29,16 +29,17 @@ class V2VMessage:
     """Structure for V2V messages"""
     sender_id: int
     message_type: str
-    timestamp: float
     data: dict
+    seq_id: int = 0  # Sequence ID for packet tracking
+    send_time_ns: int = 0  # Send time in nanoseconds for precise latency measurement
     
     def to_dict(self) -> dict:
         return asdict(self)
     
     @classmethod
     def from_dict(cls, data: dict) -> 'V2VMessage':
-        # Filter out extra fields like 'seq' that aren't part of the dataclass
-        valid_fields = {'sender_id', 'message_type', 'timestamp', 'data'}
+        # Include seq_id and send_time_ns if present
+        valid_fields = {'sender_id', 'message_type', 'data', 'seq_id', 'send_time_ns'}
         filtered_data = {k: v for k, v in data.items() if k in valid_fields}
         return cls(**filtered_data)
 
@@ -58,14 +59,14 @@ class V2VCommunication:
     RECV_TIMEOUT = 0.01   # 10ms timeout for non-blocking receive
     MAX_PACKET_SIZE = 1024
     
-    # Default send intervals per message type (in seconds)
+    # Default send intervals per message type (in nanoseconds)
     DEFAULT_SEND_INTERVALS = {
-        'local_state': 0.05,    # 20 Hz - high frequency for position updates
-        'fleet_state': 0.20,    # 5 Hz - medium frequency for fleet consensus
-        'heartbeat': 1.00,      # 1 Hz - low frequency for health checks
-        'telemetry': 0.05,      # 20 Hz - high frequency (legacy)
-        'intent': 0.10,         # 10 Hz - medium frequency for intentions
-        'warning': 0.05,        # 20 Hz - high frequency for safety
+        'local_state': 50_000_000,    # 50ms = 20 Hz - high frequency for position updates
+        'fleet_state': 200_000_000,   # 200ms = 5 Hz - medium frequency for fleet consensus
+        'heartbeat': 1_000_000_000,   # 1000ms = 1 Hz - low frequency for health checks
+        'telemetry': 50_000_000,      # 50ms = 20 Hz - high frequency (legacy)
+        'intent': 100_000_000,        # 100ms = 10 Hz - medium frequency for intentions
+        'warning': 50_000_000,        # 50ms = 20 Hz - high frequency for safety
     }
     
     def __init__(self, vehicle_id: int, logger: logging.Logger, 
@@ -98,12 +99,12 @@ class V2VCommunication:
         self.recv_socket: Optional[socket.socket] = None
         self.recv_thread: Optional[threading.Thread] = None
         
-        # Performance tracking
-        self.last_send_time = 0.0
+        # Performance tracking (in nanoseconds)
+        self.last_send_time_ns = 0
         self.sequence_number = 0
         
-        # Per-message-type rate limiting - initialize with all possible types
-        self.message_send_times = {msg_type: 0.0 for msg_type in self.send_intervals.keys()}
+        # Per-message-type rate limiting - initialize with all possible types (in nanoseconds)
+        self.message_send_times_ns = {msg_type: 0 for msg_type in self.send_intervals.keys()}
         
         
         # Message handling
@@ -280,24 +281,19 @@ class V2VCommunication:
         if not self._is_active:
             return False
         
-        # Only send if enough time has passed (rate limiting)
-        current_time = time.time()
-        telemetry_interval = self.send_intervals.get('telemetry', 0.05)
-        last_telemetry_time = self.message_send_times.get('telemetry', 0.0)
-        if current_time - last_telemetry_time < telemetry_interval:
+        # Only send if enough time has passed (rate limiting using nanoseconds)
+        current_time_ns = time.time_ns()
+        telemetry_interval_ns = self.send_intervals.get('telemetry', 50_000_000)  # 50ms default
+        last_telemetry_time_ns = self.message_send_times_ns.get('telemetry', 0)
+        if current_time_ns - last_telemetry_time_ns < telemetry_interval_ns:
             return False
         
         # Create comprehensive telemetry message with all vehicle state data
         telemetry_data = {
-            'position': [vehicle_state.get('x', 0), vehicle_state.get('y', 0)],  # Changed from 'pos' to 'position' to match receiver
+            'position': [vehicle_state.get('x', 0), vehicle_state.get('y', 0)],
             'heading': vehicle_state.get('theta', 0),
             'velocity': vehicle_state.get('velocity', 0),
-            'state': vehicle_state.get('state', 'UNKNOWN'),  # Added missing state field
-            # 'v_ref': vehicle_state.get('v_ref', 0),  # Added v_ref for speed reference
-            # 'yolo_gain': vehicle_state.get('yolo_gain', 1.0),  # Added yolo gain
-            # 'waypoint_index': vehicle_state.get('waypoint_index', 0),  # Added waypoint tracking
-            # 'gps_valid': vehicle_state.get('gps_valid', False),  # Added GPS status
-            'timestamp': current_time
+            'state': vehicle_state.get('state', 'UNKNOWN'),
         }
         
         return self.send_message(MessageType.TELEMETRY.value, telemetry_data)
@@ -332,16 +328,10 @@ class V2VCommunication:
         self.peer_ports.clear()
         self.connection_states.clear()
         self.sequence_number = 0
-        self.last_send_time = 0.0
+        self.last_send_time_ns = 0
         # Reset per-message-type tracking
-        for msg_type in self.message_send_times:
-            self.message_send_times[msg_type] = 0.0
-        # Reset per-message-type tracking
-        for msg_type in self.message_send_times:
-            self.message_send_times[msg_type] = 0.0
-        # Reset per-message-type tracking
-        for msg_type in self.message_send_times:
-            self.message_send_times[msg_type] = 0.0
+        for msg_type in self.message_send_times_ns:
+            self.message_send_times_ns[msg_type] = 0
     
     def _notify_status_change(self, event: str, peer_id: int):
         """Notify status callback of connection changes"""
@@ -357,27 +347,27 @@ class V2VCommunication:
         if not self._is_active or not self.send_socket:
             return False
         
-        # Per-message-type rate limiting for better performance
-        current_time = time.time()
+        # Per-message-type rate limiting using nanoseconds for better performance
+        send_time_ns = time.time_ns()
         
-        # Get interval for this message type (default to 0.05s if not configured)
-        message_interval = self.send_intervals.get(message_type, 0.05)
+        # Get interval for this message type in nanoseconds (default to 50ms if not configured)
+        message_interval_ns = self.send_intervals.get(message_type, 50_000_000)
         
         # Check rate limit for this specific message type
-        last_send_for_type = self.message_send_times.get(message_type, 0.0)
-        if current_time - last_send_for_type < message_interval:
+        last_send_for_type_ns = self.message_send_times_ns.get(message_type, 0)
+        if send_time_ns - last_send_for_type_ns < message_interval_ns:
             return False  # Skip this send to maintain per-type rate limit
         
         message = V2VMessage(
             sender_id=self.vehicle_id,
             message_type=message_type,
-            timestamp=current_time,
-            data=data
+            data=data,
+            seq_id=self.sequence_number,
+            send_time_ns=send_time_ns
         )
         
-        # Add sequence number for packet tracking
+        # Convert to dict (already includes seq_id and send_time_ns)
         msg_dict = message.to_dict()
-        msg_dict['seq'] = self.sequence_number
         
         try:
             # Fast JSON encode
@@ -404,13 +394,14 @@ class V2VCommunication:
             if success_count > 0:
                 self.stats['messages_sent'] += 1
                 self.sequence_number += 1
-                self.last_send_time = current_time
+                self.last_send_time_ns = send_time_ns
                 # Update per-message-type send time
-                self.message_send_times[message_type] = current_time
+                self.message_send_times_ns[message_type] = send_time_ns
                 
-                # Update send rate statistics
-                if self.stats['messages_sent'] % 20 == 0:  # Every second at 20Hz
-                    self.stats['send_rate'] = 20.0 / max(1, current_time - (self.last_send_time - 1.0))
+                # Update send rate statistics (convert to Hz)
+                if self.stats['messages_sent'] % 20 == 0:  # Every 20 messages
+                    time_diff_s = (send_time_ns - (self.last_send_time_ns - int(1e9))) / 1e9
+                    self.stats['send_rate'] = 20.0 / max(0.001, time_diff_s)
             
             return success_count > 0
             
@@ -480,8 +471,7 @@ class V2VCommunication:
         """Send driving intent to other vehicles via UDP"""
         return self.send_message(MessageType.INTENT.value, {
             'intention': intention,
-            'parameters': parameters,
-            'timestamp': time.time()
+            'parameters': parameters
         })
     
     def send_warning(self, warning_type: str, urgency: str, data: dict) -> bool:
@@ -489,6 +479,5 @@ class V2VCommunication:
         return self.send_message(MessageType.WARNING.value, {
             'warning_type': warning_type,
             'urgency': urgency,
-            'data': data,
-            'timestamp': time.time()
+            'data': data
         })
