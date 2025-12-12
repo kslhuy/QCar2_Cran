@@ -128,6 +128,7 @@ class CommandHandler:
         'set_params': CommandType.SET_PARAMS,
         'set_velocity': CommandType.SET_VELOCITY,
         'set_path': CommandType.SET_PATH,
+        'set_initial_position': CommandType.SET_INITIAL_POSITION,
         'enable_platoon': CommandType.ENABLE_PLATOON_FOLLOWER,  # Default to follower
         'enable_platoon_leader': CommandType.ENABLE_PLATOON_LEADER,
         'enable_platoon_follower': CommandType.ENABLE_PLATOON_FOLLOWER,
@@ -202,7 +203,8 @@ class CommandHandler:
         # This assumes the state logged any specific errors if the command failed
         NON_TRANSITION_COMMANDS = [
             CommandType.SET_VELOCITY, 
-            CommandType.SET_PATH, 
+            CommandType.SET_PATH,
+            CommandType.SET_INITIAL_POSITION,
             CommandType.ACTIVATE_V2V, 
             CommandType.DISABLE_V2V,
             CommandType.SET_PARAMS,

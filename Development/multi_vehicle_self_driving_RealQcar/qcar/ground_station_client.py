@@ -24,6 +24,8 @@ class GroundStationClient:
     SEND_INTERVAL = 0.05  # 50ms = 20Hz telemetry
     RECV_TIMEOUT = 0.1    # 100ms socket timeout
     MAX_QUEUE_SIZE = 50   # Smaller queue for better performance
+    RECONNECT_TIMEOUT = 10.0  # 10 seconds to wait for reconnection before shutdown
+    RECONNECT_INTERVAL = 1.0  # Try to reconnect every 1 second
     
     def __init__(self, config: VehicleControlConfig, logger: VehicleLogger, kill_event: Event):
         self.config = config
@@ -41,6 +43,10 @@ class GroundStationClient:
         self.connected = False
         self._running = False
         self.last_send_time = 0.0
+        
+        # Reconnection state
+        self._reconnecting = False
+        self._reconnect_start_time = 0.0
         
         # Single thread for communication
         self.comm_thread = None
@@ -61,28 +67,54 @@ class GroundStationClient:
         self._recv_buffer = ""
     
     def initialize_network(self) -> bool:
-        """Initialize network connection to Ground Station"""
+        """Initialize network connection to Ground Station with 8-second timeout"""
+        #TODO : Handle disabled remote control
         if not self.config.network.is_remote_enabled:
-            self.logger.logger.info("Remote control disabled - no network needed")
+            self.logger.logger.info("Remote control disabled - Ground Station not used")
             return True
         
         self.logger.logger.info(f"Connecting to Ground Station at {self.host_ip}:{self.port}")
-        return self._connect()
+        
+        # Try to connect with total 8-second timeout
+        max_connection_time = 8.0
+        connection_start = time.time()
+        attempt = 0
+        
+        while time.time() - connection_start < max_connection_time:
+            attempt += 1
+            self.logger.logger.info(f"Connection attempt {attempt} to Ground Station...")
+            
+            if self._connect():
+                elapsed = time.time() - connection_start
+                self.logger.logger.info(f"Connected to Ground Station successfully in {elapsed:.2f}s")
+                return True
+            
+            # Check if we have time for another attempt
+            if time.time() - connection_start < max_connection_time - 1.0:
+                time.sleep(0.5)  # Wait before retry
+            else:
+                break
+        
+        # Timeout reached
+        elapsed = time.time() - connection_start
+        self.logger.logger.warning(
+            f"Failed to connect to Ground Station after {elapsed:.1f}s ({attempt} attempts) - continuing without connection"
+        )
+        return True  # Return True to allow vehicle to continue without Ground Station
     
     def _connect(self) -> bool:
         """Connect to Ground Station with simplified logic"""
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(self.connection_timeout)
+            self.socket.settimeout(2.0)  # 2-second timeout per attempt
             self.socket.connect((self.host_ip, self.port))
             self.socket.settimeout(self.RECV_TIMEOUT)  # Set receive timeout
             
             self.connected = True
-            self.logger.logger.info(f"Connected to Ground Station successfully")
             return True
             
         except Exception as e:
-            self.logger.log_error("Ground Station connection failed", e)
+            self.logger.logger.debug(f"Connection attempt failed: {e}")
             self.stats['connection_errors'] += 1
             self._cleanup_socket()
             return False
@@ -128,6 +160,11 @@ class GroundStationClient:
             while self._running and not self.kill_event.is_set():
                 current_time = time.time()
                 
+                # Skip communication if reconnecting
+                if self._reconnecting:
+                    time.sleep(0.1)
+                    continue
+                
                 # Send telemetry at controlled rate
                 if current_time - last_telemetry_time >= self.SEND_INTERVAL:
                     self._send_queued_telemetry()
@@ -146,7 +183,7 @@ class GroundStationClient:
     
     def _send_queued_telemetry(self):
         """Send all queued telemetry data"""
-        if not self.connected:
+        if not self.connected or self._reconnecting:
             return
         
         # Process all queued telemetry
@@ -159,7 +196,7 @@ class GroundStationClient:
                     self.stats['telemetry_sent'] += 1
                     sent_count += 1
                 else:
-                    # Connection lost
+                    # Connection lost - _send_json_message already triggered reconnection
                     return
                 
                 self.telemetry_queue.task_done()
@@ -171,7 +208,7 @@ class GroundStationClient:
     
     def _receive_commands(self):
         """Receive and queue commands from Ground Station"""
-        if not self.connected:
+        if not self.connected or self._reconnecting:
             return
         
         try:
@@ -215,6 +252,46 @@ class GroundStationClient:
             except Exception as e:
                 self.logger.log_error("Error parsing command", e)
     
+    def _attempt_reconnection(self) -> bool:
+        """Attempt to reconnect to Ground Station with timeout"""
+        self.logger.logger.info(f"Attempting to reconnect to Ground Station (timeout: {self.RECONNECT_TIMEOUT}s)...")
+        
+        reconnect_attempts = 0
+        while time.time() - self._reconnect_start_time < self.RECONNECT_TIMEOUT:
+            if self.kill_event.is_set():
+                self.logger.logger.info("Reconnection cancelled - shutdown requested")
+                return False
+            
+            reconnect_attempts += 1
+            self.logger.logger.info(f"Reconnection attempt {reconnect_attempts}...")
+            
+            try:
+                # Try to reconnect
+                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.socket.settimeout(2.0)  # Short timeout for reconnection attempts
+                self.socket.connect((self.host_ip, self.port))
+                self.socket.settimeout(self.RECV_TIMEOUT)  # Restore normal timeout
+                
+                self.connected = True
+                self._reconnecting = False
+                self._recv_buffer = ""  # Clear receive buffer
+                
+                self.logger.logger.info(f"Successfully reconnected to Ground Station after {reconnect_attempts} attempts")
+                return True
+                
+            except Exception as e:
+                self.logger.logger.debug(f"Reconnection attempt {reconnect_attempts} failed: {e}")
+                self._cleanup_socket()
+                
+                # Wait before next attempt
+                time.sleep(self.RECONNECT_INTERVAL)
+        
+        # Timeout reached
+        elapsed = time.time() - self._reconnect_start_time
+        self.logger.logger.error(f"Failed to reconnect after {elapsed:.1f}s ({reconnect_attempts} attempts)")
+        self._reconnecting = False
+        return False
+    
     def _send_json_message(self, data: dict) -> bool:
         """Send JSON message to Ground Station"""
         try:
@@ -227,10 +304,23 @@ class GroundStationClient:
             return False
     
     def _handle_disconnect(self):
-        """Handle connection loss"""
-        self.logger.log_warning("Ground Station connection lost")
+        """Handle connection loss and attempt reconnection"""
+        if self._reconnecting:
+            return  # Already handling reconnection
+        
+        self.logger.log_warning("Ground Station connection lost - attempting reconnection...")
         self._cleanup_socket()
         self.stats['connection_errors'] += 1
+        
+        # Start reconnection attempt
+        self._reconnecting = True
+        self._reconnect_start_time = time.time()
+        
+        # Try to reconnect
+        if not self._attempt_reconnection():
+            # Reconnection failed - trigger shutdown
+            self.logger.logger.error("Failed to reconnect to Ground Station within 8 seconds - shutting down")
+            self.kill_event.set()  # Trigger system shutdown
     
     # Public interface methods
     def queue_telemetry(self, telemetry_data: Dict[str, Any]) -> bool:

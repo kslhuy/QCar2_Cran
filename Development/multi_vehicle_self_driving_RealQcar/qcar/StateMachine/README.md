@@ -108,10 +108,3 @@ from vehicle_state_machine import VehicleStateMachine
 # Initialize state machine
 state_machine = VehicleStateMachine()
 
-# Control loop
-while running:
-    sensor_data = read_sensors()
-    throttle, steering = state_machine.update(dt, sensor_data)
-    send_motor_commands(throttle, steering)
-```
-

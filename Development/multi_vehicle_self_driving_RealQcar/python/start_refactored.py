@@ -203,6 +203,15 @@ try:
             ssh.exec_command(f"pkill -f yolo_server")
             time.sleep(1)
             
+            # These are shell redirection operators used in Linux/Unix commands:
+
+            # > /dev/null 2>&1 &
+            # > - Redirects standard output (stdout)
+            # /dev/null - A special file that discards all data written to it (like a black hole)
+            # 2>&1 - Redirects standard error (stderr, file descriptor 2) to the same destination as stdout (file descriptor 1)
+            # & - Runs the process in the background
+            # Result: All output (both normal output and errors) is discarded, nothing is saved.
+
             # Start vehicle_main.py remotely
             print(f"  [→] Starting vehicle_main.py...")
             if args.no_logs:
@@ -215,6 +224,12 @@ try:
                     f"> /dev/null 2>&1 &"
                 )
             else:
+                
+            # > vehicle_{car_id}.log 2>&1 &
+            # > vehicle_{car_id}.log - Redirects stdout to a log file (e.g., vehicle_0.log)
+            # 2>&1 - Redirects stderr to the same file as stdout
+            # & - Runs the process in the background
+            # Result: All output (both normal output and errors) is saved to the log file for later review.
                 cmd_vehicle = (
                     f"cd {REMOTE_PATH} && "
                     f"nohup python vehicle_main.py "

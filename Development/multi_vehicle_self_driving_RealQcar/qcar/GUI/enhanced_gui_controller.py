@@ -678,7 +678,7 @@ class EnhancedQCarGUIController:
         
         # Compact path control (middle of right section)
         path_frame = tk.LabelFrame(controls_container,
-                                  text="🛤️ Path",
+                                  text="🛤️ Path & Position",
                                   bg='#2d2d2d',
                                   fg='white',
                                   font=('Segoe UI', 11, 'bold'))
@@ -687,13 +687,104 @@ class EnhancedQCarGUIController:
         path_content = tk.Frame(path_frame, bg='#2d2d2d')
         path_content.pack(fill='x', padx=8, pady=6)
         
-        tk.Label(path_content,
+        # Initial Position Row
+        init_pos_row = tk.Frame(path_content, bg='#2d2d2d')
+        init_pos_row.pack(fill='x', pady=(0, 5))
+        
+        tk.Label(init_pos_row,
+                text="Init Pos:",
+                bg='#2d2d2d',
+                fg='#cccccc',
+                font=('Segoe UI', 10)).pack(side='left', padx=(0, 5))
+        
+        # X position
+        tk.Label(init_pos_row,
+                text="X:",
+                bg='#2d2d2d',
+                fg='#cccccc',
+                font=('Segoe UI', 9)).pack(side='left', padx=(0, 2))
+        
+        init_x_entry = tk.Entry(init_pos_row,
+                               width=5,
+                               bg='#3d3d3d',
+                               fg='white',
+                               font=('Segoe UI', 9),
+                               insertbackground='white',
+                               relief='flat')
+        init_x_entry.insert(0, "0.0")
+        init_x_entry.pack(side='left', padx=(0, 5))
+        
+        # Y position
+        tk.Label(init_pos_row,
+                text="Y:",
+                bg='#2d2d2d',
+                fg='#cccccc',
+                font=('Segoe UI', 9)).pack(side='left', padx=(0, 2))
+        
+        init_y_entry = tk.Entry(init_pos_row,
+                               width=5,
+                               bg='#3d3d3d',
+                               fg='white',
+                               font=('Segoe UI', 9),
+                               insertbackground='white',
+                               relief='flat')
+        init_y_entry.insert(0, "0.0")
+        init_y_entry.pack(side='left', padx=(0, 5))
+        
+        # Theta (heading)
+        tk.Label(init_pos_row,
+                text="θ:",
+                bg='#2d2d2d',
+                fg='#cccccc',
+                font=('Segoe UI', 9)).pack(side='left', padx=(0, 2))
+        
+        init_theta_entry = tk.Entry(init_pos_row,
+                                   width=5,
+                                   bg='#3d3d3d',
+                                   fg='white',
+                                   font=('Segoe UI', 9),
+                                   insertbackground='white',
+                                   relief='flat')
+        init_theta_entry.insert(0, "0.0")
+        init_theta_entry.pack(side='left', padx=(0, 5))
+        
+        # Calibrate GPS checkbox
+        init_calibrate_var = tk.BooleanVar(value=False)  # Default to False
+        init_calibrate_check = tk.Checkbutton(init_pos_row,
+                                             text="Calibrate GPS",
+                                             variable=init_calibrate_var,
+                                             bg='#2d2d2d',
+                                             fg='#4caf50',
+                                             selectcolor='#1e1e1e',
+                                             activebackground='#2d2d2d',
+                                             activeforeground='#4caf50',
+                                             font=('Segoe UI', 8))
+        init_calibrate_check.pack(side='left', padx=(0, 5))
+        
+        # Set button for initial position
+        init_pos_btn = tk.Button(init_pos_row,
+                                text="Set",
+                                bg='#2196f3',
+                                fg='white',
+                                font=('Segoe UI', 9, 'bold'),
+                                command=lambda: self.set_initial_position_with_feedback(car_id, init_x_entry.get(), init_y_entry.get(), init_theta_entry.get(), init_calibrate_var),
+                                cursor='hand2',
+                                relief='flat',
+                                padx=10,
+                                pady=3)
+        init_pos_btn.pack(side='left')
+        
+        # Path Nodes Row
+        path_row = tk.Frame(path_content, bg='#2d2d2d')
+        path_row.pack(fill='x')
+        
+        tk.Label(path_row,
                 text="Nodes:",
                 bg='#2d2d2d',
                 fg='#cccccc',
                 font=('Segoe UI', 10)).pack(side='left', padx=(0, 8))
         
-        path_entry = tk.Entry(path_content,
+        path_entry = tk.Entry(path_row,
                              width=15,
                              bg='#3d3d3d',
                              fg='white',
@@ -703,7 +794,7 @@ class EnhancedQCarGUIController:
         path_entry.insert(0, "10, 2, 4, 6, 8, 10" if car_id == 0 else "10, 2, 4, 6, 8, 10")
         path_entry.pack(side='left', padx=(0, 8))
         
-        path_btn = tk.Button(path_content,
+        path_btn = tk.Button(path_row,
                             text="Set",
                             bg='#2196f3',
                             fg='white',
@@ -1167,6 +1258,35 @@ class EnhancedQCarGUIController:
                 self.log(f"❌ Path must have at least 2 nodes", 'ERROR')
         except ValueError:
             self.log(f"❌ Invalid path format: {path_str}", 'ERROR')
+    
+    def set_initial_position_with_feedback(self, car_id, x_str, y_str, theta_str, calibrate_var=None):
+        """Set initial position with enhanced validation and feedback
+        
+        Args:
+            car_id: ID of the car
+            x_str: X coordinate as string
+            y_str: Y coordinate as string
+            theta_str: Heading angle as string
+            calibrate_var: tkinter BooleanVar for calibrate checkbox (None = default True)
+        """
+        try:
+            x = float(x_str)
+            y = float(y_str)
+            theta = float(theta_str)
+            
+            # Get calibrate flag from checkbox or default to True
+            calibrate = calibrate_var.get() if calibrate_var else True
+            
+            success = self.controller.set_initial_position(car_id, x, y, theta, calibrate)
+            if success:
+                self.commands_sent_gui += 1
+                mode = "with GPS calibration" if calibrate else "without GPS calibration"
+                self.log(f"📍 Set initial position for Car {car_id}: ({x:.2f}, {y:.2f}, θ={theta:.2f}) {mode}", 'SUCCESS')
+            else:
+                self.commands_failed_gui += 1
+                self.log(f"❌ Failed to set initial position for Car {car_id}", 'ERROR')
+        except ValueError:
+            self.log(f"❌ Invalid position values: X={x_str}, Y={y_str}, θ={theta_str}", 'ERROR')
     
     def enable_platoon_with_feedback(self, car_id, role, leader_id_str):
         """Enable platoon with enhanced feedback"""
@@ -1975,9 +2095,9 @@ class EnhancedQCarGUIController:
             if control_type == 'keyboard':
                 # Keyboard control (WASD) with gradual steering
                 if 'w' in self.keys_pressed:
-                    throttle = 0.05  # Forward
+                    throttle = 0.15  # Forward
                 if 's' in self.keys_pressed:
-                    throttle = -0.05  # Backward
+                    throttle = -0.15  # Backward
                 
                 # Gradual steering increase
                 if 'a' in self.keys_pressed:

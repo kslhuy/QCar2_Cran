@@ -14,6 +14,9 @@ import time
 import sys
 import os
 
+from pal.products.qcar import QCarGPS, IS_PHYSICAL_QCAR
+import numpy as np
+
 # Add parent directory to sys.path to import command_types
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
@@ -33,7 +36,7 @@ class StateBase:
             vehicle_logic: Reference to main VehicleLogic instance
         """
         self.vehicle_logic = vehicle_logic
-        self.logger = vehicle_logic.vehicle_logger
+        self.logger = vehicle_logic.vehicle_logger # Use vehicle's logger
         self.config = vehicle_logic.config
         
         # State-specific data
@@ -144,14 +147,28 @@ class StateBase:
             # Handle path updates without transitioning
             node_sequence = data.get('node_sequence')
             if node_sequence and isinstance(node_sequence, list):
-                if hasattr(self.vehicle_logic, 'update_path'):
-                    self.vehicle_logic.update_path(node_sequence)
+                # Generate waypoints from node sequence using roadmap
+                if hasattr(self.vehicle_logic, 'roadmap') and self.vehicle_logic.roadmap:
+                    try:
+                        new_waypoints = self.vehicle_logic.roadmap.generate_path(node_sequence)
+                        self.vehicle_logic.waypoint_sequence = new_waypoints
+                        
+                        # Update steering controller if it exists
+                        if hasattr(self.vehicle_logic, 'steering_controller') and self.vehicle_logic.steering_controller:
+                            self.vehicle_logic.steering_controller.reset(new_waypoints)
+                        
+                        if self.logger:
+                            self.logger.logger.info(f"[OK] Path updated with {len(node_sequence)} nodes in {self.__class__.__name__}")
+                        return None
+                    except Exception as e:
+                        if self.logger:
+                            self.logger.log_error("Failed to generate path from nodes", e)
+                else:
                     if self.logger:
-                        self.logger.logger.info(f"[OK] Path updated in {self.__class__.__name__}")
-                    return None  # No state transition
+                        self.logger.logger.warning("[!] No roadmap available for path generation")
             else:
                 if self.logger:
-                    self.logger.logger.warning(f"[!] Invalid path update")
+                    self.logger.logger.warning(f"[!] Invalid path update data")
             return None
         
         elif command_type == CommandType.ACTIVATE_V2V:
@@ -404,47 +421,65 @@ class StateBase:
                 return False
         return True
     
-    def _recalibrate_gps_only(self) -> bool:
-        """Recalibrate GPS without reinitializing other components"""
+    def _recalibrate_gps_only(self, initial_pose=None) -> bool:
+        """
+        Recalibrate GPS without reinitializing other components
+        
+        Args:
+            initial_pose: Optional numpy array [x, y, theta]. If None, uses config calibration_pose
+            
+        Returns:
+            bool: True if recalibration successful
+        """
         try:
-            # Check if this is a fake/mock vehicle - skip recalibration for fake vehicles
-            if hasattr(self.vehicle_logic, '_parent_fake_vehicle'):
-                self.logger.logger.info("Skipping GPS recalibration for fake/mock vehicle")
-                return True  # Return success for fake vehicles without doing anything
+
             
-            from pal.products.qcar import QCarGPS, IS_PHYSICAL_QCAR
-            import numpy as np
-            import time
+            # Use provided initial_pose or fall back to config calibration_pose
+            calibration_pose = initial_pose if initial_pose is not None else self.config.path.calibration_pose
             
-            self.logger.logger.info("Starting GPS-only recalibration...")
+            if initial_pose is not None:
+                self.logger.logger.info(f"Starting GPS recalibration with custom pose: ({calibration_pose[0]:.2f}, {calibration_pose[1]:.2f}, {np.rad2deg(calibration_pose[2]):.1f}°)")
+            else:
+                self.logger.logger.info("Starting GPS recalibration with config calibration_pose")
             
             # Close existing GPS if it exists
             if hasattr(self.vehicle_logic, 'gps') and self.vehicle_logic.gps:
                 try:
                     self.vehicle_logic.gps.terminate()
+                    self.logger.logger.info("Existing GPS terminated")
                 except:
                     pass
             
             # Reinitialize GPS with calibration
             if not IS_PHYSICAL_QCAR:
-                # Simulated QCar - need car config
-                from qvl.multi_agent import readRobots
-                robotsDir = readRobots()
-                name = f"QC2_{self.vehicle_logic.vehicle_id}"
-                car_config = robotsDir[name]
+                # For fake vehicles: Update mock hardware positions
+                self._update_fake_vehicle_position(calibration_pose)
                 
-                self.vehicle_logic.gps = QCarGPS(
-                    initialPose=self.config.path.calibration_pose,
-                    calibrate=True,
-                    gpsPort=car_config["gpsPort"],
-                    lidarIdealPort=car_config["lidarIdealPort"]
-                )
+                # We dont need to recalibrate simulated GPS in Qlabs (since the Position will always be perfect)
+                # TODO :  maybe we can teleport the Qcar to the calibration_pose?
+                
+                # # Simulated QCar - need car config
+                # from qvl.multi_agent import readRobots
+                # robotsDir = readRobots()
+                # name = f"QC2_{self.vehicle_logic.vehicle_id}"
+                # car_config = robotsDir[name]
+                
+                # self.vehicle_logic.gps = QCarGPS(
+                #     initialPose=calibration_pose,
+                #     calibrate=True,
+                #     gpsPort=car_config["gpsPort"],
+                #     lidarIdealPort=car_config["lidarIdealPort"]
+                # )
+                self.logger.logger.info("GPS recalibrated (simulated mode)")
             else:
                 # Physical QCar
                 self.vehicle_logic.gps = QCarGPS(
-                    initialPose=self.config.path.calibration_pose,
+                    initialPose=calibration_pose,
                     calibrate=True
                 )
+                self.logger.logger.info("GPS recalibrated (physical mode)")
+            
+
             
             time.sleep(0.5)
             
@@ -461,13 +496,14 @@ class StateBase:
                         self.vehicle_logic.gps.orientation[2]
                     ])
                     self.logger.logger.info(
-                        f"✅ GPS recalibrated - New pose: x={new_pose[0]:.2f}, "
-                        f"y={new_pose[1]:.2f}, theta={new_pose[2]:.2f}"
+                        f"GPS recalibrated - New pose: x={new_pose[0]:.2f}, "
+                        f"y={new_pose[1]:.2f}, theta={np.rad2deg(new_pose[2]):.1f}°"
                     )
                     
-                    # Update state estimator with new GPS
+                    # Reset vehicle observer with calibrated GPS position
                     if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
-                        self.vehicle_logic.vehicle_observer.update_gps_reference(self.vehicle_logic.gps)
+                        self.vehicle_logic.vehicle_observer.reset_observer(new_pose)
+                        self.logger.logger.info("Vehicle observer reset with calibrated GPS position")
                     
                     return True
                 time.sleep(0.1)
@@ -478,3 +514,37 @@ class StateBase:
         except Exception as e:
             self.logger.log_error("GPS recalibration failed", e)
             return False
+    
+    def _update_fake_vehicle_position(self, pose):
+        """
+        Update fake vehicle mock hardware position after GPS recalibration.
+        Only applies to fake vehicles with mock hardware.
+        
+        Args:
+            pose: numpy array [x, y, theta]
+        """
+        try:
+            
+            # Check if this is a fake vehicle with mock hardware
+            if hasattr(self.vehicle_logic, '_parent_fake_vehicle'):
+                fake_vehicle = self.vehicle_logic._parent_fake_vehicle
+                
+                # Update MockQCar position
+                if hasattr(fake_vehicle, 'mock_qcar'):
+                    fake_vehicle.mock_qcar.x = float(pose[0])
+                    fake_vehicle.mock_qcar.y = float(pose[1])
+                    fake_vehicle.mock_qcar.heading = float(pose[2])
+                    self.logger.logger.info(
+                        f"MockQCar position updated: ({pose[0]:.2f}, {pose[1]:.2f}, {np.rad2deg(pose[2]):.1f}°)"
+                    )
+                
+                # Update MockQCarGPS position
+                if hasattr(fake_vehicle, 'mock_gps'):
+                    fake_vehicle.mock_gps.x = float(pose[0])
+                    fake_vehicle.mock_gps.y = float(pose[1])
+                    self.logger.logger.info(
+                        f"MockGPS position updated: ({pose[0]:.2f}, {pose[1]:.2f})"
+                    )
+        except Exception as e:
+            # Silently ignore errors for non-fake vehicles
+            pass

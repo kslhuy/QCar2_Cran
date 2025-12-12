@@ -7,6 +7,7 @@ and transitions to WAITING_FOR_START for testing.
 import time
 import sys
 import os
+import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from StateMachine.state_base import StateBase
 from StateMachine.vehicle_state import VehicleState, StateTransitionReason
@@ -39,17 +40,62 @@ class FakeInitializingState(StateBase):
     
     def enter(self) -> bool:
         """Initialize fake vehicle components quickly"""
+        print(f"[DEBUG] FakeInitializingState.enter() called - START")
         super().enter()
+        print(f"[DEBUG] FakeInitializingState.enter() - after super().enter()")
         print(f"DEBUG Car init: enter() method called")
         self.logger.logger.info("Entering FAKE INITIALIZING state")
         
         # Reset any previous state
         self.state_data = {
             'initialization_start': time.time(),
-            'quick_init_done': False
+            'quick_init_done': False,
+            'telemetry_initialized': False
         }
         
+        print(f"[DEBUG] Checking telemetry logging config: {self.config.logging.enable_telemetry_logging}")
+        
+        # Initialize telemetry logging immediately (if enabled)
+        if self.config.logging.enable_telemetry_logging:
+            print(f"[DEBUG] Telemetry logging is ENABLED - calling setup_telemetry_logging()")
+            try:
+                print(f"[DEBUG] About to call self.logger.setup_telemetry_logging()")
+                run_dir = self.logger.setup_telemetry_logging(self.config.logging.data_log_dir)
+                print(f"[DEBUG] setup_telemetry_logging() returned: {run_dir}")
+                self.state_data['telemetry_initialized'] = True
+                print(f"[+] FakeInitializingState: Telemetry logging initialized: {run_dir}")
+            except Exception as e:
+                print(f"[!] FakeInitializingState: Telemetry initialization failed: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print(f"[DEBUG] Telemetry logging is DISABLED")
+        
+        # # AUTO-ACTIVATE V2V for fake vehicles (simulate Ground Station command)
+        # print(f"[DEBUG] Auto-activating V2V for fake vehicle testing...")
+        # try:
+        #     # Activate V2V with all possible peers (vehicles 0-3 on localhost)
+        #     vehicle_id = self.config.network.car_id
+        #     peer_vehicles = [i for i in range(4) if i != vehicle_id]  # All vehicles except self
+        #     peer_ips = ["127.0.0.1"] * len(peer_vehicles)  # All on localhost
+            
+        #     if hasattr(self.vehicle_logic, 'v2v_manager'):
+        #         success = self.vehicle_logic.v2v_manager.activate_v2v(peer_vehicles, peer_ips)
+        #         if success:
+        #             print(f"[+] FakeInitializingState: V2V auto-activated with peers {peer_vehicles}")
+        #             if self.logger:
+        #                 self.logger.logger.info(f"V2V auto-activated for fake vehicle {vehicle_id} with peers {peer_vehicles}")
+        #         else:
+        #             print(f"[!] FakeInitializingState: V2V auto-activation failed")
+        #     else:
+        #         print(f"[!] FakeInitializingState: No v2v_manager found")
+        # except Exception as e:
+        #     print(f"[ERROR] V2V auto-activation failed: {e}")
+        #     import traceback
+        #     traceback.print_exc()
+        
         print(f"DEBUG Car init: state_data initialized in enter()")
+        print(f"[DEBUG] FakeInitializingState.enter() - END")
         return True
     
     def update(self, dt: float, sensor_data: Dict[str, Any]) -> Tuple[float, float, Optional[Tuple[VehicleState, StateTransitionReason]]]:
@@ -118,47 +164,45 @@ class FakeInitializingState(StateBase):
         try:
             # Get the parent fake vehicle instance to access mock components
             parent_fake_vehicle = getattr(self.vehicle_logic, '_parent_fake_vehicle', None)
-            if parent_fake_vehicle:
-                # Inject mock hardware from the fake vehicle
-                self.vehicle_logic.qcar = parent_fake_vehicle.mock_qcar
-                self.vehicle_logic.gps = parent_fake_vehicle.mock_gps  
-                # Initialize YOLOManager with parent's mock components
-                from fake_vehicle_real_logic import MockStateEstimator, MockSpeedController, MockSteeringController, MockYOLODrive
-                mock_yolo_drive = MockYOLODrive(self.config.network.car_id)
-                self.vehicle_logic.yolo_manager.initialize(parent_fake_vehicle.mock_yolo, mock_yolo_drive)
-                
-                # Create mock controllers and state estimator
-                mock_state_estimator = MockStateEstimator(parent_fake_vehicle.mock_qcar, parent_fake_vehicle.mock_gps)
-                self.vehicle_logic.vehicle_observer.set_state_estimator(mock_state_estimator)
-                self.vehicle_logic.speed_controller = MockSpeedController(self.config.network.car_id)
-                self.vehicle_logic.steering_controller = MockSteeringController(self.config.network.car_id)
-                
-                print(f"   [+] Mock QCar hardware injected")
-                print(f"   [+] Mock GPS injected")
-                print(f"   [+] Mock YOLO injected")
-                print(f"   [+] Mock controllers created")
-            else:
-                print(f"   [!] Parent fake vehicle not found, using basic mocks")
-                # Fallback to creating basic mocks
-                from fake_vehicle_real_logic import MockQCar, MockQCarGPS, MockYOLOReceiver
-                from fake_vehicle_real_logic import MockStateEstimator, MockSpeedController, MockSteeringController, MockYOLODrive
-                car_id = self.config.network.car_id
-                
-                self.vehicle_logic.qcar = MockQCar(car_id)
-                self.vehicle_logic.gps = MockQCarGPS(self.vehicle_logic.qcar)
-                
-                # Initialize YOLOManager with mock components
-                mock_yolo_receiver = MockYOLOReceiver()
-                mock_yolo_drive = MockYOLODrive()
-                self.vehicle_logic.yolo_manager.initialize(mock_yolo_receiver, mock_yolo_drive)
-                
-                mock_state_estimator = MockStateEstimator(self.vehicle_logic.qcar, self.vehicle_logic.gps)
-                self.vehicle_logic.vehicle_observer.set_state_estimator(mock_state_estimator)
-                self.vehicle_logic.speed_controller = MockSpeedController(car_id)
-                self.vehicle_logic.steering_controller = MockSteeringController(car_id)
-                
-                print(f"   [+] Basic mock components created")
             
+            if not parent_fake_vehicle:
+                print(f"   [!] Parent fake vehicle not found!")
+                return False
+            
+            # Inject mock hardware from the fake vehicle
+            self.vehicle_logic.qcar = parent_fake_vehicle.mock_qcar
+            self.vehicle_logic.gps = parent_fake_vehicle.mock_gps  
+            print(f"   [+] Mock QCar hardware injected")
+            print(f"   [+] Mock GPS injected")
+            
+            # Initialize YOLOManager with parent's mock components
+            from fake_vehicle_real_logic import MockSpeedController, MockSteeringController, MockYOLODrive
+            mock_yolo_drive = MockYOLODrive(self.config.network.car_id)
+            self.vehicle_logic.yolo_manager.initialize(parent_fake_vehicle.mock_yolo, mock_yolo_drive)
+            print(f"   [+] Mock YOLO injected")
+            
+            # Initialize the existing local estimator with mock GPS
+            # Use the normal state estimation scheme (EKF/Luenberger) with mock sensors
+            initial_pose = np.array([0.0, 0.0, 0.0])  # Will be updated by mock GPS
+            
+            print(f"   [*] Initializing local estimator (type: {self.vehicle_logic.vehicle_observer.local_estimator_type})...")
+            success = self.vehicle_logic.vehicle_observer.initialize_local_estimator(
+                gps=parent_fake_vehicle.mock_gps,
+                initial_pose=initial_pose,
+                estimator_params={'use_qcar_ekf': False}  # Use fallback EKF for simulation
+            )
+            
+            if not success:
+                print(f"   [!] Local estimator initialization failed!")
+                return False
+            
+            print(f"   [+] Local estimator initialized with mock GPS (using {self.vehicle_logic.vehicle_observer.local_estimator_type})")
+            
+            # Create mock controllers
+            self.vehicle_logic.speed_controller = MockSpeedController(self.config.network.car_id)
+            self.vehicle_logic.steering_controller = MockSteeringController(self.config.network.car_id)
+            print(f"   [+] Mock controllers created")
+           
             # Skip real hardware initialization completely
             print(f"   [+] Ground Station connection handled by VehicleLogic")
             print(f"   [+] Fake components ready")
