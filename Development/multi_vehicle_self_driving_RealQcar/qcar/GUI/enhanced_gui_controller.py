@@ -2178,7 +2178,7 @@ class EnhancedQCarGUIController:
 # Configuration
 HOST_IP = '0.0.0.0'  # Listen on all network interfaces
 BASE_PORT = 5000
-NUM_CARS = 2
+NUM_CARS = 5
 
 
 def main():

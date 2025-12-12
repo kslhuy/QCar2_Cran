@@ -59,7 +59,7 @@ for i in range(num_cars):
         "ActorNumber": i,
         "RobotType": car_type,
         "Location": [
-            init_location[0] + i * init_distance,
+            init_location[0] - i * init_distance,
             init_location[1],
             init_location[2],
         ],

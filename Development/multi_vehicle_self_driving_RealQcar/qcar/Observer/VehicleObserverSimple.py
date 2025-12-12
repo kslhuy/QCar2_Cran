@@ -314,7 +314,7 @@ class VehicleObserver:
             
             # Update fleet observer if it's time (independent rate control)
             if self._should_update_fleet_observer(current_time):
-                self._update_fleet_observer_internal(dt)
+                self._update_fleet_observer_internal(dt) # Distributed
             
             return state_info
             
@@ -401,7 +401,7 @@ class VehicleObserver:
             if not self.v2v_active:
                 return
             
-            if not self.observer_config["enable_distributed"]:
+            if not self.observer_config["enable_distributed"]: # Only enable, if V2V true
                 return
             
             if self.fleet_estimator is None:
@@ -411,6 +411,7 @@ class VehicleObserver:
             
             # Get control input (steering, throttle) - use zeros as default
             control = np.array([0.0, 0.0])  # Will be passed from vehicle_logic in future
+            # control input can be estimated by observer state. Based on the co-design method
             
             # Update fleet estimates using pluggable estimator
             current_local = self.local_state.copy()

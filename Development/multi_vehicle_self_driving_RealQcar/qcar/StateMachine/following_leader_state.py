@@ -278,6 +278,7 @@ class FollowingLeaderState(StateBase):
         # Compute throttle using modular longitudinal controller
         u = self.longitudinal_controller.compute_throttle(follower_state, leader_state, dt)
         
+        
         # Compute steering based on lateral control mode
         if self.lateral_controller_type == 'path':
             # Path-following mode: use steering controller with waypoints
@@ -294,6 +295,8 @@ class FollowingLeaderState(StateBase):
             delta=delta
         )
         
+        u = 0.05
+        delta = 0
         return u, delta
     
     def _compute_path_steering(self, x: float, y: float, theta: float, velocity: float) -> float:
