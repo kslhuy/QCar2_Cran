@@ -1,15 +1,5 @@
 # Example configuration file for Vehicle Control System
-
-speed:
-  v_ref: 0.6  # Desired velocity in m/s
-  K_p: 0.3     # Proportional gain
-  K_i: 0.2     # Integral gain
-  max_throttle: 0.1
-
-steering:
-  K_stanley: 0.5 # Stanley controller gain
-  max_steering_angle: 0.5236  # pi/6 radians (30 degrees)
-  enable_steering_control: true
+# Note: Controller parameters (PID, Stanley, etc.) are now in config_controller_sim.yaml and config_controller_real.yaml
 
 timing:
   tf: 6000  # Experiment duration in seconds

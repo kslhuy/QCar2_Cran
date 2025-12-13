@@ -11,8 +11,7 @@ from typing import Optional, Dict, Any
 from threading import Event
 
 from logging_utils import VehicleLogger
-from config import VehicleControlConfig
-
+from config_main import VehicleMainConfig
 
 class GroundStationClient:
     """
@@ -27,7 +26,7 @@ class GroundStationClient:
     RECONNECT_TIMEOUT = 10.0  # 10 seconds to wait for reconnection before shutdown
     RECONNECT_INTERVAL = 1.0  # Try to reconnect every 1 second
     
-    def __init__(self, config: VehicleControlConfig, logger: VehicleLogger, kill_event: Event):
+    def __init__(self, config: VehicleMainConfig, logger: VehicleLogger, kill_event: Event):
         self.config = config
         self.logger = logger
         self.kill_event = kill_event

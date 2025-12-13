@@ -55,7 +55,7 @@ except ImportError as e:
 
 # Import controller config loader
 try:
-    from Controller.config_loader import get_controller_config
+    from Controller.config_controller_loader import get_controller_config
     CONFIG_LOADER_AVAILABLE = True
 except ImportError as e:
     print(f"WARNING: Cannot import config_loader: {e}")
@@ -64,12 +64,12 @@ except ImportError as e:
 
 # Import SteeringController for path-following mode
 try:
-    from Controller.controllers import SteeringController
+    from Controller.lateral_controllers import StanleyController
     STEERING_CONTROLLER_AVAILABLE = True
 except ImportError as e:
     print(f"WARNING: Cannot import SteeringController: {e}")
     STEERING_CONTROLLER_AVAILABLE = False
-    SteeringController = None
+    StanleyController = None
 
 
 class FollowingLeaderState(StateBase):
@@ -152,9 +152,9 @@ class FollowingLeaderState(StateBase):
         
         try:
             # Initialize steering controller with current waypoint sequence
-            self.steering_controller = SteeringController(
+            self.steering_controller = StanleyController(
                 waypoints=self.vehicle_logic.waypoint_sequence,
-                config=self.config,
+                config=self.controller_config,
                 logger=self.logger,
                 cyclic=True
             )
@@ -169,9 +169,9 @@ class FollowingLeaderState(StateBase):
         if hasattr(self.vehicle_logic, 'loop_counter') and self.vehicle_logic.loop_counter % 1000 == 0:
             print(f"[DEBUG] FollowingLeaderState.update called - loop_counter: {getattr(self.vehicle_logic, 'loop_counter', 'N/A')}")
         
-        # Check if emergency stop requested
-        if self.should_transition_to_stopped(sensor_data):
-            return 0.0, 0.0, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
+        # # Check if emergency stop requested
+        # if self.should_transition_to_stopped(sensor_data):
+        #     return 0.0, 0.0, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
         
         # Check startup delay
         if self.vehicle_logic.elapsed_time() < self.config.timing.start_delay:
@@ -182,7 +182,7 @@ class FollowingLeaderState(StateBase):
         velocity = sensor_data['velocity']
         yolo_data = sensor_data.get('yolo_data', {})
         
-        # Update PlatoonController with perception data
+        # Update Data for PlatoonController (perception and V2V data) 
         self._update_platoon_controller(yolo_data)
         
         # Get V2V leader data
@@ -207,20 +207,22 @@ class FollowingLeaderState(StateBase):
         
         # Update with YOLO perception data
         if self.vehicle_logic.yolo_manager.yolo_enabled:
-            cars_detected = yolo_data.get('cars', False)
+            cars_detected = yolo_data.get('cars', [])
             car_distance = yolo_data.get('car_dist')
+            # Check if any car is detected (cars is an array, check if any element is non-zero)
+            has_car = any(cars_detected) if isinstance(cars_detected, (list, tuple)) else bool(cars_detected)
             pc.update_leader_info(
-                detected=cars_detected and car_distance is not None,
+                detected=has_car and car_distance is not None,
                 distance=car_distance,
                 velocity=None  # Velocity comes from V2V
             )
         
-        # Update with V2V velocity data
-        if hasattr(self.vehicle_logic, 'v2v_manager'):
-            pc.update_leader_velocity_from_v2v(
-                self.vehicle_logic.v2v_manager, 
-                self.vehicle_logic.vehicle_id
-            )
+        # # Update with V2V velocity data
+        # if hasattr(self.vehicle_logic, 'v2v_manager'):
+        #     pc.update_leader_velocity_from_v2v(
+        #         self.vehicle_logic.v2v_manager, 
+        #         self.vehicle_logic.vehicle_id
+        #     )
     
     def _get_v2v_leader_data(self) -> Optional[Dict[str, Any]]:
         """Get leader data from V2V"""
@@ -233,10 +235,12 @@ class FollowingLeaderState(StateBase):
         # If this vehicle is actually the leader, it shouldn't be following anyone
         if hasattr(pc, 'is_leader') and pc.is_leader:
             self.logger.logger.warning("Leader vehicle trying to get V2V leader data")
+            # TODO : Consider transitioning back to FOLLOWING_PATH state
             return None
         
+        # TODO: Should have the choice to use data direct from v2v_manager or Estimated by Observer
         v2v_data = self.vehicle_logic.platoon_controller.get_direct_leader_data_from_v2v(
-            getattr(self.vehicle_logic, 'v2v_manager', None),
+            self.vehicle_logic.v2v_manager,
             self.vehicle_logic.vehicle_id
         )
         
@@ -256,6 +260,8 @@ class FollowingLeaderState(StateBase):
         
         # No V2V data - stop
         if v2v_data is None:
+            if hasattr(self.vehicle_logic, 'loop_counter') and self.vehicle_logic.loop_counter % 200 == 0:
+                self.logger.logger.warning("[FOLLOW] V2V data is None - stopping")
             return 0.0, 0.0
         
         # Prepare follower state
@@ -275,6 +281,7 @@ class FollowingLeaderState(StateBase):
             'velocity': v2v_data.get('velocity', 0.0)
         }
         
+       
         # Compute throttle using modular longitudinal controller
         u = self.longitudinal_controller.compute_throttle(follower_state, leader_state, dt)
         
@@ -298,7 +305,7 @@ class FollowingLeaderState(StateBase):
     
     def _compute_path_steering(self, x: float, y: float, theta: float, velocity: float) -> float:
         """Compute steering control using path-following (like in FOLLOWING_PATH state)"""
-        if not self.config.steering.enable_steering_control or not self.steering_controller:
+        if not self.vehicle_logic.controller_config.enable_steering_control or not self.steering_controller:
             return 0.0
         
         # Use look-ahead point (0.2m forward from vehicle center)
@@ -312,6 +319,7 @@ class FollowingLeaderState(StateBase):
             
             status = "unknown"
             leader_info = ""
+            spacing_info = ""
             
             if hasattr(self.vehicle_logic, 'platoon_controller'):
                 pc = self.vehicle_logic.platoon_controller
@@ -319,9 +327,8 @@ class FollowingLeaderState(StateBase):
                 # Check for V2V leader data first (preferred for followers)
                 if v2v_data is not None:
                     leader_velocity = v2v_data.get('velocity', 0.0)
-                    leader_distance = v2v_data.get('distance', 0.0)
                     status = "following_v2v"
-                    leader_info = f"L_vel: {leader_velocity:.2f}m/s, L_dist: {leader_distance:.2f}m"
+                    leader_info = f"L_vel: {leader_velocity:.2f}m/s"
                 elif pc.is_spacing_stable():
                     status = "stable"
                 elif pc.leader_detected:
@@ -332,8 +339,8 @@ class FollowingLeaderState(StateBase):
             # Enhanced logging with control command details
             if throttle_cmd is not None:
                 self.logger.logger.info(
-                    f"[FOLLOW] {status} | Current_vel: {velocity:.2f}m/s | "
-                    f"Throttle_cmd: {throttle_cmd:.3f} | {leader_info}"
+                    f"[FOLLOW] {status} | V: {velocity:.2f}m/s | "
+                    f"Throttle: {throttle_cmd:.3f} | {leader_info} | {spacing_info}"
                 )
             else:
                 self.logger.logger.info(f"[FOLLOW] Status: {status}, velocity: {velocity:.2f}m/s")

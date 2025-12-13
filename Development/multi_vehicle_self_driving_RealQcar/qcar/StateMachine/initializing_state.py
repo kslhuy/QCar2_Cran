@@ -12,6 +12,12 @@ from typing import Dict, Any, Tuple, Optional
 
 from .state_base import StateBase
 from .vehicle_state import VehicleState, StateTransitionReason
+from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
+from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
+from hal.products.mats import SDCSRoadMap
+from ground_station_client import GroundStationClient
+from qvl.multi_agent import readRobots
+
 
 # Add parent directory to sys.path for imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -113,7 +119,6 @@ class InitializingState(StateBase):
         initialization_steps = [
             ("Path planning", self._initialize_path_planning, 0.2),
             ("QCar hardware", self._initialize_qcar, 0.2),
-            ("Controllers", self._initialize_controllers, 0.2),
             ("Perception", self._initialize_perception, 0.2),
             ("Telemetry logging", self._initialize_telemetry, 0.1)
         ]
@@ -198,11 +203,10 @@ class InitializingState(StateBase):
     
     def _initialize_path_planning(self) -> bool:
         """Initialize path planning system"""
-        if not self.config.steering.enable_steering_control:
+        if not self.vehicle_logic.controller_config.enable_steering_control:
             return True
         
         try:
-            from hal.products.mats import SDCSRoadMap
             
             # Create roadmap
             self.vehicle_logic.roadmap = SDCSRoadMap(
@@ -251,7 +255,6 @@ class InitializingState(StateBase):
     def _initialize_network_2_GroundStation(self) -> bool:
         """Initialize network communication with Ground Station"""
         try:
-            from ground_station_client import GroundStationClient
             
             # Create client
             self.vehicle_logic.client_Ground_Station = GroundStationClient(
@@ -291,12 +294,10 @@ class InitializingState(StateBase):
               but its local estimator needs GPS data to initialize properly.
         """
         try:
-            from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
             
             # Initialize QCar and GPS based on physical/simulation mode
             if not IS_PHYSICAL_QCAR:
                 self.logger.logger.info("QCar Simulation mode detected")
-                from qvl.multi_agent import readRobots
                 self._initialize_simulated_qcar(readRobots)
             else:
                 self._initialize_physical_qcar()
@@ -317,7 +318,6 @@ class InitializingState(StateBase):
     
     def _initialize_simulated_qcar(self, readRobots):
         """Initialize simulated QCar"""
-        from pal.products.qcar import QCar, QCarGPS
         
         robotsDir = readRobots()
         name = f"QC2_{self.vehicle_logic.vehicle_id}"
@@ -344,7 +344,6 @@ class InitializingState(StateBase):
     
     def _initialize_physical_qcar(self):
         """Initialize physical QCar"""
-        from pal.products.qcar import QCar, QCarGPS
         
         self.vehicle_logic.qcar = QCar(readMode=1, frequency=self.config.timing.controller_update_rate)
         time.sleep(0.3)
@@ -392,7 +391,7 @@ class InitializingState(StateBase):
             success = self.vehicle_logic.vehicle_observer.initialize_local_estimator(
                 gps=self.vehicle_logic.gps,
                 initial_pose=self.init_pose,
-                estimator_params={'use_qcar_ekf': self.config.steering.enable_steering_control}
+                estimator_params={'use_qcar_ekf': self.vehicle_logic.controller_config.enable_steering_control}
             )
             
             if success:
@@ -410,41 +409,15 @@ class InitializingState(StateBase):
             self.logger.log_error("State estimator initialization failed", e)
             return False
     
-    def _initialize_controllers(self) -> bool:
-        """Initialize speed and steering controllers"""
-        try:
-            from Controller.controllers import SpeedController, SteeringController
-            
-            # Initialize speed controller
-            self.vehicle_logic.speed_controller = SpeedController(
-                config=self.config,
-                logger=self.vehicle_logic.vehicle_logger
-            )
-            time.sleep(0.1)
-            
-            # Initialize steering controller if enabled
-            if self.config.steering.enable_steering_control:
-                self.vehicle_logic.steering_controller = SteeringController(
-                    waypoints=self.vehicle_logic.waypoint_sequence,
-                    config=self.config,
-                    logger=self.vehicle_logic.vehicle_logger
-                )
-                time.sleep(0.2)
-                self.check_initial_position()
-            
-            return True
-            
-        except Exception as e:
-            self.logger.log_error("Controller initialization failed", e)
-            return False
-    
     def _initialize_perception(self) -> bool:
         """Initialize perception systems (YOLO) - optional component"""
         try:
-            from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
             
             # TODO: Enable YOLOReceiver when ready
-            yolo_receiver = None
+            if IS_PHYSICAL_QCAR:
+                yolo_receiver = YOLOReceiver(nonBlocking=False)
+            else:
+                yolo_receiver = None
             
             pulse_length = (
                 self.config.timing.controller_update_rate *

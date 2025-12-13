@@ -8,14 +8,29 @@ Key simplifications:
 - No redundant Ground Station client creation (VehicleLogic handles it)
 - Only INITIALIZING state is fake, all other states are real
 - Mock hardware is injected during the fake initialization
+- Uses proper vehicle dynamics from vehiclemodels folder (CommonRoad models)
+
+Vehicle Models Available:
+- Kinematic Single-Track (default): Simpler, faster, 5-state model
+- Single-Track Dynamic: More realistic, includes tire dynamics, 7-state model
+
+Vehicle Parameter Sets:
+- qcar (default): Quanser QCar 1:10 scale vehicle (0.38m, 1.5kg, v_max=2.0m/s)
+- vehicle1: Ford Escort (4.3m, 1226kg, v_max=45.8m/s)
+- vehicle2: BMW 320i (4.5m, 1093kg, v_max=50.8m/s)
+- vehicle3: VW Vanagon (4.6m, 1587kg, v_max=41.7m/s)
+- vehicle4: Truck with trailer (16.5m, v_max=22.2m/s)
 
 Usage:
-    python fake_vehicle_real_logic.py [car_id] [host_ip] [base_port]
+    python fake_vehicle_real_logic.py [car_id] [host_ip] [base_port] [use_dynamic] [vehicle_params]
     
 Examples:
-    python fake_vehicle_real_logic.py                    # Car 0 connecting to localhost:5000
-    python fake_vehicle_real_logic.py 1                 # Car 1 connecting to localhost:5001  
-    python fake_vehicle_real_logic.py 0 192.168.1.100   # Car 0 connecting to remote IP
+    python fake_vehicle_real_logic.py                              # Car 0, QCar params, kinematic
+    python fake_vehicle_real_logic.py 1                            # Car 1, QCar params, kinematic
+    python fake_vehicle_real_logic.py 0 127.0.0.1 5000 false qcar  # Car 0, QCar params, kinematic
+    python fake_vehicle_real_logic.py 0 127.0.0.1 5000 true        # Car 0, QCar params, dynamic
+    python fake_vehicle_real_logic.py 2 127.0.0.1 5000 false vehicle1  # Car 2, Ford Escort params
+    python fake_vehicle_real_logic.py 0 127.0.0.1 5000 true vehicle2   # Car 0, BMW params, dynamic
 """
 import sys
 import os
@@ -36,42 +51,117 @@ if parent_dir not in sys.path:
 
 # Import the REAL VehicleLogic and related classes
 from vehicle_logic import VehicleLogic
-from config import VehicleControlConfig
+from config_main import VehicleMainConfig
 from ground_station_client import GroundStationClient
 from StateMachine.vehicle_state_machine import VehicleStateMachine
 from StateMachine.vehicle_state import VehicleState
 from fake_initializing_state import FakeInitializingState
 
+# Import vehicle dynamics models
+from vehiclemodels.vehicle_dynamics_ks import vehicle_dynamics_ks
+from vehiclemodels.vehicle_dynamics_st import vehicle_dynamics_st
+from vehiclemodels.vehicle_parameters import setup_vehicle_parameters
+from pathlib import Path
+from omegaconf import OmegaConf
+from vehiclemodels.vehicle_parameters import VehicleParameters
 
 # Removed FakeVehicleStateMachine class - using real VehicleStateMachine instead
 # We only need to replace the INITIALIZING state with fake version
 
 
 class MockQCar:
-    """Mock QCar hardware that mimics the real QCar interface"""
+    """Mock QCar hardware using proper vehicle dynamics from vehiclemodels folder"""
     
-    def __init__(self, car_id: int):
+    def __init__(self, car_id: int, use_dynamic_model: bool = False, vehicle_params: str = 'qcar'):
         self.car_id = car_id
+        self.use_dynamic_model = use_dynamic_model
+        
+        # Load vehicle parameters based on specified type
+        # Options: 'qcar' (default), 'vehicle1' (Ford Escort), 'vehicle2' (BMW), 
+        #          'vehicle3' (VW Vanagon), 'vehicle4' (Truck)
+        if vehicle_params == 'qcar':
+            # Load custom QCar parameters
+            try:
+
+                
+                params_dir = Path(__file__).parent / "vehiclemodels" / "parameters"
+                qcar_conf = OmegaConf.load(str(params_dir / "parameters_qcar.yaml"))
+                tire_conf = OmegaConf.load(str(params_dir / "parameters_tire.yaml"))
+                structured_conf = OmegaConf.structured(VehicleParameters)
+                self.params = OmegaConf.to_object(OmegaConf.merge(structured_conf, qcar_conf, tire_conf))
+            except Exception as e:
+                print(f"⚠️  Warning: Could not load QCar parameters ({e}), using vehicle1 as fallback")
+                # Fallback to vehicle1 if QCar params can't load
+                self.params = setup_vehicle_parameters(vehicle_id=1)
+        elif vehicle_params.startswith('vehicle'):
+            # Load standard vehicle parameters (vehicle1-4)
+            vehicle_id = int(vehicle_params.replace('vehicle', ''))
+            self.params = setup_vehicle_parameters(vehicle_id=vehicle_id)
+        else:
+            # Default to QCar parameters
+            try:
+                # from pathlib import Path
+                # from omegaconf import OmegaConf
+                # from vehiclemodels.vehicle_parameters import VehicleParameters
+                
+                params_dir = Path(__file__).parent / "vehiclemodels" / "parameters"
+                qcar_conf = OmegaConf.load(str(params_dir / "parameters_qcar.yaml"))
+                tire_conf = OmegaConf.load(str(params_dir / "parameters_tire.yaml"))
+                structured_conf = OmegaConf.structured(VehicleParameters)
+                self.params = OmegaConf.to_object(OmegaConf.merge(structured_conf, qcar_conf, tire_conf))
+            except:
+                self.params = setup_vehicle_parameters(vehicle_id=1)
         
         # Mock sensor data
         self.motorTach = 0.0
         self.gyroscope = np.array([0.0, 0.0, 0.0])
         self.battery = np.array([12.0])  # Mock battery voltage
         
-        # Mock actuator commands
+        # Mock actuator commands (normalized -1 to 1)
         self._throttle = 0.0
         self._steering = 0.0
         
-        # Physics simulation state
-        self.x = car_id * 2.0
-        self.y = 0.0
-        self.heading = 0.0
-        self.velocity = 0.0
-        self.angular_velocity = 0.0
+        # Vehicle state vector for kinematic single-track model (5 states)
+        # [x, y, steering_angle, velocity, yaw_angle]
+        self.state_ks = np.array([
+            car_id * 2.0,  # x position
+            0.0,           # y position
+            0.0,           # steering angle (rad)
+            0.0,           # velocity (m/s)
+            0.0            # yaw angle (rad)
+        ])
         
+        # Vehicle state vector for single-track dynamic model (7 states)
+        # [x, y, steering_angle, velocity, yaw_angle, yaw_rate, slip_angle]
+        self.state_st = np.array([
+            car_id * 2.0,  # x position
+            0.0,           # y position
+            0.0,           # steering angle (rad)
+            0.0,           # velocity (m/s)
+            0.0,           # yaw angle (rad)
+            0.0,           # yaw rate (rad/s)
+            0.0            # slip angle at vehicle center (rad)
+        ])
+        
+        # Control input vector [steering_rate, acceleration]
+        self.control_input = np.array([0.0, 0.0])
+        
+        # Timing
         self.last_time = time.time()
         
-        print(f"🔧 MockQCar {car_id}: Initialized at position ({self.x:.1f}, {self.y:.1f})")
+        # Physics properties (computed from state)
+        self.x = self.state_ks[0]
+        self.y = self.state_ks[1]
+        self.heading = self.state_ks[4]
+        self.velocity = self.state_ks[3]
+        self.angular_velocity = 0.0
+        
+        model_name = "Single-Track Dynamic" if use_dynamic_model else "Kinematic Single-Track"
+        print(f"🔧 MockQCar {car_id}: Initialized with {model_name} model")
+        print(f"   Parameters: {vehicle_params}")
+        print(f"   Vehicle: v_max={self.params.longitudinal.v_max:.2f} m/s, wheelbase={self.params.a + self.params.b:.3f}m")
+        print(f"   Dimensions: L={self.params.l:.3f}m x W={self.params.w:.3f}m, mass={self.params.m:.2f}kg")
+        print(f"   Position: ({self.x:.1f}, {self.y:.1f})")
     
     def read(self):
         """Simulate reading sensors and update physics"""
@@ -85,46 +175,190 @@ class MockQCar:
         # Update physics based on commands
         self._update_physics(dt)
         
-        # Update mock sensors
-        self.motorTach = self.velocity  # Motor tach ~ velocity
-        self.gyroscope[2] = self.angular_velocity  # Yaw rate
+        # Update mock sensors from state
+        if self.use_dynamic_model:
+            self.motorTach = self.state_st[3]  # velocity
+            self.gyroscope[2] = self.state_st[5]  # yaw rate
+        else:
+            self.motorTach = self.state_ks[3]  # velocity
+            # Compute yaw rate for kinematic model
+            if abs(self.state_ks[3]) > 0.01:
+                wheelbase = self.params.a + self.params.b
+                self.gyroscope[2] = (self.state_ks[3] / wheelbase) * math.tan(self.state_ks[2])
+            else:
+                self.gyroscope[2] = 0.0
     
     def write(self, throttle: float, steering: float):
         """Receive control commands"""
         self._throttle = np.clip(throttle, -1.0, 1.0)
         self._steering = np.clip(steering, -1.0, 1.0)
+    
     def read_write_std(self, throttle: float, steering: float, LEDs=None):
         """Receive control commands"""
         self._throttle = np.clip(throttle, -1.0, 1.0)
         self._steering = np.clip(steering, -1.0, 1.0)
     
     def _update_physics(self, dt: float):
-        """Simple physics simulation"""
-        # Convert throttle to target velocity
-        max_velocity = 2.0  # m/s
+        """Physics simulation using vehicle dynamics models from vehiclemodels folder"""
+        # Convert normalized commands to physical units
+        # Steering: -1 to 1 -> max steering angle from params (scaled down for QCar)
+        max_steering = 0.5  # rad (~30 degrees) - more realistic for small vehicles
+        target_steering = self._steering * max_steering
+        
+        # Throttle: -1 to 1 -> acceleration (scaled for QCar)
+        max_accel = 3.0  # m/s^2 - reasonable for small vehicle
+        target_accel = self._throttle * max_accel
+        
+        # Apply friction/drag and braking forces
+        current_state = self.state_st if self.use_dynamic_model else self.state_ks
+        current_velocity = current_state[3]
+        
+        # Friction coefficient (rolling resistance + air drag simplified)
+        friction_coeff = 0.8  # Deceleration from friction (m/s^2)
+        
+        # Apply friction force (opposes velocity direction)
+        if abs(current_velocity) > 0.01:
+            friction_decel = -np.sign(current_velocity) * friction_coeff
+        else:
+            friction_decel = 0.0
+        
+        # Active braking ONLY when throttle is near zero (not negative = backward)
+        # Negative throttle means backward motion, not braking!
+        if abs(self._throttle) < 0.01 and abs(current_velocity) > 0.01:
+            # Strong braking to stop quickly when throttle is zero
+            brake_decel = -np.sign(current_velocity) * 4.0  # m/s^2 braking force
+            target_accel = brake_decel + friction_decel
+        else:
+            # Normal acceleration/deceleration with friction
+            target_accel += friction_decel
+        
+        # Stop completely if velocity is very small and throttle near zero
+        if abs(current_velocity) < 0.05 and abs(self._throttle) < 0.01:
+            target_accel = 0.0
+            # Force velocity to zero in state
+            current_state[3] = 0.0
+        
+        # Compute control inputs
+        # steering_rate (rad/s) - simple P control
+        steering_error = target_steering - current_state[2]
+        steering_rate = 3.0 * steering_error  # P controller gain (reduced for stability)
+        
+        # Clip steering rate to reasonable values
+        max_steering_v = 2.0  # rad/s (reduced from params for stability)
+        steering_rate = np.clip(steering_rate, -max_steering_v, max_steering_v)
+        
+        # acceleration (m/s^2)
+        acceleration = np.clip(target_accel, -5.0, 5.0)  # Clip to reasonable range
+        
+        self.control_input[0] = steering_rate
+        self.control_input[1] = acceleration
+        
+        # Integrate using appropriate vehicle model
+        if self.use_dynamic_model:
+            # Use single-track dynamic model (more realistic)
+            try:
+                derivatives = vehicle_dynamics_st(self.state_st, self.control_input, self.params)
+                
+                # Check for numerical issues
+                if any(np.isnan(derivatives)) or any(np.isinf(derivatives)):
+                    print(f"⚠️  Warning: Numerical instability detected, resetting to safe state")
+                    # Reset to safe kinematic update
+                    self._simple_kinematic_update(dt)
+                    return
+                
+                # Simple Euler integration with safety limits
+                for i in range(len(self.state_st)):
+                    # Limit derivative magnitude to prevent instability
+                    if i >= 5:  # yaw_rate and slip_angle
+                        derivatives[i] = np.clip(derivatives[i], -10.0, 10.0)
+                    self.state_st[i] += derivatives[i] * dt
+                
+                # Clamp velocity to reasonable range
+                self.state_st[3] = np.clip(self.state_st[3], -5.0, 5.0)
+                
+                # Clamp yaw rate to prevent explosion
+                self.state_st[5] = np.clip(self.state_st[5], -5.0, 5.0)
+                
+                # Clamp slip angle to reasonable range
+                self.state_st[6] = np.clip(self.state_st[6], -0.5, 0.5)
+                
+                # Update public properties
+                self.x = self.state_st[0]
+                self.y = self.state_st[1]
+                self.heading = self.state_st[4]
+                self.velocity = self.state_st[3]
+                self.angular_velocity = self.state_st[5]
+                
+            except Exception as e:
+                print(f"⚠️  Dynamic model error: {e}, using simple kinematic update")
+                self._simple_kinematic_update(dt)
+            
+        else:
+            # Use kinematic single-track model (simpler, faster)
+            derivatives = vehicle_dynamics_ks(self.state_ks, self.control_input, self.params)
+            
+            # Simple Euler integration
+            for i in range(len(self.state_ks)):
+                self.state_ks[i] += derivatives[i] * dt
+            
+            # Clamp velocity to reasonable range
+            self.state_ks[3] = np.clip(self.state_ks[3], -5.0, 5.0)
+            
+            # Update public properties
+            self.x = self.state_ks[0]
+            self.y = self.state_ks[1]
+            self.heading = self.state_ks[4]
+            self.velocity = self.state_ks[3]
+            # Compute angular velocity
+            if abs(self.velocity) > 0.01:
+                wheelbase = self.params.a + self.params.b
+                self.angular_velocity = (self.velocity / wheelbase) * math.tan(self.state_ks[2])
+            else:
+                self.angular_velocity = 0.0
+        
+        # Normalize heading
+        while self.heading > math.pi:
+            self.heading -= 2 * math.pi
+        while self.heading < -math.pi:
+            self.heading += 2 * math.pi
+    
+    def _simple_kinematic_update(self, dt: float):
+        """Fallback simple kinematic update when dynamic model fails"""
+        # Simple bicycle model as fallback
+        max_velocity = 3.0
         target_velocity = self._throttle * max_velocity
         
-        # Simple velocity control
-        velocity_error = target_velocity - self.velocity
-        acceleration = 3.0 * velocity_error  # Simple P controller
-        self.velocity += acceleration * dt
+        # Apply friction and braking
+        friction_coeff = 0.8
+        if abs(self.velocity) > 0.01:
+            friction_decel = -np.sign(self.velocity) * friction_coeff * dt
+            self.velocity += friction_decel
+        
+        # Active braking ONLY when throttle is near zero (not negative = backward)
+        if abs(self._throttle) < 0.01 and abs(self.velocity) > 0.01:
+            brake_decel = -np.sign(self.velocity) * 4.0 * dt
+            self.velocity += brake_decel
+        
+        # Stop completely if velocity is very small and throttle near zero
+        if abs(self.velocity) < 0.05 and abs(self._throttle) < 0.01:
+            self.velocity = 0.0
+        else:
+            # Simple velocity control (allows forward AND backward motion)
+            velocity_error = target_velocity - self.velocity
+            acceleration = 2.0 * velocity_error
+            self.velocity += acceleration * dt
+        
         self.velocity = np.clip(self.velocity, -max_velocity, max_velocity)
         
         # Update position
         self.x += self.velocity * math.cos(self.heading) * dt
         self.y += self.velocity * math.sin(self.heading) * dt
         
-        # Update heading based on steering (simple bicycle model)
+        # Update heading based on steering
         if abs(self.velocity) > 0.1:
-            wheelbase = 0.3  # meters
-            self.angular_velocity = (self.velocity / wheelbase) * math.tan(self._steering * 0.5)
+            wheelbase = 0.3
+            self.angular_velocity = (self.velocity / wheelbase) * math.tan(self._steering * 0.3)
             self.heading += self.angular_velocity * dt
-            
-            # Normalize heading
-            while self.heading > math.pi:
-                self.heading -= 2 * math.pi
-            while self.heading < -math.pi:
-                self.heading += 2 * math.pi
         else:
             self.angular_velocity = 0.0
 
@@ -172,33 +406,33 @@ class MockQCarGPS:
         return True
 
 
-class MockYOLOReceiver:
-    """Mock YOLO receiver that provides detection data"""
+# class MockYOLOReceiver:
+#     """Mock YOLO receiver that provides detection data"""
     
-    def __init__(self):
-        # YOLO detection arrays (same format as real YOLO)
-        self.stopSign = np.zeros(7, dtype=np.float64)
-        self.trafficlight = np.zeros(7, dtype=np.float64) 
-        self.cars = np.zeros(7, dtype=np.float64)
-        self.yieldSign = np.zeros(7, dtype=np.float64)
-        self.person = np.zeros(7, dtype=np.float64)
+#     def __init__(self):
+#         # YOLO detection arrays (same format as real YOLO)
+#         self.stopSign = np.zeros(7, dtype=np.float64)
+#         self.trafficlight = np.zeros(7, dtype=np.float64) 
+#         self.cars = np.zeros(7, dtype=np.float64)
+#         self.yieldSign = np.zeros(7, dtype=np.float64)
+#         self.person = np.zeros(7, dtype=np.float64)
         
-        print("👁️  MockYOLO: Initialized (no detections)")
+#         print("👁️  MockYOLO: Initialized (no detections)")
     
-    def read(self):
-        """Simulate YOLO detections - always empty for safe testing"""
-        # Always reset all detections to zero (no objects detected)
-        self.stopSign.fill(0.0)
-        self.trafficlight.fill(0.0)
-        self.cars.fill(0.0)
-        self.yieldSign.fill(0.0)
-        self.person.fill(0.0)
+#     def read(self):
+#         """Simulate YOLO detections - always empty for safe testing"""
+#         # Always reset all detections to zero (no objects detected)
+#         self.stopSign.fill(0.0)
+#         self.trafficlight.fill(0.0)
+#         self.cars.fill(0.0)
+#         self.yieldSign.fill(0.0)
+#         self.person.fill(0.0)
         
-        # No fake detections to avoid triggering emergency stops
+#         # No fake detections to avoid triggering emergency stops
     
-    def terminate(self):
-        """Mock terminate method"""
-        pass
+#     def terminate(self):
+#         """Mock terminate method"""
+#         pass
 
 
 class MockStateEstimator:
@@ -233,96 +467,31 @@ class MockStateEstimator:
         )
 
 
-class MockSpeedController:
-    """Mock Speed Controller for PID speed control"""
+# class MockYOLODrive:
+#     """Mock YOLO Drive system for obstacle detection and response"""
     
-    def __init__(self, car_id: int):
-        self.car_id = car_id
-        self.ei = 0.0  # Integral error (needed by stopped_state.py)
-        self.last_error = 0.0
-        self.target_speed = 0.0
-        print(f"🏎️  MockSpeedController {car_id}: Initialized")
+#     def __init__(self, car_id: int):
+#         self.car_id = car_id
+#         self.yolo_gain = 1.0  # Default gain
+#         self.carDist = 100.0  # Safe distance - no cars detected
+#         self.personDist = 100.0  # Safe distance - no persons detected
+#         print(f"🤖 MockYOLODrive {car_id}: Initialized (safe distances)")
     
-    def update(self, current_speed, target_speed, dt):
-        """Mock speed control update"""
-        self.target_speed = target_speed
-        error = target_speed - current_speed
+#     def check_yolo(self, stop_sign, traffic_light, cars, yield_sign, person):
+#         """Mock YOLO obstacle detection - always returns safe values for testing"""
+#         # For testing, always report safe distances to avoid emergency stops
+#         self.carDist = 100.0  # Always safe distance
+#         self.personDist = 100.0  # Always safe distance
         
-        # Simple P controller
-        kp = 0.5
-        throttle = kp * error
-        
-        # Integrate error
-        self.ei += error * dt
-        self.last_error = error
-        
-        return np.clip(throttle, -1.0, 1.0)
-    
-    def reset(self):
-        """Reset controller state"""
-        self.ei = 0.0
-        self.last_error = 0.0
-
-
-class MockSteeringController:
-    """Mock Steering Controller for path following"""
-    
-    def __init__(self, car_id: int):
-        self.car_id = car_id
-        self.waypoint_index = 0
-        self.cross_track_error = 0.0
-        self.heading_error = 0.0
-        self.waypoint_sequence = None
-        print(f"🎯 MockSteeringController {car_id}: Initialized")
-    
-    def update(self, x, y, theta, velocity, dt):
-        """Mock steering control update"""
-        # Simple mock - just return small random steering
-        steering = 0.0  # Keep straight for now
-        return np.clip(steering, -1.0, 1.0)
-    
-    def reset(self, waypoint_sequence=None):
-        """Reset controller state"""
-        self.waypoint_index = 0
-        self.cross_track_error = 0.0
-        self.heading_error = 0.0
-        if waypoint_sequence is not None:
-            self.waypoint_sequence = waypoint_sequence
-    
-    def get_waypoint_index(self):
-        """Get current waypoint index"""
-        return self.waypoint_index
-    
-    def get_errors(self):
-        """Get control errors (cross_track, heading)"""
-        return (self.cross_track_error, self.heading_error)
-
-
-class MockYOLODrive:
-    """Mock YOLO Drive system for obstacle detection and response"""
-    
-    def __init__(self, car_id: int):
-        self.car_id = car_id
-        self.yolo_gain = 1.0  # Default gain
-        self.carDist = 100.0  # Safe distance - no cars detected
-        self.personDist = 100.0  # Safe distance - no persons detected
-        print(f"🤖 MockYOLODrive {car_id}: Initialized (safe distances)")
-    
-    def check_yolo(self, stop_sign, traffic_light, cars, yield_sign, person):
-        """Mock YOLO obstacle detection - always returns safe values for testing"""
-        # For testing, always report safe distances to avoid emergency stops
-        self.carDist = 100.0  # Always safe distance
-        self.personDist = 100.0  # Always safe distance
-        
-        # Always return normal speed gain (no obstacles)
-        self.yolo_gain = 1.0
-        return 1.0
+#         # Always return normal speed gain (no obstacles)
+#         self.yolo_gain = 1.0
+#         return 1.0
 
 
 class FakeVehicleWithRealLogic:
     """Fake vehicle that uses the real VehicleLogic class"""
     
-    def __init__(self, car_id: int, host_ip: str, base_port: int):
+    def __init__(self, car_id: int, host_ip: str, base_port: int, use_dynamic_model: bool = False, vehicle_params: str = 'qcar'):
         self.car_id = car_id
         self.host_ip = host_ip
         self.base_port = base_port
@@ -330,12 +499,15 @@ class FakeVehicleWithRealLogic:
         print("="*60)
         print(f"[CAR] Real VehicleLogic Fake Vehicle - Car {car_id}")
         print("   Using ACTUAL VehicleLogic class with mock hardware")
+        model_name = "Single-Track Dynamic" if use_dynamic_model else "Kinematic Single-Track"
+        print(f"   Vehicle Model: {model_name}")
+        print(f"   Vehicle Parameters: {vehicle_params}")
         print("="*60)
         
-        # Create mock hardware
-        self.mock_qcar = MockQCar(car_id)
+        # Create mock hardware with proper vehicle dynamics
+        self.mock_qcar = MockQCar(car_id, use_dynamic_model=use_dynamic_model, vehicle_params=vehicle_params)
         self.mock_gps = MockQCarGPS(self.mock_qcar)
-        self.mock_yolo = MockYOLOReceiver()
+        # No mock YOLO - it will be set to None and disabled
         
         # Create real configuration
         self.config = self._create_real_config()
@@ -365,9 +537,9 @@ class FakeVehicleWithRealLogic:
         print(f"✅ Real VehicleLogic initialized for Car {car_id}")
         print(f"   Mock hardware injected successfully")
     
-    def _create_real_config(self) -> VehicleControlConfig:
+    def _create_real_config(self) -> VehicleMainConfig:
         """Create real configuration for VehicleLogic"""
-        config = VehicleControlConfig()
+        config = VehicleMainConfig()
         
         # Network configuration
         config.network.car_id = self.car_id
@@ -414,43 +586,16 @@ class FakeVehicleWithRealLogic:
                 print(f"[!] State machine already in INITIALIZING - calling fake enter() now")
                 fake_init_state.enter()
             
-            from hal.products.mats import SDCSRoadMap
-        
-            # Create roadmap
-            self.vehicle_logic.roadmap = SDCSRoadMap(
-                leftHandTraffic=False,
-                useSmallMap=True
-            )
-             # Set node sequence
-            self.vehicle_logic.node_sequence = self.config.path.valid_nodes
-
-            
-            # Generate and validate waypoint sequence
-            waypoints = self.vehicle_logic.roadmap.generate_path(self.vehicle_logic.node_sequence)
-            if not self._validate_waypoint_sequence(waypoints):
-                print(f"   [!] Invalid waypoint sequence generated")
-                return False
-            
-            self.vehicle_logic.waypoint_sequence = waypoints
+            # Path planning will be initialized by FakeInitializingState._check_components_ready()
+            # This matches the real initialization flow where path planning happens during INITIALIZING state
 
             print(f"✅ Car {self.car_id}: Replaced INITIALIZING state with fake version")
             print(f"          All other states remain real for complete system testing")
+            print(f"          Path planning will be initialized by fake INITIALIZING state")
             
         except Exception as e:
             print(f"❌ Car {self.car_id}: Failed to replace initialization state: {e}")
 
-    def _validate_waypoint_sequence(self, waypoints) -> bool:
-        """Validate generated waypoint sequence"""
-        if waypoints is None:
-            return False
-        
-        if not isinstance(waypoints, np.ndarray):
-            return False
-        
-        if waypoints.shape[0] < 2 or waypoints.shape[1] < 2:
-            return False
-        
-        return True
     def _inject_mock_hardware(self):
         """Mock hardware injection will be done during state machine initialization"""
         # The fake initialization state will handle mock hardware injection
@@ -536,6 +681,8 @@ def main():
     car_id = 0
     host_ip = '127.0.0.1'
     base_port = 5000
+    use_dynamic_model = False
+    vehicle_params = 'qcar'  # Default to QCar parameters
     
     if len(sys.argv) > 1:
         car_id = int(sys.argv[1])
@@ -543,20 +690,29 @@ def main():
         host_ip = sys.argv[2]
     if len(sys.argv) > 3:
         base_port = int(sys.argv[3])
+    if len(sys.argv) > 4:
+        use_dynamic_model = sys.argv[4].lower() in ['true', '1', 'yes', 'dynamic']
+    if len(sys.argv) > 5:
+        vehicle_params = sys.argv[5]  # qcar, vehicle1, vehicle2, vehicle3, vehicle4
     
     print("="*70)
     print("[CAR] QCar Fake Vehicle with REAL VehicleLogic - SIMPLIFIED")
     print("   Uses actual VehicleLogic + real StateMachine + real GroundStationClient")
     print("   Only INITIALIZING state is fake for quick mock hardware injection")
+    print("   Vehicle dynamics from vehiclemodels folder (CommonRoad models)")
     print("="*70)
     print(f"Car ID: {car_id}")
     print(f"Ground Station: {host_ip}:{base_port + car_id}")
+    print(f"Vehicle Model: {'Single-Track Dynamic' if use_dynamic_model else 'Kinematic Single-Track'}")
+    print(f"Vehicle Parameters: {vehicle_params}")
     print(f"Approach: Real VehicleLogic + Fake initialization + Mock hardware")
     print("")
     
     # Create fake vehicle with real logic
     try:
-        vehicle = FakeVehicleWithRealLogic(car_id, host_ip, base_port)
+        vehicle = FakeVehicleWithRealLogic(car_id, host_ip, base_port, 
+                                          use_dynamic_model=use_dynamic_model,
+                                          vehicle_params=vehicle_params)
         print(f"✅ Fake vehicle created successfully")
     except Exception as e:
         print(f"❌ Failed to create fake vehicle: {e}")

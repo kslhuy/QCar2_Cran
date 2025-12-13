@@ -6,6 +6,11 @@
 # ============================================================================
 
 # ============================================================================
+# GENERAL CONTROL CONFIGURATION
+# ============================================================================
+enable_steering_control: true  # Enable/disable steering control system
+
+# ============================================================================
 # LONGITUDINAL CONTROLLER CONFIGURATION
 # ============================================================================
 
@@ -14,27 +19,29 @@ longitudinal_controller_type: 'cacc'
 
 # CACC Controller Parameters
 cacc:
-  s0: 0.8                    # Minimum spacing (meters)
+  s0: 0.7                    # Minimum spacing (meters)
   h: 0.3                     # Time headway (seconds)
   K_spacing: 0.3             # Spacing error gain
   K_velocity: 0.05           # Velocity error gain
-  acc_to_throttle_gain: 0.5  # Conversion gain from acceleration to throttle
-  max_throttle: 0.3          # Maximum throttle output
+  acc_to_throttle_gain: 0.65  # Conversion gain from acceleration to throttle
+  max_throttle: 0.25          # Maximum throttle output
   alpha_filter: 0.3          # Low-pass filter coefficient (0-1)
   ki_velocity: 0.1           # Velocity integral gain for additional stability
 
-# PI Velocity Controller Parameters
-pi:
-  kp: 0.1                    # Proportional gain
-  ki: 1.0                    # Integral gain
-  max_throttle: 0.3          # Maximum throttle output
+# PID Velocity Controller Parameters
+pid:
+  kp: 0.3                    # Proportional gain
+  ki: 0.2                    # Integral gain
+  kd: 0.01                  # Derivative gain
+  max_throttle: 0.1          # Maximum throttle output
   ei_max: 1.0                # Integral anti-windup limit
+  v_ref: 0.6                # Default reference velocity (m/s)
 
-# Hybrid Longitudinal Controller Parameters (uses both CACC and PI)
+# Hybrid Longitudinal Controller Parameters (uses both CACC and PID)
 hybrid_longitudinal:
-  # Uses CACC when leader available, PI when not
+  # Uses CACC when leader available, PID when not
   use_cacc_params: true      # Use params from 'cacc' section
-  use_pi_params: true        # Use params from 'pi' section
+  use_pid_params: true        # Use params from 'pid' section
 
 # ============================================================================
 # LATERAL CONTROLLER CONFIGURATION

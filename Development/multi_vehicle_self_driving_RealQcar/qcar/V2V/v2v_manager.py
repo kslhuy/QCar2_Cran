@@ -10,6 +10,8 @@ from queue import Queue, Empty
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
+import numpy as np
+
 
 from V2V.v2v_communication import V2VCommunication, V2VMessage, MessageType
 
@@ -288,7 +290,6 @@ class V2VManager:
             'x': float, 'y': float, 'theta': float, 'velocity': float,
             'acceleration': float,  # Optional for future use
             'control_input': {'steering': float, 'throttle': float},  # Optional for future use
-            'state_valid': bool,
             'source': 'local_sensors'
         }
         """
@@ -355,14 +356,19 @@ class V2VManager:
                         if self.logger:
                             self.logger.logger.warning(f"Failed to log local estimation: {e}")
                 
-                # Add to VehicleObserver if available and data is valid
+                # Add to VehicleObserver if available
                 if (self.vehicle_observer and 
-                    data.get('state_valid', False) and
                     all(key in data for key in ['x', 'y', 'theta', 'velocity'])):
                     
                     try:
-                        import numpy as np
-                        state_vector = np.array([data['x'], data['y'], data['theta'], data['velocity']])
+                        # Create 5D state vector [x, y, theta, v, a]
+                        state_vector = np.array([
+                            data['x'], 
+                            data['y'], 
+                            data['theta'], 
+                            data['velocity'],
+                            data.get('acceleration', 0.0)  # Include acceleration, default to 0 if not present
+                        ])
                         self.vehicle_observer.add_received_state(sender_id, state_vector, send_time_ns)
                     except Exception as e:
                         if self.logger:
@@ -455,6 +461,29 @@ class V2VManager:
                             self.logger.info(f"    ... and {len(fleet_states) - 3} more vehicles")
                         self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
                         self.logger.info(f"  timestamp: {data.get('timestamp'):.3f} (float)")
+            
+            # Pass entire fleet estimates to vehicle observer for processing
+            if self.vehicle_observer is not None:
+                try:
+                    success = self.vehicle_observer.add_received_fleet_state(
+                        sender_id=sender_id,
+                        fleet_estimates=fleet_states,
+                        timestamp_ns=send_time_ns
+                    )
+                    
+                    if success and self.logger:
+                        self.logger.debug(
+                            f"V2VManager: Processed fleet estimates from vehicle {sender_id} "
+                            f"({len(fleet_states)} vehicles) to fleet estimator"
+                        )
+                    elif not success and self.logger:
+                        self.logger.debug(
+                            f"V2VManager: No valid fleet states added from vehicle {sender_id}"
+                        )
+                
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"V2VManager: Failed to process fleet states to estimator: {e}")
             
             # Add to queue for other consumers
             self._add_to_queue(self.fleet_state_queue, data, sender_id)
