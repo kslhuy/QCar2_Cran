@@ -136,7 +136,9 @@ class YOLOManager:
     def initialize(self, yolo_receiver: 'YOLOReceiver', yolo_drive_logic: 'YOLODriveLogic'):
         """Initialize YOLO components"""
         if yolo_receiver is None or yolo_drive_logic is None:
-            self.yolo_enabled = True
+            self.yolo_enabled = False  # Disable YOLO if components are missing
+        else:
+            self.yolo_enabled = True   # Enable YOLO only when both components are provided
         self.yolo = yolo_receiver
         self.yolo_drive = yolo_drive_logic
         

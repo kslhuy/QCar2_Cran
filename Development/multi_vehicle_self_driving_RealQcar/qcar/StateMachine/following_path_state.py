@@ -27,17 +27,18 @@ except ImportError as e:
     COMMAND_TYPE_AVAILABLE = False
     CommandType = None
 
-# Import SteeringController
+# Import Controllers
 try:
-    from Controller.controllers import SteeringController, SpeedController
+    from Controller.longitudinal_controllers import PIDVelocityController
+    from Controller.lateral_controllers import StanleyController
     STEERING_CONTROLLER_AVAILABLE = True
     SPEED_CONTROLLER_AVAILABLE = True
 except ImportError as e:
     print(f"ERROR: Cannot import controllers: {e}")
     STEERING_CONTROLLER_AVAILABLE = False
     SPEED_CONTROLLER_AVAILABLE = False
-    SteeringController = None
-    SpeedController = None
+    StanleyController = None
+    PIDVelocityController = None
 
 
 class FollowingPathState(StateBase):
@@ -63,8 +64,8 @@ class FollowingPathState(StateBase):
         # Initialize speed controller
         if SPEED_CONTROLLER_AVAILABLE:
             try:
-                self.speed_controller = SpeedController(
-                    config=self.config,
+                self.speed_controller = PIDVelocityController(
+                    config=self.vehicle_logic.controller_config,
                     logger=self.logger
                 )
                 
@@ -84,9 +85,9 @@ class FollowingPathState(StateBase):
             else:
                 try:
                     # Initialize steering controller with current waypoint sequence
-                    self.steering_controller = SteeringController(
+                    self.steering_controller = StanleyController(
                         waypoints=self.vehicle_logic.waypoint_sequence,
-                        config=self.config,
+                        config=self.vehicle_logic.controller_config,
                         logger=self.logger,
                         cyclic=True
                     )
@@ -173,16 +174,10 @@ class FollowingPathState(StateBase):
         theta = sensor_data['theta']
         velocity = sensor_data['velocity']
         
-        # Check if emergency stop requested
-        if self.should_transition_to_stopped(sensor_data):
-            return 0.0, 0.0, None
+        # # Check if emergency stop requested
+        # if self.should_transition_to_stopped(sensor_data):
+        #     return 0.0, 0.0, None
         
-        # # Check for stop command using simplified event handling
-        # # NOTE: Stop commands now come through handle_event, this is just for legacy support
-        
-        # # Check if we should transition to leader following
-        # if self._should_follow_leader(sensor_data):
-        #     return 0.0, 0.0, (VehicleState.FOLLOWING_LEADER, StateTransitionReason.LEADER_DETECTED)
         
         # Handle startup delay
         if self.vehicle_logic.elapsed_time() < self.config.timing.start_delay:
@@ -345,12 +340,12 @@ class FollowingPathState(StateBase):
         # Apply YOLO adjustments to reference velocity
         yolo_gain = getattr(self.vehicle_logic, 'yolo_gain', 1.0)
         v_ref_adjusted = self.vehicle_logic.v_ref * yolo_gain
-        
+        # print (f"Adjusted v_ref: {v_ref_adjusted:.2f} m/s (YOLO gain: {yolo_gain:.2f})")
         return self.speed_controller.update(velocity, v_ref_adjusted, dt)
     
     def _compute_steering_control(self, x: float, y: float, theta: float, velocity: float) -> float:
         """Compute steering control command"""
-        if not self.config.steering.enable_steering_control or not self.steering_controller:
+        if not self.vehicle_logic.controller_config.enable_steering_control or not self.steering_controller:
             return 0.0
         
         # Use look-ahead point (0.2m forward from vehicle center)

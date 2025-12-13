@@ -1,0 +1,138 @@
+# parameters_qcar - parameter set for Quanser QCar autonomous vehicle platform
+# Based on QCar Studio Hardware specifications
+
+# QCar is a 1:10 scale autonomous vehicle platform designed for research and education
+# Reference: QCar Studio User Manual - System Hardware
+
+# vehicle body dimensions
+# vehicle length [m] - approximately 38cm
+l: 0.38
+# vehicle width [m] - approximately 20cm
+w: 0.20
+
+# steering constraints
+steering:
+  # maximum steering angle [rad] - approximately ±30 degrees
+  max: 0.5236
+  # minimum steering angle [rad]
+  min: -0.5236
+  # maximum steering velocity [rad/s]
+  v_max: 3.0
+  # minimum steering velocity [rad/s]
+  v_min: -3.0
+  # maximum curvature change
+  kappa_dot_max: 2.0
+  # maximum curvature rate rate
+  kappa_dot_dot_max: 10.0
+
+# longitudinal constraints
+longitudinal:
+  # maximum absolute acceleration [m/s^2] - scaled for small vehicle
+  a_max: 3.0
+  # maximum longitudinal jerk [m/s^3]
+  j_max: 10.0
+  # maximum longitudinal jerk change [m/s^4]
+  j_dot_max: 100.0
+  # maximum velocity [m/s] - approximately 2 m/s for safety
+  v_max: 2.0
+  # minimum velocity [m/s] - reverse capability
+  v_min: -1.0
+  # switching velocity [m/s] - threshold for kinematic/dynamic switching
+  v_switch: 0.5
+
+# masses
+# vehicle mass [kg] - approximately 1.5 kg for QCar
+m: 1.5
+# sprung mass [kg] - most of vehicle mass is sprung
+m_s: 1.3
+# unsprung mass front [kg] - small wheels and suspension
+m_uf: 0.1
+# unsprung mass rear [kg]
+m_ur: 0.1
+
+# axes distances (wheelbase approximately 0.26m for QCar)
+# distance from center of gravity to front axle [m]
+a: 0.13
+# distance from center of gravity to rear axle [m]
+b: 0.13
+
+# moments of inertia (scaled for small vehicle)
+# moment of inertia for sprung mass in roll [kg m^2]
+I_Phi_s: 0.01
+# moment of inertia for sprung mass in pitch [kg m^2]
+I_y_s: 0.02
+# moment of inertia for sprung mass in yaw [kg m^2]
+I_z: 0.025
+# moment of inertia cross product [kg m^2]
+I_xz_s: 0.0
+
+# suspension parameters (scaled for small vehicle)
+# suspension spring rate (front) [N/m]
+K_sf: 500.0
+# suspension damping rate (front) [N s/m]
+K_sdf: 50.0
+# suspension spring rate (rear) [N/m]
+K_sr: 500.0
+# suspension damping rate (rear) [N s/m]
+K_sdr: 50.0
+
+# geometric parameters
+# track width front [m] - approximately 18cm
+T_f: 0.18
+# track width rear [m]
+T_r: 0.18
+# lateral spring rate at compliant pin joint [N/m]
+K_ras: 2000.0
+
+# auxiliary torsion roll stiffness per axle (front) [N m/rad]
+K_tsf: -50.0
+# auxiliary torsion roll stiffness per axle (rear) [N m/rad]
+K_tsr: 0.0
+# damping rate at compliant pin joint [N s/m]
+K_rad: 100.0
+# vertical spring rate of tire [N/m]
+K_zt: 1000.0
+
+# center of gravity height of total mass [m] - low CG for stability
+h_cg: 0.06
+# height of roll axis above ground (front) [m]
+h_raf: 0.0
+# height of roll axis above ground (rear) [m]
+h_rar: 0.0
+
+# sprung mass center of gravity height above ground [m]
+h_s: 0.07
+
+# unsprung mass moment of inertia about x-axis (front) [kg m^2]
+I_uf: 0.001
+# unsprung mass moment of inertia about x-axis (rear) [kg m^2]
+I_ur: 0.001
+# wheel inertia [kg m^2] - small wheels
+I_y_w: 0.0005
+
+# lateral compliance rate of tire per tire [m/N]
+K_lt: 1.0e-4
+# effective wheel/tire radius [m] - small diameter wheels
+R_w: 0.035
+
+# split of brake and engine torque
+T_sb: 0.76
+T_se: 0.24
+
+# suspension parameters for camber angle computation
+# [rad/m]
+D_f: 0.0
+# [rad/m]
+D_r: 0.0
+E_f: 0.0
+E_r: 0.0
+
+# Additional QCar-specific notes:
+# - Wheelbase: 0.26 m (distance between front and rear axles)
+# - Track width: 0.18 m (distance between left and right wheels)
+# - Ground clearance: approximately 0.02 m
+# - Weight distribution: approximately 50/50 front/rear
+# - Battery: LiPo battery (affects center of gravity)
+# - Sensors: GPS, IMU, Camera (minimal mass impact)
+# - Motor: DC motor with gear reduction for torque
+# - Steering: Servo-actuated Ackermann steering geometry

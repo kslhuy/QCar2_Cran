@@ -16,7 +16,7 @@ import signal
 import time
 from threading import Event
 
-from config import VehicleControlConfig
+from config_main import VehicleMainConfig
 from vehicle_logic import VehicleLogic
 from pal.products.qcar import  IS_PHYSICAL_QCAR
 
@@ -130,12 +130,7 @@ def parse_arguments():
         help='Path to configuration file (JSON or YAML). Default: config_vehicle_main.yaml in script directory'
     )
     
-    parser.add_argument(
-        '--v-ref',
-        type=float,
-        default=None,
-        help='Reference velocity in m/s'
-    )
+
     
     parser.add_argument(
         '--no-steering',
@@ -147,7 +142,7 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def load_configuration(args) -> VehicleControlConfig:
+def load_configuration(args) -> VehicleMainConfig:
     """Load configuration from file or defaults"""
     
     # Determine config file path
@@ -164,9 +159,9 @@ def load_configuration(args) -> VehicleControlConfig:
     if os.path.exists(config_path):
         print(f"Loading configuration from: {config_path}")
         if config_path.endswith('.json'):
-            config = VehicleControlConfig.from_json(config_path)
+            config = VehicleMainConfig.from_json(config_path)
         elif config_path.endswith('.yaml') or config_path.endswith('.yml'):
-            config = VehicleControlConfig.from_yaml(config_path)
+            config = VehicleMainConfig.from_yaml(config_path)
         else:
             print("Error: Config file must be .json or .yaml")
             sys.exit(1)
@@ -177,18 +172,12 @@ def load_configuration(args) -> VehicleControlConfig:
         else:
             print(f"Warning: config_vehicle_main.yaml not found at {config_path}")
             print("Using default configuration values")
-            config = VehicleControlConfig()
+            config = VehicleMainConfig()
     
     # Update from command line arguments
     config.update_from_args(args)
     
-    # Override with specific arguments
-    if args.v_ref is not None:
-        config.speed.v_ref = args.v_ref
-    
-    if args.no_steering:
-        config.steering.enable_steering_control = False
-    
+
     return config
 
 
@@ -214,9 +203,7 @@ def main():
     Control_rate = config.timing.controller_update_rate if IS_PHYSICAL_QCAR else 100
     print("\n[CONFIG] Vehicle Configuration:")
     print(f"  Car ID: {config.network.car_id}")
-    print(f"  Reference velocity: {config.speed.v_ref} m/s")
     print(f"  Controller rate: {Control_rate} Hz")
-    print(f"  Steering control: {'Enabled' if config.steering.enable_steering_control else 'Disabled'}")
     print(f"  Remote control: {'Enabled' if config.network.is_remote_enabled else 'Disabled'}")
     
     if config.network.is_remote_enabled:

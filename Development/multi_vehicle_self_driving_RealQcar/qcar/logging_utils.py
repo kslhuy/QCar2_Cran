@@ -131,7 +131,7 @@ class VehicleLogger:
             # Core telemetry
             'timestamp', 'time', 'x', 'y', 'th', 'v', 
             'u', 'delta', 'v_ref', 'yolo_gain',
-            'waypoint_index', 'cross_track_error', 'heading_error',
+            # 'waypoint_index', 'cross_track_error', 'heading_error',
             'state', 'gps_valid',
             # Platoon status (only fields actually returned by _get_platoon_status)
             'platoon_enabled', 'platoon_is_leader', 'platoon_position', 
@@ -210,7 +210,7 @@ class VehicleLogger:
         fieldnames = [
             'timestamp', 'sender_id', 'source',  # timestamp=relative_time
             'seq_id', 'latency_ns',  # Sequence ID and latency in nanoseconds
-            'vehicle_id', 'x', 'y', 'theta', 'v', 'confidence'
+            'vehicle_id', 'x', 'y', 'theta', 'v', 'acceleration', 'confidence'
         ]
         
         self.fleet_estimation_writer = csv.DictWriter(self.fleet_estimation_file, fieldnames=fieldnames)
@@ -418,6 +418,7 @@ class VehicleLogger:
                         'y': state.get('y', 0.0),
                         'theta': state.get('theta', 0.0),
                         'v': state.get('v', 0.0),
+                        'acceleration': state.get('acceleration', 0.0),
                         'confidence': state.get('confidence', 0.0)
                     }
                     self.fleet_estimation_queue.put_nowait(log_entry)

@@ -9,23 +9,6 @@ import numpy as np
 
 
 @dataclass
-class SpeedControlConfig:
-    """Speed controller parameters"""
-    v_ref: float = 0.75
-    K_p: float = 0.1
-    K_i: float = 1.0
-    max_throttle: float = 0.3
-
-
-@dataclass
-class SteeringControlConfig:
-    """Steering controller parameters"""
-    K_stanley: float = 0.7
-    max_steering_angle: float = np.pi / 6
-    enable_steering_control: bool = True
-
-
-@dataclass
 class TimingConfig:
     """Timing and rate parameters"""
     tf: float = 6000  # Experiment duration in seconds
@@ -108,10 +91,8 @@ class LoggingConfig:
 
 
 @dataclass
-class VehicleControlConfig:
+class VehicleMainConfig:
     """Main configuration container"""
-    speed: SpeedControlConfig = field(default_factory=SpeedControlConfig)
-    steering: SteeringControlConfig = field(default_factory=SteeringControlConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
     yolo: YOLODetectionConfig = field(default_factory=YOLODetectionConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
@@ -120,11 +101,9 @@ class VehicleControlConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     
     @classmethod
-    def from_dict(cls, config_dict: dict) -> 'VehicleControlConfig':
+    def from_dict(cls, config_dict: dict) -> 'VehicleMainConfig':
         """Create config from dictionary"""
         return cls(
-            speed=SpeedControlConfig(**config_dict.get('speed', {})),
-            steering=SteeringControlConfig(**config_dict.get('steering', {})),
             timing=TimingConfig(**config_dict.get('timing', {})),
             yolo=YOLODetectionConfig(**config_dict.get('yolo', {})),
             network=NetworkConfig(**config_dict.get('network', {})),
@@ -134,14 +113,14 @@ class VehicleControlConfig:
         )
     
     @classmethod
-    def from_json(cls, filepath: str) -> 'VehicleControlConfig':
+    def from_json(cls, filepath: str) -> 'VehicleMainConfig':
         """Load configuration from JSON file"""
         with open(filepath, 'r') as f:
             config_dict = json.load(f)
         return cls.from_dict(config_dict)
     
     @classmethod
-    def from_yaml(cls, filepath: str) -> 'VehicleControlConfig':
+    def from_yaml(cls, filepath: str) -> 'VehicleMainConfig':
         """Load configuration from YAML file"""
         with open(filepath, 'r') as f:
             config_dict = yaml.safe_load(f)
@@ -150,8 +129,6 @@ class VehicleControlConfig:
     def to_dict(self) -> dict:
         """Convert config to dictionary"""
         return {
-            'speed': self.speed.__dict__,
-            'steering': self.steering.__dict__,
             'timing': self.timing.__dict__,
             'yolo': self.yolo.__dict__,
             'network': self.network.__dict__,

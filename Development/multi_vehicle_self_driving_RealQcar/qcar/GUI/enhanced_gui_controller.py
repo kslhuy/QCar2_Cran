@@ -504,11 +504,21 @@ class EnhancedQCarGUIController:
                     fg='#cccccc',
                     font=('Segoe UI', 10)).pack(side='left')  # Smaller font
             
+            # Set fixed width based on label type to prevent shifting
+            if key == 'position':
+                label_width = 14  # For "(X.XX, Y.YY)"
+            elif key == 'state':
+                label_width = 15  # For vehicle state text
+            else:
+                label_width = 8   # For numeric values
+            
             value_label = tk.Label(label_frame,
                                   text=default_value,
                                   bg='#2d2d2d',
                                   fg='white',
-                                  font=('Segoe UI', 10, 'bold'))  # Smaller font
+                                  font=('Segoe UI', 10, 'bold'),
+                                  width=label_width,
+                                  anchor='w')  # Left-align text within fixed width
             value_label.pack(side='left', padx=(5, 0))
             
             labels[key] = value_label
@@ -2178,7 +2188,7 @@ class EnhancedQCarGUIController:
 # Configuration
 HOST_IP = '0.0.0.0'  # Listen on all network interfaces
 BASE_PORT = 5000
-NUM_CARS = 2
+NUM_CARS = 5
 
 
 def main():
