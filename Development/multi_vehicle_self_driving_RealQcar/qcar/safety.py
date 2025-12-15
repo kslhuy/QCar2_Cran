@@ -143,37 +143,6 @@ class SensorHealthMonitor:
         self.gps_healthy = True
         self.last_gps_update = time.time()
     
-    def check_gps_health(self, gps_updated: bool) -> bool:
-        """
-        Check GPS sensor health
-        
-        Args:
-            gps_updated: Whether GPS was updated in this cycle
-            
-        Returns:
-            True if GPS is healthy
-        """
-        if gps_updated:
-            self.gps_timeout_counter = 0
-            self.last_gps_update = time.time()
-            
-            if not self.gps_healthy:
-                if self.logger:
-                    self.logger.logger.info("GPS signal restored")
-                self.gps_healthy = True
-        else:
-            self.gps_timeout_counter += 1
-            
-            if self.gps_timeout_counter > self.gps_timeout_max:
-                if self.gps_healthy:
-                    self.gps_failures += 1
-                    if self.logger:
-                        self.logger.log_warning(
-                            "GPS signal lost! Using dead reckoning"
-                        )
-                    self.gps_healthy = False
-        
-        return self.gps_healthy
     
     def get_time_since_gps_update(self) -> float:
         """Get time since last GPS update in seconds"""

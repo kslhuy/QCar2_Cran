@@ -85,9 +85,9 @@ class VehicleStateMachine:
             Tuple[float, float]: (throttle_command, steering_command)
         """
         try:
-            # Ensure event system is initialized
-            if hasattr(self.vehicle_logic, 'command_handler') and not hasattr(self.vehicle_logic.command_handler, 'state_machine'):
-                self.initialize_event_system()
+            # # Ensure event system is initialized
+            # if hasattr(self.vehicle_logic, 'command_handler') and not hasattr(self.vehicle_logic.command_handler, 'state_machine'):
+            #     self.initialize_event_system()
             
             # Get current state handler
             current_state = self.state_handlers[self.state]

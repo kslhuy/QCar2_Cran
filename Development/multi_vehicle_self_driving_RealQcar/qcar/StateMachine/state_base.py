@@ -69,8 +69,8 @@ class StateBase:
             - Optional[Tuple[VehicleState, StateTransitionReason]]: Next state transition if needed
         """
         # Check for emergency stop conditions first
-        if self.should_transition_to_stopped(sensor_data):
-            return 0.0, 0.0, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
+        # if self.should_transition_to_stopped(sensor_data):
+        #     return 0.0, 0.0, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
         
         # Base implementation - no movement, no transition
         return 0.0, 0.0, None
