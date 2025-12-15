@@ -34,11 +34,11 @@ network:
   reconnect_delay: 2.0
 
 path:
-  node_configuration: 0
+  path_number: 0
   calibration_pose: [0, 2, -1.5708]  # [x, y, theta] - adjust based on your map
   calibrate: false
   left_hand_traffic: false
-  # Note: valid_nodes is defined in config.py based on node_configuration
+  # Note: valid_nodes is defined in config.py based on path_number
   # For custom map with nodes 0-10, edit config.py valid_nodes property
 
 safety:

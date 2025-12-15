@@ -24,10 +24,10 @@ from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
 
 parser = argparse.ArgumentParser(prog='Vehicle control')
 parser.add_argument('-c','--calibrate', default=False)
-parser.add_argument('-n','--node_configuration', default=0)
+parser.add_argument('-n','--path_number', default=0)
 
 args = parser.parse_args()
-node_options = args.node_configuration
+node_options = args.path_number
 
 # choosing between two sets of nodes which avoids two way traffic
 if node_options==0:

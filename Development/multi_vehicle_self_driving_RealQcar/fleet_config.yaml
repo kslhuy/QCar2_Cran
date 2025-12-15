@@ -1,0 +1,142 @@
+# Fleet Configuration File
+# This file configures all QCars in the fleet with individual settings
+
+# Ground Station Configuration
+ground_station:
+  local_ip: 192.168.2.200
+  base_port: 5000
+
+# Remote QCar Configuration
+remote:
+  username: nvidia
+  password: nvidia
+  remote_path: /home/nvidia/Documents/multi_vehicle_RealCar
+
+# Observer Configuration
+image_size:
+  width: 320
+  height: 200
+
+# Upload Configuration
+upload:
+  skip_upload: false
+  enable_remote_logs: true
+
+# Vehicle Configurations
+# Each vehicle can have individual settings
+vehicles:
+  - car_id: 0
+    ip: 192.168.2.137
+    enabled: true
+    probing: true          # Enable YOLO probing (object detection)
+    calibrate: false       # Start in calibration mode
+    path_number: 0         # Path selection (0, 1, 2, etc.)
+    left_hand_traffic: false
+    initial_v_ref: 0.75    # Initial velocity reference (m/s)
+    description: "Leader vehicle with probing"
+    
+  - car_id: 1
+    ip: 192.168.2.108
+    enabled: true
+    probing: true         # Enable probing for follower
+    calibrate: false
+    path_number: 1         # Different path from leader
+    left_hand_traffic: false
+    initial_v_ref: 0.75
+    description: "Follower vehicle"
+  
+  # - car_id: 2
+  #   ip: 192.168.2.108
+  #   enabled: true
+  #   probing: true         # Enable probing for follower
+  #   calibrate: false
+  #   path_number: 0         # Same path as leader
+  #   left_hand_traffic: false
+  #   initial_v_ref: 0.75
+  #   description: "Follower vehicle"
+
+# Path Definitions
+# Available paths that vehicles can follow
+paths:
+  0:
+    name: "Main Circuit"
+    nodes: [10, 2, 4, 6, 8, 10]
+    description: "Default circuit starting from node 10"
+  1:
+    name: "Extended Loop"
+    nodes: [0, 2, 4, 6, 8, 10, 2, 4, 6, 0]
+    description: "Longer path with multiple loops"
+  2:
+    name: "Inner Circuit"
+    nodes: [2, 4, 6, 8, 10, 2]
+    description: "Inner circuit without node 0"
+
+# Node Definitions (Reference Information)
+# These are the physical waypoint poses on the track
+nodes:
+  0:
+    pose: [0.0, 0.13024, -1.5707963267948966]
+    description: "Start position A"
+  1:
+    pose: [0.26861999999999997, 0.0814, 1.5707963267948966]
+    description: "Junction point"
+  2:
+    pose: [1.12739, -1.084655, 0.0]
+    description: "Corner A"
+  3:
+    pose: [1.12739, -0.814, 3.141592653589793]
+    description: "Corner B"
+  4:
+    pose: [2.25478, 0.0814, 1.5707963267948966]
+    description: "Right turn"
+  5:
+    pose: [1.984125, 0.0814, -1.5707963267948966]
+    description: "U-turn point"
+  6:
+    pose: [1.01343, 1.100935, 3.141592653589793]
+    description: "Top corner"
+  7:
+    pose: [1.235245, 0.83028, 0.0]
+    description: "Mid junction"
+  8:
+    pose: [-0.74888, 1.100935, 3.141592653589793]
+    description: "Left corner"
+  9:
+    pose: [-0.74888, 0.83028, 0.0]
+    description: "Left mid"
+  10:
+    pose: [-1.28205, -0.45991, -0.7330382858376184]
+    description: "Start position B (default)"
+
+# Timing Configuration
+timing:
+  tf: 6000  # Experiment duration in seconds
+  start_delay: 1.0
+  controller_update_rate: 200  # Hz
+  observer_rate: 200  # Hz
+  telemetry_send_rate: 10  # Hz
+
+# YOLO Detection Configuration
+yolo:
+  stop_sign_threshold: 0.6
+  traffic_threshold: 1.7
+  car_threshold: 0.3
+  yield_threshold: 1.0
+  person_threshold: 0.6
+  pulse_length_multiplier: 3
+
+# Safety Configuration
+safety:
+  gps_timeout_max: 100
+  max_loop_time_warning: 0.02
+  emergency_stop_distance: 0.2
+  watchdog_timeout: 1.0
+
+# Logging Configuration
+logging:
+  log_dir: "logs"
+  data_log_dir: "data_logs"
+  enable_telemetry_logging: true
+  enable_state_logging: true
+  log_level: "INFO"
+  console_output: true
