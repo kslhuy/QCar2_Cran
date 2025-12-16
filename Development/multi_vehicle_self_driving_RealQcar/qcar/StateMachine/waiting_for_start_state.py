@@ -55,9 +55,9 @@ class WaitingForStartState(StateBase):
         throttle, steering = 0.0, 0.0
         
         # Check for emergency stop conditions first (handled by base class)
-        emergency_transition = super().update(dt, sensor_data)
-        if emergency_transition[2]:
-            return emergency_transition
+        # emergency_transition = super().update(dt, sensor_data)
+        # if emergency_transition[2]:
+        #     return emergency_transition
         
         # Optional: Auto-start logic (disabled by default)
         if self.state_data['auto_start_enabled']:
@@ -99,7 +99,7 @@ class WaitingForStartState(StateBase):
         # Handle calibrate command - GPS-only recalibration without full reinitialization
         if command_type == CommandType.CALIBRATE:
             self.logger.logger.info("GPS Calibration command received - performing GPS-only recalibration")
-            if self._recalibrate_gps_only():
+            if self._recalibrate_gps():
                 self.logger.logger.info("GPS recalibration completed successfully")
             else:
                 self.logger.log_error("GPS recalibration failed")
@@ -219,7 +219,7 @@ class WaitingForStartState(StateBase):
                         # Full GPS recalibration with new position
                         self.logger.logger.info(f"Setting initial position WITH GPS recalibration: ({x:.2f}, {y:.2f}, theta={theta:.2f})")
                         
-                        if self._recalibrate_gps_only(initial_pose):
+                        if self._recalibrate_gps(initial_pose):
                             self.logger.logger.info("✓ GPS recalibrated and observer reset successfully")
                         else:
                             self.logger.log_error("GPS recalibration with initial position failed")
@@ -248,53 +248,6 @@ class WaitingForStartState(StateBase):
         
         # Let base class handle common events (stop, emergency_stop)
         return super().handle_event(command_type, data)
-    #     """
-    #     Perform GPS-only recalibration without full reinitialization.
-    #     Reads current GPS position and resets the observer with it.
-        
-    #     Returns:
-    #         bool: True if recalibration successful
-    #     """
-    #     try:
-    #         # Check if GPS is available
-    #         if not hasattr(self.vehicle_logic, 'gps') or self.vehicle_logic.gps is None:
-    #             self.logger.logger.warning("GPS not available for recalibration")
-    #             return False
-            
-    #         # Read current GPS position
-    #         gps_updated = self.vehicle_logic.gps.readGPS()
-            
-    #         if not gps_updated:
-    #             self.logger.logger.warning("Failed to read GPS data for recalibration")
-    #             return False
-            
-    #         # Get GPS position and orientation
-    #         import numpy as np
-    #         gps_position = self.vehicle_logic.gps.position  # [x, y, z]
-    #         gps_orientation = self.vehicle_logic.gps.orientation  # [roll, pitch, yaw]
-            
-    #         # Create initial pose [x, y, theta]
-    #         initial_pose = np.array([
-    #             float(gps_position[0]),
-    #             float(gps_position[1]),
-    #             float(gps_orientation[2])  # yaw
-    #         ])
-            
-    #         # Reset vehicle observer with GPS position
-    #         if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
-    #             self.vehicle_logic.vehicle_observer.reset_observer(initial_pose)
-    #             self.logger.logger.info(
-    #                 f"✓ GPS recalibration successful: position=({initial_pose[0]:.2f}, {initial_pose[1]:.2f}), "
-    #                 f"heading={np.rad2deg(initial_pose[2]):.1f}°"
-    #             )
-    #             return True
-    #         else:
-    #             self.logger.logger.warning("Vehicle observer not available for GPS recalibration")
-    #             return False
-                
-    #     except Exception as e:
-    #         self.logger.log_error("GPS recalibration failed", e)
-    #         return False
     
     def exit(self):
         """Clean up waiting state"""

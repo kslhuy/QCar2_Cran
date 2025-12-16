@@ -179,7 +179,8 @@ class FakeInitializingState(StateBase):
     def _wait_for_mock_gps(self) -> bool:
         """Wait for initial mock GPS reading (matches real _wait_for_gps)"""
         self.logger.logger.info("Waiting for initial mock GPS reading...")
-        
+        self.logger.logger.info(f"Calibration pose: {self.config.path.calibration_pose}")
+
         # Mock GPS is always ready - just read once
         if self.vehicle_logic.gps.readGPS():
             self.init_pose = np.array([

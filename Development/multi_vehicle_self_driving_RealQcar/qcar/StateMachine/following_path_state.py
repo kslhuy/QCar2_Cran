@@ -168,6 +168,7 @@ class FollowingPathState(StateBase):
     def update(self, dt: float, sensor_data: Dict[str, Any]) -> Tuple[float, float, Optional[Tuple[VehicleState, StateTransitionReason]]]:
         """Update path following control"""
         
+        # print(sensor_data)
         # Extract sensor data
         x = sensor_data['x']
         y = sensor_data['y']

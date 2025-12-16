@@ -37,6 +37,7 @@ setup(
             "lidar_sub = ros2test.lidar_sub:main",
             'test_parameter_updates = ros2test.test_parameter_updates:main',
             'lidar_occupancy_node = ros2test.lidar_occupancy_node:main',
+            'vehicle_main_ros = ros2test.vehicle_main_ros:main',
         ],
     },
 )

@@ -53,21 +53,62 @@ class NetworkConfig:
 @dataclass
 class PathPlanningConfig:
     """Path planning parameters"""
-    node_configuration: int = 0
-    calibration_pose: List[float] = field(default_factory=lambda: [0, 2, -np.pi/2])
+    path_number: int = 0
     calibrate: bool = False
     left_hand_traffic: bool = False
     
+    # Node 0: Pose = [0.0, 0.13024, -1.5707963267948966]
+    # Node 1: Pose = [0.26861999999999997, 0.0814, 1.5707963267948966]
+    # Node 2: Pose = [1.12739, -1.084655, 0.0]
+    # Node 3: Pose = [1.12739, -0.814, 3.141592653589793]
+    # Node 4: Pose = [2.25478, 0.0814, 1.5707963267948966]
+    # Node 5: Pose = [1.984125, 0.0814, -1.5707963267948966]
+    # Node 6: Pose = [1.01343, 1.100935, 3.141592653589793]
+    # Node 7: Pose = [1.235245, 0.83028, 0.0]
+    # Node 8: Pose = [-0.74888, 1.100935, 3.141592653589793]
+    # Node 9: Pose = [-0.74888, 0.83028, 0.0]
+    # Node 10: Pose = [-1.28205, -0.45991, -0.7330382858376184]
+
     @property
     def valid_nodes(self) -> List[int]:
-        if self.node_configuration == 0:
-            return [0, 2, 4, 6, 8, 10 , 2]
-        else:
-            return [0, 2, 4, 6, 8, 10 , 2]
-        # if self.node_configuration == 0:
-        #     return [10, 2, 4, 6, 8, 10]
-        # else:
-        #     return [10, 2, 4, 6, 8, 10]
+        if self.path_number == 0:
+            return [10, 2, 4, 6, 8, 10]
+        elif self.path_number == 1:
+            return [0, 2, 4, 6, 8, 10 , 2 ,4 ,6 ,0]
+        else :
+            return [2 , 4 ,6 , 8 , 10 , 2 ]
+    
+    @property
+    def calibration_pose(self) -> List[float]:
+        """Get calibration pose based on the first valid node"""
+        node_poses = {
+            0: [0.0, 0.13024, -1.5707963267948966],
+            1: [0.26861999999999997, 0.0814, 1.5707963267948966],
+            2: [1.12739, -1.084655, 0.0],
+            3: [1.12739, -0.814, 3.141592653589793],
+            4: [2.25478, 0.0814, 1.5707963267948966],
+            5: [1.984125, 0.0814, -1.5707963267948966],
+            6: [1.01343, 1.100935, 3.141592653589793],
+            7: [1.235245, 0.83028, 0.0],
+            8: [-0.74888, 1.100935, 3.141592653589793],
+            9: [-0.74888, 0.83028, 0.0],
+            10: [-1.28205, -0.45991, -0.7330382858376184]
+        }
+        first_node = self.valid_nodes[0]
+        return node_poses.get(first_node, [0, 0, 0])
+
+
+
+@dataclass
+class VehicleConfig:
+    """Vehicle-specific configuration"""
+    vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
+    
+    def __post_init__(self):
+        """Validate vehicle type"""
+        valid_types = ["Qcar", "Limo"]
+        if self.vehicle_type not in valid_types:
+            raise ValueError(f"Invalid vehicle_type: {self.vehicle_type}. Must be one of {valid_types}")
 
 
 @dataclass
@@ -123,6 +164,7 @@ class VehicleMainConfig:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     observer: ObserverConfig = field(default_factory=ObserverConfig)
+    vehicle: VehicleConfig = field(default_factory=VehicleConfig)
     
     @classmethod
     def from_dict(cls, config_dict: dict) -> 'VehicleMainConfig':
@@ -134,7 +176,7 @@ class VehicleMainConfig:
             path=PathPlanningConfig(**config_dict.get('path', {})),
             safety=SafetyConfig(**config_dict.get('safety', {})),
             logging=LoggingConfig(**config_dict.get('logging', {})),
-            observer=ObserverConfig(**config_dict.get('observer', {}))
+            vehicle=VehicleConfig(**config_dict.get('vehicle', {}))
         )
     
     @classmethod
@@ -160,7 +202,7 @@ class VehicleMainConfig:
             'path': self.path.__dict__,
             'safety': self.safety.__dict__,
             'logging': self.logging.__dict__,
-            'observer': self.observer.__dict__,
+            'vehicle': self.vehicle.__dict__
         }
     
     def to_json(self, filepath: str):
@@ -177,11 +219,15 @@ class VehicleMainConfig:
         """Update configuration from command line arguments"""
         if hasattr(args, 'calibrate'):
             self.path.calibrate = args.calibrate
-        if hasattr(args, 'node_configuration'):
-            self.path.node_configuration = args.node_configuration
+        if hasattr(args, 'path_number'):
+            self.path.path_number = args.path_number
+        if hasattr(args, 'left_hand_traffic'):
+            self.path.left_hand_traffic = args.left_hand_traffic
         if hasattr(args, 'host') and args.host is not None:
             self.network.host_ip = args.host
         if hasattr(args, 'port'):
             self.network.base_port = args.port
         if hasattr(args, 'car_id'):
             self.network.car_id = args.car_id
+        if hasattr(args, 'vehicle_type'):
+            self.vehicle.vehicle_type = args.vehicle_type

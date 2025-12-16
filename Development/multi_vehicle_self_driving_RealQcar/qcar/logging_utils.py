@@ -677,7 +677,7 @@ class PerformanceMonitor:
         
         # Blocking detection
         self.blocking_threshold = 0.010  # 10ms threshold for potential blocking
-        self.severe_blocking_threshold = 0.025  # 25ms threshold for severe blocking
+        self.severe_blocking_threshold = 0.25  # 250ms threshold for severe blocking
         self.blocking_incidents = 0
         self.severe_blocking_incidents = 0
     
