@@ -24,10 +24,22 @@ network:
   reconnect_delay: 2.0
 
 path:
-  node_configuration: [10, 2, 4, 6, 8, 10]
+  path_number: [10, 2, 4, 6, 8, 10]
   calibration_pose: [-1.28205, -0.45991, -0.7330382858376184] # [x, y, theta] in radians
   calibrate: false
   left_hand_traffic: false
+
+# Node 0: Pose = [0.0, 0.13024, -1.5707963267948966]
+# Node 1: Pose = [0.26861999999999997, 0.0814, 1.5707963267948966]
+# Node 2: Pose = [1.12739, -1.084655, 0.0]
+# Node 3: Pose = [1.12739, -0.814, 3.141592653589793]
+# Node 4: Pose = [2.25478, 0.0814, 1.5707963267948966]
+# Node 5: Pose = [1.984125, 0.0814, -1.5707963267948966]
+# Node 6: Pose = [1.01343, 1.100935, 3.141592653589793]
+# Node 7: Pose = [1.235245, 0.83028, 0.0]
+# Node 8: Pose = [-0.74888, 1.100935, 3.141592653589793]
+# Node 9: Pose = [-0.74888, 0.83028, 0.0]
+# Node 10: Pose = [-1.28205, -0.45991, -0.7330382858376184]
 
 safety:
   gps_timeout_max: 100  # iterations

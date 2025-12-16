@@ -33,7 +33,7 @@ class LocalStateEstimatorBase(ABC):
         self.last_update_time = 0.0
     
     @abstractmethod
-    def update(self, motor_tach: float, steering: float, dt: float, 
+    def update(self, motor_tach: float, steering: float , throttle:float, dt: float, 
                gyro_z: float = 0.0, gps_data: Optional[Dict] = None) -> bool:
         """
         Update state estimate with sensor data
@@ -118,7 +118,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             self.use_qcar_ekf = False
             self.ekf_initialized = False
     
-    def update(self, motor_tach: float, steering: float, dt: float, 
+    def update(self, motor_tach: float, steering: float, throttle:float, dt: float, 
                gyro_z: float = 0.0, gps_data: Optional[Dict] = None) -> bool:
         """Update EKF with sensor data"""
         try:
@@ -263,7 +263,7 @@ class LuenbergerStateEstimator(LocalStateEstimatorBase):
         
         self.L = np.eye(self.state_dim) * observer_gain  # Observer gain matrix
     
-    def update(self, motor_tach: float, steering: float, dt: float, 
+    def update(self, motor_tach: float, steering: float, throttle:float, dt: float, 
                gyro_z: float = 0.0, gps_data: Optional[Dict] = None) -> bool:
         """Update Luenberger observer"""
         try:
@@ -322,7 +322,7 @@ class DeadReckoningEstimator(LocalStateEstimatorBase):
         """Initialize dead reckoning estimator"""
         super().__init__(initial_pose, logger)
     
-    def update(self, motor_tach: float, steering: float, dt: float, 
+    def update(self, motor_tach: float, steering: float, throttle:float, dt: float, 
                gyro_z: float = 0.0, gps_data: Optional[Dict] = None) -> bool:
         """Update using dead reckoning only"""
         try:

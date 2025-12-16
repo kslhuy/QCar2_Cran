@@ -85,17 +85,18 @@ class VehicleObserver:
         self.sensor_data = {
             'motor_tach': 0.0,
             'gyro_z': 0.0,
+            'accelerometer' : np.zeros(3),
+            'accel_magnitude': 0.0,
             'timestamp': 0.0,
             'gps_valid': False,
             'gps_position': np.zeros(3),  # [x, y, theta]
-            'gps_updated': False
         }
+
         
         # ===== Control and Dynamics Cache =====
         # self.last_velocity = 0.0
-        self.acceleration = 0.0
+        self.acceleration_magnitude = 0.0
         self.control_input = {'steering': 0.0, 'throttle': 0.0}
-        # self.last_update_time = 0.0
         
         # ===== GPS Reference =====
         self.gps = None  # Will be set during initialize_local_estimator
@@ -234,17 +235,15 @@ class VehicleObserver:
                     accel_x = qcar.accelerometer[0] if hasattr(qcar, 'accelerometer') else 0.0
                     accel_y = qcar.accelerometer[1] if hasattr(qcar, 'accelerometer') else 0.0
                     # Calculate horizontal acceleration magnitude (norm of x and y)
-                    accel_magnitude = np.sqrt(accel_x**2 + accel_y**2)
+                    accel_magnitude = float(np.sqrt(accel_x**2 + accel_y**2))
                     
                     # Read GPS once here (centralized GPS reading)
                     gps_valid = False
                     gps_position = np.zeros(3)  # [x, y, theta]
-                    gps_updated = False
                     
                     if self.gps is not None:
                         try:
-                            gps_updated = self.gps.readGPS()
-                            if gps_updated:
+                            if self.gps.readGPS():
                                 gps_valid = True
                                 gps_position = np.array([
                                     self.gps.position[0],
@@ -263,7 +262,6 @@ class VehicleObserver:
                         'timestamp': time.time(),
                         'gps_valid': gps_valid,
                         'gps_position': gps_position,
-                        'gps_updated': gps_updated
                     })
                 
                 return True
@@ -291,26 +289,11 @@ class VehicleObserver:
         try:
             # Update control input cache
             self.control_input = {'steering': last_steering, 'throttle': throttle}
-            self.acceleration = float(self.sensor_data['accel_magnitude'])
+            self.acceleration_magnitude = self.sensor_data['accel_magnitude']
 
-            # # Get acceleration from accelerometer if available, otherwise calculate from velocity
-            # if 'accel_magnitude' in self.sensor_data and self.sensor_data['accel_magnitude'] != 0.0:
-            #     # Use measured acceleration from accelerometer (preferred)
-            #     self.acceleration = float(self.sensor_data['accel_magnitude'])
-            #     self.last_velocity = self.sensor_data['motor_tach']
-            # elif dt > 0 and self.last_update_time > 0:
-            #     # Fallback: Calculate acceleration from velocity change
-            #     current_velocity = self.sensor_data['motor_tach']
-            #     self.acceleration = (current_velocity - self.last_velocity) / dt
-            #     self.last_velocity = current_velocity
-            # else:
-            #     self.acceleration = 0.0
-            #     self.last_velocity = self.sensor_data['motor_tach']
-            
-            # self.last_update_time = current_time
             
             # Update local observer (always - rate controlled by vehicle_logic)
-            state_info = self._update_local_observer(dt, last_steering)
+            state_info = self._update_local_observer(dt, last_steering , throttle)
             
             # Update fleet observer if it's time (independent rate control)
             if self._should_update_fleet_observer(current_time):
@@ -323,7 +306,7 @@ class VehicleObserver:
             # Return last known state instead of zeros
             return self._get_last_known_state()
 
-    def _update_local_observer(self, dt: float, last_steering: float = 0.0) -> dict:
+    def _update_local_observer(self, dt: float, last_steering: float = 0.0 , last_u: float = 0.0) -> dict:
         """
         Update local state estimation using pluggable local estimator.
         This is called every time vehicle_logic calls update_observer().
@@ -354,6 +337,7 @@ class VehicleObserver:
             success = self.local_estimator.update(
                 motor_tach=self.sensor_data['motor_tach'],
                 steering=last_steering,
+                throttle=last_u,
                 dt=dt,
                 gyro_z=self.sensor_data['gyro_z'],
                 gps_data=gps_data  # Pass GPS data from centralized sensor reading
@@ -365,7 +349,7 @@ class VehicleObserver:
             # Get current state from estimator (returns numpy array directly)
             state = self.local_estimator.get_state()
             
-            # Update local state cache - handle both 4D and 5D states
+            # Update local state cache - handle both 4D and 5 dimension states
             # GPS validity is tracked at observer level based on actual GPS reading
             gps_valid = self.sensor_data.get('gps_valid', False)
             
@@ -374,7 +358,7 @@ class VehicleObserver:
                     # Legacy 4D state: [x, y, theta, v] - add acceleration
                     self.local_state = np.zeros(5)
                     self.local_state[:4] = state.copy()
-                    self.local_state[4] = self.acceleration  # Add current acceleration
+                    self.local_state[4] = self.acceleration_magnitude  # Add current acceleration
                 else:
                     # 5D state: [x, y, theta, v, a]
                     self.local_state = state.copy()
@@ -689,7 +673,7 @@ class VehicleObserver:
                 'y': float(self.local_state[1]),
                 'theta': float(self.local_state[2]),
                 'velocity': float(self.local_state[3]),
-                'acceleration': float(self.local_state[4]) if len(self.local_state) > 4 else float(self.acceleration),
+                'acceleration': float(self.local_state[4]),
                 'control_input': {
                     'steering': float(self.control_input['steering']),
                     'throttle': float(self.control_input['throttle'])
@@ -807,9 +791,8 @@ class VehicleObserver:
             
             # Reset acceleration and control tracking
             # self.last_velocity = 0.0
-            self.acceleration = 0.0
+            self.acceleration_magnitude = 0.0
             self.control_input = {'steering': 0.0, 'throttle': 0.0}
-            # self.last_update_time = 0.0
             
             # Update fleet states from fleet estimator
             if self.fleet_estimator is not None:

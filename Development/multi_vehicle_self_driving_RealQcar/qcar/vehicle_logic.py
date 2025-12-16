@@ -34,6 +34,7 @@ class VehicleLogic:
         # Vehicle identification
         # vehicle_id: Connection/network ID (used for Ground Station communication, file naming, etc.)
         self.vehicle_id = config.network.car_id
+        self.Is_Limo_Car = config.network.car_id
         
         # vehicle_position: Position in platoon formation (1=leader, 2=first follower, 3=second follower, etc.)
         # Initially set to vehicle_id, but can be changed by Ground Station platoon formation commands
@@ -201,11 +202,12 @@ class VehicleLogic:
                 if hasattr(self, 'watchdog'):
                     self.watchdog.reset()
                 
-                # 1. Sensor Data Reading and GPS Update
-                self._update_sensor_data(actual_dt)
+
                 
+                # 1. Sensor Data Reading and GPS Update
                 # 2. Observer Update (handles both local and fleet internally)
                 if self._should_update_observer(loop_start):
+                    self._update_sensor_data(actual_dt)
                     self._observer_update(actual_dt)
                 
                 # 3. Control Logic (high frequency)
@@ -262,7 +264,7 @@ class VehicleLogic:
     def _update_sensor_data(self, dt: float):
         """Update sensor data using VehicleObserver - called every loop iteration"""
         try:
-            if self.qcar is not None:
+            if self.state_machine.state != VehicleState.INITIALIZING and self.qcar is not None:
                 # Use VehicleObserver to update sensor data
                 self.vehicle_observer.update_sensor_data(self.qcar)
                 
@@ -280,18 +282,19 @@ class VehicleLogic:
         """Unified observer update - handles both local and fleet observer internally"""
         try:
             # Skip observer update if local estimator not initialized yet
-            if self.vehicle_observer.get_local_estimator() is None:
+            if self.state_machine.state == VehicleState.INITIALIZING or self.vehicle_observer.get_local_estimator() is None:
                 return  # Observer not ready yet (still in INITIALIZING state)
             
             # Get last steering command for EKF
             last_steering = getattr(self, '_last_steering', 0.0)
+            last_u = getattr(self, '_last_u', 0.0) 
             
             # Update observer (internally handles local and fleet timing)
             state_info = self.vehicle_observer.update_observer(
                 dt, 
-                last_steering
+                last_steering,
+                last_u
             )
-            
             
             # Log observer state occasionally
             if self.loop_counter % 300 == 0:  # Every 3 seconds at 100Hz (reduced logging)
@@ -313,26 +316,21 @@ class VehicleLogic:
         """Control logic update - state machine and vehicle commands"""
         try:
             # Check if components are initialized
-            # Use new API: get_local_estimator() instead of get_state_estimator()
-            if self.qcar is None or (hasattr(self, 'vehicle_observer') and self.vehicle_observer.get_local_estimator() is None):
-                return self._handle_initialization_control(dt)
+            # If not still need 
+            if self.state_machine.state == VehicleState.INITIALIZING or self.qcar is not None : 
+                sensor_data = {}
+                # Update state machine - this will handle initialization
+                self.state_machine.update(dt, sensor_data)
+                return True
+                # return False
+            
+
             
             # Get current state from VehicleObserver
-            state_info = self.vehicle_observer.get_estimated_state_for_control()
-            x, y, theta, velocity = state_info['x'], state_info['y'], state_info['theta'], state_info['velocity']
-            gps_valid = state_info['gps_valid']
-            
+            sensor_data = self.vehicle_observer.get_estimated_state_for_control()
             # Prepare YOLO data
-            yolo_data = self.yolo_manager.get_yolo_data()
+            sensor_data['yolo_data'] = self.yolo_manager.get_yolo_data()
             
-            # Prepare sensor data for state machine
-            sensor_data = {
-                'x': x, 'y': y, 'theta': theta, 'velocity': velocity,
-                'motor_tach': state_info['motor_tach'],
-                'gyro_z': state_info['gyro_z'],
-                'yolo_data': yolo_data,
-                'gps_valid': gps_valid
-            }
             
             # Update state machine - it handles all state logic and transitions
             u, delta = self.state_machine.update(dt, sensor_data)
@@ -351,31 +349,7 @@ class VehicleLogic:
             self.vehicle_logger.log_error("Control logic update error", e)
             return False
     
-    def _handle_initialization_control(self, dt: float) -> bool:
-        """Handle control during initialization phase"""
-        try:
-            # During initialization, just update state machine without sensor readings
-            if hasattr(self.state_machine, 'state') and self.state_machine.state == VehicleState.INITIALIZING:
-                # Minimal sensor data for initialization
-                sensor_data = {
-                    'x': 0.0, 'y': 0.0, 'theta': 0.0, 'velocity': 0.0,
-                    'motor_tach': 0.0, 'gyro_z': 0.0,
-                    'yolo_data': self.yolo_manager.get_default_yolo_data(),
-                    'gps_valid': False
-                }
-                
-                # Update state machine - this will handle initialization
-                u, delta = self.state_machine.update(dt, sensor_data)
-                
-                # Don't send commands during initialization
-                return True
-            else:
-                self.vehicle_logger.log_error("Components not initialized but not in INITIALIZING state")
-                return False
-                
-        except Exception as e:
-            self.vehicle_logger.log_error("Initialization control error", e)
-            return False
+
     
 
     

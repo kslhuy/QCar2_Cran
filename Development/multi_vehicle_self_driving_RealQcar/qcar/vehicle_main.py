@@ -95,11 +95,11 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        '-n', '--node_configuration',
+        '-n', '--path_number',
         type=int,
         default=0,
-        choices=[0, 1],
-        help='Node configuration (0 or 1 for different traffic patterns)'
+        choices=[0, 1, 2],
+        help='Node configuration (0, 1, or 2 for different traffic patterns)'
     )
     # Auto compute port based on car_id (just keep base port here)
     parser.add_argument(
@@ -130,7 +130,19 @@ def parse_arguments():
         help='Path to configuration file (JSON or YAML). Default: config_vehicle_main.yaml in script directory'
     )
     
-
+    parser.add_argument(
+        '--v-ref',
+        type=float,
+        default=None,
+        help='Initial velocity reference in m/s (overrides config file)'
+    )
+    
+    parser.add_argument(
+        '--left-hand-traffic',
+        action='store_true',
+        default=False,
+        help='Enable left-hand traffic mode'
+    )
     
     parser.add_argument(
         '--no-steering',
@@ -213,6 +225,11 @@ def main():
     # Create vehicle logic controller
     print("\n[INIT] Creating vehicle controller...")
     vehicle_logic = VehicleLogic(config, kill_event)
+    
+    # Override v_ref if specified in command line
+    if args.v_ref is not None:
+        vehicle_logic.v_ref = args.v_ref
+        print(f"[CONFIG] Velocity reference overridden to: {args.v_ref} m/s")
     
     print("\n[READY] Vehicle controller created and ready")
     print("="*70)

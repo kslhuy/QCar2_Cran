@@ -554,8 +554,6 @@ class FakeVehicleWithRealLogic:
         config.timing.telemetry_send_rate = 20      # 20 Hz for V2V compatibility
         config.timing.tf = 300.0  # 5 minute experiment
         
-        # Disable some features that need real hardware
-        config.steering.enable_steering_control = True
         
         # Path configuration - don't set valid_nodes as it's a property
         # The default valid_nodes from PathPlanningConfig will be used
