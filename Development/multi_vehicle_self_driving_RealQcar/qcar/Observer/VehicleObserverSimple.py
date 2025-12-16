@@ -354,7 +354,7 @@ class VehicleObserver:
             
             # Update fleet observer if it's time (independent rate control)
             if self._should_update_fleet_observer(current_time):
-                state_info = self._update_fleet_observer_internal(dt) # Distributed
+                self._update_fleet_observer_internal(dt) # Distributed
             
             return state_info
             

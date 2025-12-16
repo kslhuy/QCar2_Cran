@@ -176,7 +176,8 @@ class VehicleMainConfig:
             path=PathPlanningConfig(**config_dict.get('path', {})),
             safety=SafetyConfig(**config_dict.get('safety', {})),
             logging=LoggingConfig(**config_dict.get('logging', {})),
-            vehicle=VehicleConfig(**config_dict.get('vehicle', {}))
+            vehicle=VehicleConfig(**config_dict.get('vehicle', {})),
+            observer=ObserverConfig(**config_dict.get('observer', {}))
         )
     
     @classmethod
@@ -202,7 +203,8 @@ class VehicleMainConfig:
             'path': self.path.__dict__,
             'safety': self.safety.__dict__,
             'logging': self.logging.__dict__,
-            'vehicle': self.vehicle.__dict__
+            'vehicle': self.vehicle.__dict__,
+            'observer': self.observer.__dict__,
         }
     
     def to_json(self, filepath: str):

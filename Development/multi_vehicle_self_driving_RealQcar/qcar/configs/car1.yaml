@@ -4,5 +4,5 @@ network:
 observer:
   fleet_estimator_type: distributed_luenberger
   local_estimator_type: ekf
-  observer_gain: 0.6
+  observer_gain: [[0.5,0,0,0,0],[0,0.5,0,0,0],[0,0,0.3,0,0],[0,0,0,0.2,0],[0,0,0,0,0.1]]
   consensus_gain: 0.2
