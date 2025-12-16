@@ -24,8 +24,8 @@ network:
   reconnect_delay: 2.0
 
 path:
-  path_number: [10, 2, 4, 6, 8, 10]
-  calibration_pose: [-1.28205, -0.45991, -0.7330382858376184] # [x, y, theta] in radians
+  path_number: 0
+  # calibration_pose: [-1.28205, -0.45991, -0.7330382858376184] # [x, y, theta] in radians
   calibrate: false
   left_hand_traffic: false
 

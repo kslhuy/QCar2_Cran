@@ -19,7 +19,8 @@ class FleetStarter:
     
     def __init__(self, config_path: str, args):
         self.args = args
-        self.config_path = os.path.normpath(os.path.join(os.path.dirname(__file__), config_path))
+        # Resolve config path from several sensible locations (script dir, parent dir, cwd)
+        self.config_path = self._resolve_config_path(config_path)
         self.config = self._load_config()
         self.probing_process = None
         self.current_dir = os.path.dirname(os.path.realpath(__file__))
@@ -50,6 +51,34 @@ class FleetStarter:
         except Exception as e:
             print(f"[ERROR] Failed to load configuration: {e}")
             sys.exit(1)
+
+    def _resolve_config_path(self, config_path: str) -> str:
+        """Try multiple likely locations for the config file and return the first that exists.
+
+        Priority:
+          1. Absolute path (if provided)
+          2. Path relative to script directory (python/)
+          3. Path relative to parent of script directory (project root)
+          4. Path relative to current working directory
+          5. Fallback to normalised script-relative path
+        """
+        # If absolute, use it
+        if os.path.isabs(config_path):
+            return config_path
+
+        script_dir = os.path.dirname(__file__)
+        candidates = [
+            os.path.join(script_dir, config_path),
+            os.path.normpath(os.path.join(script_dir, '..', config_path)),
+            os.path.abspath(config_path),
+        ]
+
+        for c in candidates:
+            if os.path.exists(c):
+                return os.path.normpath(c)
+
+        # Last resort: return the script-relative normalized path
+        return os.path.normpath(os.path.join(script_dir, config_path))
     
     def display_configuration(self):
         """Display fleet configuration summary"""
