@@ -100,6 +100,18 @@ class PathPlanningConfig:
 
 
 @dataclass
+class VehicleConfig:
+    """Vehicle-specific configuration"""
+    vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
+    
+    def __post_init__(self):
+        """Validate vehicle type"""
+        valid_types = ["Qcar", "Limo"]
+        if self.vehicle_type not in valid_types:
+            raise ValueError(f"Invalid vehicle_type: {self.vehicle_type}. Must be one of {valid_types}")
+
+
+@dataclass
 class SafetyConfig:
     """Safety and monitoring parameters"""
     gps_timeout_max: int = 100
@@ -128,6 +140,7 @@ class VehicleMainConfig:
     path: PathPlanningConfig = field(default_factory=PathPlanningConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    vehicle: VehicleConfig = field(default_factory=VehicleConfig)
     
     @classmethod
     def from_dict(cls, config_dict: dict) -> 'VehicleMainConfig':
@@ -138,7 +151,8 @@ class VehicleMainConfig:
             network=NetworkConfig(**config_dict.get('network', {})),
             path=PathPlanningConfig(**config_dict.get('path', {})),
             safety=SafetyConfig(**config_dict.get('safety', {})),
-            logging=LoggingConfig(**config_dict.get('logging', {}))
+            logging=LoggingConfig(**config_dict.get('logging', {})),
+            vehicle=VehicleConfig(**config_dict.get('vehicle', {}))
         )
     
     @classmethod
@@ -163,7 +177,8 @@ class VehicleMainConfig:
             'network': self.network.__dict__,
             'path': self.path.__dict__,
             'safety': self.safety.__dict__,
-            'logging': self.logging.__dict__
+            'logging': self.logging.__dict__,
+            'vehicle': self.vehicle.__dict__
         }
     
     def to_json(self, filepath: str):
@@ -190,3 +205,5 @@ class VehicleMainConfig:
             self.network.base_port = args.port
         if hasattr(args, 'car_id'):
             self.network.car_id = args.car_id
+        if hasattr(args, 'vehicle_type'):
+            self.vehicle.vehicle_type = args.vehicle_type

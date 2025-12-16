@@ -24,9 +24,11 @@ upload:
 
 # Vehicle Configurations
 # Each vehicle can have individual settings
+# vehicle_type can be: "Qcar" or "Limo"
 vehicles:
   - car_id: 0
     ip: 192.168.2.137
+    vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
     probing: true          # Enable YOLO probing (object detection)
     calibrate: false       # Start in calibration mode
@@ -37,6 +39,7 @@ vehicles:
     
   - car_id: 1
     ip: 192.168.2.108
+    vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
     probing: true         # Enable probing for follower
     calibrate: false
@@ -47,6 +50,7 @@ vehicles:
   
   # - car_id: 2
   #   ip: 192.168.2.108
+  #   vehicle_type: "Limo"   # Vehicle type: "Qcar" or "Limo"
   #   enabled: true
   #   probing: true         # Enable probing for follower
   #   calibrate: false
