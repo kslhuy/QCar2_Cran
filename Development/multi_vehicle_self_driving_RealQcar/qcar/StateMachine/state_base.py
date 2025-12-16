@@ -321,56 +321,7 @@ class StateBase:
         if not yolo_enabled:
             return False
         
-        # # Check LIDAR-based emergency stops (if available)
-        # if hasattr(self.vehicle_logic, 'gps') and self.vehicle_logic.gps:
-        #     lidar_data = sensor_data.get('lidar_data', {})
-        #     if lidar_data:
-        #         # Check for very close obstacles
-        #         min_distance = lidar_data.get('min_distance', float('inf'))
-        #         if min_distance < 0.5:  # Less than 50cm
-        #             if self.logger:
-        #                 self.logger.log_warning(f"Emergency stop: LIDAR detected obstacle at {min_distance:.2f}m")
-        #             return True
-        
-        # # Check velocity limits
-        # current_velocity = sensor_data.get('velocity', 0.0)
-        # max_safe_velocity = getattr(self.config.speed, 'max_velocity', 2.0) * 1.2  # 20% over max
-        # if abs(current_velocity) > max_safe_velocity:
-        #     if self.logger:
-        #         self.logger.log_warning(f"Emergency stop: Velocity {current_velocity:.2f} exceeds safe limits")
-        #     return True
-        
-        # # Check if vehicle is going too far off-road (if GPS and steering available)
-        # if (hasattr(self.vehicle_logic, 'roadmap') and self.vehicle_logic.roadmap and
-        #     hasattr(self.vehicle_logic, 'steering_controller') and self.vehicle_logic.steering_controller and
-        #     hasattr(self.config, 'steering') and self.config.steering.enable_steering_control):
-        #     try:
-        #         if hasattr(self.vehicle_logic.steering_controller, 'get_cross_track_error'):
-        #             cross_track_error = self.vehicle_logic.steering_controller.get_cross_track_error()
-        #             if abs(cross_track_error) > 3.0:  # More than 3m off path
-        #                 if self.logger:
-        #                     self.logger.log_warning(f"Emergency stop: Vehicle too far off path ({cross_track_error:.2f}m)")
-        #                 return True
-        #     except Exception:
-        #         pass  # Ignore errors in path checking
-        
-        # # Check system health - kill event
-        # if hasattr(self.vehicle_logic, 'kill_event') and self.vehicle_logic.kill_event and self.vehicle_logic.kill_event.is_set():
-        #     if self.logger:
-        #         self.logger.log_warning("Emergency stop: Kill event triggered")
-        #     return True
-        
-        # # Check communication timeout (if using network)
-        # if (hasattr(self.vehicle_logic, 'client_Ground_Station') and 
-        #     self.vehicle_logic.client_Ground_Station and
-        #     hasattr(self.vehicle_logic.client_Ground_Station, 'is_connection_alive')):
-        #     try:
-        #         if not self.vehicle_logic.client_Ground_Station.is_connection_alive():
-        #             if self.logger:
-        #                 self.logger.log_warning("Emergency stop: Lost communication with ground station")
-        #             return True
-        #     except Exception:
-        #         pass  # Ignore connection check errors
+       
         
         return False
     
@@ -421,7 +372,7 @@ class StateBase:
                 return False
         return True
     
-    def _recalibrate_gps_only(self, initial_pose=None) -> bool:
+    def _recalibrate_gps(self, initial_pose=None , calibrate=True) -> bool:
         """
         Recalibrate GPS without reinitializing other components
         
@@ -466,7 +417,7 @@ class StateBase:
                 
                 # self.vehicle_logic.gps = QCarGPS(
                 #     initialPose=calibration_pose,
-                #     calibrate=True,
+                #     calibrate=calibrate,
                 #     gpsPort=car_config["gpsPort"],
                 #     lidarIdealPort=car_config["lidarIdealPort"]
                 # )
@@ -475,7 +426,7 @@ class StateBase:
                 # Physical QCar
                 self.vehicle_logic.gps = QCarGPS(
                     initialPose=calibration_pose,
-                    calibrate=True
+                    calibrate=calibrate
                 )
                 self.logger.logger.info("GPS recalibrated (physical mode)")
             

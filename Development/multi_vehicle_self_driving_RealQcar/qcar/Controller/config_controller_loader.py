@@ -68,8 +68,8 @@ class ControllerConfig:
         
         if controller_type == 'cacc':
             return self._get_cacc_params()
-        elif controller_type == 'pi':
-            return self._get_pi_params()
+        elif controller_type == 'pid':
+            return self._get_pid_params()
         elif controller_type == 'hybrid':
             return self._get_hybrid_longitudinal_params()
         else:
@@ -121,15 +121,17 @@ class ControllerConfig:
             'ki_velocity': cacc_config.get('ki_velocity', 0.1),
         }
     
-    def _get_pi_params(self) -> Dict[str, Any]:
-        """Get PI controller parameters"""
-        pi_config = self.config.get('pi', {})
+    def _get_pid_params(self) -> Dict[str, Any]:
+        """Get PID controller parameters"""
+        pid_config = self.config.get('pid', {})
         
         return {
-            'kp': pi_config.get('kp', 0.1),
-            'ki': pi_config.get('ki', 1.0),
-            'max_throttle': pi_config.get('max_throttle', 0.3),
-            'ei_max': pi_config.get('ei_max', 1.0),
+            'kp': pid_config.get('kp', 0.1),
+            'ki': pid_config.get('ki', 1.0),
+            'kd': pid_config.get('kd', 0.01),
+            'max_throttle': pid_config.get('max_throttle', 0.3),
+            'ei_max': pid_config.get('ei_max', 1.0),
+            'v_ref': pid_config.get('v_ref', 0.75),
         }
     
     def _get_hybrid_longitudinal_params(self) -> Dict[str, Any]:
@@ -138,11 +140,11 @@ class ControllerConfig:
         
         # Get sub-controller params
         cacc_params = self._get_cacc_params() if hybrid_config.get('use_cacc_params', True) else {}
-        pi_params = self._get_pi_params() if hybrid_config.get('use_pi_params', True) else {}
+        pid_params = self._get_pid_params() if hybrid_config.get('use_pid_params', True) else {}
         
         return {
             'cacc_params': cacc_params,
-            'pi_params': pi_params,
+            'pid_params': pid_params,
         }
     
     # ========================================================================
@@ -221,6 +223,15 @@ class ControllerConfig:
             'l_r': vehicle_config.get('l_r', 0.141),
             'l_f': vehicle_config.get('l_f', 0.115),
         }
+    
+    def get_enable_steering_control(self) -> bool:
+        """Get enable_steering_control flag"""
+        return self.config.get('enable_steering_control', True)
+    
+    @property
+    def enable_steering_control(self) -> bool:
+        """Property accessor for enable_steering_control"""
+        return self.get_enable_steering_control()
     
     def reload(self):
         """Reload configuration from file"""

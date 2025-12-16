@@ -18,7 +18,7 @@ def test_config_loading():
     print("=" * 60)
     
     try:
-        from Controller.config_loader import get_controller_config
+        from Controller.config_controller_loader import get_controller_config
         print("✓ Config loader imported successfully")
     except ImportError as e:
         print(f"✗ Failed to import config_loader: {e}")

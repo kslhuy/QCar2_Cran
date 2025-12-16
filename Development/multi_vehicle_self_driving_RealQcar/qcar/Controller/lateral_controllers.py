@@ -8,6 +8,7 @@ import numpy as np
 import math
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
+from threading import Lock
 
 
 def wrap_to_pi(angle: float) -> float:
@@ -59,7 +60,7 @@ class PurePursuitController(LateralControllerBase):
     """
     
     def __init__(self, lookahead_distance=1.0, k_steering=1.0, 
-                 max_steering=0.55, adaptive_lookahead=True, logger=None):
+                 max_steering=0.55, adaptive_lookahead=True, config=None, logger=None):
         """
         Initialize Pure Pursuit controller
         
@@ -68,13 +69,24 @@ class PurePursuitController(LateralControllerBase):
             k_steering: Proportional steering gain
             max_steering: Maximum steering angle (radians)
             adaptive_lookahead: Enable adaptive lookahead based on distance to leader
+            config: Optional config object (takes precedence)
             logger: Logger instance
         """
-        self.lookahead_distance = lookahead_distance
-        self.k_steering = k_steering
-        self.max_steering = max_steering
-        self.adaptive_lookahead = adaptive_lookahead
         self.logger = logger
+        
+        # Use config if provided
+        if config and hasattr(config, 'get_lateral_params'):
+            # ControllerConfig - get params from dictionary
+            params = config.get_lateral_params('pure_pursuit')
+            self.lookahead_distance = params.get('lookahead_distance', lookahead_distance)
+            self.k_steering = params.get('k_steering', k_steering)
+            self.max_steering = params.get('max_steering', max_steering)
+            self.adaptive_lookahead = params.get('adaptive_lookahead', adaptive_lookahead)
+        else:
+            self.lookahead_distance = lookahead_distance
+            self.k_steering = k_steering
+            self.max_steering = max_steering
+            self.adaptive_lookahead = adaptive_lookahead
         
     def compute_steering(self, follower_state: Dict[str, float], 
                         leader_state: Optional[Dict[str, float]], 
@@ -137,30 +149,131 @@ class PurePursuitController(LateralControllerBase):
 
 class StanleyController(LateralControllerBase):
     """
-    Stanley lateral controller
+    Stanley lateral controller for path following
     Combines heading error and cross-track error
+    Compatible with both platoon following and standalone path following
     """
     
-    def __init__(self, k_e=0.5, k_soft=1.0, max_steering=0.55, logger=None):
+    def __init__(self, waypoints: np.ndarray = None, k_e=0.5, k_soft=1.0, 
+                 max_steering=0.55, config=None, logger=None, cyclic: bool = True):
         """
         Initialize Stanley controller
         
         Args:
-            k_e: Cross-track error gain
+            waypoints: Waypoint array [2, N] for path following mode
+            k_e: Cross-track error gain (if config not provided)
             k_soft: Softening gain to prevent division by zero
             max_steering: Maximum steering angle (radians)
+            config: Optional config object (takes precedence)
             logger: Logger instance
+            cyclic: Whether to cycle through waypoints
         """
-        self.k_e = k_e
-        self.k_soft = k_soft
-        self.max_steering = max_steering
         self.logger = logger
         
+        # Use config if provided
+        if config and hasattr(config, 'get_lateral_params'):
+            # ControllerConfig - get params from dictionary
+            params = config.get_lateral_params('stanley')
+            self.k = params.get('k_e', k_e)
+            self.max_steering_angle = params.get('max_steering', max_steering)
+        else:
+            self.k = k_e
+            self.max_steering_angle = max_steering
+        
+        # Path following attributes
+        self.wp = waypoints
+        self.N = len(waypoints[0, :]) if waypoints is not None else 0
+        self.wpi = 0
+        self.cyclic = cyclic
+        
+        # Reference values for telemetry
+        self.p_ref = np.array([0.0, 0.0])
+        self.th_ref = 0.0
+        
+        # Errors
+        self.cross_track_error = 0.0
+        self.heading_error = 0.0
+        
+        # Softening constant for low speeds
+        self.k_soft = k_soft
+        
+        # Thread safety
+        self._lock = Lock()
+    
+    def update(self, p: np.ndarray, th: float, speed: float) -> float:
+        """
+        Update steering controller for path following
+        
+        Args:
+            p: Current position [x, y]
+            th: Current heading
+            speed: Current speed
+            
+        Returns:
+            Steering angle command
+        """
+        if self.wp is None:
+            return 0.0
+            
+        with self._lock:
+            # Get current waypoints
+            wp_1 = self.wp[:, np.mod(self.wpi, self.N - 1)]
+            wp_2 = self.wp[:, np.mod(self.wpi + 1, self.N - 1)]
+            
+            # Path vector
+            v = wp_2 - wp_1
+            v_mag = np.linalg.norm(v)
+            
+            # Handle zero-length segment (inspired by control.py)
+            try:
+                v_uv = v / v_mag
+            except (ZeroDivisionError):
+                return 0
+            
+            # Path tangent angle
+            tangent = np.arctan2(v_uv[1], v_uv[0])
+            
+            # Progress along current segment
+            s = np.dot(p - wp_1, v_uv)
+            
+            # Check if we should advance to next waypoint
+            if s >= v_mag:
+                if self.cyclic or self.wpi < self.N - 2:
+                    self.wpi += 1
+            
+            # Closest point on path
+            ep = wp_1 + v_uv * s
+            
+            # Cross-track error vector
+            ct = ep - p
+            
+            # Direction of cross-track error
+            dir = wrap_to_pi(np.arctan2(ct[1], ct[0]) - tangent)
+            
+            # Signed cross-track error
+            ect = np.linalg.norm(ct) * np.sign(dir)
+            
+            # Heading error
+            psi = wrap_to_pi(tangent - th)
+            
+            # Store for telemetry
+            self.p_ref = ep
+            self.th_ref = tangent
+            self.cross_track_error = ect
+            self.heading_error = psi
+            
+            # Stanley control law (matching control.py implementation)
+            return np.clip(
+                wrap_to_pi(psi + np.arctan2(self.k * ect, speed)),
+                -self.max_steering_angle,
+                self.max_steering_angle
+            )
+    
     def compute_steering(self, follower_state: Dict[str, float], 
                         leader_state: Optional[Dict[str, float]], 
                         dt: float) -> float:
         """
-        Compute steering using Stanley control law
+        Compute steering using Stanley control law (platoon following interface)
         
         Stanley law: delta = heading_error + arctan(k_e * crosstrack_error / (v + k_soft))
         """
@@ -200,14 +313,46 @@ class StanleyController(LateralControllerBase):
         
         # Note: arctan2(y, x) -> arctan(y/x). 
         # We use a negative sign here to correct the direction.
-        cte_steering = math.atan2(-self.k_e * crosstrack_error, v + self.k_soft)
+        cte_steering = math.atan2(-self.k * crosstrack_error, v + self.k_soft)
         
         steering_cmd = heading_error + cte_steering
-        return steering_cmd
+        
+        # Store for telemetry
+        self.cross_track_error = crosstrack_error
+        self.heading_error = heading_error
+        
+        return np.clip(steering_cmd, -self.max_steering_angle, self.max_steering_angle)
     
-    def reset(self):
-        """Reset controller state (no state to reset for Stanley)"""
-        pass
+    def get_reference_pose(self) -> tuple:
+        """Get current reference pose"""
+        with self._lock:
+            return self.p_ref.copy(), self.th_ref
+    
+    def get_errors(self) -> tuple:
+        """Get current control errors"""
+        with self._lock:
+            return self.cross_track_error, self.heading_error
+    
+    def get_waypoint_index(self) -> int:
+        """Get current waypoint index"""
+        with self._lock:
+            return self.wpi
+    
+    def reset(self, waypoints: Optional[np.ndarray] = None):
+        """Reset controller state"""
+        with self._lock:
+            if waypoints is not None:
+                self.wp = waypoints
+                self.N = len(waypoints[0, :])
+            
+            self.wpi = 0
+            self.p_ref = np.array([0.0, 0.0])
+            self.th_ref = 0.0
+            self.cross_track_error = 0.0
+            self.heading_error = 0.0
+            
+            # if self.logger:
+            #     self.logger.log_control_event("steering_controller_reset", {})
 
 
 class LookaheadController(LateralControllerBase):
@@ -218,7 +363,7 @@ class LookaheadController(LateralControllerBase):
     """
     
     def __init__(self, ri=1.0, hi=0.3, l_r=0.141, l_f=0.115, 
-                 k1=1.0, k2=1.0, max_steering=0.55, logger=None):
+                 k1=1.0, k2=1.0, max_steering=0.55, config=None, logger=None):
         """
         Initialize Lookahead controller
         
@@ -230,16 +375,30 @@ class LookaheadController(LateralControllerBase):
             k1: Lateral control gain
             k2: Yaw rate control gain
             max_steering: Maximum steering angle (radians)
+            config: Optional config object (takes precedence)
             logger: Logger instance
         """
-        self.ri = ri
-        self.hi = hi
-        self.l_r = l_r
-        self.l_f = l_f
-        self.k1 = k1
-        self.k2 = k2
-        self.max_steering = max_steering
         self.logger = logger
+        
+        # Use config if provided
+        if config and hasattr(config, 'get_lateral_params'):
+            # ControllerConfig - get params from dictionary
+            params = config.get_lateral_params('lookahead')
+            self.ri = params.get('ri', ri)
+            self.hi = params.get('hi', hi)
+            self.l_r = params.get('l_r', l_r)
+            self.l_f = params.get('l_f', l_f)
+            self.k1 = params.get('k1', k1)
+            self.k2 = params.get('k2', k2)
+            self.max_steering = params.get('max_steering', max_steering)
+        else:
+            self.ri = ri
+            self.hi = hi
+            self.l_r = l_r
+            self.l_f = l_f
+            self.k1 = k1
+            self.k2 = k2
+            self.max_steering = max_steering
         
         # State variables
         self.prev_theta_lead = 0.0
@@ -336,7 +495,7 @@ class HybridLateralController(LateralControllerBase):
     """
     
     def __init__(self, primary_controller=None, secondary_controller=None, 
-                 switch_distance=1.5, logger=None):
+                 switch_distance=1.5, config=None, logger=None):
         """
         Initialize hybrid lateral controller
         
@@ -344,12 +503,22 @@ class HybridLateralController(LateralControllerBase):
             primary_controller: Primary lateral controller (used when close)
             secondary_controller: Secondary controller (used when far)
             switch_distance: Distance threshold for switching (meters)
+            config: Optional config object (takes precedence)
             logger: Logger instance
         """
-        self.primary = primary_controller or PurePursuitController(logger=logger)
-        self.secondary = secondary_controller or StanleyController(logger=logger)
-        self.switch_distance = switch_distance
         self.logger = logger
+        
+        # Use config if provided to get switch_distance
+        if config and hasattr(config, 'get_lateral_params'):
+            params = config.get_lateral_params('hybrid')
+            self.switch_distance = params.get('switch_distance', switch_distance)
+            # Primary and secondary controllers should already be created by config loader
+            self.primary = primary_controller or params.get('primary_controller') or PurePursuitController(config=config, logger=logger)
+            self.secondary = secondary_controller or params.get('secondary_controller') or StanleyController(config=config, logger=logger)
+        else:
+            self.primary = primary_controller or PurePursuitController(logger=logger)
+            self.secondary = secondary_controller or StanleyController(logger=logger)
+            self.switch_distance = switch_distance
         
         self.last_mode = "unknown"
         

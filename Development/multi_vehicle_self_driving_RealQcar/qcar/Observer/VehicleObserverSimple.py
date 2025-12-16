@@ -54,8 +54,8 @@ class VehicleObserver:
         self.config = config or {}
         self.vehicle_logger = logger
         
-        # State dimensions: [x, y, theta, v] - position, orientation, velocity
-        self.state_dim = 4
+        # State dimensions: [x, y, theta, v, a] - position, orientation, velocity, acceleration
+        self.state_dim = 5
         
         # Observer configuration
         self.observer_config = self._get_observer_config()
@@ -365,14 +365,22 @@ class VehicleObserver:
             # Get current state from estimator (returns numpy array directly)
             state = self.local_estimator.get_state()
             
-            # Update local state cache
+            # Update local state cache - handle both 4D and 5D states
             # GPS validity is tracked at observer level based on actual GPS reading
             gps_valid = self.sensor_data.get('gps_valid', False)
             
             with self.lock:
-                self.local_state = state.copy()
-                self.position = state[:3].copy()  # [x, y, theta]
-                self.velocity = float(state[3])
+                if len(state) == 4:
+                    # Legacy 4D state: [x, y, theta, v] - add acceleration
+                    self.local_state = np.zeros(5)
+                    self.local_state[:4] = state.copy()
+                    self.local_state[4] = self.acceleration  # Add current acceleration
+                else:
+                    # 5D state: [x, y, theta, v, a]
+                    self.local_state = state.copy()
+                
+                self.position = self.local_state[:3].copy()  # [x, y, theta]
+                self.velocity = float(self.local_state[3])
                 self.gps_valid = gps_valid  # GPS validity from sensor data
             
             return {
@@ -410,6 +418,7 @@ class VehicleObserver:
             current_time_ns = time.time_ns()  # Use nanoseconds for consistency with V2V timestamps
             
             # Get control input (steering, throttle) - use zeros as default
+            # TODO : pass actual control inputs , have size of fleet and size of control input (steering, throttle)
             control = np.array([0.0, 0.0])  # Will be passed from vehicle_logic in future
             # control input can be estimated by observer state. Based on the co-design method
             
@@ -418,7 +427,7 @@ class VehicleObserver:
             self.fleet_states = self.fleet_estimator.update(
                 local_state=current_local,
                 dt=dt,
-                current_time=current_time_ns,  # Pass nanoseconds
+                current_time_ns=current_time_ns,  # Pass nanoseconds 
                 control=control
             )
             
@@ -486,13 +495,16 @@ class VehicleObserver:
 
     def add_received_state(self, sender_id: int, state: np.ndarray, timestamp: float) -> bool:
         """
-        Add received state from another vehicle.
+        Add received LOCAL state from another vehicle (from local state broadcasts).
         Delegates to fleet estimator for processing.
+        
+        This is called when receiving high-frequency local sensor-based estimates
+        from other vehicles (20Hz typical).
         
         Args:
             sender_id: ID of the vehicle that sent the state
-            state: Received state [x, y, theta, v]
-            timestamp: Timestamp of the state
+            state: Received 5D state [x, y, theta, v, a]
+            timestamp: Timestamp of the state in nanoseconds
             
         Returns:
             bool: True if state was added successfully
@@ -504,11 +516,96 @@ class VehicleObserver:
             if self.fleet_estimator is None:
                 return False
             
-            # Delegate to fleet estimator
-            return self.fleet_estimator.add_received_state(sender_id, state, timestamp)
+            # Delegate to fleet estimator - use the proper method name
+            return self.fleet_estimator.add_received_local_state(sender_id, state, timestamp)
             
         except Exception as e:
-            self.vehicle_logger.log_error("Add received state error", e)
+            self.vehicle_logger.log_error("Add received local state error", e)
+            return False
+
+    def add_received_fleet_state(self, sender_id: int, fleet_estimates: Dict, timestamp_ns: int) -> bool:
+        """
+        Add received fleet state estimates from another vehicle.
+        Processes the entire fleet estimates dictionary and extracts individual vehicle states.
+        
+        Args:
+            sender_id: ID of the vehicle that sent the fleet estimates
+            fleet_estimates: Dictionary of fleet states in format:
+                {
+                    vehicle_id: {
+                        'x': float, 'y': float, 'theta': float, 'velocity': float,
+                        'acceleration': float,  # Now included!
+                        'confidence': float (optional)
+                    },
+                    ...
+                }
+            timestamp_ns: Timestamp in nanoseconds
+            
+        Returns:
+            bool: True if at least one state was added successfully
+        """
+        try:
+            if self.fleet_estimator is None:
+                return False
+            
+            # Track if any states were successfully added
+            any_success = False
+            
+            # Extract and add each vehicle's state from fleet estimates
+            for vehicle_id_key, vehicle_state in fleet_estimates.items():
+                # Convert vehicle_id from string/int to int
+                try:
+                    vehicle_id_int = int(vehicle_id_key)
+                except (ValueError, TypeError):
+                    continue  # Skip invalid vehicle IDs
+                
+                # Skip own vehicle ID (we already have our own state)
+                if vehicle_id_int == self.vehicle_id:
+                    continue
+                
+                # Validate vehicle state has required fields
+                if not isinstance(vehicle_state, dict):
+                    continue
+                
+                required_fields = ['x', 'y', 'theta', 'velocity']
+                if not all(field in vehicle_state for field in required_fields):
+                    continue
+                
+                # Extract state components (5D with acceleration)
+                x = vehicle_state.get('x', 0.0)
+                y = vehicle_state.get('y', 0.0)
+                theta = vehicle_state.get('theta', 0.0)
+                velocity = vehicle_state.get('velocity', 0.0)
+                acceleration = vehicle_state.get('acceleration', 0.0)  # New field
+                
+                # Create state vector [x, y, theta, v, a]
+                state_vector = np.array([x, y, theta, velocity, acceleration])
+                
+                # Add to fleet estimator using local_state method (individual vehicle)
+                # Even though this came from a fleet broadcast, we're processing each 
+                # vehicle's state individually, so we use add_received_local_state
+                success = self.fleet_estimator.add_received_local_state(
+                    sender_id=vehicle_id_int,
+                    state=state_vector,
+                    timestamp_ns=timestamp_ns
+                )
+                
+                if success:
+                    any_success = True
+                    if self.vehicle_logger:
+                        self.vehicle_logger.logger.debug(
+                            f"VehicleObserver: Added fleet state for vehicle {vehicle_id_int} "
+                            f"(from fleet broadcast by sender {sender_id}) to fleet estimator"
+                        )
+            
+            # ALTERNATIVE: Could also pass entire dictionary directly to fleet estimator
+            # This would allow fleet estimator to handle correlation between vehicles
+            # success = self.fleet_estimator.add_received_fleet_state(sender_id, fleet_estimates, timestamp_ns)
+            
+            return any_success
+            
+        except Exception as e:
+            self.vehicle_logger.log_error("Add received fleet state error", e)
             return False
 
     def get_local_state(self) -> np.ndarray:
@@ -574,8 +671,9 @@ class VehicleObserver:
                 'y': float(self.local_state[1]), 
                 'theta': float(self.local_state[2]),
                 'velocity': float(self.local_state[3]),
-                'motor_tach': self.sensor_data['motor_tach'],
-                'gyro_z': self.sensor_data['gyro_z'],
+                'acceleration': float(self.local_state[4]),
+                # 'motor_tach': self.sensor_data['motor_tach'],
+                # 'gyro_z': self.sensor_data['gyro_z'],
                 'gps_valid': self.gps_valid
             }
     
@@ -583,7 +681,7 @@ class VehicleObserver:
         """
         Get local state information for V2V broadcasting.
         High-frequency, local sensor-based estimates.
-        Includes acceleration and control inputs for future use in cooperative control.
+        Includes acceleration and control inputs for cooperative control.
         """
         with self.lock:
             return {
@@ -592,7 +690,7 @@ class VehicleObserver:
                 'y': float(self.local_state[1]),
                 'theta': float(self.local_state[2]),
                 'velocity': float(self.local_state[3]),
-                'acceleration': float(self.acceleration),
+                'acceleration': float(self.local_state[4]) if len(self.local_state) > 4 else float(self.acceleration),
                 'control_input': {
                     'steering': float(self.control_input['steering']),
                     'throttle': float(self.control_input['throttle'])
@@ -605,6 +703,7 @@ class VehicleObserver:
         """
         Get fleet state information for V2V broadcasting.
         Lower-frequency, consensus-based fleet estimates.
+        Now includes acceleration: [x, y, theta, v, a]
         """
         with self.lock:
             fleet_data = {}
@@ -616,6 +715,7 @@ class VehicleObserver:
                     'y': float(self.fleet_states[1, vehicle_id]),
                     'theta': float(self.fleet_states[2, vehicle_id]),
                     'velocity': float(self.fleet_states[3, vehicle_id]),
+                    'acceleration': float(self.fleet_states[4, vehicle_id]) if self.fleet_states.shape[0] > 4 else 0.0,
                     'confidence': 1.0 if vehicle_id == self.vehicle_id else 0.8  # Higher confidence for own state
                 }
             

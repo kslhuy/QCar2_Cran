@@ -10,23 +10,24 @@ from threading import Event
 from pal.products.qcar import QCar, QCarGPS , IS_PHYSICAL_QCAR
 # from hal.products.mats import SDCSRoadMap
 
-from config import VehicleControlConfig
+from config_main import VehicleMainConfig
 from logging_utils import VehicleLogger, PerformanceMonitor
 from StateMachine import VehicleState, VehicleStateMachine
 from ground_station_client import GroundStationClient
-from Controller.controllers import SpeedController, SteeringController, StateEstimator
 from safety import ControlValidator, SensorHealthMonitor, CollisionAvoidance, WatchdogTimer
 from Yolo.YoLo import YOLOReceiver, YOLODriveLogic, YOLOManager
 from Controller.platoon_controller import PlatoonController, PlatoonConfig
 from command_handler import CommandHandler
 from V2V.v2v_manager import V2VManager, V2VBroadcastConfig
 from Observer.VehicleObserverSimple import VehicleObserver
+# Note: Controllers (PIDVelocityController, StanleyController) are now imported 
+# in state machine states, not here
 
 
 class VehicleLogic:
     """Main vehicle controller class"""
     
-    def __init__(self, config: VehicleControlConfig, kill_event: Event):
+    def __init__(self, config: VehicleMainConfig, kill_event: Event):
         self.config = config
         self.kill_event = kill_event
 
@@ -100,10 +101,7 @@ class VehicleLogic:
         self.qcar = None
         self.gps = None
         
-        # StateEstimator is now managed by VehicleObserver
 
-        self.speed_controller = None
-        self.steering_controller = None
         
         # YOLO Manager - handles all YOLO-related functionality
         self.yolo_manager = YOLOManager(self.vehicle_logger)
@@ -114,7 +112,11 @@ class VehicleLogic:
         self.node_sequence = None
         
         # Control state (Can be set by Ground Station commands)
-        self.v_ref = config.speed.v_ref
+        # Load v_ref from controller config
+        from Controller.config_controller_loader import ControllerConfig
+        self.controller_config = ControllerConfig()
+        pid_params = self.controller_config._get_pid_params()
+        self.v_ref = pid_params.get('v_ref', 0.75)  # Default to 0.75 m/s if not specified
         
         # Calibration state flag (set by CALIBRATE command)
         self.calibration_requested = False
@@ -425,9 +427,11 @@ class VehicleLogic:
         # Get platoon status from platoon_controller
         platoon_status = self._get_platoon_status()
         
-        # Get controller data safely
-        waypoint_index = self.steering_controller.get_waypoint_index() if self.steering_controller else 0
-        errors = self.steering_controller.get_errors() if self.steering_controller else (0.0, 0.0)
+        # Get controller data safely (controllers may be in state machine, not vehicle_logic)
+        # Check if controllers exist (backward compatibility with FollowingPathState setting them)
+        # steering_controller = getattr(self, 'steering_controller', None)
+        # waypoint_index = steering_controller.get_waypoint_index() if steering_controller else 0
+        # errors = steering_controller.get_errors() if steering_controller else (0.0, 0.0)
         
         return {
             'timestamp': time.time(),
@@ -440,9 +444,9 @@ class VehicleLogic:
             'delta': float(getattr(self, '_last_steering', 0.0)),
             'v_ref': float(self.v_ref * self.yolo_manager.get_yolo_gain()),
             'yolo_gain': float(self.yolo_manager.get_yolo_gain()),
-            'waypoint_index': waypoint_index,
-            'cross_track_error': float(errors[0]),
-            'heading_error': float(errors[1]),
+            # 'waypoint_index': waypoint_index,
+            # 'cross_track_error': float(errors[0]),
+            # 'heading_error': float(errors[1]),
             'state': self.state_machine.state.name if hasattr(self.state_machine, 'state') and self.state_machine.state else 'UNKNOWN',
             'gps_valid': self.vehicle_observer.is_gps_valid() if hasattr(self, 'vehicle_observer') and self.vehicle_observer else False,
             # V2V status from cache

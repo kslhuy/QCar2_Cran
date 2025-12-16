@@ -12,7 +12,7 @@
 ```powershell
 # (In Simulator) # For spawn 2 Qcar
 cd .\Development\QCar2_multi-vehicle_control\
-python .\initCars.py     
+python .\initPlatoon.py     
 
 #  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
@@ -29,4 +29,5 @@ cd .\Development\multi_vehicle_self_driving_RealQcar\qcar
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
 
 ```
+
 
