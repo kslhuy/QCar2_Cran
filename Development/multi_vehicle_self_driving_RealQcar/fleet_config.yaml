@@ -3,7 +3,7 @@
 
 # Ground Station Configuration
 ground_station:
-  local_ip: 192.168.2.200
+  local_ip: 192.168.137.1
   base_port: 5000
 
 # Remote QCar Configuration
@@ -24,29 +24,34 @@ upload:
 
 # Vehicle Configurations
 # Each vehicle can have individual settings
+# vehicle_type can be: "Qcar" or "Limo"
 vehicles:
   - car_id: 0
-    ip: 192.168.2.137
+    # ip: 192.168.2.137
+    ip: 192.168.137.102
+    vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
     probing: true          # Enable YOLO probing (object detection)
     calibrate: false       # Start in calibration mode
     path_number: 0         # Path selection (0, 1, 2, etc.)
     left_hand_traffic: false
-    initial_v_ref: 0.75    # Initial velocity reference (m/s)
+    initial_v_ref: 0.6    # Initial velocity reference (m/s)
     description: "Leader vehicle with probing"
     
   - car_id: 1
-    ip: 192.168.2.108
+    ip: 192.168.137.208
+    vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
     probing: true         # Enable probing for follower
     calibrate: false
     path_number: 1         # Different path from leader
     left_hand_traffic: false
-    initial_v_ref: 0.75
+    initial_v_ref: 0.6
     description: "Follower vehicle"
   
   # - car_id: 2
   #   ip: 192.168.2.108
+  #   vehicle_type: "Limo"   # Vehicle type: "Qcar" or "Limo"
   #   enabled: true
   #   probing: true         # Enable probing for follower
   #   calibrate: false

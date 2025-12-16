@@ -99,7 +99,7 @@ class WaitingForStartState(StateBase):
         # Handle calibrate command - GPS-only recalibration without full reinitialization
         if command_type == CommandType.CALIBRATE:
             self.logger.logger.info("GPS Calibration command received - performing GPS-only recalibration")
-            if self._recalibrate_gps_only():
+            if self._recalibrate_gps():
                 self.logger.logger.info("GPS recalibration completed successfully")
             else:
                 self.logger.log_error("GPS recalibration failed")
@@ -219,7 +219,7 @@ class WaitingForStartState(StateBase):
                         # Full GPS recalibration with new position
                         self.logger.logger.info(f"Setting initial position WITH GPS recalibration: ({x:.2f}, {y:.2f}, theta={theta:.2f})")
                         
-                        if self._recalibrate_gps_only(initial_pose):
+                        if self._recalibrate_gps(initial_pose):
                             self.logger.logger.info("✓ GPS recalibrated and observer reset successfully")
                         else:
                             self.logger.log_error("GPS recalibration with initial position failed")

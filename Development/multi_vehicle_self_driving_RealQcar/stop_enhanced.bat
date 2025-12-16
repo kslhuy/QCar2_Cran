@@ -14,18 +14,16 @@ echo.
 
 cd /d "%~dp0"
 
-REM First, run the Python stop script for programs
+REM First, run the Python stop script for programs (now using fleet_config.yaml)
 echo [1/3] Stopping Python programs...
-python python/stop_refactored.py --config config.txt
+python python/stop_enhanced.py --config fleet_config.yaml --stop-quarc
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo [WARNING] Python stop script had issues
 )
 
-@REM REM Read configuration for IPs
-@REM echo.
-@REM echo [2/3] Stopping QUARC models (hardware control)...
+@REM REM QUARC stopping is now handled by python/stop_enhanced.py when --stop-quarc is passed
 
 @REM REM Parse config.txt for QCAR_IPS
 @REM setlocal enabledelayedexpansion

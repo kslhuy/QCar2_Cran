@@ -16,7 +16,7 @@ from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
 from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
 from hal.products.mats import SDCSRoadMap
 from ground_station_client import GroundStationClient
-from qvl.multi_agent import readRobots
+
 
 
 # Add parent directory to sys.path for imports
@@ -298,6 +298,7 @@ class InitializingState(StateBase):
             # Initialize QCar and GPS based on physical/simulation mode
             if not IS_PHYSICAL_QCAR:
                 self.logger.logger.info("QCar Simulation mode detected")
+                from qvl.multi_agent import readRobots
                 self._initialize_simulated_qcar(readRobots)
             else:
                 self._initialize_physical_qcar()
@@ -353,6 +354,7 @@ class InitializingState(StateBase):
         if getattr(self.vehicle_logic, 'calibration_requested', False):
             self.logger.logger.info("GPS calibration requested - calibrating GPS")
             self.vehicle_logic.calibration_requested = False  # Reset flag
+        self.logger.logger.info(f"Calibration pose: {self.config.path.calibration_pose}")
         
         self.vehicle_logic.gps = QCarGPS(
             initialPose=self.config.path.calibration_pose,
@@ -413,12 +415,12 @@ class InitializingState(StateBase):
         """Initialize perception systems (YOLO) - optional component"""
         try:
             
-            # TODO: Enable YOLOReceiver when ready
-            if IS_PHYSICAL_QCAR:
-                yolo_receiver = YOLOReceiver(nonBlocking=False)
-            else:
-                yolo_receiver = None
+            # # TODO: Enable YOLOReceiver when ready
+            # if IS_PHYSICAL_QCAR:
+            #     yolo_receiver = YOLOReceiver(nonBlocking=False)
+            # else:
             
+            yolo_receiver = None
             pulse_length = (
                 self.config.timing.controller_update_rate *
                 self.config.yolo.pulse_length_multiplier

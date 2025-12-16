@@ -95,7 +95,7 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        '-n', '--path_number',
+        '-n', '--path_number', '--path-number',
         type=int,
         default=0,
         choices=[0, 1, 2],
@@ -149,6 +149,14 @@ def parse_arguments():
         action='store_true',
         default=False,
         help='Disable steering control'
+    )
+    
+    parser.add_argument(
+        '--vehicle-type',
+        type=str,
+        default='Qcar',
+        choices=['Qcar', 'Limo'],
+        help='Vehicle type: Qcar or Limo (default: Qcar)'
     )
     
     return parser.parse_args()
@@ -215,6 +223,7 @@ def main():
     Control_rate = config.timing.controller_update_rate if IS_PHYSICAL_QCAR else 100
     print("\n[CONFIG] Vehicle Configuration:")
     print(f"  Car ID: {config.network.car_id}")
+    print(f"  Vehicle Type: {config.vehicle.vehicle_type}")
     print(f"  Controller rate: {Control_rate} Hz")
     print(f"  Remote control: {'Enabled' if config.network.is_remote_enabled else 'Disabled'}")
     

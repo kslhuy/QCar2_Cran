@@ -511,7 +511,7 @@ class FakeVehicleWithRealLogic:
         
         # Create real configuration
         self.config = self._create_real_config()
-        
+        # self.mock_qcar
         # Create kill event
         self.kill_event = Event()
         

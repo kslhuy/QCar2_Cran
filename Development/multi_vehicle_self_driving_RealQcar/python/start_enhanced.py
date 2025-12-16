@@ -19,7 +19,8 @@ class FleetStarter:
     
     def __init__(self, config_path: str, args):
         self.args = args
-        self.config_path = os.path.normpath(os.path.join(os.path.dirname(__file__), config_path))
+        # Resolve config path from several sensible locations (script dir, parent dir, cwd)
+        self.config_path = self._resolve_config_path(config_path)
         self.config = self._load_config()
         self.probing_process = None
         self.current_dir = os.path.dirname(os.path.realpath(__file__))
@@ -50,6 +51,34 @@ class FleetStarter:
         except Exception as e:
             print(f"[ERROR] Failed to load configuration: {e}")
             sys.exit(1)
+
+    def _resolve_config_path(self, config_path: str) -> str:
+        """Try multiple likely locations for the config file and return the first that exists.
+
+        Priority:
+          1. Absolute path (if provided)
+          2. Path relative to script directory (python/)
+          3. Path relative to parent of script directory (project root)
+          4. Path relative to current working directory
+          5. Fallback to normalised script-relative path
+        """
+        # If absolute, use it
+        if os.path.isabs(config_path):
+            return config_path
+
+        script_dir = os.path.dirname(__file__)
+        candidates = [
+            os.path.join(script_dir, config_path),
+            os.path.normpath(os.path.join(script_dir, '..', config_path)),
+            os.path.abspath(config_path),
+        ]
+
+        for c in candidates:
+            if os.path.exists(c):
+                return os.path.normpath(c)
+
+        # Last resort: return the script-relative normalized path
+        return os.path.normpath(os.path.join(script_dir, config_path))
     
     def display_configuration(self):
         """Display fleet configuration summary"""
@@ -81,8 +110,10 @@ class FleetStarter:
         
         for vehicle in self.config['vehicles']:
             path_info = self._get_path_info(vehicle['path_number'])
-            print(f"  • Car {vehicle['car_id']}: {vehicle['ip']}")
+            vehicle_type = vehicle.get('vehicle_type', 'Qcar')
+            print(f"  • Car {vehicle['car_id']}: {vehicle['ip']} [{vehicle_type}]")
             print(f"    Description: {vehicle.get('description', 'N/A')}")
+            print(f"    Vehicle Type: {vehicle_type}")
             print(f"    Path: {vehicle['path_number']} - {path_info['name']}")
             print(f"    Nodes: {path_info['nodes']}")
             print(f"    Probing: {'Yes' if vehicle.get('probing', False) else 'No'}")
@@ -192,9 +223,10 @@ class FleetStarter:
         car_id = vehicle['car_id']
         ip = vehicle['ip']
         port = gs['base_port'] + car_id
+        vehicle_type = vehicle.get('vehicle_type', 'Qcar')
         
         print(f"\n{'='*70}")
-        print(f" Starting QCar {car_id}: {ip} (Port: {port})")
+        print(f" Starting {vehicle_type} {car_id}: {ip} (Port: {port})")
         print(f"{'='*70}")
         
         try:
@@ -228,6 +260,10 @@ class FleetStarter:
                 f"--car-id {car_id}",
                 f"--path-number {vehicle['path_number']}"
             ]
+            
+            # Add vehicle type
+            if 'vehicle_type' in vehicle:
+                cmd_args.append(f"--vehicle-type {vehicle['vehicle_type']}")
             
             if vehicle.get('calibrate', False):
                 cmd_args.append("--calibrate")
@@ -320,7 +356,8 @@ class FleetStarter:
         print(f"\nVehicle Status:")
         for vehicle in self.config['vehicles']:
             car_id = vehicle['car_id']
-            print(f"  • Car {car_id}: {vehicle['ip']} (Port: {gs['base_port'] + car_id})")
+            vehicle_type = vehicle.get('vehicle_type', 'Qcar')
+            print(f"  • Car {car_id}: {vehicle['ip']} [{vehicle_type}] (Port: {gs['base_port'] + car_id})")
             print(f"    Path: {vehicle['path_number']} - {self._get_path_info(vehicle['path_number'])['name']}")
         
         print(f"\nHost PC: {gs['local_ip']}")

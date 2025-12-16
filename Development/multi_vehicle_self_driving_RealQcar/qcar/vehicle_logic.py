@@ -264,7 +264,7 @@ class VehicleLogic:
     def _update_sensor_data(self, dt: float):
         """Update sensor data using VehicleObserver - called every loop iteration"""
         try:
-            if self.state_machine.state != VehicleState.INITIALIZING and self.qcar is not None:
+            if self.qcar is not None:
                 # Use VehicleObserver to update sensor data
                 self.vehicle_observer.update_sensor_data(self.qcar)
                 
@@ -316,14 +316,15 @@ class VehicleLogic:
         """Control logic update - state machine and vehicle commands"""
         try:
             # Check if components are initialized
-            # If not still need 
-            if self.state_machine.state == VehicleState.INITIALIZING or self.qcar is not None : 
-                sensor_data = {}
-                # Update state machine - this will handle initialization
-                self.state_machine.update(dt, sensor_data)
-                return True
-                # return False
-            
+            # # If not still need 
+            # if self.state_machine.state == VehicleState.INITIALIZING or self.qcar is not None : 
+            #     sensor_data = {}
+            #     # Update state machine - this will handle initialization
+            #     self.state_machine.update(dt, sensor_data)
+            #     return True
+            #     # return False
+            if self.qcar is None or (hasattr(self, 'vehicle_observer') and self.vehicle_observer.get_local_estimator() is None):
+                return self._handle_initialization_control(dt)
 
             
             # Get current state from VehicleObserver
@@ -351,7 +352,31 @@ class VehicleLogic:
     
 
     
-
+    def _handle_initialization_control(self, dt: float) -> bool:
+        """Handle control during initialization phase"""
+        try:
+            # During initialization, just update state machine without sensor readings
+            if hasattr(self.state_machine, 'state') and self.state_machine.state == VehicleState.INITIALIZING:
+                # Minimal sensor data for initialization
+                sensor_data = {
+                    'x': 0.0, 'y': 0.0, 'theta': 0.0, 'velocity': 0.0,
+                    'motor_tach': 0.0, 'gyro_z': 0.0,
+                    'yolo_data': self.yolo_manager.get_default_yolo_data(),
+                    'gps_valid': False
+                }
+                
+                # Update state machine - this will handle initialization
+                u, delta = self.state_machine.update(dt, sensor_data)
+                
+                # Don't send commands during initialization
+                return True
+            else:
+                self.vehicle_logger.log_error("Components not initialized but not in INITIALIZING state")
+                return False
+                
+        except Exception as e:
+            self.vehicle_logger.log_error("Initialization control error", e)
+            return False
     
     # ===== Communication Handling Methods =====
     def _send_telemetry_to_ground_station(self):
