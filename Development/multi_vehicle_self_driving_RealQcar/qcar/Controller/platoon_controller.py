@@ -482,53 +482,53 @@ class PlatoonController:
         
     #     return steering_angle
     
-    # def get_direct_leader_data_from_v2v(self, v2v_manager, my_vehicle_id: int) -> Optional[Dict[str, Any]]:
-    #     """
-    #     Get direct leader's state data from V2V manager
+    def get_direct_leader_data_from_v2v(self, v2v_manager, my_vehicle_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Get direct leader's state data from V2V manager
         
-    #     Args:
-    #         v2v_manager: V2V manager instance
-    #         my_vehicle_id: This vehicle's ID
+        Args:
+            v2v_manager: V2V manager instance
+            my_vehicle_id: This vehicle's ID
             
-    #     Returns:
-    #         Direct leader's state data or None
-    #     """
-    #     try:
-    #         # Use get_latest_local_state 
-    #         if not v2v_manager or not hasattr(v2v_manager, 'get_latest_local_state'):
-    #             if self.logger:
-    #                 self.logger.logger.debug(f"V2V manager not available or missing get_latest_local_state")
-    #             return None
+        Returns:
+            Direct leader's state data or None
+        """
+        try:
+            # Use get_latest_local_state 
+            if not v2v_manager or not hasattr(v2v_manager, 'get_latest_local_state'):
+                if self.logger:
+                    self.logger.logger.debug(f"V2V manager not available or missing get_latest_local_state")
+                return None
             
-    #         # Find direct leader (vehicle with position = my_position - 1)
-    #         if hasattr(self, 'formation_data') and hasattr(self, 'my_position'):
-    #             my_position = self.my_position
-    #             if my_position > 1:  # Not the leader
-    #                 direct_leader_position = my_position - 1
+            # Find direct leader (vehicle with position = my_position - 1)
+            if hasattr(self, 'formation_data') and hasattr(self, 'my_position'):
+                my_position = self.my_position
+                if my_position > 1:  # Not the leader
+                    direct_leader_position = my_position - 1
                     
-    #                 # Find vehicle ID with this position - handle both string and int keys
-    #                 for vehicle_id, position in self.formation_data.items():
-    #                     # Convert vehicle_id to int if it's a string for querying V2V
-    #                     if isinstance(vehicle_id, str):
-    #                         vehicle_id_int = int(vehicle_id)
-    #                     else:
-    #                         vehicle_id_int = vehicle_id
+                    # Find vehicle ID with this position - handle both string and int keys
+                    for vehicle_id, position in self.formation_data.items():
+                        # Convert vehicle_id to int if it's a string for querying V2V
+                        if isinstance(vehicle_id, str):
+                            vehicle_id_int = int(vehicle_id)
+                        else:
+                            vehicle_id_int = vehicle_id
                         
-    #                     if position == direct_leader_position:
-    #                         # Use get_latest_local_state
-    #                         leader_data = v2v_manager.get_latest_local_state(vehicle_id_int)
-    #                         return leader_data
+                        if position == direct_leader_position:
+                            # Use get_latest_local_state
+                            leader_data = v2v_manager.get_latest_local_state(vehicle_id_int)
+                            return leader_data
             
-    #         # Fallback: use leader_car_id if available
-    #         if self.leader_car_id is not None:
-    #             return v2v_manager.get_latest_local_state(self.leader_car_id)
+            # Fallback: use leader_car_id if available
+            if self.leader_car_id is not None:
+                return v2v_manager.get_latest_local_state(self.leader_car_id)
             
-    #         return None
+            return None
             
-    #     except Exception as e:
-    #         if self.logger:
-    #             self.logger.logger.warning(f"Error getting direct leader data from V2V: {e}")
-    #         return None
+        except Exception as e:
+            if self.logger:
+                self.logger.logger.warning(f"Error getting direct leader data from V2V: {e}")
+            return None
     
     def update_leader_velocity_from_v2v(self, v2v_manager, my_vehicle_id: int):
         """

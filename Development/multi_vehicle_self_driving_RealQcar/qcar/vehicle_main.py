@@ -95,7 +95,7 @@ def parse_arguments():
     )
     
     parser.add_argument(
-        '-n', '--path_number',
+        '-n', '--path_number', '--path-number',
         type=int,
         default=0,
         choices=[0, 1, 2],
