@@ -633,7 +633,7 @@ class DistributedKalmanEstimator(FleetStateEstimatorBase):
             if self.logger:
                 self.logger.log_error("Data cleanup error", e)
 
-class DistributedLubergerEstimator(FleetStateEstimatorBase):
+class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
     """
     Distributed Lunberger Observer for fleet longitudinal estimation
     More sophisticated, uses dynamics model and consensus
@@ -752,7 +752,8 @@ class DistributedLubergerEstimator(FleetStateEstimatorBase):
             # Measurement correction: L * (y - C * x_pred)
             # estimated_measurement = C @ dynamics_term
             # measurement_error = local_measurement - estimated_measurement
-            estimated_position = dynamics_term[self.vehicle_id + self.vehicle_id * self.state_dim] # Catch the estimated position from the observer state
+            estimated_index = self.vehicle_id + self.vehicle_id * self.state_dim
+            estimated_position = dynamics_term[estimated_index] # Catch the estimated position from the observer state
             measurement_error = measure_position - estimated_position
             measurement_term = self.observer_gain * measurement_error
 
@@ -770,7 +771,7 @@ class DistributedLubergerEstimator(FleetStateEstimatorBase):
         
         Args:
             sender_id: ID of sender vehicle
-            state: Received state vector [x, y, theta, v, acceleration]
+            state: Received state vector [x, y, theta, v, acceleration, a]
             timestamp_ns: Timestamp in nanoseconds (directly from V2V message)
         """
         try:
@@ -876,6 +877,7 @@ class FleetEstimatorFactory:
     ESTIMATOR_TYPES = {
         'consensus': ConsensusFleetEstimator,
         'distributed_kalman': DistributedKalmanEstimator,
+        'distributed_Luenberger': DistributedLuenbergerEstimator,
     }
     
     @staticmethod

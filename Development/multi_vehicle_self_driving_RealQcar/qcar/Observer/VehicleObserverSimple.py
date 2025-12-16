@@ -109,7 +109,8 @@ class VehicleObserver:
         self.lock = threading.RLock()
         
         self.vehicle_logger.logger.info(
-            f"VehicleObserver initialized: vehicle_id={vehicle_id}, "
+            # f"VehicleObserver initialized: vehicle_id={vehicle_id}, "
+            f"Observer config: {self.config.observer}, "
             # f"local_estimator={local_estimator_type}, fleet_estimator={fleet_estimator_type}"
         )
 
@@ -197,16 +198,72 @@ class VehicleObserver:
     # ===== Configuration =====
     
     def _get_observer_config(self) -> dict:
-        """Get observer configuration with defaults."""
+        """
+        Get observer configuration by merging defaults with external config.
+        
+        External config is expected to provide an `observer` block (from YAML/JSON),
+        e.g.:
+            observer:
+              observer_rate: 120
+              fleet_observer_rate: 40
+              local_estimator_type: ekf
+              fleet_estimator_type: distributed_kalman
+              observer_gain: [[...]]   # scalar, vector, or matrix
+              consensus_gain: 0.2      # scalar, vector, or matrix
+        
+        The method is defensive: if no external config is found, it falls back to
+        the hardcoded defaults.
+        """
         default_config = {
             "observer_rate": 100,
             "fleet_observer_rate": 50,
             "local_observer_type": "ekf",
+            "fleet_estimator_type": "consensus",
             "enable_distributed": True,
-            "consensus_gain": 0.3
+            "consensus_gain": 0.3,
+            "observer_gain": 0.1,
         }
-        
-        return default_config
+
+        def _normalize_gain(value, default):
+            """
+            Normalize gain input to float or numpy array.
+            Accepts scalar, list, nested list (matrix). Falls back to default if None.
+            """
+            if value is None:
+                return default
+            arr = np.array(value, dtype=float)
+            if arr.ndim == 0:
+                return float(arr)
+            return arr
+
+        # Pull observer config block from self.config if present
+        observer_cfg = None
+        if isinstance(self.config, dict):
+            observer_cfg = self.config.get("observer")
+        else:
+            observer_cfg = getattr(self.config, "observer", None)
+
+        if observer_cfg is None:
+            return default_config
+
+        # Convert possible dataclass/object to dict for easy access
+        # Guard against malformed observer_cfg to keep loading robust
+        try:
+            cfg_dict = observer_cfg if isinstance(observer_cfg, dict) else getattr(observer_cfg, "__dict__", {}) or {}
+        except Exception:
+            # Fall back to defaults when the external block cannot be parsed
+            return default_config
+
+        merged = default_config.copy()
+        merged["observer_rate"] = cfg_dict.get("observer_rate", merged["observer_rate"])
+        merged["fleet_observer_rate"] = cfg_dict.get("fleet_observer_rate", merged["fleet_observer_rate"])
+        merged["local_observer_type"] = cfg_dict.get("local_estimator_type", merged["local_observer_type"])
+        merged["fleet_estimator_type"] = cfg_dict.get("fleet_estimator_type", merged["fleet_estimator_type"])
+        merged["enable_distributed"] = cfg_dict.get("enable_distributed", merged["enable_distributed"])
+        merged["consensus_gain"] = _normalize_gain(cfg_dict.get("consensus_gain"), merged["consensus_gain"])
+        merged["observer_gain"] = _normalize_gain(cfg_dict.get("observer_gain"), merged["observer_gain"])
+
+        return merged
 
     def update_sensor_data(self, qcar):
         """
@@ -314,7 +371,7 @@ class VehicleObserver:
             
             # Update fleet observer if it's time (independent rate control)
             if self._should_update_fleet_observer(current_time):
-                self._update_fleet_observer_internal(dt) # Distributed
+                state_info = self._update_fleet_observer_internal(dt) # Distributed
             
             return state_info
             

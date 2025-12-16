@@ -91,6 +91,29 @@ class LoggingConfig:
 
 
 @dataclass
+class ObserverConfig:
+    """
+    Observer configuration block.
+    This is optional in external YAML/JSON; defaults are provided here so that
+    config.observer always exists and downstream code can safely read it.
+    """
+    # Update rates (Hz)
+    observer_rate: int = 100
+    fleet_observer_rate: int = 50
+
+    # Selector for estimator implementations
+    local_estimator_type: str = "ekf"  # ekf, luenberger, dead_reckoning
+    fleet_estimator_type: str = "consensus"  # consensus, distributed_kalman, distributed_luenberger
+
+    # Enable/disable distributed observation (used by VehicleObserverSimple)
+    enable_distributed: bool = True
+
+    # Gains can be scalar, vector, or matrix (parsed later into numpy arrays)
+    consensus_gain: object = 0.3
+    observer_gain: object = 0.1
+
+
+@dataclass
 class VehicleMainConfig:
     """Main configuration container"""
     timing: TimingConfig = field(default_factory=TimingConfig)
@@ -99,6 +122,7 @@ class VehicleMainConfig:
     path: PathPlanningConfig = field(default_factory=PathPlanningConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    observer: ObserverConfig = field(default_factory=ObserverConfig)
     
     @classmethod
     def from_dict(cls, config_dict: dict) -> 'VehicleMainConfig':
@@ -109,7 +133,8 @@ class VehicleMainConfig:
             network=NetworkConfig(**config_dict.get('network', {})),
             path=PathPlanningConfig(**config_dict.get('path', {})),
             safety=SafetyConfig(**config_dict.get('safety', {})),
-            logging=LoggingConfig(**config_dict.get('logging', {}))
+            logging=LoggingConfig(**config_dict.get('logging', {})),
+            observer=ObserverConfig(**config_dict.get('observer', {}))
         )
     
     @classmethod
@@ -134,7 +159,8 @@ class VehicleMainConfig:
             'network': self.network.__dict__,
             'path': self.path.__dict__,
             'safety': self.safety.__dict__,
-            'logging': self.logging.__dict__
+            'logging': self.logging.__dict__,
+            'observer': self.observer.__dict__,
         }
     
     def to_json(self, filepath: str):

@@ -149,12 +149,13 @@ class VehicleLogic:
         #   - FleetStateEstimator: Pluggable fleet estimation (Consensus, Distributed Kalman, etc.)
         # Fleet size starts at 1 and will be expanded when V2V activates
         # Local estimator will be initialized later in INITIALIZING state with GPS data
+        obs_cfg = getattr(config, "observer", {})  # observer config in yaml
         self.vehicle_observer = VehicleObserver(
             vehicle_id=config.network.car_id,
             config=config,
             logger=self.vehicle_logger,
-            local_estimator_type='ekf',  # Can be: 'ekf', 'luenberger', 'dead_reckoning'
-            fleet_estimator_type='consensus'  # Can be: 'consensus', 'distributed_kalman'
+            local_estimator_type = 'ekf', # default type, Can be: 'ekf', 'luenberger', 'dead_reckoning'
+            fleet_estimator_type = 'consensus',  # default type, Can be: 'consensus', 'distributed_kalman','distributed_luenberger'
         )
         
         # Connect VehicleObserver to V2VManager
