@@ -232,7 +232,7 @@ class VehicleLogger:
         fieldnames = [
             'timestamp', 'data_age', 'sender_id', 'source',  # timestamp=relative_time, data_age=latency_in_seconds
             'seq_id',  # Sequence ID
-            'x', 'y', 'theta', 'v', 'acceleration', 
+            'x', 'y', 'theta', 'velocity', 'acceleration', 
             'steering', 'throttle','confidence'  # New fields for dynamics and control
         ]
         
@@ -461,7 +461,7 @@ class VehicleLogger:
                     'x': state.get('x', 0.0),
                     'y': state.get('y', 0.0),
                     'theta': state.get('theta', 0.0),
-                    'v': state.get('v', 0.0),
+                    'velocity': state.get('velocity', 0.0),
                     'confidence': state.get('confidence', 0.0),
                     'acceleration': state.get('acceleration', 0.0),
                     'steering': control_input.get('steering', 0.0) if isinstance(control_input, dict) else 0.0,

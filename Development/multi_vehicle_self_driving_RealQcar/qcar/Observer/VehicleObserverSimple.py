@@ -16,6 +16,8 @@ Architecture:
 import numpy as np
 import threading
 import time
+import yaml
+import os
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
@@ -53,6 +55,28 @@ class VehicleObserver:
         self.fleet_size = max(vehicle_id + 1, 1)  # At least large enough for this vehicle
         self.config = config or {}
         self.vehicle_logger = logger
+        
+        # Load fleet estimator defaults from config file
+        self.fleet_config_defaults = {}
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), 'config_fleet_estimators.yaml')
+            with open(config_path, 'r') as f:
+                loaded = yaml.safe_load(f)
+                self.fleet_config_defaults = loaded.get('fleet', {})
+        except Exception as e:
+            if self.vehicle_logger:
+                self.vehicle_logger.log_warning(f"Failed to load fleet config file: {e}")
+        
+        # Load local estimator defaults from config file
+        self.local_config_defaults = {}
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), 'config_local_estimators.yaml')
+            with open(config_path, 'r') as f:
+                loaded = yaml.safe_load(f)
+                self.local_config_defaults = loaded.get('local', {})
+        except Exception as e:
+            if self.vehicle_logger:
+                self.vehicle_logger.log_warning(f"Failed to load local config file: {e}")
         
         # State dimensions: [x, y, theta, v, a] - position, orientation, velocity, acceleration
         self.state_dim = 5
@@ -120,10 +144,13 @@ class VehicleObserver:
     def _create_fleet_estimator(self):
         """Create fleet state estimator using factory"""
         try:
-            fleet_config = {
-                'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
-                'observer_gain': self.observer_config.get('observer_gain', 0.1),
-            }
+            # Use config from file, fallback to observer_config if not available
+            fleet_config = self.fleet_config_defaults.get(self.fleet_estimator_type, {})
+            if not fleet_config:
+                fleet_config = {
+                    'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
+                    'observer_gain': self.observer_config.get('observer_gain', 0.1),
+                }
             
             self.fleet_estimator = FleetEstimatorFactory.create(
                 estimator_type=self.fleet_estimator_type,
@@ -164,15 +191,19 @@ class VehicleObserver:
         try:
             estimator_params = estimator_params or {}
             
+            # Merge with config defaults
+            config_defaults = self.local_config_defaults.get(self.local_estimator_type, {})
+            config_defaults.update(estimator_params)  # estimator_params override defaults
+            estimator_params = config_defaults
+            
             # Store GPS reference at observer level for centralized sensor reading
             self.gps = gps
             
             self.local_estimator = LocalEstimatorFactory.create(
                 estimator_type=self.local_estimator_type,
                 initial_pose=initial_pose,
-                gps=gps,
                 logger=self.vehicle_logger,
-                **estimator_params
+                config=estimator_params
             )
             
             self.vehicle_logger.logger.info(
@@ -534,7 +565,7 @@ class VehicleObserver:
         """
         return self.fleet_estimator
 
-    def add_received_state(self, sender_id: int, state: np.ndarray, timestamp: float) -> bool:
+    def add_received_local_state(self, sender_id: int, state: np.ndarray, timestamp: float) -> bool:
         """
         Add received LOCAL state from another vehicle (from local state broadcasts).
         Delegates to fleet estimator for processing.

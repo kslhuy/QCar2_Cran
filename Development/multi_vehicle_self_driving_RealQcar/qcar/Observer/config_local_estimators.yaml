@@ -1,0 +1,32 @@
+# Local Estimator Configuration
+# Default parameters for the local state estimators used by VehicleObserver
+# Place this file under qcar/Observer/ and load it when starting observers.
+
+# Local estimator defaults
+local:
+  # ---------------------------------------------------------------------
+  # EKF estimator defaults
+  # ---------------------------------------------------------------------
+  ekf:
+    use_qcar_ekf: true  # Whether to use QCarEKF (if available)
+
+  # ---------------------------------------------------------------------
+  # Luenberger estimator defaults
+  # ---------------------------------------------------------------------
+  luenberger:
+    observer_gain: 0.5  # Observer gain (0-1, higher = more aggressive correction)
+
+  # ---------------------------------------------------------------------
+  # Dead reckoning estimator defaults
+  # ---------------------------------------------------------------------
+  dead_reckoning: {}  # No configurable parameters
+
+# Example override (when loading config into VehicleObserver):
+# vehicle_observer_config:
+#   observer:
+#     local_estimator_type: luenberger
+#     local:
+#       luenberger:
+#         observer_gain: 0.3
+#       ekf:
+#         use_qcar_ekf: false
