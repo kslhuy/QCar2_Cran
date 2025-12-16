@@ -22,6 +22,9 @@ python .\enhanced_gui_controller.py
 
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar      
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 0
+python vehicle_main.py --config configs/car1.yaml
+python vehicle_main.py --config configs/car0.yaml
+
 
 # Run the real logic of vehicle 1 (another cmd) 
 
