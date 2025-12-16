@@ -110,8 +110,10 @@ class FleetStarter:
         
         for vehicle in self.config['vehicles']:
             path_info = self._get_path_info(vehicle['path_number'])
-            print(f"  • Car {vehicle['car_id']}: {vehicle['ip']}")
+            vehicle_type = vehicle.get('vehicle_type', 'Qcar')
+            print(f"  • Car {vehicle['car_id']}: {vehicle['ip']} [{vehicle_type}]")
             print(f"    Description: {vehicle.get('description', 'N/A')}")
+            print(f"    Vehicle Type: {vehicle_type}")
             print(f"    Path: {vehicle['path_number']} - {path_info['name']}")
             print(f"    Nodes: {path_info['nodes']}")
             print(f"    Probing: {'Yes' if vehicle.get('probing', False) else 'No'}")
@@ -221,9 +223,10 @@ class FleetStarter:
         car_id = vehicle['car_id']
         ip = vehicle['ip']
         port = gs['base_port'] + car_id
+        vehicle_type = vehicle.get('vehicle_type', 'Qcar')
         
         print(f"\n{'='*70}")
-        print(f" Starting QCar {car_id}: {ip} (Port: {port})")
+        print(f" Starting {vehicle_type} {car_id}: {ip} (Port: {port})")
         print(f"{'='*70}")
         
         try:
@@ -257,6 +260,10 @@ class FleetStarter:
                 f"--car-id {car_id}",
                 f"--path-number {vehicle['path_number']}"
             ]
+            
+            # Add vehicle type
+            if 'vehicle_type' in vehicle:
+                cmd_args.append(f"--vehicle-type {vehicle['vehicle_type']}")
             
             if vehicle.get('calibrate', False):
                 cmd_args.append("--calibrate")
@@ -349,7 +356,8 @@ class FleetStarter:
         print(f"\nVehicle Status:")
         for vehicle in self.config['vehicles']:
             car_id = vehicle['car_id']
-            print(f"  • Car {car_id}: {vehicle['ip']} (Port: {gs['base_port'] + car_id})")
+            vehicle_type = vehicle.get('vehicle_type', 'Qcar')
+            print(f"  • Car {car_id}: {vehicle['ip']} [{vehicle_type}] (Port: {gs['base_port'] + car_id})")
             print(f"    Path: {vehicle['path_number']} - {self._get_path_info(vehicle['path_number'])['name']}")
         
         print(f"\nHost PC: {gs['local_ip']}")
