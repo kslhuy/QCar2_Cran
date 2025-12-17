@@ -651,7 +651,7 @@ class FleetEstimatorFactory:
     ESTIMATOR_TYPES = {
         'consensus': ConsensusFleetEstimator,
         'distributed_kalman': DistributedKalmanEstimator,
-        'distributed_Luenberger': DistributedLuenbergerEstimator,
+        'distributed_luenberger': DistributedLuenbergerEstimator,
     }
     
     @staticmethod

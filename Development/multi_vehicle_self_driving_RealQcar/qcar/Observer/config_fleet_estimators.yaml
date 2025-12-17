@@ -2,6 +2,8 @@
 # Default parameters for the fleet state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
+fleet_estimator_type: consensus
+
 # Global defaults for fleet estimation
 fleet:
   # State handling

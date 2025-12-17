@@ -5,7 +5,23 @@
 
 ## ToDo List
 - [ ] Test if the observer gain can be used correctly in the observer class;
+- [ ] Make a logs for observer , local and fleet 
 
+## HUY UPDATE 
+
+Refactor state estimators and V2V manager for improved configuration handling and logging
+- ( GOOD ) Use fleet state received to Fleet Estimator (Check Consensus) 
+- Updated EKFStateEstimator and LuenbergerStateEstimator to accept a configuration dictionary for parameters. "config_fleet_estimators.yaml" "config_local_estimators.yaml"
+
+So i think no need to do " python vehicle_main.py --car-id 0 --config configs/car0.yaml"
+Just change the type in "config_fleet_estimators.yaml" , so all the vehicle have the same fleet estimator type
+
+
+
+- Removed unused GPS parameter from EKFStateEstimator.
+- Introduced ConsensusFleetEstimator for distributed fleet state estimation.
+- Enhanced V2VManager by normalizing state data and improving message handling.
+- Commented out legacy queue handling in V2VManager to streamline data processing.
 
 ## Observer config flow (summary)
 
