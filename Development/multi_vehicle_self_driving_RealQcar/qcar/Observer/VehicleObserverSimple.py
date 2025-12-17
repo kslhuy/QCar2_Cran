@@ -63,7 +63,7 @@ class VehicleObserver:
             with open(config_path, 'r') as f:
                 loaded = yaml.safe_load(f)
                 self.fleet_config_defaults = loaded.get('fleet', {})
-                self.fleet_estimator_type = loaded.get('fleet_estimator_type', self.fleet_estimator_type)
+                self.fleet_estimator_type = loaded.get('fleet_estimator_type', fleet_estimator_type)
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(f"Failed to load fleet config file: {e}")
@@ -75,7 +75,7 @@ class VehicleObserver:
             with open(config_path, 'r') as f:
                 loaded = yaml.safe_load(f)
                 self.local_config_defaults = loaded.get('local', {})
-                self.local_estimator_type = loaded.get('local_estimator_type', self.local_estimator_type)
+                self.local_estimator_type = loaded.get('local_estimator_type', local_estimator_type)
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(f"Failed to load local config file: {e}")
@@ -87,12 +87,10 @@ class VehicleObserver:
         self.observer_config = self._get_observer_config()
         
         # ===== Local State Estimator (pluggable) =====
-        self.local_estimator_type = local_estimator_type
         self.local_estimator: Optional[LocalStateEstimatorBase] = None
         # Will be initialized later via initialize_local_estimator()
         
         # ===== Fleet State Estimator (pluggable) =====
-        self.fleet_estimator_type = fleet_estimator_type
         self.fleet_estimator: Optional[FleetStateEstimatorBase] = None
         # Fleet estimator will be created when V2V is activated (not at initialization)
         # This saves resources and ensures clean state when V2V starts
@@ -622,61 +620,61 @@ class VehicleObserver:
             if self.fleet_estimator is None:
                 return False
             
-            # Track if any states were successfully added
-            any_success = False
+            # # Track if any states were successfully added
+            # any_success = False
             
-            # Extract and add each vehicle's state from fleet estimates
-            for vehicle_id_key, vehicle_state in fleet_estimates.items():
-                # Convert vehicle_id from string/int to int
-                try:
-                    vehicle_id_int = int(vehicle_id_key)
-                except (ValueError, TypeError):
-                    continue  # Skip invalid vehicle IDs
+            # # Extract and add each vehicle's state from fleet estimates
+            # for vehicle_id_key, vehicle_state in fleet_estimates.items():
+            #     # Convert vehicle_id from string/int to int
+            #     try:
+            #         vehicle_id_int = int(vehicle_id_key)
+            #     except (ValueError, TypeError):
+            #         continue  # Skip invalid vehicle IDs
                 
-                # Skip own vehicle ID (we already have our own state)
-                if vehicle_id_int == self.vehicle_id:
-                    continue
+            #     # Skip own vehicle ID (we already have our own state)
+            #     if vehicle_id_int == self.vehicle_id:
+            #         continue
                 
-                # Validate vehicle state has required fields
-                if not isinstance(vehicle_state, dict):
-                    continue
+            #     # Validate vehicle state has required fields
+            #     if not isinstance(vehicle_state, dict):
+            #         continue
                 
-                required_fields = ['x', 'y', 'theta', 'velocity']
-                if not all(field in vehicle_state for field in required_fields):
-                    continue
+            #     required_fields = ['x', 'y', 'theta', 'velocity']
+            #     if not all(field in vehicle_state for field in required_fields):
+            #         continue
                 
-                # Extract state components (5D with acceleration)
-                x = vehicle_state.get('x', 0.0)
-                y = vehicle_state.get('y', 0.0)
-                theta = vehicle_state.get('theta', 0.0)
-                velocity = vehicle_state.get('velocity', 0.0)
-                acceleration = vehicle_state.get('acceleration', 0.0)  # New field
+                # # Extract state components (5D with acceleration)
+                # x = vehicle_state.get('x', 0.0)
+                # y = vehicle_state.get('y', 0.0)
+                # theta = vehicle_state.get('theta', 0.0)
+                # velocity = vehicle_state.get('velocity', 0.0)
+                # acceleration = vehicle_state.get('acceleration', 0.0)  # New field
                 
-                # Create state vector [x, y, theta, v, a]
-                state_vector = np.array([x, y, theta, velocity, acceleration])
+                # # Create state vector [x, y, theta, v, a]
+                # state_vector = np.array([x, y, theta, velocity, acceleration])
                 
-                # Add to fleet estimator using local_state method (individual vehicle)
-                # Even though this came from a fleet broadcast, we're processing each 
-                # vehicle's state individually, so we use add_received_local_state
-                success = self.fleet_estimator.add_received_local_state(
-                    sender_id=vehicle_id_int,
-                    state=state_vector,
-                    timestamp_ns=timestamp_ns
-                )
+                # # Add to fleet estimator using local_state method (individual vehicle)
+                # # Even though this came from a fleet broadcast, we're processing each 
+                # # vehicle's state individually, so we use add_received_local_state
+                # success = self.fleet_estimator.add_received_local_state(
+                #     sender_id=vehicle_id_int,
+                #     state=state_vector,
+                #     timestamp_ns=timestamp_ns
+                # )
                 
-                if success:
-                    any_success = True
-                    if self.vehicle_logger:
-                        self.vehicle_logger.logger.debug(
-                            f"VehicleObserver: Added fleet state for vehicle {vehicle_id_int} "
-                            f"(from fleet broadcast by sender {sender_id}) to fleet estimator"
-                        )
+                # if success:
+                #     any_success = True
+                #     if self.vehicle_logger:
+                #         self.vehicle_logger.logger.debug(
+                #             f"VehicleObserver: Added fleet state for vehicle {vehicle_id_int} "
+                #             f"(from fleet broadcast by sender {sender_id}) to fleet estimator"
+                #         )
             
             # ALTERNATIVE: Could also pass entire dictionary directly to fleet estimator
             # This would allow fleet estimator to handle correlation between vehicles
-            # success = self.fleet_estimator.add_received_fleet_state(sender_id, fleet_estimates, timestamp_ns)
+            success = self.fleet_estimator.add_received_fleet_state(sender_id, fleet_estimates, timestamp_ns)
             
-            return any_success
+            return success
             
         except Exception as e:
             self.vehicle_logger.log_error("Add received fleet state error", e)
