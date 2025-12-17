@@ -565,7 +565,7 @@ class VehicleObserver:
         """
         return self.fleet_estimator
 
-    def add_received_local_state(self, sender_id: int, state: np.ndarray, timestamp: float) -> bool:
+    def add_received_local_state(self, sender_id: int, state: Dict, timestamp: float) -> bool:
         """
         Add received LOCAL state from another vehicle (from local state broadcasts).
         Delegates to fleet estimator for processing.

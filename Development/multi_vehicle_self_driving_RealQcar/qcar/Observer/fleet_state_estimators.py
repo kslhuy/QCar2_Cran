@@ -10,6 +10,49 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
+# Canonical ordering for state fields used in V2V/local state messages.
+STATE_FIELDS = ("x", "y", "theta", "velocity", "acceleration")
+
+
+def _normalize_state_array(state_array, expected_dim: int, logger=None) -> Optional[np.ndarray]:
+    """
+    Convert any array-like to a 1D numpy array with the expected dimension.
+    Pads with zeros or truncates if needed to avoid shape errors in downstream algorithms.
+    """
+    try:
+        arr = np.asarray(state_array, dtype=float).flatten()
+        if arr.shape[0] == expected_dim:
+            return arr
+        if arr.shape[0] > expected_dim:
+            if logger:
+                logger.logger.debug(
+                    f"State dim {arr.shape[0]} larger than expected {expected_dim}, truncating"
+                )
+            return arr[:expected_dim]
+        # Pad with zeros when shorter than expected
+        if logger:
+            logger.logger.debug(
+                f"State dim {arr.shape[0]} smaller than expected {expected_dim}, padding with zeros"
+            )
+        return np.pad(arr, (0, expected_dim - arr.shape[0]), mode="constant")
+    except Exception as exc:
+        if logger:
+            logger.log_error("Failed to normalize state array", exc)
+        return None
+
+
+def _state_dict_to_array(state_dict: Dict, expected_dim: int, logger=None) -> Optional[np.ndarray]:
+    """
+    Convert a state dict (as used in communication/log layers) to ndarray in canonical order.
+    """
+    try:
+        base_arr = np.array([state_dict.get(k, 0.0) for k in STATE_FIELDS], dtype=float)
+        return _normalize_state_array(base_arr, expected_dim, logger=logger)
+    except Exception as exc:
+        if logger:
+            logger.log_error("Failed to convert state dict to array", exc)
+        return None
+
 
 class FleetStateEstimatorBase(ABC):
     """Base class for all fleet state estimators"""
@@ -61,26 +104,28 @@ class FleetStateEstimatorBase(ABC):
         """
         pass
     
-    def add_received_local_state(self, sender_id: int, state: np.ndarray, timestamp_ns: int) -> bool:
-        """Add a received LOCAL state from another vehicle and store it in history.
+    def add_received_local_state(self, sender_id: int, state: Dict, timestamp_ns: int) -> bool:
+        """Add a received LOCAL state (dict or ndarray) and store ndarray in history.
 
-        Default implementation used by most estimators. Subclasses may override
-        when custom validation or handling is required.
+        Communication/log layers hand us dicts; algorithms want numpy arrays.
+        We normalize here so downstream consumers always see ndarray.
         """
+        print(f"Adding received local state from vehicle_id {sender_id}")
         try:
             if sender_id == self.vehicle_id:
                 return False  # Don't store own state
 
-            # Validate state dimension
-            if state.shape[0] != self.state_dim:
-                if self.logger:
-                    self.logger.log_error(
-                        f"State dimension mismatch: expected {self.state_dim}, got {state.shape[0]}"
-                    )
+            state_vec: Optional[np.ndarray] = None
+            if isinstance(state, dict):
+                state_vec = _state_dict_to_array(state, self.state_dim, logger=self.logger)
+            else:
+                state_vec = _normalize_state_array(state, self.state_dim, logger=self.logger)
+
+            if state_vec is None:
                 return False
 
-            # Store timestamp in nanoseconds
-            self.received_local_states[sender_id].append((timestamp_ns, state.copy()))
+            # Store timestamp in nanoseconds (keep ndarray only)
+            self.received_local_states[sender_id].append((timestamp_ns, state_vec.copy()))
 
             # Keep only recent history (default 10 entries)
             if len(self.received_local_states[sender_id]) > 10:
@@ -147,23 +192,35 @@ class FleetStateEstimatorBase(ABC):
         return None
 
     def _get_latest_received_state(self, vehicle_id: int, current_time_ns: int) -> Optional[np.ndarray]:
-        """Return the most recent received state for `vehicle_id` within the age limit.
+        """Return the most recent received state (as ndarray) within the age limit.
 
-        Returns None if no recent state is available.
+        Returns None if no recent state is available or conversion fails.
         """
         if vehicle_id not in self.received_local_states:
+            print(f"vehicle_id {vehicle_id} not in self.received_local_states")
             return None
 
         states_list = self.received_local_states[vehicle_id]
         if not states_list:
+            print(f"states_list for vehicle_id {vehicle_id} is empty")
             return None
 
         # Iterate backwards (newest first) and return first valid entry
         for timestamp_ns, state in reversed(states_list):
             age_ns = current_time_ns - timestamp_ns
-            if age_ns <= self.max_state_age_ns:
-                return state
+            if age_ns > self.max_state_age_ns:
+                continue
 
+            # History stores ndarray; older entries might still be dict, so normalize defensively
+            if isinstance(state, dict):
+                state_vec = _state_dict_to_array(state, self.state_dim, logger=self.logger)
+            else:
+                state_vec = _normalize_state_array(state, self.state_dim, logger=self.logger)
+
+            if state_vec is not None:
+                return state_vec
+            
+        print(f"No valid recent state for vehicle_id {vehicle_id}")
         return None
 
     
@@ -536,10 +593,10 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             control: Control input [steering, throttle]
         """
         try:
-            
-            
-            
-                
+            # Ensure we have capacity and write our own latest local state into fleet_states
+            self._ensure_fleet_capacity(self.vehicle_id)
+            self.fleet_states[:, self.vehicle_id] = local_state.copy()
+
             # Distributed observer for this vehicle
             self.fleet_states = self._distributed_observer_update(
                 current_time_ns, control, dt
@@ -564,39 +621,46 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # Distributed observer dimention
         dim_distributed_observer = self.state_dim * self.fleet_size
         # Current estimate
-        x_i = self.fleet_states.copy()
+        x_i_mat = self.fleet_states.copy()
+        x_vec = x_i_mat.flatten(order="F") # column-major flattening
+        own_state = x_i_mat[:, self.vehicle_id]
 
+        # Get the current estimate (position, velocity, acceleration) for all vehicles:
+        
         
         # 1. Dynamics prediction (collective longitudinal model)
         u = collective_control if len(collective_control) > self.fleet_size else 0.0
         
         # collective longitudinal model
         # dx = Ax + Bf
-        f = np.zeros(self.fleet_size)
+        f = np.zeros(self.fleet_size)   
+        v_i = own_state[1]  # self velocity
+        a_i = own_state[2]  # self acceleration
+        f[self.vehicle_id] = self._get_nonlinear_term_phi_i(v_i, a_i)
+
+        # Loop over other vehicles only (skip self)
         for i in range(self.fleet_size):
+            if i == self.vehicle_id:
+                continue
             state = self._get_latest_received_state(i, current_time_ns)
-            v_i = state.get("velocity", 0.0)
-            a_i = state.get("acceleration", 0.0)
-            v_i = state[4] # Test value
-            a_i = state[5] # Test value
+            v_i = state[1]  # velocity from received state (state_dim=3)
+            a_i = state[2]  # acceleration from received state (state_dim=3)
             f[i] = self._get_nonlinear_term_phi_i(v_i, a_i)
         
-        dynamics_term = x_i + (self.A @ x_i + self.B @ f) * dt
+
+        dynamics_term = x_vec + (self.A @ x_vec + self.B @ f) * dt
         
         # 2. Measurement correction (if we have data from target)
-        measurement_term = np.zeros(self.state_dim)
-        # Question: How to make sure what's the meaning of the state_list in _get_latest_received_state?
-        local_measurement = self._get_latest_received_state(self.vehicle_id, current_time_ns) # Assume all the state in the host vehicle is measurable
-        measure_position = local_measurement[0] # Get the local measurement from all the avilable measurement
+        measurement_term = np.zeros(self.state_dim * self.fleet_size)
+        # Use latest self measurement (assumed available) to correct position
+        local_measurement = self._get_latest_received_state(self.vehicle_id, current_time_ns) # assume measurable
+        measure_position = local_measurement[0]  # measured position
 
-        if local_measurement is not None:
-            # Measurement correction: L * (y - C * x_pred)
-            # estimated_measurement = C @ dynamics_term
-            # measurement_error = local_measurement - estimated_measurement
-            estimated_index = self.vehicle_id + self.vehicle_id * self.state_dim
-            estimated_position = dynamics_term[estimated_index] # Catch the estimated position from the observer state
-            measurement_error = measure_position - estimated_position
-            measurement_term = self.observer_gain * measurement_error
+        # Measurement correction: apply only to this vehicle's position entry in the flattened vector
+        estimated_index = self.vehicle_id * self.state_dim  # starting index for this vehicle in x_vec
+        estimated_position = dynamics_term[estimated_index]
+        measurement_error = measure_position - estimated_position
+        measurement_term[estimated_index] = self.observer_gain * measurement_error
 
         # 3. Consensus term (simple for now - can be enhanced)
         # TODO : use the _get_latest_received_state to get the neibour's state, it is already the real communicarion
@@ -604,8 +668,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # Combine all terms
         x_i_new = dynamics_term + measurement_term + consensus_term
-        x_i_new = 0.1217 # Test value
-        
+        # Reshape back to matrix form  
+        x_i_new = x_i_new.reshape((self.state_dim, self.fleet_size), order="F")      
         return x_i_new
 
     

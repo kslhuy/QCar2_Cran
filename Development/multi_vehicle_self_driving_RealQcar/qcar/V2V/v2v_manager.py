@@ -323,7 +323,7 @@ class V2VManager:
                 
                 # Build a normalized state dict and reuse it for storage, queue, and logging
                 state_dict = {
-                    'vehicle_id': data.get('vehicle_id', sender_id),
+                    # 'vehicle_id': data.get('vehicle_id', sender_id),
                     'x': data.get('x', 0.0),
                     'y': data.get('y', 0.0),
                     'theta': data.get('theta', 0.0),
@@ -332,8 +332,8 @@ class V2VManager:
                     'confidence': data.get('confidence', 1.0),
                     'acceleration': data.get('acceleration', 0.0),
                     'control_input': data.get('control_input', {}) or {},
-                    'source': data.get('source', 'local_sensors'),
-                    'timestamp': data.get('timestamp', time.time())
+                    # 'source': data.get('source', 'local_sensors'),
+                    # 'timestamp': data.get('timestamp', time.time())
                 }
 
                 # Add to received local states with send time in nanoseconds (store normalized dict)
@@ -351,18 +351,9 @@ class V2VManager:
                 
                 # Add to VehicleObserver if available (observer expects a 5D numpy array)
                 if self.vehicle_observer:
-                    try:
-                        state_vector = np.array([
-                            state_dict['x'],
-                            state_dict['y'],
-                            state_dict['theta'],
-                            state_dict['v'],
-                            state_dict.get('acceleration', 0.0)
-                        ])
-                        self.vehicle_observer.add_received_local_state(sender_id, state_vector, send_time_ns)
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.warning(f"Failed to add state to VehicleObserver: {e}")
+
+                    self.vehicle_observer.add_received_local_state(sender_id, state_dict, send_time_ns)
+                    
                     
             # # Add normalized state to queue for other consumers
             # self._add_to_queue(self.local_state_queue, state_dict, sender_id)
