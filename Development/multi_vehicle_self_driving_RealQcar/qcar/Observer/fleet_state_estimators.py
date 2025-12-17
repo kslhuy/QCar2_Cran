@@ -498,14 +498,14 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
         
         # System matrices of the longutinal model
-        Ai = np.array([0, 1, 0],
+        Ai = np.array([[0, 1, 0],
                      [0, 0, 1],
-                     [0, 0, 0])
+                     [0, 0, 0]])
         self.A = np.block([
                         [Ai if i == j else np.zeros_like(Ai) for j in range(fleet_size)]
                         for i in range(fleet_size)
                     ])
-        Bi = np.array(0, 0, 1)
+        Bi = np.array([0, 0, 1])
         self.B = np.block([
             [Bi if i == j else np.zeros_like(Bi) for j in range(fleet_size)]
             for i in range(fleet_size)
@@ -536,30 +536,26 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             control: Control input [steering, throttle]
         """
         try:
-            # Update own state in fleet
-            self.fleet_states[:, self.vehicle_id] = local_state.copy()
             
-            # Update estimates for other vehicles
-            for target_id in range(self.fleet_size):
-                if target_id == self.vehicle_id:
-                    continue
+            
+            
                 
-                # Distributed observer for this vehicle
-                self.fleet_states[:, target_id] = self._distributed_observer_update(
-                    target_id, current_time_ns, control, dt
-                )
+            # Distributed observer for this vehicle
+            self.fleet_states = self._distributed_observer_update(
+                current_time_ns, control, dt
+            )
             
             # Cleanup old data
             self._cleanup_old_data(current_time_ns)
             
-            return self.fleet_states.copy()
+            return self.fleet_states
             
         except Exception as e:
             if self.logger:
                 self.logger.log_error("Distributed Kalman update error", e)
-            return self.fleet_states.copy()
+            return self.fleet_states
     
-    def _distributed_observer_update(self, target_id: int, current_time_ns: int,
+    def _distributed_observer_update(self, current_time_ns: int,
                                      collective_control: np.ndarray, dt: float) -> np.ndarray:
         """
         Distributed observer update for one target vehicle
@@ -579,8 +575,10 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         f = np.zeros(self.fleet_size)
         for i in range(self.fleet_size):
             state = self._get_latest_received_state(i, current_time_ns)
-            v_i = state[4]
-            a_i = state[5]
+            v_i = state.get("velocity", 0.0)
+            a_i = state.get("acceleration", 0.0)
+            v_i = state[4] # Test value
+            a_i = state[5] # Test value
             f[i] = self._get_nonlinear_term_phi_i(v_i, a_i)
         
         dynamics_term = x_i + (self.A @ x_i + self.B @ f) * dt
@@ -606,6 +604,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # Combine all terms
         x_i_new = dynamics_term + measurement_term + consensus_term
+        x_i_new = 0.1217 # Test value
         
         return x_i_new
 

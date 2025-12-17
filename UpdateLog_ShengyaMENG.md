@@ -1,3 +1,11 @@
+# Update Log 2025/12/17 (Shengya Meng)
+- [x] Test if the observer gain can be used correctly in the observer class
+    - local observer type can be applied. 
+
+## ToDo List
+- [ ] Make a logs for observer , local and fleet 
+- [ ] Distinguiwish the observer gain for local observer and distributed osberver
+
 # Update Log 2025/12/16 (Shengya Meng)
 - Added `initPlatoon.py` to create platoons with variable sizes.
 - Enabled observer configuration via external setting files (see details below).

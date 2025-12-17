@@ -343,6 +343,8 @@ class VehicleLogic:
             self._last_steering = delta
             self._last_u = u
             
+            u = 0.075 # Test value 
+            delta = 0.0 # Test value 
             # Send commands to vehicle hardware
             if self.qcar is not None:
                 self.qcar.write(throttle=u, steering=delta)
