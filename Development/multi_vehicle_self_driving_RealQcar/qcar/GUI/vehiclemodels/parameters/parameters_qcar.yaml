@@ -39,6 +39,8 @@ longitudinal:
   v_min: -1.0
   # switching velocity [m/s] - threshold for kinematic/dynamic switching
   v_switch: 0.5
+  # maximum braking deceleration magnitude [m/s^2]
+  # brake_decel_mag : 3.0
 
 # masses
 # vehicle mass [kg] - approximately 1.5 kg for QCar
