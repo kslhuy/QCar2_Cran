@@ -73,19 +73,21 @@ class EKFStateEstimator(LocalStateEstimatorBase):
     """
     
     def __init__(self, initial_pose: Optional[np.ndarray] = None, 
-                 gps=None, use_qcar_ekf: bool = True, logger=None):
+                config: Dict = None, logger=None):
         """
         Initialize EKF state estimator
         
         Args:
             initial_pose: Initial pose [x, y, theta]
             gps: GPS instance (for QCarEKF)
-            use_qcar_ekf: Whether to use QCarEKF (if available)
+            config: Configuration dict with keys: use_qcar_ekf
             logger: Logger instance
         """
+        config = config or {}
+        use_qcar_ekf = config.get('use_qcar_ekf', True)
+        
         super().__init__(initial_pose, logger)
         
-        self.gps = gps
         self.use_qcar_ekf = use_qcar_ekf
         self.ekf = None
         self.ekf_initialized = False
@@ -96,7 +98,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         self.R = np.diag([0.5, 0.5, 0.1, 0.2])  # Measurement noise
         
         # Initialize QCarEKF if available
-        if self.use_qcar_ekf and gps is not None:
+        if self.use_qcar_ekf :
             self._initialize_qcar_ekf(initial_pose)
     
     def _initialize_qcar_ekf(self, initial_pose: Optional[np.ndarray]):
@@ -250,15 +252,18 @@ class LuenbergerStateEstimator(LocalStateEstimatorBase):
     """
     
     def __init__(self, initial_pose: Optional[np.ndarray] = None, 
-                 observer_gain: float = 0.5, logger=None):
+                 config: Dict = None, logger=None):
         """
         Initialize Luenberger observer
         
         Args:
             initial_pose: Initial pose [x, y, theta]
-            observer_gain: Observer gain (0-1, higher = more aggressive correction)
+            config: Configuration dict with keys: observer_gain
             logger: Logger instance
         """
+        config = config or {}
+        observer_gain = config.get('observer_gain', 0.5)
+        
         super().__init__(initial_pose, logger)
         
         self.L = np.eye(self.state_dim) * observer_gain  # Observer gain matrix
@@ -318,8 +323,15 @@ class DeadReckoningEstimator(LocalStateEstimatorBase):
     Uses only odometry and IMU
     """
     
-    def __init__(self, initial_pose: Optional[np.ndarray] = None, logger=None):
-        """Initialize dead reckoning estimator"""
+    def __init__(self, initial_pose: Optional[np.ndarray] = None, config: Dict = None, logger=None):
+        """
+        Initialize dead reckoning estimator
+        
+        Args:
+            initial_pose: Initial pose [x, y, theta]
+            config: Configuration dict (unused for dead reckoning)
+            logger: Logger instance
+        """
         super().__init__(initial_pose, logger)
     
     def update(self, motor_tach: float, steering: float, throttle:float, dt: float, 
@@ -367,7 +379,7 @@ class LocalEstimatorFactory:
     
     @staticmethod
     def create(estimator_type: str, initial_pose: Optional[np.ndarray] = None,
-               gps=None, logger=None, **kwargs):
+               gps=None, logger=None, config: Dict = None) -> LocalStateEstimatorBase:
         """
         Create a local state estimator
         
@@ -376,7 +388,7 @@ class LocalEstimatorFactory:
             initial_pose: Initial pose [x, y, theta]
             gps: GPS instance (for EKF)
             logger: Logger instance
-            **kwargs: Additional estimator-specific parameters
+            config: Configuration parameters for the estimator
             
         Returns:
             Local state estimator instance
@@ -388,9 +400,10 @@ class LocalEstimatorFactory:
             )
         
         estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]
-        
-        # Pass appropriate parameters based on estimator type
-        if estimator_type == 'ekf':
-            return estimator_class(initial_pose=initial_pose, gps=gps, logger=logger, **kwargs)
-        else:
-            return estimator_class(initial_pose=initial_pose, logger=logger, **kwargs)
+        return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
+
+        # # Pass config dict to estimators
+        # if estimator_type == 'ekf':
+        #     return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
+        # else:
+        #     return estimator_class(initial_pose=initial_pose, config=config, logger=logger)

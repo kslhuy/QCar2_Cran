@@ -199,6 +199,8 @@ class FollowingPathState(StateBase):
         self._periodic_logging(x, y, theta, velocity)
         
         # Control computation and periodic logging
+        u = 0.05
+        delta = 0
         return u, delta, None
     
     def handle_event(self, command_type, data: Dict[str, Any] = None) -> Optional[Tuple[VehicleState, StateTransitionReason]]:

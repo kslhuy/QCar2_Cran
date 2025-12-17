@@ -16,6 +16,8 @@ Architecture:
 import numpy as np
 import threading
 import time
+import yaml
+import os
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
@@ -54,6 +56,30 @@ class VehicleObserver:
         self.config = config or {}
         self.vehicle_logger = logger
         
+        # Load fleet estimator defaults from config file
+        self.fleet_config_defaults = {}
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), 'config_fleet_estimators.yaml')
+            with open(config_path, 'r') as f:
+                loaded = yaml.safe_load(f)
+                self.fleet_config_defaults = loaded.get('fleet', {})
+                self.fleet_estimator_type = loaded.get('fleet_estimator_type', fleet_estimator_type)
+        except Exception as e:
+            if self.vehicle_logger:
+                self.vehicle_logger.log_warning(f"Failed to load fleet config file: {e}")
+        
+        # Load local estimator defaults from config file
+        self.local_config_defaults = {}
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), 'config_local_estimators.yaml')
+            with open(config_path, 'r') as f:
+                loaded = yaml.safe_load(f)
+                self.local_config_defaults = loaded.get('local', {})
+                self.local_estimator_type = loaded.get('local_estimator_type', local_estimator_type)
+        except Exception as e:
+            if self.vehicle_logger:
+                self.vehicle_logger.log_warning(f"Failed to load local config file: {e}")
+        
         # State dimensions: [x, y, theta, v, a] - position, orientation, velocity, acceleration
         self.state_dim = 5
         
@@ -61,12 +87,10 @@ class VehicleObserver:
         self.observer_config = self._get_observer_config()
         
         # ===== Local State Estimator (pluggable) =====
-        self.local_estimator_type = local_estimator_type
         self.local_estimator: Optional[LocalStateEstimatorBase] = None
         # Will be initialized later via initialize_local_estimator()
         
         # ===== Fleet State Estimator (pluggable) =====
-        self.fleet_estimator_type = fleet_estimator_type
         self.fleet_estimator: Optional[FleetStateEstimatorBase] = None
         # Fleet estimator will be created when V2V is activated (not at initialization)
         # This saves resources and ensures clean state when V2V starts
@@ -110,7 +134,8 @@ class VehicleObserver:
         self.lock = threading.RLock()
         
         self.vehicle_logger.logger.info(
-            f"VehicleObserver initialized: vehicle_id={vehicle_id}, "
+            # f"VehicleObserver initialized: vehicle_id={vehicle_id}, "
+            f"Observer config: {self.config.observer}, "
             # f"local_estimator={local_estimator_type}, fleet_estimator={fleet_estimator_type}"
         )
 
@@ -119,10 +144,13 @@ class VehicleObserver:
     def _create_fleet_estimator(self):
         """Create fleet state estimator using factory"""
         try:
-            fleet_config = {
-                'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
-                'observer_gain': self.observer_config.get('observer_gain', 0.1),
-            }
+            # Use config from file, fallback to observer_config if not available
+            fleet_config = self.fleet_config_defaults.get(self.fleet_estimator_type, {})
+            if not fleet_config:
+                fleet_config = {
+                    'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
+                    'observer_gain': self.observer_config.get('observer_gain', 0.1),
+                }
             
             self.fleet_estimator = FleetEstimatorFactory.create(
                 estimator_type=self.fleet_estimator_type,
@@ -163,15 +191,19 @@ class VehicleObserver:
         try:
             estimator_params = estimator_params or {}
             
+            # Merge with config defaults
+            config_defaults = self.local_config_defaults.get(self.local_estimator_type, {})
+            config_defaults.update(estimator_params)  # estimator_params override defaults
+            estimator_params = config_defaults
+            
             # Store GPS reference at observer level for centralized sensor reading
             self.gps = gps
             
             self.local_estimator = LocalEstimatorFactory.create(
                 estimator_type=self.local_estimator_type,
                 initial_pose=initial_pose,
-                gps=gps,
                 logger=self.vehicle_logger,
-                **estimator_params
+                config=estimator_params
             )
             
             self.vehicle_logger.logger.info(
@@ -198,16 +230,72 @@ class VehicleObserver:
     # ===== Configuration =====
     
     def _get_observer_config(self) -> dict:
-        """Get observer configuration with defaults."""
+        """
+        Get observer configuration by merging defaults with external config.
+        
+        External config is expected to provide an `observer` block (from YAML/JSON),
+        e.g.:
+            observer:
+              observer_rate: 120
+              fleet_observer_rate: 40
+              local_estimator_type: ekf
+              fleet_estimator_type: distributed_kalman
+              observer_gain: [[...]]   # scalar, vector, or matrix
+              consensus_gain: 0.2      # scalar, vector, or matrix
+        
+        The method is defensive: if no external config is found, it falls back to
+        the hardcoded defaults.
+        """
         default_config = {
             "observer_rate": 100,
             "fleet_observer_rate": 50,
             "local_observer_type": "ekf",
+            "fleet_estimator_type": "consensus",
             "enable_distributed": True,
-            "consensus_gain": 0.3
+            "consensus_gain": 0.3,
+            "observer_gain": 0.1,
         }
-        
-        return default_config
+
+        def _normalize_gain(value, default):
+            """
+            Normalize gain input to float or numpy array.
+            Accepts scalar, list, nested list (matrix). Falls back to default if None.
+            """
+            if value is None:
+                return default
+            arr = np.array(value, dtype=float)
+            if arr.ndim == 0:
+                return float(arr)
+            return arr
+
+        # Pull observer config block from self.config if present
+        observer_cfg = None
+        if isinstance(self.config, dict):
+            observer_cfg = self.config.get("observer")
+        else:
+            observer_cfg = getattr(self.config, "observer", None)
+
+        if observer_cfg is None:
+            return default_config
+
+        # Convert possible dataclass/object to dict for easy access
+        # Guard against malformed observer_cfg to keep loading robust
+        try:
+            cfg_dict = observer_cfg if isinstance(observer_cfg, dict) else getattr(observer_cfg, "__dict__", {}) or {}
+        except Exception:
+            # Fall back to defaults when the external block cannot be parsed
+            return default_config
+
+        merged = default_config.copy()
+        merged["observer_rate"] = cfg_dict.get("observer_rate", merged["observer_rate"])
+        merged["fleet_observer_rate"] = cfg_dict.get("fleet_observer_rate", merged["fleet_observer_rate"])
+        merged["local_observer_type"] = cfg_dict.get("local_estimator_type", merged["local_observer_type"])
+        merged["fleet_estimator_type"] = cfg_dict.get("fleet_estimator_type", merged["fleet_estimator_type"])
+        merged["enable_distributed"] = cfg_dict.get("enable_distributed", merged["enable_distributed"])
+        merged["consensus_gain"] = _normalize_gain(cfg_dict.get("consensus_gain"), merged["consensus_gain"])
+        merged["observer_gain"] = _normalize_gain(cfg_dict.get("observer_gain"), merged["observer_gain"])
+
+        return merged
 
     def update_sensor_data(self, qcar):
         """
@@ -297,7 +385,7 @@ class VehicleObserver:
             
             # Update fleet observer if it's time (independent rate control)
             if self._should_update_fleet_observer(current_time):
-                self._update_fleet_observer_internal(dt)
+                self._update_fleet_observer_internal(dt) # Distributed
             
             return state_info
             
@@ -393,7 +481,7 @@ class VehicleObserver:
             if not self.v2v_active:
                 return
             
-            if not self.observer_config["enable_distributed"]:
+            if not self.observer_config["enable_distributed"]: # Only enable, if V2V true
                 return
             
             if self.fleet_estimator is None:
@@ -404,6 +492,7 @@ class VehicleObserver:
             # Get control input (steering, throttle) - use zeros as default
             # TODO : pass actual control inputs , have size of fleet and size of control input (steering, throttle)
             control = np.array([0.0, 0.0])  # Will be passed from vehicle_logic in future
+            # control input can be estimated by observer state. Based on the co-design method
             
             # Update fleet estimates using pluggable estimator
             current_local = self.local_state.copy()
@@ -476,7 +565,7 @@ class VehicleObserver:
         """
         return self.fleet_estimator
 
-    def add_received_state(self, sender_id: int, state: np.ndarray, timestamp: float) -> bool:
+    def add_received_local_state(self, sender_id: int, state: Dict, timestamp: float) -> bool:
         """
         Add received LOCAL state from another vehicle (from local state broadcasts).
         Delegates to fleet estimator for processing.
@@ -531,61 +620,61 @@ class VehicleObserver:
             if self.fleet_estimator is None:
                 return False
             
-            # Track if any states were successfully added
-            any_success = False
+            # # Track if any states were successfully added
+            # any_success = False
             
-            # Extract and add each vehicle's state from fleet estimates
-            for vehicle_id_key, vehicle_state in fleet_estimates.items():
-                # Convert vehicle_id from string/int to int
-                try:
-                    vehicle_id_int = int(vehicle_id_key)
-                except (ValueError, TypeError):
-                    continue  # Skip invalid vehicle IDs
+            # # Extract and add each vehicle's state from fleet estimates
+            # for vehicle_id_key, vehicle_state in fleet_estimates.items():
+            #     # Convert vehicle_id from string/int to int
+            #     try:
+            #         vehicle_id_int = int(vehicle_id_key)
+            #     except (ValueError, TypeError):
+            #         continue  # Skip invalid vehicle IDs
                 
-                # Skip own vehicle ID (we already have our own state)
-                if vehicle_id_int == self.vehicle_id:
-                    continue
+            #     # Skip own vehicle ID (we already have our own state)
+            #     if vehicle_id_int == self.vehicle_id:
+            #         continue
                 
-                # Validate vehicle state has required fields
-                if not isinstance(vehicle_state, dict):
-                    continue
+            #     # Validate vehicle state has required fields
+            #     if not isinstance(vehicle_state, dict):
+            #         continue
                 
-                required_fields = ['x', 'y', 'theta', 'velocity']
-                if not all(field in vehicle_state for field in required_fields):
-                    continue
+            #     required_fields = ['x', 'y', 'theta', 'velocity']
+            #     if not all(field in vehicle_state for field in required_fields):
+            #         continue
                 
-                # Extract state components (5D with acceleration)
-                x = vehicle_state.get('x', 0.0)
-                y = vehicle_state.get('y', 0.0)
-                theta = vehicle_state.get('theta', 0.0)
-                velocity = vehicle_state.get('velocity', 0.0)
-                acceleration = vehicle_state.get('acceleration', 0.0)  # New field
+                # # Extract state components (5D with acceleration)
+                # x = vehicle_state.get('x', 0.0)
+                # y = vehicle_state.get('y', 0.0)
+                # theta = vehicle_state.get('theta', 0.0)
+                # velocity = vehicle_state.get('velocity', 0.0)
+                # acceleration = vehicle_state.get('acceleration', 0.0)  # New field
                 
-                # Create state vector [x, y, theta, v, a]
-                state_vector = np.array([x, y, theta, velocity, acceleration])
+                # # Create state vector [x, y, theta, v, a]
+                # state_vector = np.array([x, y, theta, velocity, acceleration])
                 
-                # Add to fleet estimator using local_state method (individual vehicle)
-                # Even though this came from a fleet broadcast, we're processing each 
-                # vehicle's state individually, so we use add_received_local_state
-                success = self.fleet_estimator.add_received_local_state(
-                    sender_id=vehicle_id_int,
-                    state=state_vector,
-                    timestamp_ns=timestamp_ns
-                )
+                # # Add to fleet estimator using local_state method (individual vehicle)
+                # # Even though this came from a fleet broadcast, we're processing each 
+                # # vehicle's state individually, so we use add_received_local_state
+                # success = self.fleet_estimator.add_received_local_state(
+                #     sender_id=vehicle_id_int,
+                #     state=state_vector,
+                #     timestamp_ns=timestamp_ns
+                # )
                 
-                if success:
-                    any_success = True
-                    if self.vehicle_logger:
-                        self.vehicle_logger.logger.debug(
-                            f"VehicleObserver: Added fleet state for vehicle {vehicle_id_int} "
-                            f"(from fleet broadcast by sender {sender_id}) to fleet estimator"
-                        )
+                # if success:
+                #     any_success = True
+                #     if self.vehicle_logger:
+                #         self.vehicle_logger.logger.debug(
+                #             f"VehicleObserver: Added fleet state for vehicle {vehicle_id_int} "
+                #             f"(from fleet broadcast by sender {sender_id}) to fleet estimator"
+                #         )
             
             # ALTERNATIVE: Could also pass entire dictionary directly to fleet estimator
             # This would allow fleet estimator to handle correlation between vehicles
-            # success = self.fleet_estimator.add_received_fleet_state(sender_id, fleet_estimates, timestamp_ns)
+            success = self.fleet_estimator.add_received_fleet_state(sender_id, fleet_estimates, timestamp_ns)
             
-            return any_success
+            return success
             
         except Exception as e:
             self.vehicle_logger.log_error("Add received fleet state error", e)

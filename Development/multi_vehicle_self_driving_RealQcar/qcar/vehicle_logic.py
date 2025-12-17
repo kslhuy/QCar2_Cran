@@ -150,12 +150,15 @@ class VehicleLogic:
         #   - FleetStateEstimator: Pluggable fleet estimation (Consensus, Distributed Kalman, etc.)
         # Fleet size starts at 1 and will be expanded when V2V activates
         # Local estimator will be initialized later in INITIALIZING state with GPS data
+        obs_cfg = getattr(config, "observer", None)  # ObserverConfig 实例或 None
+        local_type = getattr(obs_cfg, "local_estimator_type", "ekf")
+        fleet_type = getattr(obs_cfg, "fleet_estimator_type", "consensus")
         self.vehicle_observer = VehicleObserver(
             vehicle_id=config.network.car_id,
             config=config,
             logger=self.vehicle_logger,
-            local_estimator_type='ekf',  # Can be: 'ekf', 'luenberger', 'dead_reckoning'
-            fleet_estimator_type='consensus'  # Can be: 'consensus', 'distributed_kalman'
+            local_estimator_type = local_type, # default type, Can be: 'ekf', 'luenberger', 'dead_reckoning'
+            fleet_estimator_type = fleet_type,  # default type, Can be: 'consensus', 'distributed_kalman','distributed_luenberger'
         )
         
         # Connect VehicleObserver to V2VManager
@@ -340,6 +343,8 @@ class VehicleLogic:
             self._last_steering = delta
             self._last_u = u
             
+            u = 0.075 # Test value 
+            delta = 0.0 # Test value 
             # Send commands to vehicle hardware
             if self.qcar is not None:
                 self.qcar.write(throttle=u, steering=delta)
