@@ -202,11 +202,11 @@ class MockQCar:
         """Physics simulation using vehicle dynamics models from vehiclemodels folder"""
         # Convert normalized commands to physical units
         # Steering: -1 to 1 -> max steering angle from params (scaled down for QCar)
-        max_steering = 0.5  # rad (~30 degrees) - more realistic for small vehicles
+        max_steering = self.params.steering.max  # rad (~30 degrees) - more realistic for small vehicles
         target_steering = self._steering * max_steering
         
         # Throttle: -1 to 1 -> acceleration (scaled for QCar)
-        max_accel = 3.0  # m/s^2 - reasonable for small vehicle
+        max_accel = self.params.longitudinal.a_max  # m/s^2 - reasonable for small vehicle
         target_accel = self._throttle * max_accel
         
         # Apply friction/drag and braking forces
@@ -214,24 +214,44 @@ class MockQCar:
         current_velocity = current_state[3]
         
         # Friction coefficient (rolling resistance + air drag simplified)
-        friction_coeff = 0.8  # Deceleration from friction (m/s^2)
+
+
+        # --- 2. INTELLIGENT FRICTION  ---
         
-        # Apply friction force (opposes velocity direction)
-        if abs(current_velocity) > 0.01:
-            friction_decel = -np.sign(current_velocity) * friction_coeff
+        # CONSTANTS
+        # Friction when driving (MUST be lower than target_accel to move)
+        c_rolling = 0.08   # Low resistance so motor wins
+        c_air_drag = 0.1   # Wind resistance
+        
+        # Friction when throttle is zero (The "RC Drag Brake")
+        brake_strength = 3.0 # High value = Instant stop
+        
+        # LOGIC
+        if abs(self._throttle) > 0.01:
+            # === STATE A: DRIVING ===
+            # Apply normal physics: Motor Force - Small Friction
+            friction_val = c_rolling + (c_air_drag * abs(current_velocity))
+            friction_decel = -np.sign(current_velocity) * friction_val
+            
+            # Combine Motor + Friction
+            target_accel = target_accel + friction_decel
+            
         else:
-            friction_decel = 0.0
+            # === STATE B: DRAG BRAKING (Throttle is 0) ===
+            # Ignore motor, apply massive braking force
+            
+            # Check if we are moving fast enough to need braking
+            if abs(current_velocity) > 0.05:
+                # Apply strong braking opposite to movement
+                target_accel = -np.sign(current_velocity) * brake_strength
+            else:
+                # Snap to full stop if nearly stopped
+                target_accel = 0.0
+                current_state[3] = 0.0 # Force velocity state to 0
         
-        # Active braking ONLY when throttle is near zero (not negative = backward)
-        # Negative throttle means backward motion, not braking!
-        if abs(self._throttle) < 0.01 and abs(current_velocity) > 0.01:
-            # Strong braking to stop quickly when throttle is zero
-            brake_decel = -np.sign(current_velocity) * 4.0  # m/s^2 braking force
-            target_accel = brake_decel + friction_decel
-        else:
-            # Normal acceleration/deceleration with friction
-            target_accel += friction_decel
-        
+        # target_accel = self._throttle * max_accel + friction_decel
+
+
         # Stop completely if velocity is very small and throttle near zero
         if abs(current_velocity) < 0.05 and abs(self._throttle) < 0.01:
             target_accel = 0.0
@@ -240,11 +260,12 @@ class MockQCar:
         
         # Compute control inputs
         # steering_rate (rad/s) - simple P control
+        K_p_steering = 4.0
         steering_error = target_steering - current_state[2]
-        steering_rate = 3.0 * steering_error  # P controller gain (reduced for stability)
+        steering_rate = K_p_steering * steering_error  # P controller gain (reduced for stability)
         
         # Clip steering rate to reasonable values
-        max_steering_v = 2.0  # rad/s (reduced from params for stability)
+        max_steering_v = float(self.params.steering.v_max)  # 3.0 rad/s from YAML
         steering_rate = np.clip(steering_rate, -max_steering_v, max_steering_v)
         
         # acceleration (m/s^2)
@@ -273,8 +294,10 @@ class MockQCar:
                         derivatives[i] = np.clip(derivatives[i], -10.0, 10.0)
                     self.state_st[i] += derivatives[i] * dt
                 
+                v_max = float(self.params.longitudinal.v_max)  # 2.0
+                v_min = float(self.params.longitudinal.v_min)  # -1.0
                 # Clamp velocity to reasonable range
-                self.state_st[3] = np.clip(self.state_st[3], -5.0, 5.0)
+                self.state_st[3] = np.clip(self.state_st[3], v_min, v_max)
                 
                 # Clamp yaw rate to prevent explosion
                 self.state_st[5] = np.clip(self.state_st[5], -5.0, 5.0)
@@ -302,13 +325,20 @@ class MockQCar:
                 self.state_ks[i] += derivatives[i] * dt
             
             # Clamp velocity to reasonable range
-            self.state_ks[3] = np.clip(self.state_ks[3], -5.0, 5.0)
+            v_max = float(self.params.longitudinal.v_max)  # 2.0
+            v_min = float(self.params.longitudinal.v_min)  # -1.0
+            self.state_ks[3] = np.clip(self.state_ks[3], v_min, v_max)
             
             # Update public properties
             self.x = self.state_ks[0]
             self.y = self.state_ks[1]
             self.heading = self.state_ks[4]
             self.velocity = self.state_ks[3]
+            print(f"_steering={self._steering:.3f}, target_steering={target_steering:.3f}, "
+                f"state_steer={current_state[2]:.6f}, err={steering_error:.6f}, "
+                f"Kp={K_p_steering}, steering_rate={steering_rate:.6f}")
+            print(f"Velocity: {self.velocity}, Heading: {self.heading} , control input: {self.control_input}")
+
             # Compute angular velocity
             if abs(self.velocity) > 0.01:
                 wheelbase = self.params.a + self.params.b
