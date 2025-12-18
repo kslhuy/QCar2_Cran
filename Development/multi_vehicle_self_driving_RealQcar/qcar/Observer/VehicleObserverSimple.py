@@ -83,6 +83,7 @@ class VehicleObserver:
         # State dimensions: [x, y, theta, v, a] - position, orientation, velocity, acceleration
         self.state_dim = 5
         
+
         # Observer configuration
         self.observer_config = self._get_observer_config()
         
@@ -103,7 +104,7 @@ class VehicleObserver:
         self.gps_valid = False  # GPS validity flag
         
         # Fleet states (managed by fleet_estimator but cached here)
-        self.fleet_states = np.zeros((self.state_dim, self.fleet_size))
+        self.fleet_states = np.zeros((self.state_dim , self.fleet_size))
         
         # ===== Sensor Data Cache =====
         self.sensor_data = {
@@ -565,7 +566,7 @@ class VehicleObserver:
         """
         return self.fleet_estimator
 
-    def add_received_local_state(self, sender_id: int, state: Dict, timestamp: float) -> bool:
+    def add_received_local_state(self, sender_id: int, state: Dict, timestamp_ns: int) -> bool:
         """
         Add received LOCAL state from another vehicle (from local state broadcasts).
         Delegates to fleet estimator for processing.
@@ -575,8 +576,8 @@ class VehicleObserver:
         
         Args:
             sender_id: ID of the vehicle that sent the state
-            state: Received 5D state [x, y, theta, v, a]
-            timestamp: Timestamp of the state in nanoseconds
+            state: Received 5D state dict with keys: x, y, theta, velocity/v, acceleration (optional)
+            timestamp_ns: Timestamp of the state in nanoseconds
             
         Returns:
             bool: True if state was added successfully
@@ -589,7 +590,7 @@ class VehicleObserver:
                 return False
             
             # Delegate to fleet estimator - use the proper method name
-            return self.fleet_estimator.add_received_local_state(sender_id, state, timestamp)
+            return self.fleet_estimator.add_received_local_state(sender_id, state, timestamp_ns)
             
         except Exception as e:
             self.vehicle_logger.log_error("Add received local state error", e)
