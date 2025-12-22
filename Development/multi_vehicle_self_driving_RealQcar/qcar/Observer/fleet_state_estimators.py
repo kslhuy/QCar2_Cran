@@ -110,7 +110,7 @@ class FleetStateEstimatorBase(ABC):
         Communication/log layers hand us dicts; algorithms want numpy arrays.
         We normalize here so downstream consumers always see ndarray.
         """
-        print(f"Adding received local state from vehicle_id {sender_id}")
+        # print(f"Adding received local state from vehicle_id {sender_id}")
         try:
             if sender_id == self.vehicle_id:
                 return False  # Don't store own state

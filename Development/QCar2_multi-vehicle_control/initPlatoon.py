@@ -18,7 +18,7 @@ from qvl.real_time import QLabsRealTime
 from qvl.free_camera import QLabsFreeCamera
 
 # 
-num_cars = 2
+num_cars = 1
 car_type = "QC2"
 init_location = [0, -6.2, 1.131]
 init_distance = 15

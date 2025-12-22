@@ -34,7 +34,9 @@ class VehicleLogic:
         # Vehicle identification
         # vehicle_id: Connection/network ID (used for Ground Station communication, file naming, etc.)
         self.vehicle_id = config.network.car_id
-        self.Is_Limo_Car = config.network.car_id
+        self.vehicle_type = config.vehicle.vehicle_type
+
+        # self.Is_Limo_Car = config.network.car_id
         
         # vehicle_position: Position in platoon formation (1=leader, 2=first follower, 3=second follower, etc.)
         # Initially set to vehicle_id, but can be changed by Ground Station platoon formation commands
@@ -151,8 +153,8 @@ class VehicleLogic:
         # Fleet size starts at 1 and will be expanded when V2V activates
         # Local estimator will be initialized later in INITIALIZING state with GPS data
         obs_cfg = getattr(config, "observer", None)  # ObserverConfig 实例或 None
-        local_type = getattr(obs_cfg, "local_estimator_type", "ekf")
-        fleet_type = getattr(obs_cfg, "fleet_estimator_type", "consensus")
+        local_type = getattr(obs_cfg, "local_estimator_type")
+        fleet_type = getattr(obs_cfg, "fleet_estimator_type")
         self.vehicle_observer = VehicleObserver(
             vehicle_id=config.network.car_id,
             config=config,
@@ -343,8 +345,8 @@ class VehicleLogic:
             self._last_steering = delta
             self._last_u = u
             
-            u = 0.075 # Test value 
-            delta = 0.0 # Test value 
+            # u = 0.075 # Test value 
+            # delta = 0.0 # Test value 
             # Send commands to vehicle hardware
             if self.qcar is not None:
                 self.qcar.write(throttle=u, steering=delta)

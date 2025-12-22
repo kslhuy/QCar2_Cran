@@ -1,0 +1,16 @@
+{
+    "crop_top": 60,
+    "crop_bottom": 430,
+    "crop_left": 95,
+    "crop_right": 510,
+    "dilate_iterations": 3,
+    "erode_iterations": 1,
+    "morph_total": 1,
+    "use_temporal_filter": true,
+    "temporal_weight": 1.0,
+    "viz_mode": "edges",
+    "calibration_mode": true,
+    "blend_alpha": 0.5000000000000001,
+    "minThreshold": 1.0,
+    "maxThreshold": 3.5
+}

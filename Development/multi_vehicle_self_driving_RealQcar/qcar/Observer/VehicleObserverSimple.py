@@ -63,7 +63,8 @@ class VehicleObserver:
             with open(config_path, 'r') as f:
                 loaded = yaml.safe_load(f)
                 self.fleet_config_defaults = loaded.get('fleet', {})
-                self.fleet_estimator_type = loaded.get('fleet_estimator_type', fleet_estimator_type)
+                self.fleet_estimator_type = loaded.get('fleet_estimator_type')
+                self.vehicle_logger.logger.info(f"(HUY) Loaded fleet estimator config: {self.fleet_estimator_type}")
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(f"Failed to load fleet config file: {e}")
@@ -75,7 +76,8 @@ class VehicleObserver:
             with open(config_path, 'r') as f:
                 loaded = yaml.safe_load(f)
                 self.local_config_defaults = loaded.get('local', {})
-                self.local_estimator_type = loaded.get('local_estimator_type', local_estimator_type)
+                self.local_estimator_type = loaded.get('local_estimator_type')
+                self.vehicle_logger.logger.info(f"(HUY) Loaded local estimator config: {self.local_estimator_type}")
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(f"Failed to load local config file: {e}")

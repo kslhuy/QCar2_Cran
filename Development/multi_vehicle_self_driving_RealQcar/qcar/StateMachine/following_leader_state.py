@@ -302,8 +302,8 @@ class FollowingLeaderState(StateBase):
             delta=delta
         )
         
-        u = 0.05
-        delta = 0
+        # u = 0.05
+        # delta = 0
         return u, delta
     
     def _compute_path_steering(self, x: float, y: float, theta: float, velocity: float) -> float:
