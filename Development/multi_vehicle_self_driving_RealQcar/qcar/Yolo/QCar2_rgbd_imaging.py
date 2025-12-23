@@ -143,8 +143,8 @@ align_config = DepthAlignmentConfig()
 ## Initialize the RealSense camera for RGB and Depth data
 
 # Multiagent port assignment (ensure unique port if multiple QCars are used)
-# myCam1 = QCarRealSense(mode='RGB, Depth', video3dPort=18805) 
-myCam1 = QCarRealSense(mode='RGB, Depth')
+myCam1 = QCarRealSense(mode='RGB, Depth', video3dPort=18805) 
+# myCam1 = QCarRealSense(mode='RGB, Depth')
 
 # Scaling constants
 QLabsScaling = 10

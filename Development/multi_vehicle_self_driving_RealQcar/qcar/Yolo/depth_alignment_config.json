@@ -1,7 +1,7 @@
 {
-    "crop_top": 60,
-    "crop_bottom": 430,
-    "crop_left": 95,
+    "crop_top": 65,
+    "crop_bottom": 415,
+    "crop_left": 105,
     "crop_right": 510,
     "dilate_iterations": 3,
     "erode_iterations": 1,
