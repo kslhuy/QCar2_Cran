@@ -1,10 +1,7 @@
 {
     "mode": "simple",
-    "crop_top": 65,
-    "crop_bottom": 415,
-    "crop_left": 105,
-    "crop_right": 510,
-    "edge_threshold1": 50,
-    "edge_threshold2": 150,
-    "visualization_mode": 0
+    "crop_top": 73,
+    "crop_bottom": 407,
+    "crop_left": 73,
+    "crop_right": 542
 }

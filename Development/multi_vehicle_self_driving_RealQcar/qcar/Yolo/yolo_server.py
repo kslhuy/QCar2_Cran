@@ -11,7 +11,7 @@ import argparse
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
 # Collect command line arguments
 parser = argparse.ArgumentParser(prog='Vehicle control')
-parser.add_argument('-i','--ip_host', default='192.168.2.10')
+parser.add_argument('-i','--ip_host', default='localhost')
 parser.add_argument('-p','--probing', default="False")
 parser.add_argument('-w','--width', default=320, help="wide of to image to be displayed in the observer")
 parser.add_argument('-ht','--height', default=200, help="height of to image to be displayed in the observer")
@@ -82,6 +82,7 @@ try:
         
         # Resize the annotated image and send to observer if probing is enabled
         if probing and probe_count%2 == 0:
+            # print("Sending image to probe...")
             probe.check_connection()
             if probe.connected:
                 resizedImg = cv2.resize(annotatedImg, (width, height))

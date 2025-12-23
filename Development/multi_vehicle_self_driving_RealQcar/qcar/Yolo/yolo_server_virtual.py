@@ -1,21 +1,23 @@
 import numpy as np
 import time
 import cv2
-from pit.YOLO.utils import QCar2DepthAligned
+# from pit.YOLO.utils import QCar2DepthAligned  # Replaced with custom alignment class
+from QCar2DepthAlignedCamera import QCar2DepthAlignedCamera
 from pal.utilities.probe import Probe
 from pit.YOLO.nets import YOLOv8
 
-from Yolo.YoLo import YOLOPublisher
+from YoLo import YOLOPublisher
 import argparse
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
 # Collect command line arguments
 parser = argparse.ArgumentParser(prog='Vehicle control')
-parser.add_argument('-i','--ip_host', default='192.168.2.10')
+parser.add_argument('-i','--ip_host', default='localhost')
 parser.add_argument('-p','--probing', default="False")
 parser.add_argument('-w','--width', default=320, help="wide of to image to be displayed in the observer")
 parser.add_argument('-ht','--height', default=200, help="height of to image to be displayed in the observer")
 parser.add_argument('-idx','--caridx', type=int, default=0, help="Car ID for port assignment")
+parser.add_argument('-s','--show-image', action='store_true', help="Show annotated image directly in a window")
 args = parser.parse_args()
 ipHost = args.ip_host
 probing = args.probing=="True"
@@ -38,18 +40,28 @@ myYolo  = YOLOv8(
 # camera_port = f'1877{car_id}'  # Car 0: 18770, Car 1: 18771, etc.
 yolo_port = f'1866{car_id}'    # Car 0: 18660, Car 1: 18661, etc.
 
-# Initialize Depth/RGB alignment RT model, YOLO server, and probe
-# QCarImg = QCar2DepthAligned(port='18777')
-QCarImg = QCar2DepthAligned(port='18777')
+# Initialize the custom depth-aligned camera
+QCarImg = QCar2DepthAlignedCamera(
+    imageWidth=imageWidth,
+    imageHeight=imageHeight,
+    use_intrinsics=True,  # Set to False to use simple mode
+    clipping_distance=10.0,
+    video3dPort=18805,
+    load_settings=True,  # Load saved alignment settings if available
+    use_fast_alignment=True  # Use fast alignment method
+)
 
-YOLOserver = YOLOPublisher(port='18666')
+YOLOserver = YOLOPublisher(port=yolo_port)
 
+
+## for virtual car , use cv2.imshow better 
+##
 if probing:
     probe = Probe(ip = ipHost)
     # Use car_id as display ID to avoid port conflicts
     # Car 0 → display ID 0 → port 18800
     # Car 1 → display ID 1 → port 18801, etc.
-    probe.numDisplays = car_id  # Set the counter to car_id
+    probe.numDisplays = car_id + 50  # Set the counter to car_id
     probe.add_display(imageSize = [height, width, 3], name=f'YOLO Car {car_id}', scalingFactor=1)
 else:
     probe = None
@@ -69,23 +81,39 @@ try:
         
         # Get aligned RGB and Depth images
         QCarImg.read()
+        
+        # Crop 40 pixels from bottom and resize back to original dimensions
+        cropped_rgb = QCarImg.rgb[:-40, :, :]
+        cropped_depth = QCarImg.depth[:-40, :]
+        resized_rgb = cv2.resize(cropped_rgb, (imageWidth, imageHeight))
+        resized_depth = cv2.resize(cropped_depth, (imageWidth, imageHeight))
             
         # Get YOLO predictions and post-process results
-        rgbProcessed = myYolo.pre_process(QCarImg.rgb)
+        rgbProcessed = myYolo.pre_process(resized_rgb)
         predecion = myYolo.predict(inputImg = rgbProcessed,
                                    classes = [0,2,9,11,33],
                                    confidence = 0.4,
                                    half = True,
                                    verbose = False
                                    )
-        processedResults=myYolo.post_processing(alignedDepth = QCarImg.depth,
+        processedResults=myYolo.post_processing(alignedDepth = resized_depth,
                                                 clippingDistance = 10)
         annotatedImg=myYolo.post_process_render(showFPS = True)
         
+        # Show image directly if option is enabled
+        if args.show_image:
+            cv2.imshow('YOLO Server', annotatedImg)
+            key = cv2.waitKey(1)
+            if key == ord('q'):
+                break
+        
         # Resize the annotated image and send to observer if probing is enabled
         if probing and probe_count%2 == 0:
+            # print("Sending image to probe...")
             probe.check_connection()
             if probe.connected:
+                # print("Sending image to probe...")
+
                 resizedImg = cv2.resize(annotatedImg, (width, height))
                 probe.send(name=f'YOLO Car {car_id}', imageData=resizedImg)
         probe_count += 1
@@ -121,7 +149,7 @@ try:
         yieldBuffer[0] = yieldCount
         personBuffer[0] = personCount
         sendPacket = np.vstack((stopSignBuffers,trafficBuffers,carBuffer,yieldBuffer,personBuffer))
-        YOLOserver.send(sendPacket)
+        # YOLOserver.send(sendPacket)
 
 except KeyboardInterrupt:
     print("User interrupted!")

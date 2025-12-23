@@ -226,55 +226,6 @@ class EnhancedQCarGUIController:
         """Enhanced mouse wheel scrolling"""
         self.car_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
     
-    # def create_car_count_panel(self, parent):
-    #     """Enhanced car count control panel"""
-    #     frame = tk.Frame(parent, bg='#2d2d2d', relief='raised', bd=2)
-    #     frame.pack(fill='x', pady=(0, 5))
-        
-    #     content = tk.Frame(frame, bg='#2d2d2d')
-    #     content.pack(fill='x', padx=15, pady=10)
-        
-    #     tk.Label(content,
-    #             text="Fleet Size:",
-    #             bg='#2d2d2d',
-    #             fg='white',
-    #             font=('Segoe UI', 12, 'bold')).pack(side='left', padx=(0, 10))
-        
-    #     # Enhanced car count spinbox
-    #     self.car_count_var = tk.StringVar(value=str(self.num_cars))
-    #     spinbox = tk.Spinbox(content,
-    #                         from_=1,
-    #                         to=self.max_cars,
-    #                         textvariable=self.car_count_var,
-    #                         width=5,
-    #                         bg='#3d3d3d',
-    #                         fg='white',
-    #                         font=('Segoe UI', 11),
-    #                         buttonbackground='#4d4d4d',
-    #                         relief='flat',
-    #                         insertbackground='white')
-    #     spinbox.pack(side='left', padx=(0, 15))
-        
-    #     # Enhanced apply button
-    #     apply_btn = tk.Button(content,
-    #                          text="Apply",
-    #                          bg='#2196f3',
-    #                          fg='white',
-    #                          font=('Segoe UI', 10, 'bold'),
-    #                          command=self.apply_car_count,
-    #                          cursor='hand2',
-    #                          relief='flat',
-    #                          padx=20,
-    #                          pady=5)
-    #     apply_btn.pack(side='left', padx=(0, 15))
-        
-    #     # Enhanced info label
-    #     self.car_count_info = tk.Label(content,
-    #                                    text=f"Active: {self.num_cars} cars",
-    #                                    bg='#2d2d2d',
-    #                                    fg='#4caf50',
-    #                                    font=('Segoe UI', 10, 'bold'))
-    #     self.car_count_info.pack(side='left')
     
     def apply_car_count(self):
         """Apply the new car count with enhanced validation"""
@@ -917,17 +868,6 @@ class EnhancedQCarGUIController:
         row2 = tk.Frame(content, bg='#2d2d2d')
         row2.pack(fill='x', pady=(8, 0))
         
-        # emergency_all_btn = tk.Button(row2,
-        #                              text="🚨 EMERGENCY STOP ALL",
-        #                              bg='#ff5722',
-        #                              fg='white',
-        #                              font=('Segoe UI', 11, 'bold'),
-        #                              command=self.emergency_stop_all_with_feedback,
-        #                              cursor='hand2',
-        #                              relief='flat',
-        #                              padx=20,
-        #                              pady=8)
-        # emergency_all_btn.pack(fill='x', pady=(0, 8))
         
         # Platoon controls - First row
         platoon_row = tk.Frame(row2, bg='#2d2d2d')
@@ -2025,8 +1965,8 @@ class EnhancedQCarGUIController:
         
         # Gradual steering parameters
         self.max_steering = 0.5          # Maximum steering angle
-        self.steering_increment = 0.015  # Steering increase per update (at 50Hz)
-        self.steering_decay = 0.95       # Decay rate when no input (smooth return to center)
+        self.steering_increment = 0.1  # Steering increase per update (at 50Hz)
+        self.steering_decay = 0.7       # Decay rate when no input (smooth return to center)
         
         # Bind keyboard events
         self.root.bind('<KeyPress>', self.on_key_press)
@@ -2118,8 +2058,8 @@ class EnhancedQCarGUIController:
                     self.current_steering = max(self.current_steering - self.steering_increment, -self.max_steering)
                 else:
                     # No steering input - gradually return to center
-                    self.current_steering *= self.steering_decay
-                    if abs(self.current_steering) < 0.01:
+                    self.current_steering *=  self.steering_decay
+                    if abs(self.current_steering) < 0.05:
                         self.current_steering = 0.0
                 
                 steering = self.current_steering

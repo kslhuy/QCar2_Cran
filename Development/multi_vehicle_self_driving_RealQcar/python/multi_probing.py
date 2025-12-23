@@ -18,7 +18,8 @@ def create_observer(car_id, width=320, height=200):
     This allows multiple vehicles to send their YOLO streams to different windows.
     """
     observer = Observer()
-    observer.numDisplays = car_id  # Unique counter for each car's YOLO stream
+    # + 50 conflict with other ports already used
+    observer.numDisplays = car_id + 50 # Unique counter for each car's YOLO stream
     observer.add_display(
         imageSize=[height, width, 3],
         name=f'QCar {car_id} YOLO',

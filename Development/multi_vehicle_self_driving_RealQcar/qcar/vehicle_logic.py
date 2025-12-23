@@ -341,6 +341,10 @@ class VehicleLogic:
             # Update state machine - it handles all state logic and transitions
             u, delta = self.state_machine.update(dt, sensor_data)
             
+            if u is None or delta is None:
+                # self.vehicle_logger.log_error("State machine returned invalid control commands")
+                return True  # Skip sending commands
+            
             # Store steering and throttle for next EKF update and telemetry
             self._last_steering = delta
             self._last_u = u
@@ -712,6 +716,27 @@ class VehicleLogic:
         # Close network handler and stop threads
         if self.client_Ground_Station:
             self.client_Ground_Station.close()
+        
+        # Shutdown YOLO server process
+        if hasattr(self, 'yolo_process') and self.yolo_process:
+            try:
+                self.vehicle_logger.logger.info("Terminating YOLO server...")
+                self.yolo_process.terminate()
+                try:
+                    self.yolo_process.wait(timeout=5)
+                    self.vehicle_logger.logger.info("YOLO server terminated")
+                except:
+                    self.vehicle_logger.logger.warning("YOLO server force killed")
+                    self.yolo_process.kill()
+            except Exception as e:
+                self.vehicle_logger.logger.error(f"YOLO server shutdown error: {e}")
+        
+        # Shutdown YOLO manager
+        if hasattr(self, 'yolo_manager') and self.yolo_manager.yolo is not None:
+            try:
+                self.yolo_manager.yolo.terminate()
+            except Exception as e:
+                self.vehicle_logger.logger.error(f"YOLO receiver shutdown error: {e}")
         
         # Shutdown V2V Manager (which handles V2V communication internally)
         if hasattr(self, 'v2v_manager'):

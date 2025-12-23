@@ -210,24 +210,6 @@ image_size:
   height: 480
 ```
 
-### Number of Probing Vehicles
-- 1 vehicle: ~5-10 Mbps bandwidth
-- 2 vehicles: ~10-20 Mbps bandwidth  
-- 3+ vehicles: Consider network capacity
-
-**Recommendation**: Only enable probing on leader vehicles or vehicles that need obstacle detection.
-
-## Testing Checklist
-
-- [ ] Configuration test passes: `python test_multiprobing_config.py`
-- [ ] Multi-probing starts without errors
-- [ ] Correct number of observer windows appear
-- [ ] Each window shows correct vehicle ID in title
-- [ ] YOLO detections appear in correct windows
-- [ ] All windows update smoothly (no freezing)
-- [ ] Stopping (Ctrl+C) cleanly terminates all windows
-
-## Code References
 
 ### Key Files
 - `python/multi_probing.py` - Observer manager
