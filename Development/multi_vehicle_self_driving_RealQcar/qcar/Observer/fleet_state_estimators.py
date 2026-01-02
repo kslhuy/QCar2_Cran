@@ -555,25 +555,46 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
         
         # System matrices of the longutinal model
-        Ai = np.array([[0, 1, 0],
-                     [0, 0, 1],
-                     [0, 0, 0]])
-        self.A = np.block([
-                        [Ai if i == j else np.zeros_like(Ai) for j in range(fleet_size)]
-                        for i in range(fleet_size)
-                    ])
-        Bi = np.array([[0], [0], [1]])
-        self.B = np.block([
-            [Bi if i == j else np.zeros_like(Bi) for j in range(fleet_size)]
-            for i in range(fleet_size)
+        tau = 0.16  # Time constant
+        h = 1.0     # Distance between vehicles
+
+        A_tau = np.array([
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0/tau],
         ])
 
-        self.m_i = 0.5 # kg
-        self.tau_i = 0.16 
-        self.rho_i = 0.12
-        self.Cd_i = 0.035 
-        self.AF_i = 0.22
-        self.mu_i = 0.01
+        B_tau = np.array([
+            [0.0],
+            [0.0],
+            [1.0/tau],
+        ])
+
+        A_h = np.array([
+            [0.0, 0.0, h],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ])
+
+        # B_delta = blkdiag(B_tau, B_tau, B_tau)
+        self.B_delta = np.block([
+            [B_tau,              np.zeros((fleet_size, 1)), np.zeros((fleet_size, 1))],
+            [np.zeros((fleet_size, 1)),  B_tau,             np.zeros((fleet_size, 1))],
+            [np.zeros((fleet_size, 1)),  np.zeros((fleet_size, 1)), B_tau],
+        ])
+
+        A_h_tau = A_h + A_tau
+
+        # A_delta = [A_h_tau, 0, 0; A_h, A_h_tau, 0; A_h, A_h, A_h_tau]
+        Z = np.zeros((fleet_size, fleet_size))
+        self.A_delta = np.block([
+            [A_h_tau, Z,      Z],
+            [A_h,     A_h_tau, Z],
+            [A_h,     A_h,    A_h_tau],
+        ])
+
+        self.Cv = np.array([-h,1])
+        self.Cd = np.array([-1,0])
 
         # Observer gains
         self.observer_gain = self.config.get('observer_gain', 0.1)
@@ -655,7 +676,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             f[i] = self._get_nonlinear_term_phi_i(v_i, a_i)
         
             # self.B @ f
-        dynamics_term = x_vec + (self.A @ x_vec + self.B @ f) * dt
+        dynamics_term = x_vec + (self.A_delta @ x_vec + self.B @ f) * dt
         
         # 2. Measurement correction (if we have data from target)
         measurement_term = np.zeros(dim_distributed_observer)  # Use 3*fleet_size dimension
