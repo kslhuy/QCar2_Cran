@@ -9,14 +9,15 @@ class YOLOReceiver():
         self.cars = np.zeros((7),dtype=np.float64)
         self.yieldSign = np.zeros((7),dtype=np.float64)
         self.person = np.zeros((7),dtype=np.float64)
+        self.lane = np.zeros((7),dtype=np.float64)  # Lane detection data: [confidence, steering, slope, intercept, 0, 0, 0]
 
         self.uri='tcpip://'+ip+':'+port
         self._timeout = Timeout(seconds=0, nanoseconds=100000)
         self._handle = BasicStream(uri=self.uri,
                                     agent='C',
-                                    receiveBuffer=np.zeros((5,7),
+                                    receiveBuffer=np.zeros((6,7),  # Expanded to 6 rows for lane data
                                                            dtype=np.float64),
-                                    recvBufferSize=7*5*8,
+                                    recvBufferSize=7*6*8,  # Updated buffer size
                                     nonBlocking=nonBlocking,
                                     reshapeOrder='C')
         self.status_check('', iterations=20)
@@ -48,6 +49,7 @@ class YOLOReceiver():
                 self.cars[:] = self._handle.receiveBuffer[2,:]
                 self.yieldSign[:]= self._handle.receiveBuffer[3,:]
                 self.person[:]= self._handle.receiveBuffer[4,:]
+                self.lane[:] = self._handle.receiveBuffer[5,:]  # Extract lane data
         else:
             self.status_check('Reconnected to yolo Server',iterations=1)
         return new
@@ -70,7 +72,7 @@ class YOLOPublisher():
         self._timeout = Timeout(seconds=0, nanoseconds=100000)
         self._handle = BasicStream(uri=self.uri,
                                     agent='S',
-                                    sendBufferSize=7*5*8,
+                                    sendBufferSize=7*6*8,  # Updated for 6 rows (added lane data)
                                     nonBlocking=nonBlocking,
                                     reshapeOrder='F')
         self.status_check('', iterations=20)
@@ -183,6 +185,12 @@ class YOLOManager:
         """Get current YOLO detection data"""
         try:
             if self.yolo is not None:
+                # Extract lane data: [confidence, steering, slope, intercept, ...]
+                lane_confidence = self.yolo.lane[0] if len(self.yolo.lane) > 0 else 0.0
+                lane_steering = self.yolo.lane[1] if len(self.yolo.lane) > 1 else 0.0
+                lane_slope = self.yolo.lane[2] if len(self.yolo.lane) > 2 else 0.0
+                lane_intercept = self.yolo.lane[3] if len(self.yolo.lane) > 3 else 0.0
+                
                 return {
                     'stop_sign': self.yolo.stopSign,
                     'traffic_light': self.yolo.trafficlight,
@@ -190,7 +198,11 @@ class YOLOManager:
                     'yield_sign': self.yolo.yieldSign,
                     'person': self.yolo.person,
                     'car_dist': getattr(self.yolo_drive, 'carDist', 0.0),
-                    'person_dist': getattr(self.yolo_drive, 'personDist', 0.0)
+                    'person_dist': getattr(self.yolo_drive, 'personDist', 0.0),
+                    'lane_confidence': lane_confidence,
+                    'lane_steering': lane_steering,
+                    'lane_slope': lane_slope,
+                    'lane_intercept': lane_intercept
                 }
             else:
                 return self.get_default_yolo_data()
@@ -203,7 +215,8 @@ class YOLOManager:
         """Get default YOLO data when YOLO is not available"""
         return {
             'stop_sign': [0]*7, 'traffic_light': [0]*7, 'cars': [0]*7,
-            'yield_sign': [0]*7, 'person': [0]*7, 'car_dist': None, 'person_dist': None
+            'yield_sign': [0]*7, 'person': [0]*7, 'car_dist': None, 'person_dist': None,
+            'lane_confidence': 0.0, 'lane_steering': 0.0, 'lane_slope': 0.0, 'lane_intercept': 0.0
         }
         
     def get_yolo_gain(self) -> float:
@@ -444,3 +457,325 @@ class YOLODriveLogic():
             self.vGain_person = np.clip(m*self.personDist+b,0,1)
         else:
             self.personTrigger=0
+
+
+class YOLODriveLogicNew():
+    """
+    Improved YOLODriveLogic with time-based logic and better observability.
+    
+    Key improvements:
+    - Time-based pulse logic (seconds) instead of frame-based
+    - All thresholds configurable (no hard-coded values)
+    - Logging support for detection reasons
+    - Returns (gain, reason) tuple for better telemetry
+    - Velocity-aware braking (optional)
+    
+    Arguments:
+        stopSignThreshold (float): Distance threshold for stop sign detection (m).
+        trafficThreshold (float): Distance threshold for traffic light detection (m).
+        carThreshold (float): Minimum distance threshold for car detection (m).
+        carDetectThreshold (float): Distance at which car detection starts (m).
+        yieldThreshold (float): Distance threshold for yield sign detection (m).
+        personThreshold (float): Minimum distance threshold for person detection (m).
+        personDetectThreshold (float): Distance at which person detection starts (m).
+        pulseDuration (float): Duration of pulse after detecting an object (seconds).
+        trafficPulseDuration (float): Duration of pulse for traffic light (seconds).
+        velocityAwareThresholds (bool): Scale thresholds by velocity if True.
+        logger: Optional logger for detection events.
+    """
+    def __init__(self,
+                 stopSignThreshold=0.6,
+                 trafficThreshold=1.7,
+                 carThreshold=0.3,
+                 carDetectThreshold=1.2,
+                 yieldThreshold=1.0,
+                 personThreshold=0.6,
+                 personDetectThreshold=1.5,
+                 pulseDuration=1.5,
+                 trafficPulseDuration=0.25,
+                 velocityAwareThresholds=False,
+                 logger=None
+                 ):
+        # Timers (all in seconds now)
+        self.timer_stop = 0.0
+        self.timer_yield = 0.0
+        self.timer_traffic = 0.0
+        
+        # State flags
+        self.pulse_active_stop = False
+        self.pulse_active_yield = False
+        self.pulse_active_traffic = False
+        
+        # Trigger states
+        self.stopSignTrigger = 0
+        self.carTrigger = 0
+        self.trafficTrigger = 0
+        self.yieldTrigger = 0
+        self.personTrigger = 0
+        
+        # Velocity gains per detection type
+        self.vGain_person = 1.0
+        self.vGain_yield = 1.0 
+        self.vGain_stop = 1.0 
+        self.vGain_car = 1.0 
+        self.vGain = 1.0
+        
+        # Configurable thresholds
+        self.stopSignThreshold = stopSignThreshold
+        self.trafficThreshold = trafficThreshold
+        self.carThreshold = carThreshold
+        self.carDetectThreshold = carDetectThreshold
+        self.yieldThreshold = yieldThreshold
+        self.personThreshold = personThreshold
+        self.personDetectThreshold = personDetectThreshold
+        
+        # Time-based pulse durations
+        self.pulseDuration = pulseDuration
+        self.trafficPulseDuration = trafficPulseDuration
+        
+        # Distances to detected objects
+        self.carDist = 100.0
+        self.stopSignDist = 100.0
+        self.trafficLightDist = 100.0
+        self.yieldDist = 100.0
+        self.personDist = 100.0
+        
+        # Velocity-aware mode
+        self.velocityAwareThresholds = velocityAwareThresholds
+        
+        # Observability
+        self.logger = logger
+        self.last_detection_reason = "none"
+        self.detection_active = False
+        
+    def check_yolo(self, stopSign, trafficLight, QCar, yieldSign, person, dt, current_velocity=0.75):
+        """
+        Process YOLO predictions and return velocity gain.
+        
+        Args:
+            stopSign, trafficLight, QCar, yieldSign, person: YOLO detection arrays
+            dt (float): Time delta since last call (seconds)
+            current_velocity (float): Current vehicle velocity for adaptive thresholds
+            
+        Returns:
+            tuple: (velocity_gain, detection_reason)
+        """
+        # Reset detection reason
+        reasons = []
+        
+        # Process each detection type
+        self.stopSignPulse(stopSign, dt)
+        self.trafficPulse(trafficLight, dt)
+        
+        if self.stopSignTrigger == 1 or self.trafficTrigger == 1:
+            self.vGain_stop = 0.0
+            if self.stopSignTrigger == 1:
+                reasons.append(f"stop_sign@{self.stopSignDist:.2f}m")
+            if self.trafficTrigger == 1:
+                reasons.append(f"red_light@{self.trafficLightDist:.2f}m")
+        
+        self.carPulse(QCar, current_velocity)
+        self.personPulse(person, current_velocity)
+        
+        if self.carTrigger == 1:
+            reasons.append(f"car@{self.carDist:.2f}m(gain={self.vGain_car:.2f})")
+        if self.personTrigger == 1:
+            reasons.append(f"person@{self.personDist:.2f}m(gain={self.vGain_person:.2f})")
+        
+        self.yieldPulse(yieldSign, dt)
+        if self.yieldTrigger == 1:
+            self.vGain_yield = 0.5
+            reasons.append(f"yield@{self.yieldDist:.2f}m")
+        
+        # Combine all gains (most restrictive wins)
+        self.vGain = min([self.vGain_yield, self.vGain_stop, self.vGain_car, self.vGain_person])
+        
+        # Store detection reason
+        self.last_detection_reason = "; ".join(reasons) if reasons else "clear"
+        self.detection_active = len(reasons) > 0
+        
+        # Log if detection is active and logger available
+        if self.logger and self.detection_active:
+            self.logger.logger.debug(f"[YOLO] Detection: {self.last_detection_reason} → gain={self.vGain:.2f}")
+        
+        # Reset individual gains for next iteration
+        self.vGain_yield = 1.0
+        self.vGain_stop = 1.0
+        self.vGain_car = 1.0
+        self.vGain_person = 1.0
+        
+        return self.vGain, self.last_detection_reason
+    
+    def stopSignPulse(self, stopSign, dt):
+        """
+        Time-based stop sign detection with pulse logic.
+        Stops for pulseDuration seconds, then pauses detection for pulseDuration/2.
+        """
+        stopSignCount = stopSign[0]
+        stopSign_clean = stopSign.copy()
+        stopSign_clean[np.isnan(stopSign_clean)] = 10.0
+        
+        if stopSignCount > 0:
+            self.stopSignDist = stopSign_clean[1:][stopSign_clean[1:] != 0].min()
+        else:
+            self.stopSignDist = 100.0
+        
+        if not self.pulse_active_stop:
+            # Check for new detection
+            if stopSignCount > 0 and self.stopSignDist < self.stopSignThreshold:
+                self.pulse_active_stop = True
+                self.timer_stop = 0.0
+                self.stopSignTrigger = 1
+                if self.logger:
+                    self.logger.logger.info(f"[YOLO] Stop sign detected at {self.stopSignDist:.2f}m - stopping")
+            else:
+                self.stopSignTrigger = 0
+        else:
+            # Pulse is active - update timer
+            self.timer_stop += dt
+            
+            if self.timer_stop < self.pulseDuration:
+                # Still stopping
+                self.stopSignTrigger = 1
+            elif self.timer_stop < self.pulseDuration + (self.pulseDuration / 2):
+                # Cooldown period - detection paused
+                self.stopSignTrigger = 0
+            else:
+                # Reset
+                self.timer_stop = 0.0
+                self.pulse_active_stop = False
+                self.stopSignTrigger = 0
+    
+    def trafficPulse(self, trafficLight, dt):
+        """Time-based traffic light detection with short pulse."""
+        trafficLightCount = trafficLight[0]
+        trafficLight_clean = trafficLight.copy()
+        trafficLight_clean[np.isnan(trafficLight_clean)] = 10.0
+        
+        if trafficLightCount > 0:
+            self.trafficLightDist = trafficLight_clean[1:][trafficLight_clean[1:] != 0].min()
+        else:
+            self.trafficLightDist = 100.0
+            self.trafficTrigger = 0
+            return
+        
+        if not self.pulse_active_traffic:
+            # Check for detection in valid range
+            if (trafficLightCount > 0 and 
+                self.trafficLightDist <= self.trafficThreshold and
+                self.trafficLightDist > self.trafficThreshold - 0.6):
+                
+                self.trafficTrigger = 1
+                self.pulse_active_traffic = True
+                self.timer_traffic = 0.0
+                if self.logger:
+                    self.logger.logger.info(f"[YOLO] Red light detected at {self.trafficLightDist:.2f}m - stopping")
+            else:
+                self.trafficTrigger = 0
+        else:
+            # Pulse active
+            self.timer_traffic += dt
+            
+            if self.timer_traffic < self.trafficPulseDuration:
+                self.trafficTrigger = 1
+            else:
+                self.timer_traffic = 0.0
+                self.pulse_active_traffic = False
+                self.trafficTrigger = 0
+    
+    def yieldPulse(self, yieldSign, dt):
+        """Time-based yield sign detection with pulse logic."""
+        yieldSignCount = yieldSign[0]
+        yieldSign_clean = yieldSign.copy()
+        yieldSign_clean[np.isnan(yieldSign_clean)] = 10.0
+        
+        if yieldSignCount > 0:
+            self.yieldDist = yieldSign_clean[1:][yieldSign_clean[1:] != 0].min()
+        else:
+            self.yieldDist = 100.0
+            self.yieldTrigger = 0
+            return
+        
+        if not self.pulse_active_yield:
+            if yieldSignCount > 0 and self.yieldDist < self.yieldThreshold:
+                self.pulse_active_yield = True
+                self.timer_yield = 0.0
+                self.yieldTrigger = 1
+                if self.logger:
+                    self.logger.logger.info(f"[YOLO] Yield sign detected at {self.yieldDist:.2f}m - slowing")
+            else:
+                self.pulse_active_yield = False
+                self.yieldTrigger = 0
+        else:
+            self.timer_yield += dt
+            
+            if self.timer_yield < self.pulseDuration:
+                self.yieldTrigger = 1
+            else:
+                self.timer_yield = 0.0
+                self.pulse_active_yield = False
+                self.yieldTrigger = 0
+    
+    def carPulse(self, car, current_velocity):
+        """
+        Car detection with smooth linear deceleration.
+        Optionally velocity-aware (scales thresholds with speed).
+        """
+        carCount = car[0]
+        car_clean = car.copy()
+        car_clean[np.isnan(car_clean)] = 10.0
+        
+        if carCount > 0:
+            self.carDist = car_clean[1:][car_clean[1:] != 0].min()
+        else:
+            self.carDist = 100.0
+            self.carTrigger = 0
+            return
+        
+        # Velocity-aware threshold adjustment
+        if self.velocityAwareThresholds:
+            velocity_factor = max(current_velocity / 0.75, 1.0)  # Scale up at higher speeds
+            detect_threshold = self.carDetectThreshold * velocity_factor
+        else:
+            detect_threshold = self.carDetectThreshold
+        
+        if carCount > 0 and self.carDist < detect_threshold:
+            self.carTrigger = 1
+            # Linear interpolation from detect_threshold (gain=1) to carThreshold (gain=0)
+            m = 1.0 / (detect_threshold - self.carThreshold)
+            b = -m * self.carThreshold
+            self.vGain_car = np.clip(m * self.carDist + b, 0.0, 1.0)
+        else:
+            self.carTrigger = 0
+    
+    def personPulse(self, person, current_velocity):
+        """
+        Person detection with smooth linear deceleration.
+        Optionally velocity-aware (scales thresholds with speed).
+        """
+        personCount = person[0]
+        person_clean = person.copy()
+        person_clean[np.isnan(person_clean)] = 10.0
+        
+        if personCount > 0:
+            self.personDist = person_clean[1:][person_clean[1:] != 0].min()
+        else:
+            self.personDist = 100.0
+            self.personTrigger = 0
+            return
+        
+        # Velocity-aware threshold adjustment
+        if self.velocityAwareThresholds:
+            velocity_factor = max(current_velocity / 0.75, 1.0)
+            detect_threshold = self.personDetectThreshold * velocity_factor
+        else:
+            detect_threshold = self.personDetectThreshold
+        
+        if personCount > 0 and self.personDist < detect_threshold:
+            self.personTrigger = 1
+            # Linear interpolation
+            m = 1.0 / (detect_threshold - self.personThreshold)
+            b = -m * self.personThreshold
+            self.vGain_person = np.clip(m * self.personDist + b, 0.0, 1.0)
+        else:
+            self.personTrigger = 0

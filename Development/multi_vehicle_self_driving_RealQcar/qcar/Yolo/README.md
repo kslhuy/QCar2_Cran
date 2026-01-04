@@ -50,7 +50,17 @@ QCar2_Depth2RBG_align.py for tuning
 QCar2DepthAlignedCamera for use 
 
 ## Test Scripts
+
+
+# Terminal 1: Start observer for car 0
+python multi_probing.py --cars 0
+
+# Terminal 2: Start YOLO server
+python yolo_server_virtual.py -idx 0 -p True
+
+# Another things
 python test_yolo_with_images.py --car-id 0
+
 
 ### 3. `visual_yolo_monitor.py` - Visual Monitor with Images ⭐ NEW
 Real-time visual monitor with OpenCV showing:

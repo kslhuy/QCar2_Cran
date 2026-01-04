@@ -1,0 +1,12 @@
+{
+    "warp_w_top": 477,
+    "warp_w_bot": 531,
+    "warp_h": 182,
+    "warp_y_offset": 1,
+    "s_min": 177,
+    "s_max": 255,
+    "sx_min": 17,
+    "sx_max": 137,
+    "steer_gain": 0.3,
+    "curve_gain": 49
+}

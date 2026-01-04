@@ -175,9 +175,6 @@ class FollowingPathState(StateBase):
         theta = sensor_data['theta']
         velocity = sensor_data['velocity']
         
-        # # Check if emergency stop requested
-        # if self.should_transition_to_stopped(sensor_data):
-        #     return 0.0, 0.0, None
         
         
         # Handle startup delay
@@ -189,8 +186,10 @@ class FollowingPathState(StateBase):
         # Speed control
         u = self._compute_speed_control(velocity, dt)
         
-        # Steering control
-        delta = self._compute_steering_control(x, y, theta, velocity)
+        # Steering control with lane fusion
+        # yolo_data = self.vehicle_logic.yolo_manager.get_yolo_data() if hasattr(self.vehicle_logic, 'yolo_manager') else None
+        yolo_data = sensor_data.get('yolo_data', None)
+        delta = self._compute_steering_control(x, y, theta, velocity, yolo_data)
         
         # Monitor progress
         self._monitor_progress()
@@ -346,14 +345,41 @@ class FollowingPathState(StateBase):
         # print (f"Adjusted v_ref: {v_ref_adjusted:.2f} m/s (YOLO gain: {yolo_gain:.2f})")
         return self.speed_controller.update(velocity, v_ref_adjusted, dt)
     
-    def _compute_steering_control(self, x: float, y: float, theta: float, velocity: float) -> float:
-        """Compute steering control command"""
+    def _compute_steering_control(self, x: float, y: float, theta: float, velocity: float, yolo_data: dict = None) -> float:
+        """Compute steering control command with lane fusion"""
         if not self.vehicle_logic.controller_config.enable_steering_control or not self.steering_controller:
             return 0.0
         
-        # Use look-ahead point (0.2m forward from vehicle center)
+        # Primary: Waypoint-based steering (global path following)
         p = np.array([x, y]) + np.array([np.cos(theta), np.sin(theta)]) * 0.2
-        return self.steering_controller.update(p, theta, max(velocity, 0.1))
+        waypoint_steering = self.steering_controller.update(p, theta, max(velocity, 0.1))
+        
+        # Secondary: Lane-based correction (local lane keeping)
+        if yolo_data is not None:
+            lane_confidence = yolo_data.get('lane_confidence', 0.0)
+            lane_steering = yolo_data.get('lane_steering', 0.0)
+            
+            # Fusion strategy: weighted combination based on lane confidence
+            if lane_confidence > 0.3:  # Only use if lane detected with sufficient confidence
+                # Adaptive gain: higher confidence = more lane influence (max 30%)
+                lane_gain = 0.3 * lane_confidence
+                final_steering = waypoint_steering + lane_gain * lane_steering
+                
+                # Log lane fusion activity periodically
+                if self.vehicle_logic.loop_counter % 100 == 0:
+                    self.logger.logger.debug(
+                        f"[LANE] Fusion active: waypoint={waypoint_steering:.3f}, "
+                        f"lane={lane_steering:.3f} (conf={lane_confidence:.2f}), "
+                        f"final={final_steering:.3f}"
+                    )
+            else:
+                # Low confidence: rely purely on waypoint steering
+                final_steering = waypoint_steering
+        else:
+            # No YOLO data: fallback to waypoint-only
+            final_steering = waypoint_steering
+        
+        return np.clip(final_steering, -0.5, 0.5)
     
     def _monitor_progress(self):
         """Monitor waypoint progress and lap completion"""

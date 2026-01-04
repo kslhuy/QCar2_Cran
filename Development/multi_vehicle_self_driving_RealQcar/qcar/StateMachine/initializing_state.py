@@ -423,52 +423,54 @@ class InitializingState(StateBase):
                 import subprocess
                 import os
                 
-                # # Calculate YOLO port for this car
-                # yolo_port = f'1866{self.vehicle_logic.vehicle_id}'
+                # Calculate YOLO port for this car
+                yolo_port = f'1866{self.vehicle_logic.vehicle_id}'
                 
-                # # Construct path to yolo_server_virtual.py
-                # yolo_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
-                #                         '..', 'Yolo', 'yolo_server_virtual.py')
+                # Construct path to yolo_server_virtual.py
+                yolo_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
+                                        '..', 'Yolo', 'yolo_server_virtual.py')
                 
-                # self.logger.logger.info(f"Launching YOLO server on port {yolo_port}...")
+                self.logger.logger.info(f"Launching YOLO server on port {yolo_port}...")
                 
-                # # Launch YOLO server as subprocess in new console window for debugging
-                # yolo_process = subprocess.Popen(
-                #     [
-                #         'python', yolo_script,
-                #         '--ip_host', '127.0.0.1',
-                #         '--probing', 'False',
-                #         '--caridx', str(self.vehicle_logic.vehicle_id)
-                #     ],
-                #     stdout=subprocess.PIPE,
-                #     stderr=subprocess.PIPE,
-                #     creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
-                # )
+                # Launch YOLO server as subprocess in new console window for debugging
+                yolo_process = subprocess.Popen(
+                    [
+                        'python', yolo_script,
+                        '-idx', str(self.vehicle_logic.vehicle_id),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+                )
                 
-                # # Store process handle for cleanup
-                # self.vehicle_logic.yolo_process = yolo_process
+                # Store process handle for cleanup
+                self.vehicle_logic.yolo_process = yolo_process
                 
-                # # Wait for YOLO server to start
-                # self.logger.logger.info("Waiting for YOLO server to initialize...")
-                # time.sleep(2.5)
+                # Wait for YOLO server to start
+                self.logger.logger.info("Waiting for YOLO server to initialize...")
+                time.sleep(2.5)
                 
-                # # Check if process is still running
-                # if yolo_process.poll() is not None:
-                #     self.logger.log_error("YOLO server failed to start")
-                #     return False
+                # Check if process is still running
+                if yolo_process.poll() is not None:
+                    self.logger.log_error("YOLO server failed to start")
+                    return False
                 
-                # # Create YOLOReceiver to connect to the server
-                # self.logger.logger.info("Connecting to YOLO server...")
-                # yolo_receiver = YOLOReceiver(
-                #     ip='localhost',
-                #     nonBlocking=True,
-                #     port=yolo_port
-                # )
+                # Create YOLOReceiver to connect to the server
+                self.logger.logger.info("Connecting to YOLO server...")
+                yolo_receiver = YOLOReceiver(
+                    ip='localhost',
+                    nonBlocking=True,
+                    port=yolo_port
+                )
 
-                yolo_receiver = None  # YOLO not used on physical QCar
+                # yolo_receiver = None  # YOLO not used on physical QCar
 
             else:
-                yolo_receiver = None  # YOLO not used on physical QCar
+                yolo_receiver = YOLOReceiver(
+                    ip='localhost',
+                    nonBlocking=True,
+                )
+                # yolo_receiver = None  # YOLO not used on physical QCar
             # Create YOLO drive logic with proper pulse length
             pulse_length = (
                 self.config.timing.controller_update_rate *
@@ -478,7 +480,7 @@ class InitializingState(StateBase):
                 stopSignThreshold=0.6,
                 trafficThreshold=1.7,
                 carThreshold=0.3,
-                yieldThreshold=1.0,
+                yieldThreshold=0.9,
                 personThreshold=0.6,
                 pulseLength=pulse_length
             )
