@@ -547,17 +547,18 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         Args:
             vehicle_id: ID of the host vehicle
-            fleet_size: Total number of vehicles in fleet
+            fleet_size: Total number of vehicles in fleet, including the leader labeled 0
             state_dim: State dimension (default 5: x, y, theta, v, a) based on vehicle model
             config: Configuration dict
             logger: Logger instance
         """
         super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
         
-        # System matrices of the longutinal model
+        # System matrices of the longitudinal model
         tau = 0.16  # Time constant
         self.h = 1.0     # time headway
         self.d = 0.8    # Desired distance
+        self.observer_size = self.fleet_size - 1  # Exclude leader from observer size
 
         A_tau = np.array([
             [0.0, 1.0, 0.0],
@@ -579,15 +580,15 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 
         # B_delta = blkdiag(B_tau, B_tau, B_tau)
         self.B_delta = np.block([
-            [B_tau,              np.zeros((fleet_size, 1)), np.zeros((fleet_size, 1))],
-            [np.zeros((fleet_size, 1)),  B_tau,             np.zeros((fleet_size, 1))],
-            [np.zeros((fleet_size, 1)),  np.zeros((fleet_size, 1)), B_tau],
+            [B_tau,              np.zeros((self.observer_size, 1)), np.zeros((self.observer_size, 1))],
+            [np.zeros((self.observer_size, 1)),  B_tau,             np.zeros((self.observer_size, 1))],
+            [np.zeros((self.observer_size, 1)),  np.zeros((self.observer_size, 1)), B_tau],
         ])
 
         A_h_tau = A_h + A_tau
 
         # A_delta = [A_h_tau, 0, 0; A_h, A_h_tau, 0; A_h, A_h, A_h_tau]
-        Z = np.zeros((fleet_size, fleet_size))
+        Z = np.zeros((self.observer_size, self.observer_size))
         self.A_delta = np.block([
             [A_h_tau, Z,      Z],
             [A_h,     A_h_tau, Z],
@@ -607,7 +608,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         self.consensus_gain = self.config.get('consensus_gain', 0.2)
         
         # Communication weights (uniform for now)
-        self.weights = np.ones(fleet_size) / fleet_size
+        self.weights = np.ones(self.observer_size) / self.observer_size
     
     def compute_output_matrix_Ci(self, i: int) -> np.ndarray:
         """
@@ -754,8 +755,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             fleet_states_new[4, i] = ai  # 加速度
             
             # y 和 theta 保持原值（或者可以根据需要更新）
-            # fleet_states_new[1, i] = self.fleet_states[1, i]  # y (已经在 copy 中保留)
-            # fleet_states_new[2, i] = self.fleet_states[2, i]  # theta (已经在 copy 中保留)
+            fleet_states_new[1, i] = self.fleet_states[1, i]  # y (已经在 copy 中保留)
+            fleet_states_new[2, i] = self.fleet_states[2, i]  # theta (已经在 copy 中保留)
         
         return fleet_states_new
 
@@ -783,22 +784,11 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         for i in range(self.fleet_size):
             collective_control[i] = test_throttle_value
 
-
-           
-        # 1. Dynamics prediction (collective longitudinal model)
-        
-        # collective longitudinal model
-        # dx = Ax + Bu
-        f = np.zeros(self.fleet_size)   
+        # Get the collective nonlinear term phi_i for all vehicles
+        f = np.zeros(self.fleet_size)
         v_i = own_state[1]  # self velocity
         a_i = own_state[2]  # self acceleration
         f[self.vehicle_id] = self._get_nonlinear_term_phi_i(v_i, a_i)
-
-        
-        state_leader = self._get_latest_received_state(0, current_time_ns)
-        v0 = state_leader[3] if state_leader is not None else 0.0 # velocity of the leader vehicle
-
-        # Loop over other vehicles only (skip self)
         for i in range(self.fleet_size):
             if i == self.vehicle_id:
                 continue
@@ -808,23 +798,30 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 v_i = x_i_mat5[3, i]  # velocity from current estimate
                 a_i = x_i_mat5[4, i]  # acceleration from current estimate
             else:
-                v_i = state5[3]  # velocity from received state (state_dim=5) in the orignal system
-                a_i = state5[4]  # acceleration from received state (state_dim=5) in the orignal system
-            f[i] = self._get_nonlinear_term_phi_i(v_i, a_i)
+                v_i = state5[3]  # velocity from received state (state_dim=5) in the original system
+                a_i = state5[4]  # acceleration from received state (state_dim=5) in the original system
+           
+        # 1. Dynamics prediction (collective longitudinal model)
         
-            # self.B @ f
+        # collective longitudinal model
+        # dx = Ax + Bu
+
+        state_leader = self._get_latest_received_state(0, current_time_ns)
+        v0 = state_leader[3] if state_leader is not None else 0.0 # velocity of the leader vehicle
+
         dynamics_term = x_vec + (self.A_delta @ x_vec + self.B_delta @ collective_control) * dt
         
         # 2. Measurement correction (if we have data from target)
         measurement_term = np.zeros(dim_distributed_observer)  # Use 3*fleet_size dimension
         # Use latest self measurement (assumed available) to correct position
         local_measurement = np.zeros(self.local_measurement_dim)
-        # Todo: get the latest relative position from sensors (Lidar/Camera)
-        # For now, we use the V2V local state messages to calculate the relative position measurement
-        local_measurement[0] = x_i_mat3[0, self.vehicle_id] - x_i_mat3[0, self.vehicle_id - 1]  # relativeposition measurement 
-        local_measurement[1] = v_i # velocity measurement
+        """
+        Todo: get the latest relative position from sensors (Lidar/Camera)
+        For now, we use the V2V local state messages to calculate the relative position measurement
+        """
+        local_measurement[0] = x_i_mat3[0, self.vehicle_id] - x_i_mat3[0, self.vehicle_id - 1]  # relative position  
+        local_measurement[1] = v_i # velocity 
         
-       
         estimated_measurement = np.zeros(self.local_measurement_dim)
         Ci = self.compute_output_matrix_Ci(self.vehicle_id)  # Get Ci for this vehicle (1-based index)
         estimated_measurement = Ci @ x_vec + self.Cv * v0 + self.Cd * self.d  # estimated relative position and velocity
@@ -832,64 +829,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         measurement_error = local_measurement - estimated_measurement
         measurement_term = self.observer_gain * measurement_error
         
-        # 3. Consensus term - use fleet state broadcasts from neighbors
+        # 3. Consensus term
         consensus_term = np.zeros(dim_distributed_observer)
-        neighbor_count = 0
-
-        # 1. Ensure capacity and set own state (Ground Truth for self)
-        self._ensure_fleet_capacity(self.vehicle_id)
-        self.fleet_states[:, self.vehicle_id] = local_state.copy()
-        
-        # 2. Update estimates for every other vehicle in the fleet
-        for target_id in range(self.fleet_size):
-            if target_id == self.vehicle_id:
-                continue  # Skip self
-            
-            # --- Step A: Get Current Estimate ---
-            current_est = x_vec
-            total_correction = np.zeros_like(current_est)
-            
-            # --- Step B: Calculate Consensus Term (What neighbors think of Target) ---
-            # "I trust my neighbors N1, N2... to tell me where Target T is"
-            neighbor_count = 0
-            consensus_accum = np.zeros_like(current_est)
-            
-            for neighbor_id, history in self.received_fleet_states.items():
-                # Get neighbor's latest fleet view
-                neighbor_fleet_dict = self._get_latest_fleet_data(neighbor_id, current_time_ns)
-                
-                if neighbor_fleet_dict and target_id in neighbor_fleet_dict:
-                    # Extract what Neighbor thinks of Target
-                    neigh_est_dict = neighbor_fleet_dict[target_id]
-                    neigh_est_vec = np.array([
-                        neigh_est_dict['x'], neigh_est_dict['y'], 
-                        neigh_est_dict['theta'], neigh_est_dict['velocity'],
-                        neigh_est_dict.get('acceleration', 0.0)
-                    ])
-                    neigh_est_vec_obs = np.zeros(dim_distributed_observer)
-                    neigh_est_vec_obs
-                    
-                    # Add difference (Neighbor - Self)
-                    consensus_accum += (neigh_est_vec - current_est)
-                    neighbor_count += 1
-            
-            if neighbor_count > 0:
-                # Consensus term: ri * consensus_gain * Sum(Neighbor_N's Est(T) - Host_H's Est(T))
-                total_correction += self.consensus_gain @ consensus_accum
-
-            # --- Step C: Calculate Direct Term (What Target says about itself) ---
-            # "I trust Target T to tell me where Target T is" (Highest Confidence)
-            direct_state = self._get_latest_received_state(target_id, current_time_ns)
-            
-            if direct_state is not None:
-                # Innovation: Direct_Broadcast - Current_Estimate
-                total_correction += self.direct_gain * (direct_state - current_est)
-            
-            # --- Step D: Apply Update ---
-            self.fleet_states[:, target_id] = current_est + total_correction
-
-        # 3. Cleanup old data from both storages
-        self._cleanup_old_data(current_time_ns)
         
         # Loop through all neighbors who have sent fleet state broadcasts
         for neighbor_id in self.received_fleet_states.keys():
@@ -922,23 +863,13 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # Apply consensus gain (average over neighbors to prevent explosion)
         if neighbor_count > 0:
-            consensus_term = (self.consensus_gain / neighbor_count) * consensus_term
+            consensus_term = self.consensus_gain @ consensus_term
         
         # Combine all terms
         x_i_new = dynamics_term + measurement_term + consensus_term
-        # Reshape back to matrix form (3 x N)
-        x_i_new_3xN = x_i_new.reshape((3, self.fleet_size), order="F")
         
-        # Convert back to original 5xN format
-        # Create 5xN matrix and fill the computed rows (0, 3, 4 -> x, v, a)
-        x_i_new_5xN = np.zeros((5, self.fleet_size))
-        x_i_new_5xN[0, :] = x_i_new_3xN[0, :]  # x position
-        # x_i_new_5xN[1, :] remains 0 (y position, not estimated)
-        # x_i_new_5xN[2, :] remains 0 (theta, not estimated)
-        x_i_new_5xN[3, :] = x_i_new_3xN[1, :]  # velocity
-        x_i_new_5xN[4, :] = x_i_new_3xN[2, :]  # acceleration
         
-        return x_i_new_5xN
+        return x_i_new
 
     
     def _get_nonlinear_term_phi_i(self, v_i, a_i, g_s: float = 9.81):
