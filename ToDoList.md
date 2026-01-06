@@ -1,5 +1,5 @@
 ## Consensus Term
-- [] Tranfer the estimated state from the distributed observer to be fleet state. **The meaning of them are different**
+- [x] Transfer the estimated state from the distributed observer to be fleet state. **The meaning of them are different**
 
     The estimated state from the distributed observer:
     - pi - pi-1 + di0
@@ -27,4 +27,5 @@
     Method: def _transfer_estimated_states_to_fleet_states(self, estimated_state: np.ndarray) -> np.ndarray:
 
     **Question**: If we calcultate pi = pi-1-di0, where the pi-1 should come from? from the local data or fleet data? I think it should be local data. di0 also.
-            
+
+- [ ] Config the leader without distributed observer. But keep it state in the fleet state. So that the followers can use it to calculate the relative position and velocity to the leader.

@@ -56,26 +56,35 @@ class VehicleObserver:
         self.config = config or {}
         self.vehicle_logger = logger
         
-        # Load fleet estimator defaults from config file
+        # Start with types provided by constructor (from external config)
+        self.fleet_estimator_type = fleet_estimator_type
+        self.local_estimator_type = local_estimator_type
+
+        # Load fleet estimator defaults from config file (acts as global defaults)
         self.fleet_config_defaults = {}
         try:
             config_path = os.path.join(os.path.dirname(__file__), 'config_fleet_estimators.yaml')
             with open(config_path, 'r') as f:
                 loaded = yaml.safe_load(f)
                 self.fleet_config_defaults = loaded.get('fleet', {})
-                self.fleet_estimator_type = loaded.get('fleet_estimator_type', fleet_estimator_type)
+                yaml_fleet_type = loaded.get('fleet_estimator_type')
+                if yaml_fleet_type:
+                    # Use file default only if present; can be overridden by external observer config later
+                    self.fleet_estimator_type = yaml_fleet_type
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(f"Failed to load fleet config file: {e}")
         
-        # Load local estimator defaults from config file
+        # Load local estimator defaults from config file (acts as global defaults)
         self.local_config_defaults = {}
         try:
             config_path = os.path.join(os.path.dirname(__file__), 'config_local_estimators.yaml')
             with open(config_path, 'r') as f:
                 loaded = yaml.safe_load(f)
                 self.local_config_defaults = loaded.get('local', {})
-                self.local_estimator_type = loaded.get('local_estimator_type', local_estimator_type)
+                yaml_local_type = loaded.get('local_estimator_type')
+                if yaml_local_type:
+                    self.local_estimator_type = yaml_local_type
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(f"Failed to load local config file: {e}")
@@ -84,8 +93,17 @@ class VehicleObserver:
         self.state_dim = 5
         
 
-        # Observer configuration
+        # Observer configuration (external per-vehicle overrides)
         self.observer_config = self._get_observer_config()
+
+        # Allow external observer config to override estimator types
+        cfg_local_type = self.observer_config.get("local_observer_type")
+        if cfg_local_type:
+            self.local_estimator_type = cfg_local_type
+
+        cfg_fleet_type = self.observer_config.get("fleet_estimator_type")
+        if cfg_fleet_type:
+            self.fleet_estimator_type = cfg_fleet_type
         
         # ===== Local State Estimator (pluggable) =====
         self.local_estimator: Optional[LocalStateEstimatorBase] = None
@@ -162,7 +180,12 @@ class VehicleObserver:
                 logger=self.vehicle_logger
             )
             
-            self.vehicle_logger.logger.info(f"Fleet estimator created: {self.fleet_estimator_type}")
+            # self.vehicle_logger.logger.info(f"Fleet estimator created: {self.fleet_estimator_type}")
+            # Add logging of created estimator type
+            self.vehicle_logger.logger.info(
+            f"Fleet estimator instance: {type(self.fleet_estimator).__name__} "
+            f"(configured type='{self.fleet_estimator_type}')"
+        )
             
         except Exception as e:
             self.vehicle_logger.log_error(f"Failed to create fleet estimator: {self.fleet_estimator_type}", e)

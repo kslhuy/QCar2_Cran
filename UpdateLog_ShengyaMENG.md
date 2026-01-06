@@ -1,3 +1,18 @@
+# Update Log 2026/01/06 (Shengya Meng)
+- [x] Transfer the estimated state from the distributed observer to be fleet state. [_transfer_estimated_states_to_fleet_states function_](../qcar/Observer/fleet_state_estimators.py)
+    - The estimated state from the distributed observer and fleet state have different meanings.
+    - Implemented the conversion method to map the distributed observer's estimated state to the fleet state format.
+    - Clarified that pi-1 and di0 should be sourced from local data for accurate calculations.
+- [x] Change the config file [carx.yaml](../configs/car0.yaml) to be first config file higher priority than [fleet_config.yaml](../configs/fleet_config.yaml). Modified `VehicleObserverSimple` to log observer configuration upon initialization for better debugging and tracking.
+- [x] Remove the manual setting  of the initial location of each vehicle in `initPlatoon.py`. Instead, set the initial distance between vehicles and calculate their positions accordingly.
+
+## ToDo List
+- [ ] Config the **leader without distributed observer**. But keep it state in the fleet state. So that the followers can use it to calculate the relative position and velocity to the leader.
+- [ ] Check the reason why the fleet state is **nan** in the log. And fix it. 
+- [ ] Use fake vehicle to test.
+- [ ] Get the latest control input from V2V messages
+- [ ] get the latest relative position from sensors (Lidar/Camera)
+
 # Update Log 2025/12/17 (Shengya Meng)
 - [x] Test if the observer gain can be used correctly in the observer class
     - local observer type can be applied. 
