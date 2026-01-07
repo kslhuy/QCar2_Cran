@@ -1,3 +1,9 @@
+# Update Log 2026/01/07 (Shengya MENG)
+- [x] Transfer the fleet state to be distributed observer state. [_transfer_estimated_states_to_fleet_states function_](../qcar/Observer/fleet_state_estimators.py)
+- [x]Config the communication network, in my own distributed observer. [get_neighbors](../qcar/Observer/fleet_state_estimators.py). In the log of each vehicle, it is configed correctly. 
+- [ ] Check the reason why the fleet state is **nan** in the log. And fix it. 
+
+
 # Update Log 2026/01/06 (Shengya Meng)
 - [x] Transfer the estimated state from the distributed observer to be fleet state. [_transfer_estimated_states_to_fleet_states function_](../qcar/Observer/fleet_state_estimators.py)
     - The estimated state from the distributed observer and fleet state have different meanings.
