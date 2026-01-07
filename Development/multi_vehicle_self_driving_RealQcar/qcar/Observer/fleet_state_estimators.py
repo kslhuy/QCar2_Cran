@@ -639,7 +639,14 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         else:
             # Default chain topology: follower i connected to follower i-1 and i+1
             self.adjacency_matrix = self._create_chain_topology()
-        
+
+        # 🔧 添加：打印邻接矩阵用于调试
+        if self.logger:
+            self.logger.logger.info(
+                f"Vehicle {self.vehicle_id}: Adjacency matrix initialized "
+                f"[{self.observer_size}x{self.observer_size}]:\n{self.adjacency_matrix}"
+            )
+
         # Validate adjacency matrix dimensions (should be observer_size, not fleet_size)
         if self.adjacency_matrix.shape != (self.observer_size, self.observer_size):
             if self.logger:
@@ -789,7 +796,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 current_time_ns, control, dt
             )
             # Transfer the estimated states back to fleet_states. 
-            self.fleet_states = self._transfer_estimated_states_to_fleet_states(self.estimated_state)
+            self.fleet_states = self._transfer_estimated_states_to_fleet_states(self.estimated_state, current_time_ns)
             # Cleanup old data
             self._cleanup_old_data(current_time_ns)
             
@@ -800,7 +807,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 self.logger.log_error("Distributed Luenberger update error", e)
             return self.fleet_states
     
-    def _transfer_fleet_states_to_estimated_states(self, fleet_states: np.ndarray) -> np.ndarray:
+    def _transfer_fleet_states_to_estimated_states(self, fleet_states: np.ndarray, current_time_ns: int) -> np.ndarray:
         """
         将完整的车队状态矩阵转换为分布式观测器的估计状态格式
         
@@ -820,9 +827,15 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                            格式: [p1-p0+d10, v1-v0, a1-a0, p2-p0+d20, v2-v0, a2-a0, ...]
         """
         # 获取领导者（车辆0）的绝对状态
-        p0 = fleet_states[0, 0]  # 领导者的位置
-        v0 = fleet_states[3, 0]  # 领导者的速度
-        a0 = fleet_states[4, 0]  # 领导者的加速度
+        state_leader = self._get_latest_received_state(0,current_time_ns)
+        if state_leader is not None:
+            p0 = state_leader[0]  # 领导者的位置
+            v0 = state_leader[3]  # 领导者的速度
+            a0 = state_leader[4]  # 领导者的加速度
+        else:
+            p0 = fleet_states[0, 0]  # 领导者的位置
+            v0 = fleet_states[3, 0]  # 领导者的速度
+            a0 = fleet_states[4, 0]  # 领导者的加速度
         
         # 初始化估计状态矩阵 [3 x observer_size]
         estimated_state_mat = np.zeros((3, self.observer_size))
@@ -860,7 +873,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         return estimated_state
 
-    def _transfer_estimated_states_to_fleet_states(self, estimated_state: np.ndarray) -> np.ndarray:
+    def _transfer_estimated_states_to_fleet_states(self, estimated_state: np.ndarray, current_time_ns: int) -> np.ndarray:
         """
         将分布式观测器的估计状态转换为完整的车队状态矩阵
         
@@ -891,9 +904,17 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         fleet_states_new = self.fleet_states.copy()
         
         # 获取领导者（车辆0）的绝对状态
-        p0 = self.fleet_states[0, 0]  # 领导者的位置
-        v0 = self.fleet_states[3, 0]  # 领导者的速度
-        a0 = self.fleet_states[4, 0]  # 领导者的加速度
+        # 获取领导者（车辆0）的绝对状态
+        state_leader = self._get_latest_received_state(0,current_time_ns)
+        if state_leader is not None:
+            p0 = state_leader[0]  # 领导者的位置
+            v0 = state_leader[3]  # 领导者的速度
+            a0 = state_leader[4]  # 领导者的加速度
+        else:
+            p0 = self.fleet_states[0, 0]  # 领导者的位置
+            v0 = self.fleet_states[3, 0]  # 领导者的速度
+            a0 = self.fleet_states[4, 0]  # 领导者的加速度
+
         
         # 领导者的状态保持不变（直接从 fleet_states 读取）
         fleet_states_new[:, 0] = self.fleet_states[:, 0]
@@ -952,14 +973,15 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         x_i_mat5 = self.fleet_states.copy()
 
         # Distributed observer state (x_vec: pi-p0+di0, vi-v0, ai-a0)
-        x_vec = self._transfer_fleet_states_to_estimated_states(self.fleet_states)
+        x_vec = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
 
         # 当前本车的状态，在 x_i_mat3 中的列索引是 vehicle_id-1
         p_i = x_i_mat5[0, self.vehicle_id]  # self position
         v_i = x_i_mat5[3, self.vehicle_id]  # self velocity
         a_i = x_i_mat5[4, self.vehicle_id]  # self acceleration   
 
-        v0 = x_i_mat5[3, 0]  # 领导者的速度  
+        state_leader = self._get_latest_received_state(0,current_time_ns)
+        v0 = state_leader[3]  # 领导者的速度  
 
         # Get the control input of all follower vehicles
         # Todo: get the latest control input from V2V messages
@@ -1018,30 +1040,45 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # Get list of valid neighbors based on adjacency matrix
         my_neighbors = self.get_neighbors(self.vehicle_id)
         
-        if self.logger and len(my_neighbors) > 0:
-            self.logger.logger.debug(
-                f"Vehicle {self.vehicle_id} consensus with neighbors: {my_neighbors}"
-            )
-        
         # Loop through neighbors defined by adjacency matrix
         for neighbor_id in my_neighbors:
-            # Check if we have received fleet state data from this neighbor
-            if neighbor_id not in self.received_fleet_states:
-                if self.logger:
+            # 🔧 尝试获取 fleet_state，如果没有则使用 local_state 作为后备
+            neighbor_fleet_dict = None
+            
+            # 优先：尝试获取完整的 fleet_states
+            if neighbor_id in self.received_fleet_states:
+                neighbor_fleet_dict = self._get_latest_fleet_data(neighbor_id, current_time_ns)
+                if neighbor_fleet_dict is not None and self.logger:
                     self.logger.logger.debug(
-                        f"Vehicle {self.vehicle_id}: No fleet data from neighbor {neighbor_id}"
+                        f"Vehicle {self.vehicle_id}: Using fleet_state from neighbor {neighbor_id}"
                     )
-                continue
             
-            # Get neighbor's latest fleet estimate
-            neighbor_fleet_dict = self._get_latest_fleet_data(neighbor_id, current_time_ns)
+            # 后备：如果没有 fleet_states，尝试使用 local_state 构建临时字典
+            if neighbor_fleet_dict is None and neighbor_id in self.received_local_states:
+                neighbor_local_state = self._get_latest_received_state(neighbor_id, current_time_ns)
+                if neighbor_local_state is not None:
+                    # 构建一个临时的 fleet_dict，只包含邻居自己的状态
+                    neighbor_fleet_dict = {
+                        neighbor_id: {
+                            'x': float(neighbor_local_state[0]),
+                            'y': float(neighbor_local_state[1]),
+                            'theta': float(neighbor_local_state[2]),
+                            'velocity': float(neighbor_local_state[3]),
+                            'acceleration': float(neighbor_local_state[4] if len(neighbor_local_state) > 4 else 0.0)
+                        }
+                    }
+                    if self.logger:
+                        self.logger.logger.info(
+                            f"Vehicle {self.vehicle_id}: Using local_state from neighbor {neighbor_id} as fallback"
+                        )
             
+            # 如果两者都没有，跳过这个邻居
             if neighbor_fleet_dict is None:
                 if self.logger:
-                    self.logger.logger.debug(
-                        f"Vehicle {self.vehicle_id}: Stale fleet data from neighbor {neighbor_id}"
+                    self.logger.logger.warning(
+                        f"Vehicle {self.vehicle_id}: No data (fleet or local) from neighbor {neighbor_id}"
                     )
-                continue  # No valid data from this neighbor
+                continue
             
             # 构建邻居的完整 fleet_states 矩阵 [state_dim x fleet_size]
             neighbor_fleet_states = np.zeros((self.state_dim, self.fleet_size))
@@ -1064,7 +1101,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                     continue
             
             # 将邻居的 fleet_states 转换为分布式观测器状态
-            neighbor_x_vec = self._transfer_fleet_states_to_estimated_states(neighbor_fleet_states)
+            neighbor_x_vec = self._transfer_fleet_states_to_estimated_states(neighbor_fleet_states,current_time_ns)
             
             # 计算共识差异: (neighbor_estimate - own_estimate)
             # 使用邻接矩阵的权重（如果需要加权共识）
