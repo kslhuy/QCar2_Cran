@@ -1,3 +1,40 @@
+# Update Log 2026/01/08 (Shengya MENG)
+- [ ] Check the reason why the fleet state is **nan** in the log. And fix it. 
+- [x] Fixed the one reason causing nan. Correct the discrete update. But it **still diffuse**. 
+```
+x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
+```
+- [x]Fixed the warning. It is beacuse we stop the car at the different time. 
+```
+2026-01-08 16:50:53 - [Car Car_1] - WARNING - _distributed_luenberger_observer_update:1107 - Vehicle 1: Using fallback strategy for neighbor 2
+```
+
+
+## What I did and what I got
+
+### Setting the observer state always be 0
+```
+x_i_new = np.zeros_like(dynamics_term)  # Testing without update first.
+```
+- The data log file seems correct. Not diffuse. Means **The communication is no problem**
+- the log of each vehicle can hadle the fleet state message correctly, like 
+```
+2026-01-08 11:23:28 - [Car Car_3] - INFO - _handle_fleet_state_message:440 -     vehicle_0: x=0.000, y=0.000, theta=0.000, v=0.000, conf=0.80
+```
+- But in the log file of vehicle 1 and vehicle 2, there is no fleet data got from the neighbor, like 
+```
+2026-01-08 11:23:33 - [Car Car_1] - WARNING - _distributed_luenberger_observer_update:1102 - Vehicle 1: No fleet_state from neighbor 2, building from scratch
+```
+
+**The Nan maybe from the "get the fleet data from the communication"**
+
+**Or the algrithem, if the gain is applied corretly?**
+
+
+
+
+
+
 # Update Log 2026/01/07 (Shengya MENG)
 - [x] Transfer the fleet state to be distributed observer state. [_transfer_estimated_states_to_fleet_states function_](../qcar/Observer/fleet_state_estimators.py)
 - [x]Config the communication network, in my own distributed observer. [get_neighbors](../qcar/Observer/fleet_state_estimators.py). In the log of each vehicle, it is configed correctly. 
