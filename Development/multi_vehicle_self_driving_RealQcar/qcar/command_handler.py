@@ -137,6 +137,8 @@ class CommandHandler:
         'start_platoon': CommandType.START_PLATOON,  # New platoon trigger
         'activate_v2v': CommandType.ACTIVATE_V2V,
         'disable_v2v': CommandType.DISABLE_V2V,
+        'activate_perception': CommandType.ACTIVATE_PERCEPTION,
+        'disable_perception': CommandType.DISABLE_PERCEPTION,
         'enable_manual_mode': CommandType.ENABLE_MANUAL_MODE,
         'manual_control': CommandType.MANUAL_CONTROL,
         'disable_manual_mode': CommandType.DISABLE_MANUAL_MODE,
@@ -207,6 +209,8 @@ class CommandHandler:
             CommandType.SET_INITIAL_POSITION,
             CommandType.ACTIVATE_V2V, 
             CommandType.DISABLE_V2V,
+            CommandType.ACTIVATE_PERCEPTION,
+            CommandType.DISABLE_PERCEPTION,
             CommandType.SET_PARAMS,
             CommandType.ENABLE_PLATOON_FOLLOWER, # In waiting state, this configures but doesn't transition
             CommandType.ENABLE_PLATOON_LEADER,

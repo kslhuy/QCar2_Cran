@@ -226,6 +226,30 @@ class YOLOManager:
     def is_yolo_active(self) -> bool:
         """Check if YOLO components are active"""
         return self.yolo is not None and self.yolo_drive is not None
+    
+    def disable(self):
+        """Disable YOLO system and clean up resources"""
+        if self.logger:
+            self.logger.logger.info("[YOLO] Disabling YOLO system...")
+        
+        # Terminate YOLO receiver if it exists
+        if self.yolo is not None:
+            try:
+                self.yolo.terminate()
+                if self.logger:
+                    self.logger.logger.info("[YOLO] YOLO receiver terminated")
+            except Exception as e:
+                if self.logger:
+                    self.logger.logger.warning(f"[YOLO] Error terminating receiver: {e}")
+        
+        # Clear references
+        self.yolo = None
+        self.yolo_drive = None
+        self.yolo_enabled = False
+        self.yolo_gain = 1.0
+        
+        if self.logger:
+            self.logger.logger.info("[YOLO] YOLO system disabled")
 
 
 class YOLODriveLogic():

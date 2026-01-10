@@ -62,17 +62,32 @@ YOLOserver = YOLOPublisher(port=yolo_port)
 
 ## for virtual car , use cv2.imshow better 
 ##
-if probing:
-    probe = Probe(ip = ipHost)
+def create_probe(ip_host, car_id, height, width):
+    """Create and initialize a new probe instance for reconnection support."""
+    new_probe = Probe(ip=ip_host)
     # Use car_id as display ID to avoid port conflicts
-    # Car 0 → display ID 0 → port 18800
-    # Car 1 → display ID 1 → port 18801, etc.
-    probe.numDisplays = car_id + 50  # Set the counter to car_id
-    probe.add_display(imageSize = [height, width, 3], name=f'YOLO Car {car_id}', scalingFactor=1)
+    # Car 0 → display ID 0 → port 18851
+    # Car 1 → display ID 1 → port 18852, etc.
+    new_probe.numDisplays = car_id + 50  # Set the counter to car_id
+    new_probe.add_display(imageSize=[height, width, 3], name=f'YOLO Car {car_id}', scalingFactor=1)
+    print(f"[PROBE] Initialized probe for Car {car_id} on port {18851 + car_id}")
+    return new_probe
+
+if probing:
+    probe = create_probe(ipHost, car_id, height, width)
 else:
     probe = None
     
 probe_count = 0
+probe_reconnect_counter = 0
+probe_reconnect_interval = 100  # Try to reconnect every 100 frames if disconnected
+probe_frame_skip = 4  # Send every 4th frame to reduce load (adjustable: 2-10)
+last_successful_send = time.time()
+send_failure_count = 0
+consecutive_send_failures = 0  # Track consecutive send failures to detect dead connection
+last_reconnect_attempt = 0  # Timestamp of last reconnection attempt
+reconnect_cooldown = 2.0  # Seconds to wait between reconnection attempts
+CONNECTION_DEAD_THRESHOLD = 5  # Number of consecutive failures before considering connection dead
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- 
 # Lane detection helper function
@@ -155,14 +170,80 @@ try:
                 break
         
         # Resize the annotated image and send to observer if probing is enabled
-        if probing and probe_count%2 == 0:
-            # print("Sending image to probe...")
-            probe.check_connection()
-            if probe.connected:
-                # print("Sending image to probe...")
-
-                resizedImg = cv2.resize(annotatedImg, (width, height))
-                probe.send(name=f'YOLO Car {car_id}', imageData=resizedImg)
+        if probing:
+            probe_reconnect_counter += 1
+            current_time = time.time()
+            
+            # Check if connection appears dead (too many consecutive send failures or long time since success)
+            connection_appears_dead = (
+                consecutive_send_failures >= CONNECTION_DEAD_THRESHOLD or
+                (current_time - last_successful_send > 5.0 and consecutive_send_failures > 0)
+            )
+            
+            # Attempt reconnection if connection is dead
+            if connection_appears_dead and (current_time - last_reconnect_attempt) > reconnect_cooldown:
+                last_reconnect_attempt = current_time
+                print(f"[PROBE] Connection dead for Car {car_id} (failures: {consecutive_send_failures}) - attempting reconnection...")
+                try:
+                    # Terminate old probe gracefully
+                    try:
+                        probe.terminate()
+                    except Exception as e:
+                        pass  # Ignore termination errors on dead connection
+                    
+                    # Small delay to allow port to be released
+                    time.sleep(0.3)
+                    
+                    # Create new probe instance
+                    probe = create_probe(ipHost, car_id, height, width)
+                    consecutive_send_failures = 0
+                    send_failure_count = 0
+                    print(f"[PROBE] New probe created for Car {car_id} - waiting for observer to connect...")
+                except Exception as e:
+                    print(f"[PROBE] Reconnection failed for Car {car_id}: {e}")
+            
+            # Adaptive frame skipping based on send success rate
+            if send_failure_count > 10 and probe_frame_skip < 8:
+                probe_frame_skip = min(8, probe_frame_skip + 1)
+                send_failure_count = 0
+            elif current_time - last_successful_send < 1.0 and probe_frame_skip > 3:
+                probe_frame_skip = max(3, probe_frame_skip - 1)
+            
+            # Only send data on skipped frames
+            if probe_count % probe_frame_skip == 0:
+                # Try to connect/check connection
+                probe.check_connection()
+                
+                if probe.connected:
+                    try:
+                        # Compress image to JPEG to reduce bandwidth
+                        _, buffer = cv2.imencode('.jpg', annotatedImg, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        compressed_img = cv2.imdecode(buffer, cv2.IMREAD_COLOR)
+                        resizedImg = cv2.resize(compressed_img, (width, height))
+                        
+                        success = probe.send(name=f'YOLO Car {car_id}', imageData=resizedImg)
+                        # Note: success can be True, False, or None (if not connected)
+                        if success is True:
+                            last_successful_send = current_time
+                            consecutive_send_failures = 0
+                            send_failure_count = max(0, send_failure_count - 1)
+                            if probe_reconnect_counter % 500 == 0:
+                                print(f"[PROBE] Car {car_id} streaming OK")
+                        else:
+                            # Either False (send failed) or None (not connected)
+                            consecutive_send_failures += 1
+                            send_failure_count += 1
+                            print(f"[PROBE] Send failed for Car {car_id} (failure #{consecutive_send_failures}, success={success})")
+                    except Exception as e:
+                        consecutive_send_failures += 1
+                        send_failure_count += 1
+                        if probe_reconnect_counter % 100 == 0:
+                            print(f"[PROBE] Error sending to Car {car_id}: {e}")
+                else:
+                    # Not connected yet - this is normal when waiting for observer
+                    if probe_reconnect_counter % 200 == 0:
+                        print(f"[PROBE] Car {car_id} waiting for observer connection...")
+        
         probe_count += 1
 
         # process the prediction results and send to vehicle control server

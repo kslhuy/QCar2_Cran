@@ -32,6 +32,10 @@ class CommandType(Enum):
     ACTIVATE_V2V = "activate_v2v"
     DISABLE_V2V = "disable_v2v"
     
+    # Perception commands
+    ACTIVATE_PERCEPTION = "activate_perception"
+    DISABLE_PERCEPTION = "disable_perception"
+    
     # Manual control commands
     ENABLE_MANUAL_MODE = "enable_manual_mode"
     MANUAL_CONTROL = "manual_control"

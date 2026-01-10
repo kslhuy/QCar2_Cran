@@ -285,6 +285,27 @@ class StateBase:
                 return None  # No state transition
             return None
         
+        elif command_type == CommandType.ACTIVATE_PERCEPTION:
+            self.logger.logger.info(f"[CMD] Activating perception system (YOLO)")
+            try:
+                success = self._activate_perception_system()
+                if success:
+                    self.logger.logger.info(f"[CMD] Perception system activated successfully")
+                else:
+                    self.logger.log_error("[CMD] Failed to activate perception system")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error activating perception", e)
+            return None
+        
+        elif command_type == CommandType.DISABLE_PERCEPTION:
+            self.logger.logger.info(f"[CMD] Disabling perception system")
+            try:
+                self._disable_perception_system()
+                self.logger.logger.info(f"[CMD] Perception system disabled")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error disabling perception", e)
+            return None
+        
         # Default: Event not handled by this state
         if self.logger:
             self.logger.logger.info(f"Command '{command_type}' ignored in {self.__class__.__name__}")
@@ -499,3 +520,299 @@ class StateBase:
         except Exception as e:
             # Silently ignore errors for non-fake vehicles
             pass
+    
+    def _activate_perception_system(self) -> bool:
+        """
+        Activate perception system (YOLO) based on fleet configuration.
+        Works for both physical and simulated vehicles.
+        Fake vehicles gracefully ignore this command.
+        
+        Returns:
+            bool: True if activation successful
+        """
+        try:
+            import subprocess
+            import os
+            import time
+            from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
+            
+            # Check if this is a fake vehicle - if so, just log and return success
+            if hasattr(self.vehicle_logic, '_parent_fake_vehicle'):
+                self.logger.logger.info("[PERCEPTION] Fake vehicle detected - ignoring perception activation")
+                return True
+            
+            # Check if perception should be enabled based on config
+            vehicle_id = self.vehicle_logic.vehicle_id
+            
+            # Load fleet_config to check probing setting
+            config_enabled = self._check_perception_config()
+            if not config_enabled:
+                self.logger.logger.warning(f"[PERCEPTION] Vehicle {vehicle_id} not configured for perception in fleet_config.yaml")
+                return False
+            
+            self.logger.logger.info(f"[PERCEPTION] Starting YOLO system for vehicle {vehicle_id}...")
+            
+            # Get probing flag from config
+            probing_enabled = self.config.vehicle.probing
+            probing_flag = "True" if probing_enabled else "False"
+            
+            # For simulated vehicles, launch YOLO server subprocess
+            if not IS_PHYSICAL_QCAR:
+                import socket
+                
+                yolo_port = f'1866{vehicle_id}'
+                yolo_port_int = int(yolo_port)
+                
+                yolo_script = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), 
+                    '..', 'Yolo', 'yolo_server_virtual.py'
+                )
+                
+                # Verify script exists
+                if not os.path.exists(yolo_script):
+                    self.logger.log_error(f"[PERCEPTION] YOLO script not found: {yolo_script}")
+                    return False
+                
+                self.logger.logger.info(f"[PERCEPTION] [→] Starting yolo_server_virtual.py...")
+                self.logger.logger.info(f"[PERCEPTION] Script path: {yolo_script}")
+                self.logger.logger.info(f"[PERCEPTION] Launching YOLO server on port {yolo_port}...")
+                self.logger.logger.info(f"[PERCEPTION] Probing enabled: {probing_enabled}")
+                
+                # Build command with probing flag
+                # Note: yolo_server_virtual.py uses -p/--probing with value "True" or "False"
+                # and -s/--show-image to display the image directly in a window
+                # For simulated vehicles, we dont use probing use directly cv2 window (reduce latency)
+                cmd = ['python', yolo_script, '-idx', str(vehicle_id), '-p', "False"]
+                
+                # If probing is enabled but no Observer is running, also show image directly
+                # This provides a fallback visualization
+                if probing_enabled:
+                    cmd.append('-s')  # Show image in cv2 window as backup
+                
+                self.logger.logger.info(f"[PERCEPTION] Command: {' '.join(cmd)}")
+                
+                # Launch YOLO server as subprocess
+                # On Windows, use CREATE_NEW_CONSOLE so cv2 windows can display properly
+                import sys
+                if sys.platform == 'win32':
+                    # Create new console window for the YOLO server
+                    yolo_process = subprocess.Popen(
+                        cmd,
+                        creationflags=subprocess.CREATE_NEW_CONSOLE
+                    )
+                else:
+                    yolo_process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
+                    )
+                
+                # Store process handle
+                self.vehicle_logic.yolo_process = yolo_process
+                
+                # Wait for server startup with connection verification
+                self.logger.logger.info("[PERCEPTION] Waiting for YOLO server to initialize...")
+                max_wait = 10.0  # Maximum wait time
+                check_interval = 0.5
+                waited = 0.0
+                server_ready = False
+                
+                while waited < max_wait:
+                    time.sleep(check_interval)
+                    waited += check_interval
+                    
+                    # Check if process crashed
+                    if yolo_process.poll() is not None:
+                        # Process terminated unexpectedly
+                        self.logger.log_error("[PERCEPTION] YOLO server process terminated unexpectedly")
+                        self.logger.logger.error(f"[PERCEPTION] Exit code: {yolo_process.returncode}")
+                        # On Windows with CREATE_NEW_CONSOLE, we don't have stdout/stderr pipes
+                        if sys.platform != 'win32':
+                            try:
+                                stdout, stderr = yolo_process.communicate(timeout=1)
+                                if stderr:
+                                    self.logger.logger.error(f"[PERCEPTION] STDERR: {stderr.decode('utf-8', errors='ignore')}")
+                                if stdout:
+                                    self.logger.logger.error(f"[PERCEPTION] STDOUT: {stdout.decode('utf-8', errors='ignore')}")
+                            except:
+                                pass
+                        return False
+                    
+                    # Try to connect to verify server is accepting connections
+                    try:
+                        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        test_socket.settimeout(0.5)
+                        result = test_socket.connect_ex(('localhost', yolo_port_int))
+                        test_socket.close()
+                        
+                        if result == 0:
+                            server_ready = True
+                            self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server accepting connections (waited {waited:.1f}s)")
+                            break
+                    except Exception:
+                        # Connection not ready yet, continue waiting
+                        pass
+                
+                if not server_ready:
+                    self.logger.log_error(f"[PERCEPTION] YOLO server failed to accept connections after {max_wait}s")
+                    yolo_process.terminate()
+                    return False
+                
+                # Give server additional time to fully initialize
+                time.sleep(0.5)
+                self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
+                
+                # Create YOLOReceiver to connect to the server
+                yolo_receiver = YOLOReceiver(
+                    ip='localhost',
+                    nonBlocking=True,
+                    port=yolo_port
+                )
+            else:
+                # For physical vehicles, launch yolo_server.py with probing flag
+                yolo_script = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), 
+                    '..', 'Yolo', 'yolo_server.py'
+                )
+                
+                self.logger.logger.info(f"[PERCEPTION] [→] Starting yolo_server.py...")
+                self.logger.logger.info(f"[PERCEPTION] Probing: {probing_enabled}, Car ID: {vehicle_id}")
+                
+                # Build command with probing flag
+                yolo_cmd = [
+                    'python', yolo_script,
+                    '--probing', probing_flag,
+                    '--car-id', str(vehicle_id)
+                ]
+                
+                # Set up logging - redirect to file for physical vehicles
+                # This allows checking logs later via: tail -f logs/yolo_0.log
+                log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'logs')
+                os.makedirs(log_dir, exist_ok=True)
+                log_file = os.path.join(log_dir, f'yolo_{vehicle_id}.log')
+                
+                self.logger.logger.info(f"[PERCEPTION] YOLO log file: {log_file}")
+                self.logger.logger.info(f"[PERCEPTION] Command: {' '.join(yolo_cmd)}")
+                
+                # Open log file and keep handle for subprocess lifetime
+                # Store the file handle so it doesn't get garbage collected
+                yolo_log_handle = open(log_file, 'w')
+                self.vehicle_logic.yolo_log_handle = yolo_log_handle
+                
+                # Launch YOLO server as subprocess with log file
+                yolo_process = subprocess.Popen(
+                    yolo_cmd,
+                    stdout=yolo_log_handle,
+                    stderr=subprocess.STDOUT
+                )
+                
+                # Store process handle
+                self.vehicle_logic.yolo_process = yolo_process
+                
+                # Wait for server startup
+                self.logger.logger.info("[PERCEPTION] Waiting for YOLO server to initialize...")
+                time.sleep(2.5)
+                
+                # Check if process is still running
+                if yolo_process.poll() is not None:
+                    self.logger.log_error("[PERCEPTION] YOLO server failed to start")
+                    return False
+                
+                self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
+                
+                # Create YOLOReceiver to connect to the server
+                yolo_receiver = YOLOReceiver(
+                    ip='localhost',
+                    nonBlocking=True,
+                )
+            
+            # Create YOLO drive logic
+            pulse_length = (
+                self.config.timing.controller_update_rate *
+                self.config.yolo.pulse_length_multiplier
+            )
+            yolo_drive_logic = YOLODriveLogic(
+                stopSignThreshold=self.config.yolo.stop_sign_threshold,
+                trafficThreshold=self.config.yolo.traffic_threshold,
+                carThreshold=self.config.yolo.car_threshold,
+                yieldThreshold=self.config.yolo.yield_threshold,
+                personThreshold=self.config.yolo.person_threshold,
+                pulseLength=pulse_length
+            )
+            
+            # Initialize YOLOManager
+            self.vehicle_logic.yolo_manager.initialize(yolo_receiver, yolo_drive_logic)
+            
+            self.logger.logger.info("[PERCEPTION] YOLO system activated successfully")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("[PERCEPTION] Failed to activate perception system", e)
+            # Clean up process if it was started
+            if hasattr(self.vehicle_logic, 'yolo_process'):
+                try:
+                    self.vehicle_logic.yolo_process.terminate()
+                except:
+                    pass
+            return False
+    
+    def _disable_perception_system(self) -> bool:
+        """
+        Disable perception system (YOLO).
+        Fake vehicles gracefully ignore this command.
+        
+        Returns:
+            bool: True if deactivation successful
+        """
+        try:
+            # Check if this is a fake vehicle - if so, just log and return success
+            if hasattr(self.vehicle_logic, '_parent_fake_vehicle'):
+                self.logger.logger.info("[PERCEPTION] Fake vehicle detected - ignoring perception deactivation")
+                return True
+            
+            self.logger.logger.info("[PERCEPTION] Disabling YOLO system...")
+            
+            # Disable YOLO manager
+            if hasattr(self.vehicle_logic, 'yolo_manager'):
+                self.vehicle_logic.yolo_manager.disable()
+            
+            # Terminate YOLO process if running
+            if hasattr(self.vehicle_logic, 'yolo_process'):
+                try:
+                    self.vehicle_logic.yolo_process.terminate()
+                    self.vehicle_logic.yolo_process.wait(timeout=2)
+                    self.logger.logger.info("[PERCEPTION] YOLO process terminated")
+                except:
+                    self.vehicle_logic.yolo_process.kill()
+                    self.logger.logger.warning("[PERCEPTION] YOLO process killed")
+            
+            # Close YOLO log file handle if it exists (physical vehicles)
+            if hasattr(self.vehicle_logic, 'yolo_log_handle'):
+                try:
+                    self.vehicle_logic.yolo_log_handle.close()
+                    self.logger.logger.info("[PERCEPTION] YOLO log file closed")
+                except:
+                    pass
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("[PERCEPTION] Error disabling perception", e)
+            return False
+    
+    def _check_perception_config(self) -> bool:
+        """
+        Check if perception is enabled for this vehicle in configuration.
+        
+        Returns:
+            bool: True if perception should be enabled
+        """
+        # Simply check the probing flag in vehicle config
+        probing_enabled = self.config.vehicle.probing
+        
+        if probing_enabled:
+            self.logger.logger.info(f"[PERCEPTION] Vehicle {self.vehicle_logic.vehicle_id} configured with probing=True")
+        else:
+            self.logger.logger.info(f"[PERCEPTION] Vehicle {self.vehicle_logic.vehicle_id} configured with probing=False")
+        
+        return probing_enabled

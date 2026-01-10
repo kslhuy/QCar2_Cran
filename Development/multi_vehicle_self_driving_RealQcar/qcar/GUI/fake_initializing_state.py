@@ -113,6 +113,11 @@ class FakeInitializingState(StateBase):
             if command_type == CommandType.EMERGENCY_STOP:
                 print(f"[!] FakeInitializingState: Emergency stop during initialization")
                 return (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
+            
+            # Fake vehicles ignore perception commands (no real camera/YOLO)
+            if command_type in [CommandType.ACTIVATE_PERCEPTION, CommandType.DISABLE_PERCEPTION]:
+                print(f"[-] FakeInitializingState: Ignoring perception command (fake vehicle)")
+                return None
         
         # Ignore other commands during initialization
         print(f"[-] FakeInitializingState: Ignoring command during initialization")
@@ -159,6 +164,13 @@ class FakeInitializingState(StateBase):
             # Inject mock hardware from the fake vehicle
             self.vehicle_logic.qcar = parent_fake_vehicle.mock_qcar
             self.vehicle_logic.gps = parent_fake_vehicle.mock_gps
+            
+            # Disable YOLO for fake vehicles (no camera/perception)
+            if hasattr(self.vehicle_logic, 'yolo_manager'):
+                self.vehicle_logic.yolo_manager.yolo_enabled = False
+                self.vehicle_logic.yolo_manager.yolo = None
+                self.vehicle_logic.yolo_manager.yolo_drive = None
+                self.logger.logger.info("Mock perception disabled (fake vehicle has no camera)")
             
             # Initialize mock GPS reading (simulate _wait_for_gps)
             if not self._wait_for_mock_gps():

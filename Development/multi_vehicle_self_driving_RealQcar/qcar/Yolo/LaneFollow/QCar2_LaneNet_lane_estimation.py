@@ -39,8 +39,11 @@ try:
         start = time.time()
         # Read the RGB
         myCamRGB.read_RGB()
-
-        rgbProcessed=myLaneNet.pre_process(myCamRGB.imageBufferRGB)
+        # Crop 40 pixels from bottom and resize back to original dimensions
+        cropped_rgb = myCamRGB.imageBufferRGB[:-40, :, :]
+        resized_rgb = cv2.resize(cropped_rgb, (imageWidth, imageHeight))
+        # Process the image
+        rgbProcessed=myLaneNet.pre_process(resized_rgb)
         binaryPred , instancePred = myLaneNet.predict(rgbProcessed)
         
         # # # Optimized clustering for better lane separation (10-20 FPS)

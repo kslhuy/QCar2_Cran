@@ -114,11 +114,9 @@ class LaneTracker:
         self.fit_left_history = deque(maxlen=5)
         self.fit_right_history = deque(maxlen=5)
         
-        # Calibration parameters (will be updated from GUI)
-        self.camera_offset_m = 0.032  # meters to the left (default)
-        self.lane_width_ref_m = 0.5   # reference lane width in meters for offset calculation
-        self.single_lane_offset_px = 250  # pixels offset when only one lane detected
-        self.assumed_lane_width_px = 500  # assumed lane width when only one lane detected
+        # Camera calibration: camera is 0.032m to the left
+        # This offset needs to be compensated in the control calculation
+        self.camera_offset_m = 0.032  # meters to the left
 
     def preprocess(self, img, params):
         """
@@ -330,7 +328,7 @@ class LaneTracker:
     def calculate_curvature_and_offset(self, left_fit, right_fit, img_height, img_width):
         """
         Calculate curvature and vehicle position offset from center.
-        Includes camera offset calibration (tunable via GUI).
+        Includes camera offset calibration (camera is 0.032m to the left).
         Note: This is in pixel space unless meters_per_pixel is calibrated.
         """
         if left_fit is None and right_fit is None:
@@ -357,20 +355,24 @@ class LaneTracker:
             lane_visible_width = right_x - left_x
         elif left_fit is not None:
             # Only left lane detected - follow it at a fixed offset to the right
-            lane_center = left_x + self.single_lane_offset_px
-            lane_visible_width = self.assumed_lane_width_px
+            # Assume we want to drive ~250px to the right of the left lane marker
+            lane_center = left_x + 250
+            lane_visible_width = 500  # Assume standard lane width
         elif right_fit is not None:
             # Only right lane detected - follow it at a fixed offset to the left
-            lane_center = right_x - self.single_lane_offset_px
-            lane_visible_width = self.assumed_lane_width_px
+            # Assume we want to drive ~250px to the left of the right lane marker
+            lane_center = right_x - 250
+            lane_visible_width = 500  # Assume standard lane width
              
         # Center offset: Positive = Car is to the right of center (Need to steer Left)
         # Negative = Car is to the left of center (Need to steer Right)
         # Normalized to [-1, 1] relative to half image width (or lane width)
         
         # Camera position with calibration offset
-        # Camera offset in meters converted to pixels using reference lane width
-        camera_offset_pixels = (self.camera_offset_m / self.lane_width_ref_m) * lane_visible_width
+        # Camera is 0.032m to the left, so we need to shift the perceived center
+        # Approximate pixel conversion: assume lane width ~0.5m corresponds to lane_visible_width pixels
+        # So 0.032m ≈ (0.032 / 0.5) * lane_visible_width pixels
+        camera_offset_pixels = (self.camera_offset_m / 0.5) * lane_visible_width
         
         # Adjusted car position accounting for camera offset
         car_position = (img_width / 2) - camera_offset_pixels
@@ -502,15 +504,9 @@ default_params = {
     'sx_min': 20,
     'sx_max': 100,
     
-    # Control gains
+    # Steering gain
     'steer_gain': 1.0,
-    'curve_gain': 200.0,
-    
-    # Calibration parameters
-    'camera_offset_m': 32,        # Camera offset in millimeters (32mm = 0.032m to the left)
-    'lane_width_ref_m': 500,      # Reference lane width in millimeters (500mm = 0.5m)
-    'single_lane_offset_px': 250, # Pixel offset when only one lane detected
-    'assumed_lane_width_px': 500  # Assumed lane width in pixels when only one lane detected
+    'curve_gain': 200.0 # Gain for curvature feedforward
 }
 
 # Load params
@@ -530,16 +526,10 @@ cv2.createTrackbar("S Max", "Controls", default_params['s_max'], 255, nothing)
 cv2.createTrackbar("SX Min", "Controls", default_params['sx_min'], 255, nothing)
 cv2.createTrackbar("SX Max", "Controls", default_params['sx_max'], 255, nothing)
 
-# 3. Control Gains
+# 3. Control
 cv2.createTrackbar("Steer Gain", "Controls", int(default_params['steer_gain']*10), 50, nothing)    # 0.0 - 5.0
 cv2.createTrackbar("Curve Gain", "Controls", int(default_params['curve_gain']), 1000, nothing)
 cv2.createTrackbar("Inv Curve (0/1)", "Controls", 1, 1, nothing) # Default 1 (Inverted)
-
-# 4. Calibration Parameters
-cv2.createTrackbar("Cam Offset (mm)", "Controls", default_params['camera_offset_m'], 200, nothing)  # -100mm to +100mm (offset by 100)
-cv2.createTrackbar("Lane W Ref (mm)", "Controls", default_params['lane_width_ref_m'], 1000, nothing)  # 0-1000mm
-cv2.createTrackbar("1-Lane Offset (px)", "Controls", default_params['single_lane_offset_px'], 500, nothing)  # 0-500px
-cv2.createTrackbar("Assumed Lane W (px)", "Controls", default_params['assumed_lane_width_px'], 800, nothing)  # 0-800px
 
 # Control state
 throttle = 0.0
@@ -585,18 +575,8 @@ try:
             'sx_min': cv2.getTrackbarPos("SX Min", "Controls"),
             'sx_max': cv2.getTrackbarPos("SX Max", "Controls"),
             'steer_gain': cv2.getTrackbarPos("Steer Gain", "Controls") / 10.0,
-            'curve_gain': cv2.getTrackbarPos("Curve Gain", "Controls"),
-            'camera_offset_m': cv2.getTrackbarPos("Cam Offset (mm)", "Controls"),
-            'lane_width_ref_m': cv2.getTrackbarPos("Lane W Ref (mm)", "Controls"),
-            'single_lane_offset_px': cv2.getTrackbarPos("1-Lane Offset (px)", "Controls"),
-            'assumed_lane_width_px': cv2.getTrackbarPos("Assumed Lane W (px)", "Controls")
+            'curve_gain': cv2.getTrackbarPos("Curve Gain", "Controls")
         }
-        
-        # Update tracker calibration parameters (convert mm to m)
-        tracker.camera_offset_m = curr_params['camera_offset_m'] / 1000.0
-        tracker.lane_width_ref_m = curr_params['lane_width_ref_m'] / 1000.0
-        tracker.single_lane_offset_px = curr_params['single_lane_offset_px']
-        tracker.assumed_lane_width_px = curr_params['assumed_lane_width_px']
         
         # 3. Pipeline
         # Update Warper

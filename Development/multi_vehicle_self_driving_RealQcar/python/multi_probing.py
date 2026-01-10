@@ -22,7 +22,7 @@ def create_observer(car_id, width=320, height=200):
     observer.numDisplays = car_id + 50 # Unique counter for each car's YOLO stream
     observer.add_display(
         imageSize=[height, width, 3],
-        name=f'QCar {car_id} YOLO',
+        name=f'YOLO Car {car_id}',  # Must match name in yolo_server_virtual.py
         scalingFactor=1
     )
     print(f"  [✓] Observer for QCar {car_id} created (Display ID: {car_id})")
@@ -80,18 +80,50 @@ def main():
         
         time.sleep(0.5)  # Stagger the launches to avoid conflicts
     
+    # Wait for observers to establish connections
+    print("\nWaiting for YOLO servers to connect...")
+    
+    # Track which observers are already connected
+    connected_status = {idx: False for idx in range(len(observers))}
+    first_frame_received = {idx: False for idx in range(len(observers))}
+    
+    while True:
+        time.sleep(1.0)
+        
+        # Check each observer
+        for idx, observer in enumerate(observers):
+            car_id = args.cars[idx]
+            
+            if not connected_status[idx]:
+                # Check for initial connection
+                if len(observer.agentList) > 0:
+                    agent = observer.agentList[0]
+                    if hasattr(agent, 'connected') and agent.connected:
+                        print(f"  [✓] QCar {car_id}: Connected to YOLO stream")
+                        connected_status[idx] = True
+            elif not first_frame_received[idx]:
+                # Check if receiving data (counter > 0 means data received)
+                if len(observer.agentList) > 0:
+                    agent = observer.agentList[0]
+                    if hasattr(agent, 'counter') and agent.counter > 0:
+                        print(f"  [✓] QCar {car_id}: Receiving video frames - window should be visible")
+                        first_frame_received[idx] = True
+        
+        # Check if all connected
+        if all(connected_status.values()):
+            break
+    
     print()
     print("="*70)
-    print(f" All {len(observers)} observer window(s) launched successfully!")
+    print(f" All {len(observers)} observer(s) connected and receiving data!")
     print("="*70)
-    print("\nEach vehicle will send its YOLO detection stream to its own window.")
-    print("Press Ctrl+C to stop all observers...")
+    print("\nPress Ctrl+C to stop all observers...")
     print()
     
     try:
         # Keep main thread alive
         while True:
-            time.sleep(1)
+            time.sleep(5)
     except KeyboardInterrupt:
         print("\nShutting down observers...")
         for observer in observers:

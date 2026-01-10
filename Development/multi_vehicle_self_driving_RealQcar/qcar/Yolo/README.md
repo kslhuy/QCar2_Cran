@@ -54,6 +54,8 @@ QCar2DepthAlignedCamera for use
 
 # Terminal 1: Start observer for car 0
 python multi_probing.py --cars 0
+<!-- python multi_probing.py --cars 0 --width 320 --height 200 -->
+
 
 # Terminal 2: Start YOLO server
 python yolo_server_virtual.py -idx 0 -p True

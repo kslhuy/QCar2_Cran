@@ -119,7 +119,7 @@ class InitializingState(StateBase):
         initialization_steps = [
             ("Path planning", self._initialize_path_planning, 0.2),
             ("QCar hardware", self._initialize_qcar, 0.2),
-            ("Perception", self._initialize_perception, 0.2),
+            # Perception is now activated via Ground Station command
             ("Telemetry logging", self._initialize_telemetry, 0.1)
         ]
         
