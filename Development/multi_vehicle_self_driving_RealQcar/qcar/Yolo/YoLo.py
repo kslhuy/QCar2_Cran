@@ -1,6 +1,60 @@
 import numpy as np
+import time
+from dataclasses import dataclass, field
+from typing import Optional
 from quanser.common import Timeout
 from pal.utilities.stream import BasicStream
+
+
+@dataclass
+class YOLOData:
+    """
+    Immutable container for all YOLO detection data per frame.
+    Created fresh each update cycle - no stale data issues.
+    """
+    # Detection arrays (raw 7-element arrays)
+    stop_sign: np.ndarray = field(default_factory=lambda: np.zeros(7))
+    traffic_light: np.ndarray = field(default_factory=lambda: np.zeros(7))
+    cars: np.ndarray = field(default_factory=lambda: np.zeros(7))
+    yield_sign: np.ndarray = field(default_factory=lambda: np.zeros(7))
+    person: np.ndarray = field(default_factory=lambda: np.zeros(7))
+    
+    # Computed velocity gain from YOLODriveLogic
+    yolo_gain: float = 1.0
+    
+    # Distance to detected objects
+    car_dist: Optional[float] = None
+    person_dist: Optional[float] = None
+    
+    # Lane detection data
+    lane_confidence: float = 0.0
+    lane_steering: float = 0.0
+    lane_curvature: float = 0.0
+    lane_offset: float = 0.0
+    lane_left_detected: bool = False
+    lane_right_detected: bool = False
+    
+    # Metadata
+    is_valid: bool = False
+    timestamp: float = 0.0
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary for backward compatibility with sensor_data['yolo_data']."""
+        return {
+            'stop_sign': self.stop_sign,
+            'traffic_light': self.traffic_light,
+            'cars': self.cars,
+            'yield_sign': self.yield_sign,
+            'person': self.person,
+            'car_dist': self.car_dist,
+            'person_dist': self.person_dist,
+            'lane_confidence': self.lane_confidence,
+            'lane_steering': self.lane_steering,
+            'lane_slope': self.lane_curvature,  # Alias for backward compat
+            'lane_intercept': self.lane_offset,  # Alias for backward compat
+            'lane_left_detected': self.lane_left_detected,
+            'lane_right_detected': self.lane_right_detected,
+        }
 
 class YOLOReceiver():
     def __init__(self,ip='localhost',nonBlocking=True,port="18666"):
@@ -10,6 +64,9 @@ class YOLOReceiver():
         self.yieldSign = np.zeros((7),dtype=np.float64)
         self.person = np.zeros((7),dtype=np.float64)
         self.lane = np.zeros((7),dtype=np.float64)  # Lane detection data: [confidence, steering, slope, intercept, 0, 0, 0]
+        
+        # Shutdown flag to prevent reads during termination (avoids timeout spam)
+        self._shutting_down = False
 
         self.uri='tcpip://'+ip+':'+port
         self._timeout = Timeout(seconds=0, nanoseconds=100000)
@@ -38,7 +95,13 @@ class YOLOReceiver():
 
     def read(self):
         new = False
-        self._timeout = Timeout(seconds=0, nanoseconds=10)
+        
+        # Skip reads if shutting down (prevents timeout spam during disable)
+        if self._shutting_down:
+            return False
+        
+        # Increased timeout from 10ns to 100us for more reliable reception
+        self._timeout = Timeout(seconds=0, nanoseconds=50)
         if self._handle.connected:
             new, bytesReceived = self._handle.receive(timeout=self._timeout, iterations=5)
             # print('read:',new, bytesReceived)
@@ -51,11 +114,19 @@ class YOLOReceiver():
                 self.person[:]= self._handle.receiveBuffer[4,:]
                 self.lane[:] = self._handle.receiveBuffer[5,:]  # Extract lane data
         else:
-            self.status_check('Reconnected to yolo Server',iterations=1)
+            # Only try to reconnect if not shutting down
+            if not self._shutting_down:
+                self.status_check('Reconnected to yolo Server',iterations=1)
         return new
 
     def terminate(self):
+        """Terminate the YOLO receiver. Sets shutdown flag first to prevent timeout errors."""
+        self._shutting_down = True
         self._handle.terminate()
+    
+    def graceful_shutdown(self):
+        """Signal shutdown to stop reads before actual termination."""
+        self._shutting_down = True
     
     def __enter__(self):
         """ Used for with statement. """
@@ -74,7 +145,7 @@ class YOLOPublisher():
                                     agent='S',
                                     sendBufferSize=7*6*8,  # Updated for 6 rows (added lane data)
                                     nonBlocking=nonBlocking,
-                                    reshapeOrder='F')
+                                    reshapeOrder='C')
         self.status_check('', iterations=20)
 
     def status_check(self, message, iterations=10):
@@ -125,15 +196,22 @@ class YOLOManager:
     """
     YOLOManager class manages YOLO components and provides high-level interface
     for vehicle_logic.py to reduce YOLO-related code in the main controller.
+    
+    Refactored API:
+    - update(loop_counter) -> YOLOData: Reads, processes, and returns fresh data each cycle
+    - get_data() -> YOLOData: Returns cached YOLOData from last update
+    - get_gain() -> float: Convenience getter for velocity gain
     """
     
     def __init__(self, logger=None):
         self.logger = logger
         self.yolo = None
         self.yolo_drive = None
-        self.yolo_gain = 1.0
         self.loop_counter = 0
         self.yolo_enabled = False
+        
+        # Cached YOLOData - created fresh each update cycle
+        self._cached_data: YOLOData = YOLOData()
         
     def initialize(self, yolo_receiver: 'YOLOReceiver', yolo_drive_logic: 'YOLODriveLogic'):
         """Initialize YOLO components"""
@@ -143,94 +221,127 @@ class YOLOManager:
             self.yolo_enabled = True   # Enable YOLO only when both components are provided
         self.yolo = yolo_receiver
         self.yolo_drive = yolo_drive_logic
+    
+    def update(self, loop_counter: int = 0) -> YOLOData:
+        """
+        Update YOLO detection data - reads, processes, and returns fresh YOLOData.
+        This is the primary method to call each control loop iteration.
         
-    def update_yolo_data(self, loop_counter: int = 0):
-        """Update YOLO detection data and return velocity gain"""
+        Returns:
+            YOLOData: Fresh instance containing all detection data for this cycle
+        """
         self.loop_counter = loop_counter
+        
+        # Create new YOLOData instance each cycle (user requested fresh instances)
+        data = YOLOData(timestamp=time.time())
+        
         try:
-            if self.yolo is not None:
-                self.yolo.read()
-                
-                # Process YOLO and get velocity gain
-                if self.yolo_drive is not None:
-                    try:
-                        self.yolo_gain = self.yolo_drive.check_yolo(
-                            self.yolo.stopSign,
-                            self.yolo.trafficlight,
-                            self.yolo.cars,
-                            self.yolo.yieldSign,
-                            self.yolo.person
-                        )
-                    except Exception as e:
-                        if self.loop_counter % 100 == 0:  # Log occasionally
-                            if self.logger:
-                                self.logger.log_error("YOLO drive error", e)
-                        self.yolo_gain = 1.0  # Default gain
-                else:
-                    self.yolo_gain = 1.0
-            else:
-                if self.loop_counter % 1000 == 0:  # Log occasionally
-                    if self.logger:
-                        self.logger.log_error("YOLO drive is None")
-                self.yolo_gain = 1.0
-                
+            if self.yolo is None:
+                if self.loop_counter % 1000 == 0 and self.logger:
+                    self.logger.log_error("YOLO receiver is None")
+                self._cached_data = data
+                return data
+            
+            # Read from YOLO receiver
+            new_data = self.yolo.read()
+            
+            # # Debug logging
+            # if self.loop_counter % 100 == 0 and self.logger:
+            #     connection_status = "Connected" if self.yolo._handle.connected else "NOT Connected"
+            #     self.logger.logger.info(f"[YOLO] Receiver status: {connection_status}, New data: {new_data}")
+            
+            # Copy detection arrays (create new arrays to avoid stale references)
+            data.stop_sign = self.yolo.stopSign.copy()
+            data.traffic_light = self.yolo.trafficlight.copy()
+            data.cars = self.yolo.cars.copy()
+            data.yield_sign = self.yolo.yieldSign.copy()
+            data.person = self.yolo.person.copy()
+            data.is_valid = new_data
+            
+            # Extract lane data from receiver
+            lane = self.yolo.lane
+            if len(lane) >= 6:
+                data.lane_confidence = float(lane[0])
+                data.lane_steering = float(lane[1])
+                data.lane_curvature = float(lane[2])
+                data.lane_offset = float(lane[3])
+                data.lane_left_detected = lane[4] > 0.5
+                data.lane_right_detected = lane[5] > 0.5
+            
+            # Process through YOLODriveLogic to get velocity gain
+            if self.yolo_drive is not None:
+                try:
+                    data.yolo_gain = self.yolo_drive.check_yolo(
+                        self.yolo.stopSign,
+                        self.yolo.trafficlight,
+                        self.yolo.cars,
+                        self.yolo.yieldSign,
+                        self.yolo.person
+                    )
+                    # Get computed distances from drive logic
+                    data.car_dist = getattr(self.yolo_drive, 'carDist', None)
+                    data.person_dist = getattr(self.yolo_drive, 'personDist', None)
+                except Exception as e:
+                    if self.loop_counter % 100 == 0 and self.logger:
+                        self.logger.log_error("YOLO drive error", e)
+                    data.yolo_gain = 1.0
+            
         except Exception as e:
             if self.logger:
-                self.logger.log_error("YOLO data update error", e)
-            self.yolo_gain = 1.0
-            
-        return self.yolo_gain
+                self.logger.log_error("YOLO update error", e)
+            data.yolo_gain = 1.0
+        
+        self._cached_data = data
+        return data
+    
+    def get_data(self) -> YOLOData:
+        """Get cached YOLOData from last update() call."""
+        return self._cached_data
     
     def get_yolo_data(self) -> dict:
-        """Get current YOLO detection data"""
-        try:
-            if self.yolo is not None:
-                # Extract lane data: [confidence, steering, slope, intercept, ...]
-                lane_confidence = self.yolo.lane[0] if len(self.yolo.lane) > 0 else 0.0
-                lane_steering = self.yolo.lane[1] if len(self.yolo.lane) > 1 else 0.0
-                lane_slope = self.yolo.lane[2] if len(self.yolo.lane) > 2 else 0.0
-                lane_intercept = self.yolo.lane[3] if len(self.yolo.lane) > 3 else 0.0
-                
-                return {
-                    'stop_sign': self.yolo.stopSign,
-                    'traffic_light': self.yolo.trafficlight,
-                    'cars': self.yolo.cars,
-                    'yield_sign': self.yolo.yieldSign,
-                    'person': self.yolo.person,
-                    'car_dist': getattr(self.yolo_drive, 'carDist', 0.0),
-                    'person_dist': getattr(self.yolo_drive, 'personDist', 0.0),
-                    'lane_confidence': lane_confidence,
-                    'lane_steering': lane_steering,
-                    'lane_slope': lane_slope,
-                    'lane_intercept': lane_intercept
-                }
-            else:
-                return self.get_default_yolo_data()
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("YOLO data retrieval error", e)
-            return self.get_default_yolo_data()
+        """
+        Get current YOLO detection data as dict.
+        DEPRECATED: Use update() or get_data().to_dict() instead.
+        Kept for backward compatibility with existing code.
+        """
+        return self._cached_data.to_dict()
     
     def get_default_yolo_data(self) -> dict:
         """Get default YOLO data when YOLO is not available"""
-        return {
-            'stop_sign': [0]*7, 'traffic_light': [0]*7, 'cars': [0]*7,
-            'yield_sign': [0]*7, 'person': [0]*7, 'car_dist': None, 'person_dist': None,
-            'lane_confidence': 0.0, 'lane_steering': 0.0, 'lane_slope': 0.0, 'lane_intercept': 0.0
-        }
-        
+        return YOLOData().to_dict()
+    
+    def get_gain(self) -> float:
+        """Get velocity gain from last update."""
+        return self._cached_data.yolo_gain
+    
     def get_yolo_gain(self) -> float:
-        """Get current YOLO velocity gain"""
-        return self.yolo_gain
+        """Get current YOLO velocity gain (alias for backward compat)."""
+        return self._cached_data.yolo_gain
         
     def is_yolo_active(self) -> bool:
         """Check if YOLO components are active"""
         return self.yolo is not None and self.yolo_drive is not None
     
+    # Legacy method - redirects to update() 
+    def update_yolo_data(self, loop_counter: int = 0) -> float:
+        """
+        DEPRECATED: Use update() instead.
+        Kept for backward compatibility - returns only yolo_gain.
+        """
+        data = self.update(loop_counter)
+        return data.yolo_gain
+    
     def disable(self):
         """Disable YOLO system and clean up resources"""
         if self.logger:
             self.logger.logger.info("[YOLO] Disabling YOLO system...")
+        
+        # Signal graceful shutdown first to prevent timeout spam during disable
+        if self.yolo is not None:
+            try:
+                self.yolo.graceful_shutdown()
+            except Exception:
+                pass  # Ignore errors during shutdown signal
         
         # Terminate YOLO receiver if it exists
         if self.yolo is not None:
@@ -246,7 +357,7 @@ class YOLOManager:
         self.yolo = None
         self.yolo_drive = None
         self.yolo_enabled = False
-        self.yolo_gain = 1.0
+        self._cached_data = YOLOData()  # Reset to default
         
         if self.logger:
             self.logger.logger.info("[YOLO] YOLO system disabled")

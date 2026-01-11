@@ -275,8 +275,37 @@ class QCarRemoteController:
         except Exception as e:
             print(f"[Ground Station] Error receiving from Car {car_id}: {e}")
         finally:
-            if car_id in self.cars:
-                self.cars[car_id].status = 'disconnected'
+            # Clean up car data on disconnection
+            self._cleanup_car(car_id)
+    
+    def _cleanup_car(self, car_id: int) -> None:
+        """Clean up all local data for a disconnected car.
+        
+        This removes the car from tracking so no further commands are attempted.
+        The server will continue listening for reconnection.
+        """
+        # Close socket if still open
+        if car_id in self.cars and self.cars[car_id].sock:
+            try:
+                self.cars[car_id].sock.close()
+            except Exception:
+                pass
+        
+        # Remove car from tracking
+        if car_id in self.cars:
+            del self.cars[car_id]
+        
+        # Clear telemetry data
+        if car_id in self.telemetry_buffers:
+            del self.telemetry_buffers[car_id]
+        if car_id in self.telemetry_stats:
+            del self.telemetry_stats[car_id]
+        
+        # Notify GUI controller to clean up manual mode state
+        if self.gui_controller and hasattr(self.gui_controller, '_on_car_disconnected'):
+            self.gui_controller._on_car_disconnected(car_id)
+        
+        print(f"[Ground Station] Car {car_id} data cleaned up, waiting for reconnection...")
     
     def _process_message(self, car_id: int, message: str) -> None:
         """Process a received message."""
@@ -352,7 +381,7 @@ class QCarRemoteController:
             True if command was sent successfully
         """
         if not self.is_car_connected(car_id):
-            print(f"[Ground Station] ❌ Car {car_id} is not connected")
+            # Don't log here - disconnection is already logged once when it happens
             return False
         
         # Add metadata

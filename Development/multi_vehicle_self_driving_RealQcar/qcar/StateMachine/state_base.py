@@ -558,10 +558,7 @@ class StateBase:
             
             # For simulated vehicles, launch YOLO server subprocess
             if not IS_PHYSICAL_QCAR:
-                import socket
-                
                 yolo_port = f'1866{vehicle_id}'
-                yolo_port_int = int(yolo_port)
                 
                 yolo_script = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)), 
@@ -610,12 +607,13 @@ class StateBase:
                 # Store process handle
                 self.vehicle_logic.yolo_process = yolo_process
                 
-                # Wait for server startup with connection verification
+                # Wait for server startup - just check that process is running
+                # Note: We don't use a test socket connection here because it can interfere
+                # with BasicStream's connection handling (connects then immediately disconnects)
                 self.logger.logger.info("[PERCEPTION] Waiting for YOLO server to initialize...")
-                max_wait = 10.0  # Maximum wait time
+                max_wait = 6.0  # Maximum wait time for process to stabilize
                 check_interval = 0.5
                 waited = 0.0
-                server_ready = False
                 
                 while waited < max_wait:
                     time.sleep(check_interval)
@@ -638,28 +636,11 @@ class StateBase:
                                 pass
                         return False
                     
-                    # Try to connect to verify server is accepting connections
-                    try:
-                        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        test_socket.settimeout(0.5)
-                        result = test_socket.connect_ex(('localhost', yolo_port_int))
-                        test_socket.close()
-                        
-                        if result == 0:
-                            server_ready = True
-                            self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server accepting connections (waited {waited:.1f}s)")
-                            break
-                    except Exception:
-                        # Connection not ready yet, continue waiting
-                        pass
+                    # Log progress every second
+                    if waited % 1.0 == 0:
+                        self.logger.logger.info(f"[PERCEPTION] Server starting... ({waited:.0f}s)")
                 
-                if not server_ready:
-                    self.logger.log_error(f"[PERCEPTION] YOLO server failed to accept connections after {max_wait}s")
-                    yolo_process.terminate()
-                    return False
-                
-                # Give server additional time to fully initialize
-                time.sleep(0.5)
+                self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server process running (waited {waited:.1f}s)")
                 self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
                 
                 # Create YOLOReceiver to connect to the server
@@ -761,10 +742,15 @@ class StateBase:
         Disable perception system (YOLO).
         Fake vehicles gracefully ignore this command.
         
+        Process termination is done asynchronously in a background thread 
+        to avoid blocking the main control loop.
+        
         Returns:
             bool: True if deactivation successful
         """
         try:
+            import threading
+            
             # Check if this is a fake vehicle - if so, just log and return success
             if hasattr(self.vehicle_logic, '_parent_fake_vehicle'):
                 self.logger.logger.info("[PERCEPTION] Fake vehicle detected - ignoring perception deactivation")
@@ -772,28 +758,49 @@ class StateBase:
             
             self.logger.logger.info("[PERCEPTION] Disabling YOLO system...")
             
-            # Disable YOLO manager
+            # Disable YOLO manager (non-blocking - just clears references and terminates receiver)
             if hasattr(self.vehicle_logic, 'yolo_manager'):
                 self.vehicle_logic.yolo_manager.disable()
             
-            # Terminate YOLO process if running
-            if hasattr(self.vehicle_logic, 'yolo_process'):
-                try:
-                    self.vehicle_logic.yolo_process.terminate()
-                    self.vehicle_logic.yolo_process.wait(timeout=2)
-                    self.logger.logger.info("[PERCEPTION] YOLO process terminated")
-                except:
-                    self.vehicle_logic.yolo_process.kill()
-                    self.logger.logger.warning("[PERCEPTION] YOLO process killed")
+            # Terminate YOLO process asynchronously to avoid blocking the main loop
+            yolo_process = getattr(self.vehicle_logic, 'yolo_process', None)
+            yolo_log_handle = getattr(self.vehicle_logic, 'yolo_log_handle', None)
+            logger = self.logger
             
-            # Close YOLO log file handle if it exists (physical vehicles)
-            if hasattr(self.vehicle_logic, 'yolo_log_handle'):
-                try:
-                    self.vehicle_logic.yolo_log_handle.close()
-                    self.logger.logger.info("[PERCEPTION] YOLO log file closed")
-                except:
-                    pass
+            def cleanup_yolo_process():
+                """Background thread to clean up YOLO process without blocking main loop."""
+                if yolo_process is not None:
+                    try:
+                        yolo_process.terminate()
+                        yolo_process.wait(timeout=5)  # Wait up to 5 seconds
+                        if logger:
+                            logger.logger.info("[PERCEPTION] YOLO process terminated (async)")
+                    except Exception:
+                        try:
+                            yolo_process.kill()
+                            if logger:
+                                logger.logger.warning("[PERCEPTION] YOLO process killed (async)")
+                        except Exception:
+                            pass
+                
+                # Close YOLO log file handle if it exists (physical vehicles)
+                if yolo_log_handle is not None:
+                    try:
+                        yolo_log_handle.close()
+                        if logger:
+                            logger.logger.info("[PERCEPTION] YOLO log file closed (async)")
+                    except Exception:
+                        pass
             
+            # Start cleanup in background thread (daemon so it won't block program exit)
+            cleanup_thread = threading.Thread(target=cleanup_yolo_process, daemon=True)
+            cleanup_thread.start()
+            
+            # Clear references immediately
+            self.vehicle_logic.yolo_process = None
+            self.vehicle_logic.yolo_log_handle = None
+            
+            self.logger.logger.info("[PERCEPTION] YOLO cleanup started in background thread")
             return True
             
         except Exception as e:

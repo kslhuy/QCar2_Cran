@@ -40,6 +40,23 @@ except ImportError as e:
     StanleyController = None
     PIDVelocityController = None
 
+# Import LaneFusion for modular lane-assisted path following
+try:
+    from Controller.LaneFusion import (
+        LaneFusion, 
+        LaneFusionConfig, 
+        FusionStrategy
+    )
+    from Controller.LaneFusion.config_loader_lane_fusion import get_lane_fusion_config
+    LANE_FUSION_AVAILABLE = True
+except ImportError as e:
+    print(f"WARNING: LaneFusion not available: {e}")
+    LANE_FUSION_AVAILABLE = False
+    LaneFusion = None
+    LaneFusionConfig = None
+    FusionStrategy = None
+    get_lane_fusion_config = None
+
 
 class FollowingPathState(StateBase):
     """Handler for FOLLOWING_PATH state with simplified event handling"""
@@ -52,6 +69,11 @@ class FollowingPathState(StateBase):
         self.steering_controller = None
         self.speed_controller = None
         self._controllers_initialized = False
+        
+        # Lane fusion system for combining waypoint steering with lane detection
+        # Lane detection runs in yolo_server, results received via yolo_data dict
+        self.lane_fusion = None
+        self._lane_fusion_enabled = False
     
     def _init_controllers(self):
         """
@@ -100,7 +122,116 @@ class FollowingPathState(StateBase):
                 except Exception as e:
                     self.logger.log_error("Failed to initialize steering controller", e)
         
+        # Initialize Lane Fusion system for lane-assisted path following
+        self._init_lane_fusion()
+        
         self._controllers_initialized = True
+    
+    def _init_lane_fusion(self, config: dict = None):
+        """
+        Initialize the modular lane fusion system from YAML config.
+        
+        The lane fusion system combines waypoint-based steering with lane detection
+        corrections to improve path following, especially with poor GPS.
+        
+        Configuration is loaded from: Controller/LaneFusion/config_lane_fusion.yaml
+        
+        Args:
+            config: Optional override configuration dict
+        """
+        if not LANE_FUSION_AVAILABLE:
+            self.logger.logger.warning("[PATH] LaneFusion not available - lane assist disabled")
+            return
+        
+        try:
+            # Load configuration from YAML file
+            yaml_config = get_lane_fusion_config()
+            settings = yaml_config.get_fusion_settings()
+            
+            # Check if enabled in config
+            if not settings.enabled:
+                self.logger.logger.info("[PATH] Lane Fusion disabled in config")
+                self._lane_fusion_enabled = False
+                return
+            
+            # Build config dict from YAML settings
+            fusion_settings = {
+                'strategy': settings.strategy,
+                'max_lane_weight': settings.max_lane_weight,
+                'min_confidence': settings.min_confidence,
+                'lane_gain': settings.lane_gain,
+                'smoothing_factor': settings.smoothing_factor,
+                'max_steering': settings.max_steering,
+                'deadband': settings.deadband,
+                'switch_threshold': settings.switch_threshold,
+                'enable_curvature_compensation': settings.enable_curvature_compensation,
+                'debug_logging': settings.debug_logging
+            }
+            
+            # Override with provided config (for programmatic changes)
+            if config:
+                fusion_settings.update(config)
+            
+            # Create fusion config
+            fusion_config = LaneFusionConfig(
+                strategy=FusionStrategy(fusion_settings['strategy']),
+                max_lane_weight=fusion_settings['max_lane_weight'],
+                min_confidence=fusion_settings['min_confidence'],
+                lane_gain=fusion_settings['lane_gain'],
+                smoothing_factor=fusion_settings['smoothing_factor'],
+                max_steering=fusion_settings['max_steering'],
+                deadband=fusion_settings['deadband'],
+                switch_threshold=fusion_settings['switch_threshold'],
+                enable_curvature_compensation=fusion_settings['enable_curvature_compensation'],
+                debug_logging=fusion_settings['debug_logging']
+            )
+            
+            # Create lane fusion instance
+            self.lane_fusion = LaneFusion(config=fusion_config, logger=self.logger)
+            self._lane_fusion_enabled = True
+            
+            self.logger.logger.info(
+                f"[PATH] Lane Fusion initialized from YAML: strategy={fusion_settings['strategy']}, "
+                f"max_weight={fusion_settings['max_lane_weight']}, min_conf={fusion_settings['min_confidence']}"
+            )
+            
+        except Exception as e:
+            self.logger.log_error("Failed to initialize Lane Fusion", e)
+            self._lane_fusion_enabled = False
+    
+    def configure_lane_fusion(self, **kwargs):
+        """
+        Configure lane fusion parameters at runtime.
+        
+        Args:
+            strategy: 'adaptive', 'weighted', 'cascaded', 'switch', 'lane_priority'
+            max_lane_weight: Maximum lane steering influence (0.0-1.0)
+            min_confidence: Minimum lane confidence to use (0.0-1.0)
+            lane_gain: Gain applied to lane steering correction
+            enabled: Enable/disable lane fusion
+            
+        Example:
+            following_state.configure_lane_fusion(
+                strategy='cascaded',
+                max_lane_weight=0.5,
+                enabled=True
+            )
+        """
+        if 'enabled' in kwargs:
+            self._lane_fusion_enabled = kwargs.pop('enabled')
+            self.logger.logger.info(f"[PATH] Lane fusion enabled: {self._lane_fusion_enabled}")
+        
+        if self.lane_fusion is None:
+            return
+        
+        # Update individual parameters
+        for key, value in kwargs.items():
+            if key == 'strategy':
+                self.lane_fusion.config.strategy = FusionStrategy(value)
+            elif hasattr(self.lane_fusion.config, key):
+                setattr(self.lane_fusion.config, key, value)
+        
+        self.logger.logger.info(f"[PATH] Lane fusion config updated: {kwargs}")
     
     def update_path(self, new_waypoint_sequence: np.ndarray):
         """
@@ -189,6 +320,10 @@ class FollowingPathState(StateBase):
         # Steering control with lane fusion
         # yolo_data = self.vehicle_logic.yolo_manager.get_yolo_data() if hasattr(self.vehicle_logic, 'yolo_manager') else None
         yolo_data = sensor_data.get('yolo_data', None)
+        if yolo_data and not yolo_data.get('is_valid', True):  # Stale data
+            # Could skip lane fusion or use more conservative weight
+            yolo_data = None
+            
         delta = self._compute_steering_control(x, y, theta, velocity, yolo_data)
         
         # Monitor progress
@@ -345,41 +480,113 @@ class FollowingPathState(StateBase):
         # print (f"Adjusted v_ref: {v_ref_adjusted:.2f} m/s (YOLO gain: {yolo_gain:.2f})")
         return self.speed_controller.update(velocity, v_ref_adjusted, dt)
     
-    def _compute_steering_control(self, x: float, y: float, theta: float, velocity: float, yolo_data: dict = None) -> float:
-        """Compute steering control command with lane fusion"""
+    def _extract_lane_data(self, yolo_data: dict) -> dict:
+        """
+        Extract and validate lane detection data from YOLO packet.
+        
+        This helper provides a clean interface to the lane data transmitted
+        from yolo_server_virtual.py, handling missing/invalid data gracefully.
+        
+        Args:
+            yolo_data: Dict from YOLO receiver with lane_* keys
+            
+        Returns:
+            Structured dict with validated lane data:
+            - valid: bool - Whether lane data is usable
+            - confidence: float - Detection confidence [0-1]
+            - steering: float - Suggested steering correction
+            - curvature: float - Lane curvature proxy
+            - offset: float - Lateral offset from center
+            - left_detected: bool - Left lane marker visible
+            - right_detected: bool - Right lane marker visible
+        """
+        if not yolo_data:
+            return {'valid': False, 'confidence': 0.0, 'steering': 0.0,
+                    'curvature': 0.0, 'offset': 0.0, 
+                    'left_detected': False, 'right_detected': False}
+        
+        confidence = yolo_data.get('lane_confidence', 0.0)
+        is_valid = confidence > 0.1  # Minimum threshold for usable lane data
+        
+        return {
+            'valid': is_valid,
+            'confidence': confidence,
+            'steering': yolo_data.get('lane_steering', 0.0),
+            'curvature': yolo_data.get('lane_slope', 0.0),  # slope used as curvature proxy
+            'offset': yolo_data.get('lane_intercept', 0.0),
+            'left_detected': yolo_data.get('lane_left_detected', False),
+            'right_detected': yolo_data.get('lane_right_detected', False),
+        }
+    
+    def _compute_steering_control(self, x: float, y: float, theta: float, velocity: float, 
+                                     yolo_data: dict = None) -> float:
+        """
+        Compute steering control command with optional lane fusion.
+        
+        Lane detection runs in yolo_server_virtual.py (where the camera is).
+        Results are sent here via UDP as yolo_data dict.
+        LaneFusion converts this dict to standardized format for fusion.
+        
+        Args:
+            x, y: Vehicle position
+            theta: Vehicle heading
+            velocity: Current velocity
+            yolo_data: Dict with lane data from YOLO server
+                      (keys: lane_confidence, lane_steering, lane_slope, lane_intercept,
+                             lane_left_detected, lane_right_detected)
+            
+        Returns:
+            Steering command in radians
+        """
         if not self.vehicle_logic.controller_config.enable_steering_control or not self.steering_controller:
             return 0.0
         
         # Primary: Waypoint-based steering (global path following)
-        p = np.array([x, y]) + np.array([np.cos(theta), np.sin(theta)]) * 0.2
+        # Add lookahead point slightly ahead of vehicle
+        lookahead_offset = 0.2  # meters
+        p = np.array([x, y]) + np.array([np.cos(theta), np.sin(theta)]) * lookahead_offset
         waypoint_steering = self.steering_controller.update(p, theta, max(velocity, 0.1))
         
-        # Secondary: Lane-based correction (local lane keeping)
-        if yolo_data is not None:
-            lane_confidence = yolo_data.get('lane_confidence', 0.0)
-            lane_steering = yolo_data.get('lane_steering', 0.0)
+        # Secondary: Lane-based correction using modular LaneFusion system
+        if self._lane_fusion_enabled and self.lane_fusion is not None:
+            # LaneFusion internally converts yolo_data to LaneDetectionResult
+            fusion_result = self.lane_fusion.compute_steering(
+                waypoint_steering=waypoint_steering,
+                yolo_data=yolo_data,
+                velocity=velocity
+            )
+            final_steering = fusion_result.final_steering
             
-            # Fusion strategy: weighted combination based on lane confidence
-            if lane_confidence > 0.3:  # Only use if lane detected with sufficient confidence
-                # Adaptive gain: higher confidence = more lane influence (max 30%)
-                lane_gain = 0.3 * lane_confidence
-                final_steering = waypoint_steering + lane_gain * lane_steering
-                
-                # Log lane fusion activity periodically
-                if self.vehicle_logic.loop_counter % 100 == 0:
-                    self.logger.logger.debug(
-                        f"[LANE] Fusion active: waypoint={waypoint_steering:.3f}, "
-                        f"lane={lane_steering:.3f} (conf={lane_confidence:.2f}), "
-                        f"final={final_steering:.3f}"
-                    )
-            else:
-                # Low confidence: rely purely on waypoint steering
-                final_steering = waypoint_steering
+            # Log lane fusion activity periodically (every ~0.5 sec at 200Hz)
+            if fusion_result.lane_valid and self.vehicle_logic.loop_counter % 100 == 0:
+                lane_info = self._extract_lane_data(yolo_data)
+                lane_status = "L" if lane_info['left_detected'] else "-"
+                lane_status += "R" if lane_info['right_detected'] else "-"
+                self.logger.logger.info(
+                    f"[LANE] [{lane_status}] conf={fusion_result.lane_confidence:.2f}, "
+                    f"wp={waypoint_steering:.3f}, lane={fusion_result.lane_steering:.3f}, "
+                    f"w={fusion_result.lane_weight_used:.2f}, final={final_steering:.3f}"
+                )
         else:
-            # No YOLO data: fallback to waypoint-only
+            # Lane fusion disabled or not available - use waypoint steering only
             final_steering = waypoint_steering
         
         return np.clip(final_steering, -0.5, 0.5)
+    
+    def get_lane_fusion_stats(self) -> dict:
+        """
+        Get lane fusion statistics for monitoring and debugging.
+        
+        Returns:
+            Dict with fusion statistics including lane usage rate
+        """
+        if self.lane_fusion is None:
+            return {'enabled': False, 'lane_fusion_available': False}
+        
+        stats = self.lane_fusion.get_statistics()
+        stats['enabled'] = self._lane_fusion_enabled
+        stats['lane_fusion_available'] = True
+        return stats
     
     def _monitor_progress(self):
         """Monitor waypoint progress and lap completion"""

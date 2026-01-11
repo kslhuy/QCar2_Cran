@@ -176,16 +176,16 @@ def load_configuration(args) -> VehicleMainConfig:
         fleet_config_path = os.path.normpath(os.path.join(script_dir, '..', 'fleet_config.yaml'))
         local_config_path = os.path.join(script_dir, 'config_vehicle_main.yaml')
         
-        print(f"[DEBUG] script_dir: {script_dir}")
-        print(f"[DEBUG] fleet_config_path: {fleet_config_path}")
-        print(f"[DEBUG] fleet_config exists: {os.path.exists(fleet_config_path)}")
+        # print(f"[DEBUG] script_dir: {script_dir}")
+        # print(f"[DEBUG] fleet_config_path: {fleet_config_path}")
+        # print(f"[DEBUG] fleet_config exists: {os.path.exists(fleet_config_path)}")
         
         if os.path.exists(fleet_config_path):
             config_path = fleet_config_path
-            print(f"[DEBUG] Using fleet_config.yaml")
+            # print(f"[DEBUG] Using fleet_config.yaml")
         else:
             config_path = local_config_path
-            print(f"[DEBUG] Using config_vehicle_main.yaml")
+            # print(f"[DEBUG] Using config_vehicle_main.yaml")
     
     # Load from file if it exists
     if os.path.exists(config_path):
@@ -198,7 +198,7 @@ def load_configuration(args) -> VehicleMainConfig:
         if 'vehicles' in raw_config:
             # Fleet config format - need car_id to extract per-vehicle settings
             car_id = args.car_id if hasattr(args, 'car_id') else 0
-            print(f"Detected fleet config format, loading settings for car_id={car_id}")
+            # print(f"Detected fleet config format, loading settings for car_id={car_id}")
             config = VehicleMainConfig.from_fleet_yaml(config_path, car_id)
         else:
             # Standard config format

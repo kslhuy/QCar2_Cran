@@ -1,0 +1,73 @@
+
+# =============================================================================
+# LANE DETECTION ALGORITHM (runs in yolo_server_virtual.py)
+# The camera is in yolo_server, so lane detection ALWAYS runs there.
+# This config tells yolo_server which algorithm to use.
+# =============================================================================
+lane_detection:
+  # Algorithm options (used by yolo_server_virtual.py):
+  # - 'hsv': Simple HSV color thresholding (fast, ~100+ FPS)
+  # - 'bev': Bird's Eye View with sliding window 
+  # - 'lanenet': LaneNet deep learning
+  algorithm: 'hsv'
+  
+  # Enable/disable lane detection in yolo_server
+  enabled: true
+
+# =============================================================================
+# HSV LANE DETECTOR SETTINGS
+# Used when source is 'yolo_server' or 'local_hsv'
+# =============================================================================
+hsv_detector:
+  # Crop bottom portion of image for lane detection
+  crop_ratio: 0.4  # Use bottom 40% of image
+  
+  # HSV color thresholds for yellow lane
+  hsv_lower: [10, 50, 100]   # [H, S, V] lower bounds
+  hsv_upper: [45, 255, 255]  # [H, S, V] upper bounds
+  
+  # Steering calculation parameters
+  target_slope: 0.3419       # Expected slope when centered
+  slope_gain: 1.5            # Gain for slope-based steering
+  intercept_gain: 0.00667    # Gain for intercept (1/150)
+  intercept_offset: 5.0      # Offset added to intercept
+
+# =============================================================================
+# BEV (Bird's Eye View) DETECTOR SETTINGS
+# Used when source is 'local_bev'
+# =============================================================================
+bev_detector:
+  # Image dimensions
+  img_width: 640
+  img_height: 480
+  
+  # Perspective warp trapezoid parameters
+  warp_w_top: 150      # Top width of trapezoid
+  warp_w_bot: 640      # Bottom width of trapezoid
+  warp_h: 180          # Height of trapezoid region
+  warp_y_offset: 0     # Vertical offset from bottom
+  
+  # Sliding window parameters
+  nwindows: 9          # Number of sliding windows
+  margin: 100          # Window margin (pixels)
+  minpix: 50           # Min pixels to recenter window
+  
+  # Camera calibration
+  camera_offset_m: 0.032      # Camera lateral offset (meters)
+  lane_width_ref_m: 0.5       # Reference lane width (meters)
+  single_lane_offset_px: 250  # Offset when only one lane detected
+  assumed_lane_width_px: 500  # Assumed lane width in pixels
+  
+  # Steering gains
+  steer_gain: 1.0      # Gain for lateral offset
+  curve_gain: 200.0    # Gain for curvature compensation
+
+# =============================================================================
+# LANENET DETECTOR SETTINGS
+# Used when source is 'local_lanenet'
+# =============================================================================
+lanenet_detector:
+  image_width: 640
+  image_height: 480
+  row_upper_bound: 200
+  use_clustering: false  # Slower but separates lanes

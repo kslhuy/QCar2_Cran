@@ -275,7 +275,7 @@ class VehicleLogic:
                 
                 # Handle YOLO logic using YOLOManager (only if enabled)
                 if self.yolo_manager.yolo_enabled:
-                    self.yolo_manager.update_yolo_data(self.loop_counter)
+                    self.yolo_manager.update(self.loop_counter)
                 
         except Exception as e:
             self.vehicle_logger.log_error("Sensor data update error", e)

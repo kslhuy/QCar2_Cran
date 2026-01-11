@@ -200,6 +200,14 @@ class QCarFleetController:
     
     # ========== Car Panel Management ==========
     
+    def _on_car_disconnected(self, car_id: int) -> None:
+        """Handle car disconnection - clear manual mode state."""
+        if car_id in self._manual_mode_active:
+            del self._manual_mode_active[car_id]
+            self.log(f"Car {car_id} disconnected - cleared manual mode state", 'WARNING')
+    
+
+    
     def _create_car_panel_callbacks(self, car_id: int) -> CarPanelCallbacks:
         """Create callbacks for a car panel."""
         return CarPanelCallbacks(

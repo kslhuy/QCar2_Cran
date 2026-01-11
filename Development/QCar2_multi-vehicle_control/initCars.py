@@ -147,55 +147,55 @@ def spawn_environment_objects(qlabs_instance):
     print("  ✓ Spawned 3 roundabout signs")
     # endregion
     
-    # region: Spawning Basic Shapes
-    environment_objects['basic_shapes'] = []
-    hBasicShape = QLabsBasicShape(qlabs_instance)
+    # # region: Spawning Basic Shapes
+    # environment_objects['basic_shapes'] = []
+    # hBasicShape = QLabsBasicShape(qlabs_instance)
     
-    # Plus
-    hBasicShape.spawn_id_box_walls_from_end_points(
-        actorNumber=2,
-        startLocation=[-13.64, 3.82, 0.0],
-        endLocation=[-3.08, -7.062, 0.0],
-        height=5,
-        thickness=3,
-        color=[(154/255), (101/255), (14/255)],
-        waitForConfirmation=False
-    )
+    # # Plus
+    # hBasicShape.spawn_id_box_walls_from_end_points(
+    #     actorNumber=2,
+    #     startLocation=[-13.64, 3.82, 0.0],
+    #     endLocation=[-3.08, -7.062, 0.0],
+    #     height=5,
+    #     thickness=3,
+    #     color=[(154/255), (101/255), (14/255)],
+    #     waitForConfirmation=False
+    # )
     
-    hBasicShape.spawn_id_box_walls_from_end_points(
-        actorNumber=3,
-        startLocation=[-3.93, 4.00, -0],
-        endLocation=[-10.034, -3.102, -0],
-        height=5,
-        thickness=3,
-        color=[(154/255), (101/255), (14/255)],
-        waitForConfirmation=False
-    )
+    # hBasicShape.spawn_id_box_walls_from_end_points(
+    #     actorNumber=3,
+    #     startLocation=[-3.93, 4.00, -0],
+    #     endLocation=[-10.034, -3.102, -0],
+    #     height=5,
+    #     thickness=3,
+    #     color=[(154/255), (101/255), (14/255)],
+    #     waitForConfirmation=False
+    # )
     
-    # Roundabout Box
-    hBasicShape.spawn_id_box_walls_from_end_points(
-        actorNumber=4,
-        startLocation=[12.104, 38.266, 0],
-        endLocation=[18.345, 38.433, 0],
-        height=5,
-        thickness=4,
-        color=[(154/255), (101/255), (14/255)],
-        waitForConfirmation=False
-    )
+    # # Roundabout Box
+    # hBasicShape.spawn_id_box_walls_from_end_points(
+    #     actorNumber=4,
+    #     startLocation=[12.104, 38.266, 0],
+    #     endLocation=[18.345, 38.433, 0],
+    #     height=5,
+    #     thickness=4,
+    #     color=[(154/255), (101/255), (14/255)],
+    #     waitForConfirmation=False
+    # )
     
-    # Basic Building Box
-    hBasicShape.spawn_id_box_walls_from_end_points(
-        actorNumber=5,
-        startLocation=[5.969, 0.072, 0.385],
-        endLocation=[16.578, -0.016, 0],
-        height=5,
-        thickness=8.5,
-        color=[(154/255), (101/255), (14/255)],
-        waitForConfirmation=False
-    )
-    environment_objects['basic_shapes'].append(hBasicShape)
-    print("  ✓ Spawned basic shapes (buildings)")
-    # endregion
+    # # Basic Building Box
+    # hBasicShape.spawn_id_box_walls_from_end_points(
+    #     actorNumber=5,
+    #     startLocation=[5.969, 0.072, 0.385],
+    #     endLocation=[16.578, -0.016, 0],
+    #     height=5,
+    #     thickness=8.5,
+    #     color=[(154/255), (101/255), (14/255)],
+    #     waitForConfirmation=False
+    # )
+    # environment_objects['basic_shapes'].append(hBasicShape)
+    # print("  ✓ Spawned basic shapes (buildings)")
+    # # endregion
     
     # region: Spawn stopsign
     environment_objects['stop_signs'] = []
