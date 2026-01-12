@@ -97,6 +97,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         
         # Create Weight Configuration
         self.weight_config = WeightConfig(
+            weight_type=weight_config_dict.get('weight_type', 'trust_based'),
             w0_fixed=weight_config_dict.get('w0_fixed', 0.3),
             w_self_base=weight_config_dict.get('w_self_base', 0.2),
             w_cap=weight_config_dict.get('w_cap', 0.4),
@@ -128,6 +129,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         # Cache for host state (for trust evaluation)
         self.host_state: Dict = {}
         
+        # Cache for current weight result
+        self.current_weight_result: Optional[WeightResult] = None
+        
         # Attack mitigation enabled
         self.attack_mitigation_enabled = self.config.get('attack_mitigation', True)
         
@@ -142,7 +146,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         if self.logger:
             self.logger.logger.info(
                 f"TrustBasedFleetEstimator initialized for vehicle_{vehicle_id} "
-                f"with fleet_size={fleet_size}, state_dim={state_dim}"
+                f"with fleet_size={fleet_size}, state_dim={state_dim}, "
+                f"weight_type={self.weight_config.weight_type}"
             )
     
     def update(self, local_state: np.ndarray, dt: float,
@@ -179,10 +184,31 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             # 3. Calculate adaptive weights based on trust
             weight_result = self.weight_module.calculate_weights(trust_scores)
             
+            # Cache weight result for use in _trust_weighted_update
+            self.current_weight_result = weight_result
+            
             # 3.5. Log trust and weight data together
             if self.logger and hasattr(self.logger, 'log_trust_weight'):
-                cached_trust_data = getattr(self, '_cached_trust_data', {})
-                for vehicle_id, trust_data in cached_trust_data.items():
+                for vehicle_id, trust_score in trust_scores.items():
+                    # Get detailed trust score from trust model
+                    trust_result = self.trust_model.get_trust_score(vehicle_id)
+                    if trust_result is not None:
+                        trust_data = {
+                            'trust_score': trust_result.final_score,
+                            'velocity_score': trust_result.velocity_score,
+                            'distance_score': trust_result.distance_score,
+                            'acceleration_score': trust_result.acceleration_score,
+                            'heading_score': trust_result.heading_score,
+                            'beacon_score': trust_result.beacon_score,
+                            'quality_factor': trust_result.quality_factor,
+                            'flag_target_attack': trust_result.flag_target_attack,
+                            'flag_local_est_check': trust_result.flag_local_est_check,
+                            'flag_global_est_check': trust_result.flag_global_est_check
+                        }
+                    else:
+                        # Fallback if detailed score not available
+                        trust_data = {'trust_score': trust_score}
+                    
                     # Get weight for this neighbor
                     neighbor_weight = weight_result.neighbor_weights.get(vehicle_id, 0.0)
                     weight_data = {
@@ -191,8 +217,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         'w_neighbor': neighbor_weight
                     }
                     self.logger.log_trust_weight(vehicle_id, trust_data, weight_data)
-                # Clear cache after logging
-                self._cached_trust_data = {}
             
             # 4. Update estimates for other vehicles using trust-weighted consensus
             for target_id in range(self.fleet_size):
@@ -264,24 +288,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             
             trust_scores[vehicle_id] = trust_result.final_score
             self.stats['trust_updates'] += 1
-            
-            # Log trust data if logger is available
-            if self.logger and hasattr(self.logger, 'log_trust_weight'):
-                trust_data = {
-                    'trust_score': trust_result.final_score,
-                    'velocity_score': trust_result.velocity_score,
-                    'distance_score': trust_result.distance_score,
-                    'acceleration_score': trust_result.acceleration_score,
-                    'heading_score': trust_result.heading_score,
-                    'beacon_score': trust_result.beacon_score,
-                    'quality_factor': trust_result.quality_factor,
-                    'flag_target_attack': trust_result.flag_target_attack,
-                    'flag_local_est_check': trust_result.flag_local_est_check,
-                    'flag_global_est_check': trust_result.flag_global_est_check
-                }
-                # Weight data will be added after weight calculation
-                self._cached_trust_data = getattr(self, '_cached_trust_data', {})
-                self._cached_trust_data[vehicle_id] = trust_data
         
         return trust_scores
     
@@ -289,37 +295,36 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                                 trust_scores: Dict[int, float],
                                 control: np.ndarray, dt: float) -> np.ndarray:
         """
-        Update estimate for a target vehicle using trust-weighted consensus
+        Update estimate for a target vehicle using pre-calculated consensus weights
+        
+        All weight calculation is handled by weight_module.calculate_weights()
+        This method simply applies the weights to the consensus update.
         
         Algorithm:
         1. Start with current estimate
-        2. Add direct measurement correction (weighted by trust)
-        3. Add neighbor consensus correction (weighted by trust)
-        4. Apply dynamics prediction correction
+        2. Add direct measurement correction (if available, using w0 from weight_result)
+        3. Add neighbor consensus correction (using neighbor_weights from weight_result)
+        4. Apply dynamics prediction correction (if no direct measurement)
         """
         # Current estimate for target
         current_est = self.fleet_states[:, target_id].copy()
         total_correction = np.zeros(self.state_dim)
         
-        # Get trust score for target (direct measurement weight)
-        target_trust = trust_scores.get(target_id, 0.5)
-        
-        # === Direct Measurement Correction ===
-        # Weight: w0 * target_trust (trust modulates how much we believe target)
+        # Get direct measurement from target
         direct_state = self._get_latest_received_state(target_id, current_time_ns)
         
+        # Use pre-calculated weights from weight_module
+        if self.current_weight_result is None:
+            # Fallback: no weights calculated yet, return current estimate
+            return current_est
+        
+        # === Direct Measurement Correction (Node 0) ===
         if direct_state is not None:
-            # Calculate weight for direct measurement
-            w0 = self.weight_config.w0_fixed * target_trust
+            w0 = self.current_weight_result.w0
             direct_correction = w0 * (direct_state - current_est)
             total_correction += direct_correction
         
         # === Neighbor Consensus Correction ===
-        # Weight: w_N based on neighbor's trust score
-        neighbor_correction = np.zeros(self.state_dim)
-        neighbor_count = 0
-        total_neighbor_weight = 0.0
-        
         for neighbor_id, history in self.received_fleet_states.items():
             if neighbor_id == self.vehicle_id:
                 continue
@@ -329,10 +334,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             if neighbor_fleet is None or target_id not in neighbor_fleet:
                 continue
             
-            # Get neighbor's trust score
-            neighbor_trust = trust_scores.get(neighbor_id, 0.0)
-            if neighbor_trust < self.weight_config.trust_threshold:
-                continue  # Skip untrusted neighbors
+            # Get pre-calculated weight for this neighbor
+            w_neighbor = self.current_weight_result.neighbor_weights.get(neighbor_id, 0.0)
+            if w_neighbor <= 0:
+                continue  # Skip if no weight assigned
             
             # Extract neighbor's estimate of target
             neigh_est_dict = neighbor_fleet[target_id]
@@ -344,25 +349,16 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 neigh_est_dict.get('acceleration', 0.0)
             ])
             
-            # Weight based on neighbor trust (capped)
-            w_neighbor = min(neighbor_trust * self.consensus_gain, self.weight_config.w_cap)
-            
-            neighbor_correction += w_neighbor * (neigh_est - current_est)
-            total_neighbor_weight += w_neighbor
-            neighbor_count += 1
-        # TODO : why divide by neighbor_count?
-        if neighbor_count > 0:
-            # Average the corrections
-            total_correction += neighbor_correction / neighbor_count
+            # Apply weight (already normalized, no division needed)
+            neighbor_correction = w_neighbor * (neigh_est - current_est)
+            total_correction += neighbor_correction
         
         # === Dynamics Prediction (optional) ===
-        # Add small dynamics-based correction for smoothness
-        if dt > 0:
+        # Only apply if no direct measurement available
+        if direct_state is None and dt > 0:
             dynamics_pred = self._predict_dynamics(current_est, control, dt)
             dynamics_correction = self.observer_gain * (dynamics_pred - current_est)
-            # Only apply if no direct measurement
-            if direct_state is None:
-                total_correction += dynamics_correction
+            total_correction += dynamics_correction
         
         # === Apply Update ===
         new_est = current_est + total_correction

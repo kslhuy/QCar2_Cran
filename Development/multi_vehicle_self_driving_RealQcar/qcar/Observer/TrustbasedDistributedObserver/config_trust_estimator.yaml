@@ -53,7 +53,14 @@ trust:
 # Weight Calculation Configuration
 # =====================================================================
 weight:
-  # Fixed weight allocations
+  # Weight calculation type
+  # Options: 'equal', 'trust_based', 'graph_based'
+  # - 'equal': All neighbors get equal weight (simple consensus)
+  # - 'trust_based': Trust-proportional weights with fixed w0 and w_self
+  # - 'graph_based': Graph topology-based weights (matches old implementation)
+  weight_type: trust_based
+  
+  # Fixed weight allocations (for trust_based mode)
   w0_fixed: 0.3                   # Weight for direct measurement (target's own broadcast)
   w_self_base: 0.2                # Base weight for self (persistence of own estimate)
   

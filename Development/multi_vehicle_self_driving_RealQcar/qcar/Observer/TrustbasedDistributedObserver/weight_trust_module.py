@@ -20,6 +20,9 @@ from collections import defaultdict
 @dataclass
 class WeightConfig:
     """Configuration for weight calculation"""
+    # Weight calculation type
+    weight_type: str = "trust_based"  # 'equal', 'trust_based', 'graph_based'
+    
     # Fixed weights
     w0_fixed: float = 0.3          # Virtual node weight (local measurement)
     w_self_base: float = 0.2       # Self weight
@@ -54,10 +57,15 @@ class WeightTrustModule:
     
     Calculates adaptive weights for consensus-based state estimation
     using trust scores from the TriP Trust Model.
+    
+    Supports two modes:
+    1. Simple mode: Uses trust_scores dict directly (no graph)
+    2. Graph mode: Uses adjacency matrix for neighbor discovery (like old implementation)
     """
     
     def __init__(self, vehicle_id: int, fleet_size: int,
-                 config: WeightConfig = None, logger=None):
+                 config: WeightConfig = None, logger=None,
+                 graph: np.ndarray = None, trust_threshold: float = None):
         """
         Initialize Weight Trust Module
         
@@ -66,30 +74,133 @@ class WeightTrustModule:
             fleet_size: Total number of vehicles in fleet
             config: Weight configuration parameters
             logger: Logger instance
+            graph: Optional adjacency matrix (n x n) for neighbor discovery
+            trust_threshold: Optional trust threshold (overrides config)
         """
         self.vehicle_id = vehicle_id
         self.fleet_size = fleet_size
         self.config = config or WeightConfig()
         self.logger = logger
         
+        # Override trust threshold if provided
+        if trust_threshold is not None:
+            self.config.trust_threshold = trust_threshold
+        
+        # Adjacency matrix for graph-based neighbor discovery
+        # If not provided, assume fully connected graph
+        if graph is not None:
+            self.graph = np.array(graph)
+        else:
+            # Default: fully connected (all vehicles communicate)
+            self.graph = self.generate_fully_connected_graph(fleet_size)
+        
         # Weight storage: includes virtual node at index 0
         # [w0, w1, w2, ..., wN] where w0 is virtual node
         self.weights = np.zeros(fleet_size + 1)
         self.weights[0] = self.config.w0_fixed
-        self.weights[vehicle_id + 1] = self.config.w_self_base
+        self.weights[self.vehicle_id + 1] = self.config.w_self_base
         
         # Previous weights for smoothing
         self.prev_weights = self.weights.copy()
         
-        # Adjacency matrix for virtual graph (optional)
-        self.adjacency_matrix: Optional[np.ndarray] = None
+        # Virtual graph (adjacency matrix with extra node for local measurement)
+        self.virtual_graph: Optional[np.ndarray] = None
     
     def calculate_weights(self, trust_scores: Dict[int, float],
                           neighbor_ids: List[int] = None) -> WeightResult:
         """
+        Calculate weights for distributed observer based on configured weight_type
+        
+        Dispatches to appropriate weight calculation method:
+        - 'equal': Equal weights for all neighbors
+        - 'trust_based': Trust-proportional weights with fixed w0/w_self
+        - 'graph_based': Graph topology-based weights
+        
+        Args:
+            trust_scores: Dict of {vehicle_id: trust_score}
+            neighbor_ids: Optional list of neighbor IDs to consider
+            
+        Returns:
+            WeightResult with weight array and metadata
+        """
+        if self.config.weight_type == "equal":
+            return self._calculate_equal_weights(trust_scores, neighbor_ids)
+        elif self.config.weight_type == "graph_based":
+            return self.calculate_weights_with_graph(trust_scores)
+        else:  # trust_based (default)
+            return self._calculate_trust_based_weights(trust_scores, neighbor_ids)
+    
+    def _calculate_equal_weights(self, trust_scores: Dict[int, float],
+                                  neighbor_ids: List[int] = None) -> WeightResult:
+        """
+        Calculate equal weights for all neighbors (simple consensus)
+        
+        All available neighbors get equal weight: w = 1 / n_total
+        Row-stochastic guarantee: Σ weights = 1.0
+        
+        Args:
+            trust_scores: Dict of {vehicle_id: trust_score} (used for neighbor discovery)
+            neighbor_ids: Optional list of neighbor IDs to consider
+            
+        Returns:
+            WeightResult with equal weights
+        """
+        # Initialize
+        new_weights = np.zeros(self.fleet_size + 1)
+        neighbor_weights = {}
+        
+        # Get available neighbors (above threshold)
+        trusted = self._get_trusted_neighbors(trust_scores, neighbor_ids)
+        
+        # Calculate equal weights
+        n_total = len(trusted) + 1  # neighbors + virtual node (w0)
+        equal_weight = 1.0 / n_total if n_total > 0 else 0.0
+        
+        # Assign equal weight to virtual node
+        new_weights[0] = equal_weight
+        
+        # Assign equal weight to each neighbor
+        for vid in trusted:
+            new_weights[vid + 1] = equal_weight
+            neighbor_weights[vid] = equal_weight
+        
+        # Self weight is 0 in pure equal consensus
+        new_weights[self.vehicle_id + 1] = 0.0
+        
+        # Normalize (should already be 1.0, but ensure it)
+        weight_sum = np.sum(new_weights)
+        if weight_sum > 0:
+            new_weights = new_weights / weight_sum
+        
+        # Apply EMA smoothing if enabled
+        if self.config.enable_smoothing and np.any(self.prev_weights > 0):
+            eta = self.config.eta
+            smoothed_weights = eta * new_weights + (1 - eta) * self.prev_weights
+            smoothed_weights = smoothed_weights / np.sum(smoothed_weights)
+            new_weights = smoothed_weights
+        
+        # Store for next iteration
+        self.prev_weights = new_weights.copy()
+        self.weights = new_weights
+        
+        # Build result
+        result = WeightResult(
+            weights=new_weights,
+            trusted_neighbors=trusted,
+            neighbor_weights=neighbor_weights,
+            w0=new_weights[0],
+            w_self=new_weights[self.vehicle_id + 1],
+            total_neighbor_weight=sum(neighbor_weights.values())
+        )
+        
+        return result
+    
+    def _calculate_trust_based_weights(self, trust_scores: Dict[int, float],
+                                        neighbor_ids: List[int] = None) -> WeightResult:
+        """
         Calculate trust-based weights for distributed observer
         
-        Algorithm (v2 - simplified):
+        Algorithm:
         1. Set fixed weights: w0 = 0.3, w_self = 0.2
         2. Calculate neighbor budget: 1.0 - w0 - w_self = 0.5
         3. Get trusted neighbors (trust > threshold)
@@ -275,32 +386,199 @@ class WeightTrustModule:
         
         return [vid for vid, _ in trusted]
     
-    def generate_virtual_graph(self, physical_graph: np.ndarray) -> np.ndarray:
+    def generate_virtual_graph(self, physical_graph: np.ndarray = None) -> np.ndarray:
         """
-        Generate virtual graph with extra node for local measurement
+        Generate virtual graph with extra node for local measurement.
         
         The virtual graph adds node 0 representing the local measurement,
-        connected to all other nodes.
+        connected to the host vehicle and its neighbors.
         
         Args:
             physical_graph: Adjacency matrix of physical topology [N x N]
+                           If None, uses self.graph
             
         Returns:
             Virtual graph adjacency matrix [(N+1) x (N+1)]
         """
+        if physical_graph is None:
+            physical_graph = self.graph
+        
         n = physical_graph.shape[0]
         virtual_graph = np.zeros((n + 1, n + 1))
         
         # Copy physical connections (shifted by 1)
         virtual_graph[1:, 1:] = physical_graph
         
-        # Add connections to virtual node (node 0)
-        # Virtual node is connected to all real nodes
-        virtual_graph[0, 1:] = 1
-        virtual_graph[1:, 0] = 1
+        # Set bidirectional edge between virtual node (0) and host vehicle
+        virtual_graph[0, self.vehicle_id + 1] = 1
+        virtual_graph[self.vehicle_id + 1, 0] = 1
         
-        self.adjacency_matrix = virtual_graph
+        # Set edges between virtual node and host's neighbors
+        neighbors = np.where(physical_graph[self.vehicle_id, :])[0]
+        for neighbor in neighbors:
+            virtual_graph[0, neighbor + 1] = physical_graph[self.vehicle_id, neighbor]
+            virtual_graph[neighbor + 1, 0] = physical_graph[neighbor, self.vehicle_id]
+        
+        self.virtual_graph = virtual_graph
         return virtual_graph
+    
+    @staticmethod
+    def generate_fully_connected_graph(n: int) -> np.ndarray:
+        """
+        Generate a fully connected adjacency matrix (all vehicles communicate).
+        
+        For V2V/P2P platoon where all vehicles can communicate with each other.
+        Diagonal is 0 (no self-loops).
+        
+        Args:
+            n: Number of vehicles
+            
+        Returns:
+            n x n adjacency matrix with 1s everywhere except diagonal
+        """
+        graph = np.ones((n, n)) - np.eye(n)
+        return graph
+    
+    def get_neighbors_from_graph(self, vehicle_idx: int = None) -> np.ndarray:
+        """
+        Get direct neighbors from adjacency matrix.
+        
+        Args:
+            vehicle_idx: Vehicle index (default: self.vehicle_id)
+            
+        Returns:
+            Array of neighbor vehicle indices
+        """
+        if vehicle_idx is None:
+            vehicle_idx = self.vehicle_id
+        
+        return np.where(self.graph[vehicle_idx, :])[0]
+    
+    def get_trusted_neighbors_from_graph(self, trust_scores: Dict[int, float]) -> np.ndarray:
+        """
+        Get trusted neighbors using graph topology and trust scores.
+        
+        This matches the old implementation logic:
+        1. Find direct neighbors from adjacency matrix
+        2. Filter by trust threshold
+        
+        Args:
+            trust_scores: Dict of {vehicle_id: trust_score}
+            
+        Returns:
+            Array of trusted neighbor vehicle indices
+        """
+        # Convert trust_scores dict to array
+        trust_array = np.zeros(self.fleet_size)
+        for vid, score in trust_scores.items():
+            if 0 <= vid < self.fleet_size:
+                trust_array[vid] = score
+        
+        # Find direct neighbors from graph
+        neighbors = self.get_neighbors_from_graph()
+        
+        # Filter by trust threshold
+        trusted_mask = trust_array[neighbors] > self.config.trust_threshold
+        trusted_neighbors = neighbors[trusted_mask]
+        
+        return trusted_neighbors
+    
+    def calculate_weights_with_graph(self, trust_scores: Dict[int, float],
+                                      weight_type: str = "local") -> WeightResult:
+        """
+        Calculate weights using graph topology (matches old implementation).
+        
+        This method uses the adjacency matrix more explicitly:
+        1. Generate virtual graph for this vehicle
+        2. Find trusted neighbors from graph topology
+        3. Distribute weights based on trust and topology
+        
+        Args:
+            trust_scores: Dict of {vehicle_id: trust_score}
+            weight_type: "local" (prioritize local measurement) or "distributed" (equal)
+            
+        Returns:
+            WeightResult with weight array and metadata
+        """
+        # Generate virtual graph
+        virtual_graph = self.generate_virtual_graph()
+        num_nodes = virtual_graph.shape[0]
+        
+        # Get trusted neighbors from graph
+        trusted_neighbors = self.get_trusted_neighbors_from_graph(trust_scores)
+        
+        # Initialize weights
+        new_weights = np.zeros(num_nodes)
+        neighbor_weights = {}
+        
+        # Calculate base weight using old formula
+        # n_w_i = max(kappa, |trusted neighbors| + 1 (self) + 1 (virtual))
+        n_w_i = max(self.config.kappa, len(trusted_neighbors) + 2)
+        base_weight = 1.0 / n_w_i
+        
+        # Set self weight
+        new_weights[self.vehicle_id + 1] = base_weight
+        
+        # Set neighbor weights
+        for neighbor_id in trusted_neighbors:
+            new_weights[neighbor_id + 1] = base_weight
+            neighbor_weights[int(neighbor_id)] = base_weight
+        
+        # Set virtual node weight based on weight_type
+        if weight_type == "local":
+            # Prioritize local measurement: remainder goes to virtual node
+            new_weights[0] = 1.0 - (len(trusted_neighbors) + 1) * base_weight
+        else:
+            # Distributed equally
+            new_weights[0] = base_weight
+        
+        # Ensure non-negative and normalize
+        new_weights = np.maximum(new_weights, 0.0)
+        weight_sum = np.sum(new_weights)
+        if weight_sum > 0:
+            new_weights = new_weights / weight_sum
+        
+        # Apply EMA smoothing if enabled
+        if self.config.enable_smoothing and np.any(self.prev_weights > 0):
+            # Ensure same size
+            if len(self.prev_weights) == len(new_weights):
+                eta = self.config.eta
+                new_weights = eta * new_weights + (1 - eta) * self.prev_weights
+                new_weights = new_weights / np.sum(new_weights)
+        
+        # Store for next iteration
+        self.prev_weights = new_weights.copy()
+        self.weights = new_weights
+        
+        # Build result
+        result = WeightResult(
+            weights=new_weights,
+            trusted_neighbors=list(trusted_neighbors),
+            neighbor_weights=neighbor_weights,
+            w0=new_weights[0],
+            w_self=new_weights[self.vehicle_id + 1],
+            total_neighbor_weight=sum(neighbor_weights.values())
+        )
+        
+        return result
+    
+    def set_graph(self, graph: np.ndarray):
+        """
+        Set/update the adjacency matrix.
+        
+        Args:
+            graph: New adjacency matrix (n x n)
+        """
+        self.graph = np.array(graph)
+        self.fleet_size = graph.shape[0]
+        
+        # Reset weights for new graph size
+        self.weights = np.zeros(self.fleet_size + 1)
+        self.weights[0] = self.config.w0_fixed
+        if self.vehicle_id < self.fleet_size:
+            self.weights[self.vehicle_id + 1] = self.config.w_self_base
+        self.prev_weights = self.weights.copy()
+        self.virtual_graph = None
     
     def get_weights_array(self) -> np.ndarray:
         """Get current weights as numpy array"""

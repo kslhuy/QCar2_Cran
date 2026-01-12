@@ -23,13 +23,14 @@ import time
 class TrustConfig:
     """Configuration for trust model parameters"""
     # Trust component weights
-    weight_velocity: float = 12.0
+    weight_velocity: float = 3.0  # Reduced from 12.0 to be less sensitive
     weight_distance: float = 2.0
     weight_acceleration: float = 0.3
     weight_heading: float = 1.0
     
     # Trust thresholds
     trust_threshold: float = 0.5
+    stationary_velocity_threshold: float = 0.2  # m/s - consider stationary below this
     
     # Dirichlet parameters
     num_trust_levels: int = 5
@@ -47,6 +48,9 @@ class TrustConfig:
     
     # EMA smoothing
     ema_alpha: float = 0.3
+    
+    # Noise tolerance for stationary vehicles
+    stationary_noise_tolerance: float = 0.15  # Tolerance for measurement noise when stationary
 
 
 @dataclass  
@@ -130,6 +134,11 @@ class TriPTrustModel:
         # Cross-check data from neighbors (for gamma_cross)
         self.neighbor_trust_reports: Dict[int, Dict[int, float]] = defaultdict(dict)
         # neighbor_trust_reports[reporter_id][target_id] = trust_score
+        
+        # Per-vehicle history for dynamic scoring
+        self.previous_states: Dict[int, VehicleData] = {}
+        self.distance_buffers: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(5))
+        self.buffer_size = 5
         
     def calculate_trust(self, 
                         host_state: Dict,
@@ -218,6 +227,17 @@ class TriPTrustModel:
         # Store in history
         self._update_history(target_id, trust.final_score)
         
+        # Store current state for next iteration (used by heading, distance, acceleration scores)
+        self.previous_states[target_id] = VehicleData(
+            vehicle_id=target_id,
+            x=target_data.x,
+            y=target_data.y,
+            theta=target_data.theta,
+            velocity=target_data.velocity,
+            acceleration=target_data.acceleration,
+            timestamp_ns=current_time_ns
+        )
+        
         return trust
     
     def _calculate_velocity_score(self, host_state: Dict, 
@@ -227,16 +247,33 @@ class TriPTrustModel:
         Calculate velocity consistency score
         
         v_score = max(1 - |v_target - v_ref| / v_ref, 0)^w_v
+        
+        Special handling for stationary vehicles to avoid penalizing noise.
         """
         v_target = target_data.velocity
         
         # Use leader velocity as reference, or host velocity
         if leader_data is not None:
-            v_ref = max(leader_data.velocity, 0.1)  # Avoid division by zero
+            v_ref = leader_data.velocity
         else:
-            v_ref = max(host_state.get('velocity', 0.5), 0.1)
+            v_ref = host_state.get('velocity', 0.0)
         
-        # Compute normalized error
+        # Special case: both vehicles are stationary
+        # Give high trust if both are below stationary threshold
+        stationary_threshold = self.config.stationary_velocity_threshold
+        if abs(v_target) < stationary_threshold and abs(v_ref) < stationary_threshold:
+            # Both stationary - check if velocities are similar (within noise tolerance)
+            v_error = abs(v_target - v_ref)
+            if v_error < self.config.stationary_noise_tolerance:
+                return 1.0  # Perfect trust for stationary vehicles with similar readings
+            else:
+                # Small difference in stationary readings - still give high trust
+                normalized_error = v_error / stationary_threshold
+                score = max(1.0 - normalized_error, 0.0) ** self.config.weight_velocity
+                return float(np.clip(score, 0.0, 1.0))
+        
+        # Normal case: at least one vehicle is moving
+        v_ref = max(abs(v_ref), 0.1)  # Avoid division by zero
         v_error = abs(v_target - v_ref)
         normalized_error = v_error / v_ref
         
@@ -248,68 +285,155 @@ class TriPTrustModel:
     def _calculate_distance_score(self, host_state: Dict, 
                                    target_data: VehicleData) -> float:
         """
-        Calculate distance consistency score
+        Calculate distance consistency score.
         
-        Validates that reported position matches observed distance.
-        d_score = max(1 - |d_reported - d_measured| / d_measured, 0)^w_d
+        Compares expected distance change (from relative velocity) with reported change.
+        d_score = max(1 - |d_error| / d_measured, 0)^w_d
         """
-        # Calculate distance from host to target based on reported positions
+        target_id = target_data.vehicle_id
+        
+        # Calculate current distance from host to target
         dx = target_data.x - host_state.get('x', 0.0)
         dy = target_data.y - host_state.get('y', 0.0)
-        d_reported = np.sqrt(dx**2 + dy**2)
+        d_current = np.sqrt(dx**2 + dy**2)
         
-        # For now, use reported as "measured" (in real system, use sensor measurement)
-        # This can be enhanced with actual sensor distance measurement
-        d_measured = max(d_reported, 0.1)  # Placeholder
-        
-        # Calculate error (this becomes meaningful when d_measured comes from sensors)
-        d_error = abs(d_reported - d_measured)
-        normalized_error = d_error / d_measured
-        
-        score = max(1.0 - normalized_error, 0.0) ** self.config.weight_distance
+        # Get previous state if available
+        if target_id in self.previous_states:
+            prev = self.previous_states[target_id]
+            
+            # Previous distance
+            prev_host_x = host_state.get('x', 0.0)  # Approximate, using current host position
+            prev_host_y = host_state.get('y', 0.0)
+            prev_dx = prev.x - prev_host_x
+            prev_dy = prev.y - prev_host_y
+            d_prev = np.sqrt(prev_dx**2 + prev_dy**2)
+            
+            # Expected distance change based on relative velocity
+            v_target = target_data.velocity
+            v_host = host_state.get('velocity', 0.0)
+            v_rel = v_target - v_host
+            
+            # Approximate dt based on timestamps or default
+            dt = 0.1  # Default 100ms update rate
+            d_expected = d_prev + v_rel * dt
+            
+            # Calculate error between expected and actual distance
+            d_measured = max(d_current, 0.1)
+            d_error = abs(d_current - d_expected)
+            normalized_error = d_error / d_measured
+            
+            score = max(1.0 - normalized_error, 0.0) ** self.config.weight_distance
+        else:
+            # First observation - no comparison possible
+            score = 1.0
         
         return float(np.clip(score, 0.0, 1.0))
     
     def _calculate_acceleration_score(self, host_state: Dict,
                                         target_data: VehicleData) -> float:
         """
-        Calculate acceleration consistency score
+        Calculate acceleration consistency score based on dynamics.
         
-        Checks if acceleration is physically reasonable.
-        a_score = max(1 - |d_add * delta_a|, 0)^w_a
+        Uses distance buffer to compute relative velocity and expected acceleration.
+        a_score = max(1 - |d_add * delta_acc|, 0)^w_a
+        
+        Special handling for stationary vehicles to tolerate measurement noise.
         """
+        target_id = target_data.vehicle_id
         a_target = target_data.acceleration
+        a_host = host_state.get('acceleration', 0.0)
+        v_target = target_data.velocity
+        v_host = host_state.get('velocity', 0.0)
         
-        # Maximum reasonable acceleration for QCar (m/s^2)
-        a_max = 3.0
+        # Special case: both vehicles are stationary
+        stationary_threshold = self.config.stationary_velocity_threshold
+        if abs(v_target) < stationary_threshold and abs(v_host) < stationary_threshold:
+            # Both stationary - expect near-zero acceleration
+            # Allow for measurement noise
+            a_error = abs(a_target - a_host)
+            noise_tolerance = 0.5  # m/s^2 - typical sensor noise for stationary vehicles
+            
+            if a_error < noise_tolerance:
+                return 1.0  # High trust for small acceleration differences when stationary
+            else:
+                # Larger acceleration difference - penalize but not too harshly
+                normalized_error = min(a_error / noise_tolerance, 2.0)  # Cap at 2x tolerance
+                score = max(1.0 - normalized_error / 2.0, 0.0) ** self.config.weight_acceleration
+                return float(np.clip(score, 0.0, 1.0))
         
-        # Normalize acceleration
-        normalized_a = abs(a_target) / a_max
+        # Normal case: at least one vehicle is moving
+        # Calculate current distance
+        dx = target_data.x - host_state.get('x', 0.0)
+        dy = target_data.y - host_state.get('y', 0.0)
+        d_current = np.sqrt(dx**2 + dy**2)
         
-        score = max(1.0 - normalized_a, 0.0) ** self.config.weight_acceleration
+        # Update distance buffer (shift and add new distance)
+        buffer = self.distance_buffers[target_id].copy()
+        buffer = np.roll(buffer, 1)
+        buffer[0] = d_current
+        self.distance_buffers[target_id] = buffer
+        
+        # Compute relative velocity from distance buffer
+        dt = 0.1  # Assumed time step (100ms)
+        
+        if np.all(buffer != 0):  # Buffer is filled
+            v_rel = (buffer[-1] - buffer[0]) / ((self.buffer_size - 1) * dt)
+            v_rel_prev = (buffer[-2] - buffer[1]) / ((self.buffer_size - 1) * dt)
+            expected_a_rel = (v_rel - v_rel_prev) / dt
+        else:
+            v_rel = 0.0
+            expected_a_rel = 0.0
+        
+        # Calculate relative acceleration difference
+        a_rel = a_target - a_host
+        delta_acc = expected_a_rel - a_rel
+        
+        # Normalization factor based on distance (from old implementation)
+        d_norm = 19.0  # Normalization constant
+        d_add = d_norm / max(d_current, 1.0)
+        
+        # Calculate score using old formula
+        score = max(1.0 - abs(d_add * delta_acc), 0.0) ** self.config.weight_acceleration
         
         return float(np.clip(score, 0.0, 1.0))
     
     def _calculate_heading_score(self, host_state: Dict,
                                   target_data: VehicleData) -> float:
         """
-        Calculate heading consistency score
+        Calculate heading consistency score.
         
-        Validates heading from trajectory.
+        Compares trajectory-based estimated heading with reported heading.
         h_score = max(1 - theta_diff / theta_max, 0)
         """
-        theta_target = target_data.theta
-        theta_host = host_state.get('theta', 0.0)
+        target_id = target_data.vehicle_id
+        theta_reported = target_data.theta
         
-        # Calculate heading difference (normalized to [-pi, pi])
+        # Check if we have previous position data
+        if target_id not in self.previous_states:
+            return 1.0  # First observation, cannot compute heading
+        
+        prev = self.previous_states[target_id]
+        
+        # Calculate position change
+        delta_x = target_data.x - prev.x
+        delta_y = target_data.y - prev.y
+        
+        # Only compute if there's meaningful movement
+        movement = np.sqrt(delta_x**2 + delta_y**2)
+        if movement < 0.001:  # Less than 1mm movement
+            return 1.0  # No movement, can't estimate heading
+        
+        # Estimate heading from trajectory
+        theta_est = np.arctan2(delta_y, delta_x)
+        
+        # Calculate heading difference (handle circular nature of angles)
         theta_diff = np.arctan2(
-            np.sin(theta_target - theta_host),
-            np.cos(theta_target - theta_host)
+            np.sin(theta_reported - theta_est),
+            np.cos(theta_reported - theta_est)
         )
         
-        # Maximum expected heading difference
-        theta_max = np.pi / 2  # 90 degrees
-        
+        # Maximum expected heading difference (90 degrees)
+        theta_max = np.pi / 2
         normalized_diff = abs(theta_diff) / theta_max
         score = max(1.0 - normalized_diff, 0.0)
         
@@ -578,3 +702,5 @@ class TriPTrustModel:
         self.beacon_drop_counts.clear()
         self.beacon_receive_counts.clear()
         self.neighbor_trust_reports.clear()
+        self.previous_states.clear()
+        self.distance_buffers.clear()
