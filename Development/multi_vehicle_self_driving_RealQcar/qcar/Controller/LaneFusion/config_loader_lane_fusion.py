@@ -116,7 +116,7 @@ class LaneFusionConfigLoader:
             try:
                 with open(self.config_file, 'r') as f:
                     self._config = yaml.safe_load(f) or {}
-                print(f"[LaneFusion] Loaded config from {self.config_file}")
+                # print(f"[LaneFusion] Loaded config from {self.config_file}")
             except Exception as e:
                 print(f"[LaneFusion] Error loading config: {e}")
                 self._config = {}

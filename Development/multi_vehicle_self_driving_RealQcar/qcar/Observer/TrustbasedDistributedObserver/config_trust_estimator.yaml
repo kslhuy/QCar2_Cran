@@ -1,0 +1,137 @@
+# Trust-Based Distributed Observer Configuration
+# Configuration for trust model, weight calculation, and fleet estimation
+# Place in qcar/Observer/TrustbasedDistributedObserver/
+
+# =====================================================================
+# Fleet Estimator Type Selection
+# =====================================================================
+# Options: 'trust_consensus', 'trust_kalman'
+fleet_estimator_type: trust_consensus
+
+# =====================================================================
+# Global Fleet Settings (inherited from base estimators)
+# =====================================================================
+fleet:
+  state_dim: 5                    # [x, y, theta, v, a]
+  max_state_age_ns: 1000000000    # 1 second validity window
+  fleet_observer_rate: 50         # Hz
+  received_local_states_limit: 10
+  received_fleet_states_limit: 5
+
+# =====================================================================
+# Trust Model Configuration (TriP Model)
+# =====================================================================
+trust:
+  # Component weights (exponents for score calculation)
+  # Higher weight = more sensitive to errors in that component
+  weight_velocity: 12.0           # Velocity consistency weight
+  weight_distance: 2.0            # Distance consistency weight  
+  weight_acceleration: 0.3        # Acceleration plausibility weight
+  weight_heading: 1.0             # Heading consistency weight
+  
+  # Trust threshold for considering a vehicle "trusted"
+  trust_threshold: 0.5
+  
+  # Dirichlet-based trust level parameters
+  num_trust_levels: 5             # [Untrusted, Suspicious, Neutral, Trusted, Highly Trusted]
+  dirichlet_update_rate: 0.1      # How fast trust levels update (0-1)
+  dirichlet_type: "Dual"          # "Single" (local only) or "Dual" (local + cross-validation)
+  
+  # Attack detection settings
+  monitor_sudden_change: true     # Enable sudden trust change monitoring
+  sudden_change_threshold: 0.5    # Threshold for sudden change detection
+  attack_detection_window: 10     # Number of samples for attack detection
+  
+  # Communication quality parameters
+  max_message_age_s: 1.0          # Maximum message age in seconds
+  expected_beacon_interval_s: 0.1 # Expected beacon interval (10 Hz)
+  
+  # EMA smoothing for trust scores
+  ema_alpha: 0.3                  # Smoothing factor (0-1, higher = less smoothing)
+
+# =====================================================================
+# Weight Calculation Configuration
+# =====================================================================
+weight:
+  # Fixed weight allocations
+  w0_fixed: 0.3                   # Weight for direct measurement (target's own broadcast)
+  w_self_base: 0.2                # Base weight for self (persistence of own estimate)
+  
+  # Neighbor weight constraints
+  w_cap: 0.4                      # Maximum weight per neighbor (influence cap - 40%)
+  kappa: 5                        # Maximum neighbors to consider in consensus
+  
+  # Temporal smoothing (EMA)
+  eta: 0.15                       # EMA smoothing factor
+  enable_smoothing: true          # Enable weight smoothing between updates
+  
+  # Advanced options
+  use_distance_weighting: false   # Weight by physical distance (experimental)
+
+# =====================================================================
+# Observer/Estimator Gains
+# =====================================================================
+observer:
+  observer_gain: 0.1              # Measurement correction gain (L in Luenberger)
+  consensus_gain: 0.2             # Consensus correction gain
+  
+  # Attack mitigation
+  attack_mitigation: true         # Enable automatic attack mitigation
+  
+  # Kalman-specific parameters (for trust_kalman type)
+  kalman:
+    process_noise: 0.01           # Q - process noise covariance
+    measurement_noise: 0.1        # R - measurement noise covariance
+    initial_covariance: 1.0       # Initial P matrix diagonal
+
+# =====================================================================
+# Vehicle Dynamics Parameters (for prediction models)
+# =====================================================================
+vehicle:
+  wheelbase: 0.256                # QCar wheelbase in meters
+  max_velocity: 2.0               # Maximum velocity m/s
+  max_acceleration: 5.0           # Maximum acceleration m/s^2
+  max_steering: 0.5               # Maximum steering angle rad
+
+# =====================================================================
+# Logging and Debugging
+# =====================================================================
+logging:
+  log_trust_scores: true          # Log trust scores each update
+  log_weight_updates: true        # Log weight calculations
+  log_attack_flags: true          # Log attack detection flags
+  log_interval_s: 1.0             # Logging interval in seconds
+
+# =====================================================================
+# Example: Different Configurations for Different Scenarios
+# =====================================================================
+
+# For high-trust environment (cooperative, no adversaries):
+# trust:
+#   trust_threshold: 0.3
+#   weight_velocity: 5.0
+#   dirichlet_type: "Single"
+# weight:
+#   w0_fixed: 0.4
+#   w_cap: 0.5
+
+# For adversarial environment (potential attackers):
+# trust:
+#   trust_threshold: 0.7
+#   weight_velocity: 15.0
+#   dirichlet_type: "Dual"
+#   monitor_sudden_change: true
+# weight:
+#   w0_fixed: 0.2
+#   w_cap: 0.3
+# observer:
+#   attack_mitigation: true
+
+# For sparse communication (unreliable links):
+# trust:
+#   max_message_age_s: 2.0
+#   expected_beacon_interval_s: 0.5
+# weight:
+#   w_self_base: 0.3
+#   enable_smoothing: true
+#   eta: 0.3

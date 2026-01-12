@@ -49,6 +49,41 @@ fleet:
     AF_i: 0.22
     mu_i: 0.01
 
+  # ---------------------------------------------------------------------
+  # Trust-Based Consensus estimator defaults
+  # See TrustbasedDistributedObserver/config_trust_estimator.yaml for full options
+  # ---------------------------------------------------------------------
+  trust_consensus:
+    observer_gain: 0.1
+    consensus_gain: 0.2
+    attack_mitigation: true
+    trust:
+      trust_threshold: 0.5
+      dirichlet_type: "Dual"
+      ema_alpha: 0.3
+    weight:
+      w0_fixed: 0.3
+      w_self_base: 0.2
+      w_cap: 0.4
+      kappa: 5
+      eta: 0.15
+
+  # ---------------------------------------------------------------------
+  # Trust-Based Kalman estimator defaults
+  # ---------------------------------------------------------------------
+  trust_kalman:
+    observer_gain: 0.1
+    consensus_gain: 0.2
+    process_noise: 0.01
+    measurement_noise: 0.1
+    attack_mitigation: true
+    trust:
+      trust_threshold: 0.5
+      dirichlet_type: "Dual"
+    weight:
+      w0_fixed: 0.3
+      w_cap: 0.4
+
 # Example override (when loading config into VehicleObserver):
 # vehicle_observer_config:
 #   observer:

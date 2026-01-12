@@ -301,22 +301,22 @@ class V2VManager:
             # if not self._validate_local_state_data(data, sender_id):
             #     return
             
-            if self.logger:
-                self.logger.debug(f"Vehicle {self.vehicle_id}: Received local state from vehicle {sender_id}")
+            # if self.logger:
+            #     # self.logger.debug(f"Vehicle {self.vehicle_id}: Local state data structure local state from vehicle {sender_id}")
                 
-                # Periodically log the data structure for debugging
-                self._local_state_log_counter += 1
-                if self._local_state_log_counter % self._log_data_structure_interval == 0:
-                    self.logger.info(f"V2VManager: Local state data structure from vehicle {sender_id}:")
-                    self.logger.info(f"  vehicle_id: {data.get('vehicle_id')} (int)")
-                    self.logger.info(f"  position: ({data.get('x'):.3f}, {data.get('y'):.3f}) (float)")
-                    self.logger.info(f"  theta: {data.get('theta'):.3f} rad (float)")
-                    self.logger.info(f"  velocity: {data.get('velocity'):.3f} m/s (float)")
-                    self.logger.info(f"  acceleration: {data.get('acceleration', 0.0):.3f} m/s² (float)")
-                    control_input = data.get('control_input', {}) or {}
-                    self.logger.info(f"  control_input: steering={control_input.get('steering', 0.0):.3f}, throttle={control_input.get('throttle', 0.0):.3f}")
-                    self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
-                    self.logger.info(f"  send_time_ns: {send_time_ns} (nanoseconds)")
+            #     # Periodically log the data structure for debugging
+            #     self._local_state_log_counter += 1
+            #     if self._local_state_log_counter % self._log_data_structure_interval == 0:
+            #         self.logger.info(f"V2VManager: Local state data structure from vehicle {sender_id}:")
+            #         self.logger.info(f"  vehicle_id: {data.get('vehicle_id')} (int)")
+            #         self.logger.info(f"  position: ({data.get('x'):.3f}, {data.get('y'):.3f}) (float)")
+            #         self.logger.info(f"  theta: {data.get('theta'):.3f} rad (float)")
+            #         self.logger.info(f"  velocity: {data.get('velocity'):.3f} m/s (float)")
+            #         self.logger.info(f"  acceleration: {data.get('acceleration', 0.0):.3f} m/s² (float)")
+            #         control_input = data.get('control_input', {}) or {}
+            #         self.logger.info(f"  control_input: steering={control_input.get('steering', 0.0):.3f}, throttle={control_input.get('throttle', 0.0):.3f}")
+            #         self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
+            #         self.logger.info(f"  send_time_ns: {send_time_ns} (nanoseconds)")
             
             with self._lock:
 

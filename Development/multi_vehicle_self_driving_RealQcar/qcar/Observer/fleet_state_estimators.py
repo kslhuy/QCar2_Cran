@@ -711,11 +711,33 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 class FleetEstimatorFactory:
     """Factory to create fleet state estimators by name"""
     
+    # Base estimator types (always available)
     ESTIMATOR_TYPES = {
         'consensus': ConsensusFleetEstimator,
         'distributed_kalman': DistributedKalmanEstimator,
         'distributed_luenberger': DistributedLuenbergerEstimator,
     }
+    
+    # Trust-based estimators are loaded lazily to avoid circular imports
+    _trust_estimators_loaded = False
+    
+    @classmethod
+    def _load_trust_estimators(cls):
+        """Lazily load trust-based estimators to avoid circular imports"""
+        if cls._trust_estimators_loaded:
+            return
+        
+        try:
+            from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
+                TrustBasedFleetEstimator,
+                TrustBasedKalmanEstimator
+            )
+            cls.ESTIMATOR_TYPES['trust_consensus'] = TrustBasedFleetEstimator
+            cls.ESTIMATOR_TYPES['trust_kalman'] = TrustBasedKalmanEstimator
+            cls._trust_estimators_loaded = True
+        except ImportError as e:
+            # Trust-based estimators not available
+            pass
     
     @staticmethod
     def create(estimator_type: str, vehicle_id: int, fleet_size: int,
@@ -724,16 +746,21 @@ class FleetEstimatorFactory:
         Create a fleet state estimator
         
         Args:
-            estimator_type: One of 'consensus', 'distributed_kalman'
+            estimator_type: One of 'consensus', 'distributed_kalman', 
+                           'distributed_luenberger', 'trust_consensus', 'trust_kalman'
             vehicle_id: ID of the host vehicle
             fleet_size: Total number of vehicles in fleet
-            state_dim: State dimension (default 4)
+            state_dim: State dimension (default 5)
             config: Configuration dict
             logger: Logger instance
             
         Returns:
             Fleet state estimator instance
         """
+        # Try to load trust-based estimators if requesting one
+        if estimator_type.startswith('trust_'):
+            FleetEstimatorFactory._load_trust_estimators()
+        
         if estimator_type not in FleetEstimatorFactory.ESTIMATOR_TYPES:
             raise ValueError(
                 f"Unknown fleet estimator type: {estimator_type}. "
@@ -748,3 +775,9 @@ class FleetEstimatorFactory:
             config=config,
             logger=logger
         )
+    
+    @classmethod
+    def get_available_types(cls) -> List[str]:
+        """Get list of available estimator types"""
+        cls._load_trust_estimators()
+        return list(cls.ESTIMATOR_TYPES.keys())
