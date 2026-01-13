@@ -378,13 +378,25 @@ class LocalEstimatorFactory:
     }
     
     @staticmethod
+    def _lazy_load_neural_estimator():
+        """Lazy load neural estimator to avoid import errors if dependencies missing"""
+        try:
+            from LocalNeuralObs.neural_state_estimator import NeuralLuenbergerEstimator
+            return NeuralLuenbergerEstimator
+        except ImportError as e:
+            raise ImportError(
+                f"Neural estimator requires additional dependencies (torch). "
+                f"Install with: pip install torch. Error: {e}"
+            )
+    
+    @staticmethod
     def create(estimator_type: str, initial_pose: Optional[np.ndarray] = None,
                gps=None, logger=None, config: Dict = None) -> LocalStateEstimatorBase:
         """
         Create a local state estimator
         
         Args:
-            estimator_type: One of 'ekf', 'luenberger', 'dead_reckoning'
+            estimator_type: One of 'ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger'
             initial_pose: Initial pose [x, y, theta]
             gps: GPS instance (for EKF)
             logger: Logger instance
@@ -393,10 +405,16 @@ class LocalEstimatorFactory:
         Returns:
             Local state estimator instance
         """
+        # Handle neural estimator separately (lazy loading)
+        if estimator_type == 'neural_luenberger':
+            NeuralLuenbergerEstimator = LocalEstimatorFactory._lazy_load_neural_estimator()
+            return NeuralLuenbergerEstimator(initial_pose=initial_pose, config=config, logger=logger)
+        
+        # Standard estimators
         if estimator_type not in LocalEstimatorFactory.ESTIMATOR_TYPES:
             raise ValueError(
                 f"Unknown estimator type: {estimator_type}. "
-                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys())}"
+                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys()) + ['neural_luenberger']}"
             )
         
         estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]

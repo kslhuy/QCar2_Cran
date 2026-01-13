@@ -23,12 +23,62 @@ local:
   # ---------------------------------------------------------------------
   dead_reckoning: {}  # No configurable parameters
 
+  # ---------------------------------------------------------------------
+  # Neural Luenberger estimator defaults
+  # ---------------------------------------------------------------------
+  neural_luenberger:
+    # Neural network architecture
+    input_dim: 6  # [v_x, v_y, ψ, ψ̇, δ, a]
+    hidden_dim: 24
+    output_dim: 2  # [f_f, f_r] tire force compensation
+    
+    # Training parameters
+    learning_rate: 0.005
+    batch_size: 3
+    weight_decay: 0.0
+    
+    # Observer parameters
+    observer_gain: 0.5  # Luenberger observer gain
+    sample_time: 0.02  # Sample time in seconds
+    
+    # Loss function configuration
+    loss_type: 'measurement_full'  # Options: 'refs', 'measurement_small', 'measurement_full'
+    weight_vx: 10
+    weight_vy: 20000
+    weight_psi: 10
+    weight_psi_dot: 20000
+    lambda_regularization: 0.0  # Regularization weight for force error
+    
+    # Learning mode
+    learning_mode: 'learningby_dict'  # Options: 'normal_basic', 'continuous_learning', 'learningby_dict'
+    dict_size: 20  # Size of experience replay buffer
+    
+    # Model persistence
+    model_path: 'trained_data/neural_observer_model.pt'
+    load_pretrained: false  # Set to true to load existing model
+    
+    # Two-layer architecture with first-layer observer
+    use_uio: false  # Enable two-layer architecture with first-layer observer
+    uio_type: 'pi'  # Options: 'pi' (PI observer from old system), 'luenberger', 'vehicle_model'
+    uio_model_type: 'ks'  # Vehicle model type (if uio_type='vehicle_model'): 'ks', 'st', 'mb'
+    uio_observer_gain: 0.5  # Observer gain for Luenberger/vehicle model observers
+    
+    # Composite loss function weights (for two-layer architecture)
+    # Loss = T_ref*(x_nn - x_ref)² + T_y*(y - y_nn)² + T_uio*(x_nn - x_uio)² + λ||f_nn - f_uk||²
+    weight_T_ref: 1.0  # Tracking error weight
+    weight_T_y: 1.0  # Output error weight
+    weight_T_uio: 1.0  # First-layer observer consistency weight
+
 # Example override (when loading config into VehicleObserver):
 # vehicle_observer_config:
 #   observer:
-#     local_estimator_type: luenberger
+#     local_estimator_type: neural_luenberger
 #     local:
-#       luenberger:
-#         observer_gain: 0.3
-#       ekf:
-#         use_qcar_ekf: false
+#       neural_luenberger:
+#         learning_rate: 0.01
+#         batch_size: 5
+#         load_pretrained: true
+#         # Enable two-layer architecture with PI observer
+#         use_uio: true
+#         loss_type: 'composite_uio'
+#         uio_type: 'pi'  # Use PI observer from old system
