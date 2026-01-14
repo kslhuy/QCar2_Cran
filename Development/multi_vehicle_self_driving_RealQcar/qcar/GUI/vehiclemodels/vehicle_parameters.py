@@ -86,6 +86,13 @@ class VehicleParameters:
     # trailer parameters
     trailer: TrailerParameters = field(default_factory=TrailerParameters)
 
+    # Cornering stiffness for qLPV observer model [N/rad]
+    Cf: Optional[float] = None  # Front cornering stiffness
+    Cr: Optional[float] = None  # Rear cornering stiffness
+
+    # Road friction coefficient (small, realistic)
+    mu: Optional[float] = None
+
 
 def setup_vehicle_parameters(vehicle_id: int, dir_params: str = None) -> VehicleParameters:
     """

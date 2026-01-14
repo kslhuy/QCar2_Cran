@@ -1,8 +1,8 @@
 import math
 
-from vehiclemodels.utils.steering_constraints import steering_constraints
-from vehiclemodels.utils.acceleration_constraints import acceleration_constraints
-from vehiclemodels.utils.vehicle_dynamics_ks_cog import vehicle_dynamics_ks_cog
+from .utils.steering_constraints import steering_constraints
+from .utils.acceleration_constraints import acceleration_constraints
+from .utils.vehicle_dynamics_ks_cog import vehicle_dynamics_ks_cog
 
 __author__ = "Matthias Althoff"
 __copyright__ = "TUM Cyber-Physical Systems Group"

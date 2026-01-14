@@ -28,7 +28,7 @@ import numpy as np
 import torch
 import time
 import os
-from typing import Optional, Dict, Tuple
+from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 
 # Import local modules
@@ -42,41 +42,26 @@ from neural_network import (
     save_model, load_model, create_optimizer
 )
 from gradient_solver import GradientSolver, create_weight_matrix
-from uio_observers import create_first_layer_observer, FirstLayerObserverBase
+
+# Import first-layer observer from 1LayerObs directory
+one_layer_dir = parent_dir.parent / "1LayerObs"
+sys.path.insert(0, str(one_layer_dir))
+from firstLayerObserverBase import create_first_layer_observer, FirstLayerObserverBase
 
 # Import base class from parent directory
 sys.path.insert(0, str(parent_dir.parent))
 from local_state_estimators import LocalStateEstimatorBase
 
+# Import centralized qLPV vehicle dynamics
+from qlpv_vehicle_dynamics_obs import (
+    SchedulingParameters,
+    QLPVVehicleDynamicsObs,
+    get_default_vehicle_params,
+    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
+    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
+)
 
-@dataclass
-class SchedulingParameters:
-    """Scheduling parameters ρ for qLPV system"""
-    inv_vx: float      # 1/v_x
-    sin_delta: float   # sin(δ)
-    cos_delta: float   # cos(δ)
-    vx: float          # v_x
-    vy: float          # v_y
-    sin_psi: float     # sin(ψ)
-    cos_psi: float     # cos(ψ)
-
-    @classmethod
-    def from_state_and_input(cls, state: np.ndarray, delta: float, 
-                              min_vx: float = 0.5) -> 'SchedulingParameters':
-        """Compute scheduling parameters from state and steering input"""
-        vx = max(abs(state[0]), min_vx)
-        vy = state[1]
-        psi = state[2]
-        
-        return cls(
-            inv_vx=1.0 / vx,
-            sin_delta=np.sin(delta),
-            cos_delta=np.cos(delta),
-            vx=vx,
-            vy=vy,
-            sin_psi=np.sin(psi),
-            cos_psi=np.cos(psi)
-        )
+# Note: SchedulingParameters is imported from qlpv_vehicle_dynamics_obs
 
 
 class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
@@ -254,9 +239,11 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             })
         }
         
-        # Trajectory reference for composite UIO loss [X, Y, ψ, v_ref] or 6D
-        self.trajectory_ref = None
-        self.trajectory_ref_6d = np.zeros(self.INTERNAL_STATE_DIM)
+        # Trajectory reference for composite UIO loss (reduced dimension)
+        # trajectory_ref: actual reference values [X, Y, ψ] or [X, Y, ψ, v_x]
+        # ref_indices: indices in 6D state corresponding to trajectory_ref
+        self.trajectory_ref = None  # Can be 3D or 4D depending on available reference
+        self.ref_indices = None     # Indices in state_nn_6d that correspond to trajectory_ref
         
         # First-layer state for composite loss
         self.state_uio = np.zeros(self.INTERNAL_STATE_DIM)
@@ -312,16 +299,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         return default_config
     
     def _default_vehicle_params(self) -> Dict:
-        """Default vehicle parameters (QCar scale)"""
-        return {
-            'lf': 0.11,      # Distance CG to front axle [m]
-            'lr': 0.11,      # Distance CG to rear axle [m]
-            'm': 3.5,        # Mass [kg]
-            'Iz': 0.05,      # Yaw inertia [kg·m²]
-            'Cf': 50.0,      # Front cornering stiffness [N/rad]
-            'Cr': 50.0,      # Rear cornering stiffness [N/rad]
-            'vx_min': 0.5,   # Minimum velocity
-        }
+        """Default vehicle parameters - uses centralized defaults"""
+        return get_default_vehicle_params()
     
     def _initialize_observer_gains(self):
         """Initialize observer gain matrices for 6D state"""
@@ -537,7 +516,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 )
                 
                 # Store first-layer state for composite loss calculation
-                self.state_uio = state_uio.copy()
+                self.state_uio = state_uio
                 
                 # Use first-layer w estimate for observer dynamics
                 w_hat = w_uio
@@ -617,17 +596,18 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         loss_type = self.config.get('loss_type', 'measurement_full')
         
         if loss_type == 'composite_uio' and self.trajectory_ref is not None:
-            # Use composite UIO loss with trajectory reference
+            # Use composite UIO loss with trajectory reference (reduced dimension)
             dL_df, loss = self.gradient_solver.chain_rule_composite_uio(
-                self.trajectory_ref_6d,  # Reference trajectory
+                self.trajectory_ref,     # Reduced reference (e.g., [X, Y, ψ])
                 measurement_full,         # Measurement
-                self.state_nn_6d,          # Neural observer state
-                self.state_uio,            # First-layer UIO state
+                self.state_nn_6d,          # Neural observer state (6D)
+                self.state_uio,            # First-layer UIO state (6D)
                 self.dx_df,
                 f_uk,
                 self.f_nn,
                 self.weight_matrices,
-                self.config['lambda_regularization']
+                self.config['lambda_regularization'],
+                ref_indices=self.ref_indices  # Indices mapping ref to 6D state
             )
         else:
             # Use standard measurement loss
@@ -762,34 +742,48 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 ref_velocity=self.target_speed
             )
         """
-        self.trajectory_ref = ref_pose.copy()
+        # Build trajectory reference with corresponding indices
+        # State indices: [v_x=0, v_y=1, ψ=2, r=3, X=4, Y=5]
         
-        # Build 6D reference: [v_x, v_y, ψ, r, X, Y]
+        ref_values = []
+        ref_indices = []
+        
+        # Position reference (X, Y) - always available from controller
+        if len(ref_pose) >= 2:
+            ref_values.append(ref_pose[0])  # X
+            ref_indices.append(self.IDX_X)
+            ref_values.append(ref_pose[1])  # Y
+            ref_indices.append(self.IDX_Y)
+        
+        # Heading reference (ψ) - available if ref_pose has 3 elements
         if len(ref_pose) >= 3:
-            # [X, Y, θ] format
-            self.trajectory_ref_6d[self.IDX_X] = ref_pose[0]
-            self.trajectory_ref_6d[self.IDX_Y] = ref_pose[1]
-            self.trajectory_ref_6d[self.IDX_PSI] = ref_pose[2]
-        else:
-            # [X, Y] format only
-            self.trajectory_ref_6d[self.IDX_X] = ref_pose[0]
-            self.trajectory_ref_6d[self.IDX_Y] = ref_pose[1]
-            self.trajectory_ref_6d[self.IDX_PSI] = self.state_nn_6d[self.IDX_PSI]
+            ref_values.append(ref_pose[2])  # ψ
+            ref_indices.append(self.IDX_PSI)
         
-        # Set reference velocity
+        # Velocity reference (v_x) - optional
         if ref_velocity is not None:
-            self.trajectory_ref_6d[self.IDX_VX] = ref_velocity
-        else:
-            self.trajectory_ref_6d[self.IDX_VX] = self.state_nn_6d[self.IDX_VX]
+            ref_values.append(ref_velocity)
+            ref_indices.append(self.IDX_VX)
         
-        # Set reference heading rate and lateral velocity
-        self.trajectory_ref_6d[self.IDX_R] = ref_heading_rate
-        self.trajectory_ref_6d[self.IDX_VY] = 0.0  # Assume zero lateral velocity at reference
+        # Heading rate reference (r) - optional
+        if ref_heading_rate != 0.0:
+            ref_values.append(ref_heading_rate)
+            ref_indices.append(self.IDX_R)
+        
+        # Store as numpy arrays
+        self.trajectory_ref = np.array(ref_values)
+        self.ref_indices = np.array(ref_indices)
     
-    def get_trajectory_reference(self) -> Optional[np.ndarray]:
-        """Get current trajectory reference (6D)"""
+    def get_trajectory_reference(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        """
+        Get current trajectory reference
+        
+        Returns:
+            Tuple of (reference values, corresponding indices in 6D state)
+            or None if no reference set
+        """
         if self.trajectory_ref is not None:
-            return self.trajectory_ref_6d.copy()
+            return self.trajectory_ref.copy(), self.ref_indices.copy()
         return None
     
     def reset(self, initial_pose: Optional[np.ndarray] = None):

@@ -323,25 +323,21 @@ class GradientSolver:
                                  f_uk_uio: np.ndarray,
                                  f_nn: np.ndarray,
                                  weight_matrices: dict,
-                                 lambda_reg: float = 0.0) -> Tuple[np.ndarray, float]:
+                                 lambda_reg: float = 0.0,
+                                 ref_indices: Optional[np.ndarray] = None) -> Tuple[np.ndarray, float]:
         """
         Composite loss function for two-layer observer architecture with UIO
         
-        Loss: L = (x̂_nn - x_ref)ᵀ T_ref (x̂_nn - x_ref)           [Tracking Error]
-                + (y - y_nn)ᵀ T_y (y - y_nn)                        [Output Error]
-                + (x̂_nn - x̂_uio)ᵀ T_uio (x̂_nn - x̂_uio)           [UIO Consistency]
-                + λ ||f_nn - f̂_uk||²                                [Regularization]
+        Supports partial reference: only compares available reference states.
+        Use ref_indices to specify which indices in x_nn correspond to x_ref.
         
-        where:
-        - x̂_nn: Neural observer state estimate (second layer)
-        - x̂_uio: UIO state estimate (first layer, robust baseline)
-        - f̂_uk: UIO unknown input estimate (first layer)
-        - f_nn: Neural network output (second layer)
-        - y: Actual measurement
-        - y_nn: Predicted output from neural observer (C·x̂_nn)
+        Loss: L = (x̂_nn[ref_indices] - x_ref)ᵀ T_ref (x̂_nn[ref_indices] - x_ref)  [Tracking]
+                + (y - y_nn)ᵀ T_y (y - y_nn)                                        [Output Error]
+                + (x̂_nn - x̂_uio)ᵀ T_uio (x̂_nn - x̂_uio)                           [UIO Consistency]
+                + λ ||f_nn - f̂_uk||²                                                [Regularization]
         
         Args:
-            reference: Reference trajectory x_ref (state_dim × 1)
+            reference: Reference trajectory x_ref (n_ref × 1), can be smaller than state_dim
             measurement: Actual measurement y (measurement_dim × 1)
             state_hat_nn: Neural observer state estimate x̂_nn (state_dim × 1)
             state_hat_uio: UIO state estimate x̂_uio (state_dim × 1)
@@ -349,10 +345,14 @@ class GradientSolver:
             f_uk_uio: UIO unknown input estimate f̂_uk (output_dim × 1)
             f_nn: Neural network output (output_dim × 1)
             weight_matrices: Dictionary with keys:
-                - 'T_ref': Weight matrix for tracking error
+                - 'T_ref': Weight matrix for tracking error (n_ref × n_ref)
                 - 'T_y': Weight matrix for output error
-                - 'T_uio': Weight matrix for UIO consistency
+                - 'T_uio': Weight matrix for UIO consistency  
             lambda_reg: Regularization weight λ
+            ref_indices: Indices in x_nn that correspond to x_ref.
+                        Example: [4, 5, 2] means x_ref = [X, Y, ψ] maps to
+                                 x_nn[4]=X, x_nn[5]=Y, x_nn[2]=ψ
+                        If None, assumes first n elements of x_nn match x_ref.
         
         Returns:
             Tuple of (gradient dL/df, total loss value)
@@ -363,18 +363,39 @@ class GradientSolver:
         reference = reference.reshape(-1, 1)
         measurement = measurement.reshape(-1, 1)
         
+        n_ref = reference.shape[0]
+        
+        # Determine which indices in x_nn correspond to x_ref
+        if ref_indices is None:
+            # Default: assume first n_ref elements of x_nn
+            ref_indices = np.arange(n_ref)
+        else:
+            ref_indices = np.asarray(ref_indices)
+        
         # Extract weight matrices
-        T_ref = weight_matrices.get('T_ref', np.eye(self.state_dim))
+        T_ref = weight_matrices.get('T_ref', np.eye(n_ref))
         T_y = weight_matrices.get('T_y', np.eye(measurement.shape[0]))
         T_uio = weight_matrices.get('T_uio', np.eye(self.state_dim))
         
-        # ========== Term 1: Tracking Error ==========
-        # (x̂_nn - x_ref)ᵀ T_ref (x̂_nn - x_ref)
-        tracking_error = state_hat_nn - reference
+        # Ensure T_ref has correct dimensions
+        if T_ref.shape[0] != n_ref:
+            T_ref = np.eye(n_ref)  # Fallback to identity
+        
+        # ========== Term 1: Tracking Error (Reduced Dimension) ==========
+        # Extract only the states that have reference values
+        x_nn_reduced = state_hat_nn[ref_indices]  # (n_ref, 1)
+        
+        tracking_error = x_nn_reduced - reference
         loss_tracking = self.K_loss * ((tracking_error.T @ T_ref) @ tracking_error)[0, 0]
         
-        # Gradient: dL_tracking/dx = T_ref · (x̂_nn - x_ref)
-        dL_tracking_dx = T_ref @ tracking_error
+        # Gradient: dL_tracking/dx has sparse structure
+        # dL/dx_reduced = T_ref · (x̂_nn_reduced - x_ref)
+        dL_tracking_dx_reduced = T_ref @ tracking_error
+        
+        # Map back to full state space (state_dim × 1)
+        dL_tracking_dx = np.zeros((self.state_dim, 1))
+        for i, idx in enumerate(ref_indices):
+            dL_tracking_dx[idx, 0] = dL_tracking_dx_reduced[i, 0]
         
         # ========== Term 2: Output Error ==========
         # (y - y_nn)ᵀ T_y (y - y_nn) where y_nn = C·x̂_nn

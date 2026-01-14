@@ -65,16 +65,34 @@ from pathlib import Path
 from omegaconf import OmegaConf
 from vehiclemodels.vehicle_parameters import VehicleParameters
 
+# Import qLPV vehicle dynamics for observer testing
+from vehiclemodels.vehicle_dynamics_qlpv import (
+    vehicle_dynamics_qlpv, 
+    QLPVVehicleModel,
+    get_tire_residuals,
+    get_lateral_acceleration,
+    compute_tire_forces_linear,
+    state_qlpv_to_observer
+)
+
 # Removed FakeVehicleStateMachine class - using real VehicleStateMachine instead
 # We only need to replace the INITIALIZING state with fake version
 
 
 class MockQCar:
-    """Mock QCar hardware using proper vehicle dynamics from vehiclemodels folder"""
+    """Mock QCar hardware using proper vehicle dynamics from vehiclemodels folder
     
-    def __init__(self, car_id: int, use_dynamic_model: bool = False, vehicle_params: str = 'qcar'):
+    Supports three dynamics models:
+    - Kinematic Single-Track (default): Simpler, faster, 5-state model
+    - Single-Track Dynamic: More realistic, includes tire dynamics, 7-state model
+    - qLPV Model (for observer testing): Matches observer dynamics exactly, 7-state model
+    """
+    
+    def __init__(self, car_id: int, use_dynamic_model: bool = False, 
+                 vehicle_params: str = 'qcar', use_qlpv_model: bool = False):
         self.car_id = car_id
         self.use_dynamic_model = use_dynamic_model
+        self.use_qlpv_model = use_qlpv_model  # NEW: Use qLPV dynamics matching observer
         
         # Load vehicle parameters based on specified type
         # Options: 'qcar' (default), 'vehicle1' (Ford Escort), 'vehicle2' (BMW), 
@@ -115,6 +133,7 @@ class MockQCar:
         # Mock sensor data
         self.motorTach = 0.0
         self.gyroscope = np.array([0.0, 0.0, 0.0])
+        self.accelerometer = np.array([0.0, 0.0, 9.81])  # NEW: Accelerometer [ax, ay, az]
         self.battery = np.array([12.0])  # Mock battery voltage
         
         # Mock actuator commands (normalized -1 to 1)
@@ -143,6 +162,29 @@ class MockQCar:
             0.0            # slip angle at vehicle center (rad)
         ])
         
+        # NEW: qLPV state vector for observer testing (7 states)
+        # [X, Y, δ, v_x, ψ, r, v_y] - CommonRoad convention
+        self.state_qlpv = np.array([
+            car_id * 2.0,  # X position
+            0.0,           # Y position
+            0.0,           # δ steering angle (rad)
+            0.0,           # v_x longitudinal velocity (m/s)
+            0.0,           # ψ yaw angle (rad)
+            0.0,           # r yaw rate (rad/s)
+            0.0            # v_y lateral velocity (m/s)
+        ])
+        
+        # NEW: True tire residuals for observer testing (ground truth)
+        self.w_r = 0.0  # Rear tire residual [N]
+        self.w_f = 0.0  # Front tire residual [N]
+        
+        # NEW: Lateral acceleration for observer measurement
+        self.a_y = 0.0  # Lateral acceleration [m/s²]
+        
+        # NEW: Cornering stiffness from parameters (for residual computation)
+        self.Cf = getattr(self.params, 'Cf', 50.0)
+        self.Cr = getattr(self.params, 'Cr', 50.0)
+        
         # Control input vector [steering_rate, acceleration]
         self.control_input = np.array([0.0, 0.0])
         
@@ -155,8 +197,15 @@ class MockQCar:
         self.heading = self.state_ks[4]
         self.velocity = self.state_ks[3]
         self.angular_velocity = 0.0
+        self.lateral_velocity = 0.0  # NEW: For qLPV model
         
-        model_name = "Single-Track Dynamic" if use_dynamic_model else "Kinematic Single-Track"
+        # Model name for logging
+        if use_qlpv_model:
+            model_name = "qLPV (Observer-Compatible)"
+        elif use_dynamic_model:
+            model_name = "Single-Track Dynamic"
+        else:
+            model_name = "Kinematic Single-Track"
         print(f"🔧 MockQCar {car_id}: Initialized with {model_name} model")
         print(f"   Parameters: {vehicle_params}")
         print(f"   Vehicle: v_max={self.params.longitudinal.v_max:.2f} m/s, wheelbase={self.params.a + self.params.b:.3f}m")
@@ -172,11 +221,20 @@ class MockQCar:
         if dt > 0.1:  # Skip large time steps
             dt = 0.02
         
-        # Update physics based on commands
-        self._update_physics(dt)
+        # Update physics based on selected model
+        if self.use_qlpv_model:
+            self._update_physics_qlpv(dt)
+        else:
+            self._update_physics(dt)
         
         # Update mock sensors from state
-        if self.use_dynamic_model:
+        if self.use_qlpv_model:
+            # qLPV model: [X, Y, δ, v_x, ψ, r, v_y]
+            self.motorTach = self.state_qlpv[3]  # v_x
+            self.gyroscope[2] = self.state_qlpv[5]  # r (yaw rate)
+            self.accelerometer[1] = self.a_y  # Lateral acceleration
+            self.accelerometer[0] = 0.0  # Simplification
+        elif self.use_dynamic_model:
             self.motorTach = self.state_st[3]  # velocity
             self.gyroscope[2] = self.state_st[5]  # yaw rate
         else:
@@ -391,6 +449,227 @@ class MockQCar:
             self.heading += self.angular_velocity * dt
         else:
             self.angular_velocity = 0.0
+    
+    def _update_physics_qlpv(self, dt: float):
+        """
+        Physics simulation using qLPV dynamics (matches observer model)
+        
+        State: [X, Y, δ, v_x, ψ, r, v_y]
+        This model matches the observer's dynamics exactly for proper testing.
+        
+        CONTROL INPUT NOTES:
+        - Car receives: (steering_angle, throttle) in normalized [-1, 1] range
+        - qLPV model expects: (steering_rate, acceleration)
+        - We convert steering_angle → steering_rate using a P controller:
+            steering_rate = K_p * (target_steering - current_steering)
+        - This simulates how the real steering servo responds to angle commands
+        """
+        # Convert normalized commands to physical units
+        # _steering: normalized [-1, 1] steering ANGLE command
+        # _throttle: normalized [-1, 1] throttle command
+        max_steering = self.params.steering.max  # rad
+        target_steering_angle = self._steering * max_steering
+        
+        # Throttle → Acceleration (direct mapping)
+        max_accel = self.params.longitudinal.a_max
+        acceleration = self._throttle * max_accel
+        
+        # Current steering angle from state
+        current_steering_angle = self.state_qlpv[2]  # δ
+        
+        # Compute steering rate: P controller to track target steering angle
+        # This simulates the steering servo dynamics
+        K_p_steering = 4.0  # Gain for steering rate controller
+        steering_rate = K_p_steering * (target_steering_angle - current_steering_angle)
+        
+        # Clamp steering rate to physical limits
+        max_steering_rate = float(self.params.steering.v_max)
+        steering_rate = np.clip(steering_rate, -max_steering_rate, max_steering_rate)
+        
+        # Control input for qLPV model: [steering_rate, acceleration]
+        control = np.array([steering_rate, acceleration])
+        
+        # Store control input for observer use
+        self.control_input = control.copy()
+        
+        # Use qLPV dynamics (with Pacejka for true tire forces)
+        try:
+            derivatives = vehicle_dynamics_qlpv(
+                self.state_qlpv, control, self.params, use_pacejka=True)
+            
+            # Euler integration
+            for i in range(len(self.state_qlpv)):
+                self.state_qlpv[i] += derivatives[i] * dt
+            
+            # Clamp velocity to physical limits
+            v_max = float(self.params.longitudinal.v_max)
+            v_min = float(self.params.longitudinal.v_min)
+            self.state_qlpv[3] = np.clip(self.state_qlpv[3], v_min, v_max)
+            
+            # Clamp yaw rate and lateral velocity for stability
+            self.state_qlpv[5] = np.clip(self.state_qlpv[5], -5.0, 5.0)
+            self.state_qlpv[6] = np.clip(self.state_qlpv[6], -2.0, 2.0)
+            
+        except Exception as e:
+            print(f"⚠️ qLPV model error: {e}, using simple update")
+            self._simple_kinematic_update(dt)
+            return
+        
+        # Update public properties from qLPV state
+        self.x = self.state_qlpv[0]  # X
+        self.y = self.state_qlpv[1]  # Y
+        self.heading = self.state_qlpv[4]  # ψ
+        self.velocity = self.state_qlpv[3]  # v_x
+        self.angular_velocity = self.state_qlpv[5]  # r
+        self.lateral_velocity = self.state_qlpv[6]  # v_y
+        
+        # Normalize heading
+        while self.heading > math.pi:
+            self.heading -= 2 * math.pi
+        while self.heading < -math.pi:
+            self.heading += 2 * math.pi
+        self.state_qlpv[4] = self.heading
+        
+        # Update IMU sensors (realistic accelerometer and gyroscope)
+        self._update_imu_sensors(derivatives, acceleration)
+        
+        # Update tire residuals (ground truth for observer testing)
+        self._update_tire_residuals()
+    
+    def _update_imu_sensors(self, derivatives: list, commanded_accel: float):
+        """
+        Compute realistic IMU sensor readings based on vehicle dynamics.
+        
+        Accelerometer (body frame): [a_x, a_y, a_z]
+            - a_x: longitudinal acceleration = dv_x/dt - r*v_y (inertial + centripetal)
+            - a_y: lateral acceleration = dv_y/dt + r*v_x (inertial + centripetal)
+            - a_z: vertical = gravity (assuming flat ground)
+        
+        Gyroscope (body frame): [ω_x, ω_y, ω_z]
+            - ω_x: roll rate (assumed ~0 for bicycle model)
+            - ω_y: pitch rate (assumed ~0 for bicycle model)
+            - ω_z: yaw rate = r
+        
+        Args:
+            derivatives: State derivatives from qLPV model
+            commanded_accel: Commanded acceleration from control input
+        """
+        g = 9.81  # gravity [m/s²]
+        
+        # Extract states
+        vx = self.state_qlpv[3]  # longitudinal velocity
+        vy = self.state_qlpv[6]  # lateral velocity
+        r = self.state_qlpv[5]   # yaw rate
+        
+        # State derivatives: [Ẋ, Ẏ, δ̇, v̇_x, ψ̇, ṙ, v̇_y]
+        # derivatives[3] = v̇_x, derivatives[6] = v̇_y
+        vx_dot = derivatives[3] if len(derivatives) > 3 else commanded_accel
+        vy_dot = derivatives[6] if len(derivatives) > 6 else 0.0
+        
+        # Accelerometer readings (body frame)
+        # IMU measures: a_measured = a_inertial - g (gravity subtracted in real IMU)
+        # But for simulation, we compute what the IMU would read:
+        
+        # Longitudinal acceleration: v̇_x - r*v_y (minus centripetal term)
+        # Note: In body frame, centripetal effect adds r*v_y to apparent acceleration
+        a_x_body = vx_dot + r * vy  # includes centripetal correction
+        
+        # Lateral acceleration: v̇_y + r*v_x (plus centripetal term)
+        # This is what the IMU measures as lateral acceleration
+        a_y_body = vy_dot + r * vx  # includes centripetal acceleration
+        
+        # Vertical acceleration (gravity in body frame, assuming flat ground)
+        a_z_body = g
+        
+        # Update accelerometer array
+        self.accelerometer[0] = float(a_x_body)
+        self.accelerometer[1] = float(a_y_body)
+        self.accelerometer[2] = float(a_z_body)
+        
+        # Gyroscope readings (body frame angular rates)
+        # For bicycle model: roll and pitch rates are approximately zero
+        self.gyroscope[0] = 0.0   # ω_x (roll rate) - assumed zero
+        self.gyroscope[1] = 0.0   # ω_y (pitch rate) - assumed zero
+        self.gyroscope[2] = float(r)  # ω_z (yaw rate)
+        
+        # Also update the lateral acceleration for observer (a_y in sensor)
+        self.a_y = float(a_y_body)
+    
+    def _update_tire_residuals(self):
+        """Compute true tire residuals for observer testing"""
+        vx = max(abs(self.state_qlpv[3]), 0.5)
+        vy = self.state_qlpv[6]
+        r = self.state_qlpv[5]
+        delta = self.state_qlpv[2]
+        
+        lf = self.params.a
+        lr = self.params.b
+        
+        # Slip angles
+        alpha_f = delta - (vy + lf * r) / vx
+        alpha_r = -(vy - lr * r) / vx
+        
+        # True tire residuals using Pacejka vs linear difference
+        self.w_r, self.w_f = get_tire_residuals(
+            alpha_f, alpha_r, self.Cf, self.Cr, self.params, vx)
+        
+        # Lateral acceleration
+        Fyf_linear, Fyr_linear = compute_tire_forces_linear(
+            alpha_f, alpha_r, self.Cf, self.Cr)
+        Fyf_true = Fyf_linear + self.w_f
+        Fyr_true = Fyr_linear + self.w_r
+        self.a_y = get_lateral_acceleration(
+            Fyf_true, Fyr_true, delta, self.params.m)
+    
+    def get_observer_measurement(self) -> np.ndarray:
+        """
+        Get measurement vector for observer [v_x, r, ψ, X, Y, a_y]
+        
+        Returns:
+            Measurement vector (6D) for qLPV observer
+        """
+        if self.use_qlpv_model:
+            return np.array([
+                self.state_qlpv[3],  # v_x
+                self.state_qlpv[5],  # r
+                self.state_qlpv[4],  # ψ
+                self.state_qlpv[0],  # X
+                self.state_qlpv[1],  # Y
+                self.a_y,            # a_y
+            ])
+        else:
+            # For non-qLPV models, approximate the measurement
+            return np.array([
+                self.velocity,       # v_x
+                self.angular_velocity,  # r
+                self.heading,        # ψ
+                self.x,              # X
+                self.y,              # Y
+                0.0,                 # a_y (not computed)
+            ])
+    
+    def get_observer_state(self) -> np.ndarray:
+        """
+        Get true state in observer format [v_x, v_y, ψ, r, X, Y]
+        
+        Returns:
+            True state vector (6D) for observer comparison
+        """
+        if self.use_qlpv_model:
+            return state_qlpv_to_observer(self.state_qlpv)
+        else:
+            return np.array([
+                self.velocity,
+                0.0,  # v_y unknown for non-qLPV models
+                self.heading,
+                self.angular_velocity,
+                self.x,
+                self.y,
+            ])
+    
+    def get_true_residuals(self) -> np.ndarray:
+        """Get true tire residuals [w_r, w_f] for observer testing"""
+        return np.array([self.w_r, self.w_f])
 
 
 class MockQCarGPS:
