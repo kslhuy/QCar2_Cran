@@ -441,7 +441,11 @@ class V2VManager:
                         if len(fleet_states) > 3:
                             self.logger.info(f"    ... and {len(fleet_states) - 3} more vehicles")
                         self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
-                        self.logger.info(f"  timestamp: {data.get('timestamp'):.3f} (float)")
+                        timestamp = data.get('timestamp')
+                        if timestamp is not None:
+                            self.logger.info(f"  timestamp: {timestamp:.3f} (float)")
+                        else:
+                            self.logger.info(f"  send_time_ns: {send_time_ns} (nanoseconds)")
             
             # Pass entire fleet estimates to vehicle observer for processing
             if self.vehicle_observer is not None:

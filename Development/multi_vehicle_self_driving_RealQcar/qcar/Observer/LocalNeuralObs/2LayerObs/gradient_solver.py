@@ -5,13 +5,24 @@ Computes sensitivities and gradients for backpropagation through observer dynami
 Implements the chain rule to propagate gradients from loss functions back to neural
 network parameters.
 
-Key Equations:
-    Sensitivity: dx/df[k+1] = (A + K·C) · dx/df[k] + D
+Supports two gradient computation methods:
+    1. Analytical: Manual sensitivity propagation (dx/df[k+1] = A_d·dx/df[k] + E_d)
+    2. Autodiff: PyTorch automatic differentiation through observer dynamics
+
+Key Equations (Analytical):
+    Sensitivity: dx/df[k+1] = (I + Ts·(A - L·C)) · dx/df[k] + Ts·E
     Chain Rule: dL/df = dL/dx · dx/df
 """
 
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Callable
+
+# Import PyTorch for autodiff (optional)
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 
 class GradientSolver:
@@ -46,6 +57,11 @@ class GradientSolver:
         
         # Loss scaling factor
         self.K_loss = 1.0
+    
+    def _ensure_col_vector(self, v: np.ndarray) -> np.ndarray:
+        """Ensure v is a column vector (n, 1) for consistent shape handling."""
+        v = np.atleast_1d(np.squeeze(v))
+        return v.reshape(-1, 1)
     
     def update_matrices(self, observer_matrices: dict):
         """
@@ -105,9 +121,12 @@ class GradientSolver:
     
     def gradient_solver_discrete(self, sensitivity: np.ndarray) -> np.ndarray:
         """
-        Update sensitivity for discrete-time observer
+        Update sensitivity for discrete-time observer (constant matrices version)
         
         Equation: dx/df[k+1] = (A + K·C) · dx/df[k] + D
+        
+        Note: This uses matrices set at initialization. For LPV systems,
+              use gradient_solver_discrete_lpv() instead.
         
         Args:
             sensitivity: Current sensitivity matrix dx/df (state_dim × output_dim)
@@ -122,6 +141,87 @@ class GradientSolver:
         sensitivity_new = A_obs @ sensitivity + self.D
         
         return sensitivity_new
+    
+    def gradient_solver_discrete_lpv(self, sensitivity: np.ndarray,
+                                      A: np.ndarray, L: np.ndarray, 
+                                      E: np.ndarray) -> np.ndarray:
+        """
+        Update sensitivity for discrete-time LPV observer with time-varying matrices.
+        
+        For discretized Luenberger observer:
+            x̂[k+1] = x̂[k] + Ts·(A(ρ)·x̂ + B·u + E(ρ)·f_nn + L·(y - C·x̂))
+        
+        The sensitivity equation becomes:
+            dx/df[k+1] = (I + Ts·(A(ρ) - L·C)) · dx/df[k] + Ts·E(ρ)
+        
+        where A(ρ), E(ρ), and optionally L(ρ) vary with scheduling parameters ρ.
+        
+        Args:
+            sensitivity: Current sensitivity matrix dx/df (state_dim × output_dim)
+            A: Current state matrix A(ρ) (state_dim × state_dim)
+            L: Current observer gain L(ρ) (state_dim × meas_dim)
+            E: Current disturbance input matrix E(ρ) (state_dim × output_dim)
+        
+        Returns:
+            Updated sensitivity matrix dx/df[k+1]
+        """
+        n = A.shape[0]
+        
+        # Discrete closed-loop dynamics: A_d = I + Ts·(A - L·C)
+        A_cl_continuous = A - L @ self.C
+        A_d = np.eye(n) + self.Ts * A_cl_continuous
+        
+        # Discrete input matrix: E_d = Ts·E
+        E_d = self.Ts * E
+        
+        # LPV sensitivity update
+        sensitivity_new = A_d @ sensitivity + E_d
+        
+        return sensitivity_new
+    
+    def gradient_solver_luenberger(self, sensitivity: np.ndarray,
+                                   A: np.ndarray, L: np.ndarray, 
+                                   E: np.ndarray, C: np.ndarray,
+                                   dt: float, gps_valid: bool) -> np.ndarray:
+        """
+        Sensitivity for Luenberger observer with predict-correct structure.
+        
+        Observer dynamics:
+            x_pred = x + dt*(A*x + B*u + E*w)      # Prediction
+            x_new = x_pred + L*(y - C*x_pred)       # Correction (if GPS valid)
+        
+        Which expands to:
+            x_new = (I + dt*A - L*C)*x + dt*B*u + dt*E*w + L*y   (when GPS valid)
+            x_new = (I + dt*A)*x + dt*B*u + dt*E*w               (prediction only)
+        
+        Sensitivity equations:
+            When GPS valid:  dx/df[k+1] = (I + dt*A - L*C) * dx/df[k] + dt*E
+            When GPS invalid: dx/df[k+1] = (I + dt*A) * dx/df[k] + dt*E
+        
+        Args:
+            sensitivity: Current sensitivity matrix dx/df (state_dim × output_dim)
+            A: Current state matrix A(ρ) (state_dim × state_dim)
+            L: Current observer gain L(ρ) (state_dim × meas_dim)
+            E: Current disturbance input matrix E(ρ) (state_dim × output_dim)
+            C: Output matrix (meas_dim × state_dim)
+            dt: Sample time
+            gps_valid: Whether GPS measurement is valid (correction applied)
+        
+        Returns:
+            Updated sensitivity matrix dx/df[k+1]
+        """
+        n = A.shape[0]
+        I = np.eye(n)
+        
+        if gps_valid:
+            # Correction applied: A_cl = I + dt*A - L*C
+            A_cl = I + dt * A - L @ C
+        else:
+            # Prediction only: A_cl = I + dt*A
+            A_cl = I + dt * A
+        
+        E_d = dt * E
+        return A_cl @ sensitivity + E_d
     
     def chain_rule_reference_tracking(self,
                                      reference: np.ndarray,
@@ -158,11 +258,11 @@ class GradientSolver:
         # Loss 1: State tracking error
         loss1 = self.K_loss * ((state_error.T @ weight_matrix) @ state_error)[0, 0]
         
-        # Loss 2: Force regularization
-        f_nn_reshaped = f_nn.T if f_nn.shape[0] == self.output_dim else f_nn
-        f_hat_reshaped = f_hat.reshape(1, -1)
-        f_error = f_nn_reshaped - f_hat_reshaped
-        loss2 = lambda_reg * np.linalg.norm(f_error, ord=2)
+        # Loss 2: Force regularization (squared norm: λ||f_nn - f̂||²)
+        f_nn_col = self._ensure_col_vector(f_nn)
+        f_hat_col = self._ensure_col_vector(f_hat)
+        f_error = f_nn_col - f_hat_col
+        loss2 = lambda_reg * np.sum(f_error ** 2)
         
         # Total loss
         loss_total = loss1 + loss2
@@ -174,8 +274,8 @@ class GradientSolver:
         # dL/df = dL/dx · dx/df
         dL_df_1 = dL_dx.T @ dx_df
         
-        # dL/df from force regularization
-        dL_df_2 = lambda_reg * f_error
+        # dL/df from force regularization: d/df(λ||f||²) = 2λf
+        dL_df_2 = 2 * lambda_reg * f_error.T
         
         # Total gradient
         dL_df = dL_df_1 + dL_df_2
@@ -221,9 +321,11 @@ class GradientSolver:
         # Loss 1: Measurement tracking error
         loss1 = self.K_loss * ((y_error.T @ weight_matrix) @ y_error)[0, 0]
         
-        # Loss 2: Force regularization
-        f_error = f_nn - f_hat
-        loss2 = lambda_reg * np.linalg.norm(f_error, ord=2)
+        # Loss 2: Force regularization (squared norm: λ||f_nn - f̂||²)
+        f_nn_col = self._ensure_col_vector(f_nn)
+        f_hat_col = self._ensure_col_vector(f_hat)
+        f_error = f_nn_col - f_hat_col
+        loss2 = lambda_reg * np.sum(f_error ** 2)
         
         # Total loss
         loss_total = loss1 + loss2
@@ -241,10 +343,8 @@ class GradientSolver:
         # dL/df = dL/dx · dx/df
         dL_df_1 = dL_dx.T @ dx_df
         
-        # dL/df from force regularization
-        f_nn_reshaped = f_nn.T if f_nn.shape[0] == self.output_dim else f_nn
-        f_hat_reshaped = f_hat.reshape(1, -1)
-        dL_df_2 = lambda_reg * (f_nn_reshaped - f_hat_reshaped)
+        # dL/df from force regularization: d/df(λ||f||²) = 2λf
+        dL_df_2 = 2 * lambda_reg * f_error.T
         
         # Total gradient
         dL_df = dL_df_1 + dL_df_2
@@ -289,11 +389,11 @@ class GradientSolver:
         # Loss 1: State tracking error
         loss1 = self.K_loss * ((state_error.T @ weight_matrix) @ state_error)[0, 0]
         
-        # Loss 2: Force error
-        f_nn_reshaped = f_nn.T if f_nn.shape[0] == self.output_dim else f_nn
-        f_uk_reshaped = f_uk.reshape(1, -1)
-        f_error = f_nn_reshaped - f_uk_reshaped
-        loss2 = lambda_reg * np.linalg.norm(f_error, ord=2)
+        # Loss 2: Force error (squared norm: λ||f_nn - f_uk||²)
+        f_nn_col = self._ensure_col_vector(f_nn)
+        f_uk_col = self._ensure_col_vector(f_uk)
+        f_error = f_nn_col - f_uk_col
+        loss2 = lambda_reg * np.sum(f_error ** 2)
         
         # Total loss
         loss_total = loss1 + loss2
@@ -305,8 +405,8 @@ class GradientSolver:
         # dL/df = dL/dx · dx/df
         dL_df_1 = dL_dy.T @ dx_df
         
-        # dL/df from force error
-        dL_df_2 = lambda_reg * f_error
+        # dL/df from force error: d/df(λ||f||²) = 2λf
+        dL_df_2 = 2 * lambda_reg * f_error.T
         
         # Total gradient
         dL_df = dL_df_1 + dL_df_2
@@ -416,10 +516,10 @@ class GradientSolver:
         
         # ========== Term 4: Regularization ==========
         # λ ||f_nn - f̂_uk||²
-        f_nn_reshaped = f_nn.T if f_nn.shape[0] == self.output_dim else f_nn
-        f_uk_reshaped = f_uk_uio.reshape(1, -1)
-        f_error = f_nn_reshaped - f_uk_reshaped
-        loss_reg = lambda_reg * np.linalg.norm(f_error, ord=2) ** 2
+        f_nn_col = self._ensure_col_vector(f_nn)
+        f_uk_col = self._ensure_col_vector(f_uk_uio)
+        f_error = f_nn_col - f_uk_col
+        loss_reg = lambda_reg * np.sum(f_error ** 2)
         
         # ========== Total Loss ==========
         loss_total = loss_tracking + loss_output + loss_uio + loss_reg
@@ -438,6 +538,130 @@ class GradientSolver:
         dL_df = dL_df_state + dL_df_reg
         
         return dL_df, loss_total
+
+    # =========================================================================
+    # Autodiff Loss Functions (PyTorch)
+    # =========================================================================
+    
+    def compute_loss_measurement_autodiff(self,
+                                          x_hat: 'torch.Tensor',
+                                          measurement: 'torch.Tensor',
+                                          weight_matrix: 'torch.Tensor',
+                                          f_nn: 'torch.Tensor',
+                                          f_uk: 'torch.Tensor',
+                                          lambda_reg: float = 0.0) -> 'torch.Tensor':
+        """
+        Compute measurement tracking loss with autodiff support.
+        
+        Loss: L = (x̂ - y)ᵀ W (x̂ - y) + λ ||f_nn - f_uk||²
+        
+        All inputs should be torch tensors with requires_grad where needed.
+        
+        Args:
+            x_hat: Estimated state tensor (state_dim,) or (state_dim, 1)
+            measurement: Measurement tensor (state_dim,)
+            weight_matrix: Weight matrix tensor (state_dim, state_dim)
+            f_nn: Neural network output tensor (output_dim,) - requires_grad=True
+            f_uk: Unknown input estimate tensor (output_dim,)
+            lambda_reg: Regularization weight
+            
+        Returns:
+            loss: Differentiable loss tensor (scalar)
+        """
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch not available for autodiff")
+        
+        # Ensure correct shapes
+        x_hat = x_hat.flatten()
+        measurement = measurement.flatten()
+        f_nn = f_nn.flatten()
+        f_uk = f_uk.flatten()
+        
+        # State tracking error
+        state_error = x_hat - measurement
+        loss_state = state_error @ weight_matrix @ state_error
+        
+        # Regularization term
+        f_error = f_nn - f_uk
+        loss_reg = lambda_reg * torch.sum(f_error ** 2)
+        
+        return loss_state + loss_reg
+    
+    def compute_loss_composite_uio_autodiff(self,
+                                            x_hat_nn: 'torch.Tensor',
+                                            x_hat_uio: 'torch.Tensor',
+                                            reference: 'torch.Tensor',
+                                            measurement: 'torch.Tensor',
+                                            C: 'torch.Tensor',
+                                            weight_matrices: dict,
+                                            f_nn: 'torch.Tensor',
+                                            f_uk_uio: 'torch.Tensor',
+                                            lambda_reg: float = 0.0,
+                                            ref_indices: Optional[np.ndarray] = None) -> 'torch.Tensor':
+        """
+        Compute composite UIO loss with autodiff support.
+        
+        Loss: L = (x̂_nn[ref_idx] - x_ref)ᵀ T_ref (x̂_nn[ref_idx] - x_ref)  [Tracking]
+                + (y - C·x̂_nn)ᵀ T_y (y - C·x̂_nn)                         [Output Error]
+                + (x̂_nn - x̂_uio)ᵀ T_uio (x̂_nn - x̂_uio)                  [UIO Consistency]
+                + λ ||f_nn - f̂_uk||²                                       [Regularization]
+        
+        Args:
+            x_hat_nn: Neural observer state estimate tensor (state_dim,)
+            x_hat_uio: UIO state estimate tensor (state_dim,)
+            reference: Reference trajectory tensor (n_ref,)
+            measurement: Measurement tensor (meas_dim,)
+            C: Output matrix tensor (meas_dim, state_dim)
+            weight_matrices: Dict with tensors 'T_ref', 'T_y', 'T_uio'
+            f_nn: Neural network output tensor - requires_grad=True
+            f_uk_uio: UIO unknown input estimate tensor
+            lambda_reg: Regularization weight
+            ref_indices: Indices mapping reference to state
+            
+        Returns:
+            loss: Differentiable loss tensor (scalar)
+        """
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch not available for autodiff")
+        
+        # Ensure correct shapes
+        x_hat_nn = x_hat_nn.flatten()
+        x_hat_uio = x_hat_uio.flatten()
+        reference = reference.flatten()
+        measurement = measurement.flatten()
+        f_nn = f_nn.flatten()
+        f_uk_uio = f_uk_uio.flatten()
+        
+        n_ref = reference.shape[0]
+        
+        # Get weight matrices
+        T_ref = weight_matrices.get('T_ref', torch.eye(n_ref, dtype=x_hat_nn.dtype))
+        T_y = weight_matrices.get('T_y', torch.eye(measurement.shape[0], dtype=x_hat_nn.dtype))
+        T_uio = weight_matrices.get('T_uio', torch.eye(x_hat_nn.shape[0], dtype=x_hat_nn.dtype))
+        
+        # Determine reference indices
+        if ref_indices is None:
+            ref_indices = list(range(n_ref))
+        
+        # Term 1: Tracking error (reduced dimension)
+        x_nn_reduced = x_hat_nn[ref_indices]
+        tracking_error = x_nn_reduced - reference
+        loss_tracking = tracking_error @ T_ref @ tracking_error
+        
+        # Term 2: Output error
+        y_nn = C @ x_hat_nn
+        output_error = measurement - y_nn
+        loss_output = output_error @ T_y @ output_error
+        
+        # Term 3: UIO consistency
+        uio_error = x_hat_nn - x_hat_uio
+        loss_uio = uio_error @ T_uio @ uio_error
+        
+        # Term 4: Regularization
+        f_error = f_nn - f_uk_uio
+        loss_reg = lambda_reg * torch.sum(f_error ** 2)
+        
+        return loss_tracking + loss_output + loss_uio + loss_reg
 
 
 def create_weight_matrix(weights: dict) -> np.ndarray:

@@ -220,6 +220,8 @@ class QCarFleetController:
             on_toggle_manual=self._toggle_manual_mode,
             on_update_control_type=self._update_control_type,
             on_platoon_position_change=self._update_platoon_position,
+            on_toggle_perception=self._toggle_perception_car,
+            on_toggle_scopes=self._toggle_scopes_car,
         )
     
     def _update_car_panels(self) -> None:
@@ -281,6 +283,8 @@ class QCarFleetController:
                     platoon_is_leader=telemetry.get('platoon_is_leader', False),
                     platoon_position=telemetry.get('platoon_position'),
                     manual_mode=self._manual_mode_active.get(car_id, False),
+                    perception_active=telemetry.get('perception_active', False),
+                    scopes_active=telemetry.get('scopes_active', False),
                 )
                 panel.update_state(state)
     
@@ -401,6 +405,72 @@ class QCarFleetController:
     def _update_control_type(self, car_id: int, control_type: str) -> None:
         """Update control type for a car."""
         self.log(f"Car {car_id}: Manual control type set to {control_type.upper()}", 'CONFIG')
+    
+    # ========== Individual Perception Control ==========
+    
+    def _toggle_perception_car(self, car_id: int) -> None:
+        """Toggle perception for a specific car."""
+        # Check current state from telemetry
+        telemetry = self._remote.get_telemetry(car_id)
+        is_active = telemetry.get('perception_active', False) if telemetry else False
+        
+        if is_active:
+            self._disable_perception_car(car_id)
+        else:
+            self._activate_perception_car(car_id)
+    
+    def _activate_perception_car(self, car_id: int) -> None:
+        """Activate perception for a specific car."""
+        if self._remote.activate_perception(car_id):
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Perception activation sent", 'SUCCESS')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to activate perception", 'ERROR')
+    
+    def _disable_perception_car(self, car_id: int) -> None:
+        """Disable perception for a specific car."""
+        if self._remote.disable_perception(car_id):
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Perception disabled", 'INFO')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to disable perception", 'ERROR')
+    
+    # ========== Individual Scopes Control ==========
+    
+    def _toggle_scopes_car(self, car_id: int) -> None:
+        """Toggle estimation scopes for a specific car."""
+        # Check current state from telemetry
+        telemetry = self._remote.get_telemetry(car_id)
+        is_active = telemetry.get('scopes_active', False) if telemetry else False
+        
+        if is_active:
+            self._disable_scopes_car(car_id)
+        else:
+            self._activate_scopes_car(car_id)
+    
+    def _activate_scopes_car(self, car_id: int) -> None:
+        """Activate estimation scopes for a specific car."""
+        command = {
+            'command': 'activate_scopes',
+            'preset_names': ['local_state', 'local_control']
+        }
+        if self._remote.send_command(car_id, command):
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Scopes activation sent", 'SUCCESS')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to activate scopes", 'ERROR')
+    
+    def _disable_scopes_car(self, car_id: int) -> None:
+        """Disable estimation scopes for a specific car."""
+        if self._remote.send_command(car_id, {'command': 'disable_scopes'}):
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Scopes disabled", 'INFO')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to disable scopes", 'ERROR')
     
     # ========== Fleet Commands ==========
     

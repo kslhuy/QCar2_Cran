@@ -59,12 +59,7 @@ class ManualModeState(StateBase):
     
     def update(self, dt: float, sensor_data: Dict[str, Any]) -> Tuple[float, float, Optional[Tuple[VehicleState, StateTransitionReason]]]:
         """Handle manual mode - apply direct control commands from Ground Station"""
-        
-        # # Check for emergency stop conditions first (safety override)
-        # if self.should_transition_to_stopped(sensor_data):
-        #     self.logger.log_warning("[MANUAL] Emergency stop triggered")
-        #     return 0.0, 0.0, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
-        
+
         # Get current control commands from state data
         throttle = self.state_data.get('current_throttle', 0.0)
         steering = self.state_data.get('current_steering', 0.0)

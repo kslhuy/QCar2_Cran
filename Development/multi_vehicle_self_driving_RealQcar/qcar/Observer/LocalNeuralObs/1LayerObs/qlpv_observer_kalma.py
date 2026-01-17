@@ -223,6 +223,12 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
         # Minimum velocity threshold
         self.min_vx = 0.5  # [m/s]
         
+        # Centralized vehicle dynamics (single source of truth)
+        self.dynamics = QLPVVehicleDynamicsObs(
+            vehicle_params=self.params,
+            min_vx=self.min_vx
+        )
+        
         # Numerical Jacobian step size
         self.epsilon = 1e-6
     
@@ -316,235 +322,39 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
     
     def compute_scheduling_params(self, state: np.ndarray, delta: float) -> SchedulingParameters:
         """Compute scheduling parameters from current state and input"""
-        return SchedulingParameters.from_state_and_input(state, delta, self.min_vx)
+        return self.dynamics.compute_scheduling_params(state, delta)
     
     def compute_slip_angles(self, state: np.ndarray, delta: float) -> Tuple[float, float]:
-        """
-        Compute front and rear slip angles
-        
-        α_f = δ - v_y/v_x - l_f·r/v_x
-        α_r = -v_y/v_x + l_r·r/v_x
-        
-        Args:
-            state: State vector [v_x, v_y, ψ, r, X, Y]
-            delta: Steering angle
-            
-        Returns:
-            Tuple of (alpha_f, alpha_r)
-        """
-        vx = max(abs(state[self.IDX_VX]), self.min_vx)
-        vy = state[self.IDX_VY]
-        r = state[self.IDX_R]
-        
-        alpha_f = delta - vy / vx - self.lf * r / vx
-        alpha_r = -vy / vx + self.lr * r / vx
-        
-        return alpha_f, alpha_r
+        """Compute front and rear slip angles - delegates to centralized dynamics"""
+        return self.dynamics.compute_slip_angles(state, delta)
     
     def compute_A_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """
-        Compute state matrix A(ρ) for qLPV system
-        
-        State: [v_x, v_y, ψ, r, X, Y]
-        
-        Uses linearized single-track model with linear tire assumption.
-        """
-        A = np.zeros((self.STATE_DIM, self.STATE_DIM))
-        
-        # Shortcuts
-        inv_vx = rho.inv_vx
-        cos_d = rho.cos_delta
-        sin_d = rho.sin_delta
-        vx = rho.vx
-        vy = rho.vy
-        cos_psi = rho.cos_psi
-        sin_psi = rho.sin_psi
-        
-        # v_x dynamics: v̇_x = -μg + ... (friction term as constant, not in A)
-        A[0, 0] = -self.mu * self.g / vx  # Longitudinal friction approx
-        A[0, 1] = self.Cf * sin_d / (self.m * vx)
-        A[0, 3] = self.Cf * self.lf * sin_d / (self.m * vx) + vy
-        
-        # v_y dynamics: v̇_y = F_yr/m + F_yf·cos(δ)/m - r·v_x
-        A[1, 1] = -(self.Cr + self.Cf * cos_d) / (self.m * vx)
-        A[1, 3] = -(self.Cf * self.lf * cos_d - self.Cr * self.lr) / (self.m * vx) - vx
-        
-        # ψ dynamics: ψ̇ = r
-        A[2, 3] = 1.0
-        
-        # r dynamics: ṙ = (l_f·F_yf·cos(δ) - l_r·F_yr) / I_z
-        A[3, 1] = -(self.Cf * self.lf * cos_d - self.Cr * self.lr) / (self.Iz * vx)
-        A[3, 3] = -(self.Cf * self.lf**2 * cos_d + self.Cr * self.lr**2) / (self.Iz * vx)
-        
-        # X dynamics: Ẋ = v_x·cos(ψ) - v_y·sin(ψ)
-        A[4, 0] = cos_psi
-        A[4, 1] = -sin_psi
-        A[4, 2] = -vx * sin_psi - vy * cos_psi  # ∂/∂ψ
-        
-        # Y dynamics: Ẏ = v_x·sin(ψ) + v_y·cos(ψ)
-        A[5, 0] = sin_psi
-        A[5, 1] = cos_psi
-        A[5, 2] = vx * cos_psi - vy * sin_psi  # ∂/∂ψ
-        
-        return A
+        """Compute state matrix A(ρ) - delegates to centralized dynamics"""
+        return self.dynamics.compute_A_matrix(rho)
     
     def compute_B_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """
-        Compute input matrix B(ρ)
-        
-        Input: u = [δ, a]ᵀ (steering, acceleration)
-        """
-        B = np.zeros((self.STATE_DIM, 2))
-        
-        cos_d = rho.cos_delta
-        sin_d = rho.sin_delta
-        
-        # v_x: affected by acceleration
-        B[0, 0] = -self.Cf * sin_d / self.m  # ∂/∂δ (steering effect)
-        B[0, 1] = 1.0  # ∂/∂a (direct acceleration)
-        
-        # v_y: affected by steering (front tire force direction change)
-        B[1, 0] = self.Cf * cos_d / self.m
-        
-        # r: affected by steering through front tire moment
-        B[3, 0] = self.Cf * self.lf * cos_d / self.Iz
-        
-        return B
+        """Compute input matrix B(ρ) - delegates to centralized dynamics"""
+        return self.dynamics.compute_B_matrix(rho)
     
     def compute_E_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """
-        Compute residual injection matrix E(ρ)
-        
-        Residual: w = [w_r, w_f]ᵀ (rear and front tire force residuals)
-        
-        E(ρ) = [[0,        -sin(δ)/m     ],
-                [1/m,       cos(δ)/m     ],
-                [0,         0            ],
-                [-l_r/I_z,  l_f·cos(δ)/I_z],
-                [0,         0            ],
-                [0,         0            ]]
-        """
-        E = np.zeros((self.STATE_DIM, 2))
-        
-        cos_d = rho.cos_delta
-        sin_d = rho.sin_delta
-        
-        # v_x: front tire residual affects through sin(δ)
-        E[0, 1] = -sin_d / self.m
-        
-        # v_y: both residuals contribute
-        E[1, 0] = 1.0 / self.m  # w_r
-        E[1, 1] = cos_d / self.m  # w_f·cos(δ)
-        
-        # r: both residuals create moment
-        E[3, 0] = -self.lr / self.Iz  # -l_r·w_r / I_z
-        E[3, 1] = self.lf * cos_d / self.Iz  # l_f·w_f·cos(δ) / I_z
-        
-        return E
+        """Compute residual injection matrix E(ρ) - delegates to centralized dynamics"""
+        return self.dynamics.compute_E_matrix(rho)
     
     def compute_C_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """
-        Compute output matrix C(ρ)
-        
-        Measurements: y = [v_x, r, ψ, X, Y, a_y]ᵀ
-        
-        First 5 rows are simple state selections.
-        Row 6 (a_y) is computed from lateral dynamics:
-            a_y = v̇_y + r·v_x = F_yr/m + F_yf·cos(δ)/m
-        
-        Using F_y = C·α + w:
-            a_y = (C_r·α_r + w_r)/m + (C_f·α_f + w_f)·cos(δ)/m
-        
-        Linear part C_ay involves state-dependent slip angles.
-        """
-        C = np.zeros((self.MEAS_DIM, self.STATE_DIM))
-        
-        # Direct measurements
-        C[self.MEAS_IDX_VX, self.IDX_VX] = 1.0  # v_x
-        C[self.MEAS_IDX_R, self.IDX_R] = 1.0    # r
-        C[self.MEAS_IDX_PSI, self.IDX_PSI] = 1.0  # ψ
-        C[self.MEAS_IDX_X, self.IDX_X] = 1.0    # X
-        C[self.MEAS_IDX_Y, self.IDX_Y] = 1.0    # Y
-        
-        # a_y measurement: C_ay(ρ)·x
-        # C_ay = [0, -(C_r + C_f·cos(δ))/(m·v_x), 0, (C_r·l_r - C_f·l_f·cos(δ))/(m·v_x), 0, 0]
-        inv_vx = rho.inv_vx
-        cos_d = rho.cos_delta
-        
-        C[self.MEAS_IDX_AY, self.IDX_VY] = -(self.Cr + self.Cf * cos_d) / (self.m * rho.vx)
-        C[self.MEAS_IDX_AY, self.IDX_R] = (self.Cr * self.lr - self.Cf * self.lf * cos_d) / (self.m * rho.vx)
-        
-        return C
+        """Compute output matrix C(ρ) - delegates to centralized dynamics"""
+        return self.dynamics.compute_C_matrix(rho)
     
     def compute_D_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """
-        Compute feedthrough matrix D(ρ) from input to output
-        
-        Only a_y has feedthrough from steering:
-            D_ay = [C_f·cos(δ)/m, 0]
-        """
-        D = np.zeros((self.MEAS_DIM, 2))
-        
-        cos_d = rho.cos_delta
-        
-        # Only a_y row has feedthrough
-        D[self.MEAS_IDX_AY, 0] = self.Cf * cos_d / self.m  # Steering effect
-        
-        return D
+        """Compute feedthrough matrix D(ρ) - delegates to centralized dynamics"""
+        return self.dynamics.compute_D_matrix(rho)
     
     def compute_F_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """
-        Compute residual-to-output matrix F(ρ)
-        
-        Only a_y is affected by tire residuals:
-            F_ay = [1/m, cos(δ)/m]
-        
-        This is KEY for UIO-style residual estimation!
-        """
-        F = np.zeros((self.MEAS_DIM, 2))
-        
-        cos_d = rho.cos_delta
-        
-        # a_y row: a_y = ... + w_r/m + w_f·cos(δ)/m
-        F[self.MEAS_IDX_AY, 0] = 1.0 / self.m  # w_r contribution
-        F[self.MEAS_IDX_AY, 1] = cos_d / self.m  # w_f contribution
-        
-        return F
+        """Compute residual-to-output matrix F(ρ) - delegates to centralized dynamics"""
+        return self.dynamics.compute_F_matrix(rho)
     
     def compute_augmented_matrices(self, rho: SchedulingParameters) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Compute augmented system matrices for x_a = [x; w]
-        
-        Augmented dynamics (assuming ẇ ≈ 0):
-            A_a = [[A(ρ), E(ρ)], [0, 0]]
-            B_a = [[B(ρ)], [0]]
-            C_a = [C(ρ), F(ρ)]
-        
-        Returns:
-            Tuple of (A_a, B_a, C_a)
-        """
-        A = self.compute_A_matrix(rho)
-        B = self.compute_B_matrix(rho)
-        E = self.compute_E_matrix(rho)
-        C = self.compute_C_matrix(rho)
-        F = self.compute_F_matrix(rho)
-        
-        # Augmented state matrix (8×8)
-        A_a = np.zeros((self.AUGMENTED_DIM, self.AUGMENTED_DIM))
-        A_a[:self.STATE_DIM, :self.STATE_DIM] = A
-        A_a[:self.STATE_DIM, self.STATE_DIM:] = E
-        # Lower right block is zeros (ẇ = 0 assumption)
-        
-        # Augmented input matrix (8×2)
-        B_a = np.zeros((self.AUGMENTED_DIM, 2))
-        B_a[:self.STATE_DIM, :] = B
-        
-        # Augmented output matrix (6×8)
-        C_a = np.zeros((self.MEAS_DIM, self.AUGMENTED_DIM))
-        C_a[:, :self.STATE_DIM] = C
-        C_a[:, self.STATE_DIM:] = F
-        
-        return A_a, B_a, C_a
+        """Compute augmented system matrices - delegates to centralized dynamics"""
+        return self.dynamics.compute_augmented_matrices(rho)
     
     def compute_ay_innovation(self, measurement: np.ndarray, state_hat: np.ndarray,
                               control_input: np.ndarray, rho: SchedulingParameters) -> float:
@@ -592,7 +402,7 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
         
         xa[k+1] = f(xa[k], u[k])
         
-        Uses Euler discretization of qLPV dynamics.
+        Uses Euler discretization of qLPV dynamics via centralized dynamics module.
         
         Args:
             xa: Augmented state [vx, vy, psi, r, X, Y, wr, wf]
@@ -601,55 +411,20 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
         Returns:
             Predicted augmented state at next time step
         """
-        # Extract state components
-        vx = max(abs(xa[self.IDX_VX]), self.min_vx)
-        vy = xa[self.IDX_VY]
-        psi = xa[self.IDX_PSI]
-        r = xa[self.IDX_R]
-        X = xa[self.IDX_X]
-        Y = xa[self.IDX_Y]
-        wr = xa[self.IDX_WR]
-        wf = xa[self.IDX_WF]
+        # Extract 6D state and tire residuals
+        x = xa[:self.STATE_DIM]
+        w = xa[self.STATE_DIM:]
         
-        delta = u[0]
-        accel = u[1] if len(u) > 1 else 0.0
-        
-        cos_psi = np.cos(psi)
-        sin_psi = np.sin(psi)
-        cos_delta = np.cos(delta)
-        sin_delta = np.sin(delta)
-        
-        # Compute tire slip angles
-        alpha_f = delta - vy / vx - self.lf * r / vx
-        alpha_r = -vy / vx + self.lr * r / vx
-        
-        # Tire forces (including residuals)
-        Fyf = self.Cf * alpha_f + wf  # Front lateral force
-        Fyr = self.Cr * alpha_r + wr  # Rear lateral force
-        
-        # State derivatives (continuous-time)
-        vx_dot = accel - self.mu * self.g + r * vy - Fyf * sin_delta / self.m
-        vy_dot = (Fyr + Fyf * cos_delta) / self.m - r * vx
-        psi_dot = r
-        r_dot = (self.lf * Fyf * cos_delta - self.lr * Fyr) / self.Iz
-        X_dot = vx * cos_psi - vy * sin_psi
-        Y_dot = vx * sin_psi + vy * cos_psi
+        # Use centralized continuous dynamics
+        x_dot = self.dynamics.f_continuous(x, u, w)
         
         # Tire residual dynamics (random-walk: ẇ = 0)
-        wr_dot = 0.0
-        wf_dot = 0.0
+        w_dot = np.zeros(2)
         
         # Euler discretization
-        xa_next = np.array([
-            xa[self.IDX_VX] + self.Ts * vx_dot,
-            xa[self.IDX_VY] + self.Ts * vy_dot,
-            xa[self.IDX_PSI] + self.Ts * psi_dot,
-            xa[self.IDX_R] + self.Ts * r_dot,
-            xa[self.IDX_X] + self.Ts * X_dot,
-            xa[self.IDX_Y] + self.Ts * Y_dot,
-            xa[self.IDX_WR] + self.Ts * wr_dot,
-            xa[self.IDX_WF] + self.Ts * wf_dot,
-        ])
+        xa_next = np.zeros(self.AUGMENTED_DIM)
+        xa_next[:self.STATE_DIM] = x + self.Ts * x_dot
+        xa_next[self.STATE_DIM:] = w + self.Ts * w_dot
         
         return xa_next
     
@@ -659,6 +434,8 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
         
         y = h(xa, u) = [vx, r, psi, X, Y, ay]
         
+        Uses centralized dynamics module for measurement prediction.
+        
         Args:
             xa: Augmented state [vx, vy, psi, r, X, Y, wr, wf]
             u: Control input [δ, a]
@@ -666,40 +443,12 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
         Returns:
             Predicted measurement vector
         """
-        vx = max(abs(xa[self.IDX_VX]), self.min_vx)
-        vy = xa[self.IDX_VY]
-        psi = xa[self.IDX_PSI]
-        r = xa[self.IDX_R]
-        X = xa[self.IDX_X]
-        Y = xa[self.IDX_Y]
-        wr = xa[self.IDX_WR]
-        wf = xa[self.IDX_WF]
+        # Extract 6D state and tire residuals
+        x = xa[:self.STATE_DIM]
+        w = xa[self.STATE_DIM:]
         
-        delta = u[0]
-        cos_delta = np.cos(delta)
-        
-        # Compute tire slip angles
-        alpha_f = delta - vy / vx - self.lf * r / vx
-        alpha_r = -vy / vx + self.lr * r / vx
-        
-        # Tire forces (including residuals)
-        Fyf = self.Cf * alpha_f + wf
-        Fyr = self.Cr * alpha_r + wr
-        
-        # Lateral acceleration: a_y = (Fyr + Fyf·cos(δ)) / m
-        ay = (Fyr + Fyf * cos_delta) / self.m
-        
-        # Measurement vector
-        y = np.array([
-            xa[self.IDX_VX],  # vx
-            r,                 # r
-            psi,               # psi
-            X,                 # X
-            Y,                 # Y
-            ay,                # ay
-        ])
-        
-        return y
+        # Use centralized measurement function
+        return self.dynamics.h_meas(x, u, w)
     
     # =========================================================
     # EKF Predict + Update

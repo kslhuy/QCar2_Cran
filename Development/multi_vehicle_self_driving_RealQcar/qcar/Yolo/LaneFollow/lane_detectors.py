@@ -31,6 +31,13 @@ import json
 import os
 from typing import Optional, Dict, Any, Tuple
 from collections import deque
+from enum import Enum
+
+# Import to detect if running on physical QCar or simulation
+try:
+    from pal.products.qcar import IS_PHYSICAL_QCAR
+except ImportError:
+    IS_PHYSICAL_QCAR = False  # Default to simulation if import fails
 
 from .lane_detection_interface import (
     LaneDetectorBase,
@@ -39,33 +46,59 @@ from .lane_detection_interface import (
 )
 
 
+class LanePosition(Enum):
+    """Enum representing the vehicle's lane position relative to yellow divider."""
+    UNKNOWN = "unknown"
+    LEFT_LANE = "left_lane"    # Yellow line detected on RIGHT side
+    RIGHT_LANE = "right_lane"  # Yellow line detected on LEFT side
+
+
 class HSVLaneDetector(LaneDetectorBase):
     """
-    Simple HSV-based lane detector using color thresholding.
+    Simple HSV-based lane detector using color thresholding with lane position detection.
     
     This is a fast detector suitable for yellow/white lane markings.
     Best for well-lit conditions with consistent lane colors.
     
+    Features:
+        - Detects yellow lane markings using HSV thresholding
+        - Determines vehicle lane position (left or right lane) by detecting
+          which side of the image contains the yellow dividing line
+        - Uses different crop ratios for simulation vs physical QCar
+    
     Config options:
-        crop_ratio: Bottom portion of image to analyze (default: 0.4 = bottom 40%)
+        crop_ratio_sim: Bottom portion for simulation (default: 0.4 = bottom 40%)
+        crop_ratio_real: Bottom portion for physical QCar (default: 0.3)
         hsv_lower: Lower HSV bounds [H, S, V] (default: [10, 50, 100] for yellow)
         hsv_upper: Upper HSV bounds [H, S, V] (default: [45, 255, 255])
         target_slope: Expected lane slope when centered (default: 0.3419)
         slope_gain: Gain for slope-based steering (default: 1.5)
         intercept_gain: Gain for intercept-based steering (default: 1/150)
+        lane_detection_threshold: Min pixel ratio to confirm lane presence (default: 0.01)
     """
     
     def __init__(self, config: Dict[str, Any] = None, logger=None):
         super().__init__(config, logger)
         
-        # Default configuration
-        self.crop_ratio = self.config.get('crop_ratio', 0.4)
+        # Crop ratio depends on simulation vs physical QCar
+        if IS_PHYSICAL_QCAR:
+            self.crop_ratio = self.config.get('crop_ratio_real', 0.0)
+        else:
+            self.crop_ratio = self.config.get('crop_ratio_sim', 0.4)
+        
+        # HSV thresholds for yellow lane detection
         self.hsv_lower = np.array(self.config.get('hsv_lower', [10, 50, 100]))
         self.hsv_upper = np.array(self.config.get('hsv_upper', [45, 255, 255]))
+        
+        # Steering calculation parameters
         self.target_slope = self.config.get('target_slope', 0.3419)
         self.slope_gain = self.config.get('slope_gain', 1.5)
         self.intercept_gain = self.config.get('intercept_gain', 1/150)
         self.intercept_offset = self.config.get('intercept_offset', 5)
+        
+        # Lane position detection parameters
+        self.lane_detection_threshold = self.config.get('lane_detection_threshold', 0.01)
+        self._last_lane_position = LanePosition.UNKNOWN
         
     @property
     def method(self) -> LaneDetectionMethod:
@@ -78,31 +111,47 @@ class HSVLaneDetector(LaneDetectorBase):
     def detect(self, image: np.ndarray,
                vehicle_state: Optional[Dict[str, float]] = None) -> LaneDetectionResult:
         """
-        Detect lane using HSV thresholding.
+        Detect lane using HSV thresholding and determine lane position.
+        
+        The lane position is determined by checking which half of the image
+        contains the yellow dividing line:
+        - Yellow line on LEFT half  -> Vehicle is in RIGHT lane
+        - Yellow line on RIGHT half -> Vehicle is in LEFT lane
         
         Args:
             image: BGR image (H, W, 3)
             vehicle_state: Optional vehicle state (not used)
             
         Returns:
-            LaneDetectionResult with steering correction
+            LaneDetectionResult with steering correction and lane_position
         """
         try:
-            height = image.shape[0]
+            height, width = image.shape[:2]
             
             # Crop bottom portion for lane detection
             crop_start = int(height * (1.0 - self.crop_ratio))
             cropped = image[crop_start:, :, :]
             
-            # Convert to HSV and threshold
+            # Convert to HSV and threshold for yellow lane
             hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
             mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
+            
+            # Determine lane position by checking left/right halves
+            lane_position = self._detect_lane_position(mask)
+            self._last_lane_position = lane_position
             
             # Calculate slope and intercept using linear regression
             slope, intercept = self._find_slope_intercept(mask)
             
             if np.isnan(slope) or np.isnan(intercept):
-                self._last_result = LaneDetectionResult(timestamp=time.time())
+                self._last_result = LaneDetectionResult(
+                    timestamp=time.time(),
+                    raw_data={
+                        'lane_position': lane_position.value,
+                        'slope': np.nan,
+                        'intercept': np.nan
+                    }
+                )
                 return self._last_result
             
             # Calculate steering correction
@@ -114,13 +163,22 @@ class HSVLaneDetector(LaneDetectorBase):
             confidence = np.sum(mask > 0) / mask.size
             confidence = min(confidence * 10, 1.0)  # Scale up
             
+            # Determine which lanes are detected based on position
+            left_lane_detected = (lane_position == LanePosition.RIGHT_LANE)  # Yellow on left
+            right_lane_detected = (lane_position == LanePosition.LEFT_LANE)  # Yellow on right
+            
             self._last_result = LaneDetectionResult(
                 is_valid=True,
                 confidence=confidence,
                 steering_correction=steering,
                 curvature=slope,
-                left_lane_detected=True,
-                raw_data={'slope': slope, 'intercept': intercept},
+                left_lane_detected=left_lane_detected,
+                right_lane_detected=right_lane_detected,
+                raw_data={
+                    'slope': slope,
+                    'intercept': intercept,
+                    'lane_position': lane_position.value
+                },
                 timestamp=time.time()
             )
             
@@ -130,6 +188,60 @@ class HSVLaneDetector(LaneDetectorBase):
             self._last_result = LaneDetectionResult(timestamp=time.time())
         
         return self._last_result
+    
+    def _detect_lane_position(self, mask: np.ndarray) -> LanePosition:
+        """
+        Detect which lane the vehicle is in by checking yellow line position.
+        
+        In a double-lane environment, the yellow line separates the lanes:
+        - If yellow line is detected on the LEFT side -> We are in the RIGHT lane
+        - If yellow line is detected on the RIGHT side -> We are in the LEFT lane
+        
+        Args:
+            mask: Binary mask of yellow lane pixels
+            
+        Returns:
+            LanePosition enum indicating detected lane
+        """
+        height, width = mask.shape
+        mid_x = width // 2
+        
+        # Split mask into left and right halves
+        left_half = mask[:, :mid_x]
+        right_half = mask[:, mid_x:]
+        
+        # Count yellow pixels in each half
+        left_pixels = np.sum(left_half > 0)
+        right_pixels = np.sum(right_half > 0)
+        
+        # Calculate pixel ratios
+        left_ratio = left_pixels / left_half.size if left_half.size > 0 else 0
+        right_ratio = right_pixels / right_half.size if right_half.size > 0 else 0
+        
+        # Determine lane position based on where yellow line is detected
+        if left_ratio > self.lane_detection_threshold and left_ratio > right_ratio * 1.5:
+            # Yellow line predominantly on LEFT -> Vehicle in RIGHT lane
+            return LanePosition.RIGHT_LANE
+        elif right_ratio > self.lane_detection_threshold and right_ratio > left_ratio * 1.5:
+            # Yellow line predominantly on RIGHT -> Vehicle in LEFT lane
+            return LanePosition.LEFT_LANE
+        elif left_ratio > self.lane_detection_threshold or right_ratio > self.lane_detection_threshold:
+            # Yellow detected but not clearly on one side - use previous position
+            return self._last_lane_position
+        else:
+            return LanePosition.UNKNOWN
+    
+    def get_lane_position(self) -> LanePosition:
+        """Get the last detected lane position."""
+        return self._last_lane_position
+    
+    def is_in_left_lane(self) -> bool:
+        """Check if vehicle is in the left lane."""
+        return self._last_lane_position == LanePosition.LEFT_LANE
+    
+    def is_in_right_lane(self) -> bool:
+        """Check if vehicle is in the right lane."""
+        return self._last_lane_position == LanePosition.RIGHT_LANE
     
     def _find_slope_intercept(self, binary_image: np.ndarray) -> Tuple[float, float]:
         """Find slope and intercept from binary lane mask using regression"""

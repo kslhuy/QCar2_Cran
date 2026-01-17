@@ -301,10 +301,14 @@ class QLPVVehicleDynamicsObs:
         cos_psi = rho.cos_psi
         sin_psi = rho.sin_psi
         
-        # v_x dynamics: v̇_x = -μg + ... (friction term)
+        # v_x dynamics: v̇_x = accel - μg + r·v_y - Fyf·sin(δ)/m
+        # where Fyf = Cf·αf = Cf·(δ - vy/vx - lf·r/vx)
+        # ∂vx_dot/∂vx = -μg/vx (friction approximation)
+        # ∂vx_dot/∂vy = r + Cf·sin(δ)/(m·vx) (from r·vy and -Fyf·sin(δ)/m)
+        # ∂vx_dot/∂r = vy + Cf·lf·sin(δ)/(m·vx) (from r·vy and -Fyf·sin(δ)/m)
         A[IDX_VX, IDX_VX] = -self.mu * self.g / vx  # Longitudinal friction approx
-        A[IDX_VX, IDX_VY] = self.Cf * sin_d / (self.m * vx)
-        A[IDX_VX, IDX_R] = self.Cf * self.lf * sin_d / (self.m * vx) + vy
+        A[IDX_VX, IDX_VY] =  self.Cf * sin_d / (self.m * vx)  # Note: r term omitted (scheduling param)
+        A[IDX_VX, IDX_R] = vy + self.Cf * self.lf * sin_d / (self.m * vx)  # vy from r·vy coupling
         
         # v_y dynamics: v̇_y = F_yr/m + F_yf·cos(δ)/m - r·v_x
         A[IDX_VY, IDX_VY] = -(self.Cr + self.Cf * cos_d) / (self.m * vx)

@@ -68,9 +68,7 @@ class StateBase:
             - float: steering_command  
             - Optional[Tuple[VehicleState, StateTransitionReason]]: Next state transition if needed
         """
-        # Check for emergency stop conditions first
-        # if self.should_transition_to_stopped(sensor_data):
-        #     return 0.0, 0.0, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
+
         
         # Base implementation - no movement, no transition
         return 0.0, 0.0, None
@@ -306,45 +304,32 @@ class StateBase:
                 self.logger.log_error("[CMD] Error disabling perception", e)
             return None
         
-        # Default: Event not handled by this state
-        if self.logger:
-            self.logger.logger.info(f"Command '{command_type}' ignored in {self.__class__.__name__}")
+        elif command_type == CommandType.ACTIVATE_SCOPES:
+            self.logger.logger.info(f"[CMD] Activating estimation scopes")
+            try:
+                preset_names = data.get('preset_names', ['local_state', 'local_control'])
+                success = self._activate_estimation_scopes(preset_names)
+                if success:
+                    self.logger.logger.info(f"[CMD] Estimation scopes activated: {preset_names}")
+                else:
+                    self.logger.log_error("[CMD] Failed to activate estimation scopes")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error activating scopes", e)
+            return None
+        
+        elif command_type == CommandType.DISABLE_SCOPES:
+            self.logger.logger.info(f"[CMD] Disabling estimation scopes")
+            try:
+                self._disable_estimation_scopes()
+                self.logger.logger.info(f"[CMD] Estimation scopes disabled")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error disabling scopes", e)
+            return None
         return None
     
     # === Helper Methods ===
     
-    def should_transition_to_stopped(self, sensor_data: Dict[str, Any]) -> bool:
-        """
-        Common check for emergency stop conditions
-        All states can use this to check for safety stops
-        Works with or without camera/YOLO system
-        """
-        # Check collision avoidance system (YOLO/Camera-based) - only if enabled
-        yolo_enabled = getattr(self.vehicle_logic.yolo_manager, 'yolo_enabled', False)
-        if yolo_enabled and hasattr(self.vehicle_logic, 'collision_avoidance'):
-            try:
-                yolo_data = sensor_data.get('yolo_data', {})
-                emergency_stop, _ = self.vehicle_logic.collision_avoidance.check_collision_risk(
-                    car_distance=yolo_data.get('car_dist'),
-                    person_distance=yolo_data.get('person_dist'),
-                    current_velocity=sensor_data.get('velocity', 0.0)
-                )
-                if emergency_stop:
-                    if self.logger:
-                        self.logger.log_warning("Emergency stop triggered by collision avoidance system")
-                    return True
-            except Exception as e:
-                # Log but continue if collision check fails
-                if self.logger:
-                    self.logger.logger.debug(f"Collision check failed (ignored): {e}")
-        
-        # If YOLO not enabled, skip collision checks
-        if not yolo_enabled:
-            return False
-        
-       
-        
-        return False
+
     
     def _send_platoon_setup_confirmation(self, my_vehicle_id: int, formation: Dict, leader_id: int):
         """Send platoon setup confirmation to Ground Station"""
@@ -823,3 +808,65 @@ class StateBase:
             self.logger.logger.info(f"[PERCEPTION] Vehicle {self.vehicle_logic.vehicle_id} configured with probing=False")
         
         return probing_enabled
+    
+    def _activate_estimation_scopes(self, preset_names: list = None) -> bool:
+        """
+        Activate estimation scopes visualization.
+        
+        Args:
+            preset_names: List of preset names to enable. Options:
+                - 'local_state', 'local_error', 'local_control'
+                - 'fleet_position', 'fleet_state', 'fleet_consensus'
+                
+        Returns:
+            bool: True if activation successful
+        """
+        try:
+            if preset_names is None:
+                preset_names = ['local_state', 'local_control']
+            
+            # Check if vehicle_observer exists
+            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
+                self.logger.log_error("[SCOPES] Vehicle observer not available")
+                return False
+            
+            # Enable scopes on observer
+            success = self.vehicle_logic.vehicle_observer.enable_scopes(
+                preset_names=preset_names,
+                fps=30,
+                time_window=60.0
+            )
+            
+            if success:
+                self.logger.logger.info(f"[SCOPES] Estimation scopes activated: {preset_names}")
+            else:
+                self.logger.log_error("[SCOPES] Failed to enable scopes")
+            
+            return success
+            
+        except Exception as e:
+            self.logger.log_error("[SCOPES] Error activating estimation scopes", e)
+            return False
+    
+    def _disable_estimation_scopes(self) -> bool:
+        """
+        Disable estimation scopes visualization.
+        
+        Returns:
+            bool: True if deactivation successful
+        """
+        try:
+            # Check if vehicle_observer exists
+            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
+                self.logger.log_error("[SCOPES] Vehicle observer not available")
+                return False
+            
+            # Stop scopes on observer
+            self.vehicle_logic.vehicle_observer.stop_scopes()
+            self.logger.logger.info("[SCOPES] Estimation scopes disabled")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("[SCOPES] Error disabling estimation scopes", e)
+            return False

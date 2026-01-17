@@ -36,6 +36,10 @@ class CommandType(Enum):
     ACTIVATE_PERCEPTION = "activate_perception"
     DISABLE_PERCEPTION = "disable_perception"
     
+    # Visualization commands
+    ACTIVATE_SCOPES = "activate_scopes"
+    DISABLE_SCOPES = "disable_scopes"
+    
     # Manual control commands
     ENABLE_MANUAL_MODE = "enable_manual_mode"
     MANUAL_CONTROL = "manual_control"

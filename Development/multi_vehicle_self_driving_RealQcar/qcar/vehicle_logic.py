@@ -7,19 +7,21 @@ import time
 # from typing import Optional
 from threading import Event
 
-from pal.products.qcar import QCar, QCarGPS , IS_PHYSICAL_QCAR
+from pal.products.qcar import  IS_PHYSICAL_QCAR
 # from hal.products.mats import SDCSRoadMap
 
 from config_main import VehicleMainConfig
 from logging_utils import VehicleLogger, PerformanceMonitor
 from StateMachine import VehicleState, VehicleStateMachine
 from ground_station_client import GroundStationClient
-from safety import ControlValidator, SensorHealthMonitor, CollisionAvoidance, WatchdogTimer
-from Yolo.YoLo import YOLOReceiver, YOLODriveLogic, YOLOManager
+from safety import WatchdogTimer
+from Yolo.YoLo import YOLOManager
 from Controller.platoon_controller import PlatoonController, PlatoonConfig
 from command_handler import CommandHandler
 from V2V.v2v_manager import V2VManager, V2VBroadcastConfig
 from Observer.VehicleObserverSimple import VehicleObserver
+from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset
+
 # Note: Controllers (PIDVelocityController, StanleyController) are now imported 
 # in state machine states, not here
 
@@ -81,26 +83,14 @@ class VehicleLogic:
         )
         
         # Safety systems
-        # self.validator = ControlValidator(config, self.vehicle_logger)
-        # self.sensor_health = SensorHealthMonitor(config, self.vehicle_logger)
-        self.collision_avoidance = CollisionAvoidance(config, self.vehicle_logger)
         self.watchdog = WatchdogTimer(config.safety.watchdog_timeout, self.vehicle_logger)
         
         # Components (initialized later)
         self.vehicle_logger.logger.info("Creating Ground Station client...")
-        # # Create Ground Station client
-        # self.client_Ground_Station = GroundStationClient(
-        #     config=self.config,
-        #     logger=self.vehicle_logger,
-        #     kill_event=self.kill_event
-        # )
+
         self._initialize_network_2_GroundStation()
         self.logger.logger.info("Initializing QCar hardware...")
             
-        # self.qcar = QCar(
-        #     readMode=1,
-        #     frequency=self.config.timing.controller_update_rate
-        # )
         self.qcar = None
         self.gps = None
         
@@ -165,6 +155,53 @@ class VehicleLogic:
         
         # Connect VehicleObserver to V2VManager
         self.v2v_manager.update_vehicle_observer(self.vehicle_observer)
+
+        # Initialize Estimation Scopes (Visualization)
+        # Check if plotting is enabled in observer config
+        self.scope_manager = None
+        
+        # Check both local and fleet plotting configs
+        local_plot_enabled = getattr(self.vehicle_observer, 'local_plotting_config', {}).get('enabled', False)
+        fleet_plot_enabled = getattr(self.vehicle_observer, 'fleet_plotting_config', {}).get('enabled', False)
+        
+        if local_plot_enabled or fleet_plot_enabled:
+            # Use local config params as default for manager
+            plot_params = getattr(self.vehicle_observer, 'local_plotting_config', {}).get('params', {})
+            fps = plot_params.get('fps', 30)
+            time_window = plot_params.get('time_window', 60.0)
+            
+            # Check for save_only mode (headless) - Default to True as per user request
+            save_only = plot_params.get('save_only', True)
+            
+            self.scope_manager = EstimationScopeManager(
+                fps=fps, 
+                time_window=time_window,
+                headless=save_only
+            )
+            
+            if local_plot_enabled:
+                self.scope_manager.add_preset(LocalStatePreset())
+                self.scope_manager.add_preset(LocalControlPreset())
+                self.vehicle_logger.logger.info("Plotting enabled: Local State & Control")
+                
+            if fleet_plot_enabled:
+                fleet_params = getattr(self.vehicle_observer, 'fleet_plotting_config', {}).get('params', {})
+                max_vehicles = fleet_params.get('max_vehicles_plot', 5)
+                self.scope_manager.add_preset(FleetPositionPreset(max_vehicles=max_vehicles))
+                self.scope_manager.add_preset(FleetStatePreset(max_vehicles=max_vehicles))
+                self.vehicle_logger.logger.info("Plotting enabled: Fleet State & Positions")
+            
+            # Start in MANUAL mode (threaded=False) for main-thread GUI updates
+            self.scope_manager.start(threaded=False)
+            
+            # If in save_only mode, start recording automatically
+            if save_only:
+                # Define columns to record (scalars only)
+                cols = ['x', 'y', 'theta', 'velocity', 'acceleration', 
+                       'x_gps', 'y_gps', 'theta_gps', 'steering', 'throttle', 'v_ref']
+                rec_path = self.scope_manager.start_recording(columns=cols)
+                self.vehicle_logger.logger.info(f"Scope Manager: Headless mode active. Recording to {rec_path}")
+
         
         # Initialize the event system to connect command_handler to state_machine
         # This allows ground station commands to be properly routed to the current state
@@ -226,6 +263,12 @@ class VehicleLogic:
                 self._process_queued_commands()  # No rate limit - process as fast as possible
                 self._broadcast_v2v_state()  # V2VManager handles internal rate-limiting
                 
+                # 5. Visualization Update (Main Thread)
+                # Only update if manager exists and is enabled
+                if self.scope_manager:
+                    self.scope_manager.update()
+
+                
                 # Performance monitoring
                 loop_time = time.time() - loop_start
                 if hasattr(self, 'perf_monitor'):
@@ -248,7 +291,13 @@ class VehicleLogic:
         except Exception as e:
             self.vehicle_logger.log_error("Control loop error", e)
         finally:
+
             self._shutdown()
+
+            # Stop scope manager
+            if self.scope_manager:
+                self.scope_manager.stop()
+
                 
     # ===== Component Update Rate Control Methods =====
     def _should_update_observer(self, current_time: float) -> bool:
@@ -300,18 +349,45 @@ class VehicleLogic:
                 last_steering,
                 last_u
             )
+
+            # Update visualization scope (if enabled)
+            if self.scope_manager and self.scope_manager.enabled:
+                # Gather visualization data
+                vis_data = state_info.copy()
+                
+                # Add GPS reference if available
+                sensor_data = self.vehicle_observer.get_sensor_data()
+                if sensor_data.get('gps_valid', False):
+                    vis_data['x_gps'] = sensor_data['gps_position'][0]
+                    vis_data['y_gps'] = sensor_data['gps_position'][1]
+                    vis_data['theta_gps'] = sensor_data['gps_position'][2]
+                
+                # Add control signals
+                vis_data['v_ref'] = self.v_ref * self.yolo_manager.get_yolo_gain()
+                vis_data['steering'] = last_steering
+                vis_data['throttle'] = last_u
+                
+                # Add fleet data for plotting
+                if self.vehicle_observer.v2v_active:
+                    vis_data['fleet_states'] = self.vehicle_observer.get_fleet_states()
+                
+                # Push to scope manager (non-blocking)
+                self.scope_manager.sample(self.elapsed_time(), vis_data)
+
             
             # Log observer state occasionally
-            if self.loop_counter % 300 == 0:  # Every 3 seconds at 100Hz (reduced logging)
-                self.vehicle_logger.logger.debug(
-                    f"Observer: Pos=({state_info['x']:.2f}, {state_info['y']:.2f}, {state_info['theta']:.2f}), "
-                    f"Vel={state_info['velocity']:.2f}, GPS_Valid={state_info['gps_valid']}"
-                )
+            
+            # # Log observer state occasionally
+            # if self.loop_counter % 300 == 0:  # Every 3 seconds at 100Hz (reduced logging)
+            #     self.vehicle_logger.logger.debug(
+            #         f"Observer: Pos=({state_info['x']:.2f}, {state_info['y']:.2f}, {state_info['theta']:.2f}), "
+            #         f"Vel={state_info['velocity']:.2f}, GPS_Valid={state_info['gps_valid']}"
+            #     )
                 
-                # Log fleet observer status
-                fleet_states = self.vehicle_observer.get_fleet_states()
-                active_vehicles = np.sum(np.any(fleet_states != 0, axis=0))
-                self.vehicle_logger.logger.debug(f"Fleet Observer: {active_vehicles} active vehicles in fleet")
+            #     # Log fleet observer status
+            #     fleet_states = self.vehicle_observer.get_fleet_states()
+            #     active_vehicles = np.sum(np.any(fleet_states != 0, axis=0))
+            #     self.vehicle_logger.logger.debug(f"Fleet Observer: {active_vehicles} active vehicles in fleet")
                 
         except Exception as e:
             self.vehicle_logger.log_error("Observer update error", e)
@@ -744,6 +820,13 @@ class VehicleLogic:
                 self.v2v_manager.disable_v2v()
             except Exception as e:
                 self.vehicle_logger.logger.error(f"V2V Manager shutdown error: {e}")
+
+        # Stop Vehicle Observer (closes data recordings)
+        if hasattr(self, 'vehicle_observer') and self.vehicle_observer:
+            try:
+                self.vehicle_observer.stop()
+            except Exception as e:
+                self.vehicle_logger.logger.error(f"Observer shutdown error: {e}")
         
         # Log final statistics
         self.vehicle_logger.logger.info("="*60)

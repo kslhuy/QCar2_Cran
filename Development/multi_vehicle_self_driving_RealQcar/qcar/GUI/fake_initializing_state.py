@@ -308,11 +308,7 @@ class FakeInitializingState(StateBase):
         
         return True
     
-    def should_transition_to_stopped(self, sensor_data: Dict[str, Any]) -> bool:
-        """Override emergency stop checks during fake initialization"""
-        # During fake initialization, never trigger emergency stops
-        # This allows the system to initialize properly with mock hardware
-        return False
+
         
     def _check_initial_position(self, sensor_data: Dict[str, Any]) -> bool:
         """Override position check - fake vehicles start at valid positions"""

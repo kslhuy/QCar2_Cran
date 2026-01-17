@@ -309,6 +309,12 @@ class QLPVGainScheduler:
         self.Cf = vehicle_params.get('Cf', 50.0)
         self.Cr = vehicle_params.get('Cr', 50.0)
         
+        # Centralized vehicle dynamics (single source of truth)
+        self.dynamics = QLPVVehicleDynamicsObs(
+            vehicle_params=vehicle_params,
+            min_vx=vx_range[0]
+        )
+        
         # Generate polytope vertices
         self.vertices = self._generate_vertices(n_vx_vertices, n_delta_vertices)
         self.n_vertices = len(self.vertices)
@@ -372,56 +378,17 @@ class QLPVGainScheduler:
         return vertices
     
     def _compute_A_at_vertex(self, vertex: PolytopicVertex) -> np.ndarray:
-        """Compute A matrix at a polytope vertex"""
-        vx = max(vertex.vx, 0.5)  # Avoid division by zero, use reasonable min
-        delta = vertex.delta
-        psi = vertex.psi
-        
-        cos_d = np.cos(delta)
-        sin_d = np.sin(delta)
-        cos_psi = np.cos(psi)
-        sin_psi = np.sin(psi)
-        vy = 0.0  # Nominal vy at vertex
-        
-        A = np.zeros((6, 6))
-        
-        # v_y dynamics
-        A[1, 1] = -(self.Cr + self.Cf * cos_d) / (self.m * vx)
-        A[1, 3] = -(self.Cf * self.lf * cos_d - self.Cr * self.lr) / (self.m * vx) - vx
-        
-        # ψ dynamics
-        A[2, 3] = 1.0
-        
-        # r dynamics
-        A[3, 1] = -(self.Cf * self.lf * cos_d - self.Cr * self.lr) / (self.Iz * vx)
-        A[3, 3] = -(self.Cf * self.lf**2 * cos_d + self.Cr * self.lr**2) / (self.Iz * vx)
-        
-        # X dynamics
-        A[4, 0] = cos_psi
-        A[4, 1] = -sin_psi
-        A[4, 2] = -vx * sin_psi - vy * cos_psi
-        
-        # Y dynamics
-        A[5, 0] = sin_psi
-        A[5, 1] = cos_psi
-        A[5, 2] = vx * cos_psi - vy * sin_psi
-        
-        return A
+        """Compute A matrix at a polytope vertex - delegates to centralized dynamics"""
+        x_dummy = np.array([vertex.vx, 0.0, vertex.psi, 0.0, 0.0, 0.0])
+        rho = self.dynamics.compute_scheduling_params(x_dummy, vertex.delta)
+        return self.dynamics.compute_A_matrix(rho)
     
     def _compute_C_at_vertex(self, vertex: PolytopicVertex) -> np.ndarray:
-        """Compute C matrix at a polytope vertex"""
-        C = np.zeros((6, 6))
-        
-        # Direct measurements: y = [vx, r, psi, X, Y, ay]
-        # Mapping to state x = [vx, vy, psi, r, X, Y]
-        C[0, 0] = 1.0  # y[0] = vx = x[0]
-        C[1, 3] = 1.0  # y[1] = r = x[3]
-        C[2, 2] = 1.0  # y[2] = psi = x[2]
-        C[3, 4] = 1.0  # y[3] = X = x[4]
-        C[4, 5] = 1.0  # y[4] = Y = x[5]
-        # y[5] = a_y handled separately
-        
-        return C
+        """Compute C matrix at a polytope vertex - delegates to centralized dynamics"""
+        x_dummy = np.array([vertex.vx, 0.0, vertex.psi, 0.0, 0.0, 0.0])
+        rho = self.dynamics.compute_scheduling_params(x_dummy, vertex.delta)
+        return self.dynamics.compute_C_matrix(rho)
+    
     
     def compute_gains_lmi(self) -> bool:
         """
@@ -958,7 +925,9 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         self.Cr = self.params['Cr']
         
         # Centralized qLPV dynamics for matrix computation
-        self._dynamics = QLPVVehicleDynamicsObs(self.params, min_vx=0.5)
+        # min_vx aligned with vehicle model (0.15 like EKF version)
+        self.min_vx = 0.15  # [m/s]
+        self._dynamics = QLPVVehicleDynamicsObs(self.params, min_vx=self.min_vx)
         
         # Initialize state estimate
         self.state_hat = np.zeros(self.STATE_DIM)
@@ -993,9 +962,6 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
             n_delta_vertices=n_delta_vertices,
             use_common_lyapunov=use_common_lyapunov
         )
-        
-        # Minimum velocity threshold
-        self.min_vx = 0.5  # [m/s]
         
         # Diagnostics
         self.rdot_hat = 0.0
@@ -1185,106 +1151,32 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         return self._current_L.copy()
     
     def compute_scheduling_params(self, state: np.ndarray, delta: float) -> SchedulingParameters:
-        """Compute scheduling parameters from current state and input"""
-        return SchedulingParameters.from_state_and_input(state, delta, self.min_vx)
+        """Compute scheduling parameters - delegates to centralized dynamics"""
+        return self._dynamics.compute_scheduling_params(state, delta)
     
     def compute_A_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """
-        Compute state matrix A(ρ) for qLPV system
-        
-        State: [v_x, v_y, ψ, r, X, Y]
-        """
-        A = np.zeros((self.STATE_DIM, self.STATE_DIM))
-        
-        inv_vx = rho.inv_vx
-        cos_d = rho.cos_delta
-        sin_d = rho.sin_delta
-        vx = rho.vx
-        vy = rho.vy
-        cos_psi = rho.cos_psi
-        sin_psi = rho.sin_psi
-        
-        # v_y dynamics: v̇_y = F_yr/m + F_yf·cos(δ)/m - r·v_x
-        A[1, 1] = -(self.Cr + self.Cf * cos_d) / (self.m * vx)
-        A[1, 3] = -(self.Cf * self.lf * cos_d - self.Cr * self.lr) / (self.m * vx) - vx
-        
-        # ψ dynamics: ψ̇ = r
-        A[2, 3] = 1.0
-        
-        # r dynamics: ṙ = (l_f·F_yf·cos(δ) - l_r·F_yr) / I_z
-        A[3, 1] = -(self.Cf * self.lf * cos_d - self.Cr * self.lr) / (self.Iz * vx)
-        A[3, 3] = -(self.Cf * self.lf**2 * cos_d + self.Cr * self.lr**2) / (self.Iz * vx)
-        
-        # X dynamics: Ẋ = v_x·cos(ψ) - v_y·sin(ψ)
-        A[4, 0] = cos_psi
-        A[4, 1] = -sin_psi
-        A[4, 2] = -vx * sin_psi - vy * cos_psi
-        
-        # Y dynamics: Ẏ = v_x·sin(ψ) + v_y·cos(ψ)
-        A[5, 0] = sin_psi
-        A[5, 1] = cos_psi
-        A[5, 2] = vx * cos_psi - vy * sin_psi
-        
-        return A
+        """Compute state matrix A(ρ) - delegates to centralized dynamics"""
+        return self._dynamics.compute_A_matrix(rho)
     
     def compute_B_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """
-        Compute input matrix B(ρ)
-        
-        Input: u = [δ, a]ᵀ (steering, acceleration)
-        """
-        B = np.zeros((self.STATE_DIM, 2))
-        
-        cos_d = rho.cos_delta
-        
-        # v_x: affected by acceleration
-        B[0, 1] = 1.0  # Direct acceleration
-        
-        # v_y: affected by steering
-        B[1, 0] = self.Cf * cos_d / self.m
-        
-        # r: affected by steering
-        B[3, 0] = self.Cf * self.lf * cos_d / self.Iz
-        
-        return B
+        """Compute input matrix B(ρ) - delegates to centralized dynamics"""
+        return self._dynamics.compute_B_matrix(rho)
     
     def compute_E_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """
-        Compute residual injection matrix E(ρ)
-        
-        Residual: w = [w_r, w_f]ᵀ
-        """
-        E = np.zeros((self.STATE_DIM, 2))
-        
-        cos_d = rho.cos_delta
-        
-        # v_y: both residuals contribute
-        E[1, 0] = 1.0 / self.m
-        E[1, 1] = cos_d / self.m
-        
-        # r: both residuals create moment
-        E[3, 0] = -self.lr / self.Iz
-        E[3, 1] = self.lf * cos_d / self.Iz
-        
-        return E
+        """Compute residual injection matrix E(ρ) - delegates to centralized dynamics"""
+        return self._dynamics.compute_E_matrix(rho)
     
-    def compute_C_matrix(self) -> np.ndarray:
-        """
-        Compute output matrix C
-        
-        Measurements: y = [v_x, r, ψ, X, Y, a_y]ᵀ
-        """
-        C = np.zeros((self.MEAS_DIM, self.STATE_DIM))
-        
-        # Direct measurements
-        C[self.MEAS_IDX_VX, self.IDX_VX] = 1.0
-        C[self.MEAS_IDX_R, self.IDX_R] = 1.0
-        C[self.MEAS_IDX_PSI, self.IDX_PSI] = 1.0
-        C[self.MEAS_IDX_X, self.IDX_X] = 1.0
-        C[self.MEAS_IDX_Y, self.IDX_Y] = 1.0
-        # a_y is handled separately in update
-        
-        return C
+    def compute_C_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+        """Compute output matrix C(ρ) - delegates to centralized dynamics"""
+        return self._dynamics.compute_C_matrix(rho)
+    
+    def f_continuous(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
+        """Continuous-time state dynamics - delegates to centralized dynamics"""
+        return self._dynamics.f_continuous(x, u, w)
+    
+    def h_meas(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
+        """Measurement function - delegates to centralized dynamics"""
+        return self._dynamics.h_meas(x, u, w)
     
     def update(self, measurement: np.ndarray, control_input: np.ndarray,
                f_nn: Optional[np.ndarray] = None,
@@ -1299,6 +1191,12 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         
         UIO-style w estimation:
             ŵ = argmin ||M·w - b||² where b = [rdot_res, ay_res]
+
+
+            #     Uses the same flow as DifferentiatorUIOEKF:
+            # 1. UIO-Style w estimation via differentiator
+            # 2. Predict: x_pred = x + Ts * f(x, u, w) using nonlinear dynamics
+            # 3. Correct: x = x_pred + Ts * L(ρ) * (y - h(x_pred, u, w))
         
         Args:
             measurement: Measurement vector (various formats supported)
@@ -1315,44 +1213,44 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         # Control input
         u = control_input.reshape(-1)
         delta = u[0]
-        accel = u[1] if len(u) > 1 else 0.0
         
-        # Get current velocity for gain scheduling
-        vx = max(abs(self.state_hat[self.IDX_VX]), self.min_vx)
-        
-        # Get scheduled observer gain L(ρ)
-        self._current_L = self.get_scheduled_gain(vx, delta)
-        
-        # Compute scheduling parameters from current state estimate
-        rho = self.compute_scheduling_params(self.state_hat, delta)
-        
-        # Get system matrices
-        A = self.compute_A_matrix(rho)
-        B = self.compute_B_matrix(rho)
-        E = self.compute_E_matrix(rho)
-        C = self.compute_C_matrix()
-        
-        # === UIO-Style w estimation ===
+        # === Step 1: UIO-Style w estimation ===
         r_meas = y[self.MEAS_IDX_R]
         ay_meas = y[self.MEAS_IDX_AY]
         self.w_hat, self.rdot_hat, self.residual = self.w_estimator.estimate(
             self.state_hat, r_meas, ay_meas, delta
         )
         
-        # === State observer update with scheduled gain ===
-        # Predicted output (without a_y for simplicity)
-        y_pred = C @ self.state_hat
+        # === Step 2: PREDICT using nonlinear dynamics (like EKF) ===
+        # State derivative from centralized nonlinear dynamics
+        x_dot = self.f_continuous(self.state_hat, u, self.w_hat)
+        
+        # Euler discretization for prediction
+        x_pred = self.state_hat + self.Ts * x_dot
+        
+        # === Step 3: CORRECT using scheduled gain ===
+        # Predicted measurement using nonlinear measurement function
+        y_pred = self.h_meas(x_pred, u, self.w_hat)
         
         # Innovation (measurement residual)
         innovation = y - y_pred
-        # Set a_y innovation to 0 since it's used for w estimation
-        innovation[self.MEAS_IDX_AY] = 0.0
         
-        # State dynamics with scheduled gain (continuous-time)
-        x_dot = A @ self.state_hat + B @ u + E @ self.w_hat + self._current_L @ innovation
+        # Get scheduled observer gain L(ρ) based on predicted state
+        vx_pred = max(abs(x_pred[self.IDX_VX]), self.min_vx)
+        self._current_L = self.get_scheduled_gain(vx_pred, delta)
         
-        # Discrete update (Euler integration)
-        self.state_hat = self.state_hat + self.Ts * x_dot
+        # Correction step (scale by Ts for proper discrete-time application)
+        # Continuous-time: ẋ = f(x) + L(y - h(x))
+        # Discretized: x[k+1] = x_pred + Ts * L * innovation
+        self.state_hat = x_pred + self.Ts * self._current_L @ innovation
+        
+        # === Step 4: State clamping for numerical stability ===
+        self.state_hat[self.IDX_VX] = np.clip(self.state_hat[self.IDX_VX], -10.0, 10.0)
+        self.state_hat[self.IDX_VY] = np.clip(self.state_hat[self.IDX_VY], -5.0, 5.0)
+        self.state_hat[self.IDX_R] = np.clip(self.state_hat[self.IDX_R], -10.0, 10.0)
+        
+        # Clamp w_hat too
+        self.w_hat = np.clip(self.w_hat, -500.0, 500.0)
         
         # Copy to base class attribute for interface compatibility
         self.f_uk_hat = self.w_hat.copy()

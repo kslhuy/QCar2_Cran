@@ -35,6 +35,8 @@ class CarState:
     platoon_is_leader: bool = False
     platoon_position: Optional[int] = None
     manual_mode: bool = False
+    perception_active: bool = False
+    scopes_active: bool = False
 
 
 @dataclass
@@ -49,6 +51,8 @@ class CarPanelCallbacks:
     on_toggle_manual: Callable[[int], None] = None
     on_update_control_type: Callable[[int, str], None] = None
     on_platoon_position_change: Callable[[int, int], None] = None
+    on_toggle_perception: Callable[[int], None] = None
+    on_toggle_scopes: Callable[[int], None] = None
 
 
 class TelemetryDisplay(BaseWidget):
@@ -264,6 +268,130 @@ class ManualControlPanel(BaseWidget):
     def control_type(self) -> str:
         """Get the selected control type."""
         return self._control_type_var.get() if self._control_type_var else 'keyboard'
+
+
+class PerceptionControl(BaseWidget):
+    """Widget for perception system (YOLO) control."""
+    
+    def __init__(self, parent: tk.Widget, car_id: int,
+                 callbacks: CarPanelCallbacks,
+                 theme: Theme = None):
+        self.car_id = car_id
+        self.callbacks = callbacks
+        self._perception_btn: Optional[tk.Button] = None
+        self._perception_active = False
+        super().__init__(parent, theme)
+    
+    def _build(self) -> None:
+        """Build the perception control panel."""
+        c = self.theme.colors
+        
+        self.frame = ThemedLabelFrame(
+            self.parent,
+            text="👁️ Perception",
+            theme=self.theme
+        )
+        
+        content = tk.Frame(self.frame, bg=c.bg_medium)
+        content.pack(fill='x', padx=6, pady=4)
+        
+        # Perception toggle button
+        self._perception_btn = ThemedButton(
+            content,
+            text="👁️ Activate YOLO",
+            button_type='command',
+            command=self._toggle_perception,
+            padx=10,
+            pady=3
+        )
+        self._perception_btn.pack(fill='x')
+    
+    def _toggle_perception(self) -> None:
+        """Toggle perception system."""
+        if self.callbacks.on_toggle_perception:
+            self.callbacks.on_toggle_perception(self.car_id)
+    
+    def set_perception_active(self, active: bool) -> None:
+        """Update perception button state."""
+        self._perception_active = active
+        if self._perception_btn:
+            if active:
+                self._perception_btn.config(
+                    text="👁️ YOLO: ON",
+                    bg=self.theme.colors.accent_green
+                )
+            else:
+                self._perception_btn.config(
+                    text="👁️ Activate YOLO",
+                    bg=self.theme.colors.accent_blue
+                )
+    
+    @property
+    def is_active(self) -> bool:
+        """Get whether perception is active."""
+        return self._perception_active
+
+
+class ScopesControl(BaseWidget):
+    """Widget for estimation scopes visualization control."""
+    
+    def __init__(self, parent: tk.Widget, car_id: int,
+                 callbacks: CarPanelCallbacks,
+                 theme: Theme = None):
+        self.car_id = car_id
+        self.callbacks = callbacks
+        self._scopes_btn: Optional[tk.Button] = None
+        self._scopes_active = False
+        super().__init__(parent, theme)
+    
+    def _build(self) -> None:
+        """Build the scopes control panel."""
+        c = self.theme.colors
+        
+        self.frame = ThemedLabelFrame(
+            self.parent,
+            text="📊 Scopes",
+            theme=self.theme
+        )
+        
+        content = tk.Frame(self.frame, bg=c.bg_medium)
+        content.pack(fill='x', padx=6, pady=4)
+        
+        # Scopes toggle button
+        self._scopes_btn = ThemedButton(
+            content,
+            text="📊 Show Plots",
+            button_type='command',
+            command=self._toggle_scopes,
+            padx=10,
+            pady=3
+        )
+        self._scopes_btn.pack(fill='x')
+    
+    def _toggle_scopes(self) -> None:
+        """Toggle estimation scopes."""
+        if self.callbacks.on_toggle_scopes:
+            self.callbacks.on_toggle_scopes(self.car_id)
+    
+    def set_scopes_active(self, active: bool) -> None:
+        """Update scopes button state."""
+        self._scopes_active = active
+        if self._scopes_btn:
+            if active:
+                self._scopes_btn.config(
+                    text="📊 Scopes: ON",
+                    bg=self.theme.colors.accent_green
+                )
+            else:
+                self._scopes_btn.config(
+                    text="📊 Show Plots",
+                    bg=self.theme.colors.accent_blue
+                )
+    
+    @property
+    def is_active(self) -> bool:
+        """Get whether scopes are active."""
+        return self._scopes_active
 
 
 class VelocityControl(BaseWidget):
@@ -523,6 +651,8 @@ class CarPanelWidget(BaseWidget):
         self._telemetry: Optional[TelemetryDisplay] = None
         self._control_buttons: Optional[ControlButtons] = None
         self._manual_control: Optional[ManualControlPanel] = None
+        self._perception_control: Optional[PerceptionControl] = None
+        self._scopes_control: Optional[ScopesControl] = None
         self._velocity_control: Optional[VelocityControl] = None
         self._path_control: Optional[PathControl] = None
         self._platoon_control: Optional[PlatoonControl] = None
@@ -637,6 +767,23 @@ class CarPanelWidget(BaseWidget):
         )
         self._manual_control.pack(fill='x', pady=(5, 0))
         
+        self._perception_control = PerceptionControl(
+            left_section,
+            self.car_id,
+            self.callbacks,
+            theme=self.theme
+        )
+        self._perception_control.pack(fill='x', pady=(5, 0))
+        
+        # Scopes control (estimation visualization)
+        self._scopes_control = ScopesControl(
+            left_section,
+            self.car_id,
+            self.callbacks,
+            theme=self.theme
+        )
+        self._scopes_control.pack(fill='x', pady=(5, 0))
+        
         # Right section: Velocity + Path + Platoon controls
         right_section = tk.Frame(main_layout, bg=c.bg_medium)
         right_section.pack(side='right', fill='both', expand=True, padx=(5, 0))
@@ -710,6 +857,14 @@ class CarPanelWidget(BaseWidget):
         # Update manual mode
         if self._manual_control:
             self._manual_control.set_manual_active(state.manual_mode)
+        
+        # Update perception status
+        if self._perception_control:
+            self._perception_control.set_perception_active(state.perception_active)
+        
+        # Update scopes status
+        if self._scopes_control:
+            self._scopes_control.set_scopes_active(state.scopes_active)
     
     def set_connected(self, connected: bool) -> None:
         """Update connection status."""

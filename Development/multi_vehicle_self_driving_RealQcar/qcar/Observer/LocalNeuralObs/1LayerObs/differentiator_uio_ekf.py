@@ -170,6 +170,12 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         # Minimum velocity threshold (aligned with vehicle model)
         self.min_vx = 0.15  # [m/s]
         
+        # Centralized vehicle dynamics (single source of truth)
+        self.dynamics = QLPVVehicleDynamicsObs(
+            vehicle_params=self.params,
+            min_vx=self.min_vx
+        )
+        
         # === EKF Components ===
         # Error covariance
         self.P = P0 if P0 is not None else self._default_P0()
@@ -231,93 +237,17 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         ])
     
     def compute_scheduling_params(self, state: np.ndarray, delta: float) -> SchedulingParameters:
-        """Compute scheduling parameters"""
-        return SchedulingParameters.from_state_and_input(state, delta, self.min_vx)
+        """Compute scheduling parameters - delegates to centralized dynamics"""
+        return self.dynamics.compute_scheduling_params(state, delta)
     
     def f_continuous(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
-        """
-        Continuous-time state dynamics
-        
-        ẋ = f(x, u, w)
-        
-        Args:
-            x: State [vx, vy, psi, r, X, Y]
-            u: Control [δ, a]
-            w: Tire residuals [wr, wf]
-        
-        Returns:
-            State derivative
-        """
-        vx = max(abs(x[self.IDX_VX]), self.min_vx)
-        vy = x[self.IDX_VY]
-        psi = x[self.IDX_PSI]
-        r = x[self.IDX_R]
-        
-        delta = u[0]
-        accel = u[1] if len(u) > 1 else 0.0
-        
-        wr = w[0]
-        wf = w[1]
-        
-        cos_psi = np.cos(psi)
-        sin_psi = np.sin(psi)
-        cos_delta = np.cos(delta)
-        sin_delta = np.sin(delta)
-        
-        # Slip angles
-        alpha_f = delta - vy / vx - self.lf * r / vx
-        alpha_r = -vy / vx + self.lr * r / vx
-        
-        # Tire forces (linear + residuals)
-        Fyf = self.Cf * alpha_f + wf
-        Fyr = self.Cr * alpha_r + wr
-        
-        # State derivatives
-        vx_dot = accel - self.mu * self.g + r * vy - Fyf * sin_delta / self.m
-        vy_dot = (Fyr + Fyf * cos_delta) / self.m - r * vx
-        psi_dot = r
-        r_dot = (self.lf * Fyf * cos_delta - self.lr * Fyr) / self.Iz
-        X_dot = vx * cos_psi - vy * sin_psi
-        Y_dot = vx * sin_psi + vy * cos_psi
-        
-        return np.array([vx_dot, vy_dot, psi_dot, r_dot, X_dot, Y_dot])
+        """Continuous-time state dynamics - delegates to centralized dynamics"""
+        return self.dynamics.f_continuous(x, u, w)
     
     def h_meas(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
-        """
-        Measurement function y = h(x, u, w)
-        
-        Returns:
-            Predicted measurement [vx, r, psi, X, Y, ay]
-        """
-        vx = max(abs(x[self.IDX_VX]), self.min_vx)
-        vy = x[self.IDX_VY]
-        r = x[self.IDX_R]
-        
-        delta = u[0]
-        cos_delta = np.cos(delta)
-        
-        wr = w[0]
-        wf = w[1]
-        
-        # Slip angles
-        alpha_f = delta - vy / vx - self.lf * r / vx
-        alpha_r = -vy / vx + self.lr * r / vx
-        
-        # Tire forces
-        Fyf = self.Cf * alpha_f + wf
-        Fyr = self.Cr * alpha_r + wr
-        
-        # Lateral acceleration
-        ay = (Fyr + Fyf * cos_delta) / self.m
-        
-        return np.array([
-            x[self.IDX_VX],
-            r,
-            x[self.IDX_PSI],
-            x[self.IDX_X],
-            x[self.IDX_Y],
-            ay,
-        ])
+        """Measurement function - delegates to centralized dynamics"""
+        return self.dynamics.h_meas(x, u, w)
+    
     
     def _numerical_jacobian_F(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
         """Compute Jacobian of f wrt x using central differences"""

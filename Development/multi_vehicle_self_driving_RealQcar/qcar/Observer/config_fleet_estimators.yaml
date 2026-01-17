@@ -5,6 +5,16 @@
 # Options: 'consensus', 'distributed_kalman', 'distributed_luenberger', 'trust_consensus', 'trust_kalman'
 fleet_estimator_type: trust_consensus
 
+# Plotting configuration
+enable_plotting: false
+enable_recording: true
+plotting:
+  fps: 30
+  time_window: 20.0
+  max_vehicles_plot: 5
+  save_only: true
+
+
 # Global defaults for fleet estimation
 fleet:
   # State handling

@@ -162,21 +162,7 @@ class StoppedState(StateBase):
         else:
             return super().handle_event(command_type, data)
     
-    def _should_auto_resume(self, sensor_data: Dict[str, Any]) -> bool:
-        """Check if conditions are met to automatically resume (emergency clears)"""
-        # Only auto-resume if it was an emergency stop and emergency has cleared
-        if self.state_data.get('emergency_stop', False):
-            return self._is_emergency_cleared_now()
-        return False
-    
-    def _is_emergency_cleared_now(self) -> bool:
-        """Check if emergency conditions have been cleared right now"""
-        if not hasattr(self.vehicle_logic, 'collision_avoidance'):
-            return True  # If no collision avoidance, assume clear
-        
-        # This would need current sensor data - simplified for now
-        return True  # Placeholder: Assume emergency cleared for demo purposes
-    
+ 
     def _ensure_vehicle_stopped(self):
         """Ensure the vehicle hardware is actually stopped"""
         if hasattr(self.vehicle_logic, 'qcar'):

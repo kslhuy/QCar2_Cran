@@ -84,10 +84,12 @@ def create_all_observers(dt: float, obs_params: dict):
     """Create instances of all observer types"""
     observers = {}
     
-    # 1. Basic qLPV Observer (qlpv_observer.py)
+    # 1. Basic qLPV Observer with LMI Gain Scheduling (qlpv_observer.py)
     observers['qLPV_Basic'] = qLPVObserverBasic(
         sample_time=dt,
-        vehicle_params=obs_params
+        vehicle_params=obs_params,
+        use_gain_scheduling=True,  # Enable LMI-based gain scheduling
+        verbose=False
     )
     
     # 2. qLPV Observer with EKF gains (qlpv_observer_kalma.py)

@@ -20,7 +20,9 @@ lane_detection:
 # =============================================================================
 hsv_detector:
   # Crop bottom portion of image for lane detection
-  crop_ratio: 0.4  # Use bottom 40% of image
+  # Different ratios for simulation vs physical QCar
+  crop_ratio_sim: 0.4   # Use bottom 40% for simulation
+  crop_ratio_real: 0.0  # Use full image for physical QCar (adjust as needed)
   
   # HSV color thresholds for yellow lane
   hsv_lower: [10, 50, 100]   # [H, S, V] lower bounds
@@ -31,6 +33,10 @@ hsv_detector:
   slope_gain: 1.5            # Gain for slope-based steering
   intercept_gain: 0.00667    # Gain for intercept (1/150)
   intercept_offset: 5.0      # Offset added to intercept
+  
+  # Lane position detection parameters
+  # Used to determine if vehicle is in left or right lane
+  lane_detection_threshold: 0.01  # Min pixel ratio to confirm lane presence
 
 # =============================================================================
 # BEV (Bird's Eye View) DETECTOR SETTINGS
