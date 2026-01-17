@@ -121,37 +121,8 @@ class CommandHandler:
     """
     
     # Class-level mappings for better performance (avoid recreating dictionaries)
-    TYPE_MAPPING = {
-        'stop': CommandType.STOP,
-        'start': CommandType.START,
-        'emergency_stop': CommandType.EMERGENCY_STOP,
-        'set_params': CommandType.SET_PARAMS,
-        'set_velocity': CommandType.SET_VELOCITY,
-        'set_path': CommandType.SET_PATH,
-        'set_initial_position': CommandType.SET_INITIAL_POSITION,
-        'enable_platoon': CommandType.ENABLE_PLATOON_FOLLOWER,  # Default to follower
-        'enable_platoon_leader': CommandType.ENABLE_PLATOON_LEADER,
-        'enable_platoon_follower': CommandType.ENABLE_PLATOON_FOLLOWER,
-        'disable_platoon': CommandType.DISABLE_PLATOON,
-        'setup_platoon_formation': CommandType.SETUP_PLATOON_FORMATION,  # New global formation
-        'start_platoon': CommandType.START_PLATOON,  # New platoon trigger
-        'activate_v2v': CommandType.ACTIVATE_V2V,
-        'disable_v2v': CommandType.DISABLE_V2V,
-        'activate_perception': CommandType.ACTIVATE_PERCEPTION,
-        'disable_perception': CommandType.DISABLE_PERCEPTION,
-        'enable_manual_mode': CommandType.ENABLE_MANUAL_MODE,
-        'manual_control': CommandType.MANUAL_CONTROL,
-        'disable_manual_mode': CommandType.DISABLE_MANUAL_MODE,
-        'shutdown': CommandType.SHUTDOWN,
-        'reset': CommandType.RESET,
-        'calibrate': CommandType.CALIBRATE,
-        # Scopes commands
-        'activate_scopes': CommandType.ACTIVATE_SCOPES,
-        'disable_scopes': CommandType.DISABLE_SCOPES,
-        # Scope streaming commands
-        'enable_scope_streaming': CommandType.ENABLE_SCOPE_STREAMING,
-        'disable_scope_streaming': CommandType.DISABLE_SCOPE_STREAMING,
-    }
+    # Class-level mappings removed in favor of direct CommandType usage
+
     
     def __init__(self, logger, config=None):
         self.logger = logger
@@ -210,6 +181,7 @@ class CommandHandler:
         # For commands that don't trigger transitions but are valid, return True to avoid "not handled" warning
         # This assumes the state logged any specific errors if the command failed
         NON_TRANSITION_COMMANDS = [
+            CommandType.START,  # START is a valid command even if already running (no transition)
             CommandType.SET_VELOCITY, 
             CommandType.SET_PATH,
             CommandType.SET_INITIAL_POSITION,
@@ -290,22 +262,24 @@ class CommandHandler:
                 cmd_type_str = raw_command['command']
             
             if cmd_type_str:
-                # Use class-level mapping for better performance
-                command_type = self.TYPE_MAPPING.get(cmd_type_str)
-                if not command_type:
+                # Direct CommandType conversion (replaces TYPE_MAPPING)
+                try:
+                    # Special handling for platoon commands which might need role differentiation
+                    if cmd_type_str == 'enable_platoon':
+                        role = raw_command.get('role', 'follower')
+                        if role == 'leader':
+                            command_type = CommandType.ENABLE_PLATOON_LEADER
+                        elif role == 'follower':
+                            command_type = CommandType.ENABLE_PLATOON_FOLLOWER
+                        else:
+                            self.logger.log_warning(f"Invalid platoon role: {role}")
+                            return None
+                    else:
+                        # Try to match string directly to Enum value
+                        command_type = CommandType(cmd_type_str)
+                except ValueError:
                     self.logger.log_warning(f"Unknown command type: {cmd_type_str}")
                     return None
-                
-                # Special handling for platoon commands
-                if cmd_type_str == 'enable_platoon':
-                    role = raw_command.get('role', 'follower')
-                    if role == 'leader':
-                        command_type = CommandType.ENABLE_PLATOON_LEADER
-                    elif role == 'follower':
-                        command_type = CommandType.ENABLE_PLATOON_FOLLOWER
-                    else:
-                        self.logger.log_warning(f"Invalid platoon role: {role}")
-                        return None
                 
                 return CommandInfo(
                     command_type=command_type,

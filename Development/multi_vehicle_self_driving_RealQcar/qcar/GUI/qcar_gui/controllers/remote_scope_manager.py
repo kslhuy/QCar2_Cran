@@ -375,7 +375,7 @@ class RemoteScopeViewer:
         self.buffer = buffer
         self.field_names = field_names
         self.fps = fps
-        self.time_window = 30.0  # Show last 30 seconds
+        self.time_window = 15.0  # Show last 20 seconds
         
         # Process control
         self.running = False
@@ -526,6 +526,9 @@ def _run_scope_plot_process(car_id, field_names, data_queue, stop_event, fps, ti
                 min_len = min(len(x), len(y))
                 if min_len > 0:
                     lines['trajectory'].set_data(x[:min_len], y[:min_len])
+                    # Update head
+                    if 'trajectory_head' in lines:
+                        lines['trajectory_head'].set_data([x[min_len-1]], [y[min_len-1]])
             
             if 'trajectory_gps' in lines and 'x_gps' in latest_data and 'y_gps' in latest_data:
                 x = latest_data['x_gps']['v']
@@ -557,6 +560,10 @@ def _run_scope_plot_process(car_id, field_names, data_queue, stop_event, fps, ti
                     min_len = min(len(x), len(y))
                     if min_len > 0:
                         lines[line_key].set_data(x[:min_len], y[:min_len])
+                        # Update head
+                        head_key = f'traj_head_{i}'
+                        if head_key in lines:
+                             lines[head_key].set_data([x[min_len-1]], [y[min_len-1]])
 
         # Update axis limits
         for ax in axes.values():
@@ -606,6 +613,10 @@ def _create_local_layout(plt, car_id, field_names):
     # Est path
     line, = ax_traj.plot([], [], 'b-', lw=2, label='Path Est')
     lines['trajectory'] = line
+    # Head marker
+    line_head, = ax_traj.plot([], [], 'bo', ms=8, zorder=10) # Blue dot
+    lines['trajectory_head'] = line_head
+
     # GPS path
     if 'x_gps' in field_names:
         line_gps, = ax_traj.plot([], [], 'r--', lw=1, label='GPS')
@@ -694,6 +705,11 @@ def _create_fleet_layout(plt, car_id, field_names):
         c = colors[i % len(colors)]
         l, = ax_traj.plot([], [], color=c, lw=2, label=f'V{i}')
         lines[f'traj_{i}'] = l
+        
+        # Head marker
+        l_head, = ax_traj.plot([], [], marker='o', color=c, ms=8, linestyle='None', zorder=10)
+        lines[f'traj_head_{i}'] = l_head
+        
     ax_traj.legend(fontsize=8)
     
     # 2. Velocities (Top Right)

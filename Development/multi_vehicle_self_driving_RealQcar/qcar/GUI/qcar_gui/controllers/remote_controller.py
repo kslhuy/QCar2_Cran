@@ -462,39 +462,39 @@ class QCarRemoteController:
     
     def start_car(self, car_id: int) -> bool:
         """Send start command."""
-        return self.send_command(car_id, {'type': 'start'})
+        return self.send_command(car_id, {'type': CommandType.START.value})
     
     def stop_car(self, car_id: int) -> bool:
         """Send stop command."""
-        return self.send_command(car_id, {'type': 'stop', 'source': 'Ground Station'})
+        return self.send_command(car_id, {'type': CommandType.STOP.value, 'source': 'Ground Station'})
     
     def emergency_stop_car(self, car_id: int) -> bool:
         """Send emergency stop command."""
         return self.send_command(car_id, {
-            'type': 'emergency_stop',
+            'type': CommandType.EMERGENCY_STOP.value,
             'source': 'Ground Station',
-            'reason': 'Emergency command from operator'
+            'reason': 'Emergency'
         })
     
     def shutdown_car(self, car_id: int) -> bool:
         """Send shutdown command."""
-        return self.send_command(car_id, {'type': 'shutdown'})
+        return self.send_command(car_id, {'type': CommandType.SHUTDOWN.value})
     
     # ========== Parameter Commands ==========
     
     def set_velocity(self, car_id: int, velocity: float) -> bool:
         """Set target velocity."""
-        return self.send_command(car_id, {'type': 'set_velocity', 'v_ref': velocity})
+        return self.send_command(car_id, {'type': CommandType.SET_VELOCITY.value, 'v_ref': velocity})
     
     def set_path(self, car_id: int, node_sequence: List[int]) -> bool:
         """Set path nodes."""
-        return self.send_command(car_id, {'type': 'set_path', 'node_sequence': node_sequence})
+        return self.send_command(car_id, {'type': CommandType.SET_PATH.value, 'node_sequence': node_sequence})
     
     def set_initial_position(self, car_id: int, x: float, y: float,
                              theta: float = 0.0, calibrate: bool = True) -> bool:
         """Set initial position."""
         return self.send_command(car_id, {
-            'type': 'set_initial_position',
+            'type': CommandType.SET_INITIAL_POSITION.value,
             'x': x,
             'y': y,
             'theta': theta,
@@ -503,7 +503,7 @@ class QCarRemoteController:
     
     def set_params(self, car_id: int, **params) -> bool:
         """Set multiple parameters."""
-        command = {'type': 'set_params'}
+        command = {'type': CommandType.SET_PARAMS.value}
         command.update(params)
         return self.send_command(car_id, command)
     
@@ -511,13 +511,13 @@ class QCarRemoteController:
     
     def enable_platoon_leader(self, car_id: int) -> bool:
         """Enable platoon leader mode."""
-        return self.send_command(car_id, {'type': 'enable_platoon', 'role': 'leader'})
+        return self.send_command(car_id, {'type': CommandType.ENABLE_PLATOON_LEADER.value, 'role': 'leader'})
     
     def enable_platoon_follower(self, car_id: int, leader_id: int,
                                  following_distance: float = 2.0) -> bool:
         """Enable platoon follower mode."""
         return self.send_command(car_id, {
-            'type': 'enable_platoon',
+            'type': CommandType.ENABLE_PLATOON_FOLLOWER.value,
             'role': 'follower',
             'leader_id': leader_id,
             'following_distance': following_distance
@@ -525,7 +525,7 @@ class QCarRemoteController:
     
     def disable_platoon(self, car_id: int) -> bool:
         """Disable platoon mode."""
-        return self.send_command(car_id, {'type': 'disable_platoon'})
+        return self.send_command(car_id, {'type': CommandType.DISABLE_PLATOON.value})
     
     def setup_global_platoon_formation(self, formation: Dict[int, int]) -> Dict[int, bool]:
         """
@@ -541,7 +541,7 @@ class QCarRemoteController:
         leader_id = next((cid for cid, pos in formation.items() if pos == 1), None)
         
         formation_command = {
-            'type': 'setup_platoon_formation',
+            'type': CommandType.SETUP_PLATOON_FORMATION.value,
             'formation': formation,
             'leader_id': leader_id,
             'timestamp': time.time()
@@ -567,7 +567,7 @@ class QCarRemoteController:
             return {'status': 'error', 'message': f'Car {car_id} not connected'}
         
         command = {
-            'type': 'start_platoon',
+            'type': CommandType.START_PLATOON.value,
             'leader_id': leader_id,
             'timestamp': time.time()
         }
@@ -619,7 +619,7 @@ class QCarRemoteController:
     def enable_manual_mode(self, car_id: int, control_type: str = 'keyboard') -> bool:
         """Enable manual control mode."""
         return self.send_command(car_id, {
-            'type': 'enable_manual_mode',
+            'type': CommandType.ENABLE_MANUAL_MODE.value,
             'control_type': control_type
         })
     
@@ -629,14 +629,14 @@ class QCarRemoteController:
         steering = max(-1.0, min(1.0, steering))
         
         return self.send_command(car_id, {
-            'type': 'manual_control',
+            'type': CommandType.MANUAL_CONTROL.value,
             'throttle': throttle,
             'steering': steering
         }, validate=False)
     
     def disable_manual_mode(self, car_id: int) -> bool:
         """Disable manual control mode."""
-        return self.send_command(car_id, {'type': 'disable_manual_mode'})
+        return self.send_command(car_id, {'type': CommandType.DISABLE_MANUAL_MODE.value})
     
     # ========== Perception Commands ==========
     
@@ -650,7 +650,7 @@ class QCarRemoteController:
         Returns:
             bool: True if command sent successfully
         """
-        return self.send_command(car_id, {'type': 'activate_perception'})
+        return self.send_command(car_id, {'type': CommandType.ACTIVATE_PERCEPTION.value})
     
     def disable_perception(self, car_id: int) -> bool:
         """
@@ -662,7 +662,7 @@ class QCarRemoteController:
         Returns:
             bool: True if command sent successfully
         """
-        return self.send_command(car_id, {'type': 'disable_perception'})
+        return self.send_command(car_id, {'type': CommandType.DISABLE_PERCEPTION.value})
     
     def activate_perception_fleet(self, car_ids: List[int] = None) -> Dict[int, bool]:
         """
@@ -705,7 +705,7 @@ class QCarRemoteController:
             self.scope_manager.start_stream(car_id, preset_names)
         
         return self.send_command(car_id, {
-            'type': 'enable_scope_streaming',
+            'type': CommandType.ENABLE_SCOPE_STREAMING.value,
             'preset_names': preset_names,
             'stream_rate': stream_rate
         })
@@ -724,7 +724,7 @@ class QCarRemoteController:
         if self.scope_manager:
             self.scope_manager.stop_stream(car_id)
         
-        return self.send_command(car_id, {'type': 'disable_scope_streaming'})
+        return self.send_command(car_id, {'type': CommandType.DISABLE_SCOPE_STREAMING.value})
     
     def open_scope_viewer(self, car_id: int, preset_names: List[str] = None) -> bool:
         """
