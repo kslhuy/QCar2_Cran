@@ -374,6 +374,42 @@ class VehicleLogic:
                 # Push to scope manager (non-blocking)
                 self.scope_manager.sample(self.elapsed_time(), vis_data)
 
+            # Stream scope data to Ground Station (if streaming enabled)
+            if hasattr(self, 'scope_streamer') and self.scope_streamer and self.scope_streamer.is_streaming():
+                # Build streaming data (similar to vis_data but can be separate)
+                stream_data = state_info.copy()
+                
+                # Add GPS reference
+                sensor_data = self.vehicle_observer.get_sensor_data()
+                if sensor_data.get('gps_valid', False):
+                    stream_data['x_gps'] = sensor_data['gps_position'][0]
+                    stream_data['y_gps'] = sensor_data['gps_position'][1]
+                    stream_data['theta_gps'] = sensor_data['gps_position'][2]
+                
+                # Add control signals
+                stream_data['v_ref'] = self.v_ref * self.yolo_manager.get_yolo_gain()
+                stream_data['steering'] = last_steering
+                stream_data['throttle'] = last_u
+                
+                # Add fleet data if V2V is active
+                if self.vehicle_observer.v2v_active:
+                    stream_data['fleet_states'] = self.vehicle_observer.get_fleet_states()
+                    
+                    # Get consensus error if available
+                    if hasattr(self.vehicle_observer, 'fleet_observer') and self.vehicle_observer.fleet_observer:
+                        stream_data['consensus_error'] = getattr(
+                            self.vehicle_observer.fleet_observer, 'consensus_error', 0.0
+                        )
+                    
+                    # Get trust scores if available
+                    if hasattr(self.vehicle_observer, 'fleet_observer') and self.vehicle_observer.fleet_observer:
+                        trust_scores = getattr(self.vehicle_observer.fleet_observer, 'trust_scores', None)
+                        if trust_scores is not None:
+                            stream_data['trust_scores'] = trust_scores
+                
+                # Stream to Ground Station (rate-limited internally)
+                self.scope_streamer.stream_sample(self.elapsed_time(), stream_data)
+
             
             # Log observer state occasionally
             

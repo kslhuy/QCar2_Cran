@@ -53,6 +53,8 @@ class CarPanelCallbacks:
     on_platoon_position_change: Callable[[int, int], None] = None
     on_toggle_perception: Callable[[int], None] = None
     on_toggle_scopes: Callable[[int], None] = None
+    on_toggle_remote_plot_local: Callable[[int], None] = None
+    on_toggle_remote_plot_fleet: Callable[[int], None] = None
 
 
 class TelemetryDisplay(BaseWidget):
@@ -333,7 +335,7 @@ class PerceptionControl(BaseWidget):
 
 
 class ScopesControl(BaseWidget):
-    """Widget for estimation scopes visualization control."""
+    """Widget for estimation scopes and remote plotting control."""
     
     def __init__(self, parent: tk.Widget, car_id: int,
                  callbacks: CarPanelCallbacks,
@@ -341,7 +343,9 @@ class ScopesControl(BaseWidget):
         self.car_id = car_id
         self.callbacks = callbacks
         self._scopes_btn: Optional[tk.Button] = None
+        self._remote_plot_btn: Optional[tk.Button] = None
         self._scopes_active = False
+        self._remote_plot_active = False
         super().__init__(parent, theme)
     
     def _build(self) -> None:
@@ -357,41 +361,114 @@ class ScopesControl(BaseWidget):
         content = tk.Frame(self.frame, bg=c.bg_medium)
         content.pack(fill='x', padx=6, pady=4)
         
-        # Scopes toggle button
-        self._scopes_btn = ThemedButton(
+        # Remote plot Local button (streaming local data to Ground Station)
+        self._remote_local_btn = ThemedButton(
             content,
-            text="📊 Show Plots",
+            text="📡 Local Plot",
             button_type='command',
-            command=self._toggle_scopes,
+            command=self._toggle_remote_local,
             padx=10,
             pady=3
         )
-        self._scopes_btn.pack(fill='x')
+        self._remote_local_btn.pack(fill='x')
+        
+        # Remote plot Fleet button (streaming fleet data to Ground Station)
+        self._remote_fleet_btn = ThemedButton(
+            content,
+            text="📡 Fleet Plot",
+            button_type='command',
+            command=self._toggle_remote_fleet,
+            padx=10,
+            pady=3
+        )
+        self._remote_fleet_btn.pack(fill='x', pady=(3, 0))
+        
+        # Fleet button starts disabled (needs V2V active)
+        self._remote_fleet_btn.config(state='disabled')
+        self._fleet_enabled = False
     
     def _toggle_scopes(self) -> None:
-        """Toggle estimation scopes."""
+        """Toggle estimation scopes on vehicle."""
         if self.callbacks.on_toggle_scopes:
             self.callbacks.on_toggle_scopes(self.car_id)
+    
+    def _toggle_remote_local(self) -> None:
+        """Toggle remote local scope streaming to Ground Station."""
+        if self.callbacks.on_toggle_remote_plot_local:
+            self.callbacks.on_toggle_remote_plot_local(self.car_id)
+    
+    def _toggle_remote_fleet(self) -> None:
+        """Toggle remote fleet scope streaming to Ground Station."""
+        if self.callbacks.on_toggle_remote_plot_fleet:
+            self.callbacks.on_toggle_remote_plot_fleet(self.car_id)
     
     def set_scopes_active(self, active: bool) -> None:
         """Update scopes button state."""
         self._scopes_active = active
-        if self._scopes_btn:
+        if hasattr(self, '_scopes_btn') and self._scopes_btn:
             if active:
                 self._scopes_btn.config(
-                    text="📊 Scopes: ON",
+                    text="📊 Local: ON",
                     bg=self.theme.colors.accent_green
                 )
             else:
                 self._scopes_btn.config(
-                    text="📊 Show Plots",
+                    text="📊 Local Plots",
                     bg=self.theme.colors.accent_blue
                 )
+    
+    def set_remote_local_active(self, active: bool) -> None:
+        """Update remote local plot button state."""
+        self._remote_local_active = active
+        if self._remote_local_btn:
+            if active:
+                self._remote_local_btn.config(
+                    text="📡 Local: ON",
+                    bg=self.theme.colors.accent_green
+                )
+            else:
+                self._remote_local_btn.config(
+                    text="📡 Local Plot",
+                    bg=self.theme.colors.accent_blue
+                )
+    
+    def set_remote_fleet_active(self, active: bool) -> None:
+        """Update remote fleet plot button state."""
+        self._remote_fleet_active = active
+        if self._remote_fleet_btn:
+            if active:
+                self._remote_fleet_btn.config(
+                    text="📡 Fleet: ON",
+                    bg=self.theme.colors.accent_green
+                )
+            else:
+                self._remote_fleet_btn.config(
+                    text="📡 Fleet Plot",
+                    bg=self.theme.colors.accent_blue
+                )
+    
+    def set_fleet_button_enabled(self, enabled: bool) -> None:
+        """Enable/disable Fleet plot button based on V2V status."""
+        self._fleet_enabled = enabled
+        if self._remote_fleet_btn:
+            self._remote_fleet_btn.config(
+                state='normal' if enabled else 'disabled'
+            )
     
     @property
     def is_active(self) -> bool:
         """Get whether scopes are active."""
         return self._scopes_active
+    
+    @property
+    def is_remote_local_active(self) -> bool:
+        """Get whether remote local plot is active."""
+        return getattr(self, '_remote_local_active', False)
+    
+    @property
+    def is_remote_fleet_active(self) -> bool:
+        """Get whether remote fleet plot is active."""
+        return getattr(self, '_remote_fleet_active', False)
 
 
 class VelocityControl(BaseWidget):

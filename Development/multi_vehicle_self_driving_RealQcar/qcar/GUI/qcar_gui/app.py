@@ -222,6 +222,8 @@ class QCarFleetController:
             on_platoon_position_change=self._update_platoon_position,
             on_toggle_perception=self._toggle_perception_car,
             on_toggle_scopes=self._toggle_scopes_car,
+            on_toggle_remote_plot_local=self._toggle_remote_plot_local,
+            on_toggle_remote_plot_fleet=self._toggle_remote_plot_fleet,
         )
     
     def _update_car_panels(self) -> None:
@@ -286,7 +288,46 @@ class QCarFleetController:
                     perception_active=telemetry.get('perception_active', False),
                     scopes_active=telemetry.get('scopes_active', False),
                 )
+                
+                # Check stream status to keep button in sync
+                is_streaming_local = self._remote.is_scope_streaming(car_id)
+                # Note: We can't distinguish local/fleet stream easily from just boolean, 
+                # but we can check the presets if needed. For now simpler check:
+                
+                # Update panel
                 panel.update_state(state)
+        
+        # Check fleet plot availability (needs V2V active on all vehicles)
+        self._check_fleet_plot_availability()
+                
+    def _check_fleet_plot_availability(self) -> None:
+        """Check if fleet plotting should be enabled (all connected cars have V2V)."""
+        if not self._connected_cars or len(self._connected_cars) < 2:
+            all_v2v_active = False
+        else:
+            all_v2v_active = True
+            for car_id in self._connected_cars:
+                telemetry = self._remote.get_telemetry(car_id)
+                if not telemetry or not telemetry.get('v2v_active', False):
+                    all_v2v_active = False
+                    break
+        
+        # Enable/disable fleet plot button for all panels
+        for panel in self._car_panels.values():
+            if hasattr(panel, '_scopes_control'):
+                panel._scopes_control.set_fleet_button_enabled(all_v2v_active)
+
+    def on_close(self) -> None:
+        """Cleanup resources on application close."""
+        self.log("Shutting down...", 'INFO')
+        self._running = False
+        
+        # Stop all cars
+        self._stop_all_cars()
+        
+        # Stop remote controller (closes sockets and viewers)
+        if self._remote:
+            self._remote.stop()
     
     # ========== Individual Car Commands ==========
     
@@ -453,7 +494,7 @@ class QCarFleetController:
     def _activate_scopes_car(self, car_id: int) -> None:
         """Activate estimation scopes for a specific car."""
         command = {
-            'command': 'activate_scopes',
+            'type': 'activate_scopes',
             'preset_names': ['local_state', 'local_control']
         }
         if self._remote.send_command(car_id, command):
@@ -465,12 +506,124 @@ class QCarFleetController:
     
     def _disable_scopes_car(self, car_id: int) -> None:
         """Disable estimation scopes for a specific car."""
-        if self._remote.send_command(car_id, {'command': 'disable_scopes'}):
+        if self._remote.send_command(car_id, {'type': 'disable_scopes'}):
             self._commands_sent_gui += 1
             self.log(f"Car {car_id}: Scopes disabled", 'INFO')
         else:
             self._commands_failed_gui += 1
             self.log(f"Car {car_id}: Failed to disable scopes", 'ERROR')
+    
+    # ========== Remote Plotting Control ==========
+    
+    def _toggle_remote_plot_local(self, car_id: int) -> None:
+        """Toggle remote local scope streaming and visualization for a car."""
+        is_streaming = self._remote.is_scope_streaming(car_id)
+        
+        if is_streaming:
+            self._disable_remote_plot_local(car_id)
+        else:
+            self._enable_remote_plot_local(car_id)
+    
+    def _toggle_remote_plot_fleet(self, car_id: int) -> None:
+        """Toggle remote fleet scope streaming and visualization for a car."""
+        is_streaming = self._remote.is_scope_streaming(car_id)
+        
+        if is_streaming:
+            self._disable_remote_plot_fleet(car_id)
+        else:
+            self._enable_remote_plot_fleet(car_id)
+    
+    def _enable_remote_plot_local(self, car_id: int) -> None:
+        """Enable local scope streaming from vehicle and open viewer."""
+        preset_names = ['local_state', 'local_control']
+        
+        # Send command to vehicle to start streaming
+        success = self._remote.enable_scope_streaming(
+            car_id, preset_names=preset_names, stream_rate=50.0
+        )
+        
+        if success:
+            # Open viewer window on Ground Station
+            self._remote.open_scope_viewer(car_id, preset_names)
+            
+            # Update button state
+            if car_id in self._car_panels:
+                panel = self._car_panels[car_id]
+                if hasattr(panel, '_scopes_control'):
+                    panel._scopes_control.set_remote_local_active(True)
+            
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Local remote plot enabled", 'SUCCESS')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to enable local remote plot", 'ERROR')
+    
+    def _disable_remote_plot_local(self, car_id: int) -> None:
+        """Disable local scope streaming from vehicle and close viewer."""
+        # Close viewer window
+        self._remote.close_scope_viewer(car_id)
+        
+        # Send command to vehicle to stop streaming
+        success = self._remote.disable_scope_streaming(car_id)
+        
+        if success:
+            # Update button state
+            if car_id in self._car_panels:
+                panel = self._car_panels[car_id]
+                if hasattr(panel, '_scopes_control'):
+                    panel._scopes_control.set_remote_local_active(False)
+            
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Local remote plot disabled", 'INFO')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to disable local remote plot", 'ERROR')
+    
+    def _enable_remote_plot_fleet(self, car_id: int) -> None:
+        """Enable fleet scope streaming from vehicle and open viewer."""
+        preset_names = ['fleet_state', 'fleet_consensus']
+        
+        # Send command to vehicle to start streaming
+        success = self._remote.enable_scope_streaming(
+            car_id, preset_names=preset_names, stream_rate=50.0
+        )
+        
+        if success:
+            # Open viewer window on Ground Station
+            self._remote.open_scope_viewer(car_id, preset_names)
+            
+            # Update button state
+            if car_id in self._car_panels:
+                panel = self._car_panels[car_id]
+                if hasattr(panel, '_scopes_control'):
+                    panel._scopes_control.set_remote_fleet_active(True)
+            
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Fleet remote plot enabled", 'SUCCESS')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to enable fleet remote plot", 'ERROR')
+    
+    def _disable_remote_plot_fleet(self, car_id: int) -> None:
+        """Disable fleet scope streaming from vehicle and close viewer."""
+        # Close viewer window
+        self._remote.close_scope_viewer(car_id)
+        
+        # Send command to vehicle to stop streaming
+        success = self._remote.disable_scope_streaming(car_id)
+        
+        if success:
+            # Update button state
+            if car_id in self._car_panels:
+                panel = self._car_panels[car_id]
+                if hasattr(panel, '_scopes_control'):
+                    panel._scopes_control.set_remote_fleet_active(False)
+            
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Fleet remote plot disabled", 'INFO')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to disable fleet remote plot", 'ERROR')
     
     # ========== Fleet Commands ==========
     

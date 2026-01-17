@@ -325,6 +325,30 @@ class StateBase:
             except Exception as e:
                 self.logger.log_error("[CMD] Error disabling scopes", e)
             return None
+        
+        elif command_type == CommandType.ENABLE_SCOPE_STREAMING:
+            self.logger.logger.info(f"[CMD] Enabling scope data streaming for remote plot")
+            try:
+                preset_names = data.get('preset_names', ['local_state', 'local_control'])
+                stream_rate = data.get('stream_rate', 50.0)
+                success = self._enable_scope_streaming(preset_names, stream_rate)
+                if success:
+                    self.logger.logger.info(f"[CMD] Scope streaming enabled at {stream_rate}Hz: {preset_names}")
+                else:
+                    self.logger.log_error("[CMD] Failed to enable scope streaming")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error enabling scope streaming", e)
+            return None
+        
+        elif command_type == CommandType.DISABLE_SCOPE_STREAMING:
+            self.logger.logger.info(f"[CMD] Disabling scope data streaming")
+            try:
+                self._disable_scope_streaming()
+                self.logger.logger.info(f"[CMD] Scope streaming disabled")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error disabling scope streaming", e)
+            return None
+        
         return None
     
     # === Helper Methods ===
@@ -869,4 +893,78 @@ class StateBase:
             
         except Exception as e:
             self.logger.log_error("[SCOPES] Error disabling estimation scopes", e)
+            return False
+    
+    def _enable_scope_streaming(self, preset_names: list = None, stream_rate: float = 50.0) -> bool:
+        """
+        Enable scope data streaming to Ground Station for remote plotting.
+        
+        This creates a ScopeDataStreamer that packages data and sends it
+        at high frequency (default 50Hz) to the Ground Station.
+        
+        Args:
+            preset_names: List of preset names to stream
+            stream_rate: Streaming rate in Hz
+            
+        Returns:
+            bool: True if streaming enabled successfully
+        """
+        try:
+            if preset_names is None:
+                preset_names = ['local_state', 'local_control']
+            
+            # Check if Ground Station client exists
+            if not hasattr(self.vehicle_logic, 'client_Ground_Station') or self.vehicle_logic.client_Ground_Station is None:
+                self.logger.log_error("[STREAMING] Ground Station client not available")
+                return False
+            
+            # Import and create streamer
+            from scope_data_streamer import ScopeDataStreamer
+            
+            # Create or update streamer
+            if not hasattr(self.vehicle_logic, 'scope_streamer') or self.vehicle_logic.scope_streamer is None:
+                self.vehicle_logic.scope_streamer = ScopeDataStreamer(
+                    gs_client=self.vehicle_logic.client_Ground_Station,
+                    vehicle_id=self.vehicle_logic.vehicle_id,
+                    stream_rate=stream_rate
+                )
+            else:
+                self.vehicle_logic.scope_streamer.set_stream_rate(stream_rate)
+            
+            # Enable streaming on client
+            self.vehicle_logic.client_Ground_Station.enable_scope_streaming()
+            
+            # Enable streamer
+            success = self.vehicle_logic.scope_streamer.enable(preset_names)
+            
+            if success:
+                self.logger.logger.info(f"[STREAMING] Scope streaming enabled: {preset_names} at {stream_rate}Hz")
+            
+            return success
+            
+        except Exception as e:
+            self.logger.log_error("[STREAMING] Error enabling scope streaming", e)
+            return False
+    
+    def _disable_scope_streaming(self) -> bool:
+        """
+        Disable scope data streaming to Ground Station.
+        
+        Returns:
+            bool: True if streaming disabled successfully
+        """
+        try:
+            # Disable streamer
+            if hasattr(self.vehicle_logic, 'scope_streamer') and self.vehicle_logic.scope_streamer is not None:
+                self.vehicle_logic.scope_streamer.disable()
+            
+            # Disable streaming on client
+            if hasattr(self.vehicle_logic, 'client_Ground_Station') and self.vehicle_logic.client_Ground_Station is not None:
+                self.vehicle_logic.client_Ground_Station.disable_scope_streaming()
+            
+            self.logger.logger.info("[STREAMING] Scope streaming disabled")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("[STREAMING] Error disabling scope streaming", e)
             return False

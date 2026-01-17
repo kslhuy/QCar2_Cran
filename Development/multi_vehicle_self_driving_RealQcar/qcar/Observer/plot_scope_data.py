@@ -379,6 +379,447 @@ def select_vehicles_to_plot(df: pd.DataFrame) -> Optional[List[int]]:
 
 
 # =============================================================================
+# Interactive Data Viewer with Time Slider
+# =============================================================================
+
+class InteractiveDataViewer:
+    """
+    Interactive viewer for recorded scope data with time slider navigation.
+    
+    Features:
+    - Time slider to navigate through full recording
+    - Window size control (how many seconds visible at once)
+    - Play/Pause with animation
+    - Speed control (0.5x to 4x)
+    - Auto Y-axis scaling
+    - Data decimation for performance
+    """
+    
+    MAX_DISPLAY_POINTS = 2000  # Max points to display for performance
+    
+    def __init__(self, filepath: str, data_type: str = 'local'):
+        """
+        Initialize the interactive viewer.
+        
+        Args:
+            filepath: Path to CSV file
+            data_type: 'local' or 'fleet'
+        """
+        self.filepath = filepath
+        self.data_type = data_type
+        self.df = None
+        self.times = None
+        self.duration = 0.0
+        
+        # Playback state
+        self.playing = False
+        self.speed = 1.0
+        self.current_time = 0.0
+        self.window_size = 30.0  # seconds visible
+        
+        # Animation
+        self.animation = None
+        self.last_update_time = 0.0
+        
+        # UI elements
+        self.fig = None
+        self.axes = {}
+        self.lines = {}
+        self.slider_time = None
+        self.slider_window = None
+        self.slider_speed = None
+        self.btn_play = None
+        self.text_info = None
+        
+    def load_data(self) -> bool:
+        """Load data from CSV file."""
+        try:
+            self.df = pd.read_csv(self.filepath)
+            if 'time' not in self.df.columns:
+                print("Error: 'time' column not found")
+                return False
+            
+            # Normalize time to start from 0
+            t_start = self.df['time'].iloc[0]
+            self.times = (self.df['time'] - t_start).values
+            self.duration = self.times[-1]
+            
+            print(f"Loaded: {len(self.df)} samples, {self.duration:.2f}s duration")
+            return True
+        except Exception as e:
+            print(f"Error loading file: {e}")
+            return False
+    
+    def _decimate_data(self, start_idx: int, end_idx: int) -> np.ndarray:
+        """
+        Get indices for decimated data to limit display points.
+        Returns indices that should be displayed.
+        """
+        num_points = end_idx - start_idx
+        if num_points <= self.MAX_DISPLAY_POINTS:
+            return np.arange(start_idx, end_idx)
+        
+        # Downsample to MAX_DISPLAY_POINTS
+        step = num_points / self.MAX_DISPLAY_POINTS
+        return np.array([int(start_idx + i * step) for i in range(self.MAX_DISPLAY_POINTS)])
+    
+    def _find_time_range_indices(self, t_start: float, t_end: float) -> Tuple[int, int]:
+        """Find the indices corresponding to a time range."""
+        start_idx = np.searchsorted(self.times, t_start)
+        end_idx = np.searchsorted(self.times, t_end)
+        return int(max(0, start_idx)), int(min(len(self.times), end_idx))
+    
+    def _update_plots(self, t_center: float = None):
+        """Update all plots for the current time window."""
+        if t_center is None:
+            t_center = self.current_time
+        
+        # Calculate visible window
+        half_window = self.window_size / 2
+        t_start = max(0, t_center - half_window)
+        t_end = min(self.duration, t_center + half_window)
+        
+        # Get data indices
+        start_idx, end_idx = self._find_time_range_indices(t_start, t_end)
+        display_indices = self._decimate_data(start_idx, end_idx)
+        
+        if len(display_indices) == 0:
+            return
+        
+        times_view = self.times[display_indices]
+        
+        # Update each plot based on data type
+        if self.data_type == 'local':
+            self._update_local_plots(display_indices, times_view)
+        else:
+            self._update_fleet_plots(display_indices, times_view)
+        
+        # Update axis limits
+        for ax_name, ax in self.axes.items():
+            if ax_name != 'trajectory':
+                ax.set_xlim(t_start, t_end)
+        
+        # Update info text
+        if self.text_info:
+            self.text_info.set_text(
+                f"Time: {t_center:.1f}s / {self.duration:.1f}s | "
+                f"Window: {self.window_size:.0f}s | "
+                f"Speed: {self.speed:.1f}x | "
+                f"Points: {len(display_indices)}"
+            )
+        
+        self.fig.canvas.draw_idle()
+    
+    def _update_local_plots(self, indices: np.ndarray, times: np.ndarray):
+        """Update local data plots."""
+        df = self.df
+        
+        # Trajectory (X vs Y) - show path in visible window
+        if 'trajectory' in self.lines:
+            x_data = df['x'].values[indices]
+            y_data = df['y'].values[indices]
+            self.lines['trajectory'].set_data(x_data, y_data)
+            # Axis limits are fixed at X=(-5,5), Y=(-2,2)
+        
+        # Velocity
+        if 'velocity' in self.lines and 'velocity' in df.columns:
+            self.lines['velocity'].set_data(times, df['velocity'].values[indices])
+        
+        # Heading
+        if 'theta' in self.lines and 'theta' in df.columns:
+            self.lines['theta'].set_data(times, np.degrees(df['theta'].values[indices]))
+        
+        # Steering
+        if 'steering' in self.lines and 'steering' in df.columns:
+            self.lines['steering'].set_data(times, df['steering'].values[indices])
+        
+        # Throttle
+        if 'throttle' in self.lines and 'throttle' in df.columns:
+            self.lines['throttle'].set_data(times, df['throttle'].values[indices])
+    
+    def _update_fleet_plots(self, indices: np.ndarray, times: np.ndarray):
+        """Update fleet data plots."""
+        df = self.df
+        
+        # Find vehicles
+        fleet_cols = [c for c in df.columns if c.startswith('fleet_x_')]
+        vehicle_indices = sorted([int(c.split('_')[-1]) for c in fleet_cols])
+        
+        for v_idx in vehicle_indices:
+            x_col = f'fleet_x_{v_idx}'
+            y_col = f'fleet_y_{v_idx}'
+            
+            # Trajectory
+            if f'traj_{v_idx}' in self.lines and x_col in df.columns:
+                self.lines[f'traj_{v_idx}'].set_data(
+                    df[x_col].values[indices],
+                    df[y_col].values[indices]
+                )
+            
+            # Velocity
+            v_col = f'fleet_v_{v_idx}'
+            if f'vel_{v_idx}' in self.lines and v_col in df.columns:
+                self.lines[f'vel_{v_idx}'].set_data(times, df[v_col].values[indices])
+            
+            # Trust score
+            trust_col = f'trust_{v_idx}'
+            if f'trust_{v_idx}' in self.lines and trust_col in df.columns:
+                self.lines[f'trust_{v_idx}'].set_data(times, df[trust_col].values[indices])
+        
+        # Consensus error
+        if 'consensus' in self.lines and 'consensus_error' in df.columns:
+            self.lines['consensus'].set_data(times, df['consensus_error'].values[indices])
+    
+    def _on_time_slider_change(self, val):
+        """Handle time slider change."""
+        self.current_time = val
+        self._update_plots(val)
+    
+    def _on_window_slider_change(self, val):
+        """Handle window size slider change."""
+        self.window_size = val
+        self._update_plots()
+    
+    def _on_speed_slider_change(self, val):
+        """Handle speed slider change."""
+        self.speed = val
+    
+    def _on_play_button(self, event):
+        """Handle play/pause button."""
+        self.playing = not self.playing
+        self.btn_play.label.set_text('Pause' if self.playing else 'Play')
+        
+        if self.playing:
+            self._last_wall_time = None
+            self._start_animation()
+        else:
+            self._stop_animation()
+    
+    def _start_animation(self):
+        """Start the playback animation using matplotlib.animation."""
+        from matplotlib.animation import FuncAnimation
+        
+        def animate_frame(frame):
+            if not self.playing:
+                return
+            
+            import time as time_module
+            current_wall = time_module.time()
+            
+            if self._last_wall_time is None:
+                self._last_wall_time = current_wall
+                return
+            
+            dt = (current_wall - self._last_wall_time) * self.speed
+            self._last_wall_time = current_wall
+            
+            self.current_time += dt
+            
+            if self.current_time >= self.duration:
+                self.current_time = 0.0  # Loop
+            
+            # Update slider (this triggers _on_time_slider_change which updates plots)
+            self.slider_time.set_val(self.current_time)
+        
+        self.animation = FuncAnimation(
+            self.fig, animate_frame, interval=50, blit=False, cache_frame_data=False
+        )
+        self.fig.canvas.draw_idle()
+    
+    def _stop_animation(self):
+        """Stop the playback animation."""
+        if self.animation is not None:
+            self.animation.event_source.stop()
+            self.animation = None
+    
+    def _create_local_layout(self):
+        """Create layout for local data visualization."""
+        from matplotlib.widgets import Slider, Button
+        
+        # Create figure with subplots - more bottom margin for controls
+        self.fig = plt.figure(figsize=(16, 10))
+        self.fig.subplots_adjust(bottom=0.15)
+        gs = self.fig.add_gridspec(3, 3, height_ratios=[2, 1, 1], hspace=0.35, wspace=0.3)
+        
+        # Trajectory (large, left side) - X=(-5,5), Y=(-2,2)
+        self.axes['trajectory'] = self.fig.add_subplot(gs[0:2, 0:2])
+        self.axes['trajectory'].set_xlabel('X [m]', fontsize=9)
+        self.axes['trajectory'].set_ylabel('Y [m]', fontsize=9)
+        self.axes['trajectory'].set_title('Trajectory', fontsize=10)
+        self.axes['trajectory'].grid(True)
+        self.axes['trajectory'].set_xlim(-5, 5)
+        self.axes['trajectory'].set_ylim(-2, 2)
+        self.axes['trajectory'].tick_params(labelsize=8)
+        self.lines['trajectory'], = self.axes['trajectory'].plot([], [], 'b-', lw=2, label='Path')
+        
+        # Velocity (right top) - V=(-5,5)
+        self.axes['velocity'] = self.fig.add_subplot(gs[0, 2])
+        self.axes['velocity'].set_ylabel('Velocity [m/s]', fontsize=9)
+        self.axes['velocity'].set_ylim(-5, 5)
+        self.axes['velocity'].grid(True)
+        self.axes['velocity'].tick_params(labelsize=8)
+        self.lines['velocity'], = self.axes['velocity'].plot([], [], 'b-', lw=1.5)
+        
+        # Heading (right middle) - deg=(-180,180)
+        self.axes['heading'] = self.fig.add_subplot(gs[1, 2])
+        self.axes['heading'].set_ylabel('Heading [deg]', fontsize=9)
+        self.axes['heading'].set_ylim(-180, 180)
+        self.axes['heading'].grid(True)
+        self.axes['heading'].tick_params(labelsize=8)
+        self.lines['theta'], = self.axes['heading'].plot([], [], 'g-', lw=1.5)
+        
+        # Controls (bottom left) - (-1,1)
+        self.axes['control'] = self.fig.add_subplot(gs[2, 0:2])
+        self.axes['control'].set_ylabel('Control', fontsize=9)
+        self.axes['control'].set_xlabel('Time [s]', fontsize=9)
+        self.axes['control'].set_ylim(-1, 1)
+        self.axes['control'].grid(True)
+        self.axes['control'].tick_params(labelsize=8)
+        self.lines['steering'], = self.axes['control'].plot([], [], 'r-', lw=1.5, label='Steering')
+        self.lines['throttle'], = self.axes['control'].plot([], [], 'k--', lw=1.5, label='Throttle')
+        self.axes['control'].legend(loc='upper right', fontsize=8)
+        
+        # Info panel (bottom right)
+        self.axes['info'] = self.fig.add_subplot(gs[2, 2])
+        self.axes['info'].axis('off')
+        self.text_info = self.axes['info'].text(0.5, 0.5, '', ha='center', va='center',
+                                                  fontsize=8, transform=self.axes['info'].transAxes)
+        
+        # Control widgets at bottom
+        self._create_control_widgets(gs)
+    
+    def _create_fleet_layout(self):
+        """Create layout for fleet data visualization."""
+        from matplotlib.widgets import Slider, Button
+        
+        # Create figure with subplots - more bottom margin for controls
+        self.fig = plt.figure(figsize=(16, 10))
+        self.fig.subplots_adjust(bottom=0.15)
+        gs = self.fig.add_gridspec(3, 2, height_ratios=[2, 1, 1], hspace=0.35, wspace=0.3)
+        
+        # Fleet trajectory - X=(-5,5), Y=(-2,2)
+        self.axes['trajectory'] = self.fig.add_subplot(gs[0:2, 0])
+        self.axes['trajectory'].set_xlabel('X [m]', fontsize=9)
+        self.axes['trajectory'].set_ylabel('Y [m]', fontsize=9)
+        self.axes['trajectory'].set_title('Fleet Trajectories', fontsize=10)
+        self.axes['trajectory'].set_xlim(-5, 5)
+        self.axes['trajectory'].set_ylim(-2, 2)
+        self.axes['trajectory'].grid(True)
+        self.axes['trajectory'].tick_params(labelsize=8)
+        
+        # Initialize fleet lines
+        fleet_cols = [c for c in self.df.columns if c.startswith('fleet_x_')]
+        vehicle_indices = sorted([int(c.split('_')[-1]) for c in fleet_cols])
+        num_vehicles = max(vehicle_indices) + 1 if vehicle_indices else 1
+        colors = plt.cm.jet(np.linspace(0, 1, num_vehicles))
+        
+        for v_idx in vehicle_indices:
+            color = colors[v_idx]
+            self.lines[f'traj_{v_idx}'], = self.axes['trajectory'].plot(
+                [], [], '-', color=color, lw=2, label=f'V{v_idx}'
+            )
+        self.axes['trajectory'].legend(fontsize=8)
+        
+        # Velocities - V=(-5,5)
+        self.axes['velocity'] = self.fig.add_subplot(gs[0, 1])
+        self.axes['velocity'].set_ylabel('Velocity [m/s]', fontsize=9)
+        self.axes['velocity'].set_ylim(-5, 5)
+        self.axes['velocity'].grid(True)
+        self.axes['velocity'].tick_params(labelsize=8)
+        
+        for v_idx in vehicle_indices:
+            color = colors[v_idx]
+            self.lines[f'vel_{v_idx}'], = self.axes['velocity'].plot(
+                [], [], '-', color=color, lw=1.5
+            )
+        
+        # Consensus error
+        self.axes['consensus'] = self.fig.add_subplot(gs[1, 1])
+        self.axes['consensus'].set_ylabel('Consensus Error', fontsize=9)
+        self.axes['consensus'].grid(True)
+        self.axes['consensus'].tick_params(labelsize=8)
+        self.lines['consensus'], = self.axes['consensus'].plot([], [], 'k-', lw=2)
+        
+        # Trust scores - range (-1, 1)
+        self.axes['trust'] = self.fig.add_subplot(gs[2, 0])
+        self.axes['trust'].set_ylabel('Trust Score', fontsize=9)
+        self.axes['trust'].set_xlabel('Time [s]', fontsize=9)
+        self.axes['trust'].set_ylim(-1, 1)
+        self.axes['trust'].grid(True)
+        self.axes['trust'].tick_params(labelsize=8)
+        
+        for v_idx in vehicle_indices:
+            color = colors[v_idx]
+            self.lines[f'trust_{v_idx}'], = self.axes['trust'].plot(
+                [], [], '-', color=color, lw=1.5, label=f'V{v_idx}'
+            )
+        self.axes['trust'].legend(fontsize=7, loc='upper right')
+        
+        # Info panel
+        self.axes['info'] = self.fig.add_subplot(gs[2, 1])
+        self.axes['info'].axis('off')
+        self.text_info = self.axes['info'].text(0.5, 0.5, '', ha='center', va='center',
+                                                  fontsize=8, transform=self.axes['info'].transAxes)
+        
+        self._create_control_widgets(gs)
+    
+    def _create_control_widgets(self, gs):
+        """Create control widgets (sliders and buttons)."""
+        from matplotlib.widgets import Slider, Button
+        
+        # Create axes for controls - better spacing
+        ax_time = self.fig.add_axes([0.12, 0.06, 0.60, 0.025])
+        ax_window = self.fig.add_axes([0.12, 0.025, 0.22, 0.025])
+        ax_speed = self.fig.add_axes([0.40, 0.025, 0.22, 0.025])
+        ax_play = self.fig.add_axes([0.75, 0.02, 0.12, 0.04])
+        
+        # Time slider
+        self.slider_time = Slider(
+            ax_time, 'Time', 0, self.duration, valinit=0,
+            valstep=0.1, color='lightblue'
+        )
+        self.slider_time.on_changed(self._on_time_slider_change)
+        
+        # Window size slider
+        self.slider_window = Slider(
+            ax_window, 'Window', 5, max(60, self.duration), valinit=self.window_size,
+            valstep=5, color='lightgreen'
+        )
+        self.slider_window.on_changed(self._on_window_slider_change)
+        
+        # Speed slider
+        self.slider_speed = Slider(
+            ax_speed, 'Speed', 0.25, 4.0, valinit=1.0,
+            valstep=0.25, color='lightyellow'
+        )
+        self.slider_speed.on_changed(self._on_speed_slider_change)
+        
+        # Play button
+        self.btn_play = Button(ax_play, '▶ Play', color='lightgray', hovercolor='gray')
+        self.btn_play.on_clicked(self._on_play_button)
+    
+    def show(self):
+        """Display the interactive viewer."""
+        if not self.load_data():
+            return
+        
+        # Create layout based on data type
+        if self.data_type == 'local':
+            self._create_local_layout()
+        else:
+            self._create_fleet_layout()
+        
+        # Set title
+        filename = os.path.basename(self.filepath)
+        self.fig.suptitle(f'Interactive Viewer: {filename}', fontsize=12, fontweight='bold')
+        
+        # Initial plot
+        self._update_plots(0)
+        
+        plt.show()
+
+
+# =============================================================================
 # Plotting Functions
 # =============================================================================
 
@@ -801,6 +1242,7 @@ def main_menu():
         
         options = [
             "Plot data (static matplotlib)",
+            "Interactive viewer (with time slider)",
             "Playback mode (real-time visualization)",
             "Quick plot - Latest local",
             "Quick plot - Latest fleet",
@@ -876,13 +1318,46 @@ def main_menu():
                             plot_fleet_data(filepath, selected_vehicles=selected)
                             
         elif choice == 2:
+            # Interactive viewer mode
+            result = select_vehicle_type(found_dirs)
+            if result is None:
+                continue
+            
+            vehicle_type, directory = result
+            
+            # Select data type
+            print_menu(['Local data', 'Fleet data'], "Select Data Type")
+            type_choice = get_choice(2)
+            
+            if type_choice == 0:
+                continue
+            
+            data_type = 'local' if type_choice == 1 else 'fleet'
+            
+            # Get files and let user browse
+            files = get_all_files(directory, data_type)
+            files = sort_files(files, 'newest')
+            
+            if not files:
+                print(f"No {data_type} files found!")
+                input("\nPress Enter to continue...")
+                continue
+            
+            filepath = interactive_file_browser(files)
+            
+            if filepath:
+                print(f"\nLaunching interactive viewer for: {os.path.basename(filepath)}")
+                viewer = InteractiveDataViewer(filepath, data_type)
+                viewer.show()
+                            
+        elif choice == 3:
             # Playback mode
             result = select_vehicle_type(found_dirs)
             if result:
                 _, directory = result
                 interactive_playback_menu(directory)
                 
-        elif choice == 3:
+        elif choice == 4:
             # Quick plot latest local
             found = False
             for v_type in ['fake_vehicle', 'real_vehicle']:
@@ -900,7 +1375,7 @@ def main_menu():
                 print("No local data files found!")
                 input("\nPress Enter to continue...")
                 
-        elif choice == 4:
+        elif choice == 5:
             # Quick plot latest fleet
             found = False
             for v_type in ['fake_vehicle', 'real_vehicle']:
@@ -918,7 +1393,7 @@ def main_menu():
                 print("No fleet data files found!")
                 input("\nPress Enter to continue...")
                 
-        elif choice == 5:
+        elif choice == 6:
             # Show directories
             clear_screen()
             print_header("Recording Directories")
@@ -936,7 +1411,7 @@ def main_menu():
             
             input("\nPress Enter to continue...")
             
-        elif choice == 6:
+        elif choice == 7:
             # Add custom directory
             clear_screen()
             print_header("Add Custom Directory")

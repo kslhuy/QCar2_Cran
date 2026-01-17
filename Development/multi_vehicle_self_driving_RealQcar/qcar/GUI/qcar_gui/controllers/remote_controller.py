@@ -26,6 +26,13 @@ if _qcar_dir not in sys.path:
 
 from command_types import CommandType
 
+# Import scope manager for remote plotting
+try:
+    from .remote_scope_manager import RemoteScopeManager
+    SCOPE_MANAGER_AVAILABLE = True
+except ImportError:
+    SCOPE_MANAGER_AVAILABLE = False
+
 
 
 @dataclass
@@ -188,6 +195,11 @@ class QCarRemoteController:
         
         # GUI reference for backward compatibility
         self.gui_controller = None
+        
+        # Scope manager for remote plotting (if available)
+        self.scope_manager = None
+        if SCOPE_MANAGER_AVAILABLE:
+            self.scope_manager = RemoteScopeManager()
     
     # ========== Server Management ==========
     
@@ -222,6 +234,33 @@ class QCarRemoteController:
                 
             except Exception as e:
                 print(f"[Ground Station] Failed to start server for Car {car_id}: {e}")
+    
+    def stop(self) -> None:
+        """Stop the controller and servers."""
+        self.running = False
+        
+        # Shutdown scope manager
+        if self.scope_manager:
+            self.scope_manager.shutdown()
+            
+        # Close all server sockets
+        for sock in self.server_sockets.values():
+            try:
+                sock.close()
+            except:
+                pass
+        self.server_sockets.clear()
+        
+        # Close all car connections
+        for car in self.cars.values():
+            if car.sock:
+                try:
+                    car.sock.close()
+                except:
+                    pass
+        self.cars.clear()
+        
+        print("[Ground Station] Controller stopped")
     
     def _accept_connection(self, car_id: int, server_sock: socket.socket) -> None:
         """Accept and handle connection from a specific car."""
@@ -352,7 +391,14 @@ class QCarRemoteController:
     
     def _handle_special_message(self, car_id: int, msg_type: str, data: Dict) -> None:
         """Handle special message types."""
-        if msg_type == 'v2v_status':
+        if msg_type == 'scope_data':
+            # High-frequency scope data for remote plotting
+            if self.scope_manager:
+                payload = data.get('payload', '')
+                self.scope_manager.receive_scope_data(car_id, payload)
+            return  # Don't process as telemetry
+        
+        elif msg_type == 'v2v_status':
             v2v_data = data.get('data', {})
             if self._v2v_callback:
                 self._v2v_callback(car_id, v2v_data)
@@ -635,6 +681,95 @@ class QCarRemoteController:
         for car_id in car_ids:
             results[car_id] = self.activate_perception(car_id)
         return results
+    
+    # ========== Scope Streaming Commands ==========
+    
+    def enable_scope_streaming(self, car_id: int, preset_names: List[str] = None,
+                                stream_rate: float = 50.0) -> bool:
+        """
+        Enable scope data streaming from a vehicle for remote plotting.
+        
+        Args:
+            car_id: Vehicle ID
+            preset_names: List of preset names to stream (default: local_state, local_control)
+            stream_rate: Streaming rate in Hz (default 50)
+            
+        Returns:
+            bool: True if command sent successfully
+        """
+        if preset_names is None:
+            preset_names = ['local_state', 'local_control']
+        
+        # Start receiving on scope manager
+        if self.scope_manager:
+            self.scope_manager.start_stream(car_id, preset_names)
+        
+        return self.send_command(car_id, {
+            'type': 'enable_scope_streaming',
+            'preset_names': preset_names,
+            'stream_rate': stream_rate
+        })
+    
+    def disable_scope_streaming(self, car_id: int) -> bool:
+        """
+        Disable scope data streaming from a vehicle.
+        
+        Args:
+            car_id: Vehicle ID
+            
+        Returns:
+            bool: True if command sent successfully
+        """
+        # Stop receiving on scope manager
+        if self.scope_manager:
+            self.scope_manager.stop_stream(car_id)
+        
+        return self.send_command(car_id, {'type': 'disable_scope_streaming'})
+    
+    def open_scope_viewer(self, car_id: int, preset_names: List[str] = None) -> bool:
+        """
+        Open a scope viewer window for a vehicle.
+        
+        Args:
+            car_id: Vehicle ID
+            preset_names: Presets to visualize
+            
+        Returns:
+            bool: True if viewer opened
+        """
+        if self.scope_manager:
+            self.scope_manager.open_viewer(car_id, preset_names)
+            return True
+        return False
+    
+    def close_scope_viewer(self, car_id: int) -> bool:
+        """
+        Close the scope viewer window for a vehicle.
+        
+        Args:
+            car_id: Vehicle ID
+            
+        Returns:
+            bool: True if viewer closed
+        """
+        if self.scope_manager:
+            self.scope_manager.close_viewer(car_id)
+            return True
+        return False
+    
+    def is_scope_streaming(self, car_id: int) -> bool:
+        """
+        Check if scope streaming is active for a vehicle.
+        
+        Args:
+            car_id: Vehicle ID
+            
+        Returns:
+            bool: True if streaming is active
+        """
+        if self.scope_manager:
+            return self.scope_manager.is_streaming(car_id)
+        return False
     
     # ========== Status and Telemetry ==========
     

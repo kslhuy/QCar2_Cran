@@ -144,7 +144,13 @@ class CommandHandler:
         'disable_manual_mode': CommandType.DISABLE_MANUAL_MODE,
         'shutdown': CommandType.SHUTDOWN,
         'reset': CommandType.RESET,
-        'calibrate': CommandType.CALIBRATE
+        'calibrate': CommandType.CALIBRATE,
+        # Scopes commands
+        'activate_scopes': CommandType.ACTIVATE_SCOPES,
+        'disable_scopes': CommandType.DISABLE_SCOPES,
+        # Scope streaming commands
+        'enable_scope_streaming': CommandType.ENABLE_SCOPE_STREAMING,
+        'disable_scope_streaming': CommandType.DISABLE_SCOPE_STREAMING,
     }
     
     def __init__(self, logger, config=None):
@@ -217,7 +223,12 @@ class CommandHandler:
             CommandType.SETUP_PLATOON_FORMATION,  # New: global formation setup
             CommandType.DISABLE_PLATOON,  # Pause platoon without transition
             CommandType.MANUAL_CONTROL,  # Manual control commands update state but don't transition
-            CommandType.CALIBRATE  # GPS recalibration without state transition
+            CommandType.CALIBRATE,  # GPS recalibration without state transition
+            # Scopes commands
+            CommandType.ACTIVATE_SCOPES,
+            CommandType.DISABLE_SCOPES,
+            CommandType.ENABLE_SCOPE_STREAMING,
+            CommandType.DISABLE_SCOPE_STREAMING,
         ]
         
         if command_type in NON_TRANSITION_COMMANDS:

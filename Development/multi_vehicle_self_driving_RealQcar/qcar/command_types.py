@@ -39,6 +39,8 @@ class CommandType(Enum):
     # Visualization commands
     ACTIVATE_SCOPES = "activate_scopes"
     DISABLE_SCOPES = "disable_scopes"
+    ENABLE_SCOPE_STREAMING = "enable_scope_streaming"
+    DISABLE_SCOPE_STREAMING = "disable_scope_streaming"
     
     # Manual control commands
     ENABLE_MANUAL_MODE = "enable_manual_mode"

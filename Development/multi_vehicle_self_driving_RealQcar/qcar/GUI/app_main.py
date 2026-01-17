@@ -108,7 +108,28 @@ def main():
     app.log("Waiting for vehicle connections...", 'INFO')
     
     # Run the main loop
-    app.root.mainloop()
+    app.root.protocol("WM_DELETE_WINDOW", lambda: on_close(app))
+    
+    try:
+        app.root.mainloop()
+    except KeyboardInterrupt:
+        on_close(app)
+
+
+def on_close(app):
+    """Handle application closure."""
+    print("Shutting down application...")
+    if hasattr(app, 'on_close'):
+        app.on_close()
+    
+    try:
+        app.root.quit()
+        app.root.destroy()
+    except Exception:
+        pass
+    
+    import os
+    os._exit(0)
 
 
 if __name__ == '__main__':

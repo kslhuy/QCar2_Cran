@@ -847,7 +847,8 @@ class EstimationScopeManager:
     - Recording capability
     """
     
-    def __init__(self, fps: int = 30, time_window: float = 60.0, enabled: bool = True, headless: bool = False):
+    def __init__(self, fps: int = 30, time_window: float = 60.0, enabled: bool = True, 
+                 headless: bool = False, downsample_factor: int = 1):
         """
         Initialize scope manager.
         
@@ -856,11 +857,14 @@ class EstimationScopeManager:
             time_window: Default time window for plots
             enabled: Master enable switch
             headless: If True, disables visualization (MultiScope) but allows recording
+            downsample_factor: Only display every Nth sample (1=all, 2=half, etc.)
+                              Recording always captures all samples.
         """
         self.fps = fps
         self.time_window = time_window
         self.enabled = enabled and (MULTISCOPE_AVAILABLE or headless)  # Allow if headless even if no scope
         self.headless = headless
+        self.downsample_factor = max(1, downsample_factor)
         
         # Presets
         self.presets: Dict[str, EstimationScopePreset] = {}
@@ -876,9 +880,9 @@ class EstimationScopeManager:
         self.recorder = ScopeDataRecorder()
         self.recording = False
         
-        # Downsample counter (to limit refresh rate)
+        # Downsample counter (to limit display rate)
         self._sample_counter = 0
-        self._sample_skip = 1  # How many samples to skip between updates
+        self._display_sample_counter = 0
     
     def add_preset(self, preset: EstimationScopePreset) -> bool:
         """
@@ -930,12 +934,16 @@ class EstimationScopeManager:
             return
         
         try:
-            # Non-blocking put
-            self.data_queue.put_nowait((t, data.copy()))
-            
-            # Record if enabled
+            # Always record at full rate if enabled
             if self.recording:
                 self.recorder.record(t, data)
+            
+            # Apply downsampling for display only
+            self._display_sample_counter += 1
+            if self._display_sample_counter >= self.downsample_factor:
+                self._display_sample_counter = 0
+                # Non-blocking put to display queue
+                self.data_queue.put_nowait((t, data.copy()))
                 
         except queue.Full:
             pass  # Drop sample if queue is full
