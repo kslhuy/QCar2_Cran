@@ -77,7 +77,7 @@ class WebSocketBridge:
         print(f"WebSocket server: ws://{self.config.websocket_host}:{self.config.websocket_port}")
         print(f"Configured vehicles: {len(self.vehicles)}")
         for vid, v in self.vehicles.items():
-            print(f"  • {vid}: {v.ip}:{v.port}")
+            print(f"  • {vid}: Listening on port {v.port}")
         print("=" * 60)
         
         # Start WebSocket server
@@ -88,96 +88,112 @@ class WebSocketBridge:
         )
         
         print(f"\n[READY] WebSocket Bridge started on ws://localhost:{self.config.websocket_port}")
-        print("Waiting for browser connections...")
         
-        # Connect to vehicles in background
-        asyncio.create_task(self._connect_to_vehicles())
+        # Start TCP Servers for Vehicles
+        await self._start_vehicle_listeners()
         
         # Keep running
         await server.wait_closed()
     
-    async def _connect_to_vehicles(self):
-        """Connect to all configured QCar vehicles via TCP"""
+    async def _start_vehicle_listeners(self):
+        """Start TCP listeners for each configured vehicle"""
         for vehicle_id, vehicle in self.vehicles.items():
-            asyncio.create_task(self._connect_vehicle(vehicle_id, vehicle))
-    
-    async def _connect_vehicle(self, vehicle_id: str, vehicle: VehicleConnection):
-        """Connect to a single vehicle and maintain connection"""
-        while self._running:
-            if not vehicle.connected:
-                try:
-                    print(f"[TCP] Connecting to {vehicle_id} at {vehicle.ip}:{vehicle.port}...")
-                    reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection(vehicle.ip, vehicle.port),
-                        timeout=5.0
-                    )
-                    vehicle.reader = reader
-                    vehicle.writer = writer
-                    vehicle.connected = True
-                    print(f"[TCP] ✓ Connected to {vehicle_id}")
-                    
-                    # Notify browser clients
-                    await self._broadcast_to_browsers({
-                        "type": "vehicle_status",
-                        "vehicle_id": vehicle_id,
-                        "status": "connected"
-                    })
-                    
-                    # Start receiving telemetry from this vehicle
-                    asyncio.create_task(self._receive_from_vehicle(vehicle_id, vehicle))
-                    
-                except asyncio.TimeoutError:
-                    print(f"[TCP] ✗ Connection to {vehicle_id} timed out")
-                except ConnectionRefusedError:
-                    print(f"[TCP] ✗ Connection to {vehicle_id} refused")
-                except Exception as e:
-                    print(f"[TCP] ✗ Error connecting to {vehicle_id}: {e}")
+            # Create a localized handler for this vehicle ID
+            handler = self._create_vehicle_handler(vehicle_id, vehicle)
             
-            await asyncio.sleep(5.0)  # Retry every 5 seconds
-    
+            try:
+                server = await asyncio.start_server(
+                    handler,
+                    '0.0.0.0', # Listen on all interfaces
+                    vehicle.port
+                )
+                print(f"[TCP] Listening for {vehicle_id} on 0.0.0.0:{vehicle.port}")
+                
+            except Exception as e:
+                print(f"[TCP] Failed to start listener for {vehicle_id}: {e}")
+
+    def _create_vehicle_handler(self, vehicle_id: str, vehicle: VehicleConnection):
+        """Factory for vehicle connection handlers"""
+        async def handler(reader, writer):
+            addr = writer.get_extra_info('peername')
+            print(f"[TCP] Connection from {addr} for {vehicle_id}")
+            
+            # Close existing connection if any
+            if vehicle.connected and vehicle.writer:
+                try:
+                    vehicle.writer.close()
+                except:
+                    pass
+            
+            vehicle.reader = reader
+            vehicle.writer = writer
+            vehicle.connected = True
+            vehicle.ip = addr[0] # Update IP with actual connection IP
+            
+            # Notify browser
+            await self._broadcast_to_browsers({
+                "type": "vehicle_status",
+                "vehicle_id": vehicle_id,
+                "status": "connected",
+                "ip": vehicle.ip,
+                "port": vehicle.port
+            })
+            
+            # Handle communication
+            await self._receive_from_vehicle(vehicle_id, vehicle)
+            
+        return handler
+
     async def _receive_from_vehicle(self, vehicle_id: str, vehicle: VehicleConnection):
         """Receive telemetry data from a vehicle and forward to browsers"""
         try:
             while vehicle.connected and self._running:
                 try:
-                    data = await asyncio.wait_for(
-                        vehicle.reader.read(4096),
-                        timeout=1.0
-                    )
+                    data = await vehicle.reader.read(4096)
                     
                     if not data:
-                        # Connection closed
-                        break
+                        break # Connection closed
                     
                     # Parse newline-delimited JSON
-                    vehicle.recv_buffer += data.decode('utf-8')
+                    vehicle.recv_buffer += data.decode('utf-8', errors='ignore')
                     while '\n' in vehicle.recv_buffer:
                         line, vehicle.recv_buffer = vehicle.recv_buffer.split('\n', 1)
                         if line.strip():
                             try:
+                                # Try parsing as JSON first
                                 telemetry = json.loads(line)
-                                # Add vehicle ID and forward to browsers
-                                telemetry['vehicle_id'] = vehicle_id
-                                telemetry['type'] = 'telemetry'
-                                await self._broadcast_to_browsers(telemetry)
-                            except json.JSONDecodeError:
-                                print(f"[TCP] Invalid JSON from {vehicle_id}: {line[:50]}")
                                 
-                except asyncio.TimeoutError:
-                    continue  # Normal timeout, just keep waiting
+                                # Check if it's a wrapped "scope_data" with hex payload
+                                # (As sent by ground_station_client.py: _send_queued_scope_data)
+                                if telemetry.get('type') == 'scope_data':
+                                    # Forward as-is or handle specially
+                                    telemetry['vehicle_id'] = vehicle_id
+                                    await self._broadcast_to_browsers(telemetry)
+                                else:
+                                    # Normal telemetry
+                                    telemetry['vehicle_id'] = vehicle_id
+                                    telemetry['type'] = 'telemetry'
+                                    await self._broadcast_to_browsers(telemetry)
+                                    
+                            except json.JSONDecodeError:
+                                # print(f"[TCP] Invalid JSON from {vehicle_id}: {line[:50]}")
+                                pass
+                                
+                except ConnectionResetError:
+                    break
+                except Exception as e:
+                    print(f"[TCP] Read error {vehicle_id}: {e}")
+                    break
                     
-        except Exception as e:
-            print(f"[TCP] Error receiving from {vehicle_id}: {e}")
         finally:
             vehicle.connected = False
             vehicle.recv_buffer = ""
             if vehicle.writer:
-                vehicle.writer.close()
                 try:
-                    await vehicle.writer.wait_closed()
+                    vehicle.writer.close()
                 except:
                     pass
-            print(f"[TCP] Disconnected from {vehicle_id}")
+            print(f"[TCP] Disconnected: {vehicle_id}")
             
             # Notify browsers
             await self._broadcast_to_browsers({
@@ -185,7 +201,7 @@ class WebSocketBridge:
                 "vehicle_id": vehicle_id,
                 "status": "disconnected"
             })
-    
+
     async def _handle_websocket_client(self, websocket: WebSocketServerProtocol, path: str = ""):
         """Handle a WebSocket connection from browser"""
         self.websocket_clients.add(websocket)
@@ -206,7 +222,7 @@ class WebSocketBridge:
             async for message in websocket:
                 await self._handle_browser_message(websocket, message)
         except websockets.exceptions.ConnectionClosed:
-            print(f"[WS] Browser disconnected from {client_addr}")
+            print(f"[WS] Browser disconnected")
         except Exception as e:
             print(f"[WS] Error handling browser client: {e}")
         finally:
@@ -219,15 +235,13 @@ class WebSocketBridge:
             msg_type = data.get('type', 'command')
             target = data.get('target', 'all')  # vehicle ID or 'all'
             
-            print(f"[WS] Received: {data.get('action', msg_type)} -> {target}")
+            # print(f"[WS] Received: {data.get('action', msg_type)} -> {target}")
             
             if msg_type == 'ping':
-                # Heartbeat
                 await websocket.send(json.dumps({"type": "pong"}))
                 return
             
             if msg_type == 'get_status':
-                # Return current vehicle status
                 for vid, v in self.vehicles.items():
                     await websocket.send(json.dumps({
                         "type": "vehicle_status",
@@ -243,44 +257,30 @@ class WebSocketBridge:
             else:
                 await self._send_to_vehicle(target, data)
                 
-            # Acknowledge command
-            await websocket.send(json.dumps({
-                "type": "command_ack",
-                "action": data.get('action'),
-                "target": target,
-                "success": True
-            }))
+            # Acknowledge command (?) - Optional, disabled to reduce traffic
             
         except json.JSONDecodeError:
-            print(f"[WS] Invalid JSON from browser: {message[:50]}")
-            await websocket.send(json.dumps({
-                "type": "error",
-                "message": "Invalid JSON"
-            }))
+            pass
         except Exception as e:
-            print(f"[WS] Error handling message: {e}")
-            await websocket.send(json.dumps({
-                "type": "error", 
-                "message": str(e)
-            }))
+            print(f"[WS] Error: {e}")
     
     async def _send_to_vehicle(self, vehicle_id: str, data: dict):
         """Send a command to a specific vehicle via TCP"""
         if vehicle_id not in self.vehicles:
-            print(f"[TCP] Unknown vehicle: {vehicle_id}")
             return False
         
         vehicle = self.vehicles[vehicle_id]
         if not vehicle.connected or not vehicle.writer:
-            print(f"[TCP] Vehicle {vehicle_id} not connected")
             return False
         
         try:
             # Format as newline-delimited JSON (matching QCar protocol)
+            # IMPORTANT: The real vehicle expects the command object directly.
+            # We strip the 'target' field if we want to be clean, but QCar ignores extras.
             message = json.dumps(data) + '\n'
             vehicle.writer.write(message.encode('utf-8'))
             await vehicle.writer.drain()
-            print(f"[TCP] Sent to {vehicle_id}: {data.get('action', 'data')}")
+            # print(f"[TCP] Sent to {vehicle_id}")
             return True
         except Exception as e:
             print(f"[TCP] Error sending to {vehicle_id}: {e}")
@@ -301,7 +301,6 @@ class WebSocketBridge:
             except:
                 disconnected.add(client)
         
-        # Clean up disconnected clients
         self.websocket_clients -= disconnected
     
     def stop(self):
