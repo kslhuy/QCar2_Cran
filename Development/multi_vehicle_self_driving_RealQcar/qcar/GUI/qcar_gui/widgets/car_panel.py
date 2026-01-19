@@ -37,6 +37,11 @@ class CarState:
     manual_mode: bool = False
     perception_active: bool = False
     scopes_active: bool = False
+    # Observer and Controller types
+    local_observer_type: str = 'unknown'
+    fleet_observer_type: str = 'unknown'
+    longitudinal_ctrl_type: str = 'unknown'
+    lateral_ctrl_type: str = 'unknown'
 
 
 @dataclass
@@ -55,6 +60,10 @@ class CarPanelCallbacks:
     on_toggle_scopes: Callable[[int], None] = None
     on_toggle_remote_plot_local: Callable[[int], None] = None
     on_toggle_remote_plot_fleet: Callable[[int], None] = None
+    # Runtime switching callbacks
+    on_set_local_observer: Callable[[int, str], None] = None
+    on_set_fleet_observer: Callable[[int, str], None] = None
+    on_set_controller: Callable[[int, str, str], None] = None  # car_id, category, type
 
 
 class TelemetryDisplay(BaseWidget):
@@ -123,6 +132,12 @@ class TelemetryDisplay(BaseWidget):
         
         if 'state' in self._labels:
             self._labels['state'].config(text=state.state)
+            
+        if 'longitudinal_ctrl_type' in self._labels:
+            self._labels['longitudinal_ctrl_type'].config(text=state.longitudinal_ctrl_type)
+            
+        if 'lateral_ctrl_type' in self._labels:
+            self._labels['lateral_ctrl_type'].config(text=state.lateral_ctrl_type)
 
 
 class ControlButtons(BaseWidget):
@@ -471,6 +486,148 @@ class ScopesControl(BaseWidget):
         return getattr(self, '_remote_fleet_active', False)
 
 
+class RuntimeSwitchingControl(BaseWidget):
+    """Widget for runtime observer and controller switching."""
+    
+    # Available options (matching config files)
+    LOCAL_OBSERVERS = ['ekf', 'luenberger', 'neural_luenberger']
+    FLEET_OBSERVERS = ['consensus', 'distributed_luenberger', 
+                       'trust_consensus', 'trust_kalman']
+    LONGITUDINAL_CONTROLLERS = ['cacc', 'pid', 'hybrid']
+    LATERAL_CONTROLLERS = ['pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path']
+    
+    def __init__(self, parent: tk.Widget, car_id: int,
+                 callbacks: CarPanelCallbacks,
+                 theme: Theme = None):
+        self.car_id = car_id
+        self.callbacks = callbacks
+        self._local_obs_var: Optional[tk.StringVar] = None
+        self._fleet_obs_var: Optional[tk.StringVar] = None
+        self._long_ctrl_var: Optional[tk.StringVar] = None
+        self._lat_ctrl_var: Optional[tk.StringVar] = None
+        super().__init__(parent, theme)
+    
+    def _build(self) -> None:
+        """Build the runtime switching control panel."""
+        c = self.theme.colors
+        
+        self.frame = ThemedLabelFrame(
+            self.parent,
+            text="⚙️ Runtime Config",
+            theme=self.theme
+        )
+        
+        content = tk.Frame(self.frame, bg=c.bg_medium)
+        content.pack(fill='x', padx=6, pady=4)
+        
+        # Local Observer row
+        self._build_dropdown_row(
+            content, "Local Obs:", self.LOCAL_OBSERVERS,
+            '_local_obs_var', self._apply_local_observer
+        )
+        
+        # Fleet Observer row
+        self._build_dropdown_row(
+            content, "Fleet Obs:", self.FLEET_OBSERVERS,
+            '_fleet_obs_var', self._apply_fleet_observer
+        )
+        
+        # Longitudinal Controller row
+        self._build_dropdown_row(
+            content, "Long Ctrl:", self.LONGITUDINAL_CONTROLLERS,
+            '_long_ctrl_var', self._apply_longitudinal_controller
+        )
+        
+        # Lateral Controller row
+        self._build_dropdown_row(
+            content, "Lat Ctrl:", self.LATERAL_CONTROLLERS,
+            '_lat_ctrl_var', self._apply_lateral_controller
+        )
+    
+    def _build_dropdown_row(self, parent: tk.Frame, label_text: str, 
+                            options: list, var_attr: str, 
+                            apply_callback: Callable) -> None:
+        """Build a dropdown row with label and apply button."""
+        c = self.theme.colors
+        
+        row = tk.Frame(parent, bg=c.bg_medium)
+        row.pack(fill='x', pady=2)
+        
+        # Label
+        ThemedLabel(
+            row, text=label_text, style='muted', theme=self.theme
+        ).pack(side='left', padx=(0, 5))
+        
+        # Dropdown variable
+        var = tk.StringVar(value=options[0] if options else '')
+        setattr(self, var_attr, var)
+        
+        # Dropdown (OptionMenu)
+        dropdown = tk.OptionMenu(row, var, *options)
+        dropdown.config(
+            bg=c.bg_light,
+            fg=c.fg_primary,
+            activebackground=c.bg_medium,
+            activeforeground=c.fg_primary,
+            highlightthickness=0,
+            font=self.theme.fonts.tiny(),
+            width=12
+        )
+        dropdown["menu"].config(
+            bg=c.bg_light,
+            fg=c.fg_primary,
+            activebackground=c.accent_blue,
+            activeforeground=c.fg_primary
+        )
+        dropdown.pack(side='left', padx=(0, 5))
+        
+        # Apply button
+        ThemedButton(
+            row,
+            text="Apply",
+            button_type='command',
+            command=apply_callback,
+            padx=6,
+            pady=1
+        ).pack(side='left')
+    
+    def _apply_local_observer(self) -> None:
+        """Apply local observer change."""
+        if self.callbacks.on_set_local_observer and self._local_obs_var:
+            observer_type = self._local_obs_var.get()
+            self.callbacks.on_set_local_observer(self.car_id, observer_type)
+    
+    def _apply_fleet_observer(self) -> None:
+        """Apply fleet observer change."""
+        if self.callbacks.on_set_fleet_observer and self._fleet_obs_var:
+            observer_type = self._fleet_obs_var.get()
+            self.callbacks.on_set_fleet_observer(self.car_id, observer_type)
+    
+    def _apply_longitudinal_controller(self) -> None:
+        """Apply longitudinal controller change."""
+        if self.callbacks.on_set_controller and self._long_ctrl_var:
+            controller_type = self._long_ctrl_var.get()
+            self.callbacks.on_set_controller(self.car_id, 'longitudinal', controller_type)
+    
+    def _apply_lateral_controller(self) -> None:
+        """Apply lateral controller change."""
+        if self.callbacks.on_set_controller and self._lat_ctrl_var:
+            controller_type = self._lat_ctrl_var.get()
+            self.callbacks.on_set_controller(self.car_id, 'lateral', controller_type)
+    
+    def set_current_values(self, local_obs: str = None, fleet_obs: str = None,
+                           long_ctrl: str = None, lat_ctrl: str = None) -> None:
+        """Set the current values in the dropdowns (useful for syncing with telemetry)."""
+        if local_obs and self._local_obs_var and local_obs in self.LOCAL_OBSERVERS:
+            self._local_obs_var.set(local_obs)
+        if fleet_obs and self._fleet_obs_var and fleet_obs in self.FLEET_OBSERVERS:
+            self._fleet_obs_var.set(fleet_obs)
+        if long_ctrl and self._long_ctrl_var and long_ctrl in self.LONGITUDINAL_CONTROLLERS:
+            self._long_ctrl_var.set(long_ctrl)
+        if lat_ctrl and self._lat_ctrl_var and lat_ctrl in self.LATERAL_CONTROLLERS:
+            self._lat_ctrl_var.set(lat_ctrl)
+
+
 class VelocityControl(BaseWidget):
     """Widget for velocity control."""
     
@@ -730,6 +887,7 @@ class CarPanelWidget(BaseWidget):
         self._manual_control: Optional[ManualControlPanel] = None
         self._perception_control: Optional[PerceptionControl] = None
         self._scopes_control: Optional[ScopesControl] = None
+        self._runtime_switching: Optional[RuntimeSwitchingControl] = None
         self._velocity_control: Optional[VelocityControl] = None
         self._path_control: Optional[PathControl] = None
         self._platoon_control: Optional[PlatoonControl] = None
@@ -887,7 +1045,16 @@ class CarPanelWidget(BaseWidget):
             self.callbacks,
             theme=self.theme
         )
-        self._platoon_control.pack(fill='x')
+        self._platoon_control.pack(fill='x', pady=(0, 4))
+        
+        # Runtime switching control (observer/controller selection)
+        self._runtime_switching = RuntimeSwitchingControl(
+            right_section,
+            self.car_id,
+            self.callbacks,
+            theme=self.theme
+        )
+        self._runtime_switching.pack(fill='x')
     
     def update_state(self, state: CarState) -> None:
         """Update the panel with current car state."""
@@ -942,6 +1109,15 @@ class CarPanelWidget(BaseWidget):
         # Update scopes status
         if self._scopes_control:
             self._scopes_control.set_scopes_active(state.scopes_active)
+        
+        # # Sync runtime switching dropdowns with current values from vehicle
+        # if self._runtime_switching:
+        #     self._runtime_switching.set_current_values(
+        #         local_obs=state.local_observer_type,
+        #         fleet_obs=state.fleet_observer_type,
+        #         long_ctrl=state.longitudinal_ctrl_type,
+        #         lat_ctrl=state.lateral_ctrl_type
+        #     )
     
     def set_connected(self, connected: bool) -> None:
         """Update connection status."""

@@ -276,6 +276,11 @@ class StateBase:
             # Handle V2V deactivation
             if hasattr(self.vehicle_logic, 'v2v_manager'):
                 success = self.vehicle_logic.v2v_manager.disable_v2v()
+                
+                # Also reset fleet estimation to clean up state
+                if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
+                    self.vehicle_logic.vehicle_observer.reset_fleet_estimation()
+                
                 if success and self.logger:
                     self.logger.logger.info(f"[OK] V2V disabled in {self.__class__.__name__}")
                 elif self.logger:
@@ -349,9 +354,105 @@ class StateBase:
                 self.logger.log_error("[CMD] Error disabling scope streaming", e)
             return None
         
+        elif command_type == CommandType.SET_LOCAL_OBSERVER:
+            observer_type = data.get('observer_type')
+            if observer_type:
+                self.logger.logger.info(f"[CMD] Switching local observer to: {observer_type}")
+                try:
+                    success = self._switch_local_observer(observer_type)
+                    if success:
+                        self.logger.logger.info(f"[CMD] Local observer switched to {observer_type}")
+                    else:
+                        self.logger.log_error(f"[CMD] Failed to switch local observer to {observer_type}")
+                except Exception as e:
+                    self.logger.log_error("[CMD] Error switching local observer", e)
+            else:
+                self.logger.log_warning("[CMD] SET_LOCAL_OBSERVER missing observer_type")
+            return None
+        
+        elif command_type == CommandType.SET_FLEET_OBSERVER:
+            observer_type = data.get('observer_type')
+            if observer_type:
+                self.logger.logger.info(f"[CMD] Switching fleet observer to: {observer_type}")
+                try:
+                    success = self._switch_fleet_observer(observer_type)
+                    if success:
+                        self.logger.logger.info(f"[CMD] Fleet observer switched to {observer_type}")
+                    else:
+                        self.logger.log_error(f"[CMD] Failed to switch fleet observer to {observer_type}")
+                except Exception as e:
+                    self.logger.log_error("[CMD] Error switching fleet observer", e)
+            else:
+                self.logger.log_warning("[CMD] SET_FLEET_OBSERVER missing observer_type")
+            return None
+        
+        elif command_type == CommandType.SET_CONTROLLER:
+            category = data.get('category')  # 'longitudinal' or 'lateral'
+            controller_type = data.get('controller_type')
+            if category and controller_type:
+                self.logger.logger.info(f"[CMD] Switching {category} controller to: {controller_type}")
+                try:
+                    success = self._switch_controller(category, controller_type)
+                    if success:
+                        self.logger.logger.info(f"[CMD] {category.capitalize()} controller switched to {controller_type}")
+                    else:
+                        self.logger.log_error(f"[CMD] Failed to switch {category} controller to {controller_type}")
+                except Exception as e:
+                    self.logger.log_error("[CMD] Error switching controller", e)
+            else:
+                self.logger.log_warning("[CMD] SET_CONTROLLER missing category or controller_type")
+            return None
+        
         return None
     
+    def _init_controllers(self, force: bool = False):
+        """
+        Initialize controllers specific to this state.
+        Override this in subclasses to initialize state-specific controllers.
+        Called once during state initialization or when forced.
+        
+        Args:
+            force: If True, force re-initialization even if already initialized
+        """
+        pass
+    
     # === Helper Methods ===
+    
+    def _switch_controller(self, category: str, controller_type: str) -> bool:
+        """
+        Switch controller type in real-time.
+        validates type against ConfigControllerLoader values.
+        """
+        if not hasattr(self.vehicle_logic, 'controller_manager'):
+            self.logger.logger.error("Controller Manager not available")
+            return False
+            
+        cm = self.vehicle_logic.controller_manager
+        
+        if category == 'longitudinal':
+            valid_types = cm.config.get_available_longitudinal_types()
+            if controller_type not in valid_types:
+                self.logger.logger.error(f"Invalid longitudinal controller type: {controller_type}. Valid: {valid_types}")
+                return False
+            success = cm.switch_longitudinal(controller_type)
+            
+        elif category == 'lateral':
+            valid_types = cm.config.get_available_lateral_types()
+            if controller_type not in valid_types:
+                self.logger.logger.error(f"Invalid lateral controller type: {controller_type}. Valid: {valid_types}")
+                return False
+            success = cm.switch_lateral(controller_type)
+            
+        else:
+            self.logger.logger.error(f"Invalid controller category: {category}")
+            return False
+            
+        if success:
+             self._init_controllers(force=True) # Force refresh controllers in current state
+        # else:
+        #     self.logger.logger.error(f"Failed to switch {category} controller to {controller_type}")
+        
+        return success
     
 
     
@@ -437,21 +538,7 @@ class StateBase:
                 self._update_fake_vehicle_position(calibration_pose)
                 
                 # We dont need to recalibrate simulated GPS in Qlabs (since the Position will always be perfect)
-                # TODO :  maybe we can teleport the Qcar to the calibration_pose?
-                
-                # # Simulated QCar - need car config
-                # from qvl.multi_agent import readRobots
-                # robotsDir = readRobots()
-                # name = f"QC2_{self.vehicle_logic.vehicle_id}"
-                # car_config = robotsDir[name]
-                
-                # self.vehicle_logic.gps = QCarGPS(
-                #     initialPose=calibration_pose,
-                #     calibrate=calibrate,
-                #     gpsPort=car_config["gpsPort"],
-                #     lidarIdealPort=car_config["lidarIdealPort"]
-                # )
-                self.logger.logger.info("GPS recalibrated (simulated mode)")
+                self.logger.logger.info("GPS recalibrated (simulated/Fake mode)")
             else:
                 # Physical QCar
                 self.vehicle_logic.gps = QCarGPS(
@@ -512,22 +599,23 @@ class StateBase:
                 
                 # Update MockQCar position
                 if hasattr(fake_vehicle, 'mock_qcar'):
-                    fake_vehicle.mock_qcar.x = float(pose[0])
-                    fake_vehicle.mock_qcar.y = float(pose[1])
-                    fake_vehicle.mock_qcar.heading = float(pose[2])
-                    self.logger.logger.info(
-                        f"MockQCar position updated: ({pose[0]:.2f}, {pose[1]:.2f}, {np.rad2deg(pose[2]):.1f}°)"
-                    )
+                    fake_vehicle.mock_qcar.reset(pose)
+                    # fake_vehicle.mock_qcar.x = float(pose[0])
+                    # fake_vehicle.mock_qcar.y = float(pose[1])
+                    # fake_vehicle.mock_qcar.heading = float(pose[2])
+                    # self.logger.logger.info(
+                    #     f"MockQCar position updated: ({pose[0]:.2f}, {pose[1]:.2f}, {np.rad2deg(pose[2]):.1f}°)"
+                    # )
                 
-                # Update MockQCarGPS position
-                if hasattr(fake_vehicle, 'mock_gps'):
-                    fake_vehicle.mock_gps.x = float(pose[0])
-                    fake_vehicle.mock_gps.y = float(pose[1])
-                    self.logger.logger.info(
-                        f"MockGPS position updated: ({pose[0]:.2f}, {pose[1]:.2f})"
-                    )
+                # # Update MockQCarGPS position
+                # if hasattr(fake_vehicle, 'mock_gps'):
+                #     fake_vehicle.mock_gps.x = float(pose[0])
+                #     fake_vehicle.mock_gps.y = float(pose[1])
+                #     self.logger.logger.info(
+                #         f"MockGPS position updated: ({pose[0]:.2f}, {pose[1]:.2f})"
+                #     )
         except Exception as e:
-            # Silently ignore errors for non-fake vehicles
+            self.logger.logger.error(f"Failed to update fake vehicle position: {e}")
             pass
     
     def _activate_perception_system(self) -> bool:
@@ -968,3 +1056,111 @@ class StateBase:
         except Exception as e:
             self.logger.log_error("[STREAMING] Error disabling scope streaming", e)
             return False
+    
+    # === Runtime Switching Methods ===
+    
+    def _switch_local_observer(self, observer_type: str) -> bool:
+        """
+        Switch the local state estimator at runtime.
+        
+        Args:
+            observer_type: Type of local estimator ('ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger')
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            from Observer.local_state_estimators import LocalEstimatorFactory
+            
+            valid_types = ['ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger']
+            if observer_type not in valid_types:
+                self.logger.log_error(f"Invalid local observer type: {observer_type}. Valid: {valid_types}")
+                return False
+            
+            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
+                self.logger.log_error("Vehicle observer not initialized")
+                return False
+            
+            vehicle_observer = self.vehicle_logic.vehicle_observer
+            
+            # Get current state for continuity
+            current_pose = None
+            if hasattr(vehicle_observer, 'local_estimator') and vehicle_observer.local_estimator is not None:
+                try:
+                    state = vehicle_observer.local_estimator.get_state()
+                    if state is not None:
+                        current_pose = state[:3]  # [x, y, theta]
+                except:
+                    pass
+            
+            # Get config defaults for the new estimator type
+            config_defaults = vehicle_observer.local_config_defaults.get(observer_type, {})
+            
+            # Create new estimator using factory
+            new_estimator = LocalEstimatorFactory.create(
+                estimator_type=observer_type,
+                config=config_defaults,
+                logger=self.logger
+            )
+            
+            # Initialize the new estimator
+            if hasattr(new_estimator, 'initialize'):
+                gps = getattr(self.vehicle_logic, 'gps', None)
+                new_estimator.initialize(gps=gps, initial_pose=current_pose)
+            
+            # Swap the estimator
+            vehicle_observer.set_local_estimator(new_estimator)
+            vehicle_observer.local_estimator_type = observer_type
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error(f"Failed to switch local observer to {observer_type}", e)
+            return False
+    
+    def _switch_fleet_observer(self, observer_type: str) -> bool:
+        """
+        Switch the fleet state estimator at runtime.
+        
+        Args:
+            observer_type: Type of fleet estimator ('consensus', 'distributed_kalman', etc.)
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            from Observer.fleet_state_estimators import FleetEstimatorFactory
+            
+            valid_types = ['consensus', 'distributed_kalman', 'distributed_luenberger', 
+                          'trust_consensus', 'trust_kalman']
+            if observer_type not in valid_types:
+                self.logger.log_error(f"Invalid fleet observer type: {observer_type}. Valid: {valid_types}")
+                return False
+            
+            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
+                self.logger.log_error("Vehicle observer not initialized")
+                return False
+            
+            vehicle_observer = self.vehicle_logic.vehicle_observer
+            
+            # Get observer config
+            obs_config = vehicle_observer._get_observer_config()
+            
+            # Create new fleet estimator using factory
+            new_estimator = FleetEstimatorFactory.create(
+                estimator_type=observer_type,
+                vehicle_id=self.vehicle_logic.vehicle_id,
+                config=obs_config,
+                logger=self.logger
+            )
+            
+            # Swap the estimator
+            vehicle_observer.set_fleet_estimator(new_estimator)
+            vehicle_observer.fleet_estimator_type = observer_type
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error(f"Failed to switch fleet observer to {observer_type}", e)
+            return False
+    

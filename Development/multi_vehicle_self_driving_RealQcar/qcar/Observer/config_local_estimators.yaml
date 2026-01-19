@@ -27,10 +27,7 @@ local:
   luenberger:
     observer_gain: 0.5  # Observer gain (0-1, higher = more aggressive correction)
 
-  # ---------------------------------------------------------------------
-  # Dead reckoning estimator defaults
-  # ---------------------------------------------------------------------
-  dead_reckoning: {}  # No configurable parameters
+
 
   # ---------------------------------------------------------------------
   # Neural Luenberger estimator defaults

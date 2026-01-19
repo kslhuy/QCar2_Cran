@@ -141,7 +141,7 @@ class ROSInitializingState(StateBase):
     
     def _initialize_path_planning(self) -> bool:
         """Initialize path planning system"""
-        if not self.vehicle_logic.controller_config.enable_steering_control:
+        if not self.vehicle_logic.controller_manager.config.enable_steering_control:
             self.logger.logger.info("Steering control disabled, skipping path planning")
             return True
         

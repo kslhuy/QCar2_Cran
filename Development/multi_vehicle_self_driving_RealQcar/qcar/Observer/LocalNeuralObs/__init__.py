@@ -19,13 +19,15 @@ __all__ = [
 
 def __getattr__(name):
     """Lazy import to avoid torch dependency unless needed"""
+    import importlib
     if name == 'NeuralObserverNet' or name == 'LearningBatch' or name == 'ModelQueue':
-        from .neural_network import NeuralObserverNet, LearningBatch, ModelQueue
-        return globals()[name]
+        # 2LayerObs starts with number, use importlib
+        module = importlib.import_module('.2LayerObs.neural_network', package=__name__)
+        return getattr(module, name)
     elif name == 'NeuralLuenbergerEstimator':
-        from .neural_state_estimator import NeuralLuenbergerEstimator
-        return NeuralLuenbergerEstimator
+        module = importlib.import_module('.2LayerObs.neural_state_estimator', package=__name__)
+        return module.NeuralLuenbergerEstimator
     elif name == 'GradientSolver':
-        from .gradient_solver import GradientSolver
-        return GradientSolver
+        module = importlib.import_module('.2LayerObs.gradient_solver', package=__name__)
+        return module.GradientSolver
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

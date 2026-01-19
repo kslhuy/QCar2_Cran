@@ -35,56 +35,16 @@ except ImportError as e:
     COMMAND_TYPE_AVAILABLE = False
     CommandType = None
 
-# Import modular longitudinal controllers
-try:
-    from Controller.longitudinal_controllers import ControllerFactory
-    LONGITUDINAL_CONTROLLER_AVAILABLE = True
-except ImportError as e:
-    print(f"WARNING: Cannot import longitudinal_controllers: {e}")
-    LONGITUDINAL_CONTROLLER_AVAILABLE = False
-    ControllerFactory = None
-
-# Import modular lateral controllers
-try:
-    from Controller.lateral_controllers import LateralControllerFactory
-    LATERAL_CONTROLLER_AVAILABLE = True
-except ImportError as e:
-    print(f"WARNING: Cannot import lateral_controllers: {e}")
-    LATERAL_CONTROLLER_AVAILABLE = False
-    LateralControllerFactory = None
-
-# Import controller config loader
-try:
-    from Controller.config_controller_loader import get_controller_config
-    CONFIG_LOADER_AVAILABLE = True
-except ImportError as e:
-    print(f"WARNING: Cannot import config_loader: {e}")
-    CONFIG_LOADER_AVAILABLE = False
-    get_controller_config = None
-
-# Import SteeringController for path-following mode
-try:
-    from Controller.lateral_controllers import StanleyController
-    STEERING_CONTROLLER_AVAILABLE = True
-except ImportError as e:
-    print(f"WARNING: Cannot import SteeringController: {e}")
-    STEERING_CONTROLLER_AVAILABLE = False
-    StanleyController = None
 
 
 class FollowingLeaderState(StateBase):
-    """Handler for FOLLOWING_LEADER state - simplified to use PlatoonController"""
+    """Handler for FOLLOWING_LEADER state - uses centralized ControllerManager"""
     
     def __init__(self, vehicle_logic):
-        """Initialize with configurable controller types"""
+        """Initialize the following leader state"""
         super().__init__(vehicle_logic)
         
-        # Load controller configuration from YAML (required)
-        self.controller_config = get_controller_config()
-        self.longitudinal_controller_type = self.controller_config.get_longitudinal_controller_type()
-        self.lateral_controller_type = self.controller_config.get_lateral_controller_type()
-        self.logger.logger.info(f"Loaded controller config: Long={self.longitudinal_controller_type}, Lat={self.lateral_controller_type}")
-        
+        # Controllers obtained from ControllerManager
         self.longitudinal_controller = None
         self.lateral_controller = None
         self.steering_controller = None  # For path-following lateral mode
@@ -102,65 +62,36 @@ class FollowingLeaderState(StateBase):
             self.vehicle_logic.platoon_controller.enable_as_follower()
             self.logger.logger.info("Platoon controller configured as follower")
         
-        # Initialize controllers
-        self._initialize_longitudinal_controller()
-        self._initialize_lateral_controller()
-        
-        # Initialize path-following steering controller if in path mode
-        if self.lateral_controller_type == 'path':
-            self._initialize_steering_controller()
+        # Get controllers from ControllerManager
+        self._init_controllers()
         
         return True
     
-    def _initialize_longitudinal_controller(self):
-        """Initialize the selected longitudinal controller from YAML config"""
-        params = self.controller_config.get_longitudinal_params()
-        
-        self.longitudinal_controller = ControllerFactory.create(
-            self.longitudinal_controller_type,
-            params,
-            logger=self.logger.logger
-        )
-        self.logger.logger.info(f"Initialized {self.longitudinal_controller_type.upper()} longitudinal controller from config")
-    
-    def _initialize_lateral_controller(self):
-        """Initialize the selected lateral controller from YAML config"""
-        # Skip factory creation if using path mode (uses SteeringController instead)
-        if self.lateral_controller_type == 'path':
-            self.logger.logger.info("Using path-following lateral control mode (SteeringController)")
+    def _init_controllers(self, force: bool = False):
+        """Get controllers from ControllerManager (creates them if needed)."""
+        if not hasattr(self.vehicle_logic, 'controller_manager'):
+            self.logger.logger.error("[FOLLOW] ControllerManager not available")
             return
         
-        params = self.controller_config.get_lateral_params()
+        cm = self.vehicle_logic.controller_manager
+        lateral_type = cm.get_lateral_type()
         
-        self.lateral_controller = LateralControllerFactory.create(
-            self.lateral_controller_type,
-            params,
-            logger=self.logger.logger
-        )
-        self.logger.logger.info(f"Initialized {self.lateral_controller_type.upper()} lateral controller from config")
-    
-    def _initialize_steering_controller(self):
-        """Initialize SteeringController for path-following lateral mode"""
-        if not STEERING_CONTROLLER_AVAILABLE:
-            self.logger.logger.error("SteeringController not available for path mode")
-            return
+        # Get longitudinal controller from manager
+        self.longitudinal_controller = cm.get_longitudinal_controller()
+        if self.longitudinal_controller:
+            self.logger.logger.info(f"[FOLLOW] Longitudinal controller: {cm.get_longitudinal_type()}")
         
-        # Check if we have waypoint sequence available
-        if not hasattr(self.vehicle_logic, 'waypoint_sequence') or self.vehicle_logic.waypoint_sequence is None:
-            self.logger.logger.warning("[FOLLOW] Cannot initialize steering controller - no waypoint sequence")
-            return
-        
-        try:
-            # Initialize steering controller with current waypoint sequence
-            self.steering_controller = StanleyController(
-                waypoints=self.vehicle_logic.waypoint_sequence,
-                config=self.controller_config,
-                logger=self.logger,
-                cyclic=True
-            )
-            self.logger.logger.info("[FOLLOW] Path-following steering controller initialized successfully")
-        except Exception as e:
-            self.logger.log_error("Failed to initialize path-following steering controller", e)
+        # Get lateral controller based on type
+        if lateral_type == 'path':
+            # Path-following mode: use steering controller
+            self.steering_controller = cm.get_steering_controller()
+            if self.steering_controller:
+                self.logger.logger.info("[FOLLOW] Using path-following lateral mode (SteeringController)")
+        else:
+            # Leader-tracking mode: use lateral controller factory
+            self.lateral_controller = cm.get_lateral_controller()
+            if self.lateral_controller:
+                self.logger.logger.info(f"[FOLLOW] Lateral controller: {cm.get_lateral_type()}")
     
     def update(self, dt: float, sensor_data: Dict[str, Any]) -> Tuple[float, float, Optional[Tuple[VehicleState, StateTransitionReason]]]:
         """Update leader following control using PlatoonController"""
@@ -431,7 +362,7 @@ class FollowingLeaderState(StateBase):
     
     def _compute_path_steering(self, x: float, y: float, theta: float, velocity: float) -> float:
         """Compute steering control using path-following (like in FOLLOWING_PATH state)"""
-        if not self.vehicle_logic.controller_config.enable_steering_control or not self.steering_controller:
+        if not self.vehicle_logic.controller_manager.config.enable_steering_control or not self.steering_controller:
             return 0.0
         
         # Use look-ahead point (0.2m forward from vehicle center)

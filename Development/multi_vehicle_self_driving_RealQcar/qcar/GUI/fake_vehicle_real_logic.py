@@ -11,8 +11,10 @@ Key simplifications:
 - Uses proper vehicle dynamics from vehiclemodels folder (CommonRoad models)
 
 Vehicle Models Available:
-- Kinematic Single-Track (default): Simpler, faster, 5-state model
-- Single-Track Dynamic: More realistic, includes tire dynamics, 7-state model
+# Vehicle Models Available:
+# - Kinematic Single-Track (ID 0): Simpler, faster, 5-state model
+# - Single-Track Dynamic (ID 1): More realistic, includes tire dynamics, 7-state model
+# - qLPV Legacy (ID 2): Matches observer dynamics exactly, 7-state model
 
 Vehicle Parameter Sets:
 - qcar (default): Quanser QCar 1:10 scale vehicle (0.38m, 1.5kg, v_max=2.0m/s)
@@ -88,11 +90,12 @@ class MockQCar:
     - qLPV Model (for observer testing): Matches observer dynamics exactly, 7-state model
     """
     
-    def __init__(self, car_id: int, use_dynamic_model: bool = False, 
-                 vehicle_params: str = 'qcar', use_qlpv_model: bool = False):
+    def __init__(self, car_id: int, dynamic_model_type: int = 0, 
+                 vehicle_params: str = 'qcar'):
         self.car_id = car_id
-        self.use_dynamic_model = use_dynamic_model
-        self.use_qlpv_model = use_qlpv_model  # NEW: Use qLPV dynamics matching observer
+        self.dynamic_model_type = dynamic_model_type  # 0=Kinematic, 1=Dynamic, 2=qLPV
+        self.use_qlpv_model = (dynamic_model_type == 2)
+        self.use_dynamic_model = (dynamic_model_type == 1)
         
         # Load vehicle parameters based on specified type
         # Options: 'qcar' (default), 'vehicle1' (Ford Escort), 'vehicle2' (BMW), 
@@ -200,9 +203,9 @@ class MockQCar:
         self.lateral_velocity = 0.0  # NEW: For qLPV model
         
         # Model name for logging
-        if use_qlpv_model:
+        if self.use_qlpv_model:
             model_name = "qLPV (Observer-Compatible)"
-        elif use_dynamic_model:
+        elif self.use_dynamic_model:
             model_name = "Single-Track Dynamic"
         else:
             model_name = "Kinematic Single-Track"
@@ -233,6 +236,7 @@ class MockQCar:
             self.motorTach = self.state_qlpv[3]  # v_x
             self.gyroscope[2] = self.state_qlpv[5]  # r (yaw rate)
             self.accelerometer[1] = self.a_y  # Lateral acceleration
+            # TODO : more accurate longitudinal acceleration
             self.accelerometer[0] = 0.0  # Simplification
         elif self.use_dynamic_model:
             self.motorTach = self.state_st[3]  # velocity
@@ -479,7 +483,7 @@ class MockQCar:
         
         # Compute steering rate: P controller to track target steering angle
         # This simulates the steering servo dynamics
-        K_p_steering = 4.0  # Gain for steering rate controller
+        K_p_steering = 1.0  # Gain for steering rate controller
         steering_rate = K_p_steering * (target_steering_angle - current_steering_angle)
         
         # Clamp steering rate to physical limits
@@ -671,6 +675,52 @@ class MockQCar:
         """Get true tire residuals [w_r, w_f] for observer testing"""
         return np.array([self.w_r, self.w_f])
 
+    def reset(self , pose: np.ndarray = None):
+        if pose is not None:
+            self.x = pose[0]
+            self.y = pose[1]
+            self.heading = pose[2]
+
+        else:
+            self.x = 0.0
+            self.y = 0.0
+            self.heading = 0.0
+
+        self.velocity = 0.0
+        self.angular_velocity = 0.0
+
+        self.state_qlpv = np.zeros(7)
+        self.state_qlpv[0] = self.x
+        self.state_qlpv[1] = self.y
+        self.state_qlpv[2] = self.heading
+        self.state_qlpv[3] = self.velocity
+        self.state_qlpv[4] = self.heading
+        self.state_qlpv[5] = self.angular_velocity
+        self.state_qlpv[6] = 0.0
+
+        self.state_ks = np.array([
+            self.x,  # x position
+            self.y,           # y position
+            0.0,           # steering angle (rad)
+            0.0,           # velocity (m/s)
+            self.heading            # yaw angle (rad)
+        ])
+        
+        # Vehicle state vector for single-track dynamic model (7 states)
+        # [x, y, steering_angle, velocity, yaw_angle, yaw_rate, slip_angle]
+        self.state_st = np.array([
+            self.x,  # x position
+            self.y,           # y position
+            0.0,           # steering angle (rad)
+            0.0,           # velocity (m/s)
+            self.heading,           # yaw angle (rad)
+            0.0,           # yaw rate (rad/s)
+            0.0            # slip angle at vehicle center (rad)
+        ])
+        self.a_y = 0.0
+        self.w_r = 0.0
+        self.w_f = 0.0
+        self.gps = MockQCarGPS(self)
 
 class MockQCarGPS:
     """Mock GPS that provides position data"""
@@ -800,21 +850,28 @@ class MockStateEstimator:
 class FakeVehicleWithRealLogic:
     """Fake vehicle that uses the real VehicleLogic class"""
     
-    def __init__(self, car_id: int, host_ip: str, base_port: int, use_dynamic_model: bool = False, vehicle_params: str = 'qcar'):
+    def __init__(self, car_id: int, host_ip: str, base_port: int, dynamic_model_type: int = 0, vehicle_params: str = 'qcar'):
         self.car_id = car_id
         self.host_ip = host_ip
         self.base_port = base_port
         
-        print("="*60)
-        print(f"[CAR] Real VehicleLogic Fake Vehicle - Car {car_id}")
-        print("   Using ACTUAL VehicleLogic class with mock hardware")
-        model_name = "Single-Track Dynamic" if use_dynamic_model else "Kinematic Single-Track"
-        print(f"   Vehicle Model: {model_name}")
-        print(f"   Vehicle Parameters: {vehicle_params}")
-        print("="*60)
+        # print("="*60)
+        # print(f"[CAR] Real VehicleLogic Fake Vehicle - Car {car_id}")
+        # print("   Using ACTUAL VehicleLogic class with mock hardware")
+        
+        # if dynamic_model_type == 2:
+        #     model_name = "qLPV"
+        # elif dynamic_model_type == 1:
+        #     model_name = "Single-Track Dynamic"
+        # else:
+        #     model_name = "Kinematic Single-Track"
+            
+        # print(f"   Vehicle Model: {model_name} (ID: {dynamic_model_type})")
+        # print(f"   Vehicle Parameters: {vehicle_params}")
+        # print("="*60)
         
         # Create mock hardware with proper vehicle dynamics
-        self.mock_qcar = MockQCar(car_id, use_dynamic_model=use_dynamic_model, vehicle_params=vehicle_params)
+        self.mock_qcar = MockQCar(car_id, dynamic_model_type=dynamic_model_type, vehicle_params=vehicle_params)
         self.mock_gps = MockQCarGPS(self.mock_qcar)
         # No mock YOLO - it will be set to None and disabled
         
@@ -896,9 +953,9 @@ class FakeVehicleWithRealLogic:
             # Path planning will be initialized by FakeInitializingState._check_components_ready()
             # This matches the real initialization flow where path planning happens during INITIALIZING state
 
-            print(f"✅ Car {self.car_id}: Replaced INITIALIZING state with fake version")
-            print(f"          All other states remain real for complete system testing")
-            print(f"          Path planning will be initialized by fake INITIALIZING state")
+            # print(f"✅ Car {self.car_id}: Replaced INITIALIZING state with fake version")
+            # print(f"          All other states remain real for complete system testing")
+            # print(f"          Path planning will be initialized by fake INITIALIZING state")
             
         except Exception as e:
             print(f"❌ Car {self.car_id}: Failed to replace initialization state: {e}")
@@ -988,7 +1045,7 @@ def main():
     car_id = 0
     host_ip = '127.0.0.1'
     base_port = 5000
-    use_dynamic_model = False
+    dynamic_model_type = 1 # Default to qLPV (2)
     vehicle_params = 'qcar'  # Default to QCar parameters
     
     if len(sys.argv) > 1:
@@ -998,7 +1055,23 @@ def main():
     if len(sys.argv) > 3:
         base_port = int(sys.argv[3])
     if len(sys.argv) > 4:
-        use_dynamic_model = sys.argv[4].lower() in ['true', '1', 'yes', 'dynamic']
+        # Accept integer ID or string names
+        arg = sys.argv[4].lower()
+        if arg in ['0', 'kinematic', 'ks']:
+            dynamic_model_type = 0
+        elif arg in ['1', 'dynamic', 'st']:
+            dynamic_model_type = 1
+        elif arg in ['2', 'qlpv']:
+            dynamic_model_type = 2
+        elif arg in ['true', 'yes']: # Backwards compatibility
+            dynamic_model_type = 1
+        else:
+            try:
+                dynamic_model_type = int(arg)
+            except:
+                print(f"⚠️ Unknown model type '{arg}', defaulting to Kinematic (0)")
+                dynamic_model_type = 0
+            
     if len(sys.argv) > 5:
         vehicle_params = sys.argv[5]  # qcar, vehicle1, vehicle2, vehicle3, vehicle4
     
@@ -1010,7 +1083,10 @@ def main():
     print("="*70)
     print(f"Car ID: {car_id}")
     print(f"Ground Station: {host_ip}:{base_port + car_id}")
-    print(f"Vehicle Model: {'Single-Track Dynamic' if use_dynamic_model else 'Kinematic Single-Track'}")
+    
+    model_names = {0: "Kinematic Single-Track", 1: "Single-Track Dynamic", 2: "qLPV"}
+    print(f"Vehicle Model: {model_names.get(dynamic_model_type, 'Unknown')} (ID: {dynamic_model_type})")
+    
     print(f"Vehicle Parameters: {vehicle_params}")
     print(f"Approach: Real VehicleLogic + Fake initialization + Mock hardware")
     print("")
@@ -1018,7 +1094,7 @@ def main():
     # Create fake vehicle with real logic
     try:
         vehicle = FakeVehicleWithRealLogic(car_id, host_ip, base_port, 
-                                          use_dynamic_model=use_dynamic_model,
+                                          dynamic_model_type=dynamic_model_type,
                                           vehicle_params=vehicle_params)
         print(f"✅ Fake vehicle created successfully")
     except Exception as e:

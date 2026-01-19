@@ -956,10 +956,18 @@ class VehicleObserver:
                     self.vehicle_logger.logger.info(
                         f"  vehicle_{vid}: x={fs[0]:.3f}, y={fs[1]:.3f}, theta={fs[2]:.3f}, v={fs[3]:.3f}"
                     )
-                
-                
+            
             except Exception as e:
                 self.vehicle_logger.log_error("Fleet estimation reinitialization failed", e)
+
+    def reset_fleet_estimation(self):
+        """
+        Reset fleet estimation state when V2V is disabled.
+        Cleans up fleet estimator and resets fleet size to 1 (just this vehicle).
+        """
+        self.v2v_active = False
+        # self.fleet_size = max(self.vehicle_id + 1, 1) # Keep purely local
+
 
     def reset_observer(self, initial_pose: Optional[np.ndarray] = None):
         """Reset observer state."""

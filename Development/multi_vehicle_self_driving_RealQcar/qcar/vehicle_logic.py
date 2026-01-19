@@ -21,6 +21,7 @@ from command_handler import CommandHandler
 from V2V.v2v_manager import V2VManager, V2VBroadcastConfig
 from Observer.VehicleObserverSimple import VehicleObserver
 from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset
+from Controller.controller_manager import ControllerManager
 
 # Note: Controllers (PIDVelocityController, StanleyController) are now imported 
 # in state machine states, not here
@@ -59,9 +60,7 @@ class VehicleLogic:
         
 
         
-        # Platoon controller
-        platoon_config = PlatoonConfig()
-        self.platoon_controller = PlatoonController(platoon_config, self.vehicle_logger)
+
         
         # Command handler for centralized command processing
         self.command_handler = CommandHandler(self.vehicle_logger, config)
@@ -104,12 +103,18 @@ class VehicleLogic:
         self.waypoint_sequence = None
         self.node_sequence = None
         
-        # Control state (Can be set by Ground Station commands)
-        # Load v_ref from controller config
-        from Controller.config_controller_loader import ControllerConfig
-        self.controller_config = ControllerConfig()
-        pid_params = self.controller_config._get_pid_params()
-        self.v_ref = pid_params.get('v_ref', 0.75)  # Default to 0.75 m/s if not specified
+
+        # Platoon controller
+        platoon_config = PlatoonConfig()
+        self.platoon_controller = PlatoonController(platoon_config, self.vehicle_logger)
+        # Controller Manager - centralized tracking of active controllers
+        self.controller_manager = ControllerManager(
+            logger=self.vehicle_logger
+        )
+
+        pid_params = self.controller_manager.config._get_pid_params()
+        self.v_ref = pid_params.get('v_ref', 0.75)
+        self.controller_manager.set_vehicle_logic(self)  # For waypoint access
         
         # Calibration state flag (set by CALIBRATE command)
         self.calibration_requested = False
@@ -132,9 +137,14 @@ class VehicleLogic:
         self._last_control_time = 0.0
         self._last_telemetry_send = 0.0
         
-        # V2V status cache (updated every 1 second to avoid repeated queries)
+        # V2V status cache 
         self._v2v_status_cache = {}
         self._v2v_status_cache_time = 0.0
+        
+        # Periodic status broadcast tracking
+        self._last_status_broadcast_time = 0.0
+        self._status_broadcast_rate = 1.0  # 1 Hz
+
         
         # Initialize Vehicle Observer for local and fleet state estimation
         # VehicleObserver is a manager class that coordinates:
@@ -160,47 +170,47 @@ class VehicleLogic:
         # Check if plotting is enabled in observer config
         self.scope_manager = None
         
-        # Check both local and fleet plotting configs
-        local_plot_enabled = getattr(self.vehicle_observer, 'local_plotting_config', {}).get('enabled', False)
-        fleet_plot_enabled = getattr(self.vehicle_observer, 'fleet_plotting_config', {}).get('enabled', False)
+        # # Check both local and fleet plotting configs
+        # local_plot_enabled = getattr(self.vehicle_observer, 'local_plotting_config', {}).get('enabled', False)
+        # fleet_plot_enabled = getattr(self.vehicle_observer, 'fleet_plotting_config', {}).get('enabled', False)
         
-        if local_plot_enabled or fleet_plot_enabled:
-            # Use local config params as default for manager
-            plot_params = getattr(self.vehicle_observer, 'local_plotting_config', {}).get('params', {})
-            fps = plot_params.get('fps', 30)
-            time_window = plot_params.get('time_window', 60.0)
+        # if local_plot_enabled or fleet_plot_enabled:
+        #     # Use local config params as default for manager
+        #     plot_params = getattr(self.vehicle_observer, 'local_plotting_config', {}).get('params', {})
+        #     fps = plot_params.get('fps', 30)
+        #     time_window = plot_params.get('time_window', 60.0)
             
-            # Check for save_only mode (headless) - Default to True as per user request
-            save_only = plot_params.get('save_only', True)
+        #     # Check for save_only mode (headless) - Default to True as per user request
+        #     save_only = plot_params.get('save_only', True)
             
-            self.scope_manager = EstimationScopeManager(
-                fps=fps, 
-                time_window=time_window,
-                headless=save_only
-            )
+        #     self.scope_manager = EstimationScopeManager(
+        #         fps=fps, 
+        #         time_window=time_window,
+        #         headless=save_only
+        #     )
             
-            if local_plot_enabled:
-                self.scope_manager.add_preset(LocalStatePreset())
-                self.scope_manager.add_preset(LocalControlPreset())
-                self.vehicle_logger.logger.info("Plotting enabled: Local State & Control")
+        #     if local_plot_enabled:
+        #         self.scope_manager.add_preset(LocalStatePreset())
+        #         self.scope_manager.add_preset(LocalControlPreset())
+        #         self.vehicle_logger.logger.info("Plotting enabled: Local State & Control")
                 
-            if fleet_plot_enabled:
-                fleet_params = getattr(self.vehicle_observer, 'fleet_plotting_config', {}).get('params', {})
-                max_vehicles = fleet_params.get('max_vehicles_plot', 5)
-                self.scope_manager.add_preset(FleetPositionPreset(max_vehicles=max_vehicles))
-                self.scope_manager.add_preset(FleetStatePreset(max_vehicles=max_vehicles))
-                self.vehicle_logger.logger.info("Plotting enabled: Fleet State & Positions")
+        #     if fleet_plot_enabled:
+        #         fleet_params = getattr(self.vehicle_observer, 'fleet_plotting_config', {}).get('params', {})
+        #         max_vehicles = fleet_params.get('max_vehicles_plot', 5)
+        #         self.scope_manager.add_preset(FleetPositionPreset(max_vehicles=max_vehicles))
+        #         self.scope_manager.add_preset(FleetStatePreset(max_vehicles=max_vehicles))
+        #         self.vehicle_logger.logger.info("Plotting enabled: Fleet State & Positions")
             
-            # Start in MANUAL mode (threaded=False) for main-thread GUI updates
-            self.scope_manager.start(threaded=False)
+        #     # Start in MANUAL mode (threaded=False) for main-thread GUI updates
+        #     self.scope_manager.start(threaded=False)
             
-            # If in save_only mode, start recording automatically
-            if save_only:
-                # Define columns to record (scalars only)
-                cols = ['x', 'y', 'theta', 'velocity', 'acceleration', 
-                       'x_gps', 'y_gps', 'theta_gps', 'steering', 'throttle', 'v_ref']
-                rec_path = self.scope_manager.start_recording(columns=cols)
-                self.vehicle_logger.logger.info(f"Scope Manager: Headless mode active. Recording to {rec_path}")
+        #     # If in save_only mode, start recording automatically
+        #     if save_only:
+        #         # Define columns to record (scalars only)
+        #         cols = ['x', 'y', 'theta', 'velocity', 'acceleration', 
+        #                'x_gps', 'y_gps', 'theta_gps', 'steering', 'throttle', 'v_ref']
+        #         rec_path = self.scope_manager.start_recording(columns=cols)
+        #         self.vehicle_logger.logger.info(f"Scope Manager: Headless mode active. Recording to {rec_path}")
 
         
         # Initialize the event system to connect command_handler to state_machine
@@ -260,6 +270,7 @@ class VehicleLogic:
                 
                 # 4. Communication Tasks (each manages own rate internally)
                 self._send_telemetry_to_ground_station()  # 10Hz internal rate-limiting
+                self._broadcast_periodic_status()         # 1Hz periodic status (V2V, Platoon, System)
                 self._process_queued_commands()  # No rate limit - process as fast as possible
                 self._broadcast_v2v_state()  # V2VManager handles internal rate-limiting
                 
@@ -543,12 +554,6 @@ class VehicleLogic:
         # Get current state from VehicleObserver
         state_info = self.vehicle_observer.get_estimated_state_for_control()
         
-        # Get cached V2V status (avoid repeated expensive queries)
-        v2v_status = self._get_v2v_status_cache()
-        
-        # Get platoon status from platoon_controller
-        platoon_status = self._get_platoon_status()
-        
         # Get controller data safely (controllers may be in state machine, not vehicle_logic)
         # Check if controllers exist (backward compatibility with FollowingPathState setting them)
         # steering_controller = getattr(self, 'steering_controller', None)
@@ -564,17 +569,14 @@ class VehicleLogic:
             'v': float(state_info['velocity']),
             'u': float(getattr(self, '_last_u', 0.0)),
             'delta': float(getattr(self, '_last_steering', 0.0)),
-            'v_ref': float(self.v_ref * self.yolo_manager.get_yolo_gain()),
-            'yolo_gain': float(self.yolo_manager.get_yolo_gain()),
+            # 'v_ref': float(self.v_ref * self.yolo_manager.get_yolo_gain()),
+            # 'yolo_gain': float(self.yolo_manager.get_yolo_gain()),
             # 'waypoint_index': waypoint_index,
             # 'cross_track_error': float(errors[0]),
             # 'heading_error': float(errors[1]),
             'state': self.state_machine.state.name if hasattr(self.state_machine, 'state') and self.state_machine.state else 'UNKNOWN',
             'gps_valid': self.vehicle_observer.is_gps_valid() if hasattr(self, 'vehicle_observer') and self.vehicle_observer else False,
-            # V2V status from cache
-            **v2v_status,
-            # Platoon status
-            **platoon_status
+            # Observer/Controller types moved to _broadcast_periodic_status (1Hz) to reduce bandwidth
         }
     
     def _get_v2v_status_cache(self) -> dict:
@@ -644,6 +646,66 @@ class VehicleLogic:
                 'platoon_setup_complete': False
             }
     
+    def _broadcast_periodic_status(self):
+        """Broadcast periodic status (V2V, Platoon, etc.) at low rate (1Hz)"""
+        try:
+            current_time = time.time()
+            if current_time - self._last_status_broadcast_time < (1.0 / self._status_broadcast_rate):
+                return
+            
+            # Get V2V status
+            v2v_status = self._get_v2v_status_cache()
+            
+            # Get Platoon status
+            platoon_status = self._get_platoon_status()
+            
+            # # Additional system status if needed
+            # system_status = {
+            #     'cpu_usage': 0.0, # Placeholder
+            #     'memory_usage': 0.0 # Placeholder
+            # }
+            
+            # Construct periodic status message
+            # Note: We send 'v2v_status' type to trigger the specific handler in GS,
+            # but we also include top-level fields merged into main state by GS remote_controller
+            
+            # Determine V2V details for the handler
+            v2v_details = {
+                'status': 'connected' if v2v_status.get('v2v_active') else 'disconnected',
+                'connected_peers': v2v_status.get('v2v_peers', 0),
+                'fleet_size': v2v_status.get('v2v_peers', 0) + 1 if v2v_status.get('v2v_active') else 1
+            }
+            
+            status_msg = {
+                'type': 'v2v_status', # Triggers V2V handler in GS
+                'timestamp': current_time,
+                'car_id': self.vehicle_id,
+                
+                # Top-level fields (will be merged into car state by GS)
+                **v2v_status,
+                **platoon_status,
+                
+                # Observer and Controller types (low-frequency update - only changes on user request)
+                'local_observer_type': getattr(self.vehicle_observer, 'local_estimator_type', 'unknown') if hasattr(self, 'vehicle_observer') else 'unknown',
+                'fleet_observer_type': getattr(self.vehicle_observer, 'fleet_estimator_type', 'unknown') if hasattr(self, 'vehicle_observer') else 'unknown',
+                # Use controller_manager for actual active controller types (not config file defaults)
+                'longitudinal_ctrl_type': self.controller_manager.get_longitudinal_type() if hasattr(self, 'controller_manager') else 'unknown',
+                'lateral_ctrl_type': self.controller_manager.get_lateral_type() if hasattr(self, 'controller_manager') else 'unknown',
+                
+                # Payload for the handler
+                'data': v2v_details
+            }
+            
+            if self.client_Ground_Station:
+                is_connected = getattr(self.client_Ground_Station, 'is_connected', lambda: True)()
+                if is_connected:
+                    self.client_Ground_Station.queue_telemetry(status_msg)
+            
+            self._last_status_broadcast_time = current_time
+            
+        except Exception as e:
+            self.vehicle_logger.log_error("Periodic status broadcast error", e)
+
     def _broadcast_v2v_state(self):
         """Broadcast vehicle state to V2V network - V2VManager handles rate-limiting internally"""
         try:
@@ -742,22 +804,7 @@ class VehicleLogic:
             return False
     
     
-    def reinitialize_fleet_estimation(self, peer_vehicles: list) -> bool:
-        """Reinitialize fleet estimation when V2V is activated - called by V2VManager"""
-        try:
-            if not self.vehicle_observer:
-                return False
-                
-            # Calculate actual fleet size: peers + this vehicle
-            actual_fleet_size = len(peer_vehicles) + 1
-            
-            self.vehicle_logger.logger.info(f"Reinitializing fleet estimation for {actual_fleet_size} vehicles")
-            self.vehicle_observer.reinitialize_fleet_estimation(actual_fleet_size, peer_vehicles)
-            return True
-            
-        except Exception as e:
-            self.vehicle_logger.logger.error(f"Fleet estimation reinitialization error: {e}")
-            return False
+
     
     def _handle_v2v_status_change(self, event_type: str, peer_id: int):
         """

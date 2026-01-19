@@ -38,7 +38,7 @@ class QCarFleetController:
     This class manages the GUI, vehicle connections, and all user interactions.
     """
     
-    def __init__(self, root: tk.Tk, config: AppConfig = None):
+    def __init__(self, root: tk.Tk, config: AppConfig = None, ws_port: int = 8080):
         """
         Initialize the fleet controller.
         
@@ -56,6 +56,7 @@ class QCarFleetController:
             base_port=self.config.network.base_port,
             telemetry_buffer_size=self.config.network.telemetry_buffer_size
         )
+        self._remote.websocket_port = ws_port
         self._input = ManualInputController(self.config.manual_control)
         
         # Set callbacks
@@ -224,6 +225,10 @@ class QCarFleetController:
             on_toggle_scopes=self._toggle_scopes_car,
             on_toggle_remote_plot_local=self._toggle_remote_plot_local,
             on_toggle_remote_plot_fleet=self._toggle_remote_plot_fleet,
+            # Runtime switching callbacks
+            on_set_local_observer=self._set_local_observer,
+            on_set_fleet_observer=self._set_fleet_observer,
+            on_set_controller=self._set_controller,
         )
     
     def _update_car_panels(self) -> None:
@@ -287,6 +292,11 @@ class QCarFleetController:
                     manual_mode=self._manual_mode_active.get(car_id, False),
                     perception_active=telemetry.get('perception_active', False),
                     scopes_active=telemetry.get('scopes_active', False),
+                    # Observer and Controller types
+                    local_observer_type=telemetry.get('local_observer_type', 'unknown'),
+                    fleet_observer_type=telemetry.get('fleet_observer_type', 'unknown'),
+                    longitudinal_ctrl_type=telemetry.get('longitudinal_ctrl_type', 'unknown'),
+                    lateral_ctrl_type=telemetry.get('lateral_ctrl_type', 'unknown'),
                 )
                 
                 # Check stream status to keep button in sync
@@ -625,6 +635,48 @@ class QCarFleetController:
             self._commands_failed_gui += 1
             self.log(f"Car {car_id}: Failed to disable fleet remote plot", 'ERROR')
     
+    # ========== Runtime Switching Commands ==========
+    
+    def _set_local_observer(self, car_id: int, observer_type: str) -> None:
+        """Set local observer type for a specific car."""
+        command = {
+            'type': 'set_local_observer',
+            'observer_type': observer_type
+        }
+        if self._remote.send_command(car_id, command):
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Local observer → {observer_type}", 'SUCCESS')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to set local observer", 'ERROR')
+    
+    def _set_fleet_observer(self, car_id: int, observer_type: str) -> None:
+        """Set fleet observer type for a specific car."""
+        command = {
+            'type': 'set_fleet_observer',
+            'observer_type': observer_type
+        }
+        if self._remote.send_command(car_id, command):
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: Fleet observer → {observer_type}", 'SUCCESS')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to set fleet observer", 'ERROR')
+    
+    def _set_controller(self, car_id: int, category: str, controller_type: str) -> None:
+        """Set controller type for a specific car."""
+        command = {
+            'type': 'set_controller',
+            'category': category,  # 'longitudinal' or 'lateral'
+            'controller_type': controller_type
+        }
+        if self._remote.send_command(car_id, command):
+            self._commands_sent_gui += 1
+            self.log(f"Car {car_id}: {category.capitalize()} controller → {controller_type}", 'SUCCESS')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"Car {car_id}: Failed to set {category} controller", 'ERROR')
+    
     # ========== Fleet Commands ==========
     
     def _start_all_cars(self) -> None:
@@ -852,8 +904,18 @@ class QCarFleetController:
         
         if status == 'connected':
             peers = v2v_data.get('connected_peers', 0)
+            
+            # Check for change before logging to avoid spam
+            # Check for change before logging to avoid spam
+            current_status = self._v2v_status.get(car_id, {})
+            
+            # Update status
             self._v2v_status[car_id] = {'status': 'connected', 'peers': peers}
-            self.log(f"📡 Car {car_id}: V2V connected ({peers} peers)", 'SUCCESS')
+            
+            # ONLY log if we weren't connected before (debounce updates)
+            if current_status.get('status') != 'connected':
+                self.log(f"📡 Car {car_id}: V2V connected ({peers} peers)", 'SUCCESS')
+            # Else: just updated peer count silently
             
             # Check if all vehicles connected
             self._check_v2v_network()
@@ -865,7 +927,8 @@ class QCarFleetController:
             
         elif status == 'disconnected':
             self._v2v_status[car_id] = {'status': 'disconnected'}
-            self.log(f"📡 Car {car_id}: V2V disconnected", 'WARNING')
+            
+            # self.log(f"📡 Car {car_id}: V2V disconnected", 'WARNING')
     
     def _check_v2v_network(self) -> None:
         """Check if V2V network is fully established."""
@@ -984,28 +1047,26 @@ class QCarFleetController:
         self.root.destroy()
 
 
-def create_app(num_cars: int = 5, host_ip: str = '0.0.0.0', 
-               base_port: int = 5000) -> QCarFleetController:
+def create_app(num_cars: int = 5, host_ip: str = '0.0.0.0', base_port: int = 5000, ws_port: int = 8080) -> QCarFleetController:
     """
-    Create and return the fleet controller application.
+    Factory function to create the application.
     
     Args:
         num_cars: Number of cars to support
         host_ip: IP address to listen on
         base_port: Base port number
-        
-    Returns:
-        QCarFleetController instance
+        ws_port: WebSocket port number for web bridge
     """
     from .config import NetworkConfig, GUIConfig, AppConfig
     
+    root = tk.Tk()
+    
     config = AppConfig(
-        network=NetworkConfig(host_ip=host_ip, base_port=base_port),
-        gui=GUIConfig(default_num_cars=num_cars)
+        gui=GUIConfig(default_num_cars=num_cars),
+        network=NetworkConfig(host_ip=host_ip, base_port=base_port)
     )
     
-    root = tk.Tk()
-    app = QCarFleetController(root, config)
+    app = QCarFleetController(root, config, ws_port=ws_port)
     
     return app
 

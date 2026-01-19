@@ -842,8 +842,9 @@ class V2VManager:
                 self.logger.info(f"V2VManager: Peer IPs: {peer_ips}")
             
             # Reinitialize fleet estimation via vehicle_logic
-            if self.vehicle_logic and hasattr(self.vehicle_logic, 'reinitialize_fleet_estimation'):
-                self.vehicle_logic.reinitialize_fleet_estimation(peer_vehicles)
+            # Calculate actual fleet size: peers + this vehicle
+            actual_fleet_size = len(peer_vehicles) + 1
+            self.vehicle_observer.reinitialize_fleet_estimation(actual_fleet_size, peer_vehicles)
             
             # Activate the underlying V2V communication
             success = self.activate(peer_vehicles, peer_ips)
@@ -857,7 +858,7 @@ class V2VManager:
                 # Report activation to Ground Station via vehicle_logic
                 if self.vehicle_logic and hasattr(self.vehicle_logic, 'report_v2v_status_to_gs'):
                     self.vehicle_logic.report_v2v_status_to_gs({
-                        'status': 'activated',
+                        'status': 'connected',
                         'peer_count': len(peer_vehicles),
                         'peer_vehicles': peer_vehicles,
                         'expected_peers': len([v for v in peer_vehicles if v != self.vehicle_id]),

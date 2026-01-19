@@ -51,6 +51,11 @@ class CommandType(Enum):
     SHUTDOWN = "shutdown"
     RESET = "reset"
     CALIBRATE = "calibrate"
+    
+    # Runtime switching commands
+    SET_LOCAL_OBSERVER = "set_local_observer"
+    SET_FLEET_OBSERVER = "set_fleet_observer"
+    SET_CONTROLLER = "set_controller"
 
 
 # Convenience functions for command type checking

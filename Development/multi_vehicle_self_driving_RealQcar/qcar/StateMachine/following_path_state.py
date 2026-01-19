@@ -27,18 +27,7 @@ except ImportError as e:
     COMMAND_TYPE_AVAILABLE = False
     CommandType = None
 
-# Import Controllers
-try:
-    from Controller.longitudinal_controllers import PIDVelocityController
-    from Controller.lateral_controllers import StanleyController
-    STEERING_CONTROLLER_AVAILABLE = True
-    SPEED_CONTROLLER_AVAILABLE = True
-except ImportError as e:
-    print(f"ERROR: Cannot import controllers: {e}")
-    STEERING_CONTROLLER_AVAILABLE = False
-    SPEED_CONTROLLER_AVAILABLE = False
-    StanleyController = None
-    PIDVelocityController = None
+
 
 # Import LaneFusion for modular lane-assisted path following
 try:
@@ -75,52 +64,34 @@ class FollowingPathState(StateBase):
         self.lane_fusion = None
         self._lane_fusion_enabled = False
     
-    def _init_controllers(self):
+    def _init_controllers(self, force: bool = False):
         """
-        Initialize controllers specific to this state.
-        This is called once when the controllers are needed.
+        Initialize controllers for this state using ControllerManager.
+        Controllers are created and cached centrally in controller_manager.
         """
-        if self._controllers_initialized:
+        # self.logger.logger.info("[PATH] Initializing controllers...")
+        if self._controllers_initialized and not force:
             return
         
-        # Initialize speed controller
-        if SPEED_CONTROLLER_AVAILABLE:
-            try:
-                self.speed_controller = PIDVelocityController(
-                    config=self.vehicle_logic.controller_config,
-                    logger=self.logger
-                )
-                
-                # Also set it on vehicle_logic for backward compatibility
-                self.vehicle_logic.speed_controller = self.speed_controller
-                
-                self.logger.logger.info("[PATH] Speed controller initialized successfully")
-                
-            except Exception as e:
-                self.logger.log_error("Failed to initialize speed controller", e)
-        
-        # Initialize steering controller
-        if STEERING_CONTROLLER_AVAILABLE:
-            # Check if we have waypoint sequence available
-            if not hasattr(self.vehicle_logic, 'waypoint_sequence') or self.vehicle_logic.waypoint_sequence is None:
-                self.logger.logger.warning("[PATH] Cannot initialize steering controller - no waypoint sequence")
-            else:
-                try:
-                    # Initialize steering controller with current waypoint sequence
-                    self.steering_controller = StanleyController(
-                        waypoints=self.vehicle_logic.waypoint_sequence,
-                        config=self.vehicle_logic.controller_config,
-                        logger=self.logger,
-                        cyclic=True
-                    )
-                    
-                    # Also set it on vehicle_logic for backward compatibility
-                    self.vehicle_logic.steering_controller = self.steering_controller
-                    
-                    self.logger.logger.info("[PATH] Steering controller initialized successfully")
-                    
-                except Exception as e:
-                    self.logger.log_error("Failed to initialize steering controller", e)
+        # Get controllers from ControllerManager (creates them if needed)
+        if hasattr(self.vehicle_logic, 'controller_manager'):
+            cm = self.vehicle_logic.controller_manager
+            
+            # Speed controller (PID for path following)
+            # TODO : Instead of get_speed_controller(), use get_longitudinal_controller()
+            # Currently only PID is available for path following
+            self.speed_controller = cm.get_speed_controller()
+            if self.speed_controller:
+                self.vehicle_logic.speed_controller = self.speed_controller  # Backward compatibility
+                self.logger.logger.info("[PATH] Speed controller obtained from ControllerManager")
+            
+            # Steering controller (uses waypoints from vehicle_logic)
+            self.steering_controller = cm.get_steering_controller()
+            if self.steering_controller:
+                self.vehicle_logic.steering_controller = self.steering_controller  # Backward compatibility
+                self.logger.logger.info("[PATH] Steering controller obtained from ControllerManager")
+        else:
+            self.logger.logger.warning("[PATH] ControllerManager not available")
         
         # Initialize Lane Fusion system for lane-assisted path following
         self._init_lane_fusion()
@@ -538,7 +509,7 @@ class FollowingPathState(StateBase):
         Returns:
             Steering command in radians
         """
-        if not self.vehicle_logic.controller_config.enable_steering_control or not self.steering_controller:
+        if not self.vehicle_logic.controller_manager.config.enable_steering_control or not self.steering_controller:
             return 0.0
         
         # Primary: Waypoint-based steering (global path following)

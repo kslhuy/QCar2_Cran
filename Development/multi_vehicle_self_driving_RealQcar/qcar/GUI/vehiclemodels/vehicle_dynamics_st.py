@@ -85,7 +85,7 @@ def vehicle_dynamics_st(x, uInit, p):
         f.append(d_beta)
 
     else:
-        # system dynamics
+        # system dynamics Signle track model
         f = [x[3] * math.cos(x[6] + x[4]),
              x[3] * math.sin(x[6] + x[4]),
              u[0],

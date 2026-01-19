@@ -106,9 +106,11 @@ TELEMETRY_FIELDS = [
     ('position', 'Position (m):', '(0.00, 0.00)', 14),
     ('velocity', 'Velocity (m/s):', '0.00', 8),
     ('heading', 'Heading (rad):', '0.00', 8),
+    ('state', 'Vehicle State:', 'Unknown', 15),
+    ('longitudinal_ctrl_type', 'Long Ctrl:', 'Unknown', 10),
+    ('lateral_ctrl_type', 'Lat Ctrl:', 'Unknown', 15),
     ('throttle', 'Throttle:', '0.00', 8),
     ('steering', 'Steering:', '0.00', 8),
-    ('state', 'Vehicle State:', 'Unknown', 15),
 ]
 
 

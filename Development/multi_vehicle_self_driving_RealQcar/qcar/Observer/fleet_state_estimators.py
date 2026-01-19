@@ -408,131 +408,6 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
 
 
 
-class DistributedKalmanEstimator(FleetStateEstimatorBase):
-    """
-    Distributed Kalman Filter for fleet estimation
-    More sophisticated, uses dynamics model and consensus
-    Inspired by VehicleObserver.py _distributed_observer_each
-    """
-    
-    def __init__(self, vehicle_id: int, fleet_size: int, state_dim: int = 5,
-                 config: Dict = None, logger=None):
-        """
-        Initialize distributed Kalman estimator
-        
-        Args:
-            vehicle_id: ID of the host vehicle
-            fleet_size: Total number of vehicles in fleet
-            state_dim: State dimension (default 5: x, y, theta, v, a)
-            config: Configuration dict
-            logger: Logger instance
-        """
-        super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
-        
-        # Observer gains
-        self.observer_gain = self.config.get('observer_gain', 0.1)
-        self.consensus_gain = self.config.get('consensus_gain', 0.2)
-        
-        # Communication weights (uniform for now)
-        self.weights = np.ones(fleet_size) / fleet_size
-    
-    def update(self, local_state: np.ndarray, dt: float, 
-               current_time_ns: int, control: np.ndarray) -> np.ndarray:
-        """Update using distributed observer with dynamics
-        
-        Args:
-            local_state: Own vehicle state [x, y, theta, v, a]
-            dt: Time step in seconds
-            current_time_ns: Current time in nanoseconds
-            control: Control input [steering, throttle]
-        """
-        try:
-            # Ensure fleet capacity for this vehicle and expand weights if needed
-            if self.vehicle_id >= self.fleet_states.shape[1]:
-                old_fleet_size = self.fleet_states.shape[1]
-                self._ensure_fleet_capacity(self.vehicle_id)
-                
-                # Expand weights array to match new fleet size
-                new_weights = np.ones(self.fleet_size) / self.fleet_size
-                new_weights[:old_fleet_size] = self.weights[:old_fleet_size] * (old_fleet_size / self.fleet_size)
-                self.weights = new_weights
-            
-            # Update own state in fleet
-            self.fleet_states[:, self.vehicle_id] = local_state.copy()
-            
-            # Update estimates for other vehicles
-            for target_id in range(self.fleet_size):
-                if target_id == self.vehicle_id:
-                    continue
-                
-                # Distributed observer for this vehicle
-                self.fleet_states[:, target_id] = self._distributed_observer_update(
-                    target_id, current_time_ns, control, dt
-                )
-            
-            # Cleanup old data
-            self._cleanup_old_data(current_time_ns)
-            
-            return self.fleet_states.copy()
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Distributed Kalman update error", e)
-            return self.fleet_states.copy()
-    
-    def _distributed_observer_update(self, target_id: int, current_time_ns: int,
-                                     control: np.ndarray, dt: float) -> np.ndarray:
-        """
-        Distributed observer update for one target vehicle
-        Combines dynamics prediction, measurement correction, and consensus
-        """
-        # Current estimate
-        x_ij = self.fleet_states[:, target_id].copy()
-        
-        # 1. Dynamics prediction (bicycle model)
-        x, y, theta, v = x_ij
-        steering, throttle = control[0], control[1] if len(control) > 1 else 0.0
-        
-        # Simple bicycle model
-        x_pred = x + v * np.cos(theta) * dt
-        y_pred = y + v * np.sin(theta) * dt
-        theta_pred = theta + (v * np.tan(steering) / 1.0) * dt  # L=1.0m wheelbase
-        v_pred = v + throttle * dt
-        
-        dynamics_term = np.array([x_pred, y_pred, theta_pred, v_pred])
-        
-        # 2. Measurement correction (if we have data from target)
-        measurement_term = np.zeros(self.state_dim)
-        latest_state = self._get_latest_received_state(target_id, current_time_ns)
-        
-        if latest_state is not None:
-            # Measurement correction: L * (y - x_pred)
-            measurement_error = latest_state - dynamics_term
-            measurement_term = self.observer_gain * measurement_error
-        
-        # 3. Consensus term (simple for now - can be enhanced)
-        consensus_term = np.zeros(self.state_dim)
-        
-        # Combine all terms
-        x_ij_new = dynamics_term + measurement_term + consensus_term
-        
-        # Apply state constraints
-        x_ij_new = self._apply_state_constraints(x_ij_new)
-        
-        return x_ij_new
-    
-    def _apply_state_constraints(self, state: np.ndarray) -> np.ndarray:
-        """Apply physical constraints to state"""
-        # Normalize angle to [-pi, pi]
-        state[2] = np.arctan2(np.sin(state[2]), np.cos(state[2]))
-        
-        # Velocity constraints (reasonable for QCar)
-        state[3] = np.clip(state[3], -2.0, 2.0)
-        
-        return state
-    
-
-
 class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
     """
     Distributed Lunberger Observer for fleet longitudinal estimation
@@ -714,7 +589,6 @@ class FleetEstimatorFactory:
     # Base estimator types (always available)
     ESTIMATOR_TYPES = {
         'consensus': ConsensusFleetEstimator,
-        'distributed_kalman': DistributedKalmanEstimator,
         'distributed_luenberger': DistributedLuenbergerEstimator,
     }
     

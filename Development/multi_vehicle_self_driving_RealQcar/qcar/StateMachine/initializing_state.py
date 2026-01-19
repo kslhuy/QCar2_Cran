@@ -203,7 +203,7 @@ class InitializingState(StateBase):
     
     def _initialize_path_planning(self) -> bool:
         """Initialize path planning system"""
-        if not self.vehicle_logic.controller_config.enable_steering_control:
+        if not self.vehicle_logic.controller_manager.config.enable_steering_control:
             return True
         
         try:
@@ -396,7 +396,7 @@ class InitializingState(StateBase):
             success = self.vehicle_logic.vehicle_observer.initialize_local_estimator(
                 gps=self.vehicle_logic.gps,
                 initial_pose=self.init_pose,
-                estimator_params={'use_qcar_ekf': self.vehicle_logic.controller_config.enable_steering_control}
+                estimator_params={'use_qcar_ekf': self.vehicle_logic.controller_manager.config.enable_steering_control}
             )
             
             if success:

@@ -2,7 +2,7 @@
 # Default parameters for the fleet state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-# Options: 'consensus', 'distributed_kalman', 'distributed_luenberger', 'trust_consensus', 'trust_kalman'
+# Options: 'consensus', 'distributed_luenberger', 'trust_consensus', 'trust_kalman'
 fleet_estimator_type: trust_consensus
 
 # Plotting configuration
@@ -32,18 +32,6 @@ fleet:
     direct_gain: 0.7         # weight for direct self-reports vs consensus
     neighbor_weight_mode: uniform  # 'uniform' or 'distance' (reserved)
 
-  # ---------------------------------------------------------------------
-  # Distributed Kalman estimator defaults
-  # ---------------------------------------------------------------------
-  distributed_kalman:
-    observer_gain: 0.1
-    consensus_gain: 0.2
-    process_noise: 0.01
-    measurement_noise: 0.1
-    initial_covariance: 1.0
-    weight_mode: uniform      # 'uniform' or 'adaptive'
-    # optional explicit weights (override weight_mode)
-    # weights: [0.5, 0.25, 0.25]
 
   # ---------------------------------------------------------------------
   # Distributed Luenberger estimator defaults

@@ -52,6 +52,13 @@ Examples:
     )
     
     parser.add_argument(
+        '--ws-port',
+        type=int,
+        default=8080,
+        help='WebSocket server port (default: 8080)'
+    )
+    
+    parser.add_argument(
         '--version', '-v',
         action='version',
         version='QCar Fleet Controller v2.0.0'
@@ -79,6 +86,7 @@ def main():
 ║  Base Port:   {args.port:<5}                                    ║
 ║  Listen IP:   {args.ip:<15}                          ║
 ║  Port Range:  {args.port}-{args.port + args.cars - 1:<5}                              ║
+║  WebSocket:   {args.ws_port:<5}                                    ║
 ╚══════════════════════════════════════════════════════════╝
     """)
     
@@ -86,7 +94,8 @@ def main():
     app = create_app(
         num_cars=args.cars,
         host_ip=args.ip,
-        base_port=args.port
+        base_port=args.port,
+        ws_port=args.ws_port
     )
     
     # Log startup info
@@ -97,6 +106,7 @@ def main():
     app.log(f"  • Vehicles: {args.cars}", 'INFO')
     app.log(f"  • Port Range: {args.port}-{args.port + args.cars - 1}", 'INFO')
     app.log(f"  • Host IP: {args.ip}", 'INFO')
+    app.log(f"  • WebSocket Port: {args.ws_port}", 'INFO')
     app.log("=" * 50, 'INFO')
     app.log("Features:", 'INFO')
     app.log("  • Command validation & error handling", 'INFO')

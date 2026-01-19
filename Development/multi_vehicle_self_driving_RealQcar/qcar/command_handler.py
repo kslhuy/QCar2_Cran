@@ -201,6 +201,10 @@ class CommandHandler:
             CommandType.DISABLE_SCOPES,
             CommandType.ENABLE_SCOPE_STREAMING,
             CommandType.DISABLE_SCOPE_STREAMING,
+            # Runtime switching commands
+            CommandType.SET_LOCAL_OBSERVER,
+            CommandType.SET_FLEET_OBSERVER,
+            CommandType.SET_CONTROLLER,
         ]
         
         if command_type in NON_TRANSITION_COMMANDS:

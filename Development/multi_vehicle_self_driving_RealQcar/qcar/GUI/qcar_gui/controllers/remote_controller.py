@@ -10,12 +10,16 @@ import socket
 import json
 import time
 import threading
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Set
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 import sys
 import os
+import sys
+import asyncio
+import websockets
+from websockets.server import WebSocketServerProtocol
 
 # Add qcar directory to path for command_types import
 # Path: controllers -> qcar_gui -> GUI -> qcar (where command_types.py is located)
@@ -177,6 +181,12 @@ class QCarRemoteController:
         self.base_port = base_port
         self.telemetry_buffer_size = telemetry_buffer_size
         
+        # WebSocket state
+        self.websocket_port = 8080 # Default, will be configurable
+        self.websocket_clients: Set[WebSocketServerProtocol] = set()
+        self.websocket_loop: Optional[asyncio.AbstractEventLoop] = None
+        self.websocket_thread: Optional[threading.Thread] = None
+        
         # Connection state
         self.cars: Dict[int, CarConnection] = {}
         self.server_sockets: Dict[int, socket.socket] = {}
@@ -234,6 +244,123 @@ class QCarRemoteController:
                 
             except Exception as e:
                 print(f"[Ground Station] Failed to start server for Car {car_id}: {e}")
+        
+        # Start WebSocket server
+        self._start_websocket_server()
+
+    def _start_websocket_server(self):
+        """Start WebSocket server in a separate thread."""
+        def run_loop():
+            self.websocket_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.websocket_loop)
+            
+            async def start_server():
+                print(f"[Ground Station] WebSocket server starting on port {self.websocket_port}")
+                async with websockets.serve(
+                    self._handle_websocket_client,
+                    "0.0.0.0",
+                    self.websocket_port
+                ):
+                    await asyncio.Future()  # Run forever
+
+            try:
+                self.websocket_loop.run_until_complete(start_server())
+            except RuntimeError:
+                # Loop stopped before future completed - normal during shutdown
+                pass
+
+        self.websocket_thread = threading.Thread(target=run_loop, daemon=True)
+        self.websocket_thread.start()
+
+    async def _handle_websocket_client(self, websocket: WebSocketServerProtocol):
+        """Handle a WebSocket connection from browser."""
+        self.websocket_clients.add(websocket)
+        print(f"[WS] Client connected from {websocket.remote_address}")
+        
+        try:
+            # Send initial status for all connected cars
+            for car_id, car in self.cars.items():
+                if car.status == 'connected':
+                    await websocket.send(json.dumps({
+                        "type": "vehicle_status",
+                        "vehicle_id": f"qcar-{car_id}", # Match bridge format
+                        "status": "connected",
+                        "ip": car.address[0] if car.address else "unknown",
+                        "port": self.base_port + car_id
+                    }))
+
+            async for message in websocket:
+                await self._handle_websocket_message(websocket, message)
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            self.websocket_clients.discard(websocket)
+            print("[WS] Client disconnected")
+
+    async def _handle_websocket_message(self, websocket, message):
+        """Handle incoming WebSocket message."""
+        try:
+            data = json.loads(message)
+            msg_type = data.get('type')
+            
+            if msg_type == 'ping':
+                await websocket.send(json.dumps({"type": "pong"}))
+                return
+                
+            elif msg_type == 'get_status':
+                # Send current vehicle status for all connected cars
+                for car_id, car in self.cars.items():
+                    if car.status == 'connected':
+                        await websocket.send(json.dumps({
+                            "type": "vehicle_status",
+                            "vehicle_id": f"qcar-{car_id}",
+                            "status": "connected",
+                            "ip": car.address[0] if car.address else "unknown",
+                            "port": self.base_port + car_id
+                        }))
+                        
+                        # Also send latest telemetry if available
+                        if car.last_data:
+                            telemetry = car.last_data.copy()
+                            telemetry['vehicle_id'] = f"qcar-{car_id}"
+                            await websocket.send(json.dumps(telemetry))
+                return
+                
+            # Handle commands from browser
+            target = data.get('target', 'all')
+            # Extract actual command payload (remove protocol wrapper if needed)
+            # The bridge passed 'action' or 'msg_type' as command
+            
+            if target == 'all':
+                for car_id in self.cars:
+                    self.send_command(car_id, data)
+            else:
+                # Target format might be 'qcar-1' or just '1'
+                try:
+                    target_id = int(str(target).replace('qcar-', ''))
+                    self.send_command(target_id, data)
+                except ValueError:
+                    pass
+
+        except Exception as e:
+            print(f"[WS] Error handling message: {e}")
+
+    def _broadcast_to_websockets(self, data: dict):
+        """Broadcast data to all connected WebSocket clients."""
+        if not self.websocket_clients or not self.websocket_loop:
+            return
+            
+        async def send():
+            disconnected = set()
+            message = json.dumps(data)
+            for client in self.websocket_clients:
+                try:
+                    await client.send(message)
+                except:
+                    disconnected.add(client)
+            self.websocket_clients -= disconnected
+            
+        asyncio.run_coroutine_threadsafe(send(), self.websocket_loop)
     
     def stop(self) -> None:
         """Stop the controller and servers."""
@@ -250,6 +377,12 @@ class QCarRemoteController:
             except:
                 pass
         self.server_sockets.clear()
+        
+        # Stop WebSocket server
+        if self.websocket_loop:
+            self.websocket_loop.call_soon_threadsafe(self.websocket_loop.stop)
+            if self.websocket_thread:
+                self.websocket_thread.join(timeout=1.0)
         
         # Close all car connections
         for car in self.cars.values():
@@ -289,6 +422,15 @@ class QCarRemoteController:
                     daemon=True
                 )
                 thread.start()
+                
+                # Broadcast vehicle connection to WebSocket clients
+                self._broadcast_to_websockets({
+                    "type": "vehicle_status",
+                    "vehicle_id": f"qcar-{car_id}",
+                    "status": "connected",
+                    "ip": addr[0],
+                    "port": self.base_port + car_id
+                })
                 
         except Exception as e:
             if self.running:
@@ -340,6 +482,13 @@ class QCarRemoteController:
         if car_id in self.telemetry_stats:
             del self.telemetry_stats[car_id]
         
+        # Broadcast disconnection to WebSocket clients
+        self._broadcast_to_websockets({
+            "type": "vehicle_status",
+            "vehicle_id": f"qcar-{car_id}",
+            "status": "disconnected"
+        })
+        
         # Notify GUI controller to clean up manual mode state
         if self.gui_controller and hasattr(self.gui_controller, '_on_car_disconnected'):
             self.gui_controller._on_car_disconnected(car_id)
@@ -351,8 +500,12 @@ class QCarRemoteController:
         try:
             data = json.loads(message)
             
-            # Update last data
-            self.cars[car_id].last_data = data
+            # Update last data (MERGE instead of overwrite to support partial updates)
+            if self.cars[car_id].last_data is None:
+                self.cars[car_id].last_data = {}
+            
+            self.cars[car_id].last_data.update(data)
+            self.cars[car_id].last_data['timestamp_recv'] = time.time()
             
             # Add to buffer
             if car_id in self.telemetry_buffers:
@@ -366,6 +519,16 @@ class QCarRemoteController:
             
             # Process special messages
             msg_type = data.get('type', 'telemetry')
+            
+            # Broadcast to WebSockets
+            # Add vehicle_id for the web app and ensure type is set
+            ws_data = data.copy()
+            ws_data['vehicle_id'] = f"qcar-{car_id}"
+            # Ensure 'type' field is always present for the web handler
+            if 'type' not in ws_data:
+                ws_data['type'] = 'telemetry'
+            self._broadcast_to_websockets(ws_data)
+
             self._handle_special_message(car_id, msg_type, data)
             
         except json.JSONDecodeError as e:
@@ -854,13 +1017,6 @@ class QCarRemoteController:
         """Set callback for V2V status updates."""
         self._v2v_callback = callback
     
-    # ========== Legacy Support ==========
-    
-    def send_legacy_command(self, car_id: int, command_str: str, **params) -> bool:
-        """Send command in legacy format."""
-        legacy_command = {'command': command_str}
-        legacy_command.update(params)
-        return self.send_command(car_id, legacy_command, validate=False)
     
     # ========== Cleanup ==========
     
