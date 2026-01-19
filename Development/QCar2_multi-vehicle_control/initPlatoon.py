@@ -20,8 +20,8 @@ from qvl.free_camera import QLabsFreeCamera
 # 
 num_cars = 4
 car_type = "QC2"
-init_location = [0, -6.2, 1.131]
-init_distance = 10
+init_location = [40, -6.2, 1.131]
+init_distance = 9
 init_rotation = [0, 0, 0]
 
 qlabs = QuanserInteractiveLabs()
@@ -44,7 +44,7 @@ qlabs.destroy_all_spawned_actors()
 
 # create a camera in this qlabs instance
 camera = QLabsFreeCamera(qlabs)
-camera.spawn_degrees(location=[30, -16, 35], rotation=[0, 44, 141.502])
+camera.spawn_degrees(location=[50, -16, 35], rotation=[0, 44, 141.502])
 # to switch our view from our current camera to the new camera we just initialized
 camera.possess()
 

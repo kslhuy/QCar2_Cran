@@ -1,6 +1,9 @@
 # Update Log 2026/01/19 (Shengya MENG)
 - [x] Creat the [start_all_cars.ps1](start_all_cars.ps1) and [stop_all_cars.ps1](stop_all_cars.ps1) to start or stop all cars at the same time. 
 - [x] Remove the fleet_state = local state
+- [x] Move the Ci and neighbors list to the init
+- [x] Modify the transfer function to make sure the di0 is the same.\
+- [x] Add the numerical protection
 
 
 ## About the Consensus term, there are the following issues:

@@ -659,6 +659,21 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                     f"Using default chain topology."
                 )
             self.adjacency_matrix = self._create_chain_topology()
+        
+        # 🔧 在初始化阶段计算并缓存邻居列表
+        self.my_neighbors = self.get_neighbors(self.vehicle_id)
+        
+        # 🔧 在初始化阶段计算并缓存输出矩阵Ci
+        self.Ci = self.compute_output_matrix_Ci(self.vehicle_id)
+        
+        # 🔧 在日志中打印邻居列表和矩阵信息
+        if self.logger:
+            self.logger.logger.info(
+                f"Vehicle {self.vehicle_id}: Neighbors list initialized: {self.my_neighbors}"
+            )
+            self.logger.logger.info(
+                f"Vehicle {self.vehicle_id}: Output matrix Ci computed with shape: {self.Ci.shape}"
+            )
     
     def _create_chain_topology(self) -> np.ndarray:
         """
@@ -785,7 +800,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         """Update using distributed observer with dynamics
         
         Args:
-            local_state: Own vehicle state [x, y, theta, v] - used ONLY for local measurement calculation
+            local_state: Own vehicle state [x, y, theta, v, a] - used ONLY for local measurement calculation
             dt: Time step in seconds
             current_time_ns: Current time in nanoseconds
             control: Control input [steering, throttle]
@@ -806,7 +821,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 local_state, current_time_ns, control, dt
             )
             # Transfer the estimated states back to fleet_states. 
-            self.fleet_states = self._transfer_estimated_states_to_fleet_states(self.estimated_state, current_time_ns)
+            self.fleet_states = self._transfer_estimated_states_to_fleet_states(self.estimated_state, local_state, current_time_ns)
             # Cleanup old data
             self._cleanup_old_data(current_time_ns)
             
@@ -826,7 +841,11 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         - 速度估计: vi - v0
         - 加速度估计: ai - a0
         
-        其中 di0 = i*d + h*sum(vk) for k=1 to i
+        其中 di0 = vehicle_id * d + h * sum(v_k for k=1 to vehicle_id)
+        即：
+        - vehicle_id=1: di0 = 1*d + h*v1
+        - vehicle_id=2: di0 = 2*d + h*(v1+v2)
+        - vehicle_id=3: di0 = 3*d + h*(v1+v2+v3)
         
         Args:
             fleet_states: 完整的车队状态矩阵 [state_dim x fleet_size]
@@ -863,14 +882,22 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             vi = fleet_states[3, vehicle_id]  # 速度
             ai = fleet_states[4, vehicle_id]  # 加速度
             
-            # 计算 di0 = i*d + h*sum(vk) for k=1 to i
+            # 🔧 计算 di0 = vehicle_id * d + h * sum(v_k for k=1 to vehicle_id)
+            # 关键：使用统一的速度来源，确保与逆转换一致
             di0 = vehicle_id * self.d
-            if vehicle_id > 1:
-                # 累加前面车辆的速度
-                velocity_sum = 0.0
-                for k in range(1, vehicle_id):
-                    velocity_sum += fleet_states[3, k]
-                di0 += self.h * velocity_sum
+            
+            # 累加从车辆1到vehicle_id的所有绝对速度
+            velocity_sum = 0.0
+            for k in range(1, vehicle_id + 1):
+                # 优先使用 V2V 接收的最新速度（更准确），否则使用 fleet_states
+                state_k = self._get_latest_received_state(k, current_time_ns)
+                if state_k is not None:
+                    vk = state_k[3]  # V2V 接收的绝对速度
+                else:
+                    vk = fleet_states[3, k]  # Fallback: fleet_states 中的绝对速度
+                velocity_sum += vk
+            
+            di0 += self.h * velocity_sum
             
             # 计算相对状态
             relative_position = pi - p0 + di0      # pi - p0 + di0
@@ -887,7 +914,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         return estimated_state
 
-    def _transfer_estimated_states_to_fleet_states(self, estimated_state: np.ndarray, current_time_ns: int) -> np.ndarray:
+    def _transfer_estimated_states_to_fleet_states(self, estimated_state: np.ndarray, local_state: np.ndarray, current_time_ns: int) -> np.ndarray:
         """
         将分布式观测器的估计状态转换为完整的车队状态矩阵
         
@@ -896,7 +923,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         - 速度估计: vi - v0
         - 加速度估计: ai - a0
         
-        其中 di0 = i*d + h*sum(vk) for k=1 to i
+        其中 di0 = vehicle_id * d + h * sum(v_k for k=1 to vehicle_id)
         
         需要计算出绝对状态:
         - pi = 估计值 + p0 - di0
@@ -906,6 +933,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         Args:
             estimated_state: 分布式观测器估计的状态向量 [3*observer_size]
                            格式: [p1-p0+d10, v1-v0, a1-a0, p2-p0+d20, v2-v0, a2-a0, ...]
+            local_state: 当前车辆的本地状态 [x, y, theta, v, a]
+            current_time_ns: 当前时间戳（纳秒）
 
         Returns:
             fleet_states: 完整的车队状态矩阵 [state_dim x fleet_size]
@@ -917,7 +946,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # 初始化输出矩阵，保留原有的 y 和 theta 信息
         fleet_states_new = self.fleet_states.copy()
         
-        # 获取领导者（车辆0）的绝对状态
         # 获取领导者（车辆0）的绝对状态
         state_leader = self._get_latest_received_state(0,current_time_ns)
         if state_leader is not None:
@@ -945,17 +973,22 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             relative_velocity = estimated_state_mat[1, col_idx]  # vi - v0
             relative_accel = estimated_state_mat[2, col_idx]     # ai - a0
             
-            # 计算 di0 = i*d + h*sum(vk) for k=1 to i
+            # 🔧 计算 di0 = vehicle_id * d + h * sum(v_k for k=1 to vehicle_id)
+            # 关键：必须与正向转换使用完全相同的速度来源，保证可逆性
             di0 = vehicle_id * self.d
-            if vehicle_id > 1:
-                # 累加前面车辆的速度
-                velocity_sum = 0.0
-                for k in range(1, vehicle_id):
-                    # 使用当前 fleet_states 中的速度
-                    velocity_sum += self.fleet_states[3, k]
-                
-                # h 是时间间隔参数，从系统矩阵中获取
-                di0 += self.h * velocity_sum
+            
+            # 累加从车辆1到vehicle_id的所有绝对速度
+            velocity_sum = 0.0
+            for k in range(1, vehicle_id + 1):
+                # 优先使用 V2V 接收的最新速度（更准确），否则使用 fleet_states
+                state_k = self._get_latest_received_state(k, current_time_ns)
+                if state_k is not None:
+                    vk = state_k[3]  # V2V 接收的绝对速度
+                else:
+                    vk = self.fleet_states[3, k]  # Fallback: fleet_states 中的绝对速度
+                velocity_sum += vk
+            
+            di0 += self.h * velocity_sum
             
             # 计算绝对状态
             pi = relative_position + p0 - di0
@@ -1006,21 +1039,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         collective_control = np.zeros(self.observer_size)
         for i in range(self.observer_size):
             collective_control[i] = test_throttle_value
-
-        # # Get the collective nonlinear term phi_i for all vehicles
-        # f = np.zeros(self.fleet_size)
-        # f[self.vehicle_id] = self._get_nonlinear_term_phi_i(v_i, a_i)
-        # for i in range(self.fleet_size):
-        #     if i == self.vehicle_id:
-        #         continue
-        #     state5 = self._get_latest_received_state(i, current_time_ns) # To check which kind of state we get.
-        #     if state5 is None:
-        #         # Use current estimate from fleet_states if no received state
-        #         v_i = x_i_mat5[3, i]  # velocity from current estimate
-        #         a_i = x_i_mat5[4, i]  # acceleration from current estimate
-        #     else:
-        #         v_i = state5[3]  # velocity from received state (state_dim=5) in the original system
-        #         a_i = state5[4]  # acceleration from received state (state_dim=5) in the original system
            
         # 1. Dynamics prediction (collective longitudinal model)
         
@@ -1054,8 +1072,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         local_measurement[1] = v_i  # velocity 
         
         estimated_measurement = np.zeros(self.local_measurement_dim)
-        Ci = self.compute_output_matrix_Ci(self.vehicle_id)  # Get Ci for this vehicle (1-based index)
-        estimated_measurement = Ci @ x_vec + self.Cv * v0 + self.Cd * self.d  # estimated relative position and velocity
+        # 🔧 使用初始化时缓存的Ci矩阵
+        estimated_measurement = self.Ci @ x_vec + self.Cv * v0 + self.Cd * self.d  # estimated relative position and velocity
 
         measurement_error = local_measurement - estimated_measurement
         # yi -hat_yi
@@ -1066,12 +1084,14 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         neighbor_count = 0
         consensus_accum = np.zeros(dim_distributed_observer)
         
-        # Get list of valid neighbors based on adjacency matrix
-        my_neighbors = self.get_neighbors(self.vehicle_id)
-        
+        # 🔧 使用初始化阶段缓存的邻居列表
+        if self.logger:
+            self.logger.logger.debug(
+                f"Vehicle {self.vehicle_id}: Processing consensus with neighbors: {self.my_neighbors}"
+            )
         
         # Loop through each neighbor defined by adjacency matrix
-        for neighbor_id in my_neighbors:
+        for neighbor_id in self.my_neighbors:
             # --- Step 1: Try to get FLEET state (Primary Source) ---
             neighbor_fleet_dict = self._get_latest_fleet_data(neighbor_id, current_time_ns)
             
@@ -1119,6 +1139,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                     # Try to get vehicle's self-report (LOCAL state)
                     vehicle_local_state = self._get_latest_received_state(vid, current_time_ns)
                     
+                    
+                    
                     if vehicle_local_state is not None:
                         # Use received local state
                         neighbor_fleet_dict[vid] = {
@@ -1159,6 +1181,11 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                         neighbor_fleet_states[2, vid_int] = vehicle_state.get('theta', 0.0)
                         neighbor_fleet_states[3, vid_int] = vehicle_state.get('velocity', vehicle_state.get('v', 0.0))
                         neighbor_fleet_states[4, vid_int] = vehicle_state.get('acceleration', 0.0)
+                    if self.logger:
+                        self.logger.logger.info(
+                            f"Vehicle {self.vehicle_id}: Neighbor {neighbor_id} vehicle_{vid_int} state: "
+                            f"x={neighbor_fleet_states[0, vid_int]:.3f}, v={neighbor_fleet_states[3, vid_int]:.3f}"
+                        )
                 except (ValueError, TypeError) as e:
                     if self.logger:
                         self.logger.logger.error(
@@ -1177,38 +1204,51 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             weight = self.adjacency_matrix[my_matrix_idx, neighbor_matrix_idx]
             
             # Accumulate weighted difference: weight * (neighbor_estimate - own_estimate)
-            consensus_diff = neighbor_x_vec - x_vec
+            consensus_diff = x_vec - neighbor_x_vec
             consensus_accum += weight * consensus_diff
             neighbor_count += 1
             
             if self.logger:
                 self.logger.logger.info(
                     f"Vehicle {self.vehicle_id}: Consensus with neighbor {neighbor_id}, "
-                    f"weight={weight:.3f}, diff_norm={np.linalg.norm(consensus_diff):.4f}, "
+                    f"weight={weight:.3f}, neighbor_x_vec={np.array2string(neighbor_x_vec, precision=3)}, "
                     f"data_source={'fleet_state' if is_complete_fleet else 'fallback'}"
                 )
         
-        # --- Step 6: Apply consensus gain (average over neighbors) ---
+        # --- Step 6: Apply consensus gain (使用矩阵增益并归一化) ---
         if neighbor_count > 0:
-            # Average the consensus difference to prevent gain explosion
-            consensus_term = self.consensus_gain @ consensus_accum
+            # 使用矩阵增益：[9×9] @ [9×1] = [9×1]
+            # 归一化防止邻居数量导致的增益爆炸
+            consensus_term = (self.consensus_gain/ neighbor_count) @ consensus_accum
+            
+            # 🔧 添加数值保护：防止共识项过大导致发散
+            consensus_norm = np.linalg.norm(consensus_term)
+            max_consensus_threshold = 50.0  # 根据物理约束设置
+            if consensus_norm > max_consensus_threshold:
+                if self.logger:
+                    self.logger.logger.warning(
+                        f"Vehicle {self.vehicle_id}: Consensus term too large ({consensus_norm:.2f}), "
+                        f"clamping to {max_consensus_threshold}"
+                    )
+                consensus_term = consensus_term / consensus_norm * max_consensus_threshold
         
             if self.logger:
                 self.logger.logger.info(
                     f"Vehicle {self.vehicle_id}: Final consensus term applied, "
-                    f"neighbors={neighbor_count}, norm={np.linalg.norm(consensus_term):.4f}"
+                    f"neighbor_count={neighbor_count}, consensus_norm={np.linalg.norm(consensus_term):.4f}"
                 )
         else:
+            consensus_term = np.zeros(dim_distributed_observer)
             if self.logger:
                 self.logger.logger.warning(
                     f"Vehicle {self.vehicle_id}: No valid neighbors for consensus"
                 )
         
-        # Combine all terms
-        # consensus_term = np.zeros_like(dynamics_term)  # Testing without consensus first.
+        # Combine all terms (注意共识项是减号，符合理论公式)
         x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
-
-        # x_i_new = np.zeros_like(dynamics_term)  # Testing without update first.
+        
+        # 🔧 添加状态约束：防止数值溢出导致发散
+        x_i_new = np.clip(x_i_new, -1e4, 1e4)
         
         return x_i_new
 
