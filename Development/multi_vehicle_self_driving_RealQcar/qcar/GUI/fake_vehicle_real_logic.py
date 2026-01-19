@@ -103,8 +103,6 @@ class MockQCar:
         if vehicle_params == 'qcar':
             # Load custom QCar parameters
             try:
-
-                
                 params_dir = Path(__file__).parent / "vehiclemodels" / "parameters"
                 qcar_conf = OmegaConf.load(str(params_dir / "parameters_qcar.yaml"))
                 tire_conf = OmegaConf.load(str(params_dir / "parameters_tire.yaml"))
@@ -118,20 +116,14 @@ class MockQCar:
             # Load standard vehicle parameters (vehicle1-4)
             vehicle_id = int(vehicle_params.replace('vehicle', ''))
             self.params = setup_vehicle_parameters(vehicle_id=vehicle_id)
-        else:
-            # Default to QCar parameters
-            try:
-                # from pathlib import Path
-                # from omegaconf import OmegaConf
-                # from vehiclemodels.vehicle_parameters import VehicleParameters
-                
-                params_dir = Path(__file__).parent / "vehiclemodels" / "parameters"
-                qcar_conf = OmegaConf.load(str(params_dir / "parameters_qcar.yaml"))
-                tire_conf = OmegaConf.load(str(params_dir / "parameters_tire.yaml"))
-                structured_conf = OmegaConf.structured(VehicleParameters)
-                self.params = OmegaConf.to_object(OmegaConf.merge(structured_conf, qcar_conf, tire_conf))
-            except:
-                self.params = setup_vehicle_parameters(vehicle_id=1)
+
+
+        # # Load parameters
+        # # Officially use 'qcar' which now loads parameters_qcar.yaml via setup_vehicle_parameters
+        # if vehicle_params:
+        #     self.params = setup_vehicle_parameters(vehicle_id=vehicle_params)
+        # else:
+        #     self.params = setup_vehicle_parameters(vehicle_id='qcar')
         
         # Mock sensor data
         self.motorTach = 0.0
@@ -483,7 +475,7 @@ class MockQCar:
         
         # Compute steering rate: P controller to track target steering angle
         # This simulates the steering servo dynamics
-        K_p_steering = 1.0  # Gain for steering rate controller
+        K_p_steering = 4.0  # Increased from 1.0 to 4.0 for better tracking
         steering_rate = K_p_steering * (target_steering_angle - current_steering_angle)
         
         # Clamp steering rate to physical limits
@@ -1045,7 +1037,7 @@ def main():
     car_id = 0
     host_ip = '127.0.0.1'
     base_port = 5000
-    dynamic_model_type = 1 # Default to qLPV (2)
+    dynamic_model_type = 2 # Default to qLPV (2)
     vehicle_params = 'qcar'  # Default to QCar parameters
     
     if len(sys.argv) > 1:
