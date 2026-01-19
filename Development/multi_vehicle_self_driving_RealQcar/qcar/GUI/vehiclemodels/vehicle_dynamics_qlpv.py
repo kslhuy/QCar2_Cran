@@ -33,7 +33,7 @@ from typing import Tuple, Optional
 from .utils.steering_constraints import steering_constraints
 from .utils.acceleration_constraints import acceleration_constraints
 
-def vehicle_dynamics_qlpv(x, u_init, p, use_pacejka: bool = True):
+def vehicle_dynamics_qlpv(x, u_init, p,  tire_mode: str = None ):
     """
     qLPV vehicle dynamics matching observer model
     
@@ -47,7 +47,8 @@ def vehicle_dynamics_qlpv(x, u_init, p, use_pacejka: bool = True):
         :param x: vehicle state vector [X, Y, δ, v_x, ψ, r, v_y]
         :param u_init: vehicle input vector [δ_dot, a]
         :param p: vehicle parameter object
-        :param use_pacejka: if True, use Pacejka tire model for true forces
+        :param tire_mode: Tire model selection: 'static_linear', 'dynamic_linear', 'pacejka'
+                         If None, falls back to use_pacejka for backward compatibility
     
     Outputs:
         :return f: right-hand side of differential equations (7D)
@@ -106,11 +107,20 @@ def vehicle_dynamics_qlpv(x, u_init, p, use_pacejka: bool = True):
     
     # Compute tire forces
     a_long = u[1]
-    if use_pacejka and hasattr(p, 'tire'):
-        # Use Pacejka tire model for true nonlinear forces
+    
+
+    
+    if tire_mode == 'static_linear':
+        # Simple linear model: F = C * alpha (no load transfer)
+        Fyf, Fyr = compute_tire_forces_linear(alpha_f, alpha_r, Cf, Cr)
+    elif tire_mode == 'dynamic_linear':
+        # Linear model with load transfer
+        Fyf, Fyr = compute_tire_forces_load_transfer(alpha_f, alpha_r, p, a_long)
+    elif tire_mode == 'pacejka' and hasattr(p, 'tire'):
+        # Pacejka nonlinear tire model
         Fyf, Fyr = compute_tire_forces_pacejka(alpha_f, alpha_r, p, vx, a_long)
     else:
-        # Use linear tire model with load transfer
+        # Fallback to dynamic linear if pacejka requested but no tire params
         Fyf, Fyr = compute_tire_forces_load_transfer(alpha_f, alpha_r, p, a_long)
     
     # Trigonometric functions
@@ -443,19 +453,18 @@ class QLPVVehicleModel:
     STATE_DIM = 7
     
     def __init__(self, params, sample_time: float = 0.02,
-                 use_pacejka: bool = True):
+                  tire_mode= 'pacejka'):
         """
         Initialize qLPV vehicle model
         
         Args:
             params: Vehicle parameters object
             sample_time: Integration time step [s]
-            use_pacejka: Whether to use Pacejka tire model for true forces
+            tire_mode: Tire model selection: 'static_linear', 'dynamic_linear', 'pacejka'
         """
         self.params = params
         self.Ts = sample_time
-        self.use_pacejka = use_pacejka
-        
+        self.tire_mode = tire_mode
         # Extract cornering stiffness for residual computation
         self.Cf = getattr(params, 'Cf', 120.0)
         self.Cr = getattr(params, 'Cr', 120.0)
@@ -511,7 +520,7 @@ class QLPVVehicleModel:
         """
         # Compute derivatives
         f = vehicle_dynamics_qlpv(self.state, control_input, self.params,
-                                   use_pacejka=self.use_pacejka)
+                                   tire_mode=self.tire_mode)
         
         # Euler integration
         for i in range(self.STATE_DIM):
@@ -542,12 +551,15 @@ class QLPVVehicleModel:
         self.alpha_r = -(vy - lr * r) / vx
         
         # True tire forces (Truth model)
-        if self.use_pacejka and hasattr(self.params, 'tire'):
+        if self.tire_mode == 'pacejka' and hasattr(self.params, 'tire'):
             self.Fyf, self.Fyr = compute_tire_forces_pacejka(
                 self.alpha_f, self.alpha_r, self.params, vx, a_long)
-        else:
+        elif self.tire_mode == 'static_linear':
             self.Fyf, self.Fyr = compute_tire_forces_load_transfer(
-                self.alpha_f, self.alpha_r, self.params, a_long)
+                self.alpha_f, self.alpha_r, self.params, vx, a_long)
+        elif self.tire_mode == 'dynamic_linear':
+            self.Fyf, self.Fyr = compute_tire_forces_linear(
+                self.alpha_f, self.alpha_r, self.params, vx, a_long)
         
         # Tire residuals (ground truth)
         # Compares Truth model with Static Linear reference (Cf, Cr)

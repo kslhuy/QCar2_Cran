@@ -22,8 +22,6 @@ from vehiclemodels.vehicle_dynamics_qlpv import (
     compute_tire_forces_pacejka
 )
 from vehiclemodels.vehicle_parameters import setup_vehicle_parameters
-from vehiclemodels.utils.steering_constraints import steering_constraints
-from vehiclemodels.utils.acceleration_constraints import acceleration_constraints
 
 def run_simulation(scenario_name, throttle_profile, steering_profile, dt=0.001, duration=5.0):
     """Run simulation for a specific scenario using 3 different tire configurations"""
@@ -72,43 +70,16 @@ def run_simulation(scenario_name, throttle_profile, steering_profile, dt=0.001, 
             alpha_f = delta - (vy + p.a * r) / vx_safe
             alpha_r = -(vy - p.b * r) / vx_safe
             
-            # Manually compute forces for logging/manual simulation
+            # Use same dynamics framework for all models, only tire force calculation differs
             if name == 'Static Linear':
-                # Force the use of the basic linear model for this baseline
                 Fyf, Fyr = compute_tire_forces_linear(alpha_f, alpha_r, p.Cf, p.Cr)
-                
-                # Apply constraints and kinematic/dynamic logic similar to core model
-                steer_rate = steering_constraints(delta, u_raw[0], p.steering)
-                accel = acceleration_constraints(vx, u_raw[1], p.longitudinal)
-                
-                if abs(vx) < 0.1:
-                    # Kinematic model
-                    lwb = p.a + p.b
-                    beta = np.arctan2(p.b * np.tan(delta), lwb) if abs(delta) > 0.001 else 0.0
-                    vx_dot = accel - (9.81 * 0.015) * np.sign(vx) if abs(vx) > 0.01 else 0.0
-                    f = [
-                        vx * np.cos(psi + beta),
-                        vx * np.sin(psi + beta),
-                        steer_rate,
-                        vx_dot,
-                        vx / lwb * np.tan(delta) * np.cos(beta) if abs(vx) > 0.01 else 0.0,
-                        0.0, 0.0
-                    ]
-                else:
-                    # Dynamic model
-                    vx_dot = accel - (9.81 * 0.015) * np.sign(vx) + r*vy - (Fyf * np.sin(delta))/p.m
-                    vy_dot = (Fyr + Fyf * np.cos(delta))/p.m - r*vx
-                    psi_dot = r
-                    r_dot = (p.a * Fyf * np.cos(delta) - p.b * Fyr) / p.I_z
-                    X_dot = vx * np.cos(psi) - vy * np.sin(psi)
-                    Y_dot = vx * np.sin(psi) + vy * np.cos(psi)
-                    f = [X_dot, Y_dot, steer_rate, vx_dot, psi_dot, r_dot, vy_dot]
+                f = vehicle_dynamics_qlpv(state, u_raw, p, tire_mode='static_linear')
             elif name == 'Dynamic Linear':
                 Fyf, Fyr = compute_tire_forces_load_transfer(alpha_f, alpha_r, p, u_raw[1])
-                f = vehicle_dynamics_qlpv(state, u_raw, p, use_pacejka=False)
-            else: # Pacejka
+                f = vehicle_dynamics_qlpv(state, u_raw, p, tire_mode='dynamic_linear')
+            else:  # Pacejka
                 Fyf, Fyr = compute_tire_forces_pacejka(alpha_f, alpha_r, p, vx, u_raw[1])
-                f = vehicle_dynamics_qlpv(state, u_raw, p, use_pacejka=True)
+                f = vehicle_dynamics_qlpv(state, u_raw, p, tire_mode='pacejka')
             
             # Step
             state += np.array(f) * dt
