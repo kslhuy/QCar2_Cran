@@ -64,178 +64,6 @@ environment_objects = {
 }
 
 
-def spawn_environment_objects(qlabs_instance):
-    """Spawn all environment objects (crosswalks, traffic lights, signs, etc.)"""
-    global environment_objects
-    
-    print("\nSpawning environment objects...")
-    
-    # region: crosswalk
-    NUMCROSSWALKS = 4
-    environment_objects['crosswalks'] = []
-    
-    for i in range(NUMCROSSWALKS):
-        environment_objects['crosswalks'].append(QLabsCrosswalk(qlabs_instance))
-    
-    environment_objects['crosswalks'][0].spawn(location=[-5, 9.5, 0],
-                    rotation=[0, 0, np.pi/2], scale=[1, 1, 0.75],
-                    configuration=0)
-    
-    environment_objects['crosswalks'][1].spawn(location=[1.3, 16, 0],
-                    rotation=[0, 0, 0], scale=[1, 1, 0.75],
-                    configuration=0)
-    
-    environment_objects['crosswalks'][2].spawn(location=[7.7, 9.5, 0],
-                    rotation=[0, 0, np.pi/2], scale=[1, 1, 0.75],
-                    configuration=0)
-    
-    environment_objects['crosswalks'][3].spawn(location=[1.3, 3, 0],
-                    rotation=[0, 0, 0], scale=[1, 1, 0.75],
-                    configuration=0)
-    print("  ✓ Spawned 4 crosswalks")
-    # endregion
-    
-    # region: Traffic Light
-    NUMTRAFFICLIGHTS = 4
-    environment_objects['traffic_lights'] = []
-    
-    for i in range(NUMTRAFFICLIGHTS):
-        environment_objects['traffic_lights'].append(QLabsTrafficLight(qlabs_instance))
-    
-    environment_objects['traffic_lights'][0].spawn(location=[-3.77, 13, 0],
-                    rotation=[0, 0, np.pi/2],
-                    configuration=0)
-    
-    environment_objects['traffic_lights'][1].spawn(location=[4.9, 14.8, 0],
-                    rotation=[0, 0, 0],
-                    configuration=0)
-    
-    environment_objects['traffic_lights'][2].spawn(location=[6.7, 5.7, 0],
-                    rotation=[0, 0, -np.pi/2],
-                    configuration=0)
-    
-    environment_objects['traffic_lights'][3].spawn(location=[-2, 4.27, 0],
-                    rotation=[0, 0, np.pi],
-                    configuration=0)
-    print("  ✓ Spawned 4 traffic lights")
-    # endregion
-    
-    # region: Yield sign
-    environment_objects['yield_signs'] = []
-    yieldSign = QLabsYieldSign(qlabs_instance)
-    yieldSign.spawn(location=[0.4, -13, 0],
-                    rotation=[0, 0, np.pi])
-    environment_objects['yield_signs'].append(yieldSign)
-    print("  ✓ Spawned 1 yield sign")
-    # endregion
-    
-    # region: roundabout
-    NUMROUNDABOUTSIGNS = 3
-    environment_objects['roundabout_signs'] = []
-    
-    for i in range(NUMROUNDABOUTSIGNS):
-        environment_objects['roundabout_signs'].append(QLabsRoundaboutSign(qlabs_instance))
-    
-    environment_objects['roundabout_signs'][0].spawn(location=[24.5, 33, 0],
-                    rotation=[0, 0, -np.pi/2])
-    
-    environment_objects['roundabout_signs'][1].spawn(location=[4.5, 40, 0],
-                    rotation=[0, 0, np.pi])
-    
-    environment_objects['roundabout_signs'][2].spawn(location=[10.6, 28.5, 0],
-                    rotation=[0, 0, np.pi])
-    print("  ✓ Spawned 3 roundabout signs")
-    # endregion
-    
-    # # region: Spawning Basic Shapes
-    # environment_objects['basic_shapes'] = []
-    # hBasicShape = QLabsBasicShape(qlabs_instance)
-    
-    # # Plus
-    # hBasicShape.spawn_id_box_walls_from_end_points(
-    #     actorNumber=2,
-    #     startLocation=[-13.64, 3.82, 0.0],
-    #     endLocation=[-3.08, -7.062, 0.0],
-    #     height=5,
-    #     thickness=3,
-    #     color=[(154/255), (101/255), (14/255)],
-    #     waitForConfirmation=False
-    # )
-    
-    # hBasicShape.spawn_id_box_walls_from_end_points(
-    #     actorNumber=3,
-    #     startLocation=[-3.93, 4.00, -0],
-    #     endLocation=[-10.034, -3.102, -0],
-    #     height=5,
-    #     thickness=3,
-    #     color=[(154/255), (101/255), (14/255)],
-    #     waitForConfirmation=False
-    # )
-    
-    # # Roundabout Box
-    # hBasicShape.spawn_id_box_walls_from_end_points(
-    #     actorNumber=4,
-    #     startLocation=[12.104, 38.266, 0],
-    #     endLocation=[18.345, 38.433, 0],
-    #     height=5,
-    #     thickness=4,
-    #     color=[(154/255), (101/255), (14/255)],
-    #     waitForConfirmation=False
-    # )
-    
-    # # Basic Building Box
-    # hBasicShape.spawn_id_box_walls_from_end_points(
-    #     actorNumber=5,
-    #     startLocation=[5.969, 0.072, 0.385],
-    #     endLocation=[16.578, -0.016, 0],
-    #     height=5,
-    #     thickness=8.5,
-    #     color=[(154/255), (101/255), (14/255)],
-    #     waitForConfirmation=False
-    # )
-    # environment_objects['basic_shapes'].append(hBasicShape)
-    # print("  ✓ Spawned basic shapes (buildings)")
-    # # endregion
-    
-    # region: Spawn stopsign
-    environment_objects['stop_signs'] = []
-    stopSign = QLabsStopSign(qlabs_instance)
-    stopSign.spawn(location=[-0.508, -7.327, 0.2], rotation=[0, 0, np.pi/2],
-                scale=[1, 1, 1], configuration=0, waitForConfirmation=True)
-    environment_objects['stop_signs'].append(stopSign)
-    print("  ✓ Spawned 1 stop sign")
-    # endregion
-    
-    print("Environment objects spawned successfully!\n")
-
-
-def destroy_environment_objects(qlabs_instance):
-    """Destroy all spawned environment objects"""
-    global environment_objects
-    
-    print("\nDestroying environment objects...")
-    
-    # Destroy all objects by type
-    for obj_type, obj_list in environment_objects.items():
-        for obj in obj_list:
-            try:
-                obj.destroy()
-            except:
-                pass
-    
-    # Clear the dictionary
-    environment_objects = {
-        'crosswalks': [],
-        'traffic_lights': [],
-        'yield_signs': [],
-        'roundabout_signs': [],
-        'basic_shapes': [],
-        'stop_signs': []
-    }
-    
-    print("Environment objects destroyed!\n")
-
-
 def resolve_config_path(config_path: str) -> str:
     # Resolve path relative to this script, sibling folders, or absolute
     if os.path.isabs(config_path):
@@ -384,7 +212,6 @@ def get_transform_input(car_number):
         f"  - S = skip this car\n"
         f"  - X = quit (no shutdown)\n"
         f"  - Q = quit and shutdown QLabs real-time models\n"
-        f"  - E = toggle environment objects\n"
         f"> "
     )
 
@@ -406,19 +233,6 @@ def get_transform_input(car_number):
         return "SKIP", "SKIP"
     if cmd == "D":
         return default_loc, default_rot
-    if cmd == "E":
-        # Toggle environment objects
-        qlabs_temp = QuanserInteractiveLabs()
-        if qlabs_temp.open("localhost"):
-            env_action = input("  [S]pawn or [D]estroy environment objects? ").strip().upper()
-            if env_action == 'S':
-                spawn_environment_objects(qlabs_temp)
-            elif env_action == 'D':
-                destroy_environment_objects(qlabs_temp)
-            qlabs_temp.close()
-        else:
-            print("Could not connect to QLabs")
-        return "SKIP", "SKIP"
 
     # Parse numeric input: X,Y or X,Y,THETA
     parts = [p.strip() for p in s.split(",") if p.strip() != ""]
@@ -439,18 +253,6 @@ def get_transform_input(car_number):
     return location, rotation
 
     
-
-# Ask user if they want to spawn environment objects
-print("\n=== Environment Setup ===")
-env_choice = input("Spawn environment objects (crosswalks, traffic lights, signs)? (Y/N): ").strip().upper()
-if env_choice == 'Y':
-    # Need to reconnect to QLabs for spawning
-    qlabs_temp = QuanserInteractiveLabs()
-    if qlabs_temp.open("localhost"):
-        spawn_environment_objects(qlabs_temp)
-        qlabs_temp.close()
-    else:
-        print("Could not connect to QLabs for environment spawning")
 
 # Continuous loop to set transforms for both vehicles
 print("\n=== Multi-Vehicle Transform Control ===")

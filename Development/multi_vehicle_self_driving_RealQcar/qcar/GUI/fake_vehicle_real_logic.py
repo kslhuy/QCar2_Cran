@@ -396,10 +396,10 @@ class MockQCar:
             self.y = self.state_ks[1]
             self.heading = self.state_ks[4]
             self.velocity = self.state_ks[3]
-            # print(f"_steering={self._steering:.3f}, target_steering={target_steering:.3f}, "
-            #     f"state_steer={current_state[2]:.6f}, err={steering_error:.6f}, "
-            #     f"Kp={K_p_steering}, steering_rate={steering_rate:.6f}")
-            # print(f"Velocity: {self.velocity}, Heading: {self.heading} , control input: {self.control_input}")
+            print(f"_steering={self._steering:.3f}, target_steering={target_steering:.3f}, "
+                f"state_steer={current_state[2]:.6f}, err={steering_error:.6f}, "
+                f"Kp={K_p_steering}, steering_rate={steering_rate:.6f}")
+            print(f"Velocity: {self.velocity}, Heading: {self.heading} , control input: {self.control_input}")
 
             # Compute angular velocity
             if abs(self.velocity) > 0.01:
