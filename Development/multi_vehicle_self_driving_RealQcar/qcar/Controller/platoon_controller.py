@@ -494,10 +494,10 @@ class PlatoonController:
             Direct leader's state data or None
         """
         try:
-            # Use get_latest_local_state 
-            if not v2v_manager or not hasattr(v2v_manager, 'get_latest_local_state'):
+            # Use get_latest_local_state_raw 
+            if not v2v_manager or not hasattr(v2v_manager, 'get_latest_local_state_raw'):
                 if self.logger:
-                    self.logger.logger.debug(f"V2V manager not available or missing get_latest_local_state")
+                    self.logger.logger.debug(f"V2V manager not available or missing get_latest_local_state_raw")
                 return None
             
             # Find direct leader (vehicle with position = my_position - 1)
@@ -515,13 +515,13 @@ class PlatoonController:
                             vehicle_id_int = vehicle_id
                         
                         if position == direct_leader_position:
-                            # Use get_latest_local_state
-                            leader_data = v2v_manager.get_latest_local_state(vehicle_id_int)
+                            # Use get_latest_local_state_raw
+                            leader_data = v2v_manager.get_latest_local_state_raw(vehicle_id_int)
                             return leader_data
             
             # Fallback: use leader_car_id if available
             if self.leader_car_id is not None:
-                return v2v_manager.get_latest_local_state(self.leader_car_id)
+                return v2v_manager.get_latest_local_state_raw(self.leader_car_id)
             
             return None
             

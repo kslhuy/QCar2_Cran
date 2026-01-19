@@ -1,0 +1,9 @@
+{
+    "mode": "intrinsics",
+    "focal_scale_rgb": 1.0,
+    "focal_scale_depth": 1.0,
+    "principal_point_offset_x": -10.0,
+    "principal_point_offset_y": 1.0,
+    "crop_scale_x": 1.1900000000000002,
+    "crop_scale_y": 1.26
+}

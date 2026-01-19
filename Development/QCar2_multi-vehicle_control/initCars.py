@@ -18,6 +18,12 @@ from qvl.multi_agent import MultiAgent, readRobots
 from qvl.qlabs import QuanserInteractiveLabs
 from qvl.real_time import QLabsRealTime
 from qvl.free_camera import QLabsFreeCamera
+from qvl.crosswalk import QLabsCrosswalk
+from qvl.roundabout_sign import QLabsRoundaboutSign
+from qvl.yield_sign import QLabsYieldSign
+from qvl.traffic_light import QLabsTrafficLight
+from qvl.basic_shape import QLabsBasicShape
+from qvl.stop_sign import QLabsStopSign
 
 qlabs = QuanserInteractiveLabs()
     
@@ -48,6 +54,14 @@ qlabs.close()
 print("Disconnected from camera qlabs session") 
 
 QCars = []
+environment_objects = {
+    'crosswalks': [],
+    'traffic_lights': [],
+    'yield_signs': [],
+    'roundabout_signs': [],
+    'basic_shapes': [],
+    'stop_signs': []
+}
 
 
 def resolve_config_path(config_path: str) -> str:
@@ -242,7 +256,13 @@ def get_transform_input(car_number):
 
 # Continuous loop to set transforms for both vehicles
 print("\n=== Multi-Vehicle Transform Control ===")
-print("Commands: Type 'D' for default, 'S' to skip, 'X' to quit\n")
+print("Commands:")
+print("  D = default position")
+print("  S = skip this car")
+print("  X = quit (no shutdown)")
+print("  Q = quit and shutdown QLabs")
+print("  E = spawn/destroy environment objects")
+print("  X,Y or X,Y,THETA = set position\n")
 
 while True:
     try:

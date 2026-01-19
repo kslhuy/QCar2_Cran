@@ -10,6 +10,49 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
+# Canonical ordering for state fields used in V2V/local state messages.
+STATE_FIELDS = ("x", "y", "theta", "velocity", "acceleration")
+
+
+def _normalize_state_array(state_array, expected_dim: int, logger=None) -> Optional[np.ndarray]:
+    """
+    Convert any array-like to a 1D numpy array with the expected dimension.
+    Pads with zeros or truncates if needed to avoid shape errors in downstream algorithms.
+    """
+    try:
+        arr = np.asarray(state_array, dtype=float).flatten()
+        if arr.shape[0] == expected_dim:
+            return arr
+        if arr.shape[0] > expected_dim:
+            if logger:
+                logger.logger.debug(
+                    f"State dim {arr.shape[0]} larger than expected {expected_dim}, truncating"
+                )
+            return arr[:expected_dim]
+        # Pad with zeros when shorter than expected
+        if logger:
+            logger.logger.debug(
+                f"State dim {arr.shape[0]} smaller than expected {expected_dim}, padding with zeros"
+            )
+        return np.pad(arr, (0, expected_dim - arr.shape[0]), mode="constant")
+    except Exception as exc:
+        if logger:
+            logger.log_error("Failed to normalize state array", exc)
+        return None
+
+
+def _state_dict_to_array(state_dict: Dict, expected_dim: int, logger=None) -> Optional[np.ndarray]:
+    """
+    Convert a state dict (as used in communication/log layers) to ndarray in canonical order.
+    """
+    try:
+        base_arr = np.array([state_dict.get(k, 0.0) for k in STATE_FIELDS], dtype=float)
+        return _normalize_state_array(base_arr, expected_dim, logger=logger)
+    except Exception as exc:
+        if logger:
+            logger.log_error("Failed to convert state dict to array", exc)
+        return None
+
 
 class FleetStateEstimatorBase(ABC):
     """Base class for all fleet state estimators"""
@@ -37,7 +80,11 @@ class FleetStateEstimatorBase(ABC):
         self.fleet_states = np.zeros((state_dim, fleet_size))
         
         # Communication data storage
-        self.received_states = defaultdict(list)  # vehicle_id -> [(timestamp_ns, state)]
+        self.received_local_states = defaultdict(list)  # vehicle_id -> [(timestamp_ns, state)]
+
+        self.received_fleet_states = defaultdict(list) # vehicle_sender_id -> [(timestamp_ns, fleet_state)]
+
+
         self.max_state_age_ns = int(1.0 * 1e9)  # 1 second in nanoseconds
     
     @abstractmethod
@@ -57,65 +104,125 @@ class FleetStateEstimatorBase(ABC):
         """
         pass
     
-    @abstractmethod
-    def add_received_local_state(self, sender_id: int, state: np.ndarray, timestamp_ns: int) -> bool:
-        """
-        Add received LOCAL state from another vehicle (from local state broadcasts)
-        
-        This method receives 5D state vectors from other vehicles' local_state broadcasts:
-        - High frequency (20Hz typical)
-        - Sensor-based estimates [x, y, theta, v, a]
-        - Each vehicle sends their own local estimate
-        
-        Args:
-            sender_id: ID of the vehicle that sent the state
-            state: Received 5D state vector [x, y, theta, v, a]
-            timestamp_ns: Timestamp in nanoseconds
-            
-        Returns:
-            True if successfully added
-        """
-        pass
+    def add_received_local_state(self, sender_id: int, state: Dict, timestamp_ns: int) -> bool:
+        """Add a received LOCAL state (dict or ndarray) and store ndarray in history.
 
-    @abstractmethod
+        Communication/log layers hand us dicts; algorithms want numpy arrays.
+        We normalize here so downstream consumers always see ndarray.
+        """
+        # print(f"Adding received local state from vehicle_id {sender_id}")
+        try:
+            if sender_id == self.vehicle_id:
+                return False  # Don't store own state
+
+            state_vec: Optional[np.ndarray] = None
+            if isinstance(state, dict):
+                state_vec = _state_dict_to_array(state, self.state_dim, logger=self.logger)
+            else:
+                state_vec = _normalize_state_array(state, self.state_dim, logger=self.logger)
+
+            if state_vec is None:
+                return False
+
+            # Store timestamp in nanoseconds (keep ndarray only)
+            self.received_local_states[sender_id].append((timestamp_ns, state_vec.copy()))
+
+            # Keep only recent history (default 10 entries)
+            if len(self.received_local_states[sender_id]) > 10:
+                self.received_local_states[sender_id] = self.received_local_states[sender_id][-10:]
+
+            return True
+
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error("Add received local state error", e)
+            return False
+
     def add_received_fleet_state(self, sender_id: int, fleet_estimates: Dict, timestamp_ns: int) -> bool:
+        """Add a received FLEET state broadcast from another vehicle.
+
+        Default implementation stores the raw fleet dictionary in
+        `received_fleet_states` and also unpacks per-vehicle states into
+        `received_states` for easy access by other algorithms.
         """
-        Add received FLEET state from another vehicle (from fleet state broadcasts)
-        
-        This method receives entire fleet dictionaries from other vehicles' fleet broadcasts:
-        - Lower frequency (5Hz typical)
-        - Consensus-based estimates for ALL vehicles in the fleet
-        - Each vehicle broadcasts their view of the entire fleet
-        
-        Args:
-            sender_id: ID of the vehicle that sent the fleet estimate
-            fleet_estimates: Dictionary with format:
-                {
-                    vehicle_id_1: {
-                        'x': float, 'y': float, 'theta': float, 
-                        'velocity': float, 'acceleration': float,
-                        'confidence': float (optional)
-                    },
-                    vehicle_id_2: {
-                        'x': float, 'y': float, 'theta': float, 
-                        'velocity': float, 'acceleration': float,
-                        'confidence': float (optional)
-                    },
-                    ...
-                }
-            timestamp_ns: Timestamp in nanoseconds
+        try:
+            if sender_id == self.vehicle_id:
+                return False
+
+            # Check for new vehicle IDs and expand capacity if required
+            try:
+                max_id_in_msg = max((int(vid) for vid in fleet_estimates.keys()), default=0)
+            except Exception:
+                max_id_in_msg = 0
+
+            if max_id_in_msg >= self.fleet_size:
+                self._ensure_fleet_capacity(max_id_in_msg)
+
+            # Store the raw fleet dictionary with timestamp
+            self.received_fleet_states[sender_id].append((timestamp_ns, fleet_estimates))
+
+
+            # Limit history for fleet snapshots per neighbor (default 5)
+            if len(self.received_fleet_states[sender_id]) > 5:
+                self.received_fleet_states[sender_id] = self.received_fleet_states[sender_id][-5:]
+
+            return True
+
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error("Add received fleet state error", e)
+            return False
+
+    def _get_latest_fleet_data(self, neighbor_id: int, current_time_ns: int) -> Optional[Dict]:
+        """Return the newest fleet dictionary from a neighbor that is still valid.
+
+        Returns None if there is no recent valid snapshot.
+        """
+        if neighbor_id not in self.received_fleet_states:
+            return None
+
+        history = self.received_fleet_states[neighbor_id]
+        if not history:
+            return None
+
+        # Iterate backwards to find newest valid data
+        for ts_ns, fleet_data in reversed(history):
+            if (current_time_ns - ts_ns) <= self.max_state_age_ns:
+                return fleet_data
+        return None
+
+    def _get_latest_received_state(self, vehicle_id: int, current_time_ns: int) -> Optional[np.ndarray]:
+        """Return the most recent received state (as ndarray) within the age limit.
+
+        Returns None if no recent state is available or conversion fails.
+        """
+        if vehicle_id not in self.received_local_states:
+            print(f"vehicle_id {vehicle_id} not in self.received_local_states")
+            return None
+
+        states_list = self.received_local_states[vehicle_id]
+        if not states_list:
+            print(f"states_list for vehicle_id {vehicle_id} is empty")
+            return None
+
+        # Iterate backwards (newest first) and return first valid entry
+        for timestamp_ns, state in reversed(states_list):
+            age_ns = current_time_ns - timestamp_ns
+            if age_ns > self.max_state_age_ns:
+                continue
+
+            # History stores ndarray; older entries might still be dict, so normalize defensively
+            if isinstance(state, dict):
+                state_vec = _state_dict_to_array(state, self.state_dim, logger=self.logger)
+            else:
+                state_vec = _normalize_state_array(state, self.state_dim, logger=self.logger)
+
+            if state_vec is not None:
+                return state_vec
             
-        Returns:
-            True if successfully added
-        """
-        pass
-    
-    def add_received_state(self, sender_id: int, state: np.ndarray, timestamp_ns: int) -> bool:
-        """
-        DEPRECATED: Use add_received_local_state() instead.
-        Kept for backward compatibility, forwards to add_received_local_state().
-        """
-        return self.add_received_local_state(sender_id, state, timestamp_ns)
+        print(f"No valid recent state for vehicle_id {vehicle_id}")
+        return None
+
     
     def get_fleet_states(self) -> np.ndarray:
         """Get current fleet state estimates"""
@@ -167,9 +274,41 @@ class FleetStateEstimatorBase(ABC):
     def reset(self):
         """Reset fleet estimator"""
         self.fleet_states = np.zeros((self.state_dim, self.fleet_size))
-        self.received_states.clear()
+        self.received_local_states.clear()
+        self.received_fleet_states.clear()
+
+    def _cleanup_old_data(self, current_time_ns: int):
+        """Clean up old entries from both received_states and received_fleet_states."""
+        try:
+            for vehicle_id in list(self.received_local_states.keys()):
+                states_list = self.received_local_states[vehicle_id]
+
+                # Remove old states (all in nanoseconds)
+                valid_states = [(ts_ns, state) for ts_ns, state in states_list
+                               if current_time_ns - ts_ns <= self.max_state_age_ns]
+
+                if valid_states:
+                    self.received_local_states[vehicle_id] = valid_states
+                else:
+                    del self.received_local_states[vehicle_id]
 
 
+            # Clean fleet snapshots
+            for sender_id in list(self.received_fleet_states.keys()):
+                history = self.received_fleet_states[sender_id]
+                valid_history = [
+                    (ts, data) for ts, data in history
+                    if (current_time_ns - ts) <= self.max_state_age_ns
+                ]
+
+                if valid_history:
+                    self.received_fleet_states[sender_id] = valid_history
+                else:
+                    del self.received_fleet_states[sender_id]
+
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error("Data cleanup error", e)
 class ConsensusFleetEstimator(FleetStateEstimatorBase):
     """
     Consensus-based distributed fleet estimator
@@ -192,62 +331,71 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
         
         # Consensus gain (0-1, higher = faster consensus but less stable)
         self.consensus_gain = self.config.get('consensus_gain', 0.3)
+        self.direct_gain = self.config.get('direct_gain', 0.5)
     
     def update(self, local_state: np.ndarray, dt: float, 
                current_time_ns: int, control: np.ndarray) -> np.ndarray:
-        """Update fleet estimates using consensus
+        """
+        Update fleet estimates using Consensus + Direct measurements
         
-        Args:
-            local_state: Own vehicle state [x, y, theta, v, a]
-            dt: Time step in seconds
-            current_time_ns: Current time in nanoseconds
-            control: Control input [steering, throttle]
+        Algorithm for Target T (estimated by Host H):
+        New_Est(T) = Old_Est(T) 
+                   + k_consensus * Sum(Neighbor_N's Est(T) - Host_H's Est(T))
+                   + k_direct    * (Target_T's Self_Report - Host_H's Est(T))
         """
         try:
-            # Ensure fleet capacity for this vehicle
+            # 1. Ensure capacity and set own state (Ground Truth for self)
             self._ensure_fleet_capacity(self.vehicle_id)
-            
-            # Update own state in fleet - CRITICAL: Always keep own state current
             self.fleet_states[:, self.vehicle_id] = local_state.copy()
             
-            # # Debug log every 50 updates
-            # if hasattr(self, '_update_counter'):
-            #     self._update_counter += 1
-            # else:
-            #     self._update_counter = 0
-            
-            # if self._update_counter % 50 == 0 and self.logger:
-            #     self.logger.logger.info(
-            #         f"ConsensusFleet update #{self._update_counter}: "
-            #         f"vehicle_{self.vehicle_id} local_state=({local_state[0]:.3f}, {local_state[1]:.3f}, "
-            #         f"{local_state[2]:.3f}, {local_state[3]:.3f})"
-            #     )
-            
-            # Update estimates for other vehicles using consensus
-            for vehicle_id in range(self.fleet_size):
-                if vehicle_id == self.vehicle_id:
-                    continue  # Skip own vehicle
+            # 2. Update estimates for every other vehicle in the fleet
+            for target_id in range(self.fleet_size):
+                if target_id == self.vehicle_id:
+                    continue  # Skip self
                 
-                # Get latest received state
-                latest_state = self._get_latest_received_state(vehicle_id, current_time_ns)
+                # --- Step A: Get Current Estimate ---
+                current_est = self.fleet_states[:, target_id].copy()
+                total_correction = np.zeros_like(current_est)
                 
-                if latest_state is not None:
-                    # Simple consensus: move estimate towards received state
-                    current_estimate = self.fleet_states[:, vehicle_id].copy()
+                # --- Step B: Calculate Consensus Term (What neighbors think of Target) ---
+                # "I trust my neighbors N1, N2... to tell me where Target T is"
+                neighbor_count = 0
+                consensus_accum = np.zeros_like(current_est)
+                
+                for neighbor_id, history in self.received_fleet_states.items():
+                    # Get neighbor's latest fleet view
+                    neighbor_fleet_dict = self._get_latest_fleet_data(neighbor_id, current_time_ns)
                     
-                    # Update fleet state with consensus 
-                    self.fleet_states[:, vehicle_id] = current_estimate + self.consensus_gain * (latest_state - current_estimate)
-                    
-                    # # Debug log consensus updates every 50 iterations
-                    # if self._update_counter % 50 == 0 and self.logger:
-                    #     self.logger.logger.info(
-                    #         f"ConsensusFleet: Updated vehicle_{vehicle_id} estimate - "
-                    #         f"received: ({latest_state[0]:.3f}, {latest_state[1]:.3f}, {latest_state[2]:.3f}, {latest_state[3]:.3f}), "
-                    #         f"new: ({self.fleet_states[0, vehicle_id]:.3f}, {self.fleet_states[1, vehicle_id]:.3f}, "
-                    #         f"{self.fleet_states[2, vehicle_id]:.3f}, {self.fleet_states[3, vehicle_id]:.3f})"
-                    #     )
-            
-            # Cleanup old data
+                    if neighbor_fleet_dict and target_id in neighbor_fleet_dict:
+                        # Extract what Neighbor thinks of Target
+                        neigh_est_dict = neighbor_fleet_dict[target_id]
+                        neigh_est_vec = np.array([
+                            neigh_est_dict['x'], neigh_est_dict['y'], 
+                            neigh_est_dict['theta'], neigh_est_dict['velocity'],
+                            neigh_est_dict.get('acceleration', 0.0)
+                        ])
+                        
+                        # Add difference (Neighbor - Self)
+                        consensus_accum += (neigh_est_vec - current_est)
+                        neighbor_count += 1
+                
+                if neighbor_count > 0:
+                    # Average the consensus difference and apply gain
+                    # Using average prevents gain from exploding with many neighbors
+                    total_correction += self.consensus_gain * (consensus_accum / neighbor_count)
+
+                # --- Step C: Calculate Direct Term (What Target says about itself) ---
+                # "I trust Target T to tell me where Target T is" (Highest Confidence)
+                direct_state = self._get_latest_received_state(target_id, current_time_ns)
+                
+                if direct_state is not None:
+                    # Innovation: Direct_Broadcast - Current_Estimate
+                    total_correction += self.direct_gain * (direct_state - current_est)
+                
+                # --- Step D: Apply Update ---
+                self.fleet_states[:, target_id] = current_est + total_correction
+
+            # 3. Cleanup old data from both storages
             self._cleanup_old_data(current_time_ns)
             
             return self.fleet_states.copy()
@@ -257,159 +405,51 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
                 self.logger.log_error("Consensus fleet update error", e)
             return self.fleet_states.copy()
     
-    def add_received_local_state(self, sender_id: int, state: np.ndarray, timestamp_ns: int) -> bool:
-        """Add received LOCAL state from another vehicle
-        
-        Receives individual 5D state vectors from other vehicles' local sensor estimates.
-        High frequency updates (20Hz typical).
-        
-        Args:
-            sender_id: ID of sender vehicle
-            state: Received 5D state vector [x, y, theta, v, a]
-            timestamp_ns: Timestamp in nanoseconds (directly from V2V message)
-        """
-        try:
-            if sender_id == self.vehicle_id:
-                return False  # Don't store own state
-            
-            # Validate state dimension
-            if state.shape[0] != self.state_dim:
-                if self.logger:
-                    self.logger.log_error(
-                        f"State dimension mismatch: expected {self.state_dim}, got {state.shape[0]}"
-                    )
-                return False
-            
-            # Store timestamp in nanoseconds - no conversion needed
-            self.received_states[sender_id].append((timestamp_ns, state.copy()))
-            
-            # Keep only recent data (max 10 history)
-            if len(self.received_states[sender_id]) > 10:
-                self.received_states[sender_id] = self.received_states[sender_id][-10:]
-            
-            return True
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Add received local state error", e)
-            return False
-    
-    def add_received_fleet_state(self, sender_id: int, fleet_estimates: Dict, timestamp_ns: int) -> bool:
-        """Add received FLEET state from another vehicle
-        
-        Receives entire fleet dictionary from another vehicle's consensus estimate.
-        Lower frequency updates (5Hz typical). Can be used for double-check or fusion.
-        
-        Args:
-            sender_id: ID of sender vehicle
-            fleet_estimates: Dictionary mapping vehicle_id to state dict
-            timestamp_ns: Timestamp in nanoseconds
-        """
-        try:
-            if sender_id == self.vehicle_id:
-                return False  # Don't process own fleet broadcast
-            
-            # Process each vehicle state in the fleet estimate
-            for vehicle_id, state_dict in fleet_estimates.items():
-                if vehicle_id == self.vehicle_id:
-                    continue  # Skip own state from other vehicles' estimates
-                
-                # Extract 5D state from dictionary
-                try:
-                    state_vector = np.array([
-                        state_dict['x'],
-                        state_dict['y'],
-                        state_dict['theta'],
-                        state_dict['velocity'],
-                        state_dict.get('acceleration', 0.0)  # Default to 0 if missing
-                    ])
-                    
-                    # Store this as a received state for consensus
-                    # Use slightly lower weight by adjusting timestamp (optional enhancement)
-                    self.received_states[vehicle_id].append((timestamp_ns, state_vector))
-                    
-                    # Keep history limited
-                    if len(self.received_states[vehicle_id]) > 10:
-                        self.received_states[vehicle_id] = self.received_states[vehicle_id][-10:]
-                        
-                except KeyError as e:
-                    if self.logger:
-                        self.logger.log_error(f"Missing key in fleet estimate for vehicle {vehicle_id}: {e}")
-                    continue
-            
-            return True
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Add received fleet state error", e)
-            return False
-    
-    def _get_latest_received_state(self, vehicle_id: int, current_time_ns: int) -> Optional[np.ndarray]:
-        """Get the latest received state for a vehicle
-        
-        Args:
-            vehicle_id: ID of the target vehicle
-            current_time_ns: Current time in nanoseconds
-            
-        Returns:
-            Most recent state within max_state_age_ns, or None if no valid state
-        """
-        if vehicle_id not in self.received_states:
-            return None
-        
-        states_list = self.received_states[vehicle_id]
-        if not states_list:
-            return None
-        
-        # Get most recent state within time limit (all in nanoseconds - no conversion!)
-        for timestamp_ns, state in reversed(states_list):
-            age_ns = current_time_ns - timestamp_ns
-            if age_ns <= self.max_state_age_ns:
-                return state
-        
-        return None
-    
-    def _cleanup_old_data(self, current_time_ns: int):
-        """Clean up old received data"""
-        try:
-            for vehicle_id in list(self.received_states.keys()):
-                states_list = self.received_states[vehicle_id]
-                
-                # Remove old states (all in nanoseconds)
-                valid_states = [(ts_ns, state) for ts_ns, state in states_list 
-                               if current_time_ns - ts_ns <= self.max_state_age_ns]
-                
-                if valid_states:
-                    self.received_states[vehicle_id] = valid_states
-                else:
-                    del self.received_states[vehicle_id]
-                    
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Data cleanup error", e)
 
 
-class DistributedKalmanEstimator(FleetStateEstimatorBase):
+
+class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
     """
-    Distributed Kalman Filter for fleet estimation
+    Distributed Lunberger Observer for fleet longitudinal estimation
     More sophisticated, uses dynamics model and consensus
     Inspired by VehicleObserver.py _distributed_observer_each
     """
     
-    def __init__(self, vehicle_id: int, fleet_size: int, state_dim: int = 5,
+    def __init__(self, vehicle_id: int, fleet_size: int, state_dim: int = 3,
                  config: Dict = None, logger=None):
         """
-        Initialize distributed Kalman estimator
+        Initialize distributed Lunberger Observer
         
         Args:
             vehicle_id: ID of the host vehicle
             fleet_size: Total number of vehicles in fleet
-            state_dim: State dimension (default 5: x, y, theta, v, a)
+            state_dim: State dimension
             config: Configuration dict
             logger: Logger instance
         """
         super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
         
+        # System matrices of the longutinal model
+        Ai = np.array([[0, 1, 0],
+                     [0, 0, 1],
+                     [0, 0, 0]])
+        self.A = np.block([
+                        [Ai if i == j else np.zeros_like(Ai) for j in range(fleet_size)]
+                        for i in range(fleet_size)
+                    ])
+        Bi = np.array([0, 0, 1])
+        self.B = np.block([
+            [Bi if i == j else np.zeros_like(Bi) for j in range(fleet_size)]
+            for i in range(fleet_size)
+        ])
+
+        self.m_i = 0.5 # kg
+        self.tau_i = 0.16 
+        self.rho_i = 0.12
+        self.Cd_i = 0.035 
+        self.AF_i = 0.22
+        self.mu_i = 0.01
+
         # Observer gains
         self.observer_gain = self.config.get('observer_gain', 0.1)
         self.consensus_gain = self.config.get('consensus_gain', 0.2)
@@ -422,225 +462,156 @@ class DistributedKalmanEstimator(FleetStateEstimatorBase):
         """Update using distributed observer with dynamics
         
         Args:
-            local_state: Own vehicle state [x, y, theta, v, a]
+            local_state: Own vehicle state [x, y, theta, v]
             dt: Time step in seconds
             current_time_ns: Current time in nanoseconds
             control: Control input [steering, throttle]
         """
         try:
-            # Ensure fleet capacity for this vehicle and expand weights if needed
-            if self.vehicle_id >= self.fleet_states.shape[1]:
-                old_fleet_size = self.fleet_states.shape[1]
-                self._ensure_fleet_capacity(self.vehicle_id)
-                
-                # Expand weights array to match new fleet size
-                new_weights = np.ones(self.fleet_size) / self.fleet_size
-                new_weights[:old_fleet_size] = self.weights[:old_fleet_size] * (old_fleet_size / self.fleet_size)
-                self.weights = new_weights
-            
-            # Update own state in fleet
+            # Ensure we have capacity and write our own latest local state into fleet_states
+            self._ensure_fleet_capacity(self.vehicle_id)
             self.fleet_states[:, self.vehicle_id] = local_state.copy()
-            
-            # Update estimates for other vehicles
-            for target_id in range(self.fleet_size):
-                if target_id == self.vehicle_id:
-                    continue
-                
-                # Distributed observer for this vehicle
-                self.fleet_states[:, target_id] = self._distributed_observer_update(
-                    target_id, current_time_ns, control, dt
-                )
+
+            # Distributed observer for this vehicle
+            self.fleet_states = self._distributed_observer_update(
+                current_time_ns, control, dt
+            )
             
             # Cleanup old data
             self._cleanup_old_data(current_time_ns)
             
-            return self.fleet_states.copy()
+            return self.fleet_states
             
         except Exception as e:
             if self.logger:
                 self.logger.log_error("Distributed Kalman update error", e)
-            return self.fleet_states.copy()
+            return self.fleet_states
     
-    def _distributed_observer_update(self, target_id: int, current_time_ns: int,
-                                     control: np.ndarray, dt: float) -> np.ndarray:
+    def _distributed_observer_update(self, current_time_ns: int,
+                                     collective_control: np.ndarray, dt: float) -> np.ndarray:
         """
         Distributed observer update for one target vehicle
         Combines dynamics prediction, measurement correction, and consensus
         """
+        # Distributed observer dimention
+        dim_distributed_observer = self.state_dim * self.fleet_size
         # Current estimate
-        x_ij = self.fleet_states[:, target_id].copy()
+        x_i_mat = self.fleet_states.copy()
+        x_vec = x_i_mat.flatten(order="F") # column-major flattening
+        own_state = x_i_mat[:, self.vehicle_id]
+
+        # Get the current estimate (position, velocity, acceleration) for all vehicles:
         
-        # 1. Dynamics prediction (bicycle model)
-        x, y, theta, v = x_ij
-        steering, throttle = control[0], control[1] if len(control) > 1 else 0.0
         
-        # Simple bicycle model
-        x_pred = x + v * np.cos(theta) * dt
-        y_pred = y + v * np.sin(theta) * dt
-        theta_pred = theta + (v * np.tan(steering) / 1.0) * dt  # L=1.0m wheelbase
-        v_pred = v + throttle * dt
+        # 1. Dynamics prediction (collective longitudinal model)
+        u = collective_control if len(collective_control) > self.fleet_size else 0.0
         
-        dynamics_term = np.array([x_pred, y_pred, theta_pred, v_pred])
+        # collective longitudinal model
+        # dx = Ax + Bf
+        f = np.zeros(self.fleet_size)   
+        v_i = own_state[1]  # self velocity
+        a_i = own_state[2]  # self acceleration
+        f[self.vehicle_id] = self._get_nonlinear_term_phi_i(v_i, a_i)
+
+        # Loop over other vehicles only (skip self)
+        for i in range(self.fleet_size):
+            if i == self.vehicle_id:
+                continue
+            state = self._get_latest_received_state(i, current_time_ns)
+            v_i = state[1]  # velocity from received state (state_dim=3)
+            a_i = state[2]  # acceleration from received state (state_dim=3)
+            f[i] = self._get_nonlinear_term_phi_i(v_i, a_i)
+        
+
+        dynamics_term = x_vec + (self.A @ x_vec + self.B @ f) * dt
         
         # 2. Measurement correction (if we have data from target)
-        measurement_term = np.zeros(self.state_dim)
-        latest_state = self._get_latest_received_state(target_id, current_time_ns)
-        
-        if latest_state is not None:
-            # Measurement correction: L * (y - x_pred)
-            measurement_error = latest_state - dynamics_term
-            measurement_term = self.observer_gain * measurement_error
-        
+        measurement_term = np.zeros(self.state_dim * self.fleet_size)
+        # Use latest self measurement (assumed available) to correct position
+        local_measurement = self._get_latest_received_state(self.vehicle_id, current_time_ns) # assume measurable
+        measure_position = local_measurement[0]  # measured position
+
+        # Measurement correction: apply only to this vehicle's position entry in the flattened vector
+        estimated_index = self.vehicle_id * self.state_dim  # starting index for this vehicle in x_vec
+        estimated_position = dynamics_term[estimated_index]
+        measurement_error = measure_position - estimated_position
+        measurement_term[estimated_index] = self.observer_gain * measurement_error
+
         # 3. Consensus term (simple for now - can be enhanced)
-        consensus_term = np.zeros(self.state_dim)
+        # TODO : use the _get_latest_received_state to get the neibour's state, it is already the real communicarion
+        consensus_term = np.zeros(dim_distributed_observer)
         
         # Combine all terms
-        x_ij_new = dynamics_term + measurement_term + consensus_term
-        
-        # Apply state constraints
-        x_ij_new = self._apply_state_constraints(x_ij_new)
-        
-        return x_ij_new
-    
-    def _apply_state_constraints(self, state: np.ndarray) -> np.ndarray:
-        """Apply physical constraints to state"""
-        # Normalize angle to [-pi, pi]
-        state[2] = np.arctan2(np.sin(state[2]), np.cos(state[2]))
-        
-        # Velocity constraints (reasonable for QCar)
-        state[3] = np.clip(state[3], -2.0, 2.0)
-        
-        return state
-    
-    def add_received_local_state(self, sender_id: int, state: np.ndarray, timestamp_ns: int) -> bool:
-        """Add received LOCAL state from another vehicle
-        
-        Args:
-            sender_id: ID of sender vehicle
-            state: Received 5D state vector [x, y, theta, v, a]
-            timestamp_ns: Timestamp in nanoseconds (directly from V2V message)
-        """
-        try:
-            if sender_id == self.vehicle_id:
-                return False
-            
-            # Validate state dimension
-            if state.shape[0] != self.state_dim:
-                if self.logger:
-                    self.logger.log_error(
-                        f"State dimension mismatch: expected {self.state_dim}, got {state.shape[0]}"
-                    )
-                return False
-            
-            # Store timestamp in nanoseconds - no conversion needed
-            self.received_states[sender_id].append((timestamp_ns, state.copy()))
-            
-            # Keep only recent data
-            if len(self.received_states[sender_id]) > 10:
-                self.received_states[sender_id] = self.received_states[sender_id][-10:]
-            
-            return True
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Add received local state error", e)
-            return False
-    
-    def add_received_fleet_state(self, sender_id: int, fleet_estimates: Dict, timestamp_ns: int) -> bool:
-        """Add received FLEET state from another vehicle
-        
-        Args:
-            sender_id: ID of sender vehicle
-            fleet_estimates: Dictionary mapping vehicle_id to state dict
-            timestamp_ns: Timestamp in nanoseconds
-        """
-        try:
-            if sender_id == self.vehicle_id:
-                return False
-            
-            # Process each vehicle state in the fleet estimate
-            for vehicle_id, state_dict in fleet_estimates.items():
-                if vehicle_id == self.vehicle_id:
-                    continue
-                
-                try:
-                    state_vector = np.array([
-                        state_dict['x'],
-                        state_dict['y'],
-                        state_dict['theta'],
-                        state_dict['velocity'],
-                        state_dict.get('acceleration', 0.0)
-                    ])
-                    
-                    self.received_states[vehicle_id].append((timestamp_ns, state_vector))
-                    
-                    if len(self.received_states[vehicle_id]) > 10:
-                        self.received_states[vehicle_id] = self.received_states[vehicle_id][-10:]
-                        
-                except KeyError as e:
-                    if self.logger:
-                        self.logger.log_error(f"Missing key in fleet estimate for vehicle {vehicle_id}: {e}")
-                    continue
-            
-            return True
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Add received fleet state error", e)
-            return False
-    
-    def _get_latest_received_state(self, vehicle_id: int, current_time_ns: int) -> Optional[np.ndarray]:
-        """Get the latest received state for a vehicle
-        
-        Args:
-            vehicle_id: ID of the target vehicle
-            current_time_ns: Current time in nanoseconds
-            
-        Returns:
-            Most recent state within max_state_age_ns, or None if no valid state
-        """
-        if vehicle_id not in self.received_states:
-            return None
-        
-        states_list = self.received_states[vehicle_id]
-        if not states_list:
-            return None
-        
-        # All in nanoseconds - no conversion needed
-        for timestamp_ns, state in reversed(states_list):
-            age_ns = current_time_ns - timestamp_ns
-            if age_ns <= self.max_state_age_ns:
-                return state
-        
-        return None
-    
-    def _cleanup_old_data(self, current_time_ns: int):
-        """Clean up old received data"""
-        try:
-            for vehicle_id in list(self.received_states.keys()):
-                states_list = self.received_states[vehicle_id]
-                
-                # All in nanoseconds
-                valid_states = [(ts_ns, state) for ts_ns, state in states_list 
-                               if current_time_ns - ts_ns <= self.max_state_age_ns]
-                
-                if valid_states:
-                    self.received_states[vehicle_id] = valid_states
-                else:
-                    del self.received_states[vehicle_id]
-                    
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Data cleanup error", e)
+        x_i_new = dynamics_term + measurement_term + consensus_term
+        # Reshape back to matrix form  
+        x_i_new = x_i_new.reshape((self.state_dim, self.fleet_size), order="F")      
+        return x_i_new
 
+    
+    def _get_nonlinear_term_phi_i(self, v_i, a_i, g_s: float = 9.81):
+        """
+        Compute the nonlinear term phi_i(v_i, a_i) using vehicle parameters on this estimator.
+
+        Args:
+            v_i: Velocity (scalar or numpy array)
+            a_i: Acceleration (scalar or numpy array)
+            g_s: Gravitational acceleration constant
+        """
+        v_i = np.asarray(v_i)
+        a_i = np.asarray(a_i)
+
+        try:
+            m_i = self.m_i
+            tau_i = self.tau_i
+            rho_i = self.rho_i
+            Cd_i = self.Cd_i
+            AF_i = self.AF_i
+            mu_i = self.mu_i
+        except AttributeError as exc:
+            raise AttributeError(
+                "Vehicle parameters (m_i, tau_i, rho_i, Cd_i, AF_i, mu_i) must be set on the estimator before calling nonlear_term_phi_i"
+            ) from exc
+
+        # Aerodynamic drag term: - (1 / (2 m_i tau_i)) * rho_i * Cd_i * AF_i * (v_i^2 + 2 tau_i v_i a_i)
+        drag_term = -(rho_i * Cd_i * AF_i / (2.0 * m_i * tau_i)) * (v_i**2 + 2.0 * tau_i * v_i * a_i)
+
+        # Acceleration damping term: - (1 / tau_i) * a_i
+        accel_term = -(1.0 / tau_i) * a_i
+
+        # Grade/rolling resistance term: + (1 / tau_i) * mu_i * g_s
+        grade_term = (1.0 / tau_i) * mu_i * g_s
+
+        return drag_term + accel_term + grade_term
 
 class FleetEstimatorFactory:
     """Factory to create fleet state estimators by name"""
     
+    # Base estimator types (always available)
     ESTIMATOR_TYPES = {
         'consensus': ConsensusFleetEstimator,
-        'distributed_kalman': DistributedKalmanEstimator,
+        'distributed_luenberger': DistributedLuenbergerEstimator,
     }
+    
+    # Trust-based estimators are loaded lazily to avoid circular imports
+    _trust_estimators_loaded = False
+    
+    @classmethod
+    def _load_trust_estimators(cls):
+        """Lazily load trust-based estimators to avoid circular imports"""
+        if cls._trust_estimators_loaded:
+            return
+        
+        try:
+            from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
+                TrustBasedFleetEstimator,
+                TrustBasedKalmanEstimator
+            )
+            cls.ESTIMATOR_TYPES['trust_consensus'] = TrustBasedFleetEstimator
+            cls.ESTIMATOR_TYPES['trust_kalman'] = TrustBasedKalmanEstimator
+            cls._trust_estimators_loaded = True
+        except ImportError as e:
+            # Trust-based estimators not available
+            pass
     
     @staticmethod
     def create(estimator_type: str, vehicle_id: int, fleet_size: int,
@@ -649,16 +620,21 @@ class FleetEstimatorFactory:
         Create a fleet state estimator
         
         Args:
-            estimator_type: One of 'consensus', 'distributed_kalman'
+            estimator_type: One of 'consensus', 'distributed_kalman', 
+                           'distributed_luenberger', 'trust_consensus', 'trust_kalman'
             vehicle_id: ID of the host vehicle
             fleet_size: Total number of vehicles in fleet
-            state_dim: State dimension (default 4)
+            state_dim: State dimension (default 5)
             config: Configuration dict
             logger: Logger instance
             
         Returns:
             Fleet state estimator instance
         """
+        # Try to load trust-based estimators if requesting one
+        if estimator_type.startswith('trust_'):
+            FleetEstimatorFactory._load_trust_estimators()
+        
         if estimator_type not in FleetEstimatorFactory.ESTIMATOR_TYPES:
             raise ValueError(
                 f"Unknown fleet estimator type: {estimator_type}. "
@@ -673,3 +649,9 @@ class FleetEstimatorFactory:
             config=config,
             logger=logger
         )
+    
+    @classmethod
+    def get_available_types(cls) -> List[str]:
+        """Get list of available estimator types"""
+        cls._load_trust_estimators()
+        return list(cls.ESTIMATOR_TYPES.keys())

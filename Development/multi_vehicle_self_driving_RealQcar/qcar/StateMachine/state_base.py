@@ -68,9 +68,7 @@ class StateBase:
             - float: steering_command  
             - Optional[Tuple[VehicleState, StateTransitionReason]]: Next state transition if needed
         """
-        # Check for emergency stop conditions first
-        # if self.should_transition_to_stopped(sensor_data):
-        #     return 0.0, 0.0, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
+
         
         # Base implementation - no movement, no transition
         return 0.0, 0.0, None
@@ -278,6 +276,11 @@ class StateBase:
             # Handle V2V deactivation
             if hasattr(self.vehicle_logic, 'v2v_manager'):
                 success = self.vehicle_logic.v2v_manager.disable_v2v()
+                
+                # Also reset fleet estimation to clean up state
+                if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
+                    self.vehicle_logic.vehicle_observer.reset_fleet_estimation()
+                
                 if success and self.logger:
                     self.logger.logger.info(f"[OK] V2V disabled in {self.__class__.__name__}")
                 elif self.logger:
@@ -285,45 +288,173 @@ class StateBase:
                 return None  # No state transition
             return None
         
-        # Default: Event not handled by this state
-        if self.logger:
-            self.logger.logger.info(f"Command '{command_type}' ignored in {self.__class__.__name__}")
+        elif command_type == CommandType.ACTIVATE_PERCEPTION:
+            self.logger.logger.info(f"[CMD] Activating perception system (YOLO)")
+            try:
+                success = self._activate_perception_system()
+                if success:
+                    self.logger.logger.info(f"[CMD] Perception system activated successfully")
+                else:
+                    self.logger.log_error("[CMD] Failed to activate perception system")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error activating perception", e)
+            return None
+        
+        elif command_type == CommandType.DISABLE_PERCEPTION:
+            self.logger.logger.info(f"[CMD] Disabling perception system")
+            try:
+                self._disable_perception_system()
+                self.logger.logger.info(f"[CMD] Perception system disabled")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error disabling perception", e)
+            return None
+        
+        elif command_type == CommandType.ACTIVATE_SCOPES:
+            self.logger.logger.info(f"[CMD] Activating estimation scopes")
+            try:
+                preset_names = data.get('preset_names', ['local_state', 'local_control'])
+                success = self._activate_estimation_scopes(preset_names)
+                if success:
+                    self.logger.logger.info(f"[CMD] Estimation scopes activated: {preset_names}")
+                else:
+                    self.logger.log_error("[CMD] Failed to activate estimation scopes")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error activating scopes", e)
+            return None
+        
+        elif command_type == CommandType.DISABLE_SCOPES:
+            self.logger.logger.info(f"[CMD] Disabling estimation scopes")
+            try:
+                self._disable_estimation_scopes()
+                self.logger.logger.info(f"[CMD] Estimation scopes disabled")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error disabling scopes", e)
+            return None
+        
+        elif command_type == CommandType.ENABLE_SCOPE_STREAMING:
+            self.logger.logger.info(f"[CMD] Enabling scope data streaming for remote plot")
+            try:
+                preset_names = data.get('preset_names', ['local_state', 'local_control'])
+                stream_rate = data.get('stream_rate', 50.0)
+                success = self._enable_scope_streaming(preset_names, stream_rate)
+                if success:
+                    self.logger.logger.info(f"[CMD] Scope streaming enabled at {stream_rate}Hz: {preset_names}")
+                else:
+                    self.logger.log_error("[CMD] Failed to enable scope streaming")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error enabling scope streaming", e)
+            return None
+        
+        elif command_type == CommandType.DISABLE_SCOPE_STREAMING:
+            self.logger.logger.info(f"[CMD] Disabling scope data streaming")
+            try:
+                self._disable_scope_streaming()
+                self.logger.logger.info(f"[CMD] Scope streaming disabled")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error disabling scope streaming", e)
+            return None
+        
+        elif command_type == CommandType.SET_LOCAL_OBSERVER:
+            observer_type = data.get('observer_type')
+            if observer_type:
+                self.logger.logger.info(f"[CMD] Switching local observer to: {observer_type}")
+                try:
+                    success = self._switch_local_observer(observer_type)
+                    if success:
+                        self.logger.logger.info(f"[CMD] Local observer switched to {observer_type}")
+                    else:
+                        self.logger.log_error(f"[CMD] Failed to switch local observer to {observer_type}")
+                except Exception as e:
+                    self.logger.log_error("[CMD] Error switching local observer", e)
+            else:
+                self.logger.log_warning("[CMD] SET_LOCAL_OBSERVER missing observer_type")
+            return None
+        
+        elif command_type == CommandType.SET_FLEET_OBSERVER:
+            observer_type = data.get('observer_type')
+            if observer_type:
+                self.logger.logger.info(f"[CMD] Switching fleet observer to: {observer_type}")
+                try:
+                    success = self._switch_fleet_observer(observer_type)
+                    if success:
+                        self.logger.logger.info(f"[CMD] Fleet observer switched to {observer_type}")
+                    else:
+                        self.logger.log_error(f"[CMD] Failed to switch fleet observer to {observer_type}")
+                except Exception as e:
+                    self.logger.log_error("[CMD] Error switching fleet observer", e)
+            else:
+                self.logger.log_warning("[CMD] SET_FLEET_OBSERVER missing observer_type")
+            return None
+        
+        elif command_type == CommandType.SET_CONTROLLER:
+            category = data.get('category')  # 'longitudinal' or 'lateral'
+            controller_type = data.get('controller_type')
+            if category and controller_type:
+                self.logger.logger.info(f"[CMD] Switching {category} controller to: {controller_type}")
+                try:
+                    success = self._switch_controller(category, controller_type)
+                    if success:
+                        self.logger.logger.info(f"[CMD] {category.capitalize()} controller switched to {controller_type}")
+                    else:
+                        self.logger.log_error(f"[CMD] Failed to switch {category} controller to {controller_type}")
+                except Exception as e:
+                    self.logger.log_error("[CMD] Error switching controller", e)
+            else:
+                self.logger.log_warning("[CMD] SET_CONTROLLER missing category or controller_type")
+            return None
+        
         return None
+    
+    def _init_controllers(self, force: bool = False):
+        """
+        Initialize controllers specific to this state.
+        Override this in subclasses to initialize state-specific controllers.
+        Called once during state initialization or when forced.
+        
+        Args:
+            force: If True, force re-initialization even if already initialized
+        """
+        pass
     
     # === Helper Methods ===
     
-    def should_transition_to_stopped(self, sensor_data: Dict[str, Any]) -> bool:
+    def _switch_controller(self, category: str, controller_type: str) -> bool:
         """
-        Common check for emergency stop conditions
-        All states can use this to check for safety stops
-        Works with or without camera/YOLO system
+        Switch controller type in real-time.
+        validates type against ConfigControllerLoader values.
         """
-        # Check collision avoidance system (YOLO/Camera-based) - only if enabled
-        yolo_enabled = getattr(self.vehicle_logic.yolo_manager, 'yolo_enabled', False)
-        if yolo_enabled and hasattr(self.vehicle_logic, 'collision_avoidance'):
-            try:
-                yolo_data = sensor_data.get('yolo_data', {})
-                emergency_stop, _ = self.vehicle_logic.collision_avoidance.check_collision_risk(
-                    car_distance=yolo_data.get('car_dist'),
-                    person_distance=yolo_data.get('person_dist'),
-                    current_velocity=sensor_data.get('velocity', 0.0)
-                )
-                if emergency_stop:
-                    if self.logger:
-                        self.logger.log_warning("Emergency stop triggered by collision avoidance system")
-                    return True
-            except Exception as e:
-                # Log but continue if collision check fails
-                if self.logger:
-                    self.logger.logger.debug(f"Collision check failed (ignored): {e}")
-        
-        # If YOLO not enabled, skip collision checks
-        if not yolo_enabled:
+        if not hasattr(self.vehicle_logic, 'controller_manager'):
+            self.logger.logger.error("Controller Manager not available")
             return False
+            
+        cm = self.vehicle_logic.controller_manager
         
-       
+        if category == 'longitudinal':
+            valid_types = cm.config.get_available_longitudinal_types()
+            if controller_type not in valid_types:
+                self.logger.logger.error(f"Invalid longitudinal controller type: {controller_type}. Valid: {valid_types}")
+                return False
+            success = cm.switch_longitudinal(controller_type)
+            
+        elif category == 'lateral':
+            valid_types = cm.config.get_available_lateral_types()
+            if controller_type not in valid_types:
+                self.logger.logger.error(f"Invalid lateral controller type: {controller_type}. Valid: {valid_types}")
+                return False
+            success = cm.switch_lateral(controller_type)
+            
+        else:
+            self.logger.logger.error(f"Invalid controller category: {category}")
+            return False
+            
+        if success:
+             self._init_controllers(force=True) # Force refresh controllers in current state
+        # else:
+        #     self.logger.logger.error(f"Failed to switch {category} controller to {controller_type}")
         
-        return False
+        return success
+    
+
     
     def _send_platoon_setup_confirmation(self, my_vehicle_id: int, formation: Dict, leader_id: int):
         """Send platoon setup confirmation to Ground Station"""
@@ -407,21 +538,7 @@ class StateBase:
                 self._update_fake_vehicle_position(calibration_pose)
                 
                 # We dont need to recalibrate simulated GPS in Qlabs (since the Position will always be perfect)
-                # TODO :  maybe we can teleport the Qcar to the calibration_pose?
-                
-                # # Simulated QCar - need car config
-                # from qvl.multi_agent import readRobots
-                # robotsDir = readRobots()
-                # name = f"QC2_{self.vehicle_logic.vehicle_id}"
-                # car_config = robotsDir[name]
-                
-                # self.vehicle_logic.gps = QCarGPS(
-                #     initialPose=calibration_pose,
-                #     calibrate=calibrate,
-                #     gpsPort=car_config["gpsPort"],
-                #     lidarIdealPort=car_config["lidarIdealPort"]
-                # )
-                self.logger.logger.info("GPS recalibrated (simulated mode)")
+                self.logger.logger.info("GPS recalibrated (simulated/Fake mode)")
             else:
                 # Physical QCar
                 self.vehicle_logic.gps = QCarGPS(
@@ -482,20 +599,568 @@ class StateBase:
                 
                 # Update MockQCar position
                 if hasattr(fake_vehicle, 'mock_qcar'):
-                    fake_vehicle.mock_qcar.x = float(pose[0])
-                    fake_vehicle.mock_qcar.y = float(pose[1])
-                    fake_vehicle.mock_qcar.heading = float(pose[2])
-                    self.logger.logger.info(
-                        f"MockQCar position updated: ({pose[0]:.2f}, {pose[1]:.2f}, {np.rad2deg(pose[2]):.1f}°)"
+                    fake_vehicle.mock_qcar.reset(pose)
+                    # fake_vehicle.mock_qcar.x = float(pose[0])
+                    # fake_vehicle.mock_qcar.y = float(pose[1])
+                    # fake_vehicle.mock_qcar.heading = float(pose[2])
+                    # self.logger.logger.info(
+                    #     f"MockQCar position updated: ({pose[0]:.2f}, {pose[1]:.2f}, {np.rad2deg(pose[2]):.1f}°)"
+                    # )
+                
+                # # Update MockQCarGPS position
+                # if hasattr(fake_vehicle, 'mock_gps'):
+                #     fake_vehicle.mock_gps.x = float(pose[0])
+                #     fake_vehicle.mock_gps.y = float(pose[1])
+                #     self.logger.logger.info(
+                #         f"MockGPS position updated: ({pose[0]:.2f}, {pose[1]:.2f})"
+                #     )
+        except Exception as e:
+            self.logger.logger.error(f"Failed to update fake vehicle position: {e}")
+            pass
+    
+    def _activate_perception_system(self) -> bool:
+        """
+        Activate perception system (YOLO) based on fleet configuration.
+        Works for both physical and simulated vehicles.
+        Fake vehicles gracefully ignore this command.
+        
+        Returns:
+            bool: True if activation successful
+        """
+        try:
+            import subprocess
+            import os
+            import time
+            from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
+            
+            # Check if this is a fake vehicle - if so, just log and return success
+            if hasattr(self.vehicle_logic, '_parent_fake_vehicle'):
+                self.logger.logger.info("[PERCEPTION] Fake vehicle detected - ignoring perception activation")
+                return True
+            
+            # Check if perception should be enabled based on config
+            vehicle_id = self.vehicle_logic.vehicle_id
+            
+            # Load fleet_config to check probing setting
+            config_enabled = self._check_perception_config()
+            if not config_enabled:
+                self.logger.logger.warning(f"[PERCEPTION] Vehicle {vehicle_id} not configured for perception in fleet_config.yaml")
+                return False
+            
+            self.logger.logger.info(f"[PERCEPTION] Starting YOLO system for vehicle {vehicle_id}...")
+            
+            # Get probing flag from config
+            probing_enabled = self.config.vehicle.probing
+            probing_flag = "True" if probing_enabled else "False"
+            
+            # For simulated vehicles, launch YOLO server subprocess
+            if not IS_PHYSICAL_QCAR:
+                yolo_port = f'1866{vehicle_id}'
+                
+                yolo_script = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), 
+                    '..', 'Yolo', 'yolo_server_virtual.py'
+                )
+                
+                # Verify script exists
+                if not os.path.exists(yolo_script):
+                    self.logger.log_error(f"[PERCEPTION] YOLO script not found: {yolo_script}")
+                    return False
+                
+                self.logger.logger.info(f"[PERCEPTION] [→] Starting yolo_server_virtual.py...")
+                self.logger.logger.info(f"[PERCEPTION] Script path: {yolo_script}")
+                self.logger.logger.info(f"[PERCEPTION] Launching YOLO server on port {yolo_port}...")
+                self.logger.logger.info(f"[PERCEPTION] Probing enabled: {probing_enabled}")
+                
+                # Build command with probing flag
+                # Note: yolo_server_virtual.py uses -p/--probing with value "True" or "False"
+                # and -s/--show-image to display the image directly in a window
+                # For simulated vehicles, we dont use probing use directly cv2 window (reduce latency)
+                cmd = ['python', yolo_script, '-idx', str(vehicle_id), '-p', "False"]
+                
+                # If probing is enabled but no Observer is running, also show image directly
+                # This provides a fallback visualization
+                if probing_enabled:
+                    cmd.append('-s')  # Show image in cv2 window as backup
+                
+                self.logger.logger.info(f"[PERCEPTION] Command: {' '.join(cmd)}")
+                
+                # Launch YOLO server as subprocess
+                # On Windows, use CREATE_NEW_CONSOLE so cv2 windows can display properly
+                import sys
+                if sys.platform == 'win32':
+                    # Create new console window for the YOLO server
+                    yolo_process = subprocess.Popen(
+                        cmd,
+                        creationflags=subprocess.CREATE_NEW_CONSOLE
+                    )
+                else:
+                    yolo_process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE
                     )
                 
-                # Update MockQCarGPS position
-                if hasattr(fake_vehicle, 'mock_gps'):
-                    fake_vehicle.mock_gps.x = float(pose[0])
-                    fake_vehicle.mock_gps.y = float(pose[1])
-                    self.logger.logger.info(
-                        f"MockGPS position updated: ({pose[0]:.2f}, {pose[1]:.2f})"
-                    )
+                # Store process handle
+                self.vehicle_logic.yolo_process = yolo_process
+                
+                # Wait for server startup - just check that process is running
+                # Note: We don't use a test socket connection here because it can interfere
+                # with BasicStream's connection handling (connects then immediately disconnects)
+                self.logger.logger.info("[PERCEPTION] Waiting for YOLO server to initialize...")
+                max_wait = 6.0  # Maximum wait time for process to stabilize
+                check_interval = 0.5
+                waited = 0.0
+                
+                while waited < max_wait:
+                    time.sleep(check_interval)
+                    waited += check_interval
+                    
+                    # Check if process crashed
+                    if yolo_process.poll() is not None:
+                        # Process terminated unexpectedly
+                        self.logger.log_error("[PERCEPTION] YOLO server process terminated unexpectedly")
+                        self.logger.logger.error(f"[PERCEPTION] Exit code: {yolo_process.returncode}")
+                        # On Windows with CREATE_NEW_CONSOLE, we don't have stdout/stderr pipes
+                        if sys.platform != 'win32':
+                            try:
+                                stdout, stderr = yolo_process.communicate(timeout=1)
+                                if stderr:
+                                    self.logger.logger.error(f"[PERCEPTION] STDERR: {stderr.decode('utf-8', errors='ignore')}")
+                                if stdout:
+                                    self.logger.logger.error(f"[PERCEPTION] STDOUT: {stdout.decode('utf-8', errors='ignore')}")
+                            except:
+                                pass
+                        return False
+                    
+                    # Log progress every second
+                    if waited % 1.0 == 0:
+                        self.logger.logger.info(f"[PERCEPTION] Server starting... ({waited:.0f}s)")
+                
+                self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server process running (waited {waited:.1f}s)")
+                self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
+                
+                # Create YOLOReceiver to connect to the server
+                yolo_receiver = YOLOReceiver(
+                    ip='localhost',
+                    nonBlocking=True,
+                    port=yolo_port
+                )
+            else:
+                # For physical vehicles, launch yolo_server.py with probing flag
+                yolo_script = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)), 
+                    '..', 'Yolo', 'yolo_server.py'
+                )
+                
+                self.logger.logger.info(f"[PERCEPTION] [→] Starting yolo_server.py...")
+                self.logger.logger.info(f"[PERCEPTION] Probing: {probing_enabled}, Car ID: {vehicle_id}")
+                
+                # Build command with probing flag
+                yolo_cmd = [
+                    'python', yolo_script,
+                    '--probing', probing_flag,
+                    '--car-id', str(vehicle_id)
+                ]
+                
+                # Set up logging - redirect to file for physical vehicles
+                # This allows checking logs later via: tail -f logs/yolo_0.log
+                log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'logs')
+                os.makedirs(log_dir, exist_ok=True)
+                log_file = os.path.join(log_dir, f'yolo_{vehicle_id}.log')
+                
+                self.logger.logger.info(f"[PERCEPTION] YOLO log file: {log_file}")
+                self.logger.logger.info(f"[PERCEPTION] Command: {' '.join(yolo_cmd)}")
+                
+                # Open log file and keep handle for subprocess lifetime
+                # Store the file handle so it doesn't get garbage collected
+                yolo_log_handle = open(log_file, 'w')
+                self.vehicle_logic.yolo_log_handle = yolo_log_handle
+                
+                # Launch YOLO server as subprocess with log file
+                yolo_process = subprocess.Popen(
+                    yolo_cmd,
+                    stdout=yolo_log_handle,
+                    stderr=subprocess.STDOUT
+                )
+                
+                # Store process handle
+                self.vehicle_logic.yolo_process = yolo_process
+                
+                # Wait for server startup
+                self.logger.logger.info("[PERCEPTION] Waiting for YOLO server to initialize...")
+                time.sleep(2.5)
+                
+                # Check if process is still running
+                if yolo_process.poll() is not None:
+                    self.logger.log_error("[PERCEPTION] YOLO server failed to start")
+                    return False
+                
+                self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
+                
+                # Create YOLOReceiver to connect to the server
+                yolo_receiver = YOLOReceiver(
+                    ip='localhost',
+                    nonBlocking=True,
+                )
+            
+            # Create YOLO drive logic
+            pulse_length = (
+                self.config.timing.controller_update_rate *
+                self.config.yolo.pulse_length_multiplier
+            )
+            yolo_drive_logic = YOLODriveLogic(
+                stopSignThreshold=self.config.yolo.stop_sign_threshold,
+                trafficThreshold=self.config.yolo.traffic_threshold,
+                carThreshold=self.config.yolo.car_threshold,
+                yieldThreshold=self.config.yolo.yield_threshold,
+                personThreshold=self.config.yolo.person_threshold,
+                pulseLength=pulse_length
+            )
+            
+            # Initialize YOLOManager
+            self.vehicle_logic.yolo_manager.initialize(yolo_receiver, yolo_drive_logic)
+            
+            self.logger.logger.info("[PERCEPTION] YOLO system activated successfully")
+            return True
+            
         except Exception as e:
-            # Silently ignore errors for non-fake vehicles
-            pass
+            self.logger.log_error("[PERCEPTION] Failed to activate perception system", e)
+            # Clean up process if it was started
+            if hasattr(self.vehicle_logic, 'yolo_process'):
+                try:
+                    self.vehicle_logic.yolo_process.terminate()
+                except:
+                    pass
+            return False
+    
+    def _disable_perception_system(self) -> bool:
+        """
+        Disable perception system (YOLO).
+        Fake vehicles gracefully ignore this command.
+        
+        Process termination is done asynchronously in a background thread 
+        to avoid blocking the main control loop.
+        
+        Returns:
+            bool: True if deactivation successful
+        """
+        try:
+            import threading
+            
+            # Check if this is a fake vehicle - if so, just log and return success
+            if hasattr(self.vehicle_logic, '_parent_fake_vehicle'):
+                self.logger.logger.info("[PERCEPTION] Fake vehicle detected - ignoring perception deactivation")
+                return True
+            
+            self.logger.logger.info("[PERCEPTION] Disabling YOLO system...")
+            
+            # Disable YOLO manager (non-blocking - just clears references and terminates receiver)
+            if hasattr(self.vehicle_logic, 'yolo_manager'):
+                self.vehicle_logic.yolo_manager.disable()
+            
+            # Terminate YOLO process asynchronously to avoid blocking the main loop
+            yolo_process = getattr(self.vehicle_logic, 'yolo_process', None)
+            yolo_log_handle = getattr(self.vehicle_logic, 'yolo_log_handle', None)
+            logger = self.logger
+            
+            def cleanup_yolo_process():
+                """Background thread to clean up YOLO process without blocking main loop."""
+                if yolo_process is not None:
+                    try:
+                        yolo_process.terminate()
+                        yolo_process.wait(timeout=5)  # Wait up to 5 seconds
+                        if logger:
+                            logger.logger.info("[PERCEPTION] YOLO process terminated (async)")
+                    except Exception:
+                        try:
+                            yolo_process.kill()
+                            if logger:
+                                logger.logger.warning("[PERCEPTION] YOLO process killed (async)")
+                        except Exception:
+                            pass
+                
+                # Close YOLO log file handle if it exists (physical vehicles)
+                if yolo_log_handle is not None:
+                    try:
+                        yolo_log_handle.close()
+                        if logger:
+                            logger.logger.info("[PERCEPTION] YOLO log file closed (async)")
+                    except Exception:
+                        pass
+            
+            # Start cleanup in background thread (daemon so it won't block program exit)
+            cleanup_thread = threading.Thread(target=cleanup_yolo_process, daemon=True)
+            cleanup_thread.start()
+            
+            # Clear references immediately
+            self.vehicle_logic.yolo_process = None
+            self.vehicle_logic.yolo_log_handle = None
+            
+            self.logger.logger.info("[PERCEPTION] YOLO cleanup started in background thread")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("[PERCEPTION] Error disabling perception", e)
+            return False
+    
+    def _check_perception_config(self) -> bool:
+        """
+        Check if perception is enabled for this vehicle in configuration.
+        
+        Returns:
+            bool: True if perception should be enabled
+        """
+        # Simply check the probing flag in vehicle config
+        probing_enabled = self.config.vehicle.probing
+        
+        if probing_enabled:
+            self.logger.logger.info(f"[PERCEPTION] Vehicle {self.vehicle_logic.vehicle_id} configured with probing=True")
+        else:
+            self.logger.logger.info(f"[PERCEPTION] Vehicle {self.vehicle_logic.vehicle_id} configured with probing=False")
+        
+        return probing_enabled
+    
+    def _activate_estimation_scopes(self, preset_names: list = None) -> bool:
+        """
+        Activate estimation scopes visualization.
+        
+        Args:
+            preset_names: List of preset names to enable. Options:
+                - 'local_state', 'local_error', 'local_control'
+                - 'fleet_position', 'fleet_state', 'fleet_consensus'
+                
+        Returns:
+            bool: True if activation successful
+        """
+        try:
+            if preset_names is None:
+                preset_names = ['local_state', 'local_control']
+            
+            # Check if vehicle_observer exists
+            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
+                self.logger.log_error("[SCOPES] Vehicle observer not available")
+                return False
+            
+            # Enable scopes on observer
+            success = self.vehicle_logic.vehicle_observer.enable_scopes(
+                preset_names=preset_names,
+                fps=30,
+                time_window=60.0
+            )
+            
+            if success:
+                self.logger.logger.info(f"[SCOPES] Estimation scopes activated: {preset_names}")
+            else:
+                self.logger.log_error("[SCOPES] Failed to enable scopes")
+            
+            return success
+            
+        except Exception as e:
+            self.logger.log_error("[SCOPES] Error activating estimation scopes", e)
+            return False
+    
+    def _disable_estimation_scopes(self) -> bool:
+        """
+        Disable estimation scopes visualization.
+        
+        Returns:
+            bool: True if deactivation successful
+        """
+        try:
+            # Check if vehicle_observer exists
+            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
+                self.logger.log_error("[SCOPES] Vehicle observer not available")
+                return False
+            
+            # Stop scopes on observer
+            self.vehicle_logic.vehicle_observer.stop_scopes()
+            self.logger.logger.info("[SCOPES] Estimation scopes disabled")
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("[SCOPES] Error disabling estimation scopes", e)
+            return False
+    
+    def _enable_scope_streaming(self, preset_names: list = None, stream_rate: float = 50.0) -> bool:
+        """
+        Enable scope data streaming to Ground Station for remote plotting.
+        
+        This creates a ScopeDataStreamer that packages data and sends it
+        at high frequency (default 50Hz) to the Ground Station.
+        
+        Args:
+            preset_names: List of preset names to stream
+            stream_rate: Streaming rate in Hz
+            
+        Returns:
+            bool: True if streaming enabled successfully
+        """
+        try:
+            if preset_names is None:
+                preset_names = ['local_state', 'local_control']
+            
+            # Check if Ground Station client exists
+            if not hasattr(self.vehicle_logic, 'client_Ground_Station') or self.vehicle_logic.client_Ground_Station is None:
+                self.logger.log_error("[STREAMING] Ground Station client not available")
+                return False
+            
+            # Import and create streamer
+            from scope_data_streamer import ScopeDataStreamer
+            
+            # Create or update streamer
+            if not hasattr(self.vehicle_logic, 'scope_streamer') or self.vehicle_logic.scope_streamer is None:
+                self.vehicle_logic.scope_streamer = ScopeDataStreamer(
+                    gs_client=self.vehicle_logic.client_Ground_Station,
+                    vehicle_id=self.vehicle_logic.vehicle_id,
+                    stream_rate=stream_rate
+                )
+            else:
+                self.vehicle_logic.scope_streamer.set_stream_rate(stream_rate)
+            
+            # Enable streaming on client
+            self.vehicle_logic.client_Ground_Station.enable_scope_streaming()
+            
+            # Enable streamer
+            success = self.vehicle_logic.scope_streamer.enable(preset_names)
+            
+            if success:
+                self.logger.logger.info(f"[STREAMING] Scope streaming enabled: {preset_names} at {stream_rate}Hz")
+            
+            return success
+            
+        except Exception as e:
+            self.logger.log_error("[STREAMING] Error enabling scope streaming", e)
+            return False
+    
+    def _disable_scope_streaming(self) -> bool:
+        """
+        Disable scope data streaming to Ground Station.
+        
+        Returns:
+            bool: True if streaming disabled successfully
+        """
+        try:
+            # Disable streamer
+            if hasattr(self.vehicle_logic, 'scope_streamer') and self.vehicle_logic.scope_streamer is not None:
+                self.vehicle_logic.scope_streamer.disable()
+            
+            # Disable streaming on client
+            if hasattr(self.vehicle_logic, 'client_Ground_Station') and self.vehicle_logic.client_Ground_Station is not None:
+                self.vehicle_logic.client_Ground_Station.disable_scope_streaming()
+            
+            self.logger.logger.info("[STREAMING] Scope streaming disabled")
+            return True
+            
+        except Exception as e:
+            self.logger.log_error("[STREAMING] Error disabling scope streaming", e)
+            return False
+    
+    # === Runtime Switching Methods ===
+    
+    def _switch_local_observer(self, observer_type: str) -> bool:
+        """
+        Switch the local state estimator at runtime.
+        
+        Args:
+            observer_type: Type of local estimator ('ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger')
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            from Observer.local_state_estimators import LocalEstimatorFactory
+            
+            valid_types = ['ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger']
+            if observer_type not in valid_types:
+                self.logger.log_error(f"Invalid local observer type: {observer_type}. Valid: {valid_types}")
+                return False
+            
+            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
+                self.logger.log_error("Vehicle observer not initialized")
+                return False
+            
+            vehicle_observer = self.vehicle_logic.vehicle_observer
+            
+            # Get current state for continuity
+            current_pose = None
+            if hasattr(vehicle_observer, 'local_estimator') and vehicle_observer.local_estimator is not None:
+                try:
+                    state = vehicle_observer.local_estimator.get_state()
+                    if state is not None:
+                        current_pose = state[:3]  # [x, y, theta]
+                except:
+                    pass
+            
+            # Get config defaults for the new estimator type
+            config_defaults = vehicle_observer.local_config_defaults.get(observer_type, {})
+            
+            # Create new estimator using factory
+            new_estimator = LocalEstimatorFactory.create(
+                estimator_type=observer_type,
+                config=config_defaults,
+                logger=self.logger
+            )
+            
+            # Initialize the new estimator
+            if hasattr(new_estimator, 'initialize'):
+                gps = getattr(self.vehicle_logic, 'gps', None)
+                new_estimator.initialize(gps=gps, initial_pose=current_pose)
+            
+            # Swap the estimator
+            vehicle_observer.set_local_estimator(new_estimator)
+            vehicle_observer.local_estimator_type = observer_type
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error(f"Failed to switch local observer to {observer_type}", e)
+            return False
+    
+    def _switch_fleet_observer(self, observer_type: str) -> bool:
+        """
+        Switch the fleet state estimator at runtime.
+        
+        Args:
+            observer_type: Type of fleet estimator ('consensus', 'distributed_kalman', etc.)
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            from Observer.fleet_state_estimators import FleetEstimatorFactory
+            
+            valid_types = ['consensus', 'distributed_kalman', 'distributed_luenberger', 
+                          'trust_consensus', 'trust_kalman']
+            if observer_type not in valid_types:
+                self.logger.log_error(f"Invalid fleet observer type: {observer_type}. Valid: {valid_types}")
+                return False
+            
+            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
+                self.logger.log_error("Vehicle observer not initialized")
+                return False
+            
+            vehicle_observer = self.vehicle_logic.vehicle_observer
+            
+            # Get observer config
+            obs_config = vehicle_observer._get_observer_config()
+            
+            # Create new fleet estimator using factory
+            new_estimator = FleetEstimatorFactory.create(
+                estimator_type=observer_type,
+                vehicle_id=self.vehicle_logic.vehicle_id,
+                config=obs_config,
+                logger=self.logger
+            )
+            
+            # Swap the estimator
+            vehicle_observer.set_fleet_estimator(new_estimator)
+            vehicle_observer.fleet_estimator_type = observer_type
+            
+            return True
+            
+        except Exception as e:
+            self.logger.log_error(f"Failed to switch fleet observer to {observer_type}", e)
+            return False
+    

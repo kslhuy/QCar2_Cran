@@ -7,7 +7,7 @@ Easy to switch between different controllers.
 import numpy as np
 import math
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 from threading import Lock
 
 
@@ -55,20 +55,25 @@ class LateralControllerBase(ABC):
 
 class PurePursuitController(LateralControllerBase):
     """
-    Pure Pursuit lateral controller
-    Tracks a point ahead of the leader vehicle
+    Pure Pursuit lateral controller with dynamic lookahead for turns.
+    Tracks a point ahead of the leader vehicle with corner-cutting prevention.
     """
     
     def __init__(self, lookahead_distance=1.0, k_steering=1.0, 
-                 max_steering=0.55, adaptive_lookahead=True, config=None, logger=None):
+                 max_steering=0.55, adaptive_lookahead=True, 
+                 curvature_threshold=0.3, turn_lookahead_offset=0.1,
+                 turn_lookahead_gain=1.5, config=None, logger=None):
         """
-        Initialize Pure Pursuit controller
+        Initialize Pure Pursuit controller with turning support
         
         Args:
             lookahead_distance: Base lookahead distance (meters)
             k_steering: Proportional steering gain
             max_steering: Maximum steering angle (radians)
             adaptive_lookahead: Enable adaptive lookahead based on distance to leader
+            curvature_threshold: Threshold to detect turning (default 0.3)
+            turn_lookahead_offset: Lateral offset during turns (default 0.1m)
+            turn_lookahead_gain: Multiplier for lookahead during turns (default 1.5)
             config: Optional config object (takes precedence)
             logger: Logger instance
         """
@@ -82,20 +87,27 @@ class PurePursuitController(LateralControllerBase):
             self.k_steering = params.get('k_steering', k_steering)
             self.max_steering = params.get('max_steering', max_steering)
             self.adaptive_lookahead = params.get('adaptive_lookahead', adaptive_lookahead)
+            # New turning parameters
+            self.curvature_threshold = params.get('curvature_threshold', curvature_threshold)
+            self.turn_lookahead_offset = params.get('turn_lookahead_offset', turn_lookahead_offset)
+            self.turn_lookahead_gain = params.get('turn_lookahead_gain', turn_lookahead_gain)
         else:
             self.lookahead_distance = lookahead_distance
             self.k_steering = k_steering
             self.max_steering = max_steering
             self.adaptive_lookahead = adaptive_lookahead
+            self.curvature_threshold = curvature_threshold
+            self.turn_lookahead_offset = turn_lookahead_offset
+            self.turn_lookahead_gain = turn_lookahead_gain
         
     def compute_steering(self, follower_state: Dict[str, float], 
                         leader_state: Optional[Dict[str, float]], 
                         dt: float) -> float:
         """
-        Compute steering using pure pursuit
+        Compute steering using pure pursuit with dynamic lookahead for turns.
         
-        Pure pursuit computes steering to track a point ahead of the leader
-        in the leader's heading direction.
+        When turning context is provided in follower_state (from YOLO/V2V),
+        the lookahead point is adjusted to prevent corner cutting.
         """
         if leader_state is None:
             # No leader - maintain current heading
@@ -110,23 +122,28 @@ class PurePursuitController(LateralControllerBase):
         y_j = leader_state['y']
         theta_j = leader_state['theta']
         
+        # Extract turning context if available
+        is_turning = follower_state.get('is_turning', False)
+        turn_direction = follower_state.get('turn_direction', 'straight')
+        curvature = follower_state.get('curvature', 0.0)
+        
         # Compute distance to leader
         dx_to_leader = x_j - x
         dy_to_leader = y_j - y
         distance_to_leader = math.sqrt(dx_to_leader**2 + dy_to_leader**2)
         
-        # Adaptive lookahead: smaller when close to leader
+        # Compute base lookahead distance
         if self.adaptive_lookahead:
-            lookahead = min(self.lookahead_distance, max(0.2, distance_to_leader * 0.5))
+            base_lookahead = min(self.lookahead_distance, max(0.2, distance_to_leader * 0.5))
         else:
-            lookahead = self.lookahead_distance
+            base_lookahead = self.lookahead_distance
 
-        
-        # Target point ahead of leader in its heading direction
-        # Use PLUS to place target ahead of leader 
-        # Use MINUS to place target behind leader 
-        target_x = x_j - lookahead * math.cos(theta_j)
-        target_y = y_j - lookahead * math.sin(theta_j)
+        # Compute dynamic 2D lookahead pose for turning sections
+        target_x, target_y = self._compute_dynamic_lookahead_pose(
+            x_j, y_j, theta_j,
+            base_lookahead,
+            is_turning, turn_direction, curvature
+        )
         
         # Compute heading error to target point
         dx = target_x - x
@@ -141,6 +158,73 @@ class PurePursuitController(LateralControllerBase):
         steering_cmd = np.clip(steering_cmd, -self.max_steering, self.max_steering)
         
         return steering_cmd
+    
+    def _compute_dynamic_lookahead_pose(
+        self, 
+        leader_x: float, leader_y: float, leader_theta: float,
+        base_lookahead: float,
+        is_turning: bool, turn_direction: str, curvature: float
+    ) -> Tuple[float, float]:
+        """
+        Compute adjusted lookahead pose for turning sections.
+        
+        In corners, the target point is offset perpendicular to the path
+        (away from the turn's inside) to prevent corner cutting.
+        
+        For a LEFT turn: offset the target to the LEFT (outside of curve)
+        For a RIGHT turn: offset the target to the RIGHT (outside of curve)
+        
+        Args:
+            leader_x, leader_y: Leader position
+            leader_theta: Leader heading
+            base_lookahead: Base lookahead distance
+            is_turning: Whether in a turning section
+            turn_direction: 'left', 'right', or 'straight'
+            curvature: Curvature magnitude
+            
+        Returns:
+            (target_x, target_y): Adjusted lookahead target position
+        """
+        # Apply longitudinal lookahead (behind leader position)
+        if is_turning:
+            lookahead = base_lookahead * self.turn_lookahead_gain
+            # Base target point (ahead of leader in its heading direction) avoid stop since too close to leader
+            target_x = leader_x + lookahead * math.cos(leader_theta)
+            target_y = leader_y + lookahead * math.sin(leader_theta)
+        
+        else:
+            lookahead = base_lookahead
+            # Base target point (behind leader in its heading direction)
+            target_x = leader_x - lookahead * math.cos(leader_theta)
+            target_y = leader_y - lookahead * math.sin(leader_theta)
+            
+        
+        # Apply lateral offset for turning sections
+        if is_turning and abs(curvature) > 0.01:
+            # Compute perpendicular direction to leader's path
+            # For left turn (positive heading change): offset to the left (outside)
+            # For right turn (negative heading change): offset to the right (outside)
+            
+            # Scale offset by curvature magnitude (more curvature = more offset)
+            offset_magnitude = self.turn_lookahead_offset * min(abs(curvature), 1.0)
+            
+            # Perpendicular unit vector (90 degrees from leader heading)
+            perp_x = -math.sin(leader_theta)
+            perp_y = math.cos(leader_theta)
+            
+            # Offset direction: positive for left turn, negative for right turn
+            if turn_direction == 'left':
+                offset_sign = 1.0  # Offset to the left (outside of left turn)
+            elif turn_direction == 'right':
+                offset_sign = -1.0  # Offset to the right (outside of right turn)
+            else:
+                offset_sign = 0.0
+            
+            # Apply perpendicular offset
+            target_x += offset_sign * offset_magnitude * perp_x
+            target_y += offset_sign * offset_magnitude * perp_y
+        
+        return target_x, target_y
     
     def reset(self):
         """Reset controller state (no state to reset for pure pursuit)"""
@@ -561,6 +645,119 @@ class HybridLateralController(LateralControllerBase):
         self.last_mode = "unknown"
 
 
+class FusionLateralController(LateralControllerBase):
+    """
+    Fusion lateral controller that combines path following with leader tracking.
+    
+    This controller fuses two steering sources:
+    1. Path-based steering (from waypoints)
+    2. Leader-based steering (from leader position)
+    
+    Modes:
+    - path_primary: Follow path, adjust based on leader deviation
+    - leader_primary: Follow leader, smooth using path reference
+    - adaptive: Dynamically weight based on conditions
+    """
+    
+    def __init__(self, mode='path_primary', path_weight=0.7, leader_weight=0.3,
+                 deviation_threshold=0.3, smoothing_factor=0.8, 
+                 max_steering=0.55, config=None, logger=None):
+        """
+        Initialize Fusion lateral controller
+        
+        Args:
+            mode: 'path_primary', 'leader_primary', or 'adaptive'
+            path_weight: Weight for path reference (0-1)
+            leader_weight: Weight for leader adjustment (0-1)
+            deviation_threshold: Max leader deviation before override (m)
+            smoothing_factor: Output smoothing (0-1)
+            max_steering: Maximum steering angle (radians)
+            config: Optional config object (takes precedence)
+            logger: Logger instance
+        """
+        self.logger = logger
+        self.prev_steering = 0.0
+        
+        # Use config if provided
+        if config and hasattr(config, 'get_lateral_params'):
+            params = config.get_lateral_params('fusion')
+            self.mode = params.get('mode', mode)
+            self.path_weight = params.get('path_weight', path_weight)
+            self.leader_weight = params.get('leader_weight', leader_weight)
+            self.deviation_threshold = params.get('deviation_threshold', deviation_threshold)
+            self.smoothing_factor = params.get('smoothing_factor', smoothing_factor)
+            self.max_steering = params.get('max_steering', max_steering)
+        else:
+            self.mode = mode
+            self.path_weight = path_weight
+            self.leader_weight = leader_weight
+            self.deviation_threshold = deviation_threshold
+            self.smoothing_factor = smoothing_factor
+            self.max_steering = max_steering
+        
+        # Inner controllers for steering computation
+        self.pure_pursuit = PurePursuitController(logger=logger)
+        
+    def compute_steering(self, follower_state: Dict[str, float], 
+                        leader_state: Optional[Dict[str, float]], 
+                        dt: float) -> float:
+        """
+        Compute fused steering from path and leader references.
+        
+        The fusion strategy depends on the mode:
+        - path_primary: Path is baseline, leader provides corrections
+        - leader_primary: Leader is baseline, path provides smoothing
+        - adaptive: Weights adjusted based on leader deviation
+        """
+        if leader_state is None:
+            return 0.0
+        
+        # Compute leader-based steering using inner pure pursuit
+        leader_steering = self.pure_pursuit.compute_steering(
+            follower_state, leader_state, dt
+        )
+        
+        # For pure fusion mode, we use leader steering as the main component
+        # Path steering would be computed externally and passed in via state
+        # For now, we provide leader steering with smoothing
+        
+        # Apply fusion weights based on mode
+        if self.mode == 'adaptive':
+            # Compute leader deviation from expected trajectory
+            x, y = follower_state['x'], follower_state['y']
+            theta = follower_state['theta']
+            leader_x, leader_y = leader_state['x'], leader_state['y']
+            
+            # Heading to leader
+            dx = leader_x - x
+            dy = leader_y - y
+            leader_heading = np.arctan2(dy, dx) if np.sqrt(dx**2 + dy**2) > 0.1 else theta
+            heading_diff = abs(wrap_to_pi(leader_heading - theta))
+            
+            # Increase leader weight when deviation is high
+            if heading_diff > self.deviation_threshold:
+                adaptive_leader_weight = min(0.8, self.leader_weight + 0.4)
+            else:
+                adaptive_leader_weight = self.leader_weight
+            
+            final_steering = adaptive_leader_weight * leader_steering
+        else:
+            # Simple weighted output
+            final_steering = self.leader_weight * leader_steering
+        
+        # Apply output smoothing
+        smoothed = (self.smoothing_factor * final_steering + 
+                   (1 - self.smoothing_factor) * self.prev_steering)
+        self.prev_steering = smoothed
+        
+        return np.clip(smoothed, -self.max_steering, self.max_steering)
+    
+    def reset(self):
+        """Reset controller state"""
+        self.prev_steering = 0.0
+        self.pure_pursuit.reset()
+
+
 class LateralControllerFactory:
     """Factory to create lateral controllers by name"""
     
@@ -569,6 +766,7 @@ class LateralControllerFactory:
         'stanley': StanleyController,
         'lookahead': LookaheadController,
         'hybrid': HybridLateralController,
+        'fusion': FusionLateralController,
     }
     
     @staticmethod

@@ -32,6 +32,16 @@ class CommandType(Enum):
     ACTIVATE_V2V = "activate_v2v"
     DISABLE_V2V = "disable_v2v"
     
+    # Perception commands
+    ACTIVATE_PERCEPTION = "activate_perception"
+    DISABLE_PERCEPTION = "disable_perception"
+    
+    # Visualization commands
+    ACTIVATE_SCOPES = "activate_scopes"
+    DISABLE_SCOPES = "disable_scopes"
+    ENABLE_SCOPE_STREAMING = "enable_scope_streaming"
+    DISABLE_SCOPE_STREAMING = "disable_scope_streaming"
+    
     # Manual control commands
     ENABLE_MANUAL_MODE = "enable_manual_mode"
     MANUAL_CONTROL = "manual_control"
@@ -41,6 +51,11 @@ class CommandType(Enum):
     SHUTDOWN = "shutdown"
     RESET = "reset"
     CALIBRATE = "calibrate"
+    
+    # Runtime switching commands
+    SET_LOCAL_OBSERVER = "set_local_observer"
+    SET_FLEET_OBSERVER = "set_fleet_observer"
+    SET_CONTROLLER = "set_controller"
 
 
 # Convenience functions for command type checking

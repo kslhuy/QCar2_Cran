@@ -64,15 +64,15 @@ vehicles:
 # Available paths that vehicles can follow
 paths:
   0:
-    name: "Main Circuit"
+    name: "Outter Circuit"
     nodes: [10, 2, 4, 6, 8, 10]
     description: "Default circuit starting from node 10"
   1:
-    name: "Extended Loop"
+    name: "Inner2Outter Circuit "
     nodes: [0, 2, 4, 6, 8, 10, 2, 4, 6, 0]
     description: "Longer path with multiple loops"
   2:
-    name: "Inner Circuit"
+    name: "Outter 2 Circuit"
     nodes: [2, 4, 6, 8, 10, 2]
     description: "Inner circuit without node 0"
 
@@ -111,7 +111,7 @@ nodes:
     description: "Left mid"
   10:
     pose: [-1.28205, -0.45991, -0.7330382858376184]
-    description: "Start position B (default)"
+    description: "Start position 10 (default)"
 
 # Timing Configuration
 timing:

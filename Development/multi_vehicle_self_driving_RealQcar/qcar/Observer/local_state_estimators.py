@@ -73,19 +73,21 @@ class EKFStateEstimator(LocalStateEstimatorBase):
     """
     
     def __init__(self, initial_pose: Optional[np.ndarray] = None, 
-                 gps=None, use_qcar_ekf: bool = True, logger=None):
+                config: Dict = None, logger=None):
         """
         Initialize EKF state estimator
         
         Args:
             initial_pose: Initial pose [x, y, theta]
             gps: GPS instance (for QCarEKF)
-            use_qcar_ekf: Whether to use QCarEKF (if available)
+            config: Configuration dict with keys: use_qcar_ekf
             logger: Logger instance
         """
+        config = config or {}
+        use_qcar_ekf = config.get('use_qcar_ekf', True)
+        
         super().__init__(initial_pose, logger)
         
-        self.gps = gps
         self.use_qcar_ekf = use_qcar_ekf
         self.ekf = None
         self.ekf_initialized = False
@@ -96,7 +98,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         self.R = np.diag([0.5, 0.5, 0.1, 0.2])  # Measurement noise
         
         # Initialize QCarEKF if available
-        if self.use_qcar_ekf and gps is not None:
+        if self.use_qcar_ekf :
             self._initialize_qcar_ekf(initial_pose)
     
     def _initialize_qcar_ekf(self, initial_pose: Optional[np.ndarray]):
@@ -250,15 +252,18 @@ class LuenbergerStateEstimator(LocalStateEstimatorBase):
     """
     
     def __init__(self, initial_pose: Optional[np.ndarray] = None, 
-                 observer_gain: float = 0.5, logger=None):
+                 config: Dict = None, logger=None):
         """
         Initialize Luenberger observer
         
         Args:
             initial_pose: Initial pose [x, y, theta]
-            observer_gain: Observer gain (0-1, higher = more aggressive correction)
+            config: Configuration dict with keys: observer_gain
             logger: Logger instance
         """
+        config = config or {}
+        observer_gain = config.get('observer_gain', 0.5)
+        
         super().__init__(initial_pose, logger)
         
         self.L = np.eye(self.state_dim) * observer_gain  # Observer gain matrix
@@ -312,49 +317,6 @@ class LuenbergerStateEstimator(LocalStateEstimatorBase):
             self.state = np.zeros(self.state_dim)
 
 
-class DeadReckoningEstimator(LocalStateEstimatorBase):
-    """
-    Simple dead reckoning estimator (no GPS correction)
-    Uses only odometry and IMU
-    """
-    
-    def __init__(self, initial_pose: Optional[np.ndarray] = None, logger=None):
-        """Initialize dead reckoning estimator"""
-        super().__init__(initial_pose, logger)
-    
-    def update(self, motor_tach: float, steering: float, throttle:float, dt: float, 
-               gyro_z: float = 0.0, gps_data: Optional[Dict] = None) -> bool:
-        """Update using dead reckoning only"""
-        try:
-            x, y, theta, v = self.state
-            
-            # Simple bicycle model integration
-            self.state[0] = x + v * np.cos(theta) * dt
-            self.state[1] = y + v * np.sin(theta) * dt
-            self.state[2] = theta + gyro_z * dt
-            self.state[3] = motor_tach
-            
-            self.last_update_time = time.time()
-            
-            return True
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Dead reckoning update error", e)
-            return False
-    
-    def get_state(self) -> np.ndarray:
-        """Get current state estimate as numpy array [x, y, theta, v]"""
-        return self.state.copy()
-    
-    def reset(self, initial_pose: Optional[np.ndarray] = None):
-        """Reset estimator state"""
-        if initial_pose is not None:
-            self.state[:3] = initial_pose
-            self.state[3] = 0.0
-        else:
-            self.state = np.zeros(self.state_dim)
-
 
 class LocalEstimatorFactory:
     """Factory to create local state estimators by name"""
@@ -362,35 +324,60 @@ class LocalEstimatorFactory:
     ESTIMATOR_TYPES = {
         'ekf': EKFStateEstimator,
         'luenberger': LuenbergerStateEstimator,
-        'dead_reckoning': DeadReckoningEstimator,
     }
     
     @staticmethod
+    def _lazy_load_neural_estimator():
+        """Lazy load neural estimator to avoid import errors if dependencies missing"""
+        try:
+            # Use importlib to handle directory name starting with number (2LayerObs)
+            import importlib
+            module = importlib.import_module('Observer.LocalNeuralObs.2LayerObs.neural_state_estimator')
+            return module.NeuralLuenbergerEstimator
+        except (ImportError, ModuleNotFoundError):
+            try:
+                # Fallback to root level LocalNeuralObs lazy import
+                from Observer.LocalNeuralObs import NeuralLuenbergerEstimator
+                return NeuralLuenbergerEstimator
+            except ImportError as e:
+                raise ImportError(
+                    f"Neural estimator requires additional dependencies (torch). "
+                    f"Install with: pip install torch. Error: {e}"
+                )
+    
+    @staticmethod
     def create(estimator_type: str, initial_pose: Optional[np.ndarray] = None,
-               gps=None, logger=None, **kwargs):
+               gps=None, logger=None, config: Dict = None) -> LocalStateEstimatorBase:
         """
         Create a local state estimator
         
         Args:
-            estimator_type: One of 'ekf', 'luenberger', 'dead_reckoning'
+            estimator_type: One of 'ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger'
             initial_pose: Initial pose [x, y, theta]
             gps: GPS instance (for EKF)
             logger: Logger instance
-            **kwargs: Additional estimator-specific parameters
+            config: Configuration parameters for the estimator
             
         Returns:
             Local state estimator instance
         """
+        # Handle neural estimator separately (lazy loading)
+        if estimator_type == 'neural_luenberger':
+            NeuralLuenbergerEstimator = LocalEstimatorFactory._lazy_load_neural_estimator()
+            return NeuralLuenbergerEstimator(initial_pose=initial_pose, config=config, logger=logger)
+        
+        # Standard estimators
         if estimator_type not in LocalEstimatorFactory.ESTIMATOR_TYPES:
             raise ValueError(
                 f"Unknown estimator type: {estimator_type}. "
-                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys())}"
+                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys()) + ['neural_luenberger']}"
             )
         
         estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]
-        
-        # Pass appropriate parameters based on estimator type
-        if estimator_type == 'ekf':
-            return estimator_class(initial_pose=initial_pose, gps=gps, logger=logger, **kwargs)
-        else:
-            return estimator_class(initial_pose=initial_pose, logger=logger, **kwargs)
+        return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
+
+        # # Pass config dict to estimators
+        # if estimator_type == 'ekf':
+        #     return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
+        # else:
+        #     return estimator_class(initial_pose=initial_pose, config=config, logger=logger)

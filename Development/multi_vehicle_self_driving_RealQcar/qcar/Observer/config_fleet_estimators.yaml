@@ -1,0 +1,100 @@
+# Fleet Estimator Configuration
+# Default parameters for the fleet state estimators used by VehicleObserver
+# Place this file under qcar/Observer/ and load it when starting observers.
+
+# Options: 'consensus', 'distributed_luenberger', 'trust_consensus', 'trust_kalman'
+fleet_estimator_type: trust_consensus
+
+# Plotting configuration
+enable_plotting: false
+enable_recording: true
+plotting:
+  fps: 30
+  time_window: 20.0
+  max_vehicles_plot: 5
+  save_only: true
+
+
+# Global defaults for fleet estimation
+fleet:
+  # State handling
+  state_dim: 5               # State vector size (default 5: [x,y,theta,v,a])
+  max_state_age_ns: 1000000000  # (ns) 1 second validity window for received states
+  received_local_states_limit: 10
+  received_fleet_states_limit: 5
+  fleet_observer_rate: 50    # Hz - how often fleet estimator is updated
+
+  # ---------------------------------------------------------------------
+  # Consensus estimator defaults
+  # ---------------------------------------------------------------------
+  consensus:
+    consensus_gain: 0.3      # (0-1) higher = faster consensus, less stable
+    direct_gain: 0.7         # weight for direct self-reports vs consensus
+    neighbor_weight_mode: uniform  # 'uniform' or 'distance' (reserved)
+
+
+  # ---------------------------------------------------------------------
+  # Distributed Luenberger estimator defaults
+  # ---------------------------------------------------------------------
+  distributed_luenberger:
+    state_dim: 3             # Longitudinal-only [position, velocity, acceleration]
+    observer_gain: 0.1
+    consensus_gain: 0.2
+    # Vehicle physical params (used in phi_i computation)
+    m_i: 0.5
+    tau_i: 0.16
+    rho_i: 0.12
+    Cd_i: 0.035
+    AF_i: 0.22
+    mu_i: 0.01
+
+  # ---------------------------------------------------------------------
+  # Trust-Based Consensus estimator defaults
+  # See TrustbasedDistributedObserver/config_trust_estimator.yaml for full options
+  # ---------------------------------------------------------------------
+  trust_consensus:
+    observer_gain: 0.1
+    consensus_gain: 0.2
+    attack_mitigation: true
+    trust:
+      trust_threshold: 0.5
+      dirichlet_type: "Dual"
+      ema_alpha: 0.3
+    weight:
+      w0_fixed: 0.3
+      w_self_base: 0.2
+      w_cap: 0.4
+      kappa: 5
+      eta: 0.15
+
+  # ---------------------------------------------------------------------
+  # Trust-Based Kalman estimator defaults
+  # ---------------------------------------------------------------------
+  trust_kalman:
+    observer_gain: 0.1
+    consensus_gain: 0.2
+    process_noise: 0.01
+    measurement_noise: 0.1
+    attack_mitigation: true
+    trust:
+      trust_threshold: 0.5
+      dirichlet_type: "Dual"
+    weight:
+      w0_fixed: 0.3
+      w_cap: 0.4
+
+# Example override (when loading config into VehicleObserver):
+# vehicle_observer_config:
+#   observer:
+#     observer_rate: 100
+#     fleet_observer_rate: 40
+#     consensus_gain: 0.25
+#     observer_gain: 0.12
+#     fleet:
+#       consensus:
+#         consensus_gain: 0.45
+#         direct_gain: 0.55
+#       distributed_kalman:
+#         observer_gain: 0.15
+#         consensus_gain: 0.25
+#         weight_mode: adaptive

@@ -1,0 +1,356 @@
+# Attack Configuration File
+# Defines attack scenarios for vehicle communication security testing
+# Based on MATLAB Attack_module implementation
+
+# Global attack settings
+attack_settings:
+  enabled: true  # Master switch for all attacks - ENABLED FOR TESTING
+  dt: 0.01  # Simulation time step (seconds)
+  log_level: "WARNING"  # Log level for attack events (DEBUG, INFO, WARNING, ERROR)
+  log_interval: 1.0  # Minimum time between detailed attack logs (seconds)
+
+# Attack scenario definitions
+# Each scenario defines when, who, and how to attack
+scenarios:
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 1: Velocity Scaling (Negative)
+  # ============================================================
+  - name: "Bogus_Velocity_Scaling_Negative"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "scaling"
+    data_type: "local"  # Attack local state broadcasts
+    
+    # Timing
+    t_start: 10.0  # Attack starts at 10 seconds
+    t_end: 15.0    # Attack ends at 15 seconds
+    
+    # Participants
+    attacker_id: 1  # Vehicle 1 is the attacker
+    victim_ids: [-1]  # -1 means all vehicles receive false data
+    
+    # Modification parameters
+    intensity: -0.5  # Scale velocity by -0.5 (reverse and reduce)
+    target_fields: ["velocity"]
+    
+    description: "Attacker sends velocity scaled by -0.5 (Bogus case 1)"
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 2: Velocity Scaling (Positive)
+  # ============================================================
+  - name: "Bogus_Velocity_Scaling_Positive"
+    enabled: true  # ENABLED - Attack will be active!
+    attack_type: "Bogus"
+    modification_type: "scaling"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 15.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 0.5  # Scale velocity by 0.5 (reduce)
+    target_fields: ["velocity"]
+    
+    description: "Attacker sends velocity scaled by 0.5 (Bogus case 2)"
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 3: Position X Bias (Negative)
+  # ============================================================
+  - name: "Bogus_Position_X_Bias_Negative"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "bias"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 15.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: -15.0  # Subtract 15 meters from X position
+    target_fields: ["X"]
+    
+    description: "Attacker sends X position with -15m bias (Bogus case 3)"
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 4: Position X Bias (Positive)
+  # ============================================================
+  - name: "Bogus_Position_X_Bias_Positive"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "bias"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 15.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 33.0  # Add 33 meters to X position
+    target_fields: ["X"]
+    
+    description: "Attacker sends X position with +33m bias (Bogus case 4)"
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 5: Velocity Linear Drift
+  # ============================================================
+  - name: "Bogus_Velocity_Linear_Drift"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "linear"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 15.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 0.1  # Linear drift of 0.1 m/s per second
+    target_fields: ["velocity"]
+    
+    description: "Attacker sends velocity with linear drift 0.1 m/s² (Bogus case 5)"
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 6: Position X Sinusoidal
+  # ============================================================
+  - name: "Bogus_Position_X_Sinusoidal"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "sinusoidal"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 15.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    # Sinusoidal parameters as dictionary
+    intensity:
+      amplitude: 5.0    # 5 meters amplitude
+      frequency: 0.5    # 0.5 Hz frequency
+      phase: 0.0        # 0 radians phase
+    target_fields: ["X"]
+    
+    description: "Attacker sends X position with sinusoidal oscillation (Bogus case 6)"
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 7: Position X Faulty (High Noise)
+  # ============================================================
+  - name: "Bogus_Position_X_Faulty_High"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "faulty"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 15.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 10.0  # Standard deviation of 10 meters for random noise
+    target_fields: ["X"]
+    
+    description: "Attacker sends X position with high random noise (Bogus case 7)"
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 8: Velocity Faulty
+  # ============================================================
+  - name: "Bogus_Velocity_Faulty"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "faulty"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 15.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 2.5  # Standard deviation of 2.5 m/s for random noise
+    target_fields: ["velocity"]
+    
+    description: "Attacker sends velocity with random noise (Bogus case 8)"
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 9: Acceleration Faulty
+  # ============================================================
+  - name: "Bogus_Acceleration_Faulty"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "faulty"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 15.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 0.2  # Standard deviation of 0.2 m/s² for random noise
+    target_fields: ["acceleration"]
+    
+    description: "Attacker sends acceleration with random noise (Bogus case 9)"
+  
+  # ============================================================
+  # Bogus Message Attacks - Case 10: Velocity Bias (Small)
+  # ============================================================
+  - name: "Bogus_Velocity_Bias_Small"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "bias"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 15.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 2.0  # Add 2 m/s to velocity
+    target_fields: ["velocity"]
+    
+    description: "Attacker sends velocity with +2 m/s bias (Bogus case 10)"
+  
+  # ============================================================
+  # Fleet Estimate Attack Example
+  # ============================================================
+  - name: "Fleet_Position_Attack"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "bias"
+    data_type: "fleet"  # Attack fleet estimate broadcasts
+    
+    t_start: 5.0
+    t_end: 20.0
+    
+    attacker_id: 2
+    victim_ids: [0]  # Target only vehicle 0's estimate
+    
+    intensity: 10.0  # Add 10 meters bias
+    target_fields: ["X", "Y"]
+    
+    description: "Attacker modifies fleet estimate of vehicle 0's position"
+  
+  # ============================================================
+  # Combined Attack on Both Local and Fleet
+  # ============================================================
+  - name: "Combined_Attack"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "scaling"
+    data_type: "both"  # Attack both local and fleet data
+    
+    t_start: 15.0
+    t_end: 25.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 1.5  # Scale by 1.5 (exaggerate)
+    target_fields: ["velocity"]
+    
+    description: "Attacker exaggerates velocity in both local and fleet broadcasts"
+  
+  # ============================================================
+  # Denial of Service (DoS) - Zero Out Data
+  # ============================================================
+  - name: "DoS_Velocity_Zero"
+    enabled: false
+    attack_type: "DoS"
+    modification_type: "zero"
+    data_type: "local"
+    
+    t_start: 8.0
+    t_end: 12.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 0.0  # Not used for zero type
+    target_fields: ["velocity"]
+    
+    description: "DoS attack: Set velocity to zero"
+  
+  # ============================================================
+  # Position-Specific Attack (POS)
+  # ============================================================
+  - name: "POS_Attack_Bias"
+    enabled: false
+    attack_type: "POS"
+    modification_type: "bias"
+    data_type: "local"
+    
+    t_start: 5.0
+    t_end: 30.0
+    
+    attacker_id: 2
+    victim_ids: [0, 1]  # Target specific vehicles
+    
+    intensity: 5.0
+    target_fields: ["X", "Y"]
+    
+    description: "Position attack: Add 5m bias to X and Y coordinates"
+  
+  # ============================================================
+  # Velocity-Specific Attack (VEL)
+  # ============================================================
+  - name: "VEL_Attack_Constant"
+    enabled: false
+    attack_type: "VEL"
+    modification_type: "constant"
+    data_type: "local"
+    
+    t_start: 10.0
+    t_end: 20.0
+    
+    attacker_id: 1
+    victim_ids: [-1]
+    
+    intensity: 3.0  # Set velocity to constant 3.0 m/s
+    target_fields: ["velocity"]
+    
+    description: "Velocity attack: Report constant 3 m/s regardless of actual velocity"
+
+# Quick scenario selection (for easy testing)
+# Set enabled: true for the scenario you want to test
+active_scenario: "Bogus_Velocity_Scaling_Positive"  # Name of currently active scenario
+
+# Predefined test configurations
+test_configs:
+  
+  # Test 1: Simple velocity attack
+  test_velocity_attack:
+    scenario: "Bogus_Velocity_Scaling_Positive"
+    attacker_id: 1
+    t_start: 10.0
+    t_end: 15.0
+  
+  # Test 2: Position bias attack
+  test_position_attack:
+    scenario: "Bogus_Position_X_Bias_Positive"
+    attacker_id: 1
+    t_start: 10.0
+    t_end: 15.0
+  
+  # Test 3: Sinusoidal attack
+  test_sinusoidal_attack:
+    scenario: "Bogus_Position_X_Sinusoidal"
+    attacker_id: 1
+    t_start: 10.0
+    t_end: 15.0
+  
+  # Test 4: Fleet estimate attack
+  test_fleet_attack:
+    scenario: "Fleet_Position_Attack"
+    attacker_id: 2
+    t_start: 5.0
+    t_end: 20.0

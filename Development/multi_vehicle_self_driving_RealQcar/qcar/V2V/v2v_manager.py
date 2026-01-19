@@ -71,11 +71,11 @@ class V2VManager:
             send_intervals=send_intervals
         )
         
-        # Separate queues for different data types
-        self.local_state_queue = Queue(maxsize=self.config.max_queue_size)
-        self.fleet_state_queue = Queue(maxsize=self.config.max_queue_size)
-        self.intent_queue = Queue(maxsize=self.config.max_queue_size)
-        self.warning_queue = Queue(maxsize=self.config.max_queue_size)
+        # # Separate queues for different data types
+        # self.local_state_queue = Queue(maxsize=self.config.max_queue_size)
+        # self.fleet_state_queue = Queue(maxsize=self.config.max_queue_size)
+        # self.intent_queue = Queue(maxsize=self.config.max_queue_size)
+        # self.warning_queue = Queue(maxsize=self.config.max_queue_size)
         
         # Received data storage with timestamps
         self.received_local_states = defaultdict(lambda: deque(maxlen=50))  # vehicle_id -> deque of (timestamp, data)
@@ -111,9 +111,7 @@ class V2VManager:
     
     def _setup_message_handlers(self):
         """Setup handlers for different message types"""
-        self.v2v_communication.register_message_handler(
-            MessageType.TELEMETRY.value, self._handle_telemetry_message
-        )
+
         self.v2v_communication.register_message_handler(
             "local_state", self._handle_local_state_message
         )
@@ -271,15 +269,7 @@ class V2VManager:
             if self.logger:
                 self.logger.error(f"Message processing error: {e}")
     
-    # Message handlers for different data types
-    def _handle_telemetry_message(self, message: V2VMessage):
-        """Handle legacy telemetry messages (for backward compatibility)"""
-        try:
-            self._add_to_queue(self.local_state_queue, message.data, message.sender_id)
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Telemetry message handling error: {e}")
+
     
     def _handle_local_state_message(self, message: V2VMessage):
         """Handle local state messages with known data structure from get_local_state_for_broadcast()
@@ -311,71 +301,62 @@ class V2VManager:
             # if not self._validate_local_state_data(data, sender_id):
             #     return
             
-            if self.logger:
-                self.logger.debug(f"Vehicle {self.vehicle_id}: Received local state from vehicle {sender_id}")
+            # if self.logger:
+            #     # self.logger.debug(f"Vehicle {self.vehicle_id}: Local state data structure local state from vehicle {sender_id}")
                 
-                # Periodically log the data structure for debugging
-                self._local_state_log_counter += 1
-                if self._local_state_log_counter % self._log_data_structure_interval == 0:
-                    self.logger.info(f"V2VManager: Local state data structure from vehicle {sender_id}:")
-                    self.logger.info(f"  vehicle_id: {data.get('vehicle_id')} (int)")
-                    self.logger.info(f"  position: ({data.get('x'):.3f}, {data.get('y'):.3f}) (float)")
-                    self.logger.info(f"  theta: {data.get('theta'):.3f} rad (float)")
-                    self.logger.info(f"  velocity: {data.get('velocity'):.3f} m/s (float)")
-                    self.logger.info(f"  acceleration: {data.get('acceleration', 0.0):.3f} m/s² (float)")
-                    control_input = data.get('control_input', {})
-                    if isinstance(control_input, dict):
-                        self.logger.info(f"  control_input: steering={control_input.get('steering', 0.0):.3f}, throttle={control_input.get('throttle', 0.0):.3f}")
-                    self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
-                    self.logger.info(f"  send_time_ns: {send_time_ns} (nanoseconds)")
+            #     # Periodically log the data structure for debugging
+            #     self._local_state_log_counter += 1
+            #     if self._local_state_log_counter % self._log_data_structure_interval == 0:
+            #         self.logger.info(f"V2VManager: Local state data structure from vehicle {sender_id}:")
+            #         self.logger.info(f"  vehicle_id: {data.get('vehicle_id')} (int)")
+            #         self.logger.info(f"  position: ({data.get('x'):.3f}, {data.get('y'):.3f}) (float)")
+            #         self.logger.info(f"  theta: {data.get('theta'):.3f} rad (float)")
+            #         self.logger.info(f"  velocity: {data.get('velocity'):.3f} m/s (float)")
+            #         self.logger.info(f"  acceleration: {data.get('acceleration', 0.0):.3f} m/s² (float)")
+            #         control_input = data.get('control_input', {}) or {}
+            #         self.logger.info(f"  control_input: steering={control_input.get('steering', 0.0):.3f}, throttle={control_input.get('throttle', 0.0):.3f}")
+            #         self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
+            #         self.logger.info(f"  send_time_ns: {send_time_ns} (nanoseconds)")
             
             with self._lock:
-                # Add to received local states with send time in nanoseconds
-                self.received_local_states[sender_id].append((send_time_ns, data))
+
                 
+                # Build a normalized state dict and reuse it for storage, queue, and logging
+                state_dict = {
+                    # 'vehicle_id': data.get('vehicle_id', sender_id),
+                    'x': data.get('x', 0.0),
+                    'y': data.get('y', 0.0),
+                    'theta': data.get('theta', 0.0),
+                    'v': data.get('velocity', data.get('v', 0.0)),
+                    'velocity': data.get('velocity', data.get('v', 0.0)),
+                    'confidence': data.get('confidence', 1.0),
+                    'acceleration': data.get('acceleration', 0.0),
+                    'control_input': data.get('control_input', {}) or {},
+                    # 'source': data.get('source', 'local_sensors'),
+                    # 'timestamp': data.get('timestamp', time.time())
+                }
+
+                # Add to received local states with send time in nanoseconds (store normalized dict)
+                self.received_local_states[sender_id].append((send_time_ns, state_dict))
+
                 # Log received local estimation to dedicated CSV file
                 if hasattr(self.vehicle_logger, 'log_local_estimation'):
-                    try:
-                        state_dict = {
-                            'x': data.get('x', 0.0),
-                            'y': data.get('y', 0.0),
-                            'theta': data.get('theta', 0.0),
-                            'v': data.get('velocity', 0.0),
-                            'confidence': data.get('confidence', 1.0),  # Default confidence if not present
-                            'acceleration': data.get('acceleration', 0.0),  # Include acceleration
-                            'control_input': data.get('control_input', {})  # Include control inputs
-                        }
-                        self.vehicle_logger.log_local_estimation(
-                            sender_id=sender_id,
-                            state=state_dict,
-                            source=data.get('source', 'local_sensors'),
-                            seq_id=message.seq_id,
-                            send_time_ns=send_time_ns
-                        )
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.logger.warning(f"Failed to log local estimation: {e}")
+                    self.vehicle_logger.log_local_estimation(
+                        sender_id=sender_id,
+                        state=state_dict,
+                        source=data.get('source', 'local_sensors'),
+                        seq_id=message.seq_id,
+                        send_time_ns=send_time_ns
+                    )
                 
-                # Add to VehicleObserver if available
-                if (self.vehicle_observer and 
-                    all(key in data for key in ['x', 'y', 'theta', 'velocity'])):
+                # Add to VehicleObserver if available (observer expects a 5D numpy array)
+                if self.vehicle_observer:
+
+                    self.vehicle_observer.add_received_local_state(sender_id, state_dict, send_time_ns)
                     
-                    try:
-                        # Create 5D state vector [x, y, theta, v, a]
-                        state_vector = np.array([
-                            data['x'], 
-                            data['y'], 
-                            data['theta'], 
-                            data['velocity'],
-                            data.get('acceleration', 0.0)  # Include acceleration, default to 0 if not present
-                        ])
-                        self.vehicle_observer.add_received_state(sender_id, state_vector, send_time_ns)
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.warning(f"Failed to add state to VehicleObserver: {e}")
-            
-            # Add to queue for other consumers
-            self._add_to_queue(self.local_state_queue, data, sender_id)
+                    
+            # # Add normalized state to queue for other consumers
+            # self._add_to_queue(self.local_state_queue, state_dict, sender_id)
             
         except Exception as e:
             if self.logger:
@@ -460,7 +441,11 @@ class V2VManager:
                         if len(fleet_states) > 3:
                             self.logger.info(f"    ... and {len(fleet_states) - 3} more vehicles")
                         self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
-                        self.logger.info(f"  timestamp: {data.get('timestamp'):.3f} (float)")
+                        timestamp = data.get('timestamp')
+                        if timestamp is not None:
+                            self.logger.info(f"  timestamp: {timestamp:.3f} (float)")
+                        else:
+                            self.logger.info(f"  send_time_ns: {send_time_ns} (nanoseconds)")
             
             # Pass entire fleet estimates to vehicle observer for processing
             if self.vehicle_observer is not None:
@@ -486,7 +471,7 @@ class V2VManager:
                         self.logger.warning(f"V2VManager: Failed to process fleet states to estimator: {e}")
             
             # Add to queue for other consumers
-            self._add_to_queue(self.fleet_state_queue, data, sender_id)
+            # self._add_to_queue(self.fleet_state_queue, data, sender_id)
             
         except Exception as e:
             if self.logger:
@@ -563,21 +548,23 @@ class V2VManager:
     
     def _handle_intent_message(self, message: V2VMessage):
         """Handle intent messages"""
-        try:
-            self._add_to_queue(self.intent_queue, message.data, message.sender_id)
+        pass
+        # try:
+        #     # self._add_to_queue(self.intent_queue, message.data, message.sender_id)
             
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Intent message handling error: {e}")
+        # except Exception as e:
+        #     if self.logger:
+        #         self.logger.error(f"Intent message handling error: {e}")
     
     def _handle_warning_message(self, message: V2VMessage):
         """Handle warning messages"""
-        try:
-            self._add_to_queue(self.warning_queue, message.data, message.sender_id)
+        pass
+        # try:
+        #     # self._add_to_queue(self.warning_queue, message.data, message.sender_id)
             
-        except Exception as e:
-            if self.logger:
-                self.logger.error(f"Warning message handling error: {e}")
+        # except Exception as e:
+        #     if self.logger:
+        #         self.logger.error(f"Warning message handling error: {e}")
     
     def _add_to_queue(self, queue: Queue, data: dict, sender_id: int):
         """Add data to queue with sender information"""
@@ -603,21 +590,21 @@ class V2VManager:
                 self.logger.error(f"Queue add error: {e}")
     
     # Public interface methods
-    def get_local_states(self, max_count: int = 10) -> List[dict]:
-        """Get received local states"""
-        return self._get_from_queue(self.local_state_queue, max_count)
+    # def get_local_states(self, max_count: int = 10) -> List[dict]:
+    #     """Get received local states"""
+    #     return self._get_from_queue(self.local_state_queue, max_count)
     
-    def get_fleet_states(self, max_count: int = 5) -> List[dict]:
-        """Get received fleet states"""
-        return self._get_from_queue(self.fleet_state_queue, max_count)
+    # def get_fleet_states(self, max_count: int = 5) -> List[dict]:
+    #     """Get received fleet states"""
+    #     return self._get_from_queue(self.fleet_state_queue, max_count)
     
-    def get_intents(self, max_count: int = 10) -> List[dict]:
-        """Get received intents"""
-        return self._get_from_queue(self.intent_queue, max_count)
+    # def get_intents(self, max_count: int = 10) -> List[dict]:
+    #     """Get received intents"""
+    #     return self._get_from_queue(self.intent_queue, max_count)
     
-    def get_warnings(self, max_count: int = 10) -> List[dict]:
-        """Get received warnings"""
-        return self._get_from_queue(self.warning_queue, max_count)
+    # def get_warnings(self, max_count: int = 10) -> List[dict]:
+    #     """Get received warnings"""
+    #     return self._get_from_queue(self.warning_queue, max_count)
     
     def _get_from_queue(self, queue: Queue, max_count: int) -> List[dict]:
         """Get messages from queue"""
@@ -629,7 +616,7 @@ class V2VManager:
                 break
         return messages
     
-    def get_latest_local_state(self, vehicle_id: int) -> Optional[dict]:
+    def get_latest_local_state_raw(self, vehicle_id: int) -> Optional[dict]:
         """Get latest local state from a specific vehicle"""
         with self._lock:
             if vehicle_id in self.received_local_states:
@@ -638,7 +625,7 @@ class V2VManager:
                     return states[-1][1]  # Return data part of (timestamp, data)
         return None
     
-    def get_latest_fleet_state(self, vehicle_id: int) -> Optional[dict]:
+    def get_latest_fleet_state_raw(self, vehicle_id: int) -> Optional[dict]:
         """Get latest fleet state from a specific vehicle"""
         with self._lock:
             if vehicle_id in self.received_fleet_states:
@@ -678,7 +665,7 @@ class V2VManager:
                     self.logger.debug(f"V2VManager: No position mapping found, using position {leader_position} as vehicle_id")
             
             # Get leader data using the leader's vehicle_id
-            leader_state = self.get_latest_local_state(leader_vehicle_id)
+            leader_state = self.get_latest_local_state_raw(leader_vehicle_id)
             
             if leader_state:
                 if self.logger:
@@ -784,10 +771,10 @@ class V2VManager:
             
             # Add queue sizes
             stats.update({
-                'local_state_queue_size': self.local_state_queue.qsize(),
-                'fleet_state_queue_size': self.fleet_state_queue.qsize(),
-                'intent_queue_size': self.intent_queue.qsize(),
-                'warning_queue_size': self.warning_queue.qsize(),
+                # 'local_state_queue_size': self.received_local_states.qsize(),
+                # 'fleet_state_queue_size': self.received_fleet_states.qsize(),
+                # 'intent_queue_size': self.received_intents.qsize(),
+                # 'warning_queue_size': self.received_warnings.qsize(),
                 'active_local_peers': len(self.received_local_states),
                 'active_fleet_peers': len(self.received_fleet_states),
                 'local_broadcast_rate': self.config.local_state_frequency,
@@ -855,8 +842,9 @@ class V2VManager:
                 self.logger.info(f"V2VManager: Peer IPs: {peer_ips}")
             
             # Reinitialize fleet estimation via vehicle_logic
-            if self.vehicle_logic and hasattr(self.vehicle_logic, 'reinitialize_fleet_estimation'):
-                self.vehicle_logic.reinitialize_fleet_estimation(peer_vehicles)
+            # Calculate actual fleet size: peers + this vehicle
+            actual_fleet_size = len(peer_vehicles) + 1
+            self.vehicle_observer.reinitialize_fleet_estimation(actual_fleet_size, peer_vehicles)
             
             # Activate the underlying V2V communication
             success = self.activate(peer_vehicles, peer_ips)
@@ -870,7 +858,7 @@ class V2VManager:
                 # Report activation to Ground Station via vehicle_logic
                 if self.vehicle_logic and hasattr(self.vehicle_logic, 'report_v2v_status_to_gs'):
                     self.vehicle_logic.report_v2v_status_to_gs({
-                        'status': 'activated',
+                        'status': 'connected',
                         'peer_count': len(peer_vehicles),
                         'peer_vehicles': peer_vehicles,
                         'expected_peers': len([v for v in peer_vehicles if v != self.vehicle_id]),
