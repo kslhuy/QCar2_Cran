@@ -1,12 +1,43 @@
+# Update Log 2026/01/19 (Shengya MENG)
+- [x] Creat the [start_all_cars.ps1](start_all_cars.ps1) and [stop_all_cars.ps1](stop_all_cars.ps1) to start or stop all cars at the same time. 
+- [x] Remove the fleet_state = local state
+
+
+## About the Consensus term, there are the following issues:
+- The neighbor id is not correct. As shown in the following, the neighbor of car 3 is just vehicle 2, not neighbor = 1. First, check the neighbor's index and the function to get the neighbor
+```
+2026-01-19 11:56:57 - [Car Car_3] - INFO - _distributed_luenberger_observer_update:1197 - Vehicle 3: Final consensus term applied, neighbors=1, norm=32682552589554365699139732780980633600.0000
+```
+- The result neighbor_x_vec - x_vec is too large, as shwon in the above, norm = 2682552589554365699139732780980633600.0000. First, check the dictionary of the neigbors state from _get_latest_received_state
+
+
+# Update Log 2026/01/10 (Shengya MENG)
+
+In the data log, there is 
+
+| time | sender_id | source | col4 | col5 | vehicle id | x | y | theta | velocity | accelerate | confidence |
+|---:|---:|:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 15.71526504 | 3 | fleet_consensus | 77 | 439500 | 0 | 0 | 0 | 0 | 0 | 0 | 0.8 |
+| 15.71527910 | 3 | fleet_consensus | 77 | 439500 | 1 | -1.955082342 | 0 | 0 | 0 | 0.08777936 | 0.8 |
+| 15.71528196 | 3 | fleet_consensus | 77 | 439500 | 2 | -1.319428368 | 0 | 0 | 0 | 0.096147887 | 0.8 |
+| 15.71528411 | 3 | fleet_consensus | 77 | 439500 | 3 | -3.382616058 | -0.621174042 | -0.014103457 | 0 | 0.042212872 | 1 |
+
+Here, if the vehicle id == sender id, the fleet estimate is from the local state. It is not reasonable. fleet estimate should just come from the distributed observer. But the local state is used to get the measurement. So it is better used it but not add it in the fleet estimate. 
+
+- [ ] Make sure there is no local state in the fleet estimate. 
+- [ ] Check why the position is alway negtiva.  
+
 # Update Log 2026/01/08 (Shengya MENG)
 - [ ] Check the reason why the fleet state is **nan** in the log. And fix it. 
 - [x] Fixed the one reason causing nan. Correct the discrete update. But it **still diffuse**. 
 ```
 x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
 ```
-- [x]Fixed the warning. It is beacuse we stop the car at the different time. 
+- [x]Fixed the following warning. It is beacuse we start or stop the car at the different time. 
 ```
 2026-01-08 16:50:53 - [Car Car_1] - WARNING - _distributed_luenberger_observer_update:1107 - Vehicle 1: Using fallback strategy for neighbor 2
+
+2026-01-08 16:50:09 - [Car Car_2] - WARNING - _distributed_luenberger_observer_update:995 - Vehicle 2: No recent leader state of the leader 0, using current estimate
 ```
 
 

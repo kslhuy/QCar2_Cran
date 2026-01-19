@@ -785,15 +785,21 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         """Update using distributed observer with dynamics
         
         Args:
-            local_state: Own vehicle state [x, y, theta, v]
+            local_state: Own vehicle state [x, y, theta, v] - used ONLY for local measurement calculation
             dt: Time step in seconds
             current_time_ns: Current time in nanoseconds
             control: Control input [steering, throttle]
+        
+        Note:
+            local_state is NOT stored in fleet_states. It is used ONLY for measurement calculation.
+            fleet_states contains ONLY distributed observer estimates for all vehicles.
         """
         try:
-            # Ensure we have capacity and write our own latest local state into fleet_states
+            # Ensure we have capacity
             self._ensure_fleet_capacity(self.vehicle_id)
-            # self.fleet_states[:, self.vehicle_id] = local_state.copy()
+            
+            # Note: local_state is used ONLY for measurement calculation in the observer update
+            # It is NOT directly assigned to fleet_states
 
             # Distributed observer for this vehicle
             self.estimated_state = self._distributed_luenberger_observer_update(
@@ -977,9 +983,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         longitudinal_state_dim = 3
         dim_distributed_observer = longitudinal_state_dim * self.observer_size
 
-        # 当前对所有车辆的估计（5 维）
-        x_i_mat5 = self.fleet_states.copy()
-
         # Distributed observer state (x_vec: pi-p0+di0, vi-v0, ai-a0)
         x_vec = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
 
@@ -1025,20 +1028,18 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         dynamics_term =  self.A_delta @ x_vec + self.B_delta @ collective_control
         
         # 2. Measurement correction (if we have data from target)
-        measurement_term = np.zeros(dim_distributed_observer)  # Use 3*observer_size dimension
+        measurement_term = np.zeros(dim_distributed_observer)  
         # Use latest self measurement (assumed available) to correct position
         local_measurement = np.zeros(self.local_measurement_dim)
         """
         Todo: get the latest relative position from sensors (Lidar/Camera)
         For now, we use the V2V local state messages to calculate the relative position measurement
         """
-        # ✅ 方案1+3: 直接从 fleet_states 读取自己的状态（已经在 update() 中更新为最新的 local_state）
-        # p_i = self.fleet_states[0, self.vehicle_id]  # Self position (Ground Truth)
-        # v_i = self.fleet_states[3, self.vehicle_id]  # Self velocity (Ground Truth)
+        # 直接从 local_state 读取自己的状态，避免依赖 fleet_states 的准确性
         p_i = local_state[0]  # Self position from local_state input
         v_i = local_state[3]  # Self velocity from local_state input
         
-        # 仅从通信获取前车状态
+        # 仅从通信获取前车状态 
         state_prev = self._get_latest_received_state(self.vehicle_id - 1, current_time_ns)
         if state_prev is not None:
             p_prev = state_prev[0]  # Previous vehicle position from received state
@@ -1046,7 +1047,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             p_prev = self.fleet_states[0, self.vehicle_id - 1]
             if self.logger:
                 self.logger.logger.warning(
-                    f"Vehicle {self.vehicle_id}: No recent local state of vehicle {self.vehicle_id - 1}, using current estimate"
+                    f"Vehicle {self.vehicle_id}: No recent local state of previous vehicle {self.vehicle_id - 1}, using current estimate"
                 )
         
         local_measurement[0] = p_i - p_prev  # relative position
@@ -1068,10 +1069,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # Get list of valid neighbors based on adjacency matrix
         my_neighbors = self.get_neighbors(self.vehicle_id)
         
-        if self.logger:
-            self.logger.logger.debug(
-                f"Vehicle {self.vehicle_id}: Processing consensus with neighbors: {my_neighbors}"
-            )
         
         # Loop through each neighbor defined by adjacency matrix
         for neighbor_id in my_neighbors:
@@ -1091,7 +1088,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 if not missing_vehicles:
                     is_complete_fleet = True
                     if self.logger:
-                        self.logger.logger.debug(
+                        self.logger.logger.info(
                             f"Vehicle {self.vehicle_id}: Complete fleet_state from neighbor {neighbor_id}"
                         )
                 else:
@@ -1145,7 +1142,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                             'acceleration': float(self.fleet_states[4, vid])
                         }
                         if self.logger:
-                            self.logger.logger.warning(
+                            self.logger.logger.info(
                                 f"Vehicle {self.vehicle_id}: Filled vehicle_{vid} using current estimate "
                                 f"(no local_state available)"
                             )
@@ -1185,7 +1182,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             neighbor_count += 1
             
             if self.logger:
-                self.logger.logger.debug(
+                self.logger.logger.info(
                     f"Vehicle {self.vehicle_id}: Consensus with neighbor {neighbor_id}, "
                     f"weight={weight:.3f}, diff_norm={np.linalg.norm(consensus_diff):.4f}, "
                     f"data_source={'fleet_state' if is_complete_fleet else 'fallback'}"
@@ -1197,7 +1194,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             consensus_term = self.consensus_gain @ consensus_accum
         
             if self.logger:
-                self.logger.logger.debug(
+                self.logger.logger.info(
                     f"Vehicle {self.vehicle_id}: Final consensus term applied, "
                     f"neighbors={neighbor_count}, norm={np.linalg.norm(consensus_term):.4f}"
                 )
@@ -1208,7 +1205,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 )
         
         # Combine all terms
-        consensus_term = np.zeros_like(dynamics_term)  # Testing without consensus first.
+        # consensus_term = np.zeros_like(dynamics_term)  # Testing without consensus first.
         x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
 
         # x_i_new = np.zeros_like(dynamics_term)  # Testing without update first.
