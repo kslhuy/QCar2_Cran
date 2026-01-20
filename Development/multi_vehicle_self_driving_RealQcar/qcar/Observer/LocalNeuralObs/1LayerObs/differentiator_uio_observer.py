@@ -925,8 +925,8 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         self.Cr = self.params['Cr']
         
         # Centralized qLPV dynamics for matrix computation
-        # min_vx aligned with vehicle model (0.15 like EKF version)
-        self.min_vx = 0.15  # [m/s]
+        # min_vx loaded from params (from parameters_qcar.yaml)
+        self.min_vx = self.params.get('vx_min', 0.1)  # Default fallback only for safety
         self._dynamics = QLPVVehicleDynamicsObs(self.params, min_vx=self.min_vx)
         
         # Initialize state estimate

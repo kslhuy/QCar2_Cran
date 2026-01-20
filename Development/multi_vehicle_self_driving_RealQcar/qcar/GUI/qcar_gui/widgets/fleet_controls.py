@@ -185,8 +185,8 @@ class FleetControlsWidget(BaseWidget):
         if self._v2v_btn:
             if activating:
                 self._v2v_btn.config(
-                    state='disabled',
-                    bg='#4d4d4d',
+                    state='normal',
+                    bg=self.theme.colors.accent_orange,
                     text="📡 Activating..."
                 )
             else:
@@ -201,8 +201,8 @@ class FleetControlsWidget(BaseWidget):
         if connected:
             if self._v2v_btn:
                 self._v2v_btn.config(
-                    state='disabled',
-                    bg='#4d4d4d',
+                    state='normal',
+                    bg=self.theme.colors.accent_orange,
                     text="📡 V2V Connected"
                 )
             if self._disable_v2v_btn:

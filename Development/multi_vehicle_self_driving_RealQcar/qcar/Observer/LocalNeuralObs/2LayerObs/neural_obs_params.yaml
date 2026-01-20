@@ -170,4 +170,16 @@ model:
   
   # Load pretrained model on initialization
   load_pretrained: false
+
+# ============================================================================
+# Data Recording Configuration
+# ============================================================================
+# Record all observer data for offline analysis and plotting
+#
+recording:
+  # Enable data recording to CSV
+  enable_recording: false
+  
+  # Output directory for recordings (relative to working directory or absolute)
+  output_dir: "neural_obs_recordings"
 # ============================================================================

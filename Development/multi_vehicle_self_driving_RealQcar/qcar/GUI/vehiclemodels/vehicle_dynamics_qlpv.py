@@ -33,7 +33,7 @@ from typing import Tuple, Optional
 from .utils.steering_constraints import steering_constraints
 from .utils.acceleration_constraints import acceleration_constraints
 
-def vehicle_dynamics_qlpv(x, u_init, p,  tire_mode: str = None ):
+def vehicle_dynamics_qlpv(x, u_init, p,  tire_mode: str = 'pacejka' ):
     """
     qLPV vehicle dynamics matching observer model
     
@@ -96,8 +96,9 @@ def vehicle_dynamics_qlpv(x, u_init, p,  tire_mode: str = None ):
     u.append(steering_constraints(delta, u_init[0], p.steering))
     u.append(acceleration_constraints(vx, u_init[1], p.longitudinal))
     
-    # Minimum velocity to avoid singularity
-    vx_safe = max(abs(vx), 0.1)   # Slightly lower than 0.15 for better low-speed precision
+    # Minimum velocity to avoid singularity (from parameters_qcar.yaml longitudinal.v_switch)
+    vx_min = getattr(p.longitudinal, 'v_switch', 0.5) if hasattr(p, 'longitudinal') else 0.5
+    vx_safe = max(abs(vx), vx_min)
     
     # Compute slip angles
     # α_f = δ - (v_y + l_f·r) / v_x

@@ -59,6 +59,7 @@ from neural_network import (
 )
 from gradient_solver import GradientSolver, create_weight_matrix
 from config_loader import load_neural_obs_config, flatten_config, merge_with_overrides
+from neural_obs_recorder import NeuralObsRecorder
 
 # Import first-layer observer from 1LayerObs directory
 one_layer_dir = parent_dir.parent / "1LayerObs"
@@ -386,8 +387,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         self.Cf = self.vehicle_params['Cf']
         self.Cr = self.vehicle_params['Cr']
         
-        # Minimum velocity threshold
-        self.min_vx = 0.5
+        # Minimum velocity threshold (from parameters_qcar.yaml)
+        self.min_vx = self.vehicle_params.get('vx_min', 0.5)
         
         # Centralized vehicle dynamics (single source of truth)
         # MUST be created before _initialize_gradient_solver which calls _compute_E_matrix
@@ -464,6 +465,17 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         # First-layer state for composite loss
         self.state_uio = np.zeros(self.INTERNAL_STATE_DIM)
+        
+        # Data recording for later plotting
+        self.recorder = None
+        self._recording_start_time = 0.0
+        if self.config.get('enable_recording', False):
+            output_dir = self.config.get('recording_output_dir', 'neural_obs_recordings')
+            self.recorder = NeuralObsRecorder(output_dir=output_dir)
+            filepath = self.recorder.start()
+            if self.logger:
+                self.logger.logger.info(f"Started neural observer recording to: {filepath}")
+            self._recording_start_time = time.time()
     
     def _load_config(self, config: Dict) -> Dict:
         """Load configuration from YAML file and merge with overrides."""
@@ -944,6 +956,31 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             # Only train when we have ground truth (GPS valid)
             if gps_valid:
                 self._train_network(nn_input, w_hat, gps_data, motor_tach)
+            
+            # ========== PHASE 7.5: DATA RECORDING ==========
+            if self.recorder is not None and self.recorder.is_recording():
+                t = time.time() - self._recording_start_time
+                measurements = {
+                    'vx': vx_meas,
+                    'r': r_meas,
+                    'psi': psi_meas,
+                    'X': X_meas,
+                    'Y': Y_meas,
+                    'ay': ay_meas,
+                }
+                # Get last loss from history if available
+                last_loss = self.loss_history[-1] if self.loss_history else 0.0
+                self.recorder.record(
+                    t=t,
+                    state_6d=self.state_nn_6d,
+                    measurements=measurements,
+                    nn_outputs=self.f_nn,
+                    uio_state=self.state_uio if self.use_first_layer else None,
+                    steering=steering,
+                    throttle=throttle,
+                    loss=last_loss,
+                    gps_valid=gps_valid
+                )
             
             self.last_update_time = time.time()
             self.update_count += 1
@@ -1433,3 +1470,27 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     def get_loss_history(self) -> list:
         """Get training loss history"""
         return self.loss_history.copy()
+    
+    def stop_recording(self) -> int:
+        """
+        Stop data recording and close the file.
+        
+        Returns:
+            Number of records written
+        """
+        if self.recorder is not None:
+            count = self.recorder.stop()
+            if self.logger and count > 0:
+                self.logger.logger.info(f"Stopped neural observer recording: {count} records")
+            return count
+        return 0
+    
+    def is_recording(self) -> bool:
+        """Check if currently recording data."""
+        return self.recorder is not None and self.recorder.is_recording()
+    
+    def get_recording_filepath(self) -> str:
+        """Get the current recording file path."""
+        if self.recorder is not None:
+            return self.recorder.get_filepath()
+        return None

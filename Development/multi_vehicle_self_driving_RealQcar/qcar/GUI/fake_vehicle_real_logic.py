@@ -491,7 +491,7 @@ class MockQCar:
         # Use qLPV dynamics (with Pacejka for true tire forces)
         try:
             derivatives = vehicle_dynamics_qlpv(
-                self.state_qlpv, control, self.params, use_pacejka=True)
+                self.state_qlpv, control, self.params,tire_mode='dynamic_linear' )
             
             # Euler integration
             for i in range(len(self.state_qlpv)):
@@ -1037,7 +1037,7 @@ def main():
     car_id = 0
     host_ip = '127.0.0.1'
     base_port = 5000
-    dynamic_model_type = 2 # Default to qLPV (2)
+    dynamic_model_type = 1 # Default to qLPV (2)
     vehicle_params = 'qcar'  # Default to QCar parameters
     
     if len(sys.argv) > 1:
