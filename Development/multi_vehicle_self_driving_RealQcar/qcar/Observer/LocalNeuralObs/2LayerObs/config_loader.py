@@ -155,6 +155,11 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     flat['n_delta_vertices'] = gain_design.get('n_delta_vertices', 3)
     flat['use_common_lyapunov'] = gain_design.get('use_common_lyapunov', True)
     
+    # Recording configuration
+    recording = config.get('recording', {})
+    flat['enable_recording'] = recording.get('enable_recording', False)
+    flat['recording_output_dir'] = recording.get('output_dir', 'neural_obs_recordings')
+    
     return flat
 
 

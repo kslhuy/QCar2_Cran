@@ -219,13 +219,13 @@ class QLPVVehicleDynamicsObs:
     Measurements: y = [v_x, r, ψ, X, Y, a_y]ᵀ
     """
     
-    def __init__(self, vehicle_params: Optional[Dict] = None, min_vx: float = 0.5):
+    def __init__(self, vehicle_params: Optional[Dict] = None, min_vx: Optional[float] = None):
         """
         Initialize qLPV vehicle dynamics
         
         Args:
             vehicle_params: Vehicle parameters dict (uses defaults if None)
-            min_vx: Minimum velocity threshold [m/s]
+            min_vx: Minimum velocity threshold [m/s]. If None, uses vx_min from YAML.
         """
         # Vehicle parameters
         self.params = get_default_vehicle_params()
@@ -242,8 +242,8 @@ class QLPVVehicleDynamicsObs:
         self.mu = self.params.get('mu', 0.01)
         self.g = 9.81  # Gravity [m/s²]
         
-        # Minimum velocity threshold
-        self.min_vx = min_vx
+        # Minimum velocity threshold (from YAML if not explicitly provided)
+        self.min_vx = min_vx if min_vx is not None else self.params.get('vx_min', 0.5)
     
     def compute_scheduling_params(self, state: np.ndarray, delta: float) -> SchedulingParameters:
         """Compute scheduling parameters from current state and input"""
@@ -701,13 +701,13 @@ class QLPVVehicleDynamicsObs:
 # =============================================================================
 
 def create_qlpv_dynamics(vehicle_params: Optional[Dict] = None, 
-                          min_vx: float = 0.5) -> QLPVVehicleDynamicsObs:
+                          min_vx: Optional[float] = None) -> QLPVVehicleDynamicsObs:
     """
     Factory function to create qLPV vehicle dynamics instance
     
     Args:
         vehicle_params: Vehicle parameters dictionary
-        min_vx: Minimum velocity threshold [m/s]
+        min_vx: Minimum velocity threshold [m/s]. If None, uses vx_min from YAML.
         
     Returns:
         Configured QLPVVehicleDynamicsObs instance

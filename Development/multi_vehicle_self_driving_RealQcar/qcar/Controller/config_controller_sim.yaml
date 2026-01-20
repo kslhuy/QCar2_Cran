@@ -48,7 +48,7 @@ hybrid_longitudinal:
 # ============================================================================
 
 # Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path'
-lateral_controller_type: 'pure_pursuit'
+lateral_controller_type: 'path'
 
 # Pure Pursuit Controller Parameters
 pure_pursuit:
