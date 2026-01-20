@@ -103,6 +103,7 @@ class PathPlanningConfig:
 class VehicleConfig:
     """Vehicle-specific configuration"""
     vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
+    probing: bool = False  # Enable YOLO perception system
     
     def __post_init__(self):
         """Validate vehicle type"""
@@ -194,6 +195,59 @@ class VehicleMainConfig:
             config_dict = yaml.safe_load(f)
         return cls.from_dict(config_dict)
     
+    @classmethod
+    def from_fleet_yaml(cls, filepath: str, car_id: int) -> 'VehicleMainConfig':
+        """
+        Load configuration from fleet_config.yaml for a specific vehicle.
+        Extracts per-vehicle settings (probing, vehicle_type, path_number, etc.)
+        from the 'vehicles' array and merges with global settings.
+        """
+        with open(filepath, 'r') as f:
+            fleet_config = yaml.safe_load(f)
+        
+        # Start with global settings from the fleet config
+        config_dict = {
+            'timing': fleet_config.get('timing', {}),
+            'yolo': fleet_config.get('yolo', {}),
+            'safety': fleet_config.get('safety', {}),
+            'logging': fleet_config.get('logging', {}),
+            'observer': fleet_config.get('observer', {}),
+        }
+        
+        # Find the vehicle with matching car_id
+        vehicles = fleet_config.get('vehicles', [])
+        vehicle_entry = None
+        for v in vehicles:
+            if v.get('car_id') == car_id:
+                vehicle_entry = v
+                break
+        
+        # Build network config
+        ground_station = fleet_config.get('ground_station', {})
+        config_dict['network'] = {
+            'host_ip': ground_station.get('local_ip'),
+            'base_port': ground_station.get('base_port', 5000),
+            'car_id': car_id,
+        }
+        
+        # Build vehicle config from per-vehicle entry
+        if vehicle_entry:
+            config_dict['vehicle'] = {
+                'vehicle_type': vehicle_entry.get('vehicle_type', 'Qcar'),
+                'probing': vehicle_entry.get('probing', False),
+            }
+            config_dict['path'] = {
+                'path_number': vehicle_entry.get('path_number', 0),
+                'calibrate': vehicle_entry.get('calibrate', False),
+                'left_hand_traffic': vehicle_entry.get('left_hand_traffic', False),
+            }
+        else:
+            # Use defaults if vehicle not found
+            config_dict['vehicle'] = {}
+            config_dict['path'] = {}
+        
+        return cls.from_dict(config_dict)
+    
     def to_dict(self) -> dict:
         """Convert config to dictionary"""
         return {
@@ -233,3 +287,5 @@ class VehicleMainConfig:
             self.network.car_id = args.car_id
         if hasattr(args, 'vehicle_type'):
             self.vehicle.vehicle_type = args.vehicle_type
+        if hasattr(args, 'probing'):
+            self.vehicle.probing = args.probing

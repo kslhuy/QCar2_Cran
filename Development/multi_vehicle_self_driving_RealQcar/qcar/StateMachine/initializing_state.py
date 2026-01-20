@@ -119,7 +119,7 @@ class InitializingState(StateBase):
         initialization_steps = [
             ("Path planning", self._initialize_path_planning, 0.2),
             ("QCar hardware", self._initialize_qcar, 0.2),
-            ("Perception", self._initialize_perception, 0.2),
+            # Perception is now activated via Ground Station command
             ("Telemetry logging", self._initialize_telemetry, 0.1)
         ]
         
@@ -203,7 +203,7 @@ class InitializingState(StateBase):
     
     def _initialize_path_planning(self) -> bool:
         """Initialize path planning system"""
-        if not self.vehicle_logic.controller_config.enable_steering_control:
+        if not self.vehicle_logic.controller_manager.config.enable_steering_control:
             return True
         
         try:
@@ -296,7 +296,10 @@ class InitializingState(StateBase):
         try:
             
             # Initialize QCar and GPS based on physical/simulation mode
-            if not IS_PHYSICAL_QCAR:
+            if self.vehicle_logic.vehicle_type == "Limo":
+                self.logger.logger.info("Limo Car detected - skipping QCar initialization")
+                
+            elif not IS_PHYSICAL_QCAR and self.vehicle_logic.vehicle_type == "Qcar":
                 self.logger.logger.info("QCar Simulation mode detected")
                 from qvl.multi_agent import readRobots
                 self._initialize_simulated_qcar(readRobots)
@@ -393,7 +396,7 @@ class InitializingState(StateBase):
             success = self.vehicle_logic.vehicle_observer.initialize_local_estimator(
                 gps=self.vehicle_logic.gps,
                 initial_pose=self.init_pose,
-                estimator_params={'use_qcar_ekf': self.vehicle_logic.controller_config.enable_steering_control}
+                estimator_params={'use_qcar_ekf': self.vehicle_logic.controller_manager.config.enable_steering_control}
             )
             
             if success:
@@ -412,26 +415,90 @@ class InitializingState(StateBase):
             return False
     
     def _initialize_perception(self) -> bool:
-        """Initialize perception systems (YOLO) - optional component"""
+        """Initialize perception systems (YOLO) - launch as subprocess"""
         try:
             
-            # # TODO: Enable YOLOReceiver when ready
-            # if IS_PHYSICAL_QCAR:
-            #     yolo_receiver = YOLOReceiver(nonBlocking=False)
-            # else:
-            
-            yolo_receiver = None
+            if not IS_PHYSICAL_QCAR:
+
+                import subprocess
+                import os
+                
+                # Calculate YOLO port for this car
+                yolo_port = f'1866{self.vehicle_logic.vehicle_id}'
+                
+                # Construct path to yolo_server_virtual.py
+                yolo_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
+                                        '..', 'Yolo', 'yolo_server_virtual.py')
+                
+                self.logger.logger.info(f"Launching YOLO server on port {yolo_port}...")
+                
+                # Launch YOLO server as subprocess in new console window for debugging
+                yolo_process = subprocess.Popen(
+                    [
+                        'python', yolo_script,
+                        '-idx', str(self.vehicle_logic.vehicle_id),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+                )
+                
+                # Store process handle for cleanup
+                self.vehicle_logic.yolo_process = yolo_process
+                
+                # Wait for YOLO server to start
+                self.logger.logger.info("Waiting for YOLO server to initialize...")
+                time.sleep(2.5)
+                
+                # Check if process is still running
+                if yolo_process.poll() is not None:
+                    self.logger.log_error("YOLO server failed to start")
+                    return False
+                
+                # Create YOLOReceiver to connect to the server
+                self.logger.logger.info("Connecting to YOLO server...")
+                yolo_receiver = YOLOReceiver(
+                    ip='localhost',
+                    nonBlocking=True,
+                    port=yolo_port
+                )
+
+                # yolo_receiver = None  # YOLO not used on physical QCar
+
+            else:
+                yolo_receiver = YOLOReceiver(
+                    ip='localhost',
+                    nonBlocking=True,
+                )
+                # yolo_receiver = None  # YOLO not used on physical QCar
+            # Create YOLO drive logic with proper pulse length
             pulse_length = (
                 self.config.timing.controller_update_rate *
                 self.config.yolo.pulse_length_multiplier
             )
-            yolo_drive = YOLODriveLogic(pulseLength=pulse_length)
+            yolo_drive_logic = YOLODriveLogic(
+                stopSignThreshold=0.6,
+                trafficThreshold=1.7,
+                carThreshold=0.3,
+                yieldThreshold=0.9,
+                personThreshold=0.6,
+                pulseLength=pulse_length
+            )
             
-            self.vehicle_logic.yolo_manager.initialize(yolo_receiver, yolo_drive)
+            # Initialize YOLOManager
+            self.vehicle_logic.yolo_manager.initialize(yolo_receiver, yolo_drive_logic)
+            
+            self.logger.logger.info("YOLO system enabled successfully")
             return True
             
         except Exception as e:
-            # YOLO is optional - log warning but continue
-            self.logger.logger.warning(f"Perception skipped: {e}")
+            self.logger.log_error("Perception initialization failed", e)
+            # Clean up process if it was started
+            if hasattr(self.vehicle_logic, 'yolo_process'):
+                try:
+                    self.vehicle_logic.yolo_process.terminate()
+                except:
+                    pass
+            # YOLO is optional - continue without it
             self.logger.logger.warning("Vehicle will operate without YOLO perception")
             return True

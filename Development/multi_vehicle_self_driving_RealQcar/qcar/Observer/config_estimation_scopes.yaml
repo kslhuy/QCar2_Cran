@@ -1,0 +1,75 @@
+# Estimation Scopes Configuration
+# ================================
+# Configure visualization settings for local and fleet estimators.
+
+scopes:
+  # Master enable switch
+  enabled: true
+  
+  # Refresh rate (frames per second)
+  fps: 30
+  
+  # Default time window for plots (seconds)
+  time_window: 60.0
+  
+  # Maximum vehicles to display in fleet plots
+  max_vehicles: 5
+
+# Preset configuration
+presets:
+  # Local estimator presets
+  local_state:
+    enabled: true
+    y_limits:
+      position: [-5, 5]
+      velocity: [0, 2]
+      theta: [-3.5, 3.5]
+  
+  local_error:
+    enabled: true
+    y_limits:
+      position_error: [-1, 1]
+      heading_error: [-0.5, 0.5]
+      acceleration: [-2, 2]
+  
+  local_control:
+    enabled: true
+    y_limits:
+      velocity: [0, 1.5]
+      throttle: [-0.3, 0.3]
+      steering: [-0.6, 0.6]
+  
+  # Fleet estimator presets
+  fleet_position:
+    enabled: true
+    x_limits: [-3, 3]
+    y_limits: [-3, 3]
+  
+  fleet_state:
+    enabled: true
+    y_limits:
+      position: [-5, 5]
+      theta: [-3.5, 3.5]
+      velocity: [0, 2]
+  
+  fleet_consensus:
+    enabled: true
+    y_limits:
+      error: [0, 1]
+      trust: [0, 1.2]
+
+# Recording settings
+recording:
+  enabled: false
+  output_dir: "scope_recordings"
+  columns:
+    - x
+    - y
+    - theta
+    - velocity
+    - acceleration
+    - x_gps
+    - y_gps
+    - theta_gps
+    - steering
+    - throttle

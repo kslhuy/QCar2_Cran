@@ -1,0 +1,107 @@
+# ============================================================================
+# Differentiator Configuration File
+# ============================================================================
+#
+# This file contains parameters for all differentiator types used in the
+# observer framework. Modify these values to tune differentiator performance.
+#
+# Available types:
+#   - dirty_derivative: Low-pass filtered (simple, stable)
+#   - highgain: High-gain observer (fast, good balance)
+#   - sliding_mode: Super-twisting (robust, finite-time convergence)
+#
+# ============================================================================
+
+# Default differentiator type to use when not specified
+default_type: highgain
+
+# ============================================================================
+# Dirty Derivative (Low-pass Filtered)
+# ============================================================================
+# Simple first-order low-pass filtered differentiator using Tustin discretization.
+# Good for: Low-frequency signals, simple applications
+# Trade-off: Larger tau = more smoothing, slower response
+#
+dirty_derivative:
+  # Filter time constant [seconds]
+  # Larger values = more smoothing but slower response
+  # Typical range: 0.01 - 0.1
+  tau: 0.02
+
+# ============================================================================
+# High-Gain Differentiator
+# ============================================================================
+# Second-order high-gain observer for differentiation.
+# Good for: General purpose, good balance of speed and noise rejection
+# Trade-off: Higher omega = faster but more noise sensitive
+#
+highgain:
+  # Observer bandwidth [rad/s]
+  # Higher = faster response but more noise amplification
+  # Typical range: 20 - 100
+  omega: 50.0
+  
+  # Damping ratio
+  # 0.707 = Butterworth (optimal flatness)
+  # 1.0 = critically damped (no overshoot)
+  # Typical range: 0.707 - 1.0
+  zeta: 0.707
+  
+  # Maximum derivative magnitude for anti-windup [units/s]
+  # Set to null for no limit
+  # Use when large transients cause issues
+  ydot_max: null
+
+# ============================================================================
+# Sliding Mode Differentiator (Super-Twisting)
+# ============================================================================
+# Super-twisting algorithm with finite-time convergence.
+# Good for: Robustness to disturbances and noise
+# Trade-off: Higher gains = faster but may amplify noise
+#
+sliding_mode:
+  # First gain (affects convergence rate)
+  # Typical range: 10 - 100
+  k1: 30.0
+  
+  # Second gain (affects robustness)
+  # Usually k2 ≈ 10 * k1
+  # Typical range: 100 - 1000
+  k2: 300.0
+  
+  # Smoothing parameter for sign function
+  # Smaller = more aggressive, may cause chattering
+  # Larger = smoother but slower settling
+  # Typical range: 0.001 - 0.1
+  epsilon: 0.01
+  
+  # Smoothing type for sign function:
+  #   'epsilon': e / (|e| + ε) - default, simple
+  #   'tanh': tanh(e / ε) - smooth, bounded
+  #   'saturation': sat(e / ε) - piecewise linear
+  smoothing: epsilon
+  
+  # Maximum derivative magnitude for anti-windup [units/s]
+  # Set to null for no limit
+  v_max: null
+
+# ============================================================================
+# Tuning Presets (for reference)
+# ============================================================================
+# Use these as starting points for different applications.
+#
+# Vehicle dynamics (yaw rate derivative):
+#   dirty_derivative: tau = 0.02
+#   highgain: omega = 50, zeta = 0.707
+#   sliding_mode: k1 = 30, k2 = 300
+#
+# Fast response (high bandwidth):
+#   dirty_derivative: tau = 0.01
+#   highgain: omega = 100, zeta = 1.0
+#   sliding_mode: k1 = 50, k2 = 500
+#
+# Noisy signals (more filtering):
+#   dirty_derivative: tau = 0.05
+#   highgain: omega = 30, zeta = 1.0
+#   sliding_mode: k1 = 20, k2 = 200
+# ============================================================================

@@ -1,8 +1,8 @@
 import math
 
-from vehiclemodels.utils.steering_constraints import steering_constraints
-from vehiclemodels.utils.acceleration_constraints import acceleration_constraints
-from vehiclemodels.utils.vehicle_dynamics_ks_cog import vehicle_dynamics_ks_cog
+from .utils.steering_constraints import steering_constraints
+from .utils.acceleration_constraints import acceleration_constraints
+from .utils.vehicle_dynamics_ks_cog import vehicle_dynamics_ks_cog
 
 __author__ = "Matthias Althoff"
 __copyright__ = "TUM Cyber-Physical Systems Group"
@@ -85,7 +85,7 @@ def vehicle_dynamics_st(x, uInit, p):
         f.append(d_beta)
 
     else:
-        # system dynamics
+        # system dynamics Signle track model
         f = [x[3] * math.cos(x[6] + x[4]),
              x[3] * math.sin(x[6] + x[4]),
              u[0],

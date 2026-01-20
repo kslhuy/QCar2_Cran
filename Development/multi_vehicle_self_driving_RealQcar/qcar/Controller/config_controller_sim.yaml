@@ -32,7 +32,7 @@ cacc:
 pid:
   kp: 0.3                    # Proportional gain
   ki: 0.2                    # Integral gain
-  kd: 0.01                  # Derivative gain
+  kd: 0.005                  # Derivative gain
   max_throttle: 0.1          # Maximum throttle output
   ei_max: 1.0                # Integral anti-windup limit
   v_ref: 0.6                # Default reference velocity (m/s)
@@ -47,7 +47,7 @@ hybrid_longitudinal:
 # LATERAL CONTROLLER CONFIGURATION
 # ============================================================================
 
-# Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid'
+# Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path'
 lateral_controller_type: 'pure_pursuit'
 
 # Pure Pursuit Controller Parameters
@@ -56,6 +56,10 @@ pure_pursuit:
   k_steering: 0.4            # Proportional steering gain
   max_steering: 0.55         # Maximum steering angle (radians)
   adaptive_lookahead: true   # Enable adaptive lookahead based on distance
+  # Turning section parameters (for corner-cutting prevention)
+  curvature_threshold: 0.3   # Lane curvature threshold for turn detection
+  turn_lookahead_offset: 0.1 # Lateral offset in turns (meters)
+  turn_lookahead_gain: 1.5   # Lookahead distance multiplier in turns
 
 # Stanley Controller Parameters
 stanley:
@@ -80,6 +84,15 @@ hybrid_lateral:
   switch_distance: 1.5                 # Distance threshold for switching (meters)
   use_primary_params: true             # Use params from primary controller section
   use_secondary_params: true           # Use params from secondary controller section
+
+# Fusion Lateral Controller Parameters (combines path + leader tracking)
+fusion_lateral:
+  mode: 'path_primary'       # 'path_primary', 'leader_primary', 'adaptive'
+  path_weight: 0.7           # Weight for path reference (0-1)
+  leader_weight: 0.3         # Weight for leader adjustment (0-1)
+  deviation_threshold: 0.3   # Max leader deviation before override (radians)
+  smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother)
+  max_steering: 0.55         # Maximum steering angle (radians)
 
 # ============================================================================
 # VEHICLE PARAMETERS (for all controllers)

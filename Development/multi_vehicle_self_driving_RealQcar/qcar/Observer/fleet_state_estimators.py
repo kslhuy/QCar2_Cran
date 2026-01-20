@@ -110,7 +110,7 @@ class FleetStateEstimatorBase(ABC):
         Communication/log layers hand us dicts; algorithms want numpy arrays.
         We normalize here so downstream consumers always see ndarray.
         """
-        # print(f"Adding received local state from vehicle_id {sender_id}")
+        # # print(f"Adding received local state from vehicle_id {sender_id}")
         try:
             if sender_id == self.vehicle_id:
                 return False  # Don't store own state
@@ -408,131 +408,6 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
 
 
 
-class DistributedKalmanEstimator(FleetStateEstimatorBase):
-    """
-    Distributed Kalman Filter for fleet estimation
-    More sophisticated, uses dynamics model and consensus
-    Inspired by VehicleObserver.py _distributed_observer_each
-    """
-    
-    def __init__(self, vehicle_id: int, fleet_size: int, state_dim: int = 5,
-                 config: Dict = None, logger=None):
-        """
-        Initialize distributed Kalman estimator
-        
-        Args:
-            vehicle_id: ID of the host vehicle
-            fleet_size: Total number of vehicles in fleet
-            state_dim: State dimension (default 5: x, y, theta, v, a)
-            config: Configuration dict
-            logger: Logger instance
-        """
-        super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
-        
-        # Observer gains
-        self.observer_gain = self.config.get('observer_gain', 0.1)
-        self.consensus_gain = self.config.get('consensus_gain', 0.2)
-        
-        # Communication weights (uniform for now)
-        self.weights = np.ones(fleet_size) / fleet_size
-    
-    def update(self, local_state: np.ndarray, dt: float, 
-               current_time_ns: int, control: np.ndarray) -> np.ndarray:
-        """Update using distributed observer with dynamics
-        
-        Args:
-            local_state: Own vehicle state [x, y, theta, v, a]
-            dt: Time step in seconds
-            current_time_ns: Current time in nanoseconds
-            control: Control input [steering, throttle]
-        """
-        try:
-            # Ensure fleet capacity for this vehicle and expand weights if needed
-            if self.vehicle_id >= self.fleet_states.shape[1]:
-                old_fleet_size = self.fleet_states.shape[1]
-                self._ensure_fleet_capacity(self.vehicle_id)
-                
-                # Expand weights array to match new fleet size
-                new_weights = np.ones(self.fleet_size) / self.fleet_size
-                new_weights[:old_fleet_size] = self.weights[:old_fleet_size] * (old_fleet_size / self.fleet_size)
-                self.weights = new_weights
-            
-            # Update own state in fleet
-            self.fleet_states[:, self.vehicle_id] = local_state.copy()
-            
-            # Update estimates for other vehicles
-            for target_id in range(self.fleet_size):
-                if target_id == self.vehicle_id:
-                    continue
-                
-                # Distributed observer for this vehicle
-                self.fleet_states[:, target_id] = self._distributed_observer_update(
-                    target_id, current_time_ns, control, dt
-                )
-            
-            # Cleanup old data
-            self._cleanup_old_data(current_time_ns)
-            
-            return self.fleet_states.copy()
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Distributed Kalman update error", e)
-            return self.fleet_states.copy()
-    
-    def _distributed_observer_update(self, target_id: int, current_time_ns: int,
-                                     control: np.ndarray, dt: float) -> np.ndarray:
-        """
-        Distributed observer update for one target vehicle
-        Combines dynamics prediction, measurement correction, and consensus
-        """
-        # Current estimate
-        x_ij = self.fleet_states[:, target_id].copy()
-        
-        # 1. Dynamics prediction (bicycle model)
-        x, y, theta, v = x_ij
-        steering, throttle = control[0], control[1] if len(control) > 1 else 0.0
-        
-        # Simple bicycle model
-        x_pred = x + v * np.cos(theta) * dt
-        y_pred = y + v * np.sin(theta) * dt
-        theta_pred = theta + (v * np.tan(steering) / 1.0) * dt  # L=1.0m wheelbase
-        v_pred = v + throttle * dt
-        
-        dynamics_term = np.array([x_pred, y_pred, theta_pred, v_pred])
-        
-        # 2. Measurement correction (if we have data from target)
-        measurement_term = np.zeros(self.state_dim)
-        latest_state = self._get_latest_received_state(target_id, current_time_ns)
-        
-        if latest_state is not None:
-            # Measurement correction: L * (y - x_pred)
-            measurement_error = latest_state - dynamics_term
-            measurement_term = self.observer_gain * measurement_error
-        
-        # 3. Consensus term (simple for now - can be enhanced)
-        consensus_term = np.zeros(self.state_dim)
-        
-        # Combine all terms
-        x_ij_new = dynamics_term + measurement_term + consensus_term
-        
-        # Apply state constraints
-        x_ij_new = self._apply_state_constraints(x_ij_new)
-        
-        return x_ij_new
-    
-    def _apply_state_constraints(self, state: np.ndarray) -> np.ndarray:
-        """Apply physical constraints to state"""
-        # Normalize angle to [-pi, pi]
-        state[2] = np.arctan2(np.sin(state[2]), np.cos(state[2]))
-        
-        # Velocity constraints (reasonable for QCar)
-        state[3] = np.clip(state[3], -2.0, 2.0)
-        
-        return state
-    
-
-
 class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
     """
     Distributed Luenberger Observer for fleet longitudinal estimation
@@ -630,6 +505,196 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             f"Vehicle {self.vehicle_id}: Observer gain: {self.observer_gain}, Consensus gain: {self.consensus_gain}"
         )
 
+        # Communication weights (uniform for now)
+        self.weights = np.ones(self.observer_size) / self.observer_size
+        
+        # Communication adjacency matrix - defines which FOLLOWER vehicles can communicate
+        # Note: Adjacency matrix is [observer_size x observer_size], NOT including leader (vehicle 0)
+        # Matrix indices 0..observer_size-1 correspond to follower vehicles 1..observer_size
+        # Default: chain topology for platoon (each follower talks to neighbors)
+        # Can be overridden by config['adjacency_matrix']
+        if 'adjacency_matrix' in self.config:
+            self.adjacency_matrix = np.array(self.config['adjacency_matrix'])
+        else:
+            # Default chain topology: follower i connected to follower i-1 and i+1
+            self.adjacency_matrix = self._create_chain_topology()
+
+        # 🔧 添加：打印邻接矩阵用于调试
+        if self.logger:
+            self.logger.logger.info(
+                f"Vehicle {self.vehicle_id}: Adjacency matrix initialized "
+                f"[{self.observer_size}x{self.observer_size}]:\n{self.adjacency_matrix}"
+            )
+
+        # Validate adjacency matrix dimensions (should be observer_size, not fleet_size)
+        if self.adjacency_matrix.shape != (self.observer_size, self.observer_size):
+            if self.logger:
+                self.logger.logger.warning(
+                    f"Adjacency matrix shape {self.adjacency_matrix.shape} doesn't match observer_size {self.observer_size}. "
+                    f"Using default chain topology."
+                )
+            self.adjacency_matrix = self._create_chain_topology()
+        
+        # 🔧 在初始化阶段计算并缓存邻居列表
+        self.my_neighbors = self.get_neighbors(self.vehicle_id)
+        
+        # 🔧 在初始化阶段计算并缓存输出矩阵Ci
+        self.Ci = self.compute_output_matrix_Ci(self.vehicle_id)
+        
+        # 🔧 在日志中打印邻居列表和矩阵信息
+        if self.logger:
+            self.logger.logger.info(
+                f"Vehicle {self.vehicle_id}: Neighbors list initialized: {self.my_neighbors}"
+            )
+            self.logger.logger.info(
+                f"Vehicle {self.vehicle_id}: Output matrix Ci computed with shape: {self.Ci.shape}"
+            )
+    
+    def _create_chain_topology(self) -> np.ndarray:
+        """
+        Distributed observer update for one target vehicle
+        Combines dynamics prediction, measurement correction, and consensus
+        """
+        # Current estimate
+        x_ij = self.fleet_states[:, target_id].copy()
+        
+        # 1. Dynamics prediction (bicycle model)
+        x, y, theta, v = x_ij
+        steering, throttle = control[0], control[1] if len(control) > 1 else 0.0
+        
+        # Simple bicycle model
+        x_pred = x + v * np.cos(theta) * dt
+        y_pred = y + v * np.sin(theta) * dt
+        theta_pred = theta + (v * np.tan(steering) / 1.0) * dt  # L=1.0m wheelbase
+        v_pred = v + throttle * dt
+        
+        dynamics_term = np.array([x_pred, y_pred, theta_pred, v_pred])
+        
+        # 2. Measurement correction (if we have data from target)
+        measurement_term = np.zeros(self.state_dim)
+        latest_state = self._get_latest_received_state(target_id, current_time_ns)
+        
+        if latest_state is not None:
+            # Measurement correction: L * (y - x_pred)
+            measurement_error = latest_state - dynamics_term
+            measurement_term = self.observer_gain * measurement_error
+        
+        # 3. Consensus term (simple for now - can be enhanced)
+        consensus_term = np.zeros(self.state_dim)
+        
+        # Combine all terms
+        x_ij_new = dynamics_term + measurement_term + consensus_term
+        
+        # Apply state constraints
+        x_ij_new = self._apply_state_constraints(x_ij_new)
+        
+        return x_ij_new
+    
+    def _apply_state_constraints(self, state: np.ndarray) -> np.ndarray:
+        """Apply physical constraints to state"""
+        # Normalize angle to [-pi, pi]
+        state[2] = np.arctan2(np.sin(state[2]), np.cos(state[2]))
+        
+        # Velocity constraints (reasonable for QCar)
+        state[3] = np.clip(state[3], -2.0, 2.0)
+        
+        return state
+    
+
+
+class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
+    """
+    Distributed Luenberger Observer for fleet longitudinal estimation
+    More sophisticated, uses dynamics model and consensus
+    Inspired by VehicleObserver.py _distributed_observer_each
+    
+    Communication Topology:
+    - Uses adjacency matrix to define which FOLLOWER vehicles can communicate
+    - Adjacency matrix is [observer_size x observer_size], NOT including leader (vehicle 0)
+    - Matrix indices 0..observer_size-1 correspond to follower vehicles 1..observer_size
+    - Default: Chain topology (follower i talks to follower i-1 and i+1)
+    - Can override with config['adjacency_matrix']
+    - Consensus term only considers neighbors defined in adjacency matrix
+    
+    Example config for 4-vehicle fleet (1 leader + 3 followers):
+        config = {
+            'observer_gain': 0.1,
+            'consensus_gain': 0.2,
+            'adjacency_matrix': [  # Optional: custom topology [3x3] for 3 followers
+                [0, 1, 0],  # Follower 1 (vehicle 1) connected to follower 2 (vehicle 2)
+                [1, 0, 1],  # Follower 2 (vehicle 2) connected to followers 1 and 3
+                [0, 1, 0]   # Follower 3 (vehicle 3) connected to follower 2 (vehicle 2)
+            ]
+        }
+    """
+    
+    def __init__(self, vehicle_id: int, fleet_size: int, state_dim: int = 5,
+                 config: Dict = None, logger=None):
+        """
+        Initialize distributed Luenberger Observer
+        
+        Args:
+            vehicle_id: ID of the host vehicle
+            fleet_size: Total number of vehicles in fleet
+            state_dim: State dimension
+            config: Configuration dict
+            logger: Logger instance
+        """
+        super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
+        
+        # System matrices of the longitudinal model
+        tau = 0.16  # Time constant
+        self.h = 1.0     # time headway
+        self.d = 0.8    # Desired distance
+        self.observer_size = self.fleet_size - 1  # Exclude leader from observer size
+
+        A_tau = np.array([
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, -1.0/tau],
+        ])
+
+        B_tau = np.array([
+            [0.0],
+            [0.0],
+            [1.0/tau],
+        ])
+
+        A_h = np.array([
+            [0.0, 0.0, self.h],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ])
+
+        # B_delta = blkdiag(B_tau, B_tau, B_tau)
+        self.B_delta = np.block([
+            [B_tau,              np.zeros((self.observer_size, 1)), np.zeros((self.observer_size, 1))],
+            [np.zeros((self.observer_size, 1)),  B_tau,             np.zeros((self.observer_size, 1))],
+            [np.zeros((self.observer_size, 1)),  np.zeros((self.observer_size, 1)), B_tau],
+        ])
+
+        A_h_tau = A_h + A_tau
+
+        # A_delta = [A_h_tau, 0, 0; A_h, A_h_tau, 0; A_h, A_h, A_h_tau]
+        Z = np.zeros((self.observer_size, self.observer_size))
+        self.A_delta = np.block([
+            [A_h_tau, Z,      Z],
+            [A_h,     A_h_tau, Z],
+            [A_h,     A_h,    A_h_tau],
+        ])
+
+        self.Cv = np.array([-self.h,1])
+        self.Cd = np.array([-1,0])
+        self.Cf = np.array([[1, -self.h, 0],
+                            [0, 1, 0]])
+        self.Cp = np.array([[-1, 0, 0],
+                            [0, 0, 0]])
+        self.local_measurement_dim = 2 # measuring relative position and velocity pi - pi-1 vi
+
+        # Observer gains
+        self.observer_gain = self.config.get('observer_gain', 0.1)
+        self.consensus_gain = self.config.get('consensus_gain', 0.2)
+        
         # Communication weights (uniform for now)
         self.weights = np.ones(self.observer_size) / self.observer_size
         
@@ -1291,11 +1356,32 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 class FleetEstimatorFactory:
     """Factory to create fleet state estimators by name"""
     
+    # Base estimator types (always available)
     ESTIMATOR_TYPES = {
         'consensus': ConsensusFleetEstimator,
-        'distributed_kalman': DistributedKalmanEstimator,
         'distributed_luenberger': DistributedLuenbergerEstimator,
     }
+    
+    # Trust-based estimators are loaded lazily to avoid circular imports
+    _trust_estimators_loaded = False
+    
+    @classmethod
+    def _load_trust_estimators(cls):
+        """Lazily load trust-based estimators to avoid circular imports"""
+        if cls._trust_estimators_loaded:
+            return
+        
+        try:
+            from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
+                TrustBasedFleetEstimator,
+                TrustBasedKalmanEstimator
+            )
+            cls.ESTIMATOR_TYPES['trust_consensus'] = TrustBasedFleetEstimator
+            cls.ESTIMATOR_TYPES['trust_kalman'] = TrustBasedKalmanEstimator
+            cls._trust_estimators_loaded = True
+        except ImportError as e:
+            # Trust-based estimators not available
+            pass
     
     @staticmethod
     def create(estimator_type: str, vehicle_id: int, fleet_size: int,
@@ -1304,7 +1390,8 @@ class FleetEstimatorFactory:
         Create a fleet state estimator
         
         Args:
-            estimator_type: One of 'consensus', 'distributed_kalman'
+            estimator_type: One of 'consensus', 'distributed_kalman', 
+                           'distributed_luenberger', 'trust_consensus', 'trust_kalman'
             vehicle_id: ID of the host vehicle
             fleet_size: Total number of vehicles in fleet
             state_dim: State dimension (default 3) based on vehicle model
@@ -1314,6 +1401,10 @@ class FleetEstimatorFactory:
         Returns:
             Fleet state estimator instance
         """
+        # Try to load trust-based estimators if requesting one
+        if estimator_type.startswith('trust_'):
+            FleetEstimatorFactory._load_trust_estimators()
+        
         if estimator_type not in FleetEstimatorFactory.ESTIMATOR_TYPES:
             raise ValueError(
                 f"Unknown fleet estimator type: {estimator_type}. "
@@ -1328,3 +1419,9 @@ class FleetEstimatorFactory:
             config=config,
             logger=logger
         )
+    
+    @classmethod
+    def get_available_types(cls) -> List[str]:
+        """Get list of available estimator types"""
+        cls._load_trust_estimators()
+        return list(cls.ESTIMATOR_TYPES.keys())

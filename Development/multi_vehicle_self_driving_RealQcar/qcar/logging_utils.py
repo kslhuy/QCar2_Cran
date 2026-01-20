@@ -54,6 +54,13 @@ class VehicleLogger:
         self.following_leader_thread = None
         self.following_leader_active = False
         
+        # Trust and weight logging
+        self.trust_weight_file = None
+        self.trust_weight_writer = None
+        self.trust_weight_queue = queue.Queue(maxsize=1000)
+        self.trust_weight_thread = None
+        self.trust_weight_active = False
+        
         # Non-blocking logging queue and thread
         self.log_queue = queue.Queue(maxsize=1000)  # Buffer up to 1000 log entries
         self.logging_thread = None
@@ -160,6 +167,9 @@ class VehicleLogger:
         
         # Setup following leader state logging
         self._setup_following_leader_logging(run_dir)
+        
+        # Setup trust and weight logging
+        self._setup_trust_weight_logging(run_dir)
         
         return run_dir
     
@@ -367,6 +377,117 @@ class VehicleLogger:
                     time.sleep(0.01)
                 except:
                     pass
+    
+    def _setup_trust_weight_logging(self, run_dir: str):
+        """Setup CSV logging for trust scores and consensus weights"""
+        trust_weight_file = os.path.join(run_dir, f"trust_weight_vehicle_{self.car_id}.csv")
+        self.trust_weight_file = open(trust_weight_file, 'w', newline='', buffering=8192)
+        
+        fieldnames = [
+            'timestamp',  # Relative time in seconds
+            # Target vehicle being evaluated
+            'target_id',
+            # Trust scores
+            'trust_score', 'velocity_score', 'distance_score', 
+            'acceleration_score', 'heading_score', 'beacon_score', 'quality_factor',
+            # Weight values
+            'w0', 'w_self', 'w_neighbor',
+            # Attack flags
+            'flag_target_attack', 'flag_local_est_check', 'flag_global_est_check'
+        ]
+        
+        self.trust_weight_writer = csv.DictWriter(self.trust_weight_file, fieldnames=fieldnames)
+        self.trust_weight_writer.writeheader()
+        self.trust_weight_file.flush()
+        
+        # Start async logging thread
+        self.trust_weight_active = True
+        self.trust_weight_thread = threading.Thread(target=self._trust_weight_worker, daemon=True)
+        self.trust_weight_thread.start()
+        
+        self.logger.info(f"Trust and weight logging initialized: {trust_weight_file}")
+    
+    def _trust_weight_worker(self):
+        """Background thread worker for trust and weight logging"""
+        flush_counter = 0
+        while self.trust_weight_active:
+            try:
+                log_entry = self.trust_weight_queue.get(timeout=0.1)
+                
+                if log_entry is None:  # Poison pill
+                    break
+                
+                if self.trust_weight_writer:
+                    self.trust_weight_writer.writerow(log_entry)
+                    flush_counter += 1
+                    
+                    if flush_counter >= 100 or (self.trust_weight_queue.qsize() == 0 and flush_counter > 0):
+                        try:
+                            self.trust_weight_file.flush()
+                            os.fsync(self.trust_weight_file.fileno())
+                            flush_counter = 0
+                        except (OSError, IOError) as e:
+                            print(f"[Trust Weight Logger] Flush failed: {e}")
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[Trust Weight Logger] Error: {e}")
+                try:
+                    time.sleep(0.01)
+                except:
+                    pass
+    
+    def log_trust_weight(self, target_id: int, trust_data: dict, weight_data: dict = None):
+        """Log trust score and weight data for a target vehicle (non-blocking via queue)
+        
+        Args:
+            target_id: ID of the vehicle being evaluated
+            trust_data: Dictionary with trust scores {
+                'trust_score': float,  # Final combined trust score
+                'velocity_score': float,  # Component scores
+                'distance_score': float,
+                'acceleration_score': float,
+                'heading_score': float,
+                'beacon_score': float,
+                'quality_factor': float,
+                'flag_target_attack': bool,  # Attack flags
+                'flag_local_est_check': bool,
+                'flag_global_est_check': bool
+            }
+            weight_data: Optional dictionary with weight values {
+                'w0': float,  # Direct measurement weight
+                'w_self': float,  # Self weight
+                'w_neighbor': float  # Neighbor consensus weight
+            }
+        """
+        if self.trust_weight_writer and self.trust_weight_active:
+            try:
+                log_entry = {
+                    'timestamp': self.get_relative_time(),
+                    'target_id': target_id,
+                    # Trust scores
+                    'trust_score': trust_data.get('trust_score', 0.0),
+                    'velocity_score': trust_data.get('velocity_score', 0.0),
+                    'distance_score': trust_data.get('distance_score', 0.0),
+                    'acceleration_score': trust_data.get('acceleration_score', 0.0),
+                    'heading_score': trust_data.get('heading_score', 0.0),
+                    'beacon_score': trust_data.get('beacon_score', 0.0),
+                    'quality_factor': trust_data.get('quality_factor', 0.0),
+                    # Weight values
+                    'w0': weight_data.get('w0', 0.0) if weight_data else 0.0,
+                    'w_self': weight_data.get('w_self', 0.0) if weight_data else 0.0,
+                    'w_neighbor': weight_data.get('w_neighbor', 0.0) if weight_data else 0.0,
+                    # Attack flags
+                    'flag_target_attack': trust_data.get('flag_target_attack', False),
+                    'flag_local_est_check': trust_data.get('flag_local_est_check', False),
+                    'flag_global_est_check': trust_data.get('flag_global_est_check', False)
+                }
+                self.trust_weight_queue.put_nowait(log_entry)
+            except queue.Full:
+                pass
+            except Exception as e:
+                print(f"[Trust Weight Logger] Error queuing data: {e}")
     
     def log_telemetry(self, data: dict):
         """Log telemetry data to CSV (non-blocking via queue)"""
@@ -609,6 +730,17 @@ class VehicleLogger:
             if self.following_leader_thread and self.following_leader_thread.is_alive():
                 self.following_leader_thread.join(timeout=2.0)
         
+        # Stop trust and weight logging thread
+        if self.trust_weight_active:
+            self.trust_weight_active = False
+            try:
+                self.trust_weight_queue.put(None, timeout=1.0)
+            except:
+                pass
+            
+            if self.trust_weight_thread and self.trust_weight_thread.is_alive():
+                self.trust_weight_thread.join(timeout=2.0)
+        
         # Flush memory handler before closing
         if hasattr(self, '_memory_handler'):
             try:
@@ -645,6 +777,14 @@ class VehicleLogger:
             try:
                 self.following_leader_file.flush()
                 self.following_leader_file.close()
+            except:
+                pass
+        
+        # Close trust and weight file
+        if self.trust_weight_file:
+            try:
+                self.trust_weight_file.flush()
+                self.trust_weight_file.close()
             except:
                 pass
         

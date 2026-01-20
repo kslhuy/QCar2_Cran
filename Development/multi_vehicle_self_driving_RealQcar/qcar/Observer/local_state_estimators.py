@@ -317,56 +317,6 @@ class LuenbergerStateEstimator(LocalStateEstimatorBase):
             self.state = np.zeros(self.state_dim)
 
 
-class DeadReckoningEstimator(LocalStateEstimatorBase):
-    """
-    Simple dead reckoning estimator (no GPS correction)
-    Uses only odometry and IMU
-    """
-    
-    def __init__(self, initial_pose: Optional[np.ndarray] = None, config: Dict = None, logger=None):
-        """
-        Initialize dead reckoning estimator
-        
-        Args:
-            initial_pose: Initial pose [x, y, theta]
-            config: Configuration dict (unused for dead reckoning)
-            logger: Logger instance
-        """
-        super().__init__(initial_pose, logger)
-    
-    def update(self, motor_tach: float, steering: float, throttle:float, dt: float, 
-               gyro_z: float = 0.0, gps_data: Optional[Dict] = None) -> bool:
-        """Update using dead reckoning only"""
-        try:
-            x, y, theta, v = self.state
-            
-            # Simple bicycle model integration
-            self.state[0] = x + v * np.cos(theta) * dt
-            self.state[1] = y + v * np.sin(theta) * dt
-            self.state[2] = theta + gyro_z * dt
-            self.state[3] = motor_tach
-            
-            self.last_update_time = time.time()
-            
-            return True
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Dead reckoning update error", e)
-            return False
-    
-    def get_state(self) -> np.ndarray:
-        """Get current state estimate as numpy array [x, y, theta, v]"""
-        return self.state.copy()
-    
-    def reset(self, initial_pose: Optional[np.ndarray] = None):
-        """Reset estimator state"""
-        if initial_pose is not None:
-            self.state[:3] = initial_pose
-            self.state[3] = 0.0
-        else:
-            self.state = np.zeros(self.state_dim)
-
 
 class LocalEstimatorFactory:
     """Factory to create local state estimators by name"""
@@ -374,8 +324,26 @@ class LocalEstimatorFactory:
     ESTIMATOR_TYPES = {
         'ekf': EKFStateEstimator,
         'luenberger': LuenbergerStateEstimator,
-        'dead_reckoning': DeadReckoningEstimator,
     }
+    
+    @staticmethod
+    def _lazy_load_neural_estimator():
+        """Lazy load neural estimator to avoid import errors if dependencies missing"""
+        try:
+            # Use importlib to handle directory name starting with number (2LayerObs)
+            import importlib
+            module = importlib.import_module('Observer.LocalNeuralObs.2LayerObs.neural_state_estimator')
+            return module.NeuralLuenbergerEstimator
+        except (ImportError, ModuleNotFoundError):
+            try:
+                # Fallback to root level LocalNeuralObs lazy import
+                from Observer.LocalNeuralObs import NeuralLuenbergerEstimator
+                return NeuralLuenbergerEstimator
+            except ImportError as e:
+                raise ImportError(
+                    f"Neural estimator requires additional dependencies (torch). "
+                    f"Install with: pip install torch. Error: {e}"
+                )
     
     @staticmethod
     def create(estimator_type: str, initial_pose: Optional[np.ndarray] = None,
@@ -384,7 +352,7 @@ class LocalEstimatorFactory:
         Create a local state estimator
         
         Args:
-            estimator_type: One of 'ekf', 'luenberger', 'dead_reckoning'
+            estimator_type: One of 'ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger'
             initial_pose: Initial pose [x, y, theta]
             gps: GPS instance (for EKF)
             logger: Logger instance
@@ -393,10 +361,16 @@ class LocalEstimatorFactory:
         Returns:
             Local state estimator instance
         """
+        # Handle neural estimator separately (lazy loading)
+        if estimator_type == 'neural_luenberger':
+            NeuralLuenbergerEstimator = LocalEstimatorFactory._lazy_load_neural_estimator()
+            return NeuralLuenbergerEstimator(initial_pose=initial_pose, config=config, logger=logger)
+        
+        # Standard estimators
         if estimator_type not in LocalEstimatorFactory.ESTIMATOR_TYPES:
             raise ValueError(
                 f"Unknown estimator type: {estimator_type}. "
-                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys())}"
+                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys()) + ['neural_luenberger']}"
             )
         
         estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]

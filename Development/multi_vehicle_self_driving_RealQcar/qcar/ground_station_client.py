@@ -52,11 +52,16 @@ class GroundStationClient:
         
         # Simplified queues
         self.telemetry_queue = queue.Queue(maxsize=self.MAX_QUEUE_SIZE)
+        self.scope_data_queue = queue.Queue(maxsize=200)  # High-frequency scope data
         self.command_queue = queue.Queue(maxsize=10)
+        
+        # Scope streaming state
+        self._scope_streaming_enabled = False
         
         # Simple statistics
         self.stats = {
             'telemetry_sent': 0,
+            'scope_data_sent': 0,
             'commands_received': 0,
             'connection_errors': 0,
             'queue_overflows': 0
@@ -181,9 +186,13 @@ class GroundStationClient:
             self.logger.logger.info("Ground Station communication loop stopped")
     
     def _send_queued_telemetry(self):
-        """Send all queued telemetry data"""
+        """Send all queued telemetry and scope data"""
         if not self.connected or self._reconnecting:
             return
+        
+        # Send scope data first (higher priority when streaming)
+        if self._scope_streaming_enabled:
+            self._send_queued_scope_data()
         
         # Process all queued telemetry
         sent_count = 0
@@ -204,6 +213,37 @@ class GroundStationClient:
             pass
         except Exception as e:
             self.logger.log_error("Error sending telemetry", e)
+    
+    def _send_queued_scope_data(self):
+        """Send queued scope data packets (high-frequency)"""
+        if not self.connected or self._reconnecting:
+            return
+        
+        sent_count = 0
+        max_per_cycle = 10  # Allow more scope data per cycle
+        
+        try:
+            while not self.scope_data_queue.empty() and sent_count < max_per_cycle:
+                scope_packet = self.scope_data_queue.get_nowait()
+                
+                # Wrap binary data in JSON message
+                scope_message = {
+                    'type': 'scope_data',
+                    'payload': scope_packet.hex()  # Hex encode for JSON transport
+                }
+                
+                if self._send_json_message(scope_message):
+                    self.stats['scope_data_sent'] += 1
+                    sent_count += 1
+                else:
+                    return  # Connection lost
+                
+                self.scope_data_queue.task_done()
+                
+        except queue.Empty:
+            pass
+        except Exception as e:
+            self.logger.log_error("Error sending scope data", e)
     
     def _receive_commands(self):
         """Receive and queue commands from Ground Station"""
@@ -339,6 +379,51 @@ class GroundStationClient:
                 return True
             except queue.Empty:
                 return False
+    
+    def queue_scope_data(self, scope_packet: bytes) -> bool:
+        """
+        Queue scope data for high-frequency streaming.
+        
+        Scope data is prioritized when streaming is enabled.
+        Uses separate queue to avoid interfering with telemetry.
+        
+        Args:
+            scope_packet: Binary packed scope data
+            
+        Returns:
+            bool: True if queued successfully
+        """
+        if not self._running or not self._scope_streaming_enabled:
+            return False
+        
+        try:
+            self.scope_data_queue.put_nowait(scope_packet)
+            return True
+        except queue.Full:
+            # Drop oldest and add new (keep most recent data)
+            try:
+                self.scope_data_queue.get_nowait()
+                self.scope_data_queue.put_nowait(scope_packet)
+                self.stats['queue_overflows'] += 1
+                return True
+            except queue.Empty:
+                return False
+    
+    def enable_scope_streaming(self):
+        """Enable high-frequency scope data streaming."""
+        self._scope_streaming_enabled = True
+        self.logger.logger.info("Scope data streaming enabled")
+    
+    def disable_scope_streaming(self):
+        """Disable scope data streaming and clear queue."""
+        self._scope_streaming_enabled = False
+        # Clear any pending scope data
+        while not self.scope_data_queue.empty():
+            try:
+                self.scope_data_queue.get_nowait()
+            except queue.Empty:
+                break
+        self.logger.logger.info("Scope data streaming disabled")
     
     def get_latest_commands(self) -> Optional[Dict[str, Any]]:
         """Get latest commands from queue"""
