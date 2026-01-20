@@ -38,6 +38,9 @@ python .\initCars.py
 #  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\enhanced_gui_controller.py
+or
+python .\app_main.py
+
 
 # Run the real logic of vehicle 0   (another cmd)
 
@@ -59,7 +62,8 @@ python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
 # Start GUI 
 
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
-python .\enhanced_gui_controller.py
+python .\app_main.py
+
 
 # Test with fake vehicles (no hardware , no Qlabs , math equation)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\    

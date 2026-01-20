@@ -41,7 +41,7 @@ class PIDVelocityController(LongitudinalControllerBase):
     Compatible with both platoon following and standalone path following
     """
     
-    def __init__(self, kp=0.1, ki=1.0, kd=0.01, max_throttle=0.3, config=None, logger=None):
+    def __init__(self, kp=0.1, ki=1.0, kd=0.01, max_throttle=0.3, ei_max=1.0, v_ref=0.5, config=None, logger=None, **kwargs):
         """
         Initialize PID velocity controller
         
@@ -50,6 +50,8 @@ class PIDVelocityController(LongitudinalControllerBase):
             ki: Integral gain
             kd: Derivative gain
             max_throttle: Maximum throttle output
+            ei_max: Integral anti-windup limit
+            v_ref: Reference velocity (used if target_velocity not provided)
             config: Optional config object (takes precedence over individual params)
             logger: Logger instance
         """
@@ -63,19 +65,18 @@ class PIDVelocityController(LongitudinalControllerBase):
             self.ki = params.get('ki', ki)
             self.kd = params.get('kd', kd)
             self.max_throttle = params.get('max_throttle', max_throttle)
+            self.ei_max = params.get('ei_max', ei_max)
         else:
             self.kp = kp
             self.ki = ki
             self.kd = kd
             self.max_throttle = max_throttle
+            self.ei_max = ei_max
         
         # print(f"[PIDVelocityController] Initialized with kp={self.kp}, ki={self.ki}, kd={self.kd}, max_throttle={self.max_throttle}")
         self.ei = 0.0  # Integral error
         self.prev_e = None  # Previous error for derivative
         self.last_error = 0.0
-        
-        # Anti-windup limit
-        self.ei_max = 1.0
     
     def update(self, v: float, v_ref: float, dt: float) -> float:
         """
@@ -358,13 +359,14 @@ class HybridController(LongitudinalControllerBase):
     Uses CACC when leader is available, PI when not
     """
     
-    def __init__(self, cacc_params=None, pi_params=None, config=None, logger=None):
+    
+    def __init__(self, cacc_params=None, pid_params=None, config=None, logger=None):
         """
         Initialize hybrid controller
         
         Args:
             cacc_params: Dict of parameters for CACC controller
-            pi_params: Dict of parameters for PI controller
+            pid_params: Dict of parameters for PID controller
             config: Optional config object (takes precedence)
             logger: Logger instance
         """
@@ -376,13 +378,13 @@ class HybridController(LongitudinalControllerBase):
                 # Get params for both controllers from config
                 hybrid_params = config.get_longitudinal_params('hybrid')
                 cacc_params = hybrid_params.get('cacc_params', cacc_params or {})
-                pi_params = hybrid_params.get('pi_params', pi_params or {})
+                pid_params = hybrid_params.get('pid_params', pid_params or {})
         else:
             cacc_params = cacc_params or {}
-            pi_params = pi_params or {}
+            pid_params = pid_params or {}
         
         self.cacc = CACCLongitudinalController(config=config, logger=logger, **cacc_params)
-        self.pi = PIDVelocityController(config=config, logger=logger, **pi_params)
+        self.pi = PIDVelocityController(config=config, logger=logger, **pid_params)
         
         self.last_mode = "unknown"
         
@@ -417,7 +419,7 @@ class ControllerFactory:
     """Factory to create longitudinal controllers by name"""
     
     CONTROLLER_TYPES = {
-        'pi': PIDVelocityController,
+        'pid': PIDVelocityController,
         'cacc': CACCLongitudinalController,
         'hybrid': HybridController,
     }
@@ -428,7 +430,7 @@ class ControllerFactory:
         Create a longitudinal controller
         
         Args:
-            controller_type: One of 'pi', 'cacc', 'hybrid'
+            controller_type: One of 'pid', 'cacc', 'hybrid'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
             

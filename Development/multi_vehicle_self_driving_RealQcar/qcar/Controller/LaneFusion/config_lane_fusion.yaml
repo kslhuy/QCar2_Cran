@@ -1,0 +1,49 @@
+# Lane Fusion Configuration
+# This file configures how lane detection assists path following
+
+# =============================================================================
+# FUSION SETTINGS
+# Controls how waypoint steering is combined with lane detection
+# =============================================================================
+lane_fusion:
+  # Enable/disable lane fusion system
+  enabled: false
+  
+  # Fusion strategy options:
+  # - 'adaptive': Weight based on lane confidence (recommended)
+  # - 'cascaded': Lane correction added to waypoint steering
+  # - 'weighted': Fixed weight ratio
+  # - 'switch': Hard switch based on confidence threshold
+  # - 'lane_priority': Prioritize lane when detected
+  strategy: 'adaptive'
+  
+  # Maximum influence from lane detection (0.0 - 1.0)
+  # 0.4 = lane can contribute up to 40% of final steering
+  max_lane_weight: 0.4
+  
+  # Minimum lane confidence to use lane data (0.0 - 1.0)
+  # Below this, only waypoint steering is used
+  min_confidence: 0.2
+  
+  # Gain applied to lane steering correction
+  lane_gain: 1.0
+  
+  # Output smoothing factor (0.0 - 1.0)
+  # Lower = smoother output, higher = more responsive
+  smoothing_factor: 0.3
+  
+  # Maximum steering angle output (radians)
+  max_steering: 0.5
+  
+  # Ignore lane corrections smaller than this (radians)
+  deadband: 0.01
+  
+  # Confidence threshold for 'switch' strategy
+  switch_threshold: 0.6
+  
+  # Use lane curvature for feedforward steering
+  enable_curvature_compensation: false
+  
+  # Enable detailed debug logging
+  debug_logging: false
+

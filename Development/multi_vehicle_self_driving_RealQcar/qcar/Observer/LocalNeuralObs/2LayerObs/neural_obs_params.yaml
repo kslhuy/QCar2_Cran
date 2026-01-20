@@ -1,0 +1,185 @@
+# ============================================================================
+# Neural Observer Configuration File
+# ============================================================================
+#
+# This file contains all parameters for the NeuralLuenbergerEstimator.
+# Modify these values to tune observer and neural network performance.
+#
+# ============================================================================
+
+# ============================================================================
+# Neural Network Architecture
+# ============================================================================
+neural_network:
+  # Input dimension (6 for [v_x, v_y, ψ, r, δ, a], 8 with acceleration)
+  input_dim: 6
+  
+  # Hidden layer dimension
+  hidden_dim: 24
+  
+  # Output dimension (tire residuals [w_r, w_f])
+  output_dim: 2
+  
+  # Include IMU acceleration [a_x, a_y] in NN input (changes input_dim to 8)
+  use_acceleration: false
+
+# ============================================================================
+# Learning Parameters
+# ============================================================================
+learning:
+  # Learning rate for optimizer
+  learning_rate: 0.005
+  
+  # Batch size for gradient accumulation
+  batch_size: 3
+  
+  # Weight decay (L2 regularization)
+  weight_decay: 0.0
+  
+  # Regularization coefficient for f_nn - f_uk term
+  lambda_regularization: 0.2
+  
+  # Learning mode: 'learningby_dict' (batch) or 'continuous_learning' (online)
+  learning_mode: learningby_dict
+  
+  # Dictionary size for learningby_dict mode
+  dict_size: 20
+  
+  # Gradient computation method:
+  #   - 'autodiff': PyTorch automatic differentiation (recommended, requires PyTorch)
+  #   - 'analytical': Manual sensitivity propagation (faster, no PyTorch needed)
+  gradient_method: autodiff
+
+# ============================================================================
+# Observer Parameters
+# ============================================================================
+observer:
+  # Observer gain coefficient (for diagonal L matrix)
+  observer_gain: 0.5
+  
+  # Sample time [seconds]
+  sample_time: 0.02
+  
+  # Minimum velocity threshold to avoid singularities [m/s]
+  min_vx: 0.5
+
+# ============================================================================
+# Observer Gain Design Configuration
+# ============================================================================
+# Advanced LMI-based gain design with H∞/L2 performance criteria
+#
+observer_gain_design:
+  # Gain design method:
+  #   - 'default': Simple diagonal gains (fastest, no external dependencies)
+  #   - 'lmi': Standard LMI-based Lyapunov design (requires CVXPY)
+  #   - 'hinf': H∞ LMI design with bounded disturbance attenuation (recommended)
+  #   - 'l2': L2-gain bounded LMI design
+  #   - 'qlpv_scheduled': Polytopic qLPV gain scheduling (robust across operating range)
+  method: "hinf"
+  
+  # H∞ performance bound γ: ||error|| ≤ γ||disturbance||
+  # Smaller = better attenuation but harder to satisfy (typical: 1.0-5.0)
+  hinf_gamma: 2.0
+  
+  # L2 gain bound (for 'l2' method, typical: 1.0-3.0)
+  l2_gamma: 3.0
+  
+  # Minimum exponential decay rate α for LMI (controls convergence speed)
+  # Larger = faster convergence but may be infeasible (typical: 0.1-2.0)
+  lmi_decay_rate: 0.5
+  
+  # Nominal velocity for single-point LMI design [m/s]
+  nominal_vx: 1.5
+  
+  # Enable qLPV polytopic gain scheduling (works with any method as enhancement)
+  use_gain_scheduling: false
+  
+  # Velocity range for gain scheduling [m/s]
+  vx_range: [0.5, 3.0]
+  
+  # Maximum steering angle for scheduling [rad]
+  delta_max: 0.4
+  
+  # Number of polytope vertices
+  n_vx_vertices: 3
+  n_delta_vertices: 3
+  
+  # Use common Lyapunov matrix for robust stability guarantee
+  use_common_lyapunov: true
+
+# ============================================================================
+# Loss Function Configuration
+# ============================================================================
+# Available types:
+#   - 'measurement_full': Standard measurement tracking loss
+#   - 'composite_uio': Two-layer UIO loss with trajectory reference
+#
+loss:
+  # Loss function type
+  type: measurement_full
+
+# ============================================================================
+# Weight Matrices for Loss Functions
+# ============================================================================
+# Higher weights = more importance in loss function
+#
+
+# Weights for standard measurement loss (6D state)
+weights_measurement:
+  v_x: 10.0
+  v_y: 20000.0
+  psi: 10.0
+  psi_dot: 20000.0
+  X: 1.0
+  Y: 1.0
+
+# Weights for composite UIO loss - reference tracking term
+weights_ref:
+  v_x: 5.0
+  v_y: 5.0
+  psi: 10.0
+  psi_dot: 5.0
+  X: 10.0
+  Y: 10.0
+
+# Weights for composite UIO loss - UIO agreement term
+weights_uio:
+  v_x: 5.0
+  v_y: 10.0
+  psi: 5.0
+  psi_dot: 10.0
+  X: 1.0
+  Y: 1.0
+
+# ============================================================================
+# First-Layer Observer Configuration
+# ============================================================================
+first_layer:
+  # Enable two-layer architecture with first-layer observer
+  enabled: true
+  
+  # First-layer observer type: 'qlpv' or 'differentiator_uio'
+  type: qlpv
+
+# ============================================================================
+# Model Persistence
+# ============================================================================
+model:
+  # Path to save/load trained model weights
+  path: trained_data/neural_observer_model.pt
+  
+  # Load pretrained model on initialization
+  load_pretrained: false
+
+# ============================================================================
+# Data Recording Configuration
+# ============================================================================
+# Record all observer data for offline analysis and plotting
+#
+recording:
+  # Enable data recording to CSV
+  enable_recording: false
+  
+  # Output directory for recordings (relative to working directory or absolute)
+  output_dir: "neural_obs_recordings"
+# ============================================================================

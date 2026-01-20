@@ -171,26 +171,45 @@ def load_configuration(args) -> VehicleMainConfig:
     if args.config:
         config_path = args.config
     else:
-        # Use config_vehicle_main.yaml from same directory as this script
+        # Priority: 1) fleet_config.yaml (parent dir), 2) config_vehicle_main.yaml (same dir)
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(script_dir, 'config_vehicle_main.yaml')
+        fleet_config_path = os.path.normpath(os.path.join(script_dir, '..', 'fleet_config.yaml'))
+        local_config_path = os.path.join(script_dir, 'config_vehicle_main.yaml')
+        
+        # print(f"[DEBUG] script_dir: {script_dir}")
+        # print(f"[DEBUG] fleet_config_path: {fleet_config_path}")
+        # print(f"[DEBUG] fleet_config exists: {os.path.exists(fleet_config_path)}")
+        
+        if os.path.exists(fleet_config_path):
+            config_path = fleet_config_path
+            # print(f"[DEBUG] Using fleet_config.yaml")
+        else:
+            config_path = local_config_path
+            # print(f"[DEBUG] Using config_vehicle_main.yaml")
     
     # Load from file if it exists
     if os.path.exists(config_path):
         print(f"Loading configuration from: {config_path}")
-        if config_path.endswith('.json'):
-            config = VehicleMainConfig.from_json(config_path)
-        elif config_path.endswith('.yaml') or config_path.endswith('.yml'):
-            config = VehicleMainConfig.from_yaml(config_path)
+
+        # Check if this is a fleet_config.yaml (has 'vehicles' key)
+        import yaml
+        with open(config_path, 'r') as f:
+            raw_config = yaml.safe_load(f)
+        if 'vehicles' in raw_config:
+            # Fleet config format - need car_id to extract per-vehicle settings
+            car_id = args.car_id if hasattr(args, 'car_id') else 0
+            # print(f"Detected fleet config format, loading settings for car_id={car_id}")
+            config = VehicleMainConfig.from_fleet_yaml(config_path, car_id)
         else:
-            print("Error: Config file must be .json or .yaml")
-            sys.exit(1)
+            # Standard config format
+            config = VehicleMainConfig.from_yaml(config_path)
+
     else:
         if args.config:
             print(f"Error: Config file not found: {config_path}")
             sys.exit(1)
         else:
-            print(f"Warning: config_vehicle_main.yaml not found at {config_path}")
+            print(f"Warning: No config file found")
             print("Using default configuration values")
             config = VehicleMainConfig()
     
@@ -265,9 +284,9 @@ def main():
             pass
         else:
             # CamLidarFusion thread cleanup removed (moved to main loop)
-            from qvl.real_time import QLabsRealTime
+            # from qvl.real_time import QLabsRealTime
 
-            cmd = QLabsRealTime().terminate_all_real_time_models()
+            # cmd = QLabsRealTime().terminate_all_real_time_models()
             time.sleep(1)
     except Exception as e:
         print(f"[WARNING] Error during QUARC cleanup: {e}")

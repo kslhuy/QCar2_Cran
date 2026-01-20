@@ -10,6 +10,7 @@ import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from .state_base import StateBase
 from .vehicle_state import VehicleState, StateTransitionReason
+from pal.products.qcar import  IS_PHYSICAL_QCAR
 
 # Import CommandType once at module level
 import sys
@@ -44,8 +45,11 @@ class ManualModeState(StateBase):
             'command_timeout': 1.0,  # Timeout in seconds (stop if no commands received)
             'current_throttle': 0.0,
             'current_steering': 0.0,
+            'last_sent_throttle': None,  # Track last sent values to hardware
+            'last_sent_steering': None,
             'command_count': 0,
-            'timeout_warnings': 0
+            'timeout_warnings': 0,
+            'hardware_update_count': 0
         }
         
         self.logger.logger.info("[MANUAL] Manual mode activated - waiting for control commands")
@@ -55,12 +59,7 @@ class ManualModeState(StateBase):
     
     def update(self, dt: float, sensor_data: Dict[str, Any]) -> Tuple[float, float, Optional[Tuple[VehicleState, StateTransitionReason]]]:
         """Handle manual mode - apply direct control commands from Ground Station"""
-        
-        # Check for emergency stop conditions first (safety override)
-        if self.should_transition_to_stopped(sensor_data):
-            self.logger.log_warning("[MANUAL] Emergency stop triggered")
-            return 0.0, 0.0, (VehicleState.STOPPED, StateTransitionReason.EMERGENCY_STOP)
-        
+
         # Get current control commands from state data
         throttle = self.state_data.get('current_throttle', 0.0)
         steering = self.state_data.get('current_steering', 0.0)
@@ -84,14 +83,15 @@ class ManualModeState(StateBase):
             throttle = 0.0
             steering = 0.0
         
-        # Apply LED indicators based on control commands
-        self._update_led_indicators(throttle, steering)
+        # Only send to hardware if commands changed (avoid blocking on every loop)
+        if self._commands_changed(throttle, steering):
+            self._send_to_hardware(throttle, steering)
         
         # Periodic status logging
         self._periodic_status_logging()
         
-        # Stay in manual mode (transitions handled via events)
-        return throttle, steering, None
+        # Stay in manual mode (No need to send throttle/steering here, done in _send_to_hardware)
+        return None, None, None
     
     def handle_event(self, command_type, data: Dict[str, Any] = None) -> Optional[Tuple[VehicleState, StateTransitionReason]]:
         """
@@ -115,6 +115,9 @@ class ManualModeState(StateBase):
             throttle = data.get('throttle', 0.0)
             steering = data.get('steering', 0.0)
             
+            if not IS_PHYSICAL_QCAR:
+                throttle *= 0.7  # Scale down for simulation (to sensible speeds)
+                
             # Validate and clamp control inputs
             throttle = max(-1.0, min(1.0, throttle))
             steering = max(-1.0, min(1.0, steering))
@@ -157,8 +160,23 @@ class ManualModeState(StateBase):
         else:
             return super().handle_event(command_type, data)
     
-    def _update_led_indicators(self, throttle: float, steering: float):
-        """Update LED indicators based on current control commands"""
+    def _commands_changed(self, throttle: float, steering: float) -> bool:
+        """Check if commands have changed since last hardware update"""
+        last_throttle = self.state_data.get('last_sent_throttle')
+        last_steering = self.state_data.get('last_sent_steering')
+        
+        # Always send first command
+        if last_throttle is None or last_steering is None:
+            return True
+        
+        # Check for significant change (0.01 threshold to avoid noise)
+        throttle_changed = abs(throttle - last_throttle) > 0.1
+        steering_changed = abs(steering - last_steering) > 0.05
+        
+        return throttle_changed or steering_changed
+    
+    def _send_to_hardware(self, throttle: float, steering: float):
+        """Send commands to hardware with LED indicators"""
         try:
             if not hasattr(self.vehicle_logic, 'qcar') or self.vehicle_logic.qcar is None:
                 return
@@ -186,24 +204,20 @@ class ManualModeState(StateBase):
                 steering=steering,
                 LEDs=LEDs
             )
-            # # Check if read_write_std method exists (real hardware) or use write (simulation)
-            # if hasattr(self.vehicle_logic.qcar, 'read_write_std'):
-            #     self.vehicle_logic.qcar.read_write_std(
-            #         throttle=throttle,
-            #         steering=steering,
-            #         LEDs=LEDs
-            #     )
-            # elif hasattr(self.vehicle_logic.qcar, 'write'):
-            #     # Fallback for MockQCar or simulation
-            #     self.vehicle_logic.qcar.write(
-            #         throttle=throttle,
-            #         steering=steering
-            #     )
+            
+            # Update tracking
+            self.state_data['last_sent_throttle'] = throttle
+            self.state_data['last_sent_steering'] = steering
+            self.state_data['hardware_update_count'] += 1
             
         except Exception as e:
-            # Don't crash on LED update errors
-            if self.state_data.get('command_count', 0) % 500 == 1:
-                self.logger.log_error("[MANUAL] LED update error", e)
+            # Don't crash on hardware errors
+            if self.state_data.get('hardware_update_count', 0) % 50 == 1:
+                self.logger.log_error("[MANUAL] Hardware update error", e)
+    
+    def _update_led_indicators(self, throttle: float, steering: float):
+        """Deprecated: Use _send_to_hardware instead"""
+        pass
     
     def _periodic_status_logging(self):
         """Log manual mode status periodically"""
@@ -212,11 +226,14 @@ class ManualModeState(StateBase):
             
             time_in_mode = self.get_time_in_state()
             cmd_count = self.state_data.get('command_count', 0)
-            avg_rate = cmd_count / time_in_mode if time_in_mode > 0 else 0
+            hw_count = self.state_data.get('hardware_update_count', 0)
+            avg_cmd_rate = cmd_count / time_in_mode if time_in_mode > 0 else 0
+            avg_hw_rate = hw_count / time_in_mode if time_in_mode > 0 else 0
             
             self.logger.logger.info(
                 f"[MANUAL] Manual mode active for {time_in_mode:.1f}s - "
-                f"Commands: {cmd_count} (avg {avg_rate:.1f} Hz)"
+                f"Commands: {cmd_count} ({avg_cmd_rate:.1f} Hz), "
+                f"Hardware updates: {hw_count} ({avg_hw_rate:.1f} Hz)"
             )
     
     def exit(self):

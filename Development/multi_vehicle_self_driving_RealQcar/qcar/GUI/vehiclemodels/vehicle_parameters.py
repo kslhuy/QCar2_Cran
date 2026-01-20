@@ -86,6 +86,23 @@ class VehicleParameters:
     # trailer parameters
     trailer: TrailerParameters = field(default_factory=TrailerParameters)
 
+    # Cornering stiffness for qLPV observer model [N/rad]
+    Cf: Optional[float] = None  # Front cornering stiffness
+    Cr: Optional[float] = None  # Rear cornering stiffness
+
+    # Road friction coefficient (small, realistic)
+    mu: Optional[float] = None
+
+    # New parameters for stopping behavior
+    Cr_roll: Optional[float] = None  # Rolling resistance
+    Cd_aero: Optional[float] = None  # Aerodynamic drag
+    Af: Optional[float] = None       # Frontal area
+
+    # New parameters for qLPV tire law
+    Csf: Optional[float] = None      # Normalized front cornering stiffness
+    Csr: Optional[float] = None      # Normalized rear cornering stiffness
+    mu_road: Optional[float] = None  # Tire road friction coefficient
+
 
 def setup_vehicle_parameters(vehicle_id: int, dir_params: str = None) -> VehicleParameters:
     """
@@ -106,7 +123,22 @@ def setup_vehicle_parameters(vehicle_id: int, dir_params: str = None) -> Vehicle
         path_root = Path(__file__).parent / "parameters"
 
     # load configurations from yaml files
-    conf_vehicle = OmegaConf.load(path_root / f'{"parameters_vehicle"}{vehicle_id}.yaml')
+    # Try parameters_vehicle{id}.yaml first, then parameters_{id}.yaml
+    conf_file_primary = path_root / f'parameters_vehicle{vehicle_id}.yaml'
+    conf_file_secondary = path_root / f'parameters_{vehicle_id}.yaml'
+    
+    if conf_file_primary.exists():
+        conf_vehicle = OmegaConf.load(conf_file_primary)
+    elif conf_file_secondary.exists():
+        conf_vehicle = OmegaConf.load(conf_file_secondary)
+    else:
+        raise FileNotFoundError(f"Neither {conf_file_primary} nor {conf_file_secondary} found.")
+        
+    # if conf_file_secondary.exists():
+    #     conf_vehicle = OmegaConf.load(conf_file_secondary)
+    # else:
+    #     raise FileNotFoundError(f"{conf_file_secondary} not found.")
+
     conf_tires = OmegaConf.load(path_root / "parameters_tire.yaml")
 
     # create merged configuration and set as Read-only

@@ -53,6 +53,32 @@ class ControllerConfig:
         """Get the selected lateral controller type"""
         return self.config.get('lateral_controller_type', 'pure_pursuit')
     
+    def get_available_longitudinal_types(self) -> list:
+        """Get list of available longitudinal controller types based on config"""
+        types = []
+        if 'cacc' in self.config:
+            types.append('cacc')
+        if 'pid' in self.config:
+            types.append('pid')
+        if 'hybrid_longitudinal' in self.config:
+            types.append('hybrid')
+        return types
+
+    def get_available_lateral_types(self) -> list:
+        """Get list of available lateral controller types based on config"""
+        types = ['path'] # 'path' is always available as a mode
+        if 'pure_pursuit' in self.config:
+            types.append('pure_pursuit')
+        if 'stanley' in self.config:
+            types.append('stanley')
+        if 'lookahead' in self.config:
+            types.append('lookahead')
+        if 'hybrid_lateral' in self.config:
+            types.append('hybrid')
+        if 'fusion_lateral' in self.config:
+            types.append('fusion')
+        return types
+
     def get_longitudinal_params(self, controller_type: Optional[str] = None) -> Dict[str, Any]:
         """
         Get parameters for longitudinal controller

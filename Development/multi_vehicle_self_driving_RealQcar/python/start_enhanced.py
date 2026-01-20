@@ -288,19 +288,19 @@ class FleetStarter:
             
             time.sleep(2)
             
-            # Start YOLO server
-            print(f"  [→] Starting yolo_server.py...")
-            probing_flag = "True" if vehicle.get('probing', False) else "False"
+            # # Start YOLO server
+            # print(f"  [→] Starting yolo_server.py...")
+            # probing_flag = "True" if vehicle.get('probing', False) else "False"
             
-            cmd_yolo = (
-                f"cd {remote['remote_path']} && "
-                f"nohup python yolo_server.py "
-                f"--probing {probing_flag} "
-                f"--car-id {car_id} "
-                f"{f'> yolo_{car_id}.log 2>&1 &' if enable_logs else '> /dev/null 2>&1 &'}"
-            )
-            ssh.exec_command(cmd_yolo)
-            print(f"  [✓] YOLO server started (Probing: {vehicle.get('probing', False)})")
+            # cmd_yolo = (
+            #     f"cd {remote['remote_path']} && "
+            #     f"nohup python yolo_server.py "
+            #     f"--probing {probing_flag} "
+            #     f"--car-id {car_id} "
+            #     f"{f'> yolo_{car_id}.log 2>&1 &' if enable_logs else '> /dev/null 2>&1 &'}"
+            # )
+            # ssh.exec_command(cmd_yolo)
+            # print(f"  [✓] YOLO server started (Probing: {vehicle.get('probing', False)})")
             
             # Close connections
             ssh.close()
@@ -338,7 +338,12 @@ class FleetStarter:
             time.sleep(3)  # Wait between vehicle starts
         
         # Start multi-probing :
-        self.start_multi_probing()
+        # self.start_multi_probing()
+        # Note: Multi-probing is now activated via Ground Station GUI
+        # No automatic start_multi_probing() call here
+        
+        
+        
         # Display summary
         self.display_summary(success_count)
     

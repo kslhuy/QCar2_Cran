@@ -1,0 +1,420 @@
+# =============================================================================
+# Attack Configuration for V2V Communication Fault Injection
+# =============================================================================
+#
+# This configuration file defines attack scenarios for security testing of
+# Vehicle-to-Vehicle (V2V) communication in the Fleet Framework.
+#
+# IMPORTANT: This module is for RESEARCH AND TESTING PURPOSES ONLY.
+# Disable attacks in production by setting enabled: false
+#
+# Version: 2.0.0
+# Updated: January 2026
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Global Attack Settings
+# -----------------------------------------------------------------------------
+attack_settings:
+  enabled: true           # Master switch for all attacks
+  dt: 0.01                # Simulation time step (seconds)
+  log_level: "WARNING"    # Log level: DEBUG, INFO, WARNING, ERROR
+  log_interval: 1.0       # Minimum interval between attack logs (seconds)
+
+# -----------------------------------------------------------------------------
+# Attack Scenario Definitions
+# -----------------------------------------------------------------------------
+# Each scenario defines:
+#   - name: Human-readable identifier
+#   - enabled: Whether this scenario is active
+#   - attack_type: Bogus, DoS, POS, VEL, ACC, Collusion
+#   - modification_type: scaling, bias, linear, sinusoidal, faulty, zero, constant
+#   - data_type: local, fleet, both
+#   - t_start/t_end: Attack timing (seconds from start)
+#   - attacker_id: Vehicle ID performing the attack
+#   - victim_ids: Target vehicle IDs (-1 = all vehicles)
+#   - intensity: Modification magnitude
+#   - target_fields: Fields to modify (x, y, theta, velocity, acceleration)
+# -----------------------------------------------------------------------------
+
+scenarios:
+
+  # ===========================================================================
+  # BOGUS ATTACKS - Falsified Data Injection
+  # ===========================================================================
+
+  # Case 1: Velocity Scaling (Negative) - Reverse velocity direction
+  - name: "Bogus_Velocity_Scaling_Negative"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "scaling"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: -0.5
+    target_fields: ["velocity"]
+    description: "Attacker broadcasts velocity scaled by -0.5 (reversed)"
+
+  # Case 2: Velocity Scaling (Positive) - Reduce reported velocity
+  - name: "Bogus_Velocity_Scaling_Positive"
+    enabled: true   # << ENABLED - This attack will be active!
+    attack_type: "Bogus"
+    modification_type: "scaling"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 0.5
+    target_fields: ["velocity"]
+    description: "Attacker broadcasts velocity scaled by 0.5 (halved)"
+
+  # Case 3: Position X Bias (Negative)
+  - name: "Bogus_Position_X_Bias_Negative"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "bias"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: -15.0
+    target_fields: ["x"]
+    description: "Attacker broadcasts X position with -15m offset"
+
+  # Case 4: Position X Bias (Positive)
+  - name: "Bogus_Position_X_Bias_Positive"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "bias"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 33.0
+    target_fields: ["x"]
+    description: "Attacker broadcasts X position with +33m offset"
+
+  # Case 5: Velocity Linear Drift
+  - name: "Bogus_Velocity_Linear_Drift"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "linear"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 0.1   # Drift rate: 0.1 m/s per second
+    target_fields: ["velocity"]
+    description: "Velocity drifts linearly at 0.1 m/s per second"
+
+  # Case 6: Position Sinusoidal Oscillation
+  - name: "Bogus_Position_Sinusoidal"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "sinusoidal"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 25.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity:
+      amplitude: 5.0      # 5 meters peak-to-peak
+      frequency: 0.5      # 0.5 Hz oscillation
+      phase: 0.0          # No phase offset
+    target_fields: ["x"]
+    description: "X position oscillates sinusoidally (5m @ 0.5Hz)"
+
+  # Case 7: Position Noise Injection (High)
+  - name: "Bogus_Position_Noisy_High"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "faulty"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 10.0   # Standard deviation = 10m
+    target_fields: ["x"]
+    description: "X position with Gaussian noise (σ=10m)"
+
+  # Case 8: Velocity Noise Injection
+  - name: "Bogus_Velocity_Noisy"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "faulty"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 2.5    # Standard deviation = 2.5 m/s
+    target_fields: ["velocity"]
+    description: "Velocity with Gaussian noise (σ=2.5 m/s)"
+
+  # Case 9: Acceleration Noise Injection
+  - name: "Bogus_Acceleration_Noisy"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "faulty"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 0.2    # Standard deviation = 0.2 m/s²
+    target_fields: ["acceleration"]
+    description: "Acceleration with Gaussian noise (σ=0.2 m/s²)"
+
+  # Case 10: Small Velocity Bias
+  - name: "Bogus_Velocity_Bias_Small"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "bias"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 2.0    # +2 m/s offset
+    target_fields: ["velocity"]
+    description: "Velocity with +2 m/s offset"
+
+  # ===========================================================================
+  # DENIAL OF SERVICE (DoS) ATTACKS
+  # ===========================================================================
+
+  # DoS Case 1: Zero Velocity
+  - name: "DoS_Velocity_Zero"
+    enabled: false
+    attack_type: "DoS"
+    modification_type: "zero"
+    data_type: "local"
+    t_start: 15.0
+    t_end: 25.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 0
+    target_fields: ["velocity"]
+    description: "Report zero velocity (vehicle appears stopped)"
+
+  # DoS Case 2: Zero Position
+  - name: "DoS_Position_Zero"
+    enabled: false
+    attack_type: "DoS"
+    modification_type: "zero"
+    data_type: "local"
+    t_start: 15.0
+    t_end: 25.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 0
+    target_fields: ["x", "y"]
+    description: "Report zero position (vehicle appears at origin)"
+
+  # DoS Case 3: Full State Zero
+  - name: "DoS_Full_State_Zero"
+    enabled: false
+    attack_type: "DoS"
+    modification_type: "zero"
+    data_type: "local"
+    t_start: 15.0
+    t_end: 25.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 0
+    target_fields: ["x", "y", "velocity"]
+    description: "Report all zeros (complete denial)"
+
+  # ===========================================================================
+  # POSITION-SPECIFIC (POS) ATTACKS - GPS Spoofing Simulation
+  # ===========================================================================
+
+  # POS Case 1: Position Bias
+  - name: "POS_Position_Bias"
+    enabled: false
+    attack_type: "POS"
+    modification_type: "bias"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 10.0   # +10m offset on both axes
+    target_fields: ["x", "y"]
+    description: "Position shifted +10m on X and Y axes"
+
+  # POS Case 2: Position Scaling
+  - name: "POS_Position_Scaling"
+    enabled: false
+    attack_type: "POS"
+    modification_type: "scaling"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 1.5    # Scale by 1.5
+    target_fields: ["x", "y"]
+    description: "Position scaled by 1.5 (appears 50% farther)"
+
+  # ===========================================================================
+  # VELOCITY-SPECIFIC (VEL) ATTACKS - Speedometer Tampering
+  # ===========================================================================
+
+  # VEL Case 1: Constant Velocity
+  - name: "VEL_Constant_Speed"
+    enabled: false
+    attack_type: "VEL"
+    modification_type: "constant"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 3.0    # Always report 3 m/s
+    target_fields: ["velocity"]
+    description: "Always report constant 3 m/s regardless of actual speed"
+
+  # VEL Case 2: Exaggerated Speed
+  - name: "VEL_Exaggerated_Speed"
+    enabled: false
+    attack_type: "VEL"
+    modification_type: "scaling"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 2.0    # Double the velocity
+    target_fields: ["velocity"]
+    description: "Report double the actual velocity"
+
+  # ===========================================================================
+  # HEADING-SPECIFIC ATTACKS - Compass Spoofing
+  # ===========================================================================
+
+  # Heading Bias Attack
+  - name: "Heading_Bias"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "bias"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 0.5    # +0.5 radians (~28 degrees)
+    target_fields: ["theta"]
+    description: "Heading rotated by +0.5 rad (~28°)"
+
+  # Heading Oscillation Attack
+  - name: "Heading_Sinusoidal"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "sinusoidal"
+    data_type: "local"
+    t_start: 10.0
+    t_end: 25.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity:
+      amplitude: 0.3   # 0.3 rad (~17°) oscillation
+      frequency: 0.2   # 0.2 Hz
+      phase: 0.0
+    target_fields: ["theta"]
+    description: "Heading oscillates sinusoidally"
+
+  # ===========================================================================
+  # FLEET STATE ATTACKS - Attack Distributed Observer Estimates
+  # ===========================================================================
+
+  # Attack on Fleet State Broadcasts
+  - name: "Fleet_Position_Attack"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "bias"
+    data_type: "fleet"      # Attacks fleet consensus broadcasts
+    t_start: 10.0
+    t_end: 20.0
+    attacker_id: 1
+    victim_ids: [0, 2, 3]   # Specific victim vehicles
+    intensity: 5.0
+    target_fields: ["x", "y"]
+    description: "Inject position bias into fleet state broadcasts"
+
+  # ===========================================================================
+  # COMBINED ATTACKS - Attack Both Local and Fleet Data
+  # ===========================================================================
+
+  # Combined Local + Fleet Attack
+  - name: "Combined_Velocity_Attack"
+    enabled: false
+    attack_type: "Bogus"
+    modification_type: "scaling"
+    data_type: "both"       # Attack both local and fleet broadcasts
+    t_start: 15.0
+    t_end: 25.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 0.7
+    target_fields: ["velocity"]
+    description: "Reduce velocity by 30% in all broadcasts"
+
+  # ===========================================================================
+  # COLLUSION ATTACKS - Multiple Attacker Vehicles
+  # ===========================================================================
+
+  # Collusion Attack - Vehicle 1
+  - name: "Collusion_Attacker1"
+    enabled: false
+    attack_type: "Collusion"
+    modification_type: "bias"
+    data_type: "local"
+    t_start: 15.0
+    t_end: 25.0
+    attacker_id: 1
+    victim_ids: [-1]
+    intensity: 10.0
+    target_fields: ["x"]
+    description: "Coordinated attack from vehicle 1"
+
+  # Collusion Attack - Vehicle 3
+  - name: "Collusion_Attacker3"
+    enabled: false
+    attack_type: "Collusion"
+    modification_type: "bias"
+    data_type: "local"
+    t_start: 15.0
+    t_end: 25.0
+    attacker_id: 3
+    victim_ids: [-1]
+    intensity: 10.0
+    target_fields: ["x"]
+    description: "Coordinated attack from vehicle 3"
+
+
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================
+# 
+# Usage Notes:
+# 1. Set enabled: true for scenarios you want to activate
+# 2. Only ONE attacker should be enabled per scenario in most tests
+# 3. For collusion tests, enable multiple attackers with same timing
+# 4. Check attack logs for verification: logs/attack_vehicle_*.log
+# 
+# Integration:
+#   from AttackModule import AttackModule
+#   from AttackScenarios import load_scenarios_from_config
+#   
+#   attack_module = AttackModule(vehicle_id=1, logger=my_logger)
+#   load_scenarios_from_config(attack_module, "attack_config.yaml")
+#
+# =============================================================================
