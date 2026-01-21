@@ -105,8 +105,8 @@ class VehicleStateMachine:
             if transition:
                 new_state, reason = transition
                 self._transition_to(new_state, reason)
-            throttle = 0.075 # Test value 
-            steering = 0.0 # Test value 
+            # throttle = 0.075 # Test value 
+            # steering = 0.0 # Test value 
             return throttle, steering
             
         except Exception as e:

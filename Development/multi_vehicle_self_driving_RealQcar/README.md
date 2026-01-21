@@ -37,8 +37,6 @@ python .\initCars.py
 
 #  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
-python .\enhanced_gui_controller.py
-or
 python .\app_main.py
 
 

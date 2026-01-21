@@ -3,12 +3,6 @@ Fake Vehicle using REAL VehicleLogic Class - SIMPLIFIED
 This creates a fake vehicle that uses the actual VehicleLogic class from vehicle_logic.py
 with mock hardware components. Only the INITIALIZING state is replaced with a fake version.
 
-Key simplifications:
-- No custom FakeVehicleStateMachine (uses real VehicleStateMachine)
-- No redundant Ground Station client creation (VehicleLogic handles it)
-- Only INITIALIZING state is fake, all other states are real
-- Mock hardware is injected during the fake initialization
-- Uses proper vehicle dynamics from vehiclemodels folder (CommonRoad models)
 
 Vehicle Models Available:
 # Vehicle Models Available:
@@ -847,20 +841,7 @@ class FakeVehicleWithRealLogic:
         self.host_ip = host_ip
         self.base_port = base_port
         
-        # print("="*60)
-        # print(f"[CAR] Real VehicleLogic Fake Vehicle - Car {car_id}")
-        # print("   Using ACTUAL VehicleLogic class with mock hardware")
-        
-        # if dynamic_model_type == 2:
-        #     model_name = "qLPV"
-        # elif dynamic_model_type == 1:
-        #     model_name = "Single-Track Dynamic"
-        # else:
-        #     model_name = "Kinematic Single-Track"
-            
-        # print(f"   Vehicle Model: {model_name} (ID: {dynamic_model_type})")
-        # print(f"   Vehicle Parameters: {vehicle_params}")
-        # print("="*60)
+
         
         # Create mock hardware with proper vehicle dynamics
         self.mock_qcar = MockQCar(car_id, dynamic_model_type=dynamic_model_type, vehicle_params=vehicle_params)

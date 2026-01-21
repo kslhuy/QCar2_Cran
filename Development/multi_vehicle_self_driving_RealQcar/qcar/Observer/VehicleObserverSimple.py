@@ -112,14 +112,7 @@ class VehicleObserver:
         # Observer configuration (external per-vehicle overrides)
         self.observer_config = self._get_observer_config()
 
-        # Allow external observer config to override estimator types
-        cfg_local_type = self.observer_config.get("local_observer_type")
-        if cfg_local_type:
-            self.local_estimator_type = cfg_local_type
 
-        cfg_fleet_type = self.observer_config.get("fleet_estimator_type")
-        if cfg_fleet_type:
-            self.fleet_estimator_type = cfg_fleet_type
         
         # ===== Local State Estimator (pluggable) =====
         self.local_estimator: Optional[LocalStateEstimatorBase] = None
@@ -237,7 +230,7 @@ class VehicleObserver:
                     'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
                     'observer_gain': self.observer_config.get('observer_gain', 0.1),
                 }
-            
+            print(fleet_config)
             self.fleet_estimator = FleetEstimatorFactory.create(
                 estimator_type=self.fleet_estimator_type,
                 vehicle_id=self.vehicle_id,
@@ -340,24 +333,9 @@ class VehicleObserver:
         default_config = {
             "observer_rate": 100,
             "fleet_observer_rate": 50,
-            "local_observer_type": "ekf",
-            "fleet_estimator_type": "consensus",
-            "enable_distributed": True,
-            "consensus_gain": 0.3,
-            "observer_gain": 0.1,
         }
 
-        def _normalize_gain(value, default):
-            """
-            Normalize gain input to float or numpy array.
-            Accepts scalar, list, nested list (matrix). Falls back to default if None.
-            """
-            if value is None:
-                return default
-            arr = np.array(value, dtype=float)
-            if arr.ndim == 0:
-                return float(arr)
-            return arr
+
 
         # Pull observer config block from self.config if present
         observer_cfg = None
@@ -380,11 +358,7 @@ class VehicleObserver:
         merged = default_config.copy()
         merged["observer_rate"] = cfg_dict.get("observer_rate", merged["observer_rate"])
         merged["fleet_observer_rate"] = cfg_dict.get("fleet_observer_rate", merged["fleet_observer_rate"])
-        merged["local_observer_type"] = cfg_dict.get("local_estimator_type", merged["local_observer_type"])
-        merged["fleet_estimator_type"] = cfg_dict.get("fleet_estimator_type", merged["fleet_estimator_type"])
-        merged["enable_distributed"] = cfg_dict.get("enable_distributed", merged["enable_distributed"])
-        merged["consensus_gain"] = _normalize_gain(cfg_dict.get("consensus_gain"), merged["consensus_gain"])
-        merged["observer_gain"] = _normalize_gain(cfg_dict.get("observer_gain"), merged["observer_gain"])
+
 
         return merged
 
@@ -590,8 +564,8 @@ class VehicleObserver:
             if not self.v2v_active:
                 return
             
-            if not self.observer_config["enable_distributed"]: # Only enable, if V2V true
-                return
+            # if not self.observer_config["enable_distributed"]: # Only enable, if V2V true
+            #     return
             
             if self.fleet_estimator is None:
                 return
@@ -959,17 +933,17 @@ class VehicleObserver:
                 if self.vehicle_id < self.fleet_size:
                     current_local = self.local_state.copy()
                     self.fleet_estimator.fleet_states[:, self.vehicle_id] = current_local
-                    self.vehicle_logger.logger.info(
-                        f"VehicleObserver: V2V activated - Initialized own state in fleet - "
-                        f"vehicle_{self.vehicle_id}: x={current_local[0]:.3f}, y={current_local[1]:.3f}, "
-                        f"theta={current_local[2]:.3f}, v={current_local[3]:.3f}"
-                    )
+                    # self.vehicle_logger.logger.info(
+                    #     f"Distributed Fleet Estimation: Initialized own state in fleet - "
+                    #     f"vehicle_{self.vehicle_id}: x={current_local[0]:.3f}, y={current_local[1]:.3f}, "
+                    #     f"theta={current_local[2]:.3f}, v={current_local[3]:.3f}"
+                    # )
                 
                 # Update cached fleet states
                 self.fleet_states = self.fleet_estimator.get_fleet_states()
                 
                 # Log the complete fleet state after reinit
-                self.vehicle_logger.logger.info("VehicleObserver: Fleet states after V2V activation:")
+                self.vehicle_logger.logger.info(f"Distributed Fleet Estimation size: {self.fleet_size}, type: {self.fleet_estimator_type}")
                 for vid in range(self.fleet_size):
                     fs = self.fleet_states[:, vid]
                     self.vehicle_logger.logger.info(

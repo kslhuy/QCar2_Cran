@@ -141,18 +141,10 @@ class ObserverConfig:
     """
     # Update rates (Hz)
     observer_rate: int = 100
-    fleet_observer_rate: int = 50
+    fleet_observer_rate: int = 30
 
-    # Selector for estimator implementations
-    local_estimator_type: str = "ekf"  # ekf, luenberger, dead_reckoning
-    fleet_estimator_type: str = "consensus"  # consensus, distributed_kalman, distributed_luenberger
 
-    # Enable/disable distributed observation (used by VehicleObserverSimple)
-    enable_distributed: bool = True
 
-    # Gains can be scalar, vector, or matrix (parsed later into numpy arrays)
-    consensus_gain: object = 0.3
-    observer_gain: object = 0.1
 
 
 @dataclass

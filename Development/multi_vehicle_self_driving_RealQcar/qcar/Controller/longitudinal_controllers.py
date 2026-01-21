@@ -142,8 +142,8 @@ class PIDVelocityController(LongitudinalControllerBase):
         self.prev_e = None
         self.last_error = 0.0
         
-        if self.logger:
-            self.logger.log_control_event("speed_controller_reset", {})
+        # if self.logger:
+        #     self.logger.log_control_event("speed_controller_reset", {})
 
 
 class CACCLongitudinalController(LongitudinalControllerBase):
@@ -414,6 +414,15 @@ class HybridController(LongitudinalControllerBase):
         self.pi.reset()
         self.last_mode = "unknown"
 
+class FixConstantController(LongitudinalControllerBase):
+    def __init__(self, throttle: float, config=None, logger=None):
+        self.throttle = throttle
+        self.logger = logger
+    
+    def compute_throttle(self, follower_state: Dict[str, float], 
+                        leader_state: Optional[Dict[str, float]], 
+                        dt: float) -> float:
+        return self.throttle
 
 class ControllerFactory:
     """Factory to create longitudinal controllers by name"""
@@ -422,6 +431,7 @@ class ControllerFactory:
         'pid': PIDVelocityController,
         'cacc': CACCLongitudinalController,
         'hybrid': HybridController,
+        'fix': FixConstantController,
     }
     
     @staticmethod
