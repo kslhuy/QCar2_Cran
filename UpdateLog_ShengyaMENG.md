@@ -1,3 +1,39 @@
+# Update Log 2026/01/21 (Shengya)
+
+## Debug Process
+
+The main update of the distributed observer:
+```
+x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
+```
+1. The measurement_term is correct, including the real local measurement. The observer gain is utilized well. 
+
+2. For the dynamics_term of the vehicle 1
+    1. The initial fleet state is correct, as shwon in the following：
+
+        | fleet_x_0 | fleet_v_0 | fleet_x_1 | fleet_v_1 | fleet_x_2 | fleet_v_2 | fleet_x_3 | fleet_v_3 |
+        |-----------|-----------|-----------|-----------|-----------|-----------|-----------|-----------|
+        | 0         | 0         | 3.420902613 | 0.36795 | 0         | 0         | 0         | 0         |
+
+    2. Checking the [_transfer_fleet_states_to_estimated_states](). At the initial time, Here the following value is not correct:
+
+        | Variable | Value |
+        |---|---|
+        | x_vec_before_p1 | 0.23487455 |
+        | x_vec_before_v1 | 0.002114917 |
+
+        ** The correct results x_vec_before_p1 should be 0.4083, not 0.23487455 **
+
+        ```
+        x_vec_before_p1 = p1 - p0 + d10; 
+        # p1 from the fleet data, is 3.420902613, vehicel id == i.  
+        # p0 from recieved local data, is 4.1805. 
+        # di0 = d + h * v1, v1 is from the fleet data, is 0.36795
+        ```
+
+        To fix this issue, add the di0 recording. 
+
+
 # Update Log 2026/01/20 (HUY)
 - [x] Move all your observer to a folder called ShengyaObs
 - [x] No need to config here when run the vehicle. All the config is in observer internal 

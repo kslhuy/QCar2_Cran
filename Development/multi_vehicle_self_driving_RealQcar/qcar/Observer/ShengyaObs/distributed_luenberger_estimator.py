@@ -468,6 +468,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 
         Returns:
             estimated_state: Distributed observer state vector [3*observer_size]
+            di0_values: Array of di0 values for each follower vehicle [observer_size]
         """
         # Get leader (vehicle 0) absolute state
         state_leader = self._get_latest_received_state(0, current_time_ns)
@@ -486,6 +487,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # Initialize estimated state matrix [3 x observer_size]
         estimated_state_mat = np.zeros((3, self.observer_size))
+        di0_values = np.zeros(self.observer_size)  # Store di0 for each follower
         
         # For each follower vehicle (vehicle_id >= 1) compute relative state
         for vehicle_id in range(1, min(self.fleet_size, self.observer_size + 1)):
@@ -510,6 +512,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 velocity_sum += vk
             
             di0 += self.h * velocity_sum
+            di0_values[col_idx] = di0  # Store di0 value
             
             # Calculate relative state
             relative_position = pi - p0 + di0
@@ -524,8 +527,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # Flatten matrix to vector (column-major order)
         estimated_state = estimated_state_mat.flatten(order="F")
         
-        return estimated_state
-
+        return estimated_state, di0_values
+    
     def _transfer_estimated_states_to_fleet_states(self, estimated_state: np.ndarray, local_state: np.ndarray, current_time_ns: int) -> np.ndarray:
         """
         Convert distributed observer estimated state to complete fleet state matrix
@@ -553,6 +556,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # Initialize output matrix, preserving y and theta information
         fleet_states_new = self.fleet_states.copy()
+        di0_values = np.zeros(self.observer_size)  # Store di0 for each follower
         
         # Get leader (vehicle 0) absolute state
         state_leader = self._get_latest_received_state(0, current_time_ns)
@@ -593,6 +597,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 velocity_sum += vk
             
             di0 += self.h * velocity_sum
+            di0_values[col_idx] = di0  # Store di0 value
             
             # Calculate absolute state
             pi = relative_position + p0 - di0
@@ -608,7 +613,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             fleet_states_new[1, vehicle_id] = self.fleet_states[1, vehicle_id]
             fleet_states_new[2, vehicle_id] = self.fleet_states[2, vehicle_id]
         
-        return fleet_states_new
+        return fleet_states_new, di0_values
 
     def _distributed_luenberger_observer_update(self, local_state: np.ndarray, current_time_ns: int,
                                      collective_control: np.ndarray, dt: float) -> np.ndarray:
@@ -621,7 +626,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         dim_distributed_observer = longitudinal_state_dim * self.observer_size
 
         # Distributed observer state (x_vec: pi-p0+di0, vi-v0, ai-a0)
-        x_vec = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
+        x_vec, di0_values_before = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
 
         # Get leader state with fallback to current estimate
         state_leader = self._get_latest_received_state(0, current_time_ns)
@@ -830,18 +835,19 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # === Store debug data for recording ===
         if self.debug_recording_enabled:
             self.debug_data = {
-                'x_vec_before': x_vec.copy(),
-                'x_vec_after': x_i_new.copy(),
-                'dynamics_term': dynamics_term.copy(),
-                'measurement_term': measurement_term.copy(),
-                'consensus_term': consensus_term.copy(),
-                'local_measurement': local_measurement.copy(),
-                'estimated_measurement': estimated_measurement.copy(),
-                'measurement_error': measurement_error.copy(),
-                'neighbor_count': neighbor_count,
-                'consensus_norm': np.linalg.norm(consensus_term) if neighbor_count > 0 else 0.0,
-                'fleet_states': self.fleet_states.copy(),
-                'dt': dt,
+                'x_vec_before': x_vec.copy(), # Observer state before update
+                'x_vec_after': x_i_new.copy(),# Observer state after update
+                'dynamics_term': dynamics_term.copy(), # Dynamics prediction term
+                'measurement_term': measurement_term.copy(), # Measurement correction term
+                'consensus_term': consensus_term.copy(), # Consensus correction term
+                'local_measurement': local_measurement.copy(), # Local measurement vector
+                'estimated_measurement': estimated_measurement.copy(), # Estimated measurement vector
+                'measurement_error': measurement_error.copy(), # Measurement error vector
+                'neighbor_count': neighbor_count, # Number of neighbors used
+                'consensus_norm': np.linalg.norm(consensus_term) if neighbor_count > 0 else 0.0, # Norm of consensus term
+                'fleet_states': self.fleet_states.copy(), # Current fleet states
+                'di0_values': di0_values_before.copy(), # di0 values for each follower
+                'dt': dt, # Time step
             }
         
         return x_i_new
