@@ -38,7 +38,7 @@ longitudinal:
   # minimum velocity [m/s] - reverse capability
   v_min: -1.0
   # switching velocity [m/s] - threshold for kinematic/dynamic switching
-  v_switch: 0.5
+  v_switch: 0.1
   # maximum braking deceleration magnitude [m/s^2]
   # brake_decel_mag : 3.0
 
@@ -71,11 +71,21 @@ I_xz_s: 0.0
 # Cornering stiffness for qLPV model [N/rad]
 # These values match the observer's linear tire model
 # Front cornering stiffness [N/rad]
-Cf: 50.0
+Cf: 120.0
 # Rear cornering stiffness [N/rad]
-Cr: 50.0
+Cr: 120.0
 
-mu: 0.01 # Road friction coefficient (small, realistic)
+# Normalized cornering stiffness (for load transfer law)
+Csf: 30.0
+Csr: 30.0
+
+mu: 0.01 # Rolling resistance internal (for vx_dot equations)
+mu_road: 1.0 # Tire-Road friction coefficient (for lateral forces)
+
+# Stopping behavior parameters
+Cr_roll: 0.015 # Rolling resistance coefficient
+Cd_aero: 0.3    # Aerodynamic drag coefficient
+Af: 0.05        # Frontal area [m^2]
 
 # suspension parameters (scaled for small vehicle)
 # suspension spring rate (front) [N/m]
@@ -105,7 +115,7 @@ K_rad: 100.0
 K_zt: 1000.0
 
 # center of gravity height of total mass [m] - low CG for stability
-h_cg: 0.06
+h_cg: 0.07
 # height of roll axis above ground (front) [m]
 h_raf: 0.0
 # height of roll axis above ground (rear) [m]

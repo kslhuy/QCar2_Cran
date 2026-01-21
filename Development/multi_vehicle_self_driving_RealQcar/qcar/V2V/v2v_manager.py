@@ -429,23 +429,23 @@ class V2VManager:
                         if self.logger:
                             self.logger.logger.warning(f"Failed to log fleet estimation: {e}")
                 
-                # Periodically log the fleet state data structure for debugging
-                self._fleet_state_log_counter += 1
-                if self._fleet_state_log_counter % self._log_data_structure_interval == 0:
-                    if self.logger:
-                        self.logger.info(f"V2VManager: Fleet state data structure from vehicle {sender_id}:")
-                        self.logger.info(f"  sender_id: {data.get('sender_id')} (int)")
-                        self.logger.info(f"  fleet_states: dict with {len(fleet_states)} vehicles")
-                        for vid, vstate in list(fleet_states.items())[:3]:  # Show first 3 vehicles
-                            self.logger.info(f"    vehicle_{vid}: x={vstate.get('x', 0):.3f}, y={vstate.get('y', 0):.3f}, theta={vstate.get('theta', 0):.3f}, v={vstate.get('velocity', 0):.3f}, conf={vstate.get('confidence', 0):.2f}")
-                        if len(fleet_states) > 3:
-                            self.logger.info(f"    ... and {len(fleet_states) - 3} more vehicles")
-                        self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
-                        timestamp = data.get('timestamp')
-                        if timestamp is not None:
-                            self.logger.info(f"  timestamp: {timestamp:.3f} (float)")
-                        else:
-                            self.logger.info(f"  send_time_ns: {send_time_ns} (nanoseconds)")
+                # # Periodically log the fleet state data structure for debugging
+                # self._fleet_state_log_counter += 1
+                # if self._fleet_state_log_counter % self._log_data_structure_interval == 0:
+                #     if self.logger:
+                #         self.logger.info(f"V2VManager: Fleet state data structure from vehicle {sender_id}:")
+                #         self.logger.info(f"  sender_id: {data.get('sender_id')} (int)")
+                #         self.logger.info(f"  fleet_states: dict with {len(fleet_states)} vehicles")
+                #         for vid, vstate in list(fleet_states.items())[:3]:  # Show first 3 vehicles
+                #             self.logger.info(f"    vehicle_{vid}: x={vstate.get('x', 0):.3f}, y={vstate.get('y', 0):.3f}, theta={vstate.get('theta', 0):.3f}, v={vstate.get('velocity', 0):.3f}, conf={vstate.get('confidence', 0):.2f}")
+                #         if len(fleet_states) > 3:
+                #             self.logger.info(f"    ... and {len(fleet_states) - 3} more vehicles")
+                #         self.logger.info(f"  source: {data.get('source', 'unknown')} (str)")
+                #         timestamp = data.get('timestamp')
+                #         if timestamp is not None:
+                #             self.logger.info(f"  timestamp: {timestamp:.3f} (float)")
+                #         else:
+                #             self.logger.info(f"  send_time_ns: {send_time_ns} (nanoseconds)")
             
             # Pass entire fleet estimates to vehicle observer for processing
             if self.vehicle_observer is not None:

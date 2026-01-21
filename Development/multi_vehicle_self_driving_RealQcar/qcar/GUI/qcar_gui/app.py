@@ -854,6 +854,7 @@ class QCarFleetController:
             self.log(f"✅ V2V disabled for {success_count} vehicles", 'SUCCESS')
             self._fleet_controls.reset_v2v_buttons()
             self._v2v_status.clear()
+            self._v2v_network_established = False  # Reset so message can be logged again
         else:
             self.log("❌ Failed to disable V2V", 'ERROR')
     
@@ -948,7 +949,10 @@ class QCarFleetController:
         
         if len(connected) == len(self._connected_cars) and fully_connected:
             self._fleet_controls.set_v2v_connected(True)
-            self.log("✅ V2V Network Fully Established", 'SUCCESS')
+            # Only log once when network becomes established
+            if not getattr(self, '_v2v_network_established', False):
+                self._v2v_network_established = True
+                self.log("✅ V2V Network Fully Established", 'SUCCESS')
     
     def process_platoon_setup_confirmation(self, car_id: int, platoon_data: dict) -> None:
         """Process platoon setup confirmation from a vehicle."""

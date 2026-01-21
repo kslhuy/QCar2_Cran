@@ -1,4 +1,4 @@
-"""Test script to verify centralized qLPV vehicle dynamics module"""
+"""Test script to verify centralized qLPV vehicle dynamics module and min_vx consistency"""
 
 import sys
 from pathlib import Path
@@ -39,7 +39,7 @@ print("\n2. Testing QLPVVehicleDynamicsObs with default params...")
 try:
     params = get_default_vehicle_params()
     dynamics = QLPVVehicleDynamicsObs()
-    print(f"   ✓ Dynamics created: lf={dynamics.lf}, m={dynamics.m}, Iz={dynamics.Iz}")
+    print(f"   ✓ Dynamics created: lf={dynamics.lf}, m={dynamics.m}, Iz={dynamics.Iz}, min_vx={dynamics.min_vx}")
 except Exception as e:
     print(f"   ✗ Failed: {e}")
     sys.exit(1)
@@ -48,49 +48,47 @@ except Exception as e:
 print("\n3. Testing YAML parameter loading...")
 try:
     yaml_params = get_vehicle_params_from_yaml()
-    print(f"   ✓ YAML params loaded: lf={yaml_params['lf']}, lr={yaml_params['lr']}, m={yaml_params['m']}, Iz={yaml_params['Iz']}, mu={yaml_params['mu']}")
+    print(f"   ✓ YAML params: lf={yaml_params['lf']}, m={yaml_params['m']}, Iz={yaml_params['Iz']}, vx_min={yaml_params.get('vx_min', 'N/A')}")
 except Exception as e:
     print(f"   ✗ YAML loading failed: {e}")
 
-# Test 4: Import from 1LayerObs observers
-print("\n4. Testing 1LayerObs imports...")
+# Test 4: Import from 1LayerObs observers and check min_vx
+print("\n4. Testing 1LayerObs imports (with vx_min check)...")
 
 try:
     from differentiator_uio_observer import DifferentiatorUIOObserver
     obs = DifferentiatorUIOObserver()
-    print(f"   ✓ DifferentiatorUIOObserver: lf={obs.lf}, m={obs.m}")
+    print(f"   ✓ DifferentiatorUIOObserver: lf={obs.lf}, m={obs.m}, min_vx={obs.min_vx}")
 except Exception as e:
     print(f"   ✗ DifferentiatorUIOObserver failed: {e}")
 
 try:
     from differentiator_uio_ekf import DifferentiatorUIOEKF
     obs = DifferentiatorUIOEKF()
-    print(f"   ✓ DifferentiatorUIOEKF: lf={obs.lf}, m={obs.m}")
+    print(f"   ✓ DifferentiatorUIOEKF: lf={obs.lf}, m={obs.m}, min_vx={obs.min_vx}")
 except Exception as e:
     print(f"   ✗ DifferentiatorUIOEKF failed: {e}")
 
 try:
     from qlpv_observer import qLPVAugmentedObserver
     obs = qLPVAugmentedObserver()
-    print(f"   ✓ qLPVAugmentedObserver: lf={obs.lf}, m={obs.m}")
+    print(f"   ✓ qLPVAugmentedObserver: lf={obs.lf}, m={obs.m}, min_vx={obs.min_vx}")
 except Exception as e:
     print(f"   ✗ qLPVAugmentedObserver failed: {e}")
 
 try:
     from qlpv_observer_kalma import qLPVAugmentedObserver as qLPVKalma
     obs = qLPVKalma()
-    print(f"   ✓ qLPVAugmentedObserver (Kalman): lf={obs.lf}, m={obs.m}")
+    print(f"   ✓ qLPVAugmentedObserver (Kalman): lf={obs.lf}, m={obs.m}, min_vx={obs.min_vx}")
 except Exception as e:
     print(f"   ✗ qLPVAugmentedObserver (Kalman) failed: {e}")
 
 # Test 5: Import from 2LayerObs
-print("\n5. Testing 2LayerObs imports...")
+print("\n5. Testing 2LayerObs imports (with vx_min check)...")
 try:
     from neural_state_estimator import NeuralLuenbergerEstimator
-    print("   ✓ NeuralLuenbergerEstimator imported successfully")
     obs = NeuralLuenbergerEstimator()
-    print(f"   ✓ NeuralLuenbergerEstimator: lf={obs.lf}, m={obs.m} ")
-
+    print(f"   ✓ NeuralLuenbergerEstimator: lf={obs.lf}, m={obs.m}, min_vx={obs.min_vx}")
 except Exception as e:
     print(f"   ✗ NeuralLuenbergerEstimator failed: {e}")
 

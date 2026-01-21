@@ -1030,8 +1030,8 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
         self.ay_innovation = 0.0
         self.w_constraint = 0.0  # m·ã_y ≈ w_r + cos(δ)·w_f
         
-        # Minimum velocity threshold
-        self.min_vx = 0.5  # [m/s]
+        # Minimum velocity threshold (from parameters_qcar.yaml)
+        self.min_vx = self.params.get('vx_min', 0.1)  # Default fallback only for safety
         
         # Centralized vehicle dynamics (single source of truth)
         self.dynamics = QLPVVehicleDynamicsObs(

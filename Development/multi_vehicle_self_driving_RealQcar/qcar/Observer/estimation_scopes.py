@@ -580,6 +580,126 @@ class FleetConsensusPreset(EstimationScopePreset):
 
 
 # ==============================================================================
+# Distributed Luenberger Observer Preset
+# ==============================================================================
+
+class DistributedLuenbergerPreset(EstimationScopePreset):
+    """
+    Visualize DistributedLuenbergerEstimator internal signals.
+    
+    Data keys expected (from estimator.get_debug_data()):
+        - x_vec_before: np.ndarray [3*observer_size] - state before update
+        - x_vec_after: np.ndarray [3*observer_size] - state after update
+        - dynamics_term: np.ndarray [3*observer_size]
+        - measurement_term: np.ndarray [3*observer_size]
+        - consensus_term: np.ndarray [3*observer_size]
+        - measurement_error: np.ndarray [2]
+        - neighbor_count: int
+        - consensus_norm: float
+    """
+    
+    def __init__(self, observer_size: int = 3, enabled: bool = True):
+        super().__init__("DistributedLuenberger", enabled)
+        self.observer_size = observer_size
+    
+    def get_config(self) -> ScopeConfig:
+        # Create signals for each follower vehicle
+        position_signals = [{"name": f"p{i+1}", "width": 2} for i in range(self.observer_size)]
+        velocity_signals = [{"name": f"v{i+1}", "width": 2} for i in range(self.observer_size)]
+        term_signals = [
+            {"name": "dynamics", "width": 2},
+            {"name": "measurement", "width": 2},
+            {"name": "consensus", "width": 1}
+        ]
+        
+        return ScopeConfig(
+            title="Distributed Luenberger Observer",
+            rows=4,
+            cols=1,
+            axes=[
+                # Row 0: Relative position estimates
+                AxisConfig(
+                    row=0, col=0,
+                    y_label="Rel. Position [m]",
+                    y_lim=(-5, 10),
+                    signals=position_signals
+                ),
+                # Row 1: Relative velocity estimates  
+                AxisConfig(
+                    row=1, col=0,
+                    y_label="Rel. Velocity [m/s]",
+                    y_lim=(-1, 1),
+                    signals=velocity_signals
+                ),
+                # Row 2: Observer terms comparison (for vehicle 1)
+                AxisConfig(
+                    row=2, col=0,
+                    y_label="Observer Terms",
+                    y_lim=(-2, 2),
+                    signals=term_signals
+                ),
+                # Row 3: Measurement error
+                AxisConfig(
+                    row=3, col=0,
+                    y_label="Meas. Error",
+                    y_lim=(-1, 1),
+                    x_label="Time [s]",
+                    signals=[
+                        {"name": "pos_err", "width": 2},
+                        {"name": "vel_err", "width": 2}
+                    ]
+                ),
+            ]
+        )
+    
+    def sample(self, t: float, data: dict) -> None:
+        if self.scope is None:
+            return
+        
+        try:
+            # Get state vectors
+            x_vec = data.get('x_vec_after', data.get('x_vec_before', None))
+            if x_vec is None:
+                return
+            
+            # Row 0: Relative position estimates (index 0 for each vehicle)
+            positions = []
+            for i in range(self.observer_size):
+                idx = i * 3  # Each vehicle has 3 states: p, v, a
+                pos = x_vec[idx] if idx < len(x_vec) else 0.0
+                positions.append(pos)
+            self.scope.axes[0].sample(t, positions)
+            
+            # Row 1: Relative velocity estimates (index 1 for each vehicle)
+            velocities = []
+            for i in range(self.observer_size):
+                idx = i * 3 + 1
+                vel = x_vec[idx] if idx < len(x_vec) else 0.0
+                velocities.append(vel)
+            self.scope.axes[1].sample(t, velocities)
+            
+            # Row 2: Observer terms (just for vehicle 1 to avoid clutter)
+            dynamics = data.get('dynamics_term', np.zeros(3))
+            measurement = data.get('measurement_term', np.zeros(3))
+            consensus = data.get('consensus_term', np.zeros(3))
+            
+            # Use position component (index 0) for visualization
+            dyn_val = dynamics[0] if len(dynamics) > 0 else 0.0
+            meas_val = measurement[0] if len(measurement) > 0 else 0.0
+            cons_val = consensus[0] if len(consensus) > 0 else 0.0
+            self.scope.axes[2].sample(t, [dyn_val, meas_val, cons_val])
+            
+            # Row 3: Measurement error
+            meas_err = data.get('measurement_error', np.zeros(2))
+            pos_err = meas_err[0] if len(meas_err) > 0 else 0.0
+            vel_err = meas_err[1] if len(meas_err) > 1 else 0.0
+            self.scope.axes[3].sample(t, [pos_err, vel_err])
+            
+        except Exception as e:
+            pass  # Non-blocking, ignore errors
+
+
+# ==============================================================================
 # Data Recording
 # ==============================================================================
 

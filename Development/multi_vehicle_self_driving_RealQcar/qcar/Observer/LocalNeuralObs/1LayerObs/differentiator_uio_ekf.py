@@ -10,7 +10,7 @@ Key improvements over DifferentiatorUIOObserver:
 - Dynamic gains via EKF covariance propagation
 - HighGain differentiator (faster, more robust)
 - State clamping for numerical stability
-- Aligned min_vx = 0.15 with vehicle model
+- Aligned min_vx = 0.5 with parameters_qcar.yaml
 - Tuned Q/R matrices for better estimation
 
 State: x = [v_x, v_y, ψ, r, X, Y]ᵀ (6D)
@@ -167,8 +167,8 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         # Tire residual estimates
         self.w_hat = np.zeros(2)
         
-        # Minimum velocity threshold (aligned with vehicle model)
-        self.min_vx = 0.15  # [m/s]
+        # Minimum velocity threshold (from parameters_qcar.yaml)
+        self.min_vx = self.params.get('vx_min', 0.1)  # Default fallback only for safety
         
         # Centralized vehicle dynamics (single source of truth)
         self.dynamics = QLPVVehicleDynamicsObs(
@@ -200,7 +200,7 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
     def _default_params(self) -> Dict:
         """Default vehicle parameters (QCar scale) - uses centralized defaults"""
         params = get_default_vehicle_params()
-        params['vx_min'] = 0.15  # Override for EKF observer
+        # params['vx_min'] = 0.15  # Override for EKF observer
         return params
     
     def _default_Q(self) -> np.ndarray:

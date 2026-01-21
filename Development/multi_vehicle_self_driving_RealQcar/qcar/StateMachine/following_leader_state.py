@@ -48,6 +48,7 @@ class FollowingLeaderState(StateBase):
         self.longitudinal_controller = None
         self.lateral_controller = None
         self.steering_controller = None  # For path-following lateral mode
+        self.lateral_controller_type = None  # 'path', 'fusion', or other (pure_pursuit, stanley, etc.)
         
     def enter(self) -> bool:
         """Initialize leader following mode"""
@@ -75,6 +76,8 @@ class FollowingLeaderState(StateBase):
         
         cm = self.vehicle_logic.controller_manager
         lateral_type = cm.get_lateral_type()
+        print(f"[FOLLOW] Lateral controller type: {lateral_type}")
+        self.lateral_controller_type = lateral_type  # Store for use in _compute_control
         
         # Get longitudinal controller from manager
         self.longitudinal_controller = cm.get_longitudinal_controller()

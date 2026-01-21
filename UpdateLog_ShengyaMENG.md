@@ -1,3 +1,11 @@
+# Update Log 2026/01/20 (HUY)
+- [x] Move all your observer to a folder called ShengyaObs
+- [x] No need to config here when run the vehicle. All the config is in observer internal 
+- [x] Move the extras config file in Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\extra_configs 
+- [x] You can run like normal , or run fake vehicle to test the observer (Look Quick_Start)
+- [x] Add the plot function to plot the result of the observer. 
+
+
 # Update Log 2026/01/19 (Shengya MENG)
 - [x] Creat the [start_all_cars.ps1](start_all_cars.ps1) and [stop_all_cars.ps1](stop_all_cars.ps1) to start or stop all cars at the same time. 
 - [x] Remove the fleet_state = local state
@@ -66,9 +74,6 @@ x_i_new = np.zeros_like(dynamics_term)  # Testing without update first.
 
 
 
-
-
-
 # Update Log 2026/01/07 (Shengya MENG)
 - [x] Transfer the fleet state to be distributed observer state. [_transfer_estimated_states_to_fleet_states function_](../qcar/Observer/fleet_state_estimators.py)
 - [x]Config the communication network, in my own distributed observer. [get_neighbors](../qcar/Observer/fleet_state_estimators.py). In the log of each vehicle, it is configed correctly. 
@@ -107,21 +112,6 @@ x_i_new = np.zeros_like(dynamics_term)  # Testing without update first.
 - [ ] Test if the observer gain can be used correctly in the observer class;
 - [ ] Make a logs for observer , local and fleet 
 
-## HUY UPDATE 
-
-Refactor state estimators and V2V manager for improved configuration handling and logging
-- ( GOOD ) Use fleet state received to Fleet Estimator (Check Consensus) 
-- Updated EKFStateEstimator and LuenbergerStateEstimator to accept a configuration dictionary for parameters. "config_fleet_estimators.yaml" "config_local_estimators.yaml"
-
-So i think no need to do " python vehicle_main.py --car-id 0 --config configs/car0.yaml"
-Just change the type in "config_fleet_estimators.yaml" , so all the vehicle have the same fleet estimator type
-
-
-
-- Removed unused GPS parameter from EKFStateEstimator.
-- Introduced ConsensusFleetEstimator for distributed fleet state estimation.
-- Enhanced V2VManager by normalizing state data and improving message handling.
-- Commented out legacy queue handling in V2VManager to streamline data processing.
 
 ## Observer config flow (summary)
 

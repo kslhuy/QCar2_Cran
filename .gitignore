@@ -14,7 +14,10 @@ Development/fleet_framwork/logs/
 Development/fleet_framwork/data_logs/
 Development/multi_vehicle_self_driving_RealQcar/qcar/scope_recordings
 Development/multi_vehicle_self_driving_RealQcar/qcar/test_recordings
+Development/multi_vehicle_self_driving_RealQcar/qcar/observer_recordings
+
 Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/scope_recordings
+Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/observer_recordings
 
 # docker/libraries/resources/pretrained_models
 docker/libraries/resources/pretrained_models/

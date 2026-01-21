@@ -3,12 +3,6 @@ Fake Vehicle using REAL VehicleLogic Class - SIMPLIFIED
 This creates a fake vehicle that uses the actual VehicleLogic class from vehicle_logic.py
 with mock hardware components. Only the INITIALIZING state is replaced with a fake version.
 
-Key simplifications:
-- No custom FakeVehicleStateMachine (uses real VehicleStateMachine)
-- No redundant Ground Station client creation (VehicleLogic handles it)
-- Only INITIALIZING state is fake, all other states are real
-- Mock hardware is injected during the fake initialization
-- Uses proper vehicle dynamics from vehiclemodels folder (CommonRoad models)
 
 Vehicle Models Available:
 # Vehicle Models Available:
@@ -103,8 +97,6 @@ class MockQCar:
         if vehicle_params == 'qcar':
             # Load custom QCar parameters
             try:
-
-                
                 params_dir = Path(__file__).parent / "vehiclemodels" / "parameters"
                 qcar_conf = OmegaConf.load(str(params_dir / "parameters_qcar.yaml"))
                 tire_conf = OmegaConf.load(str(params_dir / "parameters_tire.yaml"))
@@ -118,20 +110,14 @@ class MockQCar:
             # Load standard vehicle parameters (vehicle1-4)
             vehicle_id = int(vehicle_params.replace('vehicle', ''))
             self.params = setup_vehicle_parameters(vehicle_id=vehicle_id)
-        else:
-            # Default to QCar parameters
-            try:
-                # from pathlib import Path
-                # from omegaconf import OmegaConf
-                # from vehiclemodels.vehicle_parameters import VehicleParameters
-                
-                params_dir = Path(__file__).parent / "vehiclemodels" / "parameters"
-                qcar_conf = OmegaConf.load(str(params_dir / "parameters_qcar.yaml"))
-                tire_conf = OmegaConf.load(str(params_dir / "parameters_tire.yaml"))
-                structured_conf = OmegaConf.structured(VehicleParameters)
-                self.params = OmegaConf.to_object(OmegaConf.merge(structured_conf, qcar_conf, tire_conf))
-            except:
-                self.params = setup_vehicle_parameters(vehicle_id=1)
+
+
+        # # Load parameters
+        # # Officially use 'qcar' which now loads parameters_qcar.yaml via setup_vehicle_parameters
+        # if vehicle_params:
+        #     self.params = setup_vehicle_parameters(vehicle_id=vehicle_params)
+        # else:
+        #     self.params = setup_vehicle_parameters(vehicle_id='qcar')
         
         # Mock sensor data
         self.motorTach = 0.0
@@ -483,7 +469,7 @@ class MockQCar:
         
         # Compute steering rate: P controller to track target steering angle
         # This simulates the steering servo dynamics
-        K_p_steering = 1.0  # Gain for steering rate controller
+        K_p_steering = 4.0  # Increased from 1.0 to 4.0 for better tracking
         steering_rate = K_p_steering * (target_steering_angle - current_steering_angle)
         
         # Clamp steering rate to physical limits
@@ -499,7 +485,7 @@ class MockQCar:
         # Use qLPV dynamics (with Pacejka for true tire forces)
         try:
             derivatives = vehicle_dynamics_qlpv(
-                self.state_qlpv, control, self.params, use_pacejka=True)
+                self.state_qlpv, control, self.params,tire_mode='dynamic_linear' )
             
             # Euler integration
             for i in range(len(self.state_qlpv)):
@@ -855,20 +841,7 @@ class FakeVehicleWithRealLogic:
         self.host_ip = host_ip
         self.base_port = base_port
         
-        # print("="*60)
-        # print(f"[CAR] Real VehicleLogic Fake Vehicle - Car {car_id}")
-        # print("   Using ACTUAL VehicleLogic class with mock hardware")
-        
-        # if dynamic_model_type == 2:
-        #     model_name = "qLPV"
-        # elif dynamic_model_type == 1:
-        #     model_name = "Single-Track Dynamic"
-        # else:
-        #     model_name = "Kinematic Single-Track"
-            
-        # print(f"   Vehicle Model: {model_name} (ID: {dynamic_model_type})")
-        # print(f"   Vehicle Parameters: {vehicle_params}")
-        # print("="*60)
+
         
         # Create mock hardware with proper vehicle dynamics
         self.mock_qcar = MockQCar(car_id, dynamic_model_type=dynamic_model_type, vehicle_params=vehicle_params)
