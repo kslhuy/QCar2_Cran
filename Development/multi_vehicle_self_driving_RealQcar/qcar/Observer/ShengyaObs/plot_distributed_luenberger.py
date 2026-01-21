@@ -22,26 +22,27 @@ from matplotlib.gridspec import GridSpec
 
 # Configure matplotlib for cleaner plots
 plt.rcParams.update({
-    'font.size': 8,
-    'axes.titlesize': 9,
-    'axes.labelsize': 8,
-    'xtick.labelsize': 7,
-    'ytick.labelsize': 7,
-    'legend.fontsize': 6,
+    'font.size': 10,
+    'axes.titlesize': 10,
+    'axes.labelsize': 10,
+    'xtick.labelsize': 10,
+    'ytick.labelsize': 10,
+    'legend.fontsize': 8,
     'figure.titlesize': 10,
 })
 
 # Recording directory paths
 RECORDING_DIRS = {
     'fake': [
-        os.path.join('..','..', 'GUI', 'observer_recordings'),
+        os.path.join('..','..', 'GUI', 'observer_recordings'),      # qcar/GUI/observer_recordings
+        os.path.join('..', '..', 'observer_recordings'),            # qcar/observer_recordings (向上两级)
         os.path.join('GUI', 'observer_recordings'),
         'observer_recordings',
     ],
     'real': [
         os.path.join('..','..', 'real_recordings'),
+        os.path.join('..', '..', 'observer_recordings'),            # qcar/observer_recordings
         'real_recordings',
-        os.path.join('..', 'observer_recordings'),
     ]
 }
 
@@ -104,9 +105,9 @@ def interactive_select(directories: List[str], source_name: str) -> Optional[str
         print(f"\n  No {source_name} recordings found.")
         return None
     
-    print(f"\n{'='*60}")
+    print(f"\n{'='*70}")
     print(f"  📊 {source_name.upper()} RECORDINGS")
-    print(f"{'='*60}\n")
+    print(f"{'='*70}\n")
     
     # Group by vehicle
     by_vehicle = {}
@@ -123,12 +124,14 @@ def interactive_select(directories: List[str], source_name: str) -> Optional[str
             by_vehicle[vid] = []
         by_vehicle[vid].append((path, mtime, size))
     
-    # Display with indices
+    # Display with indices, grouped by vehicle
     all_files = []
     idx = 1
+    max_per_vehicle = 3  # Show max 3 per vehicle
+    
     for vid in sorted(by_vehicle.keys()):
         print(f"  🚗 Vehicle {vid}:")
-        for path, mtime, size in by_vehicle[vid][:5]:  # Show max 5 per vehicle
+        for path, mtime, size in by_vehicle[vid][:max_per_vehicle]:
             # Calculate duration from CSV
             try:
                 df = pd.read_csv(path)
@@ -139,21 +142,19 @@ def interactive_select(directories: List[str], source_name: str) -> Optional[str
                 dur_str = "?"
                 samples = 0
             
-            time_ago = datetime.now() - mtime
-            if time_ago.seconds < 60:
-                time_str = "just now"
-            elif time_ago.seconds < 3600:
-                time_str = f"{time_ago.seconds // 60} min ago"
-            else:
-                time_str = mtime.strftime("%H:%M")
+            # Format timestamp
+            timestamp = mtime.strftime("%m-%d %H:%M:%S")
             
-            print(f"    [{idx}] {time_str:>10} | {dur_str:>8} | {samples:>5} samples | {format_file_size(size):>8}")
+            print(f"    [{idx:2d}] {timestamp} | {dur_str:>8} | {samples:>5} samples | {format_file_size(size):>8}")
             all_files.append(path)
             idx += 1
+        
+        if len(by_vehicle[vid]) > max_per_vehicle:
+            print(f"        ... and {len(by_vehicle[vid]) - max_per_vehicle} more files")
         print()
     
     print(f"  [0] Cancel")
-    print(f"{'='*60}")
+    print(f"{'='*70}")
     
     # Get user input
     while True:
@@ -199,15 +200,15 @@ def plot_observer_states(df: pd.DataFrame, observer_size: int,
         vid = i + 1
         col_pos = f'x_vec_after_p{vid}'
         if col_pos in df.columns:
-            ax_pos.plot(time, df[col_pos], label=f'V{vid}', color=colors[i], linewidth=1.2)
+            ax_pos.plot(time, df[col_pos], label=f'Vehicle {vid}', color=colors[i], linewidth=1.5)
         
         col_vel = f'x_vec_after_v{vid}'
         if col_vel in df.columns:
-            ax_vel.plot(time, df[col_vel], label=f'V{vid}', color=colors[i], linewidth=1.2)
+            ax_vel.plot(time, df[col_vel], label=f'Vehicle {vid}', color=colors[i], linewidth=1.5)
         
         col_acc = f'x_vec_after_a{vid}'
         if col_acc in df.columns:
-            ax_acc.plot(time, df[col_acc], label=f'V{vid}', color=colors[i], linewidth=1.2)
+            ax_acc.plot(time, df[col_acc], label=f'Vehicle {vid}', color=colors[i], linewidth=1.5)
     
     ax_pos.set_ylabel('Pos [m]')
     ax_pos.set_title('Relative Position (pi - p0 + di0)')
@@ -323,9 +324,9 @@ def create_full_plot(df: pd.DataFrame, title: str = "Observer Analysis", filepat
     
     fig = plt.figure(figsize=(14, 10))
     
-    # Title with stats
+    # Title with stats (title already includes data source)
     stats_str = f"Duration: {format_duration(duration)} | Samples: {samples} | Fleet: {fleet_size} vehicles"
-    fig.suptitle(f"{title}\n{stats_str}", fontsize=10, fontweight='bold')
+    fig.suptitle(f"{title}\n{stats_str}", fontsize=9, fontweight='bold')
     
     gs = GridSpec(4, 2, figure=fig, hspace=0.4, wspace=0.3, 
                   top=0.92, bottom=0.06, left=0.08, right=0.95)
@@ -428,7 +429,10 @@ Examples:
         sys.exit(1)
     
     basename = os.path.basename(filepath)
-    title = f"Distributed Luenberger Observer - {basename}"
+    # Get file modification time
+    mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
+    time_str = mtime.strftime("%Y-%m-%d %H:%M:%S")
+    title = f"Distributed Luenberger Observer\nData: {basename} (Created: {time_str})"
     
     fig = create_full_plot(df, title, filepath)
     

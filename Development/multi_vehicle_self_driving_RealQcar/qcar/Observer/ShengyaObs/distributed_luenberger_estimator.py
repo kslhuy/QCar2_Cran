@@ -504,18 +504,10 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             # Calculate di0
             di0 = vehicle_id * self.d
             
-            # Sum absolute velocities from vehicle 1 to vehicle_id
+            # Sum absolute velocities from vehicle 1 to vehicle_id (use fleet_states)
             velocity_sum = 0.0
             for k in range(1, vehicle_id + 1):
-                # Use local_state if k is our vehicle
-                if k == self.vehicle_id and local_state is not None:
-                    vk = local_state[3]
-                else:
-                    state_k = self._get_latest_received_state(k, current_time_ns)
-                    if state_k is not None:
-                        vk = state_k[3]
-                    else:
-                        vk = fleet_states[3, k]
+                vk = fleet_states[3, k]
                 velocity_sum += vk
             
             di0 += self.h * velocity_sum
@@ -783,11 +775,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                         neighbor_fleet_states[2, vid_int] = vehicle_state.get('theta', 0.0)
                         neighbor_fleet_states[3, vid_int] = vehicle_state.get('velocity', vehicle_state.get('v', 0.0))
                         neighbor_fleet_states[4, vid_int] = vehicle_state.get('acceleration', 0.0)
-                    if self.logger:
-                        self.logger.logger.info(
-                            f"Vehicle {self.vehicle_id}: Neighbor {neighbor_id} vehicle_{vid_int} state: "
-                            f"x={neighbor_fleet_states[0, vid_int]:.3f}, v={neighbor_fleet_states[3, vid_int]:.3f}"
-                        )
+                    
                 except (ValueError, TypeError) as e:
                     if self.logger:
                         self.logger.logger.error(

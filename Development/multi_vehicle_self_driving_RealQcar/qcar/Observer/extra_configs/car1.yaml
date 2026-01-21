@@ -3,7 +3,7 @@ network:
   base_port: 5000
 observer:
   fleet_estimator_type: distributed_luenberger
-  local_estimator_type: luenberger
+  local_estimator_type: ekf
   observer_gain: [
     [ 4.4335, 30.9851],
     [-5.4707, 12.7466],

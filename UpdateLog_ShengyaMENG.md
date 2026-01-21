@@ -1,5 +1,20 @@
 # Update Log 2026/01/21 (Shengya)
-- [x] 
+
+- [x] Correct the transfermation
+- [x] Modify the plot, make sure the latest dist_luenberger_.csv can be plotted
+- [x] Modify the extral config file, make sure all the local observer is ekf
+
+Now, the results are shown as following:
+
+![Distributed Observer 1](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/distributed_observer_1.png)
+
+
+![Distributed Observer 2](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/distributed_observer_2.png)
+
+![Distributed Observer 3](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/distributed_observer_3.png)
+
+**Analysis**: Here, we set the consensus term == 0. So, the perfomance of distributed observer 1 make sence. Vehicle 3 shows similar catastrophic divergence as Vehicle 2. 
+
 
 ## Debug Process
 
