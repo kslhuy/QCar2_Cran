@@ -74,7 +74,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # System matrices of the longitudinal model
         tau = self.tau_i  # Time constant
         self.h = 1.0     # time headway
-        self.d = 0.8    # Desired distance
+        self.d = 0.4    # Desired distance
         self.observer_size = self.fleet_size - 1  # Exclude leader from observer size
 
         A_tau = np.array([
@@ -176,7 +176,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 f"Vehicle {self.vehicle_id}: Neighbors list initialized: {self.my_neighbors}"
             )
             self.logger.logger.info(
-                f"Vehicle {self.vehicle_id}: Output matrix Ci computed with shape: {self.Ci.shape}"
+                f"Vehicle {self.vehicle_id}: Output matrix Ci computed: {self.Ci}. System matrices A_delta: {self.A_delta}, Input matrix B_delta: {self.B_delta}."
             )
         
         # === Debug Data Storage and Recording ===
@@ -431,7 +431,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 local_state, current_time_ns, control, dt
             )
             # Transfer the estimated states back to fleet_states. 
-            self.fleet_states = self._transfer_estimated_states_to_fleet_states(self.estimated_state, local_state, current_time_ns)
+            self.fleet_states, _ = self._transfer_estimated_states_to_fleet_states(self.estimated_state, local_state, current_time_ns)
             # Cleanup old data
             self._cleanup_old_data(current_time_ns)
             
@@ -452,7 +452,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 self.logger.log_error("Distributed Luenberger update error", e)
             return self.fleet_states
     
-    def _transfer_fleet_states_to_estimated_states(self, fleet_states: np.ndarray, current_time_ns: int) -> np.ndarray:
+    def _transfer_fleet_states_to_estimated_states(self, fleet_states: np.ndarray, current_time_ns: int, local_state: np.ndarray = None) -> np.ndarray:
         """
         Convert complete fleet state matrix to distributed observer estimated state format
         
@@ -465,6 +465,9 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         Args:
             fleet_states: Complete fleet state matrix [state_dim x fleet_size]
+            current_time_ns: Current timestamp in nanoseconds
+            local_state: Optional local state [x, y, theta, v, a] for this vehicle. 
+                        If provided, will be used when k == self.vehicle_id instead of fleet_states
 
         Returns:
             estimated_state: Distributed observer state vector [3*observer_size]
@@ -504,11 +507,15 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             # Sum absolute velocities from vehicle 1 to vehicle_id
             velocity_sum = 0.0
             for k in range(1, vehicle_id + 1):
-                state_k = self._get_latest_received_state(k, current_time_ns)
-                if state_k is not None:
-                    vk = state_k[3]
+                # Use local_state if k is our vehicle
+                if k == self.vehicle_id and local_state is not None:
+                    vk = local_state[3]
                 else:
-                    vk = fleet_states[3, k]
+                    state_k = self._get_latest_received_state(k, current_time_ns)
+                    if state_k is not None:
+                        vk = state_k[3]
+                    else:
+                        vk = fleet_states[3, k]
                 velocity_sum += vk
             
             di0 += self.h * velocity_sum
@@ -539,9 +546,11 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         - Acceleration estimate: ai - a0
         
         Need to compute absolute states:
-        - pi = estimate + p0 - di0
-        - vi = estimate + v0
-        - ai = estimate + a0
+        - vi = estimate_i_v + v0
+        - ai = estimate_i_a + a0
+        - pi = estimate_i_p + p0 - di0
+        - Where di0 = vehicle_id * d + h * sum(hat_v_k for k=1 to vehicle_id)
+        -hat_v_k = sum (estimate_k_v + v0) for k=1 to vehicle_id
         
         Args:
             estimated_state: Distributed observer state vector [3*observer_size]
@@ -584,17 +593,19 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             relative_accel = estimated_state_mat[2, col_idx]
             
             # Calculate di0
+            # di0 = vehicle_id * d + h * sum(hat_v_k for k=1 to vehicle_id)
+            # where hat_v_k = estimate_k_v + v0
             di0 = vehicle_id * self.d
             
-            # Sum absolute velocities from vehicle 1 to vehicle_id
+            # Sum estimated absolute velocities: hat_v_k = estimate_k_v + v0
             velocity_sum = 0.0
             for k in range(1, vehicle_id + 1):
-                state_k = self._get_latest_received_state(k, current_time_ns)
-                if state_k is not None:
-                    vk = state_k[3]
-                else:
-                    vk = self.fleet_states[3, k]
-                velocity_sum += vk
+                k_idx = k - 1  # Convert vehicle_id to matrix index
+                if k_idx < self.observer_size:
+                    # Get estimated relative velocity from the estimated state matrix
+                    estimate_k_v = estimated_state_mat[1, k_idx]  # Relative velocity: vk - v0
+                    hat_v_k = estimate_k_v + v0  # Convert to absolute velocity
+                    velocity_sum += hat_v_k
             
             di0 += self.h * velocity_sum
             di0_values[col_idx] = di0  # Store di0 value
@@ -626,7 +637,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         dim_distributed_observer = longitudinal_state_dim * self.observer_size
 
         # Distributed observer state (x_vec: pi-p0+di0, vi-v0, ai-a0)
-        x_vec, di0_values_before = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
+        x_vec, di0_values_before = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns, local_state)
 
         # Get leader state with fallback to current estimate
         state_leader = self._get_latest_received_state(0, current_time_ns)
@@ -785,7 +796,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                     continue
             
             # --- Step 4: Convert to distributed observer state format ---
-            neighbor_x_vec = self._transfer_fleet_states_to_estimated_states(
+            neighbor_x_vec, neighbor_di0_values = self._transfer_fleet_states_to_estimated_states(
                 neighbor_fleet_states, current_time_ns
             )
             
@@ -801,7 +812,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # --- Step 6: Apply consensus gain (normalize by neighbor count) ---
         if neighbor_count > 0:
-            consensus_term = (self.consensus_gain / neighbor_count) @ consensus_accum
+            consensus_term = self.consensus_gain  @ consensus_accum
             
             # Numerical protection: prevent consensus term explosion
             consensus_norm = np.linalg.norm(consensus_term)
@@ -827,6 +838,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 )
         
         # Combine all terms (note: consensus term is subtracted, per theory)
+        consensus_term = np.zeros(dim_distributed_observer) 
         x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
         
         # State constraint: prevent numerical overflow

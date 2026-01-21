@@ -1,4 +1,5 @@
 # Update Log 2026/01/21 (Shengya)
+- [x] 
 
 ## Debug Process
 
@@ -32,6 +33,18 @@ x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
         ```
 
         To fix this issue, add the di0 recording. 
+
+        Test it again, the initial value of the vehicle 1 is correct, but for the vehicle 2 and 3, it is not correct.  
+
+        - [x] Fix the source of vi during the di0, if k == vehicle id, because there is not own state in the received data, so, we use local state. 
+
+        For the inital condition. Because we fixed the controller command, the velocity and accelarate of all the vehicle are the same. Therefore, the initial vi - v0 and ai - a0 should be zero. 
+
+** Big issue of transfer from estimated state to fleet state. The calculation is wrong, definiely wrong! **
+
+If we assume there is fucntion: Phi: fleet state---> estimated state
+
+Then, the transfermation from estimated state to fleet state should be inv(Phi)
 
 
 # Update Log 2026/01/20 (HUY)
