@@ -315,6 +315,11 @@ def plot_consensus_info(df: pd.DataFrame, ax: plt.Axes):
 
 def create_full_plot(df: pd.DataFrame, title: str = "Observer Analysis", filepath: str = ""):
     """Create comprehensive multi-panel plot."""
+    # Filter out last 10 seconds of data
+    max_time = df['time'].max()
+    cutoff_time = max_time - 10.0
+    df = df[df['time'] <= cutoff_time].copy()
+    
     observer_size = detect_observer_size(df)
     fleet_size = detect_fleet_size(df)
     
@@ -436,11 +441,19 @@ Examples:
     
     fig = create_full_plot(df, title, filepath)
     
-    if args.save:
-        output_path = args.output or filepath.replace('.csv', '.png')
-        fig.savefig(output_path, dpi=150, bbox_inches='tight')
-        print(f"Saved to {output_path}")
-    else:
+    # Auto-save figure to figure/ directory
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    figure_dir = os.path.join(script_dir, 'figure')
+    os.makedirs(figure_dir, exist_ok=True)
+    
+    # Generate output filename: replace 'dist' with 'figure' and .csv with .png
+    figure_filename = basename.replace('dist_luenberger', 'figure_luenberger').replace('.csv', '.png')
+    output_path = os.path.join(figure_dir, figure_filename)
+    
+    fig.savefig(output_path, dpi=150, bbox_inches='tight')
+    print(f"Figure saved to: {output_path}")
+    
+    if not args.save:
         plt.show()
 
 

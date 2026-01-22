@@ -48,17 +48,4 @@ if ($totalStopped -gt 0) {
     }
 }
 
-# Optional: Also close the extra PowerShell windows that were opened
-$currentPID = $PID
-$allPowerShellWindows = Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $currentPID }
-
-if ($allPowerShellWindows) {
-    Write-Host "`nFound $($allPowerShellWindows.Count) other PowerShell windows." -ForegroundColor Yellow
-    $closeWindows = Read-Host "Do you want to close them? (y/n)"
-    if ($closeWindows -eq 'y' -or $closeWindows -eq 'Y') {
-        $allPowerShellWindows | Stop-Process -Force
-        Write-Host "PowerShell windows closed." -ForegroundColor Green
-    }
-}
-
 Write-Host "`nDone!" -ForegroundColor Green

@@ -1,3 +1,16 @@
+# Update Log 2026/01/22 (Shengya)
+- [x] cut the time when plot the figures
+- [x] Save the figure autoly in the ./figures
+
+Now the perfomance of each distributed observer:
+![Distributed observer 1](Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\ShengyaObs\figure\figure_luenberger_v1_20260122_112916.png)
+
+![Distributed observer 2](Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\ShengyaObs\figure\figure_luenberger_v2_20260122_112916.png)
+
+![Distributed observer 3](Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\ShengyaObs\figure\figure_luenberger_v3_20260122_112916.png)
+
+It make sense. The only potential issue is **large consensus term.**
+
 # Update Log 2026/01/21 (Shengya)
 
 - [x] Correct the transfermation

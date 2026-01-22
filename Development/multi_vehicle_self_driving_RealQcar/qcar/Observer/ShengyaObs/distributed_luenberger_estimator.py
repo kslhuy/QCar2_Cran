@@ -686,11 +686,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         neighbor_count = 0
         consensus_accum = np.zeros(dim_distributed_observer)
         
-        if self.logger:
-            self.logger.logger.debug(
-                f"Vehicle {self.vehicle_id}: Processing consensus with neighbors: {self.my_neighbors}"
-            )
-        
         # Loop through each neighbor defined by adjacency matrix
         for neighbor_id in self.my_neighbors:
             # --- Step 1: Try to get FLEET state (Primary Source) ---
@@ -719,12 +714,13 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 #         )
             
             # --- Step 2: Fallback to LOCAL states if needed ---
+            # Only need it when stop the cars
             if not is_complete_fleet:
                 if self.logger:
                     self.logger.logger.warning(
                         f"Vehicle {self.vehicle_id}: Using fallback strategy for neighbor {neighbor_id}"
                     )
-                
+                # Only need it when stop the cars
                 if neighbor_fleet_dict is None:
                     neighbor_fleet_dict = {}
                     if self.logger:
@@ -757,6 +753,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                             'velocity': float(self.fleet_states[3, vid]),
                             'acceleration': float(self.fleet_states[4, vid])
                         }
+                        # Never happens
                         if self.logger:
                             self.logger.logger.info(
                                 f"Vehicle {self.vehicle_id}: Filled vehicle_{vid} using current estimate "
@@ -793,9 +790,9 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             neighbor_matrix_idx = neighbor_id - 1
             weight = self.adjacency_matrix[my_matrix_idx, neighbor_matrix_idx]
             
-            # Accumulate weighted difference: weight * (own_estimate - neighbor_estimate)
+            # Accumulate weighted difference: (own_estimate - neighbor_estimate)
             consensus_diff = x_vec - neighbor_x_vec
-            consensus_accum += weight * consensus_diff
+            consensus_accum += consensus_diff
             neighbor_count += 1
         
         # --- Step 6: Apply consensus gain (normalize by neighbor count) ---
@@ -806,18 +803,18 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             consensus_norm = np.linalg.norm(consensus_term)
             max_consensus_threshold = 50.0
             if consensus_norm > max_consensus_threshold:
-                if self.logger:
-                    self.logger.logger.warning(
-                        f"Vehicle {self.vehicle_id}: Consensus term too large ({consensus_norm:.2f}), "
-                        f"clamping to {max_consensus_threshold}"
-                    )
+                # if self.logger:
+                #     self.logger.logger.warning(
+                #         f"Vehicle {self.vehicle_id}: Consensus term too large ({consensus_norm:.2f}), "
+                #         f"clamping to {max_consensus_threshold}"
+                #     )
                 consensus_term = consensus_term / consensus_norm * max_consensus_threshold
         
-            if self.logger:
-                self.logger.logger.info(
-                    f"Vehicle {self.vehicle_id}: Final consensus term applied, "
-                    f"neighbor_count={neighbor_count}, consensus_norm={np.linalg.norm(consensus_term):.4f}"
-                )
+            # if self.logger:
+            #     self.logger.logger.info(
+            #         f"Vehicle {self.vehicle_id}: Final consensus term applied, "
+            #         f"neighbor_count={neighbor_count}, consensus_norm={np.linalg.norm(consensus_term):.4f}"
+            #     )
         else:
             consensus_term = np.zeros(dim_distributed_observer)
             if self.logger:
@@ -826,7 +823,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 )
         
         # Combine all terms (note: consensus term is subtracted, per theory)
-        consensus_term = np.zeros(dim_distributed_observer) 
+        # consensus_term = np.zeros(dim_distributed_observer) 
         x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
         
         # State constraint: prevent numerical overflow
