@@ -16,9 +16,10 @@ import threading
 class VehicleLogger:
     """Enhanced logging system for vehicle control with non-blocking async writes"""
     
-    def __init__(self, car_id: int, log_dir: str = "logs", log_level: str = "INFO"):
+    def __init__(self, car_id: int, log_dir: str = "logs", log_level: str = "INFO", logging_config=None):
         self.car_id = car_id
         self.log_dir = log_dir
+        self.logging_config = logging_config
         
         # Create log directory if it doesn't exist
         os.makedirs(log_dir, exist_ok=True)
@@ -68,8 +69,16 @@ class VehicleLogger:
         
     def _setup_logger(self, log_level: str) -> logging.Logger:
         """Setup logging configuration"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = os.path.join(self.log_dir, f"vehicle_{self.car_id}_{timestamp}.log")
+        use_timestamp = True
+        if self.logging_config and hasattr(self.logging_config, 'use_timestamped_log_files'):
+            use_timestamp = self.logging_config.use_timestamped_log_files
+            
+        if use_timestamp:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_file = os.path.join(self.log_dir, f"vehicle_{self.car_id}_{timestamp}.log")
+        else:
+            # Single file mode - use static filename
+            log_file = os.path.join(self.log_dir, f"vehicle_{self.car_id}.log")
         
         # Create logger
         logger = logging.getLogger(f"Car_{self.car_id}")
@@ -127,12 +136,23 @@ class VehicleLogger:
         """Setup CSV telemetry logging with async thread"""
         os.makedirs(data_log_dir, exist_ok=True)
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = os.path.join(data_log_dir, f"run_{timestamp}")
-        os.makedirs(run_dir, exist_ok=True)
+        use_timestamp = True
+        if self.logging_config and hasattr(self.logging_config, 'use_timestamped_log_files'):
+            use_timestamp = self.logging_config.use_timestamped_log_files
+            
+        if use_timestamp:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            run_dir = os.path.join(data_log_dir, f"run_{timestamp}")
+            os.makedirs(run_dir, exist_ok=True)
+            mode = 'w'
+        else:
+            run_dir = data_log_dir
+            mode = 'a'
         
         telemetry_file = os.path.join(run_dir, f"telemetry_vehicle_{self.car_id}.csv")
-        self.telemetry_file = open(telemetry_file, 'w', newline='', buffering=8192)  # 8KB buffer for better performance
+        file_exists = os.path.exists(telemetry_file) and os.path.getsize(telemetry_file) > 0
+        
+        self.telemetry_file = open(telemetry_file, mode, newline='', buffering=8192)  # 8KB buffer for better performance
         
         fieldnames = [
             # Core telemetry
@@ -149,7 +169,11 @@ class VehicleLogger:
         ]
         
         self.telemetry_writer = csv.DictWriter(self.telemetry_file, fieldnames=fieldnames, extrasaction='ignore')
-        self.telemetry_writer.writeheader()
+        
+        # Write header only if needed (new file or overwrite)
+        if mode == 'w' or not file_exists:
+            self.telemetry_writer.writeheader()
+            
         self.telemetry_file.flush()
         
         # Start async logging thread
@@ -159,17 +183,24 @@ class VehicleLogger:
         
         self.logger.info(f"Telemetry logging initialized (async): {telemetry_file}")
         
-        # Setup fleet estimation logging
-        self._setup_fleet_estimation_logging(run_dir)
+        # Setup specific loggers based on config
+        # Fleet Estimation
+        if not self.logging_config or getattr(self.logging_config, 'enable_fleet_estimation_logging', True):
+            self._setup_fleet_estimation_logging(run_dir, mode='a' if mode == 'a' else 'w')  
+            # Note: passing mode to helper method is tricky as original didn't take it.
+            # I must update the helper methods signatures below.
         
-        # Setup local estimation logging
-        self._setup_local_estimation_logging(run_dir)
-        
-        # Setup following leader state logging
-        self._setup_following_leader_logging(run_dir)
-        
-        # Setup trust and weight logging
-        self._setup_trust_weight_logging(run_dir)
+        # Local Estimation
+        if not self.logging_config or getattr(self.logging_config, 'enable_local_estimation_logging', True):
+            self._setup_local_estimation_logging(run_dir, mode='a' if mode == 'a' else 'w')
+            
+        # Following Leader
+        if not self.logging_config or getattr(self.logging_config, 'enable_following_leader_logging', True):
+            self._setup_following_leader_logging(run_dir, mode='a' if mode == 'a' else 'w')
+            
+        # Trust Weight
+        if not self.logging_config or getattr(self.logging_config, 'enable_trust_weight_logging', True):
+            self._setup_trust_weight_logging(run_dir, mode='a' if mode == 'a' else 'w')
         
         return run_dir
     
@@ -212,10 +243,12 @@ class VehicleLogger:
                 except:
                     pass
     
-    def _setup_fleet_estimation_logging(self, run_dir: str):
+    def _setup_fleet_estimation_logging(self, run_dir: str, mode: str = 'w'):
         """Setup CSV logging for received fleet estimations from other vehicles"""
         fleet_est_file = os.path.join(run_dir, f"received_fleet_estimations_vehicle_{self.car_id}.csv")
-        self.fleet_estimation_file = open(fleet_est_file, 'w', newline='', buffering=8192)
+        file_exists = os.path.exists(fleet_est_file) and os.path.getsize(fleet_est_file) > 0
+        
+        self.fleet_estimation_file = open(fleet_est_file, mode, newline='', buffering=8192)
         
         fieldnames = [
             'timestamp', 'sender_id', 'source',  # timestamp=relative_time
@@ -224,7 +257,10 @@ class VehicleLogger:
         ]
         
         self.fleet_estimation_writer = csv.DictWriter(self.fleet_estimation_file, fieldnames=fieldnames)
-        self.fleet_estimation_writer.writeheader()
+        
+        if mode == 'w' or not file_exists:
+            self.fleet_estimation_writer.writeheader()
+            
         self.fleet_estimation_file.flush()
         
         # Start async logging thread
@@ -234,10 +270,12 @@ class VehicleLogger:
         
         self.logger.info(f"Fleet estimation logging initialized: {fleet_est_file}")
     
-    def _setup_local_estimation_logging(self, run_dir: str):
+    def _setup_local_estimation_logging(self, run_dir: str, mode: str = 'w'):
         """Setup CSV logging for received local estimations from other vehicles"""
         local_est_file = os.path.join(run_dir, f"received_local_estimations_vehicle_{self.car_id}.csv")
-        self.local_estimation_file = open(local_est_file, 'w', newline='', buffering=8192)
+        file_exists = os.path.exists(local_est_file) and os.path.getsize(local_est_file) > 0
+        
+        self.local_estimation_file = open(local_est_file, mode, newline='', buffering=8192)
         
         fieldnames = [
             'timestamp', 'data_age', 'sender_id', 'source',  # timestamp=relative_time, data_age=latency_in_seconds
@@ -247,7 +285,10 @@ class VehicleLogger:
         ]
         
         self.local_estimation_writer = csv.DictWriter(self.local_estimation_file, fieldnames=fieldnames)
-        self.local_estimation_writer.writeheader()
+        
+        if mode == 'w' or not file_exists:
+            self.local_estimation_writer.writeheader()
+            
         self.local_estimation_file.flush()
         
         # Start async logging thread
@@ -319,10 +360,12 @@ class VehicleLogger:
                 except:
                     pass
     
-    def _setup_following_leader_logging(self, run_dir: str):
+    def _setup_following_leader_logging(self, run_dir: str, mode: str = 'w'):
         """Setup CSV logging for following leader state control data"""
         following_leader_file = os.path.join(run_dir, f"following_leader_control_vehicle_{self.car_id}.csv")
-        self.following_leader_file = open(following_leader_file, 'w', newline='', buffering=8192)
+        file_exists = os.path.exists(following_leader_file) and os.path.getsize(following_leader_file) > 0
+        
+        self.following_leader_file = open(following_leader_file, mode, newline='', buffering=8192)
         
         fieldnames = [
             'timestamp',  # Relative time in seconds
@@ -337,7 +380,10 @@ class VehicleLogger:
         ]
         
         self.following_leader_writer = csv.DictWriter(self.following_leader_file, fieldnames=fieldnames)
-        self.following_leader_writer.writeheader()
+        
+        if mode == 'w' or not file_exists:
+            self.following_leader_writer.writeheader()
+            
         self.following_leader_file.flush()
         
         # Start async logging thread
@@ -378,10 +424,12 @@ class VehicleLogger:
                 except:
                     pass
     
-    def _setup_trust_weight_logging(self, run_dir: str):
+    def _setup_trust_weight_logging(self, run_dir: str, mode: str = 'w'):
         """Setup CSV logging for trust scores and consensus weights"""
         trust_weight_file = os.path.join(run_dir, f"trust_weight_vehicle_{self.car_id}.csv")
-        self.trust_weight_file = open(trust_weight_file, 'w', newline='', buffering=8192)
+        file_exists = os.path.exists(trust_weight_file) and os.path.getsize(trust_weight_file) > 0
+        
+        self.trust_weight_file = open(trust_weight_file, mode, newline='', buffering=8192)
         
         fieldnames = [
             'timestamp',  # Relative time in seconds
@@ -397,7 +445,10 @@ class VehicleLogger:
         ]
         
         self.trust_weight_writer = csv.DictWriter(self.trust_weight_file, fieldnames=fieldnames)
-        self.trust_weight_writer.writeheader()
+        
+        if mode == 'w' or not file_exists:
+            self.trust_weight_writer.writeheader()
+            
         self.trust_weight_file.flush()
         
         # Start async logging thread

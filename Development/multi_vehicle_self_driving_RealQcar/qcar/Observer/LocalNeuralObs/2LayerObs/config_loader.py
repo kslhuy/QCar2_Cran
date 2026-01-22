@@ -135,6 +135,7 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     fl = config.get('first_layer', {})
     flat['use_first_layer'] = fl.get('enabled', True)
     flat['first_layer_type'] = fl.get('type', 'qlpv')
+    flat['output_first_layer_only'] = fl.get('output_first_layer_only', False)
     
     # Model persistence
     model = config.get('model', {})
@@ -159,6 +160,8 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     recording = config.get('recording', {})
     flat['enable_recording'] = recording.get('enable_recording', False)
     flat['recording_output_dir'] = recording.get('output_dir', 'neural_obs_recordings')
+    flat['filename'] = recording.get('filename', None)
+    flat['recording_append_mode'] = recording.get('append_mode', False)
     
     return flat
 

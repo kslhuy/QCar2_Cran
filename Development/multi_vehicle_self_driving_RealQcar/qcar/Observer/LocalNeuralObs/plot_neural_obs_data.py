@@ -105,6 +105,13 @@ def find_recordings(base_dirs: Union[str, List[str]] = "neural_obs_recordings",
     if isinstance(base_dirs, str):
         base_dirs = [base_dirs]
         
+    # If default is used, also look relative to this script's location
+    if base_dirs == ["neural_obs_recordings"]:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        local_rec_dir = os.path.join(script_dir, "neural_obs_recordings")
+        if local_rec_dir not in base_dirs:
+            base_dirs.append(local_rec_dir)
+        
     all_files = []
     seen_paths = set()
     
@@ -215,6 +222,10 @@ def select_recording_interactive(search_dir: str,
         if '_1layer_' in f.name:
             mode = '1layer'
         elif '_2layer_' in f.name:
+            mode = '2layer'
+        elif f.parent.name == 'Layer1':
+            mode = '1layer'
+        elif f.parent.name == 'Layer2':
             mode = '2layer'
         else:
             mode = '?'
@@ -392,12 +403,10 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
     elif plot_type == 'debug':
         fig = plt.figure(figsize=(16, 6))
         gs = fig.add_gridspec(1, 3, wspace=0.3)
-    else:
-        # Fallback
-        fig = plt.figure(figsize=(16, 10))
-        gs = fig.add_gridspec(3, 3)
-        
-    fig.suptitle(title, fontsize=14, fontweight='bold')
+    # Apply global small font for better visualization
+    plt.rcParams.update({'font.size': 8, 'axes.titlesize': 9, 'axes.labelsize': 8, 'legend.fontsize': 7})
+    
+    fig.suptitle(title, fontsize=11, fontweight='bold')
     axes = []
     
     # =========================================================================
@@ -414,7 +423,7 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
         ax = fig.add_subplot(pos)
         ax.plot(time, data.get('vx_est', []), 'b-', label='Estimated', linewidth=1.5)
         ax.plot(time, data.get('vx_meas', []), 'r--', label='Measured', linewidth=1)
-        ax.set_xlabel('Time [s]')
+        # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$v_x$ [m/s]')
         ax.set_title('Longitudinal Velocity')
         ax.legend(loc='upper right', fontsize=8)
@@ -426,7 +435,7 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
         pos = gs[0, 1] if plot_type == 'all' else gs[0, 1]
         ax = fig.add_subplot(pos)
         ax.plot(time, data.get('vy_est', []), 'b-', label='Estimated', linewidth=1.5)
-        ax.set_xlabel('Time [s]')
+        # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$v_y$ [m/s]')
         ax.set_title('Lateral Velocity (Estimated)')
         ax.grid(True, alpha=0.3)
@@ -438,16 +447,16 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
         ax = fig.add_subplot(pos)
         ax.plot(time, data.get('r_est', []), 'b-', label='Estimated', linewidth=1.5)
         ax.plot(time, data.get('r_meas', []), 'r--', label='Measured', linewidth=1)
-        ax.set_xlabel('Time [s]')
+        # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$r$ [rad/s]')
         ax.set_title('Yaw Rate')
         ax.legend(loc='upper right', fontsize=8)
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
-    # 4. X-Y Trajectory
+    # 4. X-Y Trajectory (Swapped with Tire Residuals, now smaller)
     if is_active(['trajectory']):
-        pos = gs[1, 0] if plot_type == 'all' else gs[0, 0]
+        pos = gs[1, 2] if plot_type == 'all' else gs[0, 0]
         ax = fig.add_subplot(pos)
         X_est = data.get('X_est', [])
         Y_est = data.get('Y_est', [])
@@ -477,16 +486,16 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
         if len(psi_est) > 0:
             ax.plot(time, np.rad2deg(psi_est), 'b-', label='Estimated', linewidth=1.5)
             ax.plot(time, np.rad2deg(psi_meas), 'r--', label='GPS', linewidth=1)
-        ax.set_xlabel('Time [s]')
+        # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$\\psi$ [deg]')
         ax.set_title('Yaw Angle')
         ax.legend(loc='upper right', fontsize=8)
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
-    # 6. Tire Residuals
+    # 6. Tire Residuals (Swapped with Trajectory, now BIGGER)
     if is_active(['debug']):
-        pos = gs[1, 2] if plot_type == 'all' else gs[0, 0]
+        pos = gs[1, 0:2] if plot_type == 'all' else gs[0, 0]
         ax = fig.add_subplot(pos)
         ax.plot(time, data.get('w_r', []), 'b-', label='$w_r$ (est)', linewidth=1.5)
         ax.plot(time, data.get('w_f', []), 'r-', label='$w_f$ (est)', linewidth=1.5)
@@ -504,18 +513,16 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
-    # 7. Control Inputs
+    # 7. Control Inputs (Simplified: no twin axis)
     if is_active(['debug']):
         pos = gs[2, 0] if plot_type == 'all' else gs[0, 1]
         ax = fig.add_subplot(pos)
-        ax.plot(time, np.rad2deg(data.get('steering', [])), 'b-', label='Steering', linewidth=1.5)
-        ax_twin = ax.twinx()
-        ax_twin.plot(time, data.get('throttle', []), 'r-', label='Throttle', linewidth=1.5)
-        ax.set_xlabel('Time [s]')
-        ax.set_ylabel('Steering [deg]', color='b')
-        ax_twin.set_ylabel('Throttle', color='r')
+        ax.plot(time, data.get('steering', []), 'b-', label='Steering [rad]', linewidth=1.5)
+        ax.plot(time, data.get('throttle', []), 'r-', label='Throttle', linewidth=1.5)
         ax.set_title('Control Inputs')
+        ax.legend(loc='upper right', fontsize=7)
         ax.grid(True, alpha=0.3)
+        axes.append(ax)
 
     # 8. Position Error
     if is_active(['errors']):
@@ -595,11 +602,10 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
     elif plot_type == 'debug':
         fig = plt.figure(figsize=(16, 8)) # slightly larger for 2 layer debug
         gs = fig.add_gridspec(2, 2, hspace=0.3)
-    else:
-        fig = plt.figure(figsize=(16, 12))
-        gs = fig.add_gridspec(4, 3)
-        
-    fig.suptitle(title, fontsize=14, fontweight='bold')
+    # Apply global small font for better visualization
+    plt.rcParams.update({'font.size': 7, 'axes.titlesize': 8, 'axes.labelsize': 8, 'legend.fontsize': 6})
+    
+    fig.suptitle(title, fontsize=10, fontweight='bold')
     axes = []
     
     def is_active(categories):
@@ -617,10 +623,10 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         ax.plot(time, data.get('vx_meas', []), 'r--', label='Measured', linewidth=1)
         if 'vx_uio' in data:
             ax.plot(time, data['vx_uio'], 'g:', label='1st Layer', linewidth=1)
-        ax.set_xlabel('Time [s]')
+        # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$v_x$ [m/s]')
         ax.set_title('Longitudinal Velocity')
-        ax.legend(loc='upper right', fontsize=8)
+        ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
@@ -631,10 +637,10 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         ax.plot(time, data.get('vy_est', []), 'b-', label='Neural', linewidth=1.5)
         if 'vy_uio' in data:
             ax.plot(time, data['vy_uio'], 'g:', label='1st Layer', linewidth=1)
-        ax.set_xlabel('Time [s]')
+        # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$v_y$ [m/s]')
         ax.set_title('Lateral Velocity')
-        ax.legend(loc='upper right', fontsize=8)
+        ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
@@ -646,10 +652,10 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         ax.plot(time, data.get('r_meas', []), 'r--', label='Measured', linewidth=1)
         if 'r_uio' in data:
             ax.plot(time, data['r_uio'], 'g:', label='1st Layer', linewidth=1)
-        ax.set_xlabel('Time [s]')
+        # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$r$ [rad/s]')
         ax.set_title('Yaw Rate')
-        ax.legend(loc='upper right', fontsize=8)
+        ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
@@ -659,25 +665,37 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         ax4 = fig.add_subplot(gs[1, 0])
         ax4.plot(time, data.get('X_est', []), 'b-', label='Neural', linewidth=1.5)
         ax4.plot(time, data.get('X_meas', []), 'r--', label='GPS', linewidth=1)
-        ax4.set_title('X Position'); ax4.grid(True, alpha=0.3); axes.append(ax4)
-        
+        if 'X_uio' in data:
+            ax4.plot(time, data['X_uio'], 'g:', label='1st Layer', linewidth=1)
+        # ax4.set_title('X Position'); ax4.grid(True, alpha=0.3); axes.append(ax4)
+        ax4.set_ylabel('$X$ [m]')
+        ax4.legend(loc='upper right')
+
         # Y Position
         ax5 = fig.add_subplot(gs[1, 1])
         ax5.plot(time, data.get('Y_est', []), 'b-', label='Neural', linewidth=1.5)
         ax5.plot(time, data.get('Y_meas', []), 'r--', label='GPS', linewidth=1)
-        ax5.set_title('Y Position'); ax5.grid(True, alpha=0.3); axes.append(ax5)
-        
+        if 'Y_uio' in data:
+            ax5.plot(time, data['Y_uio'], 'g:', label='1st Layer', linewidth=1)
+        # ax5.set_title('Y Position'); ax5.grid(True, alpha=0.3); axes.append(ax5)
+        ax5.set_ylabel('$Y$ [m]')
+        ax5.legend(loc='upper right')
+
         # Yaw Angle
         ax6 = fig.add_subplot(gs[1, 2])
         psi_est = data.get('psi_est', []); psi_meas = data.get('psi_meas', [])
         if len(psi_est) > 0:
             ax6.plot(time, np.rad2deg(psi_est), 'b-', label='Neural', linewidth=1.5)
             ax6.plot(time, np.rad2deg(psi_meas), 'r--', label='GPS', linewidth=1)
-        ax6.set_title('Yaw Angle'); ax6.grid(True, alpha=0.3); axes.append(ax6)
+            if 'psi_uio' in data:
+                ax6.plot(time, np.rad2deg(data['psi_uio']), 'g:', label='1st Layer', linewidth=1)
+        # ax6.set_title('Yaw Angle'); ax6.grid(True, alpha=0.3); axes.append(ax6)
+        ax6.set_ylabel('$yaw$ [deg]')
+        ax6.legend(loc='upper right')
 
-    # 7. NN Tire Residuals
+    # 7. NN Tire Residuals (Swapped with Trajectory, now BIGGER)
     if is_active(['debug']):
-        pos = gs[2, 0] if plot_type == 'all' else gs[0, 0]
+        pos = gs[3, 0:2] if plot_type == 'all' else gs[0, 0]
         ax = fig.add_subplot(pos)
         ax.plot(time, data.get('w_r_nn', []), 'b-', label='$w_r$ (NN)', linewidth=1.5)
         ax.plot(time, data.get('w_f_nn', []), 'r-', label='$w_f$ (NN)', linewidth=1.5)
@@ -687,22 +705,20 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         ax.set_xlabel('Time [s]')
         ax.set_ylabel('Tire Residual [N]')
         ax.set_title('Tire Force Residuals (NN vs 1st Layer)')
-        ax.legend(loc='upper right', fontsize=8)
+        ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
-    # 8. Control Inputs
+    # 8. Control Inputs (Simplified: no twin axis)
     if is_active(['debug']):
         pos = gs[2, 1] if plot_type == 'all' else gs[0, 1]
         ax = fig.add_subplot(pos)
-        ax.plot(time, np.rad2deg(data.get('steering', [])), 'b-', label='Steering', linewidth=1.5)
-        ax_twin = ax.twinx()
-        ax_twin.plot(time, data.get('throttle', []), 'r-', label='Throttle', linewidth=1.5)
-        ax.set_xlabel('Time [s]')
-        ax.set_ylabel('Steering [deg]', color='b')
-        ax_twin.set_ylabel('Throttle', color='r')
+        ax.plot(time, data.get('steering', []), 'b-', label='Steering [rad]', linewidth=1.5)
+        ax.plot(time, data.get('throttle', []), 'r-', label='Throttle', linewidth=1.5)
         ax.set_title('Control Inputs')
+        ax.legend(loc='upper right')
         ax.grid(True, alpha=0.3)
+        axes.append(ax)
 
     # 9. Training Loss
     if is_active(['debug']):
@@ -715,15 +731,15 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
             if np.any(valid_mask):
                 ax.plot(time[valid_mask], np.abs(loss[valid_mask]) + 1e-10, 'b-', linewidth=1)
                 ax.set_yscale('log')
-        ax.set_xlabel('Time [s]')
+        # ax.set_xlabel('Time [s]')
         ax.set_ylabel('Loss')
         ax.set_title('Training Loss (log scale)')
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
-    # 10. X-Y Trajectory
+    # 10. X-Y Trajectory (Swapped with Tire Residuals, now smaller)
     if is_active(['trajectory']):
-        pos = gs[3, 0:2] if plot_type == 'all' else gs[0, 0]
+        pos = gs[2, 0] if plot_type == 'all' else gs[0, 0]
         ax = fig.add_subplot(pos)
         X_est = data.get('X_est', [])
         Y_est = data.get('Y_est', [])
@@ -733,12 +749,16 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         if len(X_est) > 0:
             ax.plot(X_est, Y_est, 'b-', label='Neural Est.', linewidth=2)
             ax.plot(X_meas, Y_meas, 'r--', label='GPS Measured', linewidth=1, alpha=0.7)
+            
+            if 'X_uio' in data and 'Y_uio' in data:
+                ax.plot(data['X_uio'], data['Y_uio'], 'g:', label='1st Layer', linewidth=1.5)
+                
             ax.plot(X_est[0], Y_est[0], 'go', markersize=10, label='Start')
             ax.plot(X_est[-1], Y_est[-1], 'rs', markersize=10, label='End')
         ax.set_xlabel('X [m]')
         ax.set_ylabel('Y [m]')
         ax.set_title('X-Y Trajectory')
-        ax.legend(loc='best', fontsize=8)
+        ax.legend(loc='best')
         ax.axis('equal')
         ax.grid(True, alpha=0.3)
         axes.append(ax)
@@ -754,8 +774,8 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
             ax.plot(time, pos_err * 100, 'b-', linewidth=1.5)  # Convert to cm
             ax.axhline(y=np.mean(pos_err) * 100, color='r', linestyle='--', 
                          label=f'Mean: {np.mean(pos_err)*100:.1f} cm')
-            ax.legend(loc='upper right', fontsize=8)
-        ax.set_xlabel('Time [s]')
+            ax.legend(loc='upper right')
+        # ax.set_xlabel('Time [s]')
         ax.set_ylabel('Position Error [cm]')
         ax.set_title('Position Estimation Error')
         ax.grid(True, alpha=0.3)

@@ -908,6 +908,19 @@ class NeuralQLPVGainScheduler:
         - Uses actual C(ρ) matrix (not identity)
         - Designed for neural observer state/measurement structure
         - Supports H∞ and L2 design with disturbance E matrix
+
+    Gain Calculation Strategies:
+        1. Common Lyapunov (use_common_lyapunov=True):
+           Finds a single P > 0 such that (A_i - L_i C_i)^T P (A_i - L_i C_i) - P < 0
+           for all vertices i simultaneously.
+           PRO: Guarantees global quadratic stability for any rate of parameter change.
+           CON: More conservative, LMI may be infeasible for large polytopes.
+
+        2. Independent Lyapunov (use_common_lyapunov=False):
+           Finds independent P_i > 0 for each vertex i.
+           PRO: Less conservative, easier to solve. Good for slow-varying parameters.
+           CON: Only guarantees "frozen" point-wise stability. Does not theoretically 
+           guarantee stability during fast switching (though often stable in practice).
     
     Reference:
         - Apkarian et al., "Self-scheduled H∞ control of linear 
@@ -1580,4 +1593,4 @@ class NeuralQLPVGainScheduler:
 # =============================================================================
 
 # Alias for compatibility with existing code that imports QLPVGainScheduler
-QLPVGainScheduler = NeuralQLPVGainScheduler
+# QLPVGainScheduler = NeuralQLPVGainScheduler

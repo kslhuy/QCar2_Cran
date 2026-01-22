@@ -48,7 +48,8 @@ class VehicleLogic:
         self.vehicle_logger = VehicleLogger(
             car_id=config.network.car_id,
             log_dir=config.logging.log_dir,
-            log_level=config.logging.log_level
+            log_level=config.logging.log_level,
+            logging_config=config.logging
         )
         
         self.vehicle_logger.logger.info("="*60)
@@ -161,57 +162,66 @@ class VehicleLogic:
         
         # Connect VehicleObserver to V2VManager
         self.v2v_manager.update_vehicle_observer(self.vehicle_observer)
-
-        # Initialize Estimation Scopes (Visualization)
-        # Check if plotting is enabled in observer config
-        self.scope_manager = None
-        
-        # # Check both local and fleet plotting configs
-        # local_plot_enabled = getattr(self.vehicle_observer, 'local_plotting_config', {}).get('enabled', False)
-        # fleet_plot_enabled = getattr(self.vehicle_observer, 'fleet_plotting_config', {}).get('enabled', False)
-        
-        # if local_plot_enabled or fleet_plot_enabled:
-        #     # Use local config params as default for manager
-        #     plot_params = getattr(self.vehicle_observer, 'local_plotting_config', {}).get('params', {})
-        #     fps = plot_params.get('fps', 30)
-        #     time_window = plot_params.get('time_window', 60.0)
-            
-        #     # Check for save_only mode (headless) - Default to True as per user request
-        #     save_only = plot_params.get('save_only', True)
-            
-        #     self.scope_manager = EstimationScopeManager(
-        #         fps=fps, 
-        #         time_window=time_window,
-        #         headless=save_only
-        #     )
-            
-        #     if local_plot_enabled:
-        #         self.scope_manager.add_preset(LocalStatePreset())
-        #         self.scope_manager.add_preset(LocalControlPreset())
-        #         self.vehicle_logger.logger.info("Plotting enabled: Local State & Control")
-                
-        #     if fleet_plot_enabled:
-        #         fleet_params = getattr(self.vehicle_observer, 'fleet_plotting_config', {}).get('params', {})
-        #         max_vehicles = fleet_params.get('max_vehicles_plot', 5)
-        #         self.scope_manager.add_preset(FleetPositionPreset(max_vehicles=max_vehicles))
-        #         self.scope_manager.add_preset(FleetStatePreset(max_vehicles=max_vehicles))
-        #         self.vehicle_logger.logger.info("Plotting enabled: Fleet State & Positions")
-            
-        #     # Start in MANUAL mode (threaded=False) for main-thread GUI updates
-        #     self.scope_manager.start(threaded=False)
-            
-        #     # If in save_only mode, start recording automatically
-        #     if save_only:
-        #         # Define columns to record (scalars only)
-        #         cols = ['x', 'y', 'theta', 'velocity', 'acceleration', 
-        #                'x_gps', 'y_gps', 'theta_gps', 'steering', 'throttle', 'v_ref']
-        #         rec_path = self.scope_manager.start_recording(columns=cols)
-        #         self.vehicle_logger.logger.info(f"Scope Manager: Headless mode active. Recording to {rec_path}")
-
         
         # Initialize the event system to connect command_handler to state_machine
         # This allows ground station commands to be properly routed to the current state
         self.state_machine.initialize_event_system()
+
+        ##### ========== # Initialize Estimation Scopes (Visualization Real time on hardware) ========== #####
+        ##### ========== # Will not use this feature for now (its still work in progress) ========== #####
+        ##### ========== # Another Visualization on Ground Station is used ========== #####
+        #region Estimation Scopes 
+        
+        # Check if plotting is enabled in observer config
+        self.scope_manager = None
+        
+        # Check plotting config from vehicle observer (loaded from yaml)
+        local_plot_config = getattr(self.vehicle_observer, 'local_plotting_config', {})
+        fleet_plot_config = getattr(self.vehicle_observer, 'fleet_plotting_config', {})
+        
+        # Enable if either local or fleet plotting is enabled
+        local_enabled = local_plot_config.get('enabled', False)
+        fleet_enabled = fleet_plot_config.get('enabled', False)
+        
+        if local_enabled or fleet_enabled:
+            from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset, FleetConsensusPreset
+            
+            # Use local config params as default for manager
+            plot_params = local_plot_config.get('params', {})
+            fps = plot_params.get('fps', 30)
+            time_window = plot_params.get('time_window', 60.0)
+            
+            # Check for save_only mode (headless)
+            save_only = plot_params.get('save_only', False)
+            
+            self.scope_manager = EstimationScopeManager(
+                fps=fps, 
+                time_window=time_window,
+                headless=save_only
+            )
+            
+            if local_enabled:
+                self.scope_manager.add_preset(LocalStatePreset())
+                self.scope_manager.add_preset(LocalControlPreset())
+                self.vehicle_logger.logger.info("Plotting enabled: Local State & Control")
+                
+            if fleet_enabled:
+                fleet_params = fleet_plot_config.get('params', {})
+                max_vehicles = fleet_params.get('max_vehicles_plot', 5)
+                self.scope_manager.add_preset(FleetPositionPreset(max_vehicles=max_vehicles))
+                self.scope_manager.add_preset(FleetStatePreset(max_vehicles=max_vehicles))
+                self.scope_manager.add_preset(FleetConsensusPreset(max_vehicles=max_vehicles))
+                self.vehicle_logger.logger.info("Plotting enabled: Fleet State & Positions")
+            
+            # Start the scope manager
+            # If save_only is True, it runs without GUI window (headless)
+            self.scope_manager.start(threaded=False)
+            
+            if save_only:
+                 self.vehicle_logger.logger.info("Scope Manager running in HEADLESS mode (save_only=True)")
+            #endregion Estimation Scopes 
+        
+
         
     def elapsed_time(self) -> float:
         """Get elapsed time since start"""

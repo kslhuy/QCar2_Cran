@@ -715,17 +715,22 @@ class ScopeDataRecorder:
         self.start_time = 0.0
         self.columns = []
     
-    def start(self, columns: List[str], name: str = "scope"):
+    def start(self, columns: List[str], name: str = "scope", overwrite: bool = False):
         """
         Start recording with given columns.
         
         Args:
             columns: List of column names to record
             name: Short prefix for the file name (e.g., 'local', 'fleet')
+            overwrite: If True, overwrites {name}.csv. If False, creates {name}_{timestamp}.csv
         """
         os.makedirs(self.output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%H%M%S")
-        filepath = os.path.join(self.output_dir, f"{name}_{timestamp}.csv")
+        
+        if overwrite:
+            filepath = os.path.join(self.output_dir, f"{name}.csv")
+        else:
+            timestamp = datetime.now().strftime("%H%M%S")
+            filepath = os.path.join(self.output_dir, f"{name}_{timestamp}.csv")
         
         self.columns = ['time'] + columns
         self.file = open(filepath, 'w', newline='', buffering=8192)

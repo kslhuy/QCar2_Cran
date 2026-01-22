@@ -78,8 +78,10 @@ class FleetStateEstimatorBase(ABC):
         self.logger = logger
         
         # Fleet state estimates [state_dim x fleet_size]
+        # self.fleet_states = np.zeros((self.state_dim, fleet_size))
+        # Initialized with size 1 usually, will expand as needed
         self.fleet_states = np.zeros((self.state_dim, fleet_size))
-        print(f"fleet_states initialized with shape: {self.fleet_states.shape}")
+        # self.logger.logger.debug(f"fleet_states initialized with shape: {self.fleet_states.shape}")
         
         # Communication data storage
         self.received_local_states = defaultdict(list)  # vehicle_id -> [(timestamp_ns, state)]
@@ -112,7 +114,7 @@ class FleetStateEstimatorBase(ABC):
         Communication/log layers hand us dicts; algorithms want numpy arrays.
         We normalize here so downstream consumers always see ndarray.
         """
-        # # print(f"Adding received local state from vehicle_id {sender_id}")
+        # self.logger.logger.debug(f"Adding received local state from vehicle_id {sender_id}")
         try:
             if sender_id == self.vehicle_id:
                 return False  # Don't store own state
@@ -199,12 +201,14 @@ class FleetStateEstimatorBase(ABC):
         Returns None if no recent state is available or conversion fails.
         """
         if vehicle_id not in self.received_local_states:
-            print(f"vehicle_id {vehicle_id} not in self.received_local_states")
+            if self.logger:
+                self.logger.logger.warning(f"vehicle_id {vehicle_id} not in self.received_local_states")
             return None
 
         states_list = self.received_local_states[vehicle_id]
         if not states_list:
-            print(f"states_list for vehicle_id {vehicle_id} is empty")
+            if self.logger:
+                self.logger.logger.warning(f"states_list for vehicle_id {vehicle_id} is empty")
             return None
 
         # Iterate backwards (newest first) and return first valid entry
@@ -222,7 +226,8 @@ class FleetStateEstimatorBase(ABC):
             if state_vec is not None:
                 return state_vec
             
-        print(f"No valid recent state for vehicle_id {vehicle_id}")
+        # if self.logger:
+        #     self.logger.logger.debug(f"No valid recent state for vehicle_id {vehicle_id}")
         return None
 
     
@@ -432,7 +437,8 @@ class FleetEstimatorFactory:
             cls.ESTIMATOR_TYPES['distributed_luenberger'] = DistributedLuenbergerEstimator
             cls._distributed_luenberger_loaded = True
         except ImportError as e:
-            print(f"Warning: Could not load DistributedLuenbergerEstimator: {e}")
+            # print(f"Warning: Could not load DistributedLuenbergerEstimator: {e}")
+            pass
     
     @classmethod
     def _load_trust_estimators(cls):

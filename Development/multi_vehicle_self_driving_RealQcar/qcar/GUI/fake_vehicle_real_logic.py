@@ -1019,32 +1019,44 @@ def main():
     dynamic_model_type = 1 # Default to qLPV (2)
     vehicle_params = 'qcar'  # Default to QCar parameters
     
-    if len(sys.argv) > 1:
-        car_id = int(sys.argv[1])
-    if len(sys.argv) > 2:
-        host_ip = sys.argv[2]
-    if len(sys.argv) > 3:
-        base_port = int(sys.argv[3])
-    if len(sys.argv) > 4:
-        # Accept integer ID or string names
-        arg = sys.argv[4].lower()
-        if arg in ['0', 'kinematic', 'ks']:
+    # Smart argument parsing to allow flexible usage
+    # Example: python fake_vehicle.py 0 qlpv
+    args = sys.argv[1:]
+    
+    # 1. First argument is Car ID (if it's a small integer)
+    if len(args) > 0 and args[0].isdigit() and int(args[0]) < 1000:
+        car_id = int(args[0])
+        args.pop(0)
+
+    # 2. Parse remaining arguments by type/keyword
+    for arg in args:
+        val = arg.lower()
+        
+        # Model Type
+        if val in ['0', 'kinematic', 'ks']:
             dynamic_model_type = 0
-        elif arg in ['1', 'dynamic', 'st']:
+            continue
+        if val in ['1', 'dynamic', 'st', 'true', 'yes']:
             dynamic_model_type = 1
-        elif arg in ['2', 'qlpv']:
+            continue
+        if val in ['2', 'qlpv']:
             dynamic_model_type = 2
-        elif arg in ['true', 'yes']: # Backwards compatibility
-            dynamic_model_type = 1
-        else:
-            try:
-                dynamic_model_type = int(arg)
-            except:
-                print(f"⚠️ Unknown model type '{arg}', defaulting to Kinematic (0)")
-                dynamic_model_type = 0
+            continue
             
-    if len(sys.argv) > 5:
-        vehicle_params = sys.argv[5]  # qcar, vehicle1, vehicle2, vehicle3, vehicle4
+        # Vehicle Params
+        if val in ['qcar', 'vehicle1', 'vehicle2', 'vehicle3', 'vehicle4']:
+            vehicle_params = val
+            continue
+            
+        # Port (large integer)
+        if arg.isdigit() and int(arg) > 1000:
+            base_port = int(arg)
+            continue
+            
+        # Host IP (has dot or localhost)
+        if '.' in arg or val == 'localhost':
+            host_ip = arg
+            continue
     
     print("="*70)
     print("[CAR] QCar Fake Vehicle with REAL VehicleLogic - SIMPLIFIED")

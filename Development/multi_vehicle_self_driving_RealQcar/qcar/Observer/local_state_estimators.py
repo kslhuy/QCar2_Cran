@@ -376,8 +376,6 @@ class LocalEstimatorFactory:
         estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]
         return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
 
-        # # Pass config dict to estimators
-        # if estimator_type == 'ekf':
-        #     return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
-        # else:
-        #     return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
+        # Return the estimator instance
+        # estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]
+        # return estimator_class(initial_pose=initial_pose, config=config, logger=logger)

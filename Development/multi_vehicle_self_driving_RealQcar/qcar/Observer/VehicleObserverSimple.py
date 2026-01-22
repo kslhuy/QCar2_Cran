@@ -77,8 +77,9 @@ class VehicleObserver:
                 }
                 # Load fleet recording config
                 self.fleet_recording_enabled = loaded.get('enable_recording', False)
+                self.fleet_recording_overwrite = loaded.get('recording_overwrite', False)
                 
-                self.vehicle_logger.logger.info(f"(HUY) Loaded fleet estimator config: {self.fleet_estimator_type}")
+                self.vehicle_logger.logger.info(f"Loaded fleet estimator config: {self.fleet_estimator_type}")
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(f"Failed to load fleet config file: {e}")
@@ -99,8 +100,9 @@ class VehicleObserver:
                 }
                 # Load local recording config
                 self.local_recording_enabled = loaded.get('enable_recording', False)
+                self.local_recording_overwrite = loaded.get('recording_overwrite', False)
 
-                self.vehicle_logger.logger.info(f"(HUY) Loaded local estimator config: {self.local_estimator_type}")
+                self.vehicle_logger.logger.info(f"Loaded local estimator config: {self.local_estimator_type}")
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(f"Failed to load local config file: {e}")
@@ -189,7 +191,7 @@ class VehicleObserver:
                 ]
                 
                 # Start recording with vehicle ID prefix
-                self.local_recorder.start(columns=local_columns, name=f"local_V{self.vehicle_id}")
+                self.local_recorder.start(columns=local_columns, name=f"local_V{self.vehicle_id}", overwrite=self.local_recording_overwrite)
                 self.vehicle_logger.logger.info(f"Started local data recording for V{self.vehicle_id}")
             
             # Initialize Fleet Recorder
@@ -212,7 +214,7 @@ class VehicleObserver:
                     fleet_columns.append(f"trust_{v_idx}")
                 
                 # Start recording with vehicle ID prefix
-                self.fleet_recorder.start(columns=fleet_columns, name=f"fleet_V{self.vehicle_id}")
+                self.fleet_recorder.start(columns=fleet_columns, name=f"fleet_V{self.vehicle_id}", overwrite=self.fleet_recording_overwrite)
                 self.vehicle_logger.logger.info(f"Started fleet data recording for V{self.vehicle_id}")
                 
         except Exception as e:
@@ -230,7 +232,7 @@ class VehicleObserver:
                     'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
                     'observer_gain': self.observer_config.get('observer_gain', 0.1),
                 }
-            print(fleet_config)
+            # print(fleet_config)
             self.fleet_estimator = FleetEstimatorFactory.create(
                 estimator_type=self.fleet_estimator_type,
                 vehicle_id=self.vehicle_id,

@@ -83,7 +83,20 @@ class NeuralObsRecorder:
             name: Prefix for the recording file name
             mode: Recording mode - '1layer' for first-layer only, '2layer' for full
         """
-        self.output_dir = output_dir
+        if os.path.isabs(output_dir):
+            base_output_dir = output_dir
+        else:
+            # Resolve relative paths relative to this script's directory (LocalNeuralObs)
+            # This ensures recordings are saved in the component folder, not the CWD (GUI)
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            base_output_dir = os.path.join(base_dir, output_dir)
+            
+        # Add subfolder for layer type
+        if mode == '1layer':
+            self.output_dir = os.path.join(base_output_dir, "Layer1")
+        else:
+            self.output_dir = os.path.join(base_output_dir, "Layer2")
+            
         self.name = name
         self.mode = mode
         self.file = None
@@ -96,26 +109,49 @@ class NeuralObsRecorder:
         # Select columns based on mode
         self.columns = self.COLUMNS_1LAYER if mode == '1layer' else self.COLUMNS_2LAYER
     
-    def start(self) -> str:
+    def start(self, filename: Optional[str] = None, append: bool = False) -> str:
         """
-        Start recording to a new CSV file.
+        Start recording to a CSV file.
         
+        Args:
+            filename: Optional specific filename to save to. If None, generates timestamped name.
+            append: If True and file exists, appends to it. If False, overwrites.
+            
         Returns:
-            Path to the created CSV file
+            Path to the created/opened CSV file
         """
         os.makedirs(self.output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        mode_suffix = f"_{self.mode}"
-        self.filepath = os.path.join(self.output_dir, f"{self.name}{mode_suffix}_{timestamp}.csv")
+        
+        if filename:
+            if not filename.endswith('.csv'):
+                filename += '.csv'
+            self.filepath = os.path.join(self.output_dir, filename)
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            mode_suffix = f"_{self.mode}"
+            self.filepath = os.path.join(self.output_dir, f"{self.name}{mode_suffix}_{timestamp}.csv")
+        
+        # Determine mode and whether to write header
+        file_mode = 'a' if append else 'w'
+        write_header = True
+        
+        if append and os.path.exists(self.filepath):
+            # Check if file has content to decide on header
+            if os.path.getsize(self.filepath) > 0:
+                write_header = False
+                
+        self.file = open(self.filepath, file_mode, newline='', buffering=8192)
         
         columns = ['time'] + self.columns
-        self.file = open(self.filepath, 'w', newline='', buffering=8192)
         self.writer = csv.DictWriter(self.file, fieldnames=columns)
-        self.writer.writeheader()
+        
+        if write_header:
+            self.writer.writeheader()
         
         self.recording = True
         self.start_time = time.time()
-        self.record_count = 0
+        # Reset count only if new file, otherwise we might want to track total (but here we track session count)
+        self.record_count = 0 
         
         return self.filepath
     

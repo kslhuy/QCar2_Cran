@@ -57,6 +57,9 @@ python fake_vehicle_real_logic.py 1
 python fake_vehicle_real_logic.py 2 
 python fake_vehicle_real_logic.py 3 
 
+python fake_vehicle_real_logic.py 0 qlpv # Change the model 
+
+
 # use this to plot the result 
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\ShengyaObs
 python .\plot_distributed_luenberger.py -i

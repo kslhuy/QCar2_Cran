@@ -130,6 +130,15 @@ class LoggingConfig:
     enable_state_logging: bool = True
     log_level: str = "INFO"
     console_output: bool = True
+    
+    # Granular logging control
+    enable_fleet_estimation_logging: bool = True
+    enable_local_estimation_logging: bool = True
+    enable_following_leader_logging: bool = True
+    enable_trust_weight_logging: bool = True
+    
+    # File naming strategy
+    use_timestamped_log_files: bool = True  # If False, uses static filenames (single file/append mode)
 
 
 @dataclass
