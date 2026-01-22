@@ -223,6 +223,49 @@ class GradientSolver:
         E_d = dt * E
         return A_cl @ sensitivity + E_d
     
+    def gradient_solver_luenberger_discrete(self, sensitivity: np.ndarray,
+                                            A_d: np.ndarray, L: np.ndarray, 
+                                            E_d: np.ndarray, C: np.ndarray,
+                                            gps_valid: bool) -> np.ndarray:
+        """
+        Sensitivity for discrete-time Luenberger observer (ZOH discretized).
+        
+        This method uses pre-discretized matrices (A_d, E_d) from ZOH discretization,
+        ensuring consistency with the observer update step which uses:
+            x̂[k+1] = A_d·x̂[k] + B_d·u[k] + E_d·w[k] + L·(y[k] - C·x̂[k])
+        
+        Rearranging the observer equation:
+            x̂[k+1] = (A_d - L·C)·x̂[k] + B_d·u[k] + E_d·w[k] + L·y[k]
+        
+        The closed-loop dynamics matrix is: A_cl = A_d - L·C
+        
+        Differentiating w.r.t. unknown input w (neural network output f_nn):
+            ∂x̂[k+1]/∂f = (A_d - L·C) · ∂x̂[k]/∂f + E_d
+        
+        When GPS is invalid, no correction is applied (prediction only):
+            x̂[k+1] = A_d·x̂[k] + B_d·u[k] + E_d·w[k]
+            ∂x̂[k+1]/∂f = A_d · ∂x̂[k]/∂f + E_d
+        
+        Args:
+            sensitivity: Current sensitivity matrix dx/df (state_dim × output_dim)
+            A_d: Discrete-time state matrix A_d from ZOH (state_dim × state_dim)
+            L: Observer gain L (state_dim × meas_dim)
+            E_d: Discrete-time residual input matrix E_d from ZOH (state_dim × output_dim)
+            C: Output matrix (meas_dim × state_dim)
+            gps_valid: Whether GPS measurement is valid (correction applied)
+        
+        Returns:
+            Updated sensitivity matrix dx/df[k+1]
+        """
+        if gps_valid:
+            # Correction applied: A_cl = A_d - L·C
+            A_cl = A_d - L @ C
+        else:
+            # Prediction only: A_cl = A_d
+            A_cl = A_d
+        
+        return A_cl @ sensitivity + E_d
+    
     def chain_rule_reference_tracking(self,
                                      reference: np.ndarray,
                                      state_hat: np.ndarray,

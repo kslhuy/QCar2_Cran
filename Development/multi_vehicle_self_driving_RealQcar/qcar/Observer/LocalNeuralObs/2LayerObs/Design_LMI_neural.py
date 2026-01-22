@@ -444,6 +444,430 @@ def compute_l2_lmi_observer_gain(A: np.ndarray, C: np.ndarray, E: np.ndarray,
 
 
 # =============================================================================
+# Discrete-Time LMI-based Observer Gain Design (Schur Form)
+# =============================================================================
+
+def discretize_system_zoh(A_c: np.ndarray, B_c: np.ndarray, E_c: np.ndarray,
+                          dt: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Discretize continuous-time system using Zero-Order Hold (ZOH).
+    
+    Continuous: ẋ = A_c·x + B_c·u + E_c·w
+    Discrete:   x[k+1] = A_d·x[k] + B_d·u[k] + E_d·w[k]
+    
+    Args:
+        A_c: Continuous state matrix (n × n)
+        B_c: Continuous input matrix (n × m_u)
+        E_c: Continuous disturbance matrix (n × m_w)
+        dt: Sample time [seconds]
+        
+    Returns:
+        Tuple of (A_d, B_d, E_d) discrete-time matrices
+    """
+    from scipy.signal import cont2discrete
+    
+    n = A_c.shape[0]
+    m_u = B_c.shape[1]
+    m_w = E_c.shape[1]
+    
+    # Augment B with E for combined discretization: [B, E]
+    BE_c = np.hstack([B_c, E_c])
+    
+    # Dummy C and D for cont2discrete interface
+    C_dummy = np.eye(n)
+    D_dummy = np.zeros((n, m_u + m_w))
+    
+    A_d, BE_d, _, _, _ = cont2discrete((A_c, BE_c, C_dummy, D_dummy), dt, method='zoh')
+    
+    B_d = BE_d[:, :m_u]
+    E_d = BE_d[:, m_u:]
+    
+    return A_d, B_d, E_d
+
+
+def validate_discrete_observer_gain(A_d: np.ndarray, C: np.ndarray, L: np.ndarray,
+                                     max_spectral_radius: float = 0.99) -> bool:
+    """
+    Validate that discrete observer gain produces stable error dynamics.
+    
+    Checks that all eigenvalues of (A_d - L @ C) are inside the unit circle.
+    
+    Args:
+        A_d: Discrete state matrix (n × n)
+        C: Output matrix (m × n)  
+        L: Observer gain (n × m)
+        max_spectral_radius: Maximum allowed spectral radius (< 1 for stability)
+        
+    Returns:
+        True if gain is valid (all eigenvalues inside unit circle)
+    """
+    try:
+        A_cl = A_d - L @ C
+        eigenvalues = np.linalg.eigvals(A_cl)
+        spectral_radius = np.max(np.abs(eigenvalues))
+        return spectral_radius < max_spectral_radius
+    except:
+        return False
+
+
+def compute_discrete_hinf_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d: np.ndarray,
+                                             gamma: float = 2.0, 
+                                             contraction_rate: float = 0.95,
+                                             verbose: bool = False) -> np.ndarray:
+    """
+    Compute observer gain L using discrete-time H∞ LMI design (Schur form).
+    
+    For the discrete observer error dynamics with disturbance:
+        e[k+1] = (A_d - L·C)·e[k] + E_d·d[k]
+        z[k] = e[k]  (performance output = estimation error)
+    
+    The H∞ criterion guarantees: ||z||₂ ≤ γ||d||₂
+    
+    Discrete-time Lyapunov with H∞ performance (Schur complement form):
+        [P        P·A_d - Y·C    P·E_d  ]
+        [*        P              0      ] > 0  (stability)
+        [*        *              γ²·I   ]
+    
+    where Y = L^T·P (transpose substitution for discrete systems).
+    Then L^T = Y·P^{-1}, so L = P^{-1}·Y^T
+    
+    Alternative: Use standard continuous-time reformulation with bilinear transform.
+    
+    Args:
+        A_d: Discrete state matrix (n × n)
+        C: Output matrix (m × n)
+        E_d: Discrete disturbance matrix (n × p)
+        gamma: H∞ performance bound (smaller = better attenuation)
+        contraction_rate: λ ∈ (0, 1) for exponential stability (smaller = faster)
+        verbose: Print solver output
+        
+    Returns:
+        L: Observer gain matrix (n × m)
+        
+    Raises:
+        ValueError: If the LMI problem is infeasible or CVXPY not available
+    """
+    if not CVXPY_AVAILABLE:
+        raise ValueError("CVXPY is not available. Install with: pip install cvxpy")
+    
+    n = A_d.shape[0]  # State dimension
+    m = C.shape[0]    # Measurement dimension
+    p = E_d.shape[1]  # Disturbance dimension
+    
+    # Clamp contraction rate to valid range
+    lam = np.clip(contraction_rate, 0.5, 0.999)
+    
+    # Decision variables
+    P = cp.Variable((n, n), symmetric=True)  # Lyapunov matrix
+    Y = cp.Variable((m, n))  # Y = L^T @ P (transpose for discrete)
+    
+    # Numerical tolerances
+    eps = 1e-6
+    P_min = 1e-5
+    P_max = 1e5
+    
+    # For discrete-time observer: e[k+1] = (A_d - L*C) e[k] + E_d d[k]
+    # Stability: (A_d - L*C)^T P (A_d - L*C) - P < 0
+    # H∞: similar, ensuring ||e||_2 <= gamma ||d||_2
+    #
+    # Using Y = L^T @ P, we have L^T = Y @ P^{-1}
+    # (A_d - L*C)^T = A_d^T - C^T L^T = A_d^T - C^T Y P^{-1}
+    # P (A_d - L*C) = P A_d - P L C = P A_d - Y^T C
+    #
+    # The discrete BRL Schur form (observer version):
+    # [λ²P              (P A_d - Y^T C)     P E_d  ]
+    # [(P A_d - Y^T C)^T       P             0     ] > 0
+    # [E_d^T P                 0           γ²I    ]
+    
+    PA_YTC = P @ A_d - Y.T @ C  # This is P @ A_cl
+    
+    # Build the 3x3 block Schur LMI
+    block_11 = lam**2 * P
+    block_12 = PA_YTC
+    block_13 = P @ E_d
+    
+    block_21 = PA_YTC.T
+    block_22 = P
+    block_23 = np.zeros((n, p))
+    
+    block_31 = E_d.T @ P
+    block_32 = np.zeros((p, n))
+    block_33 = gamma**2 * np.eye(p)
+    
+    # Assemble full LMI matrix
+    row1 = cp.hstack([block_11, block_12, block_13])
+    row2 = cp.hstack([block_21, block_22, block_23])
+    row3 = cp.hstack([block_31, block_32, block_33])
+    lmi_full = cp.vstack([row1, row2, row3])
+    
+    constraints = [
+        P >> P_min * np.eye(n),      # P > 0
+        P << P_max * np.eye(n),      # P bounded for conditioning
+        lmi_full >> eps * np.eye(n + n + p),  # Schur LMI > 0
+    ]
+    
+    # Objective: minimize trace(P) + regularization on Y
+    gamma_reg = 0.01
+    objective = cp.Minimize(cp.trace(P) + gamma_reg * cp.norm(Y, 'fro'))
+    
+    # Solve the SDP
+    problem = cp.Problem(objective, constraints)
+    
+    try:
+        problem.solve(solver=cp.SCS, verbose=verbose, max_iters=30000, eps=1e-7)
+    except Exception as e:
+        try:
+            problem.solve(solver=cp.CVXOPT, verbose=verbose)
+        except:
+            raise ValueError(f"Discrete H∞ LMI solver failed: {e}")
+    
+    if problem.status not in ['optimal', 'optimal_inaccurate']:
+        raise ValueError(f"Discrete H∞ LMI infeasible. Status: {problem.status}. "
+                        f"Try increasing gamma (current: {gamma}) or relaxing contraction_rate.")
+    
+    # Recover observer gain: L^T = Y @ P^{-1}, so L = P^{-1} @ Y^T
+    P_val = P.value
+    Y_val = Y.value
+    
+    if P_val is None or Y_val is None:
+        raise ValueError("Discrete H∞ LMI solver returned None values")
+    
+    try:
+        L = np.linalg.solve(P_val, Y_val.T)
+    except np.linalg.LinAlgError:
+        L = np.linalg.pinv(P_val) @ Y_val.T
+    
+    # Validate stability
+    if not validate_discrete_observer_gain(A_d, C, L):
+        raise ValueError("Discrete H∞ LMI produced unstable observer")
+    
+    return L
+
+
+def compute_discrete_l2_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d: np.ndarray,
+                                           gamma: float = 2.0,
+                                           contraction_rate: float = 0.95,
+                                           verbose: bool = False) -> np.ndarray:
+    """
+    Compute observer gain L using discrete-time L2 gain-bounded LMI design.
+    
+    For discrete observer error dynamics:
+        e[k+1] = (A_d - L·C)·e[k] + E_d·d[k]
+    
+    The L2 criterion bounds: Σ||e[k]||² ≤ γ² Σ||d[k]||²
+    
+    Uses same Schur-form BRL as H∞ (mathematically equivalent for discrete-time).
+    
+    Args:
+        A_d: Discrete state matrix (n × n)
+        C: Output matrix (m × n)
+        E_d: Discrete disturbance matrix (n × p)
+        gamma: L2 gain bound
+        contraction_rate: Contraction rate λ ∈ (0, 1)
+        verbose: Print solver output
+        
+    Returns:
+        L: Observer gain matrix (n × m)
+    """
+    # L2 and H∞ are equivalent for discrete-time - use H∞ implementation
+    return compute_discrete_hinf_lmi_observer_gain(
+        A_d, C, E_d, gamma=gamma, contraction_rate=contraction_rate, verbose=verbose
+    )
+
+
+def compute_discrete_contraction_lmi(A_d: np.ndarray, C: np.ndarray,
+                                      contraction_rate: float = 0.95,
+                                      verbose: bool = False) -> np.ndarray:
+    """
+    Compute observer gain L for discrete-time contraction (pure stability).
+    
+    For discrete observer error dynamics:
+        e[k+1] = (A_d - L·C)·e[k]
+    
+    Contraction LMI (Schur form):
+        [λ²·P        (P·A_d - Y^T·C)  ]
+        [(...)^T           P          ] > 0
+    
+    with P > 0, Y = L^T·P (transpose substitution).
+    
+    This guarantees ||e[k]|| ≤ λ^k ||e[0]||.
+    
+    Args:
+        A_d: Discrete state matrix (n × n)
+        C: Output matrix (m × n)
+        contraction_rate: λ ∈ (0, 1) for exponential contraction (smaller = faster)
+        verbose: Print solver output
+        
+    Returns:
+        L: Observer gain matrix (n × m)
+    """
+    if not CVXPY_AVAILABLE:
+        raise ValueError("CVXPY is not available")
+    
+    n = A_d.shape[0]
+    m = C.shape[0]
+    
+    lam = np.clip(contraction_rate, 0.5, 0.999)
+    
+    # Decision variables
+    P = cp.Variable((n, n), symmetric=True)
+    Y = cp.Variable((m, n))  # Y = L^T @ P (transpose substitution)
+    
+    eps = 1e-6
+    P_min = 1e-5
+    P_max = 1e5
+    
+    # Build contraction LMI (2x2 Schur form)
+    # P(A_d - LC) = PA_d - PLT C = PA_d - Y^T C
+    PA_YTC = P @ A_d - Y.T @ C
+    
+    lmi_top = cp.hstack([lam**2 * P, PA_YTC])
+    lmi_bot = cp.hstack([PA_YTC.T, P])
+    lmi_full = cp.vstack([lmi_top, lmi_bot])
+    
+    constraints = [
+        P >> P_min * np.eye(n),
+        P << P_max * np.eye(n),
+        lmi_full >> eps * np.eye(2 * n),
+    ]
+    
+    # Objective
+    gamma_reg = 0.01
+    objective = cp.Minimize(cp.trace(P) + gamma_reg * cp.norm(Y, 'fro'))
+    
+    problem = cp.Problem(objective, constraints)
+    
+    try:
+        problem.solve(solver=cp.SCS, verbose=verbose, max_iters=20000, eps=1e-7)
+    except Exception:
+        try:
+            problem.solve(solver=cp.CVXOPT, verbose=verbose)
+        except Exception as e:
+            raise ValueError(f"Discrete contraction LMI failed: {e}")
+    
+    if problem.status not in ['optimal', 'optimal_inaccurate']:
+        raise ValueError(f"Discrete contraction LMI infeasible: {problem.status}")
+    
+    P_val = P.value
+    Y_val = Y.value
+    
+    if P_val is None or Y_val is None:
+        raise ValueError("Discrete contraction LMI returned None")
+    
+    try:
+        L = np.linalg.solve(P_val, Y_val.T)
+    except np.linalg.LinAlgError:
+        L = np.linalg.pinv(P_val) @ Y_val.T
+    
+    if not validate_discrete_observer_gain(A_d, C, L, max_spectral_radius=lam + 0.02):
+        raise ValueError("Discrete contraction LMI produced non-contracting observer")
+    
+    return L
+
+
+def compute_discrete_h2_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d: np.ndarray,
+                                           contraction_rate: float = 0.95,
+                                           verbose: bool = False) -> Tuple[np.ndarray, float]:
+    """
+    Compute observer gain L using discrete-time H2 LMI design.
+    
+    For discrete observer error dynamics:
+        e[k+1] = (A_d - L·C)·e[k] + E_d·d[k]
+    
+    H2 norm minimizes the expected energy of error response to white noise:
+        ||T_ed||₂² = trace(E_d^T · P · E_d)  (for stable system)
+    
+    H2 LMI with Y = L^T @ P:
+        min trace(W)
+        s.t. [W         E_d^T·P    ]
+             [P·E_d     P          ] > 0
+             and contraction LMI for stability
+    
+    Args:
+        A_d: Discrete state matrix (n × n)
+        C: Output matrix (m × n)
+        E_d: Discrete disturbance matrix (n × p)
+        contraction_rate: λ ∈ (0, 1) for stability
+        verbose: Print solver output
+        
+    Returns:
+        Tuple of (L, h2_norm): Observer gain and achieved H2 norm
+    """
+    if not CVXPY_AVAILABLE:
+        raise ValueError("CVXPY is not available")
+    
+    n = A_d.shape[0]
+    m = C.shape[0]
+    p = E_d.shape[1]
+    
+    lam = np.clip(contraction_rate, 0.5, 0.999)
+    
+    # Decision variables
+    P = cp.Variable((n, n), symmetric=True)
+    Y = cp.Variable((m, n))  # Y = L^T @ P (transpose substitution)
+    W = cp.Variable((p, p), symmetric=True)  # For H2 norm bound
+    
+    eps = 1e-6
+    P_min = 1e-5
+    P_max = 1e5
+    
+    # Contraction LMI for stability: P(A_d - LC) = PA_d - Y^T C
+    PA_YTC = P @ A_d - Y.T @ C
+    lmi_stab_top = cp.hstack([lam**2 * P, PA_YTC])
+    lmi_stab_bot = cp.hstack([PA_YTC.T, P])
+    lmi_stability = cp.vstack([lmi_stab_top, lmi_stab_bot])
+    
+    # H2 norm LMI
+    lmi_h2_top = cp.hstack([W, E_d.T @ P])
+    lmi_h2_bot = cp.hstack([P @ E_d, P])
+    lmi_h2 = cp.vstack([lmi_h2_top, lmi_h2_bot])
+    
+    constraints = [
+        P >> P_min * np.eye(n),
+        P << P_max * np.eye(n),
+        W >> eps * np.eye(p),
+        lmi_stability >> eps * np.eye(2 * n),
+        lmi_h2 >> eps * np.eye(p + n),
+    ]
+    
+    # Objective: minimize H2 norm (trace of W)
+    gamma_reg = 0.001
+    objective = cp.Minimize(cp.trace(W) + gamma_reg * cp.norm(Y, 'fro'))
+    
+    problem = cp.Problem(objective, constraints)
+    
+    try:
+        problem.solve(solver=cp.SCS, verbose=verbose, max_iters=20000, eps=1e-7)
+    except Exception:
+        try:
+            problem.solve(solver=cp.CVXOPT, verbose=verbose)
+        except Exception as e:
+            raise ValueError(f"Discrete H2 LMI failed: {e}")
+    
+    if problem.status not in ['optimal', 'optimal_inaccurate']:
+        raise ValueError(f"Discrete H2 LMI infeasible: {problem.status}")
+    
+    P_val = P.value
+    Y_val = Y.value
+    W_val = W.value
+    
+    if P_val is None or Y_val is None:
+        raise ValueError("Discrete H2 LMI returned None")
+    
+    try:
+        L = np.linalg.solve(P_val, Y_val.T)
+    except np.linalg.LinAlgError:
+        L = np.linalg.pinv(P_val) @ Y_val.T
+    
+    h2_norm = np.sqrt(np.trace(W_val)) if W_val is not None else float('inf')
+    
+    if not validate_discrete_observer_gain(A_d, C, L):
+        raise ValueError("Discrete H2 LMI produced unstable observer")
+    
+    return L, h2_norm
+
+
+# =============================================================================
 # Neural Observer Specific qLPV Gain Scheduler
 # =============================================================================
 
@@ -500,6 +924,9 @@ class NeuralQLPVGainScheduler:
                  lmi_method: str = 'hinf',
                  hinf_gamma: float = 5.0,
                  use_common_lyapunov: bool = True,
+                 discrete: bool = True,
+                 sample_time: float = 0.01,
+                 contraction_rate: float = 0.95,
                  verbose: bool = False):
         """
         Initialize polytopic qLPV gain scheduler for neural observer
@@ -510,10 +937,13 @@ class NeuralQLPVGainScheduler:
             delta_max: Maximum steering angle magnitude [rad]
             n_vx_vertices: Number of velocity grid points
             n_delta_vertices: Number of steering grid points
-            decay_rate: Minimum decay rate γ for Lyapunov LMI
-            lmi_method: 'hinf', 'l2', or 'lmi' (standard)
+            decay_rate: Minimum decay rate γ for continuous LMI (unused if discrete=True)
+            lmi_method: 'hinf', 'l2', 'h2', 'contraction', or 'lmi' (standard)
             hinf_gamma: H∞ or L2 performance bound
             use_common_lyapunov: If True, use single P for all vertices (robust)
+            discrete: If True, use discrete-time LMI design (recommended)
+            sample_time: Sample time for discretization [s] (default: 0.01)
+            contraction_rate: λ ∈ (0, 1) for discrete contraction (smaller = faster)
             verbose: Print solver output
         """
         self.params = vehicle_params
@@ -523,6 +953,9 @@ class NeuralQLPVGainScheduler:
         self.lmi_method = lmi_method
         self.hinf_gamma = hinf_gamma
         self.use_common_lyapunov = use_common_lyapunov
+        self.discrete = discrete
+        self.sample_time = sample_time
+        self.contraction_rate = contraction_rate
         self.verbose = verbose
         
         # Centralized vehicle dynamics (single source of truth)
@@ -548,15 +981,19 @@ class NeuralQLPVGainScheduler:
         self._last_weights: Optional[np.ndarray] = None
         self._last_rho: Optional[tuple] = None
         
+        # Gain smoothing filter state
+        self._L_filtered: Optional[np.ndarray] = None
+        
         # Default gain for fallback
         self._default_gain = self._compute_default_gain()
     
     def _compute_default_gain(self) -> np.ndarray:
         """Compute a robust default gain for neural observer"""
         # Design diagonal gain based on measurement structure
-        # Measurement: y = [v_x, r, ψ, X, Y, a_y]
+        # Measurement: y = [v_x, r, ψ, X, Y]  (5D, no a_y - matches observer)
         # State:       x = [v_x, v_y, ψ, r, X, Y]
-        L = np.zeros((STATE_DIM, MEAS_DIM))
+        OBSERVER_MEAS_DIM = 5  # Observer uses 5D measurement, not 6D dynamics
+        L = np.zeros((STATE_DIM, OBSERVER_MEAS_DIM))
         
         # v_x measurement → v_x state (direct, high gain)
         L[0, 0] = 5.0
@@ -576,8 +1013,7 @@ class NeuralQLPVGainScheduler:
         # Y measurement → Y state (direct)
         L[5, 4] = 3.0
         
-        # a_y measurement → v_y state (important for lateral dynamics)
-        L[1, 5] = 1.0
+        # Note: a_y is not included in observer measurement (5D), so no L[i, 5]
         
         return L
     
@@ -597,26 +1033,68 @@ class NeuralQLPVGainScheduler:
         
         return vertices
     
+    def _compute_observer_C_matrix(self) -> np.ndarray:
+        """
+        Compute 5D selection matrix matching the neural observer.
+        
+        The observer uses y = [vx, r, ψ, X, Y] (5D), NOT the full 6D
+        dynamics measurement that includes a_y. This matrix must match
+        what the observer actually uses for innovation computation.
+        
+        Returns:
+            C matrix (5×6)
+        """
+        OBSERVER_MEAS_DIM = 5
+        C = np.zeros((OBSERVER_MEAS_DIM, STATE_DIM))
+        C[0, 0] = 1.0   # vx -> vx
+        C[1, 3] = 1.0   # r  -> r
+        C[2, 2] = 1.0   # ψ  -> ψ
+        C[3, 4] = 1.0   # X  -> X
+        C[4, 5] = 1.0   # Y  -> Y
+        return C
+    
     def _compute_matrices_at_vertex(self, vertex: NeuralPolytopicVertex
                                     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Compute A, C, E matrices at a polytope vertex using actual C(ρ)"""
+        """Compute continuous-time A, C, E matrices at a polytope vertex"""
         x_dummy = np.array([vertex.vx, 0.0, vertex.psi, 0.0, 0.0, 0.0])
         rho = self.dynamics.compute_scheduling_params(x_dummy, vertex.delta)
         
         A = self.dynamics.compute_A_matrix(rho)
-        C = self.dynamics.compute_C_matrix(rho)  # Actual measurement matrix!
+        C = self._compute_observer_C_matrix()  # 5D selection matrix (matches observer)
         E = self.dynamics.compute_E_matrix(rho)
         
         return A, C, E
+    
+    def _compute_discrete_matrices_at_vertex(self, vertex: NeuralPolytopicVertex
+                                             ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Compute discrete-time A_d, B_d, E_d, C matrices at a polytope vertex.
+        
+        Uses ZOH discretization with the configured sample_time.
+        
+        Returns:
+            Tuple of (A_d, C, E_d, B_d) where A_d, B_d, E_d are discrete matrices
+            and C is the continuous output matrix (unchanged by discretization).
+        """
+        A_c, C, E_c = self._compute_matrices_at_vertex(vertex)
+        B_c = self.dynamics.compute_B_matrix(
+            self.dynamics.compute_scheduling_params(
+                np.array([vertex.vx, 0.0, vertex.psi, 0.0, 0.0, 0.0]),
+                vertex.delta
+            )
+        )
+        
+        A_d, B_d, E_d = discretize_system_zoh(A_c, B_c, E_c, self.sample_time)
+        
+        return A_d, C, E_d, B_d
     
     def compute_gains_lmi(self) -> bool:
         """
         Compute observer gains at all polytope vertices using LMI.
         
+        If discrete=True (default), uses discrete-time Schur-form LMI.
         If use_common_lyapunov=True, solves a single SDP for all vertices
         with a common Lyapunov matrix P, ensuring robust stability.
-        
-        If use_common_lyapunov=False, solves independent SDPs per vertex.
         
         Returns:
             True if all gains computed successfully, False otherwise
@@ -625,10 +1103,18 @@ class NeuralQLPVGainScheduler:
             print("Warning: CVXPY not available, using default gains")
             return self._use_default_gains()
         
-        if self.use_common_lyapunov:
-            success = self._compute_gains_common_lyapunov_hinf()
+        # Choose discrete or continuous design
+        if self.discrete:
+            if self.use_common_lyapunov:
+                success = self._compute_gains_common_lyapunov_discrete()
+            else:
+                success = self._compute_gains_independent_discrete()
         else:
-            success = self._compute_gains_independent()
+            # Legacy continuous-time design
+            if self.use_common_lyapunov:
+                success = self._compute_gains_common_lyapunov_hinf()
+            else:
+                success = self._compute_gains_independent()
         
         # Validate all computed gains
         if success:
@@ -662,7 +1148,7 @@ class NeuralQLPVGainScheduler:
         Then L_i = P^{-1} Y_i for each vertex i.
         """
         n = STATE_DIM  # 6
-        m = MEAS_DIM   # 6
+        m = 5          # Observer uses 5D measurement (no a_y)
         p = 2          # Disturbance dimension (tire residuals)
         
         # Common Lyapunov matrix
@@ -777,19 +1263,192 @@ class NeuralQLPVGainScheduler:
         self._gains_computed = True
         return success
     
+    def _compute_gains_common_lyapunov_discrete(self) -> bool:
+        """
+        Compute gains with common Lyapunov using discrete-time Schur-form H∞ LMI.
+        
+        Solves polytopic discrete H∞ LMI:
+            min trace(P) + γ_reg * Σ ||Y_i||_F
+            s.t. P > 0
+                 P < P_max * I
+                 For all vertices i:
+                     [λ²·P        (P·A_d,i - Y_i·C_i)^T    0        ]
+                     [P·A_d,i - Y_i·C_i    P              P·E_d,i  ] > 0
+                     [0           E_d,i^T·P               γ²·I     ]
+        
+        Then L_i = P^{-1} Y_i for each vertex i.
+        
+        This guarantees:
+            - Contraction rate ||e[k]|| ≤ λ^k ||e[0]||
+            - H∞ bound ||e||_2 ≤ γ ||d||_2
+            - Stability across the entire polytope via common P
+        """
+        n = STATE_DIM  # 6
+        m = 5          # Observer uses 5D measurement (no a_y)
+        p = 2          # Disturbance dimension (tire residuals)
+        
+        lam = self.contraction_rate
+        gamma = self.hinf_gamma
+        
+        # Common Lyapunov matrix
+        P = cp.Variable((n, n), symmetric=True)
+        
+        # Separate Y for each vertex (allows different gains)
+        Y_list = [cp.Variable((n, m)) for _ in range(self.n_vertices)]
+        
+        # Bounds for numerical stability
+        P_min = 1e-4
+        P_max = 1e4
+        eps = 1e-5
+        
+        constraints = [
+            P >> P_min * np.eye(n),
+            P << P_max * np.eye(n),
+        ]
+        
+        for i, vertex in enumerate(self.vertices):
+            A_d, C, E_d, _ = self._compute_discrete_matrices_at_vertex(vertex)
+            Y = Y_list[i]
+            
+            # Build discrete H∞ Schur-form LMI for this vertex
+            # [λ²·P        (P·A_d - Y·C)^T    0        ]
+            # [P·A_d - Y·C       P           P·E_d     ] > 0
+            # [0           E_d^T·P           γ²·I      ]
+            
+            PA_YC = P @ A_d - Y @ C
+            
+            block_11 = lam**2 * P
+            block_12 = PA_YC.T
+            block_13 = np.zeros((n, p))
+            
+            block_21 = PA_YC
+            block_22 = P
+            block_23 = P @ E_d
+            
+            block_31 = np.zeros((p, n))
+            block_32 = E_d.T @ P
+            block_33 = gamma**2 * np.eye(p)
+            
+            row1 = cp.hstack([block_11, block_12, block_13])
+            row2 = cp.hstack([block_21, block_22, block_23])
+            row3 = cp.hstack([block_31, block_32, block_33])
+            lmi_full = cp.vstack([row1, row2, row3])
+            
+            constraints.append(lmi_full >> eps * np.eye(n + n + p))
+        
+        # Objective with regularization
+        gamma_reg = 0.01
+        reg_term = sum(cp.norm(Y, 'fro') for Y in Y_list)
+        objective = cp.Minimize(cp.trace(P) + gamma_reg * reg_term)
+        
+        problem = cp.Problem(objective, constraints)
+        
+        try:
+            problem.solve(solver=cp.SCS, verbose=self.verbose, max_iters=20000, eps=1e-6)
+        except Exception as e:
+            if self.verbose:
+                print(f"SCS solver failed: {e}")
+            try:
+                problem.solve(solver=cp.CVXOPT, verbose=self.verbose)
+            except Exception as e2:
+                print(f"Discrete LMI solver failed: {e}, {e2}")
+                return False
+        
+        if problem.status not in ['optimal', 'optimal_inaccurate']:
+            if self.verbose:
+                print(f"Polytopic discrete H∞ LMI infeasible: {problem.status}")
+            return False
+        
+        # Extract results
+        self.P_common = P.value
+        
+        if self.P_common is None:
+            return False
+        
+        for i, vertex in enumerate(self.vertices):
+            Y_val = Y_list[i].value
+            if Y_val is None:
+                return False
+            
+            try:
+                L = np.linalg.solve(self.P_common, Y_val)
+                self.vertex_gains[vertex.to_tuple()] = L
+            except np.linalg.LinAlgError:
+                L = np.linalg.pinv(self.P_common) @ Y_val
+                self.vertex_gains[vertex.to_tuple()] = L
+        
+        self._gains_computed = True
+        return True
+    
+    def _compute_gains_independent_discrete(self) -> bool:
+        """Compute independent discrete-time gains for each vertex"""
+        success = True
+        
+        for vertex in self.vertices:
+            A_d, C, E_d, _ = self._compute_discrete_matrices_at_vertex(vertex)
+            
+            try:
+                if self.lmi_method == 'hinf':
+                    L = compute_discrete_hinf_lmi_observer_gain(
+                        A_d, C, E_d, gamma=self.hinf_gamma,
+                        contraction_rate=self.contraction_rate, verbose=self.verbose
+                    )
+                elif self.lmi_method == 'l2':
+                    L = compute_discrete_l2_lmi_observer_gain(
+                        A_d, C, E_d, gamma=self.hinf_gamma,
+                        contraction_rate=self.contraction_rate, verbose=self.verbose
+                    )
+                elif self.lmi_method == 'h2':
+                    L, _ = compute_discrete_h2_lmi_observer_gain(
+                        A_d, C, E_d, contraction_rate=self.contraction_rate, 
+                        verbose=self.verbose
+                    )
+                elif self.lmi_method == 'contraction':
+                    L = compute_discrete_contraction_lmi(
+                        A_d, C, contraction_rate=self.contraction_rate,
+                        verbose=self.verbose
+                    )
+                else:
+                    # Default to discrete H∞
+                    L = compute_discrete_hinf_lmi_observer_gain(
+                        A_d, C, E_d, gamma=self.hinf_gamma,
+                        contraction_rate=self.contraction_rate, verbose=self.verbose
+                    )
+                
+                self.vertex_gains[vertex.to_tuple()] = L
+                
+            except Exception as e:
+                if self.verbose:
+                    print(f"Warning: Failed to compute discrete gain at vertex {vertex}: {e}")
+                # Use default fallback
+                self.vertex_gains[vertex.to_tuple()] = self._default_gain.copy()
+                success = False
+        
+        self._gains_computed = True
+        return success
+    
     def _validate_all_gains(self) -> bool:
         """Validate that all computed gains produce stable observers"""
         for vertex in self.vertices:
-            A, C, _ = self._compute_matrices_at_vertex(vertex)
             L = self.vertex_gains.get(vertex.to_tuple())
             
             if L is None:
                 return False
             
-            if not validate_observer_gain(A, C, L, max_real_part=0.0):
-                if self.verbose:
-                    print(f"Warning: Gain at vertex {vertex} is unstable")
-                return False
+            if self.discrete:
+                # Discrete-time: check eigenvalues inside unit circle
+                A_d, C, _, _ = self._compute_discrete_matrices_at_vertex(vertex)
+                if not validate_discrete_observer_gain(A_d, C, L, max_spectral_radius=0.999):
+                    if self.verbose:
+                        print(f"Warning: Discrete gain at vertex {vertex} is unstable")
+                    return False
+            else:
+                # Continuous-time: check eigenvalues in left half-plane
+                A, C, _ = self._compute_matrices_at_vertex(vertex)
+                if not validate_observer_gain(A, C, L, max_real_part=0.0):
+                    if self.verbose:
+                        print(f"Warning: Gain at vertex {vertex} is unstable")
+                    return False
         
         return True
     
@@ -866,13 +1525,42 @@ class NeuralQLPVGainScheduler:
             self._last_weights = weights
             self._last_rho = current_rho
         
-        # Interpolate gains
-        L = np.zeros((STATE_DIM, MEAS_DIM))
+        # Interpolate gains (5D observer measurement)
+        OBSERVER_MEAS_DIM = 5
+        L = np.zeros((STATE_DIM, OBSERVER_MEAS_DIM))
         for i, vertex in enumerate(self.vertices):
             gain = self.vertex_gains.get(vertex.to_tuple(), self._default_gain)
             L += weights[i] * gain
         
         return L
+    
+    def get_scheduled_gain_smooth(self, vx: float, delta: float, 
+                                   alpha: float = 0.1) -> np.ndarray:
+        """
+        Get interpolated observer gain with low-pass filtering for smooth transitions.
+        
+        L_filtered[k] = (1 - α)·L_filtered[k-1] + α·L(ρ[k])
+        
+        This prevents abrupt gain changes during rapid operating point transitions,
+        improving switching safety.
+        
+        Args:
+            vx: Current longitudinal velocity
+            delta: Current steering angle
+            alpha: Filter coefficient ∈ (0, 1]. Larger = faster response, more noise.
+                   Typical values: 0.05-0.2 for smooth switching.
+            
+        Returns:
+            L: Smoothed interpolated observer gain matrix (6 × 6)
+        """
+        L_new = self.get_scheduled_gain(vx, delta)
+        
+        if self._L_filtered is None:
+            self._L_filtered = L_new.copy()
+        else:
+            self._L_filtered = (1.0 - alpha) * self._L_filtered + alpha * L_new
+        
+        return self._L_filtered.copy()
     
     def get_vertex_info(self) -> str:
         """Return string description of polytope vertices"""

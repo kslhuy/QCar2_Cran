@@ -18,6 +18,9 @@ Development/multi_vehicle_self_driving_RealQcar/qcar/observer_recordings
 
 Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/scope_recordings
 Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/observer_recordings
+Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/neural_obs_recordings
+Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/LocalNeuralObs/neural_obs_recordings
+
 
 # docker/libraries/resources/pretrained_models
 docker/libraries/resources/pretrained_models/

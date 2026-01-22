@@ -5,8 +5,10 @@ Provides the base class and factory function for first-layer observers that
 estimate both states and unknown inputs (tire force residuals).
 
 Available observer types:
-- 'qlpv': qLPV Augmented-State Observer with tire-residual estimation
-- 'differentiator_uio': Differentiator + UIO-style observer
+- 'qlpv': qLPV Augmented-State Observer with LMI-based gain design
+- 'qlpv_kalman': qLPV Augmented-State Observer with EKF-style Kalman gains  
+- 'differentiator_uio': Differentiator + UIO-style observer with LMI gains
+- 'differentiator_uio_ekf': Differentiator + UIO observer with EKF gains
 
 All observers implement the same interface for easy swapping.
 """
@@ -112,18 +114,30 @@ class FirstLayerObserverBase(ABC):
         return np.array([X, Y, psi, vx])
 
 
+# All available first-layer observer types
+AVAILABLE_OBSERVER_TYPES = [
+    'qlpv',              # qLPV with LMI-based gain design
+    'qlpv_kalman',       # qLPV with EKF-style Kalman gains
+    'differentiator_uio',     # Differentiator + UIO with LMI gains
+    'differentiator_uio_ekf', # Differentiator + UIO with EKF gains
+]
+
+
 def create_first_layer_observer(observer_type: str = 'qlpv', **kwargs) -> FirstLayerObserverBase:
     """
     Factory function to create first-layer observer instances
     
     Args:
         observer_type: Type of observer:
-            - 'qlpv': qLPV Augmented-State Observer with tire-residual estimation
-            - 'differentiator_uio': Differentiator + UIO-style observer
+            - 'qlpv': qLPV Augmented-State Observer with LMI-based gain design
+            - 'qlpv_kalman': qLPV Augmented-State Observer with EKF Kalman gains
+            - 'differentiator_uio': Differentiator + UIO-style observer with LMI gains
+            - 'differentiator_uio_ekf': Differentiator + UIO observer with EKF gains
         **kwargs: Additional arguments for observer initialization
             - sample_time: Sample time [s] (default 0.02)
             - vehicle_params: Vehicle parameters dict
             - observer_gains: Observer gain parameters
+            - Q, R, P0: EKF noise covariances (for kalman/ekf variants)
     
     Returns:
         First-layer observer instance (6D state, 2D unknown input)
@@ -131,15 +145,25 @@ def create_first_layer_observer(observer_type: str = 'qlpv', **kwargs) -> FirstL
     Example:
         >>> observer = create_first_layer_observer('qlpv', sample_time=0.02)
         >>> state, w = observer.update(measurement, control)
+        >>> # Or use EKF-based observer
+        >>> observer = create_first_layer_observer('qlpv_kalman', sample_time=0.02)
     """
     if observer_type == 'qlpv':
         # Import here to avoid circular imports
         from qlpv_observer import qLPVAugmentedObserver
         return qLPVAugmentedObserver(**kwargs)
+    elif observer_type == 'qlpv_kalman':
+        # Import here to avoid circular imports
+        from qlpv_observer_kalma import qLPVAugmentedObserver as qLPVKalmanObserver
+        return qLPVKalmanObserver(**kwargs)
     elif observer_type == 'differentiator_uio':
         # Import here to avoid circular imports
         from differentiator_uio_observer import DifferentiatorUIOObserver
         return DifferentiatorUIOObserver(**kwargs)
+    elif observer_type == 'differentiator_uio_ekf':
+        # Import here to avoid circular imports
+        from differentiator_uio_ekf import DifferentiatorUIOEKF
+        return DifferentiatorUIOEKF(**kwargs)
     else:
         raise ValueError(f"Unknown observer type: {observer_type}. "
-                        f"Available: 'qlpv', 'differentiator_uio'")
+                        f"Available: {AVAILABLE_OBSERVER_TYPES}")

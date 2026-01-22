@@ -58,15 +58,16 @@ observer:
   observer_gain: 0.5
   
   # Sample time [seconds]
-  sample_time: 0.02
+  sample_time: 0.01
   
   # Minimum velocity threshold to avoid singularities [m/s]
-  min_vx: 0.5
+  min_vx: 0.1
 
 # ============================================================================
 # Observer Gain Design Configuration
 # ============================================================================
-# Advanced LMI-based gain design with H∞/L2 performance criteria
+# Advanced LMI-based gain design with H∞/L2/H2 performance criteria
+# Now supports discrete-time Schur-form LMI for robust observer design.
 #
 observer_gain_design:
   # Gain design method:
@@ -74,28 +75,34 @@ observer_gain_design:
   #   - 'lmi': Standard LMI-based Lyapunov design (requires CVXPY)
   #   - 'hinf': H∞ LMI design with bounded disturbance attenuation (recommended)
   #   - 'l2': L2-gain bounded LMI design
+  #   - 'h2': H2 norm minimization (energy-optimal)
+  #   - 'contraction': Pure stability with contraction rate
   #   - 'qlpv_scheduled': Polytopic qLPV gain scheduling (robust across operating range)
-  method: "hinf"
+  method: "qlpv_scheduled"
   
   # H∞ performance bound γ: ||error|| ≤ γ||disturbance||
   # Smaller = better attenuation but harder to satisfy (typical: 1.0-5.0)
-  hinf_gamma: 2.0
+  hinf_gamma: 3.0
   
   # L2 gain bound (for 'l2' method, typical: 1.0-3.0)
   l2_gamma: 3.0
   
-  # Minimum exponential decay rate α for LMI (controls convergence speed)
+  # Minimum exponential decay rate α for continuous LMI (controls convergence speed)
   # Larger = faster convergence but may be infeasible (typical: 0.1-2.0)
   lmi_decay_rate: 0.5
   
+  # Contraction rate λ for discrete-time design (0 < λ < 1)
+  # Smaller = faster error decay, but may be infeasible (typical: 0.9-0.99)
+  contraction_rate: 0.95
+  
   # Nominal velocity for single-point LMI design [m/s]
-  nominal_vx: 1.5
+  nominal_vx: 0.6
   
   # Enable qLPV polytopic gain scheduling (works with any method as enhancement)
-  use_gain_scheduling: false
+  use_gain_scheduling: true
   
   # Velocity range for gain scheduling [m/s]
-  vx_range: [0.5, 3.0]
+  vx_range: [0.1, 2.0]
   
   # Maximum steering angle for scheduling [rad]
   delta_max: 0.4
@@ -129,7 +136,7 @@ weights_measurement:
   v_x: 10.0
   v_y: 20000.0
   psi: 10.0
-  psi_dot: 20000.0
+  psi_dot: 300.0
   X: 1.0
   Y: 1.0
 
@@ -154,12 +161,22 @@ weights_uio:
 # ============================================================================
 # First-Layer Observer Configuration
 # ============================================================================
+# Available first-layer observer types:
+#   - 'qlpv': qLPV Augmented-State Observer with LMI-based gain design
+#             Best for: Well-understood dynamics, robust stability guarantees
+#   - 'qlpv_kalman': qLPV Augmented-State Observer with EKF-style Kalman gains
+#             Best for: Dynamic gain adaptation, handling varying noise levels
+#   - 'differentiator_uio': Differentiator + UIO observer with LMI gains
+#             Best for: Direct residual estimation, simpler structure
+#   - 'differentiator_uio_ekf': Differentiator + UIO observer with EKF gains
+#             Best for: Combining UIO robustness with EKF optimality
+#
 first_layer:
   # Enable two-layer architecture with first-layer observer
   enabled: true
   
-  # First-layer observer type: 'qlpv' or 'differentiator_uio'
-  type: qlpv
+  # First-layer observer type (see options above)
+  type: qlpv_kalman
 
 # ============================================================================
 # Model Persistence

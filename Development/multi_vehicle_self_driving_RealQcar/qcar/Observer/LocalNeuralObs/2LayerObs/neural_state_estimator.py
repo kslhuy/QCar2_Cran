@@ -59,6 +59,9 @@ from neural_network import (
 )
 from gradient_solver import GradientSolver, create_weight_matrix
 from config_loader import load_neural_obs_config, flatten_config, merge_with_overrides
+# Import unified recorder from parent LocalNeuralObs directory
+parent_local_neural_dir = parent_dir.parent
+sys.path.insert(0, str(parent_local_neural_dir))
 from neural_obs_recorder import NeuralObsRecorder
 
 # Import first-layer observer from 1LayerObs directory
@@ -66,17 +69,42 @@ one_layer_dir = parent_dir.parent / "1LayerObs"
 sys.path.insert(0, str(one_layer_dir))
 from firstLayerObserverBase import create_first_layer_observer, FirstLayerObserverBase
 
-# Import LMI gain design utilities from differentiator_uio_observer
-from differentiator_uio_observer import (
-    QLPVGainScheduler,
+# # Import LMI gain design utilities from Design_LMI_neural (neural observer specific)
+# from Design_LMI_neural import (
+#     NeuralQLPVGainScheduler as QLPVGainScheduler,
+#     compute_lmi_observer_gain,
+#     compute_pole_placement_gain,
+#     validate_observer_gain,
+#     compute_hinf_lmi_observer_gain,
+#     compute_l2_lmi_observer_gain,
+# )
+
+from Design_LMI_neural import (
+    # Continuous-time LMI (legacy)
+    compute_hinf_lmi_observer_gain,
+    compute_l2_lmi_observer_gain,
     compute_lmi_observer_gain,
     compute_pole_placement_gain,
     validate_observer_gain,
+    # Discrete-time LMI (new)
+    discretize_system_zoh,
+    compute_discrete_hinf_lmi_observer_gain,
+    compute_discrete_l2_lmi_observer_gain,
+    compute_discrete_contraction_lmi,
+    compute_discrete_h2_lmi_observer_gain,
+    validate_discrete_observer_gain,
+    # Gain scheduler
+    NeuralQLPVGainScheduler as QLPVGainScheduler,
 )
 
 # Import base class from parent directory
-sys.path.insert(0, str(parent_dir.parent))
-from local_state_estimators import LocalStateEstimatorBase
+try:
+    # When imported as part of the Observer package
+    from Observer.local_state_estimators import LocalStateEstimatorBase
+except ImportError:
+    # Fallback for direct execution or testing
+    sys.path.insert(0, str(parent_dir.parent))
+    from local_state_estimators import LocalStateEstimatorBase
 
 # Import centralized qLPV vehicle dynamics
 from qlpv_vehicle_dynamics_obs import (
@@ -87,211 +115,8 @@ from qlpv_vehicle_dynamics_obs import (
     MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
 )
 
-# Note: SchedulingParameters is imported from qlpv_vehicle_dynamics_obs
+# Note: H∞ and L2 functions now imported above with other LMI utilities
 
-
-# =============================================================================
-# H∞ and L2 LMI-based Observer Gain Design
-# =============================================================================
-
-def compute_hinf_lmi_observer_gain(A: np.ndarray, C: np.ndarray, E: np.ndarray,
-                                    gamma: float = 2.0, decay_rate: float = 0.5,
-                                    verbose: bool = False) -> np.ndarray:
-    """
-    Compute observer gain L using H∞ LMI-based design (Bounded Real Lemma).
-    
-    For the observer error dynamics with disturbance injection:
-        ė = (A - LC)e + E·d
-        z = e  (performance output = state estimation error)
-    
-    The H∞ criterion guarantees: ||z||₂ ≤ γ||d||₂
-    i.e., the L2-gain from disturbance d to estimation error e is bounded by γ.
-    
-    This is achieved by solving the Bounded Real Lemma LMI:
-    
-        [A^T P + P A - C^T Y^T - Y C + αP    P E  ]
-        [            E^T P                  -γ²I  ] < 0
-        
-    with P > 0, where Y = P @ L.
-    
-    Recovery: L = P⁻¹ @ Y
-    
-    Args:
-        A: State matrix (n × n)
-        C: Output matrix (m × n)  
-        E: Disturbance injection matrix (n × p) - links unknown inputs to state
-        gamma: H∞ performance bound (smaller = better attenuation, but harder to satisfy)
-        decay_rate: Minimum exponential decay rate α (controls convergence speed)
-        verbose: Print solver output
-        
-    Returns:
-        L: Observer gain matrix (n × m)
-        
-    Raises:
-        ValueError: If the LMI problem is infeasible or CVXPY not available
-        
-    Note:
-        Smaller gamma provides better disturbance rejection but may be infeasible.
-        Typical values: gamma ∈ [1.0, 5.0], decay_rate ∈ [0.1, 1.0]
-    """
-    if not CVXPY_AVAILABLE:
-        raise ValueError("CVXPY is not available. Install with: pip install cvxpy")
-    
-    n = A.shape[0]  # State dimension
-    m = C.shape[0]  # Measurement dimension
-    p = E.shape[1]  # Disturbance dimension
-    
-    # Decision variables
-    P = cp.Variable((n, n), symmetric=True)  # Lyapunov matrix
-    Y = cp.Variable((n, m))  # Y = P @ L
-    
-    # Numerical tolerances
-    eps = 1e-5  # Strict inequality margin
-    P_min = 1e-4
-    P_max = 1e3  # Reduced upper bound for better conditioning
-    
-    # Build the H∞ LMI block matrix constraint (standard BRL form)
-    # Top-left: A^T P + P A - C^T Y^T - Y C + αP
-    top_left = A.T @ P + P @ A - C.T @ Y.T - Y @ C + decay_rate * P
-    
-    # Build full LMI matrix
-    lmi_top = cp.hstack([top_left, P @ E])
-    lmi_bot = cp.hstack([E.T @ P, -gamma**2 * np.eye(p)])
-    lmi_full = cp.vstack([lmi_top, lmi_bot])
-    
-    constraints = [
-        P >> P_min * np.eye(n),  # P > 0 (positive definite)
-        P << P_max * np.eye(n),  # Upper bound on P for conditioning
-        lmi_full << -eps * np.eye(n + p),  # H∞ LMI < 0
-    ]
-    
-    # Objective: minimize trace(P) + regularization on Y (for well-conditioned gain)
-    gamma_reg = 0.1  # Increased regularization for robustness
-    objective = cp.Minimize(cp.trace(P) + gamma_reg * cp.norm(Y, 'fro'))
-    
-    # Solve the SDP
-    problem = cp.Problem(objective, constraints)
-    try:
-        problem.solve(solver=cp.SCS, verbose=verbose, max_iters=20000, eps=1e-5)
-    except Exception as e:
-        # Try alternative solver
-        try:
-            problem.solve(solver=cp.CVXOPT, verbose=verbose)
-        except:
-            raise ValueError(f"H∞ LMI solver failed: {e}")
-    
-    if problem.status not in ['optimal', 'optimal_inaccurate']:
-        raise ValueError(f"H∞ LMI problem infeasible. Status: {problem.status}. "
-                        f"Try increasing gamma (current: {gamma})")
-    
-    # Recover observer gain: L = P⁻¹ @ Y
-    P_val = P.value
-    Y_val = Y.value
-    
-    if P_val is None or Y_val is None:
-        raise ValueError("H∞ LMI solver returned None values")
-    
-    try:
-        L = np.linalg.solve(P_val, Y_val)
-    except np.linalg.LinAlgError:
-        L = np.linalg.pinv(P_val) @ Y_val
-    
-    # Validate stability by checking eigenvalues
-    A_cl = A - L @ C
-    eigenvalues = np.linalg.eigvals(A_cl)
-    max_real = np.max(np.real(eigenvalues))
-    
-    if max_real >= 0:
-        raise ValueError(f"H∞ LMI produced unstable observer (max real eig = {max_real:.4f})")
-    
-    # Limit gain magnitude to prevent numerical issues
-    L = np.clip(L, -50.0, 50.0)
-    
-    return L
-
-
-def compute_l2_lmi_observer_gain(A: np.ndarray, C: np.ndarray, E: np.ndarray,
-                                  gamma: float = 2.0, decay_rate: float = 0.5,
-                                  verbose: bool = False) -> np.ndarray:
-    """
-    Compute observer gain L using L2 gain-bounded LMI design.
-    
-    Similar to H∞ but with a different weighting on the performance output.
-    The L2-gain criterion bounds the energy amplification from disturbance to error.
-    
-    This solves a simplified version of the Bounded Real Lemma:
-    
-        A^T P + P A - C^T Y^T - Y C + (1/γ²)I + αP < 0
-        
-    with an additional constraint on disturbance rejection via E.
-    
-    Args:
-        A: State matrix (n × n)
-        C: Output matrix (m × n)
-        E: Disturbance injection matrix (n × p)
-        gamma: L2 gain bound
-        decay_rate: Minimum exponential decay rate
-        verbose: Print solver output
-        
-    Returns:
-        L: Observer gain matrix (n × m)
-    """
-    if not CVXPY_AVAILABLE:
-        raise ValueError("CVXPY is not available")
-    
-    n = A.shape[0]
-    m = C.shape[0]
-    p = E.shape[1]
-    
-    P = cp.Variable((n, n), symmetric=True)
-    Y = cp.Variable((n, m))
-    
-    eps = 1e-6
-    
-    # L2 performance LMI with disturbance weighting
-    # Combines decay rate constraint with L2 bound on E·d
-    performance_term = (1.0 / gamma**2) * E @ E.T
-    lmi_constraint = (A.T @ P + P @ A - C.T @ Y.T - Y @ C + 
-                      decay_rate * P + performance_term)
-    
-    constraints = [
-        P >> eps * np.eye(n),
-        P << 1e4 * np.eye(n),
-        lmi_constraint << -eps * np.eye(n),
-    ]
-    
-    gamma_reg = 0.01
-    objective = cp.Minimize(cp.trace(P) + gamma_reg * cp.norm(Y, 'fro'))
-    
-    problem = cp.Problem(objective, constraints)
-    try:
-        problem.solve(solver=cp.SCS, verbose=verbose, max_iters=15000, eps=1e-6)
-    except Exception as e:
-        try:
-            problem.solve(solver=cp.CVXOPT, verbose=verbose)
-        except:
-            raise ValueError(f"L2 LMI solver failed: {e}")
-    
-    if problem.status not in ['optimal', 'optimal_inaccurate']:
-        raise ValueError(f"L2 LMI problem infeasible. Status: {problem.status}")
-    
-    P_val = P.value
-    Y_val = Y.value
-    
-    if P_val is None or Y_val is None:
-        raise ValueError("L2 LMI solver returned None values")
-    
-    try:
-        L = np.linalg.solve(P_val, Y_val)
-    except np.linalg.LinAlgError:
-        L = np.linalg.pinv(P_val) @ Y_val
-    
-    if not validate_observer_gain(A, C, L):
-        raise ValueError("Computed L2 gain does not produce stable observer")
-    
-    L = np.clip(L, -100.0, 100.0)
-    
-    return L
 
 class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     """
@@ -318,6 +143,12 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     IDX_X = IDX_X  # 4
     IDX_Y = IDX_Y  # 5
     INTERNAL_STATE_DIM = STATE_DIM  # 6
+    
+    # Measurement dimensions for observer design
+    # Full measurements: [vx, r, ψ, X, Y] (5D) - directly measurable states
+    # IMU-only: [vx, r] (2D) - always available
+    MEAS_DIM_FULL = 5  # vx, r, ψ, X, Y
+    MEAS_DIM_IMU = 2   # vx, r
     
     def __init__(self, initial_pose: Optional[np.ndarray] = None,
                  config: Dict = None, logger=None):
@@ -495,7 +326,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         """
         cfg = self.config
         
-        # Standard measurement loss weights
+        # Standard measurement loss weights (6D - kept for backward compatibility)
         measurement_weights = create_weight_matrix({
             'v_x': cfg['weight_vx'],
             'v_y': cfg['weight_vy'],
@@ -601,16 +432,25 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         self._set_default_gains()
     
     def _try_qlpv_scheduled_gains(self, decay_rate: float) -> bool:
-        """Try to compute qLPV scheduled gains"""
+        """
+        Try to compute qLPV scheduled gains using discrete-time LMI.
+        
+        Uses discrete-time Schur-form H∞ design with common Lyapunov for
+        robust stability across the velocity/steering polytope.
+        """
         if not CVXPY_AVAILABLE:
             return False
         
         try:
-            vx_range = tuple(self.config.get('vx_range', [0.5, 3.0]))
+            vx_range = tuple(self.config.get('vx_range', [0.1, 2.0]))
             delta_max = self.config.get('delta_max', 0.4)
             n_vx_vertices = self.config.get('n_vx_vertices', 3)
             n_delta_vertices = self.config.get('n_delta_vertices', 3)
             use_common_lyapunov = self.config.get('use_common_lyapunov', True)
+            sample_time = self.config.get('sample_time', 0.01)
+            contraction_rate = self.config.get('contraction_rate', 0.95)
+            hinf_gamma = self.config.get('hinf_gamma', 2.0)
+            lmi_method = self.config.get('gain_design_method', 'hinf')
             
             self._gain_scheduler = QLPVGainScheduler(
                 vehicle_params=self.vehicle_params,
@@ -619,7 +459,12 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 n_vx_vertices=n_vx_vertices,
                 n_delta_vertices=n_delta_vertices,
                 decay_rate=decay_rate,
+                lmi_method=lmi_method,
+                hinf_gamma=hinf_gamma,
                 use_common_lyapunov=use_common_lyapunov,
+                discrete=True,  # Use discrete-time design
+                sample_time=sample_time,
+                contraction_rate=contraction_rate,
                 verbose=False
             )
             
@@ -627,13 +472,15 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 # Get nominal gain for L (used as fallback)
                 nominal_vx = (vx_range[0] + vx_range[1]) / 2
                 self.L = self._gain_scheduler.get_scheduled_gain(nominal_vx, 0.0)
-                self._gain_method = 'qlpv_scheduled'
+                self._gain_method = 'qlpv_scheduled_discrete'
                 return True
             else:
                 self._gain_scheduler = None
                 return False
         except Exception as e:
             self._gain_scheduler = None
+            if self.logger:
+                self.logger.log_error("qLPV gain scheduling failed", e)
             return False
     
     def _try_hinf_design(self, A: np.ndarray, C: np.ndarray, E: np.ndarray,
@@ -687,10 +534,39 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             return False
     
     def _set_default_gains(self):
-        """Set simple diagonal observer gains"""
+        """
+        Set simple default observer gains.
+        
+        L is 6×5 mapping measurements [vx, r, ψ, X, Y] to state corrections.
+        Designed for the fixed selection matrix C (5×6).
+        """
         gain = self.config.get('observer_gain', 0.5)
-        # Tuned diagonal gains for 6D state [vx, vy, psi, r, X, Y]
-        self.L = np.diag([gain * 2, gain * 2, gain, gain * 2, gain * 0.5, gain * 0.5])
+        # Tuned gains for 6D state corrected by 5D measurement [vx, r, ψ, X, Y]
+        # L shape: (state_dim, meas_dim) = (6, 5)
+        # Columns correspond to: vx_meas, r_meas, ψ_meas, X_meas, Y_meas
+        # Rows correspond to: vx, vy, ψ, r, X, Y states
+        L = np.zeros((self.INTERNAL_STATE_DIM, self.MEAS_DIM_FULL))
+        
+        # vx state correction from vx measurement
+        L[self.IDX_VX, 0] = gain * 2.0
+        
+        # vy state correction (not directly measured, small cross-coupling)
+        L[self.IDX_VY, 0] = gain * 0.1  # Small vx coupling
+        L[self.IDX_VY, 1] = gain * 0.5  # r coupling (helps vy estimation)
+        
+        # ψ state correction from ψ measurement
+        L[self.IDX_PSI, 2] = gain * 1.0
+        
+        # r state correction from r measurement
+        L[self.IDX_R, 1] = gain * 2.0
+        
+        # X state correction from X measurement
+        L[self.IDX_X, 3] = gain * 0.5
+        
+        # Y state correction from Y measurement
+        L[self.IDX_Y, 4] = gain * 0.5
+        
+        self.L = L
         self._gain_method = 'default'
     
     def get_gain_method(self) -> str:
@@ -715,7 +591,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         Returns:
             L: Observer gain matrix (6 × 6)
         """
-        if self._gain_scheduler is not None and self._gain_method == 'qlpv_scheduled':
+        if self._gain_scheduler is not None and self._gain_method.startswith('qlpv_scheduled'):
             return self._gain_scheduler.get_scheduled_gain(vx, delta)
         else:
             return self.L.copy()
@@ -756,15 +632,23 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             self.use_first_layer = False
     
     def _initialize_gradient_solver(self):
-        """Initialize gradient solver for neural network training"""
-        # C matrix for 6D state (identity for full state observation)
-        C = np.eye(self.INTERNAL_STATE_DIM)
+        """
+        Initialize gradient solver for neural network training.
         
-        # E matrix for tire residual injection (6x2)
-        E = self._compute_E_matrix(None)
+        Uses matrices at nominal operating point (same as gain design)
+        so that sensitivity propagation is consistent.
+        """
+        # Compute matrices at nominal operating point
+        nominal_vx = self.config.get('nominal_vx', 1.5)
+        nominal_state = np.array([nominal_vx, 0.0, 0.0, 0.0, 0.0, 0.0])
+        rho = self._compute_scheduling_params(nominal_state, 0.0)
+        
+        A = self._compute_A_matrix(rho)
+        E = self._compute_E_matrix(rho)
+        C = self._compute_C_matrix()  # Fixed selection matrix (5×6)
         
         observer_matrices = {
-            'A': np.eye(self.INTERNAL_STATE_DIM),
+            'A': A,
             'C': C,
             'D': E,  # D in gradient solver corresponds to E (residual injection)
             'K': self.L
@@ -795,9 +679,95 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             rho = self.dynamics.compute_scheduling_params(dummy_state, 0.0)
         return self.dynamics.compute_E_matrix(rho)
     
+    def _discretize_system(self, rho: SchedulingParameters, dt: float
+                           ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Discretize continuous-time system matrices via Zero-Order Hold (ZOH).
+        
+        Continuous: ẋ = A_c·x + B_c·u + E_c·w
+        Discrete:   x[k+1] = A_d·x[k] + B_d·u[k] + E_d·w[k]
+        
+        Args:
+            rho: Scheduling parameters for current operating point
+            dt: Sample time [seconds]
+            
+        Returns:
+            Tuple of (A_d, B_d, E_d) discrete-time matrices
+        """
+        A_c = self._compute_A_matrix(rho)
+        B_c = self._compute_B_matrix(rho)
+        E_c = self._compute_E_matrix(rho)
+        
+        return discretize_system_zoh(A_c, B_c, E_c, dt)
+    
     def _compute_C_matrix(self) -> np.ndarray:
-        """Compute output matrix C (identity for full state)"""
-        return np.eye(self.INTERNAL_STATE_DIM)
+        """
+        Compute fixed output/selection matrix C for observer design.
+        
+        This is a SELECTION MATRIX for directly measurable states, NOT the full
+        dynamics output matrix. The observer gain L is designed for this fixed C.
+        
+        Measurement ordering: y = [vx, r, ψ, X, Y] (5D)
+        State ordering:       x = [vx, vy, ψ, r, X, Y] (6D)
+        
+        This differs from dynamics.compute_C_matrix() which includes a_y with
+        nonlinear state dependence - that's inappropriate for L gain design.
+        
+        Returns:
+            C matrix (5×6) selecting directly measurable states
+        """
+        C = np.zeros((self.MEAS_DIM_FULL, self.INTERNAL_STATE_DIM))
+        C[0, self.IDX_VX] = 1.0   # vx -> vx (motor tach)
+        C[1, self.IDX_R] = 1.0    # r -> r (gyro)
+        C[2, self.IDX_PSI] = 1.0  # ψ -> ψ (GPS heading)
+        C[3, self.IDX_X] = 1.0    # X -> X (GPS)
+        C[4, self.IDX_Y] = 1.0    # Y -> Y (GPS)
+        return C
+    
+    def _compute_C_matrix_avail(self, gps_valid: bool) -> np.ndarray:
+        """
+        Compute C matrix for available sensors.
+        
+        When GPS is valid: use full C (5×6) for [vx, r, ψ, X, Y]
+        When GPS invalid: use IMU-only C (2×6) for [vx, r]
+        
+        Args:
+            gps_valid: Whether GPS measurements are valid
+            
+        Returns:
+            C matrix with appropriate rows for available sensors
+        """
+        if gps_valid:
+            return self._compute_C_matrix()  # 5×6
+        else:
+            # IMU-only: select vx and r
+            C_imu = np.zeros((self.MEAS_DIM_IMU, self.INTERNAL_STATE_DIM))
+            C_imu[0, self.IDX_VX] = 1.0  # vx
+            C_imu[1, self.IDX_R] = 1.0   # r
+            return C_imu
+    
+    def _get_L_avail(self, gps_valid: bool) -> np.ndarray:
+        """
+        Get observer gain matrix for available sensors.
+        
+        When GPS valid: use full L (6×5)
+        When GPS invalid: use IMU-only L (6×2) - only first 2 columns
+        
+        Args:
+            gps_valid: Whether GPS measurements are valid
+            
+        Returns:
+            L matrix with appropriate columns for available sensors
+        """
+        vx_current = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
+        delta = getattr(self, '_last_steering', 0.0)
+        L_full = self.get_scheduled_gain(vx_current, delta)
+        
+        if gps_valid:
+            return L_full  # 6×5 (full measurement correction)
+        else:
+            # IMU-only: use only first 2 columns corresponding to vx, r
+            return L_full[:, :self.MEAS_DIM_IMU]  # 6×2
     
     
     def _prepare_nn_input(self, steering: float, throttle: float, 
@@ -857,8 +827,9 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             True if update successful
         """
         try:
-            # Store steering for training phase
+            # Store inputs for training phase
             self._last_steering = steering
+            self._last_throttle = throttle
             
             # ========== PHASE 1: SENSOR PROCESSING ==========
             # IMU data (always available at high rate)
@@ -903,59 +874,64 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 # Use first-layer w estimate for observer dynamics
                 w_hat = w_uio
             
-            # ========== PHASE 4: COMPUTE SYSTEM MATRICES ==========
+            # ========== PHASE 4: COMPUTE DISCRETE SYSTEM MATRICES ==========
             rho = self._compute_scheduling_params(self.state_nn_6d, steering)
-            A = self._compute_A_matrix(rho)
-            B = self._compute_B_matrix(rho)
-            E = self._compute_E_matrix(rho)
-            C = self._compute_C_matrix()
             
-            # Get scheduled observer gain
-            vx_current = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
-            L = self.get_scheduled_gain(vx_current, steering)
+            # Discretize system at current operating point (ZOH)
+            # This matches the discrete-time LMI gain design
+            A_d, B_d, E_d = self._discretize_system(rho, dt)
             
-            # ========== PHASE 5: STATE UPDATE (Predict + Correct) ==========
+            # Keep continuous A, E for sensitivity update (gradient solver uses continuous)
+            A_c = self._compute_A_matrix(rho)
+            E_c = self._compute_E_matrix(rho)
+            
+            # ========== PHASE 5: STATE UPDATE (Discrete Predict + Correct) ==========
+            # Discrete-time observer: x̂[k+1] = A_d·x̂[k] + B_d·u[k] + E_d·w[k] + L·(y[k] - C·x̂[k])
+            # This structure matches the discrete-time LMI gain design.
+            #
+            # ALWAYS correct with available sensors:
+            #   - IMU (vx, r): always available at high rate
+            #   - GPS (ψ, X, Y): only when valid
+            
             u = np.array([steering, throttle])
             
-            # Prediction: x̂_pred = x̂ + dt·(A·x̂ + B·u + E·w)
-            x_dot = A @ self.state_nn_6d + B @ u + E @ w_hat
-            state_pred = self.state_nn_6d + dt * x_dot
+            # Get sensor-dependent C and L matrices
+            C_avail = self._compute_C_matrix_avail(gps_valid)
+            L_avail = self._get_L_avail(gps_valid)
             
-            # Correction (only when GPS valid)
+            # Build measurement vector based on sensor availability
             if gps_valid:
-                # Build measurement vector [v_x, v_y, ψ, r, X, Y]
-                measurement = np.array([
-                    vx_meas,       # v_x from motor tach
-                    0.0,           # v_y (not directly measured)
-                    psi_meas,      # ψ from GPS
-                    r_meas,        # r from gyro
-                    X_meas,        # X from GPS
-                    Y_meas         # Y from GPS
-                ])
-                
-                # Innovation: y - C·x̂_pred
-                innovation = measurement - C @ state_pred
-                innovation[self.IDX_VY] = 0.0  # Don't correct v_y (unmeasured)
-                
-                # Correction: x̂ = x̂_pred + L·innovation
-                self.state_nn_6d = state_pred + L @ innovation
+                # Full measurement: [vx, r, ψ, X, Y]
+                y_avail = np.array([vx_meas, r_meas, psi_meas, X_meas, Y_meas])
             else:
-                # Prediction only
-                self.state_nn_6d = state_pred
+                # IMU-only: [vx, r]
+                y_avail = np.array([vx_meas, r_meas])
+            
+            # Discrete-time prediction: x̂_pred = A_d·x̂ + B_d·u + E_d·w
+            state_pred = A_d @ self.state_nn_6d + B_d @ u + E_d @ self.f_nn.squeeze()
+            
+            # Innovation: y - C·x̂[k] (computed at current state, not predicted)
+            # This is the "current measurement" form for discrete observer
+            innovation = y_avail - C_avail @ self.state_nn_6d
+            
+            # Correction: x̂[k+1] = x̂_pred + L·innovation
+            self.state_nn_6d = state_pred + L_avail @ innovation
             
             # Sync with base class state (4D)
             self.state = self._extract_4d_state()
             
             # ========== PHASE 6: SENSITIVITY UPDATE (matches Phase 5) ==========
-            # Use Luenberger sensitivity that matches observer predict-correct structure
-            self.dx_df = self.gradient_solver.gradient_solver_luenberger(
-                self.dx_df, A, L, E, C, dt, gps_valid
+            # Use discrete Luenberger sensitivity matching ZOH discretization and actual sensor usage
+            # Pass L_avail and C_avail to correctly capture the actual closed-loop dynamics (including IMU feedback)
+            # gps_valid=True because we ALWAYS apply correction (either full or IMU-only)
+            self.dx_df = self.gradient_solver.gradient_solver_luenberger_discrete(
+                self.dx_df, A_d, L_avail, E_d, C_avail, gps_valid=True
             )
             
             # ========== PHASE 7: NEURAL NETWORK TRAINING ==========
             # Only train when we have ground truth (GPS valid)
             if gps_valid:
-                self._train_network(nn_input, w_hat, gps_data, motor_tach)
+                self._train_network(nn_input, w_hat, gps_data, motor_tach,gyro_z)
             
             # ========== PHASE 7.5: DATA RECORDING ==========
             if self.recorder is not None and self.recorder.is_recording():
@@ -1041,7 +1017,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         return self.model(nn_input_tensor).detach().numpy()
     
     def _train_network(self, nn_input: np.ndarray, w_hat: np.ndarray,
-                       gps_data: Dict, motor_tach: float):
+                       gps_data: Dict, motor_tach: float,gyro_z: float):
         """
         Train neural network with computed gradients.
         
@@ -1052,21 +1028,18 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # Build full measurement for loss computation
         measurement_full = np.array([
             motor_tach,
-            0.0,  # v_y
+            self.state_nn_6d[self.IDX_VY],  # v_y
             gps_data.get('theta', self.state_nn_6d[self.IDX_PSI]),
-            self.state_nn_6d[self.IDX_R],
+            gyro_z,
             gps_data.get('x', self.state_nn_6d[self.IDX_X]),
             gps_data.get('y', self.state_nn_6d[self.IDX_Y])
         ]).reshape(-1, 1)
         
         f_uk = w_hat.reshape(-1, 1)
         
-        # Get current matrices for autodiff
-        steering = np.arctan2(
-            self.state_nn_6d[self.IDX_VY],
-            max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
-        ) if hasattr(self, '_last_steering') else 0.0
+        # Get actual control inputs (stored in update phase)
         steering = getattr(self, '_last_steering', 0.0)
+        throttle = getattr(self, '_last_throttle', 0.0)
         
         rho = self._compute_scheduling_params(self.state_nn_6d, steering)
         A = self._compute_A_matrix(rho)
@@ -1074,7 +1047,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         E = self._compute_E_matrix(rho)
         vx_current = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
         L = self.get_scheduled_gain(vx_current, steering)
-        u = np.array([steering, 0.0])  # Control input
+        u = np.array([steering, throttle])  # Use actual throttle
         dt = self.config.get('sample_time', 0.02)
         
         # ========== AUTODIFF MODE ==========
@@ -1234,13 +1207,19 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         Returns:
             Updated state estimate tensor (differentiable)
         """
-        # Continuous-time dynamics
+        # CRITICAL: Ensure all vectors are 1D to avoid broadcasting issues
+        state = state.flatten()
+        f_nn = f_nn.flatten()
+        u = u.flatten()
+        y = y.flatten()
+        
+        # Continuous-time dynamics: x_dot = A·x + B·u + E·f_nn
         x_dot = A @ state + B @ u + E @ f_nn
         
-        # Prediction
+        # Prediction: x_pred = x + dt·x_dot
         x_pred = state + dt * x_dot
         
-        # Innovation and correction
+        # Innovation and correction: x_new = x_pred + L·(y - C·x_pred)
         innovation = y - C @ x_pred
         x_new = x_pred + L @ innovation
         
@@ -1260,7 +1239,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         Args:
             nn_input: Input to neural network
-            measurement: Current measurement  
+            measurement: Current measurement full , fake v_y 
             A, B, E, L: System matrices
             u: Control input
             dt: Sample time
@@ -1269,19 +1248,23 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             Differentiable loss tensor or None if failed
         """
         try:
-            # Convert to tensors
-            nn_input_t = torch.from_numpy(nn_input.astype(np.float32))
+            # IMPORTANT: Use float64 throughout to avoid dtype mixing and graph breaks
+            # The neural network model should handle double precision
+            nn_input_t = torch.from_numpy(nn_input.astype(np.float64))
             state_t = torch.from_numpy(self.state_nn_6d.astype(np.float64))
             A_t = torch.from_numpy(A.astype(np.float64))
             B_t = torch.from_numpy(B.astype(np.float64))
             E_t = torch.from_numpy(E.astype(np.float64))
             L_t = torch.from_numpy(L.astype(np.float64))
-            C_t = torch.eye(6, dtype=torch.float64)
+            # Use proper selection matrix C (5×6), not identity
+            C_np = self._compute_C_matrix()
+            C_t = torch.from_numpy(C_np.astype(np.float64))
             u_t = torch.from_numpy(u.astype(np.float64))
-            y_t = torch.from_numpy(measurement.flatten().astype(np.float64))
-            
-            # Forward pass through neural network
-            f_nn_t = self.model(nn_input_t).double()  # (output_dim,)
+            # Measurement should match C dimensions (5D)
+            y_t = torch.from_numpy(measurement.flatten()[:self.MEAS_DIM_FULL].astype(np.float64))
+            measurement_ful_t = torch.from_numpy(measurement.flatten().astype(np.float64))
+            # Forward pass through neural network (convert to double for consistency)
+            f_nn_t = self.model(nn_input_t.float()).double()  # Model expects float, then convert
             
             # Differentiable observer step
             x_new = self._observer_step_torch(
@@ -1304,10 +1287,10 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                         self.weight_matrices.get('T_ref', np.eye(len(self.trajectory_ref))).astype(np.float64)
                     ),
                     'T_y': torch.from_numpy(
-                        self.weight_matrices.get('T_y', np.eye(6)).astype(np.float64)
+                        self.weight_matrices.get('T_y', np.eye(self.MEAS_DIM_FULL)).astype(np.float64)
                     ),
                     'T_uio': torch.from_numpy(
-                        self.weight_matrices.get('T_uio', np.eye(6)).astype(np.float64)
+                        self.weight_matrices.get('T_uio', np.eye(self.INTERNAL_STATE_DIM)).astype(np.float64)
                     ),
                 }
                 
@@ -1317,10 +1300,10 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     self.ref_indices
                 )
             else:
-                # Standard measurement loss
+                # Standard measurement full loss (fake 6x1 measurement)
                 f_uk_t = torch.from_numpy(self.f_nn.flatten().astype(np.float64))
                 loss = self.gradient_solver.compute_loss_measurement_autodiff(
-                    x_new, y_t, W_t, f_nn_t, f_uk_t,
+                    x_new, measurement_ful_t, W_t, f_nn_t, f_uk_t,
                     self.config['lambda_regularization']
                 )
             

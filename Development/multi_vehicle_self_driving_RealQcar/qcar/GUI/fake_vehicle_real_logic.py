@@ -973,9 +973,7 @@ class FakeVehicleWithRealLogic:
             self.running = False
             self.kill_event.set()
     
-    # Telemetry handled by real GroundStationClient - no separate worker needed
-    
-    # Commands handled by real GroundStationClient - no separate worker needed
+
     
     def stop(self):
         """Stop the simulation"""
