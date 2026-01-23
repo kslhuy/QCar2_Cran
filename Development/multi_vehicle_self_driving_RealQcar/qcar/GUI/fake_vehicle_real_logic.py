@@ -48,7 +48,6 @@ if parent_dir not in sys.path:
 # Import the REAL VehicleLogic and related classes
 from vehicle_logic import VehicleLogic
 from config_main import VehicleMainConfig
-from ground_station_client import GroundStationClient
 from StateMachine.vehicle_state_machine import VehicleStateMachine
 from StateMachine.vehicle_state import VehicleState
 from fake_initializing_state import FakeInitializingState
@@ -207,34 +206,66 @@ class MockQCar:
         dt = current_time - self.last_time
         self.last_time = current_time
         
-        if dt > 0.1:  # Skip large time steps
-            dt = 0.02
+        # Limit dt to prevent instability from CPU pauses
+        dt = min(max(dt, 0.001), 0.1)
         
-        # Update physics based on selected model
+        # 1. Update physics based on selected model
         if self.use_qlpv_model:
             self._update_physics_qlpv(dt)
         else:
             self._update_physics(dt)
         
-        # Update mock sensors from state
+        # 2. Synchronize public properties from internal state
+        self._sync_from_state()
+        
+        # 3. Update mock sensors for hardware compatibility
+        # These match the real QCar sensor interface
+        self.motorTach = self.velocity
+        # Gyroscope and Accelerometer are updated within the physics update methods
+        # but we ensure they are consistent here
+        self.gyroscope[2] = self.angular_velocity
+    
+    def _sync_from_state(self):
+        """Synchronize public properties from the active internal state model"""
         if self.use_qlpv_model:
-            # qLPV model: [X, Y, δ, v_x, ψ, r, v_y]
-            self.motorTach = self.state_qlpv[3]  # v_x
-            self.gyroscope[2] = self.state_qlpv[5]  # r (yaw rate)
-            self.accelerometer[1] = self.a_y  # Lateral acceleration
-            # TODO : more accurate longitudinal acceleration
-            self.accelerometer[0] = 0.0  # Simplification
+            # qLPV state: [X, Y, δ, v_x, ψ, r, v_y]
+            self.x = self.state_qlpv[0]
+            self.y = self.state_qlpv[1]
+            self.heading = self.state_qlpv[4]
+            self.velocity = self.state_qlpv[3]
+            self.angular_velocity = self.state_qlpv[5]
+            self.lateral_velocity = self.state_qlpv[6]
         elif self.use_dynamic_model:
-            self.motorTach = self.state_st[3]  # velocity
-            self.gyroscope[2] = self.state_st[5]  # yaw rate
+            # Dynamic state: [x, y, δ, v, ψ, r, β]
+            self.x = self.state_st[0]
+            self.y = self.state_st[1]
+            self.heading = self.state_st[4]
+            self.velocity = self.state_st[3]
+            self.angular_velocity = self.state_st[5]
+            # β is slip angle, not vy, but we can approximate vy = v * sin(β)
+            self.lateral_velocity = self.velocity * math.sin(self.state_st[6])
         else:
-            self.motorTach = self.state_ks[3]  # velocity
-            # Compute yaw rate for kinematic model
-            if abs(self.state_ks[3]) > 0.01:
+            # Kinematic state: [x, y, δ, v, ψ]
+            self.x = self.state_ks[0]
+            self.y = self.state_ks[1]
+            self.heading = self.state_ks[4]
+            self.velocity = self.state_ks[3]
+            
+            # Compute yaw rate for kinematic model: r = (v/L) * tan(δ)
+            if abs(self.velocity) > 0.01:
                 wheelbase = self.params.a + self.params.b
-                self.gyroscope[2] = (self.state_ks[3] / wheelbase) * math.tan(self.state_ks[2])
+                self.angular_velocity = (self.velocity / wheelbase) * math.tan(self.state_ks[2])
             else:
-                self.gyroscope[2] = 0.0
+                self.angular_velocity = 0.0
+            self.lateral_velocity = 0.0
+
+        # Normalize heading to [-pi, pi]
+        self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
+        
+        # Update state vectors with normalized heading
+        if self.use_qlpv_model: self.state_qlpv[4] = self.heading
+        elif self.use_dynamic_model: self.state_st[4] = self.heading
+        else: self.state_ks[4] = self.heading
     
     def write(self, throttle: float, steering: float):
         """Receive control commands"""
@@ -247,158 +278,84 @@ class MockQCar:
         self._steering = np.clip(steering, -1.0, 1.0)
     
     def _update_physics(self, dt: float):
-        """Physics simulation using vehicle dynamics models from vehiclemodels folder"""
+        """Physics simulation using Kinematic or Dynamic Single-Track models"""
         # Convert normalized commands to physical units
-        # Steering: -1 to 1 -> max steering angle from params (scaled down for QCar)
-        max_steering = self.params.steering.max  # rad (~30 degrees) - more realistic for small vehicles
+        max_steering = self.params.steering.max  
         target_steering = self._steering * max_steering
-        
-        # Throttle: -1 to 1 -> acceleration (scaled for QCar)
-        max_accel = self.params.longitudinal.a_max  # m/s^2 - reasonable for small vehicle
+        max_accel = self.params.longitudinal.a_max 
         target_accel = self._throttle * max_accel
         
-        # Apply friction/drag and braking forces
+        # Determine which state to use for control logic
         current_state = self.state_st if self.use_dynamic_model else self.state_ks
         current_velocity = current_state[3]
         
-        # Friction coefficient (rolling resistance + air drag simplified)
-
-
-        # --- 2. INTELLIGENT FRICTION  ---
-        
-        # CONSTANTS
-        # Friction when driving (MUST be lower than target_accel to move)
-        c_rolling = 0.08   # Low resistance so motor wins
-        c_air_drag = 0.1   # Wind resistance
-        
-        # Friction when throttle is zero (The "RC Drag Brake")
-        brake_strength = 3.0 # High value = Instant stop
-        
-        # LOGIC
+        # --- Intelligent Friction & Braking ---
         if abs(self._throttle) > 0.01:
-            # === STATE A: DRIVING ===
-            # Apply normal physics: Motor Force - Small Friction
+            # Driving mode
+            c_rolling = 0.08
+            c_air_drag = 0.1
             friction_val = c_rolling + (c_air_drag * abs(current_velocity))
-            friction_decel = -np.sign(current_velocity) * friction_val
-            
-            # Combine Motor + Friction
-            target_accel = target_accel + friction_decel
-            
+            target_accel -= np.sign(current_velocity) * friction_val
         else:
-            # === STATE B: DRAG BRAKING (Throttle is 0) ===
-            # Ignore motor, apply massive braking force
-            
-            # Check if we are moving fast enough to need braking
+            # Drag Braking mode (throttle is zero)
+            brake_strength = 3.0
             if abs(current_velocity) > 0.05:
-                # Apply strong braking opposite to movement
                 target_accel = -np.sign(current_velocity) * brake_strength
             else:
-                # Snap to full stop if nearly stopped
                 target_accel = 0.0
-                current_state[3] = 0.0 # Force velocity state to 0
+                current_state[3] = 0.0 # Force stop
         
-        # target_accel = self._throttle * max_accel + friction_decel
-
-
-        # Stop completely if velocity is very small and throttle near zero
-        if abs(current_velocity) < 0.05 and abs(self._throttle) < 0.01:
-            target_accel = 0.0
-            # Force velocity to zero in state
-            current_state[3] = 0.0
-        
-        # Compute control inputs
-        # steering_rate (rad/s) - simple P control
+        # Steering rate control (simulates servo dynamics)
         K_p_steering = 4.0
         steering_error = target_steering - current_state[2]
-        steering_rate = K_p_steering * steering_error  # P controller gain (reduced for stability)
-        
-        # Clip steering rate to reasonable values
-        max_steering_v = float(self.params.steering.v_max)  # 3.0 rad/s from YAML
+        steering_rate = K_p_steering * steering_error
+        max_steering_v = float(self.params.steering.v_max)
         steering_rate = np.clip(steering_rate, -max_steering_v, max_steering_v)
         
-        # acceleration (m/s^2)
-        acceleration = np.clip(target_accel, -5.0, 5.0)  # Clip to reasonable range
-        
+        # Final control vector [steering_rate, acceleration]
+        acceleration = np.clip(target_accel, -5.0, 5.0)
         self.control_input[0] = steering_rate
         self.control_input[1] = acceleration
         
-        # Integrate using appropriate vehicle model
+        # Integrate model
         if self.use_dynamic_model:
-            # Use single-track dynamic model (more realistic)
             try:
                 derivatives = vehicle_dynamics_st(self.state_st, self.control_input, self.params)
                 
-                # Check for numerical issues
                 if any(np.isnan(derivatives)) or any(np.isinf(derivatives)):
-                    print(f"⚠️  Warning: Numerical instability detected, resetting to safe state")
-                    # Reset to safe kinematic update
                     self._simple_kinematic_update(dt)
                     return
                 
-                # Simple Euler integration with safety limits
+                # Euler integration
                 for i in range(len(self.state_st)):
-                    # Limit derivative magnitude to prevent instability
-                    if i >= 5:  # yaw_rate and slip_angle
-                        derivatives[i] = np.clip(derivatives[i], -10.0, 10.0)
-                    self.state_st[i] += derivatives[i] * dt
+                    self.state_st[i] += np.clip(derivatives[i], -20.0, 20.0) * dt
                 
-                v_max = float(self.params.longitudinal.v_max)  # 2.0
-                v_min = float(self.params.longitudinal.v_min)  # -1.0
-                # Clamp velocity to reasonable range
+                # Safety clamps
+                v_max = float(self.params.longitudinal.v_max)
+                v_min = float(self.params.longitudinal.v_min)
                 self.state_st[3] = np.clip(self.state_st[3], v_min, v_max)
+                self.state_st[5] = np.clip(self.state_st[5], -5.0, 5.0) # r
+                self.state_st[6] = np.clip(self.state_st[6], -0.5, 0.5) # beta
                 
-                # Clamp yaw rate to prevent explosion
-                self.state_st[5] = np.clip(self.state_st[5], -5.0, 5.0)
-                
-                # Clamp slip angle to reasonable range
-                self.state_st[6] = np.clip(self.state_st[6], -0.5, 0.5)
-                
-                # Update public properties
-                self.x = self.state_st[0]
-                self.y = self.state_st[1]
-                self.heading = self.state_st[4]
-                self.velocity = self.state_st[3]
-                self.angular_velocity = self.state_st[5]
+                # Update IMU
+                self._update_imu_sensors(derivatives, acceleration)
                 
             except Exception as e:
-                print(f"⚠️  Dynamic model error: {e}, using simple kinematic update")
+                print(f"⚠️ Dynamic model error: {e}, falling back to kinematic")
                 self._simple_kinematic_update(dt)
-            
         else:
-            # Use kinematic single-track model (simpler, faster)
+            # Kinematic model
             derivatives = vehicle_dynamics_ks(self.state_ks, self.control_input, self.params)
-            
-            # Simple Euler integration
             for i in range(len(self.state_ks)):
                 self.state_ks[i] += derivatives[i] * dt
             
-            # Clamp velocity to reasonable range
-            v_max = float(self.params.longitudinal.v_max)  # 2.0
-            v_min = float(self.params.longitudinal.v_min)  # -1.0
+            # Safety clamps
+            v_max = float(self.params.longitudinal.v_max)
+            v_min = float(self.params.longitudinal.v_min)
             self.state_ks[3] = np.clip(self.state_ks[3], v_min, v_max)
             
-            # Update public properties
-            self.x = self.state_ks[0]
-            self.y = self.state_ks[1]
-            self.heading = self.state_ks[4]
-            self.velocity = self.state_ks[3]
-            # print(f"_steering={self._steering:.3f}, target_steering={target_steering:.3f}, "
-            #     f"state_steer={current_state[2]:.6f}, err={steering_error:.6f}, "
-            #     f"Kp={K_p_steering}, steering_rate={steering_rate:.6f}")
-            # print(f"Velocity: {self.velocity}, Heading: {self.heading} , control input: {self.control_input}")
-
-            # Compute angular velocity
-            if abs(self.velocity) > 0.01:
-                wheelbase = self.params.a + self.params.b
-                self.angular_velocity = (self.velocity / wheelbase) * math.tan(self.state_ks[2])
-            else:
-                self.angular_velocity = 0.0
-        
-        # Normalize heading
-        while self.heading > math.pi:
-            self.heading -= 2 * math.pi
-        while self.heading < -math.pi:
-            self.heading += 2 * math.pi
+            # Update IMU sensors
+            self._update_imu_sensors(derivatives, acceleration)
     
     def _simple_kinematic_update(self, dt: float):
         """Fallback simple kinematic update when dynamic model fails"""
@@ -441,149 +398,101 @@ class MockQCar:
             self.angular_velocity = 0.0
     
     def _update_physics_qlpv(self, dt: float):
-        """
-        Physics simulation using qLPV dynamics (matches observer model)
-        
-        State: [X, Y, δ, v_x, ψ, r, v_y]
-        This model matches the observer's dynamics exactly for proper testing.
-        
+        """Physics simulation using qLPV dynamics (matches observer model)
+         
         CONTROL INPUT NOTES:
         - Car receives: (steering_angle, throttle) in normalized [-1, 1] range
         - qLPV model expects: (steering_rate, acceleration)
         - We convert steering_angle → steering_rate using a P controller:
             steering_rate = K_p * (target_steering - current_steering)
-        - This simulates how the real steering servo responds to angle commands
-        """
-        # Convert normalized commands to physical units
-        # _steering: normalized [-1, 1] steering ANGLE command
-        # _throttle: normalized [-1, 1] throttle command
-        max_steering = self.params.steering.max  # rad
-        target_steering_angle = self._steering * max_steering
+        - This simulates how the real steering servo responds to angle commands"""
         
-        # Throttle → Acceleration (direct mapping)
+        # Convert normalized commands to physical units
+        max_steering = self.params.steering.max  
+        target_steering_angle = self._steering * max_steering
         max_accel = self.params.longitudinal.a_max
         acceleration = self._throttle * max_accel
         
-        # Current steering angle from state
-        current_steering_angle = self.state_qlpv[2]  # δ
-        
-        # Compute steering rate: P controller to track target steering angle
-        # This simulates the steering servo dynamics
-        K_p_steering = 4.0  # Increased from 1.0 to 4.0 for better tracking
+        # Steering rate control (simulates servo dynamics)
+        current_steering_angle = self.state_qlpv[2]
+        K_p_steering = 4.0
         steering_rate = K_p_steering * (target_steering_angle - current_steering_angle)
-        
-        # Clamp steering rate to physical limits
         max_steering_rate = float(self.params.steering.v_max)
         steering_rate = np.clip(steering_rate, -max_steering_rate, max_steering_rate)
         
         # Control input for qLPV model: [steering_rate, acceleration]
-        control = np.array([steering_rate, acceleration])
+        self.control_input = np.array([steering_rate, acceleration])
         
-        # Store control input for observer use
-        self.control_input = control.copy()
-        
-        # Use qLPV dynamics (with Pacejka for true tire forces)
+        # Integrate model
         try:
             derivatives = vehicle_dynamics_qlpv(
-                self.state_qlpv, control, self.params,tire_mode='dynamic_linear' )
+                self.state_qlpv, self.control_input, self.params, tire_mode='dynamic_linear')
             
-            # Euler integration
             for i in range(len(self.state_qlpv)):
                 self.state_qlpv[i] += derivatives[i] * dt
             
-            # Clamp velocity to physical limits
+            # Safety clamps
             v_max = float(self.params.longitudinal.v_max)
             v_min = float(self.params.longitudinal.v_min)
-            self.state_qlpv[3] = np.clip(self.state_qlpv[3], v_min, v_max)
+            self.state_qlpv[3] = np.clip(self.state_qlpv[3], v_min, v_max) # v_x
+            self.state_qlpv[5] = np.clip(self.state_qlpv[5], -5.0, 5.0) # r
+            self.state_qlpv[6] = np.clip(self.state_qlpv[6], -2.0, 2.0) # v_y
             
-            # Clamp yaw rate and lateral velocity for stability
-            self.state_qlpv[5] = np.clip(self.state_qlpv[5], -5.0, 5.0)
-            self.state_qlpv[6] = np.clip(self.state_qlpv[6], -2.0, 2.0)
+            # Update IMU and residuals
+            self._update_imu_sensors(derivatives, acceleration)
+            self._update_tire_residuals()
             
         except Exception as e:
-            print(f"⚠️ qLPV model error: {e}, using simple update")
+            print(f"⚠️ qLPV model error: {e}, falling back to simple update")
             self._simple_kinematic_update(dt)
-            return
-        
-        # Update public properties from qLPV state
-        self.x = self.state_qlpv[0]  # X
-        self.y = self.state_qlpv[1]  # Y
-        self.heading = self.state_qlpv[4]  # ψ
-        self.velocity = self.state_qlpv[3]  # v_x
-        self.angular_velocity = self.state_qlpv[5]  # r
-        self.lateral_velocity = self.state_qlpv[6]  # v_y
-        
-        # Normalize heading
-        while self.heading > math.pi:
-            self.heading -= 2 * math.pi
-        while self.heading < -math.pi:
-            self.heading += 2 * math.pi
-        self.state_qlpv[4] = self.heading
-        
-        # Update IMU sensors (realistic accelerometer and gyroscope)
-        self._update_imu_sensors(derivatives, acceleration)
-        
-        # Update tire residuals (ground truth for observer testing)
-        self._update_tire_residuals()
     
-    def _update_imu_sensors(self, derivatives: list, commanded_accel: float):
+    def _update_imu_sensors(self, derivatives: np.ndarray, commanded_accel: float):
         """
         Compute realistic IMU sensor readings based on vehicle dynamics.
         
-        Accelerometer (body frame): [a_x, a_y, a_z]
-            - a_x: longitudinal acceleration = dv_x/dt - r*v_y (inertial + centripetal)
-            - a_y: lateral acceleration = dv_y/dt + r*v_x (inertial + centripetal)
-            - a_z: vertical = gravity (assuming flat ground)
-        
-        Gyroscope (body frame): [ω_x, ω_y, ω_z]
-            - ω_x: roll rate (assumed ~0 for bicycle model)
-            - ω_y: pitch rate (assumed ~0 for bicycle model)
-            - ω_z: yaw rate = r
-        
         Args:
-            derivatives: State derivatives from qLPV model
-            commanded_accel: Commanded acceleration from control input
+            derivatives: State derivatives from the active model
+            commanded_accel: Commanded acceleration for models without explicit v_dot
         """
-        g = 9.81  # gravity [m/s²]
+        g = 9.81
         
-        # Extract states
-        vx = self.state_qlpv[3]  # longitudinal velocity
-        vy = self.state_qlpv[6]  # lateral velocity
-        r = self.state_qlpv[5]   # yaw rate
+        # Use shared properties synchronized from current model state
+        vx = self.velocity
+        vy = self.lateral_velocity
+        r = self.angular_velocity
         
-        # State derivatives: [Ẋ, Ẏ, δ̇, v̇_x, ψ̇, ṙ, v̇_y]
-        # derivatives[3] = v̇_x, derivatives[6] = v̇_y
-        vx_dot = derivatives[3] if len(derivatives) > 3 else commanded_accel
-        vy_dot = derivatives[6] if len(derivatives) > 6 else 0.0
+        # Determine acceleration derivatives based on model type
+        if self.use_qlpv_model:
+            # qLPV derivatives: [Ẋ, Ẏ, δ̇, v̇_x, ψ̇, ṙ, v̇_y]
+            vx_dot = derivatives[3]
+            vy_dot = derivatives[6]
+        elif self.use_dynamic_model:
+            # ST derivatives: [Ẋ, Ẏ, δ̇, v̇, ψ̇, ṙ, β̇]
+            v_dot = derivatives[3]
+            beta_dot = derivatives[6]
+            # v_y = v * sin(beta) -> v_y_dot = v_dot * sin(beta) + v * cos(beta) * beta_dot
+            # This is a bit complex, let's simplify for IMU
+            vx_dot = v_dot # Approximation
+            vy_dot = self.velocity * beta_dot # Approximation
+        else:
+            # KS derivatives: [Ẋ, Ẏ, δ̇, v̇, ψ̇]
+            vx_dot = derivatives[3] if len(derivatives) > 3 else commanded_accel
+            vy_dot = 0.0
         
-        # Accelerometer readings (body frame)
-        # IMU measures: a_measured = a_inertial - g (gravity subtracted in real IMU)
-        # But for simulation, we compute what the IMU would read:
+        # Accelerometer (body frame):
+        # a_x = v̇_x - r*v_y
+        # a_y = v̇_y + r*v_x
+        # In simulation, the IMU "measures" the inertial acceleration
+        self.accelerometer[0] = float(vx_dot - r * vy)
+        self.accelerometer[1] = float(vy_dot + r * vx)
+        self.accelerometer[2] = g
         
-        # Longitudinal acceleration: v̇_x - r*v_y (minus centripetal term)
-        # Note: In body frame, centripetal effect adds r*v_y to apparent acceleration
-        a_x_body = vx_dot + r * vy  # includes centripetal correction
+        # Gyroscope
+        self.gyroscope[2] = float(r)
         
-        # Lateral acceleration: v̇_y + r*v_x (plus centripetal term)
-        # This is what the IMU measures as lateral acceleration
-        a_y_body = vy_dot + r * vx  # includes centripetal acceleration
-        
-        # Vertical acceleration (gravity in body frame, assuming flat ground)
-        a_z_body = g
-        
-        # Update accelerometer array
-        self.accelerometer[0] = float(a_x_body)
-        self.accelerometer[1] = float(a_y_body)
-        self.accelerometer[2] = float(a_z_body)
-        
-        # Gyroscope readings (body frame angular rates)
-        # For bicycle model: roll and pitch rates are approximately zero
-        self.gyroscope[0] = 0.0   # ω_x (roll rate) - assumed zero
-        self.gyroscope[1] = 0.0   # ω_y (pitch rate) - assumed zero
-        self.gyroscope[2] = float(r)  # ω_z (yaw rate)
-        
-        # Also update the lateral acceleration for observer (a_y in sensor)
-        self.a_y = float(a_y_body)
+        # Update lateral acceleration property used by observer
+        self.a_y = self.accelerometer[1]
+
     
     def _update_tire_residuals(self):
         """Compute true tire residuals for observer testing"""
@@ -618,25 +527,15 @@ class MockQCar:
         Returns:
             Measurement vector (6D) for qLPV observer
         """
-        if self.use_qlpv_model:
-            return np.array([
-                self.state_qlpv[3],  # v_x
-                self.state_qlpv[5],  # r
-                self.state_qlpv[4],  # ψ
-                self.state_qlpv[0],  # X
-                self.state_qlpv[1],  # Y
-                self.a_y,            # a_y
-            ])
-        else:
-            # For non-qLPV models, approximate the measurement
-            return np.array([
-                self.velocity,       # v_x
-                self.angular_velocity,  # r
-                self.heading,        # ψ
-                self.x,              # X
-                self.y,              # Y
-                0.0,                 # a_y (not computed)
-            ])
+        # All models now share these properties via _sync_from_state
+        return np.array([
+            self.velocity,          # v_x (longitudinal)
+            self.angular_velocity,   # r (yaw rate)
+            self.heading,           # ψ (yaw)
+            self.x,                 # X
+            self.y,                 # Y
+            getattr(self, 'a_y', 0.0) # a_y (lateral acceleration)
+        ])
     
     def get_observer_state(self) -> np.ndarray:
         """
@@ -645,28 +544,25 @@ class MockQCar:
         Returns:
             True state vector (6D) for observer comparison
         """
-        if self.use_qlpv_model:
-            return state_qlpv_to_observer(self.state_qlpv)
-        else:
-            return np.array([
-                self.velocity,
-                0.0,  # v_y unknown for non-qLPV models
-                self.heading,
-                self.angular_velocity,
-                self.x,
-                self.y,
-            ])
+        return np.array([
+            self.velocity,          # v_x
+            self.lateral_velocity,  # v_y
+            self.heading,           # ψ
+            self.angular_velocity,   # r
+            self.x,                 # X
+            self.y                  # Y
+        ])
     
     def get_true_residuals(self) -> np.ndarray:
         """Get true tire residuals [w_r, w_f] for observer testing"""
         return np.array([self.w_r, self.w_f])
 
-    def reset(self , pose: np.ndarray = None):
+    def reset(self, pose: np.ndarray = None):
+        """Reset vehicle state to initial or given pose"""
         if pose is not None:
             self.x = pose[0]
             self.y = pose[1]
             self.heading = pose[2]
-
         else:
             self.x = 0.0
             self.y = 0.0
@@ -674,163 +570,121 @@ class MockQCar:
 
         self.velocity = 0.0
         self.angular_velocity = 0.0
+        self.lateral_velocity = 0.0
 
+        # Reset qLPV state [X, Y, δ, v_x, ψ, r, v_y]
         self.state_qlpv = np.zeros(7)
         self.state_qlpv[0] = self.x
         self.state_qlpv[1] = self.y
-        self.state_qlpv[2] = self.heading
-        self.state_qlpv[3] = self.velocity
-        self.state_qlpv[4] = self.heading
-        self.state_qlpv[5] = self.angular_velocity
-        self.state_qlpv[6] = 0.0
+        self.state_qlpv[2] = 0.0          # δ (steering)
+        self.state_qlpv[3] = self.velocity # v_x
+        self.state_qlpv[4] = self.heading  # ψ (yaw)
+        self.state_qlpv[5] = self.angular_velocity # r (yaw rate)
+        self.state_qlpv[6] = self.lateral_velocity # v_y
 
+        # Reset Kinematic state [x, y, δ, v, ψ]
         self.state_ks = np.array([
-            self.x,  # x position
-            self.y,           # y position
-            0.0,           # steering angle (rad)
-            0.0,           # velocity (m/s)
-            self.heading            # yaw angle (rad)
+            self.x,
+            self.y,
+            0.0,           # steering angle
+            self.velocity,
+            self.heading
         ])
         
-        # Vehicle state vector for single-track dynamic model (7 states)
-        # [x, y, steering_angle, velocity, yaw_angle, yaw_rate, slip_angle]
+        # Reset Dynamic Single-Track state [x, y, δ, v, ψ, r, β]
         self.state_st = np.array([
-            self.x,  # x position
-            self.y,           # y position
-            0.0,           # steering angle (rad)
-            0.0,           # velocity (m/s)
-            self.heading,           # yaw angle (rad)
-            0.0,           # yaw rate (rad/s)
-            0.0            # slip angle at vehicle center (rad)
+            self.x,
+            self.y,
+            0.0,           # steering angle
+            self.velocity,
+            self.heading,
+            self.angular_velocity,
+            0.0            # slip angle
         ])
+
         self.a_y = 0.0
         self.w_r = 0.0
         self.w_f = 0.0
-        self.gps = MockQCarGPS(self)
+        
+        # Update existing GPS if it exists, otherwise create it
+        if hasattr(self, 'gps') and self.gps is not None:
+            self.gps.x = self.x
+            self.gps.y = self.y
+            self.gps.position = np.array([self.x, self.y, 0.0])
+            self.gps.orientation = np.array([0.0, 0.0, self.heading])
+        else:
+            self.gps = MockQCarGPS(self)
 
 class MockQCarGPS:
     """Mock GPS that provides position data"""
     
-    def __init__(self, qcar: MockQCar):
+    def __init__(self, qcar: MockQCar, frequency: float = 5.0 , noise_enabled: bool = False):
         self.qcar = qcar
         self.x = qcar.x
         self.y = qcar.y
         self.latitude = 0.0
         self.longitude = 0.0
         self.valid = True
+        self.noise_enabled = noise_enabled
+        
+        # Timing for frequency control
+        self.last_update_time = 0.0
+        self.frequency = frequency
+        self.update_interval = 1.0 / self.frequency
         
         # Match real QCarGPS interface - position array [x, y, z]
         self.position = np.array([self.x, self.y, 0.0])
         # Match real QCarGPS interface - orientation array [roll, pitch, yaw]
         self.orientation = np.array([0.0, 0.0, qcar.heading])
         
-        print(f"🛰️  MockGPS {qcar.car_id}: Initialized")
+        print(f"🛰️  MockGPS {qcar.car_id}: Initialized (Rate: {self.frequency}Hz)")
     
-    def readGPS(self):
-        """Update GPS position from QCar physics - returns True on success"""
-        # Add some noise to simulate real GPS
-        noise_std = 0.05  # 5cm standard deviation
-        self.x = self.qcar.x + random.gauss(0, noise_std)
-        self.y = self.qcar.y + random.gauss(0, noise_std)
+    def readGPS(self) -> bool:
+        """
+        Update GPS position from QCar physics.
+        Returns True if a new reading was generated (based on frequency).
+        """
+        current_time = time.time()
         
-        # Update position array (match real QCarGPS interface)
+        # Frequency control: check if enough time has passed
+        if current_time - self.last_update_time < self.update_interval:
+            return False
+            
+        self.last_update_time = current_time
+        
+        # 1. Update Position with optional noise
+        # noise_std = 0.05 is ~5cm error, realistic for good GPS
+        if getattr(self, 'noise_enabled', True):
+            noise_x = random.gauss(0, 0.05)
+            noise_y = random.gauss(0, 0.05)
+        else:
+            noise_x, noise_y = 0.0, 0.0
+            
+        self.x = self.qcar.x + noise_x
+        self.y = self.qcar.y + noise_y
+        
+        # Update internal position array [x, y, z]
         self.position[0] = self.x
         self.position[1] = self.y
-        self.position[2] = 0.0  # z (altitude)
+        self.position[2] = 0.0  # Altitude 0
         
-        # Update orientation array (match real QCarGPS interface)
-        self.orientation[0] = 0.0  # roll
-        self.orientation[1] = 0.0  # pitch
-        self.orientation[2] = self.qcar.heading  # yaw
+        # 2. Update Orientation [roll, pitch, yaw]
+        self.orientation[0] = 0.0
+        self.orientation[1] = 0.0
+        self.orientation[2] = self.qcar.heading
         
-        # Convert to lat/lon (fake conversion)
-        self.latitude = self.y * 0.00001 + 43.0  # Fake latitude around 43°N
-        self.longitude = self.x * 0.00001 + -80.0  # Fake longitude around 80°W
+        # 3. Simulated Geodetic coordinates (using a fixed local origin)
+        # 1 degree lat is ~111,000m. 0.00001 deg is ~1.1m
+        lat_origin = 43.6532  # Toronto
+        lon_origin = -79.3832
+        self.latitude = lat_origin + (self.y * 0.000009)
+        self.longitude = lon_origin + (self.x * 0.000012)
         
-        # Return True to indicate successful reading (match real QCarGPS)
         return True
 
 
-# class MockYOLOReceiver:
-#     """Mock YOLO receiver that provides detection data"""
-    
-#     def __init__(self):
-#         # YOLO detection arrays (same format as real YOLO)
-#         self.stopSign = np.zeros(7, dtype=np.float64)
-#         self.trafficlight = np.zeros(7, dtype=np.float64) 
-#         self.cars = np.zeros(7, dtype=np.float64)
-#         self.yieldSign = np.zeros(7, dtype=np.float64)
-#         self.person = np.zeros(7, dtype=np.float64)
-        
-#         print("👁️  MockYOLO: Initialized (no detections)")
-    
-#     def read(self):
-#         """Simulate YOLO detections - always empty for safe testing"""
-#         # Always reset all detections to zero (no objects detected)
-#         self.stopSign.fill(0.0)
-#         self.trafficlight.fill(0.0)
-#         self.cars.fill(0.0)
-#         self.yieldSign.fill(0.0)
-#         self.person.fill(0.0)
-        
-#         # No fake detections to avoid triggering emergency stops
-    
-#     def terminate(self):
-#         """Mock terminate method"""
-#         pass
 
 
-class MockStateEstimator:
-    """Mock State Estimator that provides position from mock GPS"""
-    
-    def __init__(self, qcar: MockQCar, gps: MockQCarGPS):
-        self.qcar = qcar
-        self.gps = gps
-        self.state_valid = True
-        
-        print(f"🧭 MockStateEstimator {qcar.car_id}: Initialized")
-    
-    def update(self, motor_tach: float, steering: float, dt: float, gyro_z: float):
-        """Update state estimate (mock implementation)"""
-        # Update GPS position
-        self.gps.readGPS()
-        
-        # Add some small random movement for testing telemetry
-        if random.random() < 0.01:  # 1% chance per update
-            self.qcar.x += random.uniform(-0.05, 0.05)
-            self.qcar.y += random.uniform(-0.05, 0.05)
-            self.qcar.heading += random.uniform(-0.02, 0.02)
-    
-    def get_state(self):
-        """Get current state estimate"""
-        return (
-            self.qcar.x,      # x position
-            self.qcar.y,      # y position  
-            self.qcar.heading,  # theta (heading)
-            self.qcar.velocity, # velocity
-            self.state_valid   # state validity
-        )
-
-
-# class MockYOLODrive:
-#     """Mock YOLO Drive system for obstacle detection and response"""
-    
-#     def __init__(self, car_id: int):
-#         self.car_id = car_id
-#         self.yolo_gain = 1.0  # Default gain
-#         self.carDist = 100.0  # Safe distance - no cars detected
-#         self.personDist = 100.0  # Safe distance - no persons detected
-#         print(f"🤖 MockYOLODrive {car_id}: Initialized (safe distances)")
-    
-#     def check_yolo(self, stop_sign, traffic_light, cars, yield_sign, person):
-#         """Mock YOLO obstacle detection - always returns safe values for testing"""
-#         # For testing, always report safe distances to avoid emergency stops
-#         self.carDist = 100.0  # Always safe distance
-#         self.personDist = 100.0  # Always safe distance
-        
-#         # Always return normal speed gain (no obstacles)
-#         self.yolo_gain = 1.0
-#         return 1.0
 
 
 class FakeVehicleWithRealLogic:

@@ -331,11 +331,15 @@ class StanleyController(LateralControllerBase):
             # Cross-track error vector
             ct = ep - p
             
-            # Direction of cross-track error
-            dir = wrap_to_pi(np.arctan2(ct[1], ct[0]) - tangent)
+            # # Direction of cross-track error
+            # dir = wrap_to_pi(np.arctan2(ct[1], ct[0]) - tangent)
+            # # Signed cross-track error
+            # ect = np.linalg.norm(ct) * np.sign(dir)
             
-            # Signed cross-track error
-            ect = np.linalg.norm(ct) * np.sign(dir)
+            # [FIX] Robust Cross-track error (No angles involved)
+            # Normal vector (rotated 90 deg CCW)
+            n_uv = np.array([-v_uv[1], v_uv[0]]) 
+            ect = np.dot(ct, n_uv)
             
             # Heading error
             psi = wrap_to_pi(tangent - th)

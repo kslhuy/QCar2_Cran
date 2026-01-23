@@ -34,9 +34,9 @@ longitudinal:
   # maximum longitudinal jerk change [m/s^4]
   j_dot_max: 100.0
   # maximum velocity [m/s] - approximately 2 m/s for safety
-  v_max: 2.0
+  v_max: 2.5
   # minimum velocity [m/s] - reverse capability
-  v_min: -1.0
+  v_min: -1.5
   # switching velocity [m/s] - threshold for kinematic/dynamic switching
   v_switch: 0.1
   # maximum braking deceleration magnitude [m/s^2]
