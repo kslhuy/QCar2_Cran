@@ -758,6 +758,77 @@ class FusionLateralController(LateralControllerBase):
         self.pure_pursuit.reset()
 
 
+class FixConstantLateralController(LateralControllerBase):
+    """
+    Constant steering controller for testing and debugging.
+    
+    This controller always outputs a fixed steering angle regardless of vehicle state.
+    Useful for:
+    - Testing straight-line driving (steering = 0.0)
+    - Testing constant turning behavior
+    - Debugging control system without complex path-following dynamics
+    - Platoon experiments with fixed steering input
+    """
+    
+    def __init__(self, steering: float = 0.0, config=None, logger=None):
+        """
+        Initialize fix constant lateral controller
+        
+        Args:
+            steering: Fixed steering angle (radians)
+            config: Optional config object
+            logger: Logger instance
+        """
+        self.steering = steering
+        self.logger = logger
+    
+    def compute_steering(self, follower_state: Dict[str, float], 
+                        leader_state: Optional[Dict[str, float]], 
+                        dt: float) -> float:
+        """
+        Compute steering for follower control (FOLLOWING_LEADER state).
+        
+        Returns constant steering value.
+        """
+        return self.steering
+    
+    def update(self, p: np.ndarray, th: float, speed: float) -> float:
+        """
+        Update steering controller for path following (FOLLOWING_PATH state).
+        
+        NOTE: This method is required for compatibility with FOLLOWING_PATH state,
+        which expects all steering controllers to have an update() method.
+        Unlike StanleyController or PurePursuitController, this ignores position,
+        heading, and speed feedback, simply returning the constant steering value.
+        
+        Args:
+            p: Current position [x, y] (ignored)
+            th: Current heading in radians (ignored)
+            speed: Current speed in m/s (ignored)
+            
+        Returns:
+            Constant steering angle command (radians)
+        """
+        return self.steering
+    
+    def get_waypoint_index(self) -> int:
+        """
+        Get current waypoint index for progress monitoring.
+        
+        NOTE: FixConstantLateralController does not track waypoints since it outputs
+        constant steering. This method exists for compatibility with FOLLOWING_PATH state
+        which monitors waypoint progress. Always returns 0 to indicate no waypoint tracking.
+        
+        Returns:
+            0 (constant, indicating no waypoint tracking)
+        """
+        return 0
+    
+    def reset(self):
+        """Reset controller state (no-op for constant controller)"""
+        pass
+
+
 class LateralControllerFactory:
     """Factory to create lateral controllers by name"""
     
@@ -767,6 +838,7 @@ class LateralControllerFactory:
         'lookahead': LookaheadController,
         'hybrid': HybridLateralController,
         'fusion': FusionLateralController,
+        'fix_lateral': FixConstantLateralController,
     }
     
     @staticmethod

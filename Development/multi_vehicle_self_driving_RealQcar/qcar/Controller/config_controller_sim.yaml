@@ -14,8 +14,8 @@ enable_steering_control: true  # Enable/disable steering control system
 # LONGITUDINAL CONTROLLER CONFIGURATION
 # ============================================================================
 
-# Controller type options: 'cacc', 'pid', 'hybrid'
-longitudinal_controller_type: 'pid'
+# Controller type options: 'cacc', 'pid', 'hybrid', 'fix', 'state_feedback'
+longitudinal_controller_type: 'fix'
 
 # CACC Controller Parameters
 cacc:
@@ -50,8 +50,12 @@ fix:
 # LATERAL CONTROLLER CONFIGURATION
 # ============================================================================
 
-# Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path'
-lateral_controller_type: 'pure_pursuit'
+# Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path', 'fix_lateral'
+lateral_controller_type: 'fix_lateral'
+
+# Fix Lateral Controller Parameters (constant steering)
+fix_lateral:
+  steering: 0             # Fixed steering angle (radians, 0 = straight)
 
 # Pure Pursuit Controller Parameters
 pure_pursuit:

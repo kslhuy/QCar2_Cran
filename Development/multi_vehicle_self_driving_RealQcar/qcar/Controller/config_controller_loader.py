@@ -98,6 +98,10 @@ class ControllerConfig:
             return self._get_pid_params()
         elif controller_type == 'hybrid':
             return self._get_hybrid_longitudinal_params()
+        elif controller_type == 'fix':
+            return self._get_fix_params()
+        elif controller_type == 'state_feedback':
+            return self._get_state_feedback_params()
         else:
             raise ValueError(f"Unknown longitudinal controller type: {controller_type}")
     
@@ -122,6 +126,8 @@ class ControllerConfig:
             return self._get_lookahead_params()
         elif controller_type == 'hybrid':
             return self._get_hybrid_lateral_params()
+        elif controller_type == 'fix_lateral':
+            return self._get_fix_lateral_params()
         else:
             raise ValueError(f"Unknown lateral controller type: {controller_type}")
     
@@ -171,6 +177,24 @@ class ControllerConfig:
         return {
             'cacc_params': cacc_params,
             'pid_params': pid_params,
+        }
+    
+    def _get_fix_params(self) -> Dict[str, Any]:
+        """Get fix constant throttle controller parameters"""
+        fix_config = self.config.get('fix', {})
+        
+        return {
+            'throttle': fix_config.get('throttle', 0.1),
+        }
+    
+    def _get_state_feedback_params(self) -> Dict[str, Any]:
+        """Get state feedback controller parameters"""
+        sf_config = self.config.get('state_feedback', {})
+        
+        return {
+            'max_throttle': sf_config.get('max_throttle', 0.3),
+            'throttle_smoothing': sf_config.get('throttle_smoothing', 0.7),
+            'observer': None,  # Will be set by controller manager
         }
     
     # ========================================================================
@@ -238,6 +262,14 @@ class ControllerConfig:
                 secondary_params
             ),
             'switch_distance': hybrid_config.get('switch_distance', 1.5),
+        }
+    
+    def _get_fix_lateral_params(self) -> Dict[str, Any]:
+        """Get fix constant steering controller parameters"""
+        fix_config = self.config.get('fix_lateral', {})
+        
+        return {
+            'steering': fix_config.get('steering', 0.0),
         }
     
     def get_vehicle_params(self) -> Dict[str, Any]:

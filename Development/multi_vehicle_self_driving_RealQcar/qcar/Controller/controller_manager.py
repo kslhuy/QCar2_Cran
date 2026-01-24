@@ -218,16 +218,50 @@ class ControllerManager:
             self._steering_controller_waypoints is waypoints):
             return self._steering_controller
         
-        # Create new steering controller
+        # Create new steering controller using configured lateral controller type
+        # PREVIOUS IMPLEMENTATION (hardcoded Stanley): 
+        #   from Controller.lateral_controllers import StanleyController
+        #   controller = StanleyController(waypoints=waypoints, config=self.config, logger=self.logger, cyclic=True)
+        #   type_name='fix_lateral' (Just for Shengya; Default to "stanley")
+        #
+        # ISSUE: The hardcoded StanleyController ignored the lateral_controller_type setting in config.
+        #        This caused the leader vehicle to use Stanley controller for path following even when
+        #        fix_lateral (zero steering) was configured, resulting in unwanted turning behavior.
+        #
+        # NEW IMPLEMENTATION: Use get_lateral_controller() which respects the config file setting
         try:
-            from Controller.lateral_controllers import StanleyController
+            # Get the configured lateral controller type from config file
+            ctrl_type = self.config.get_lateral_controller_type() if self.config else 'stanley'
             
-            controller = StanleyController(
-                waypoints=waypoints,
-                config=self.config,
-                logger=self.logger,
-                cyclic=True
-            )
+            if self.logger:
+                self.logger.logger.info(
+                    f"[ControllerManager] Creating steering controller with type: {ctrl_type}"
+                )
+            
+            # Use the lateral controller factory to create the controller based on config
+            controller = self.get_lateral_controller(ctrl_type)
+            
+            if controller is None:
+                if self.logger:
+                    self.logger.logger.error(
+                        f"[ControllerManager] Failed to create steering controller of type: {ctrl_type}"
+                    )
+                return None
+            
+            # For waypoint-based controllers (Stanley, PurePursuit), set the waypoints
+            # Note: FixConstantLateralController does not need waypoints and will skip this
+            if hasattr(controller, 'reset') and waypoints is not None:
+                try:
+                    controller.reset(waypoints)
+                    if self.logger:
+                        self.logger.logger.info(
+                            f"[ControllerManager] Waypoints set for {ctrl_type} controller"
+                        )
+                except Exception as e:
+                    if self.logger:
+                        self.logger.logger.warning(
+                            f"[ControllerManager] Controller {ctrl_type} does not support waypoints: {e}"
+                        )
             
             self._steering_controller = controller
             self._steering_controller_waypoints = waypoints
@@ -235,12 +269,14 @@ class ControllerManager:
             # Also track as lateral controller (for telemetry)
             self._lateral = ControllerInfo(
                 controller=controller,
-                type_name='stanley',
+                type_name=ctrl_type,  # Now uses actual controller type from config
                 category='lateral'
             )
             
             if self.logger:
-                self.logger.logger.info("[ControllerManager] Created steering controller (Stanley)")
+                self.logger.logger.info(
+                    f"[ControllerManager] Created steering controller ({ctrl_type})"
+                )
             
             return controller
             
@@ -251,13 +287,32 @@ class ControllerManager:
     
     def get_speed_controller(self):
         """
-        Get PID speed controller (for FOLLOWING_PATH state).
-        Convenience wrapper around get_longitudinal_controller('pid').
+        Get speed controller for path following (FOLLOWING_PATH state).
+        
+        PREVIOUS IMPLEMENTATION (hardcoded PID):
+            return self.get_longitudinal_controller('pid')
+        
+        ISSUE: The hardcoded 'pid' controller type ignored the longitudinal_controller_type 
+               setting in config file. This caused the leader vehicle to use PID controller even 
+               when 'fix' (constant throttle) was configured, resulting in no movement.
+        
+        NEW IMPLEMENTATION: Use the configured longitudinal controller type from config file.
+        This respects the user's controller selection (e.g., 'fix', 'pid', 'cacc', etc.)
         
         Returns:
-            PIDVelocityController instance
+            Configured longitudinal controller instance (PIDVelocityController, 
+            FixConstantController, etc. based on config)
         """
-        return self.get_longitudinal_controller('pid')
+        # Get the configured longitudinal controller type
+        ctrl_type = self.config.get_longitudinal_controller_type() if self.config else 'pid'
+        
+        if self.logger:
+            self.logger.logger.info(
+                f"[ControllerManager] Creating speed controller with type: {ctrl_type}"
+            )
+        
+        # Use the configured controller type instead of hardcoded 'pid'
+        return self.get_longitudinal_controller(ctrl_type)
     
     # =============== Type Getters (for telemetry) ===============
     

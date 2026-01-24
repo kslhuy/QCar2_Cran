@@ -258,10 +258,16 @@ class FollowingPathState(StateBase):
                 self.vehicle_logic.speed_controller.reset()
             self.logger.logger.info("Speed controller reset (fallback)")
         
-        # Get current waypoint index for continuity
+        # Get current waypoint index for continuity (only for waypoint-based controllers)
+        # Note: Some controllers like FixConstantLateralController don't have waypoint tracking
         if self.steering_controller:
-            self.state_data['last_waypoint_index'] = self.steering_controller.get_waypoint_index()
-            self.logger.logger.info(f"Continuing from waypoint index: {self.state_data['last_waypoint_index']}")
+            if hasattr(self.steering_controller, 'get_waypoint_index'):
+                self.state_data['last_waypoint_index'] = self.steering_controller.get_waypoint_index()
+                self.logger.logger.info(f"Continuing from waypoint index: {self.state_data['last_waypoint_index']}")
+            else:
+                # Controller doesn't track waypoints (e.g., FixConstantLateralController)
+                self.state_data['last_waypoint_index'] = 0
+                self.logger.logger.info("[PATH] Steering controller does not track waypoints (constant control mode)")
         else:
             self.logger.logger.warning("[PATH] No steering controller available")
         
@@ -562,6 +568,11 @@ class FollowingPathState(StateBase):
     def _monitor_progress(self):
         """Monitor waypoint progress and lap completion"""
         if not self.steering_controller:
+            return
+        
+        # Check if controller supports waypoint tracking (e.g., Stanley, PurePursuit)
+        # FixConstantLateralController does not track waypoints
+        if not hasattr(self.steering_controller, 'get_waypoint_index'):
             return
         
         current_waypoint_index = self.steering_controller.get_waypoint_index()

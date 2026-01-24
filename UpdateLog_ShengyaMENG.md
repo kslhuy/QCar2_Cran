@@ -1,3 +1,35 @@
+# Update Log 2026/01/24 (Shengya)
+
+- [x] Remove Writing the throttle and steering directly in [vehicle_logic.py](Development\multi_vehicle_self_driving_RealQcar\qcar\vehicle_logic.py)
+
+- [x] Config the fixed lateral and longitudinal controller in [config_controller_loader/py](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\config_controller_loader.py)
+
+-[x] Remove the following path stratege for the leader in [controller_manager.py](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\controller_manager.py), using the [config file](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\config_controller_sim.yaml)
+
+- [x] Add the [fix constant lateral controller](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\lateral_controllers.py), to match the leader, add the following:
+```
+    def update(self, p: np.ndarray, th: float, speed: float) -> float:
+
+    def get_waypoint_index(self) -> int:
+```
+
+-[x] Modify the [fixed constant longitudinal controller](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\longitudinal_controllers.py). To match the leader, add the following：
+```
+    def update(self, p: np.ndarray, th: float, speed: float) -> float:
+```
+
+- [x] Using the controller command in the [distributed luenberger observer](Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\ShengyaObs\distributed_luenberger_estimator.py). The performance is kept. 
+
+- [x] Add the [state feedback controller based on the distributed luenberger observer](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\ShengyaCtr\state_feedback_controller.py). **Haven't test!!!!!**
+
+## ToDo List
+- [ ] Config the different controller for the different vehicle. Or, for the leader's controller, write the fixed controller tpye in [controller_manager.py](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\controller_manager.py), using the [config file](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\config_controller_sim.yaml), as in the previous version did. 
+
+- [ ] Test the state feedback controller. Maybe need to add the filter to smooth the controller command. 
+
+- [ ] Real time figure plotting.
+
+
 # Update Log 2026/01/22 (Shengya)
 - [x] cut the time when plot the figures
 - [x] Save the figure autoly in the ./figures

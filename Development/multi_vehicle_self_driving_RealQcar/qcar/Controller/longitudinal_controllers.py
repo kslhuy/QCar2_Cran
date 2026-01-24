@@ -415,6 +415,16 @@ class HybridController(LongitudinalControllerBase):
         self.last_mode = "unknown"
 
 class FixConstantController(LongitudinalControllerBase):
+    """
+    Constant throttle controller for testing and debugging.
+    
+    This controller always outputs a fixed throttle value regardless of vehicle state.
+    Useful for:
+    - Testing basic vehicle motion
+    - Debugging control system without complex PID dynamics
+    - Platoon experiments with constant acceleration
+    """
+    
     def __init__(self, throttle: float, config=None, logger=None):
         self.throttle = throttle
         self.logger = logger
@@ -422,7 +432,38 @@ class FixConstantController(LongitudinalControllerBase):
     def compute_throttle(self, follower_state: Dict[str, float], 
                         leader_state: Optional[Dict[str, float]], 
                         dt: float) -> float:
+        """
+        Compute throttle for follower control (FOLLOWING_LEADER state).
+        
+        Returns constant throttle value.
+        """
         return self.throttle
+    
+    def update(self, v: float, v_ref: float, dt: float) -> float:
+        """
+        Update speed controller for path following (FOLLOWING_PATH state).
+        
+        NOTE: This method is required for compatibility with FOLLOWING_PATH state,
+        which expects all speed controllers to have an update() method.
+        Unlike PIDVelocityController, this ignores velocity feedback and reference
+        velocity, simply returning the constant throttle value.
+        
+        Args:
+            v: Current velocity (ignored)
+            v_ref: Reference velocity (ignored)
+            dt: Time step (ignored)
+            
+        Returns:
+            Constant throttle command
+        """
+        return self.throttle
+    
+    def reset(self):
+        """Reset controller state (no-op for constant controller)"""
+        pass
+
+# Import StateFeedbackController at the end to avoid circular import
+from .ShengyaCtr.state_feedback_controller import StateFeedbackController
 
 class ControllerFactory:
     """Factory to create longitudinal controllers by name"""
@@ -432,6 +473,7 @@ class ControllerFactory:
         'cacc': CACCLongitudinalController,
         'hybrid': HybridController,
         'fix': FixConstantController,
+        'state_feedback': StateFeedbackController,
     }
     
     @staticmethod
@@ -440,7 +482,7 @@ class ControllerFactory:
         Create a longitudinal controller
         
         Args:
-            controller_type: One of 'pid', 'cacc', 'hybrid'
+            controller_type: One of 'pid', 'cacc', 'hybrid', 'fix', 'state_feedback'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
             

@@ -452,7 +452,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 self.logger.log_error("Distributed Luenberger update error", e)
             return self.fleet_states
     
-    def _transfer_fleet_states_to_estimated_states(self, fleet_states: np.ndarray, current_time_ns: int, local_state: np.ndarray = None) -> np.ndarray:
+    def _transfer_fleet_states_to_estimated_states(self, fleet_states: np.ndarray, current_time_ns: int) -> np.ndarray:
         """
         Convert complete fleet state matrix to distributed observer estimated state format
         
@@ -619,17 +619,22 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         return fleet_states_new, di0_values
 
     def _distributed_luenberger_observer_update(self, local_state: np.ndarray, current_time_ns: int,
-                                     collective_control: np.ndarray, dt: float) -> np.ndarray:
+                                     control: np.ndarray, dt: float) -> np.ndarray:
         """
         Distributed observer update for one target vehicle
         Combines dynamics prediction, measurement correction, and consensus
+        Args:
+            local_state: Own vehicle state [x, y, theta, v, a] - used ONLY for local measurement calculation
+            current_time_ns: Current time in nanoseconds
+            control: Control input [steering, throttle]
+            dt: Time step in seconds
         """
         # Distributed observer dimension (3: pi-p0+di0, vi-v0, ai-a0)
         longitudinal_state_dim = 3
         dim_distributed_observer = longitudinal_state_dim * self.observer_size
 
         # Distributed observer state (x_vec: pi-p0+di0, vi-v0, ai-a0)
-        x_vec, di0_values_before = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns, local_state)
+        x_vec, di0_values_before = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
 
         # Get leader state with fallback to current estimate
         state_leader = self._get_latest_received_state(0, current_time_ns)
@@ -646,10 +651,10 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 
         # Get the control input of all follower vehicles
         # TODO: get the latest control input from V2V messages
-        test_throttle_value = 0.075
+        throttle_value = control[1]
         collective_control = np.zeros(self.observer_size)
         for i in range(self.observer_size):
-            collective_control[i] = test_throttle_value
+            collective_control[i] = throttle_value
            
         # 1. Dynamics prediction (collective longitudinal model)
         dynamics_term = self.A_delta @ x_vec + self.B_delta @ collective_control
@@ -862,12 +867,12 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         a_i = np.asarray(a_i)
 
         try:
-            m_i = self.m_i
-            tau_i = self.tau_i
-            rho_i = self.rho_i
-            Cd_i = self.Cd_i
-            AF_i = self.AF_i
-            mu_i = self.mu_i
+            m_i = self.m_i # mass of vehicle i
+            tau_i = self.tau_i # engine time constant
+            rho_i = self.rho_i # air density
+            Cd_i = self.Cd_i # drag coefficient
+            AF_i = self.AF_i # frontal area
+            mu_i = self.mu_i   # rolling resistance coefficient
         except AttributeError as exc:
             raise AttributeError(
                 "Vehicle parameters (m_i, tau_i, rho_i, Cd_i, AF_i, mu_i) must be set on the estimator before calling nonlear_term_phi_i"
