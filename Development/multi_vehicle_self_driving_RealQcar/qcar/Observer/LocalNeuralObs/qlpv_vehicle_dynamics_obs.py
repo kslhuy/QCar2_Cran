@@ -61,6 +61,37 @@ MEAS_IDX_Y = 4
 MEAS_IDX_AY = 5
 MEAS_DIM = 6
 
+# =============================================================================
+# 8D System Constants (New System)
+# =============================================================================
+
+# State indices (8D state: [v_x, v_y, ψ, r, X, Y, a_x, a_y]ᵀ)
+IDX8_VX = 0
+IDX8_VY = 1
+IDX8_PSI = 2
+IDX8_R = 3
+IDX8_X = 4
+IDX8_Y = 5
+IDX8_AX = 6
+IDX8_AY = 7
+STATE_DIM_8D = 8
+
+# Measurement indices (7D measurement: [v_x, r, ψ, X, Y, a_y, a_x]ᵀ)
+MEAS8_IDX_VX = 0
+MEAS8_IDX_R = 1
+MEAS8_IDX_PSI = 2
+MEAS8_IDX_X = 3
+MEAS8_IDX_Y = 4
+MEAS8_IDX_AY = 5
+MEAS8_IDX_AX = 6
+MEAS_DIM_7D = 7
+
+# Augmented 8D System (with 2 tire residuals) -> 10D
+# x_a = [x(8); w(2)]
+IDX8_WR = 8
+IDX8_WF = 9
+AUGMENTED_DIM_10D = 10
+
 
 # =============================================================================
 # Vehicle Parameters (Single Source of Truth: parameters_qcar.yaml)
@@ -175,7 +206,7 @@ class SchedulingParameters:
 
     @classmethod
     def from_state_and_input(cls, state: np.ndarray, delta: float, 
-                              min_vx: float = 0.5) -> 'SchedulingParameters':
+                              min_vx: float = 0.1) -> 'SchedulingParameters':
         """
         Compute scheduling parameters from state and steering input
         
@@ -243,7 +274,11 @@ class QLPVVehicleDynamicsObs:
         self.g = 9.81  # Gravity [m/s²]
         
         # Minimum velocity threshold (from YAML if not explicitly provided)
-        self.min_vx = min_vx if min_vx is not None else self.params.get('vx_min', 0.5)
+        # Lower value allows estimation closer to zero when vehicle stops
+        self.min_vx = min_vx if min_vx is not None else self.params['vx_min']
+        
+        # Default system type
+        self.use_8d_system = False
     
     def compute_scheduling_params(self, state: np.ndarray, delta: float) -> SchedulingParameters:
         """Compute scheduling parameters from current state and input"""
@@ -324,12 +359,12 @@ class QLPVVehicleDynamicsObs:
         # X dynamics: Ẋ = v_x·cos(ψ) - v_y·sin(ψ)
         A[IDX_X, IDX_VX] = cos_psi
         A[IDX_X, IDX_VY] = -sin_psi
-        A[IDX_X, IDX_PSI] = -vx * sin_psi - vy * cos_psi  # ∂/∂ψ
+        # A[IDX_X, IDX_PSI] = -vx * sin_psi - vy * cos_psi  # ∂/∂ψ
         
         # Y dynamics: Ẏ = v_x·sin(ψ) + v_y·cos(ψ)
         A[IDX_Y, IDX_VX] = sin_psi
         A[IDX_Y, IDX_VY] = cos_psi
-        A[IDX_Y, IDX_PSI] = vx * cos_psi - vy * sin_psi  # ∂/∂ψ
+        # A[IDX_Y, IDX_PSI] = vx * cos_psi - vy * sin_psi  # ∂/∂ψ
         
         return A
     
@@ -524,12 +559,142 @@ class QLPVVehicleDynamicsObs:
         return A_a, B_a, C_a
     
     # =========================================================================
+    # Kinematic Model (for Low-Speed Operation)
+    # =========================================================================
+    
+    def f_kinematic(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+        """
+        Kinematic bicycle model for low-speed operation.
+        Matches vehicle_dynamics_qlpv.py simplified kinematic model.
+        
+        State: [vx, vy, psi, r, X, Y]
+        """
+        vx = x[IDX_VX]
+        vy = x[IDX_VY]
+        psi = x[IDX_PSI]
+        r = x[IDX_R]
+        
+        delta = u[0]
+        accel = u[1] if len(u) > 1 else 0.0
+        
+        lf = self.lf
+        lr = self.lr
+        lwb = lf + lr
+        m = self.m
+        g = self.g
+        
+        # Get Rolling resistance (default from vehicle_dynamics_qlpv logic)
+        Cr_roll = self.params.get('Cr_roll', 0.015)
+        
+        # Compute beta (sideslip angle)
+        # matches: beta = math.atan2(lr * math.tan(delta), lwb)
+        if abs(delta) > 0.001:
+            beta = np.arctan2(lr * np.tan(delta), lwb)
+        else:
+            beta = 0.0
+        
+        # Apply friction even in kinematic mode for proper stopping
+        F_roll_kin = m * g * Cr_roll
+        if abs(vx) > 0.02:
+            friction_decel_kin = F_roll_kin / m * np.sign(vx)
+        else:
+            friction_decel_kin = 0.0
+            
+        # Velocity derivative with friction
+        vx_dot = accel - friction_decel_kin
+        
+        # Force complete stop when very slow and no acceleration commanded
+        if abs(vx) < 0.02 and abs(accel) < 0.01:
+            vx_dot = -vx / 0.1  # Damp to zero quickly
+            
+        # Position derivatives (incorporating beta)
+        # matches: vx * math.cos(psi + beta)
+        X_dot = vx * np.cos(psi + beta)
+        
+        # matches: vx * math.sin(psi + beta)
+        Y_dot = vx * np.sin(psi + beta)
+        
+        # Yaw rate (psi_dot)
+        # matches: vx / lwb * math.tan(delta) * math.cos(beta)
+        if abs(vx) > 0.01:
+            psi_dot = vx / lwb * np.tan(delta) * np.cos(beta)
+        else:
+            psi_dot = 0.0
+            
+        # Simplified dynamics for other states
+        # matches: 0.0 for r_dot and vy_dot
+        r_dot = 0.0
+        vy_dot = 0.0
+        
+        return np.array([vx_dot, vy_dot, psi_dot, r_dot, X_dot, Y_dot])
+    
+    def f_blended(self, x: np.ndarray, u: np.ndarray, w: np.ndarray,
+                  blend_vx_low: float = 0.1, blend_vx_high: float = 0.3) -> np.ndarray:
+        """
+        Blended dynamics that smoothly transitions between kinematic and dynamic models.
+        
+        Uses smooth blending function to avoid discontinuities:
+            - |vx| < blend_vx_low: Pure kinematic model
+            - |vx| > blend_vx_high: Pure dynamic model
+            - blend_vx_low <= |vx| <= blend_vx_high: Smooth blend
+        
+        Args:
+            x: State [vx, vy, psi, r, X, Y]
+            u: Control [δ, a]
+            w: Tire residuals [wr, wf] (used only in dynamic model)
+            blend_vx_low: Velocity threshold for pure kinematic [m/s]
+            blend_vx_high: Velocity threshold for pure dynamic [m/s]
+        
+        Returns:
+            Blended state derivative ẋ (6D)
+        """
+        vx_abs = abs(x[IDX_VX])
+        
+        # Compute blending factor (0 = kinematic, 1 = dynamic)
+        if vx_abs <= blend_vx_low:
+            alpha = 0.0
+        elif vx_abs >= blend_vx_high:
+            alpha = 1.0
+        else:
+            # Smooth cosine blend
+            t = (vx_abs - blend_vx_low) / (blend_vx_high - blend_vx_low)
+            alpha = 0.5 * (1.0 - np.cos(np.pi * t))
+        
+        # Compute both models
+        x_dot_kin = self.f_kinematic(x, u)
+        
+        if alpha < 1.0:
+            # Need kinematic contribution
+            if alpha > 0.0:
+                # Need dynamic contribution too
+                x_dot_dyn = self.f_continuous(x, u, w)
+                return (1.0 - alpha) * x_dot_kin + alpha * x_dot_dyn
+            else:
+                return x_dot_kin
+        else:
+            # Pure dynamic
+            return self.f_continuous(x, u, w)
+    
+    def is_low_speed(self, vx: float, threshold: float = 0.15) -> bool:
+        """
+        Check if vehicle is in low-speed regime where kinematic model is preferred.
+        
+        Args:
+            vx: Longitudinal velocity [m/s]
+            threshold: Speed threshold [m/s]
+            
+        Returns:
+            True if |vx| < threshold
+        """
+        return abs(vx) < threshold
+    
+    # =========================================================================
     # Continuous-Time Dynamics
     # =========================================================================
     
     def f_continuous(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
         """
-        Continuous-time state dynamics
+        Continuous-time state dynamics (dynamic bicycle model)
         
         ẋ = f(x, u, w)
         
@@ -547,7 +712,7 @@ class QLPVVehicleDynamicsObs:
         r = x[IDX_R]
         
         delta = u[0]
-        accel = u[1] if len(u) > 1 else 0.0
+        accel = u[1] 
         
         wr = w[0]
         wf = w[1]
@@ -610,6 +775,57 @@ class QLPVVehicleDynamicsObs:
         
         return np.array([
             x[IDX_VX],
+            r,
+            x[IDX_PSI],
+            x[IDX_X],
+            x[IDX_Y],
+            ay,
+        ])
+    
+    def h_meas_blended(self, x: np.ndarray, u: np.ndarray, w: np.ndarray,
+                       blend_vx_low: float = 0.1, blend_vx_high: float = 0.3) -> np.ndarray:
+        """
+        Blended measurement function for kinematic/dynamic transition.
+        
+        At low speeds, lateral acceleration is approximated as centripetal: ay ≈ r·vx
+        At high speeds, uses full tire force model.
+        
+        Args:
+            x: State [vx, vy, psi, r, X, Y]
+            u: Control [δ, a]
+            w: Tire residuals [wr, wf]
+            blend_vx_low: Velocity threshold for pure kinematic [m/s]
+            blend_vx_high: Velocity threshold for pure dynamic [m/s]
+        
+        Returns:
+            Predicted measurement [vx, r, psi, X, Y, ay]
+        """
+        vx = x[IDX_VX]
+        vx_abs = abs(vx)
+        r = x[IDX_R]
+        
+        # Compute blending factor (0 = kinematic, 1 = dynamic)
+        if vx_abs <= blend_vx_low:
+            alpha = 0.0
+        elif vx_abs >= blend_vx_high:
+            alpha = 1.0
+        else:
+            t = (vx_abs - blend_vx_low) / (blend_vx_high - blend_vx_low)
+            alpha = 0.5 * (1.0 - np.cos(np.pi * t))
+        
+        # Kinematic ay (centripetal approximation)
+        ay_kin = r * vx
+        
+        # Dynamic ay (full tire model)
+        if alpha > 0:
+            y_dyn = self.h_meas(x, u, w)
+            ay_dyn = y_dyn[MEAS_IDX_AY]
+            ay = (1.0 - alpha) * ay_kin + alpha * ay_dyn
+        else:
+            ay = ay_kin
+        
+        return np.array([
+            vx,
             r,
             x[IDX_PSI],
             x[IDX_X],
@@ -696,22 +912,314 @@ class QLPVVehicleDynamicsObs:
         return M
 
 
+
+# =============================================================================
+# qLPV Vehicle Dynamics Class (8D State)
+# =============================================================================
+
+class QLPVVehicleDynamicsObs8D(QLPVVehicleDynamicsObs):
+    """
+    Centralized qLPV Vehicle Dynamics for Observer Use (8D State)
+    
+    Extends the standard 6D model by treating accelerations as states.
+    
+    State vector: x = [v_x, v_y, ψ, r, X, Y, a_x, a_y]ᵀ
+    Control input: u = [δ, a]ᵀ (steering, acceleration)
+    Tire residuals: w = [w_r, w_f]ᵀ
+    Measurements: y = [v_x, r, ψ, X, Y, a_y, a_x]ᵀ
+    """
+    
+    def __init__(self, vehicle_params: Optional[Dict] = None, min_vx: Optional[float] = None):
+        super().__init__(vehicle_params, min_vx)
+        self.use_8d_system = True
+        
+    def f_continuous(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
+        """
+        Continuous-time state dynamics for 8D system
+        
+        ẋ = f(x, u, w)
+        
+        x = [v_x, v_y, ψ, r, X, Y, a_x, a_y]
+        
+        Assumes random walk for accelerations: ȧ = 0
+        """
+        # Use base 6D dynamics for physical states
+        x_6d = x[:STATE_DIM]
+        # w should be same [wr, wf]
+        x_dot_6d = super().f_continuous(x_6d, u, w)
+        
+        # Zero dynamics for accelerations
+        return np.concatenate([x_dot_6d, np.zeros(2)])
+    
+    def compute_A_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+        """
+        Compute state matrix A(ρ) for 8D qLPV system
+        
+        State: [v_x, v_y, ψ, r, X, Y, a_x, a_y]
+        
+        Assumes random walk model for accelerations: 
+            ȧ_x = 0
+            ȧ_y = 0
+        
+        The physical couplings remain for the first 6 states.
+        """
+        # Get 6D A matrix first
+        A_6d = super().compute_A_matrix(rho)
+        
+        # Create 8D A matrix
+        A = np.zeros((STATE_DIM_8D, STATE_DIM_8D))
+        
+        # Fill top-left 6x6 with standard dynamics
+        A[:STATE_DIM, :STATE_DIM] = A_6d
+        
+        # Acceleration states are modeled as random walks (zeros in dynamics rows)
+        # But they might affect other states if we wanted to use them 
+        # (e.g. v_dot = a_x), but here we keep the physical model 
+        # driving v_dot and treating a_x, a_y as separate estimated states.
+        
+        return A
+    
+    def compute_B_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+        """Compute input matrix B(ρ) for 8D system"""
+        B_6d = super().compute_B_matrix(rho)
+        
+        B = np.zeros((STATE_DIM_8D, 2))
+        B[:STATE_DIM, :] = B_6d
+        
+        return B
+    
+    def compute_E_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+        """Compute residual injection matrix E(ρ) for 8D system"""
+        E_6d = super().compute_E_matrix(rho)
+        
+        E = np.zeros((STATE_DIM_8D, 2))
+        E[:STATE_DIM, :] = E_6d
+        
+        return E
+    
+    def compute_C_matrix(self, rho: SchedulingParameters, gps_available: bool = True) -> np.ndarray:
+        """
+        Compute output matrix C(ρ) for 8D system
+        
+        Measurements: y = [v_x, r, ψ, X, Y, a_y, a_x]ᵀ
+        
+        If gps_available is False:
+            The rows for X, Y, and potentially ψ are zeroed out (or handled by observer).
+            Strictly speaking, C should reflect available measurements.
+            However, typically we keep C size fixed and use R=infinity for missing.
+            But here we return the FULL C matrix. The observer can slice it 
+            or we can zero it out here. 
+            
+            Let's return the full theoretical C matrix here.
+            The dynamic switching logic (gps vs no gps) involves changing 
+            WHICH usage of C is done (e.g. for LMI design).
+        
+        Args:
+            rho: Scheduling parameters
+            gps_available: Whether GPS measurements (X, Y) are available.
+                           Note: If False, this function currently still returns 
+                           full ideal C. Observer gain design should use reduced C.
+            
+        Returns:
+            C matrix (7×8)
+        """
+        C = np.zeros((MEAS_DIM_7D, STATE_DIM_8D))
+        
+        # 1. v_x
+        C[MEAS8_IDX_VX, IDX8_VX] = 1.0
+        
+        # 2. r
+        C[MEAS8_IDX_R, IDX8_R] = 1.0
+        
+        # 3. ψ (heading)
+        C[MEAS8_IDX_PSI, IDX8_PSI] = 1.0
+        
+        # 4. X
+        C[MEAS8_IDX_X, IDX8_X] = 1.0
+        
+        # 5. Y
+        C[MEAS8_IDX_Y, IDX8_Y] = 1.0
+        
+        # 6. a_y (measured directly or linked to state a_y)
+        # Using the state a_y directly as measurement model: y_ay = a_y
+        C[MEAS8_IDX_AY, IDX8_AY] = 1.0
+        
+        # 7. a_x (measured directly or linked to state a_x)
+        C[MEAS8_IDX_AX, IDX8_AX] = 1.0
+        
+        # Note: We are using the "Direct State Measurement" model for a_x, a_y here
+        # instead of the physical model (a_y = Fyr/m + ...) because we added them as states.
+        # This implies the observer is "filtering" the accelerometer values.
+        
+        if not gps_available:
+            # Zero out GPS rows to reflect NO connection to state (infinite variance)
+            # This allows C*hat_x prediction to be 0 for these, but strictly 
+            # for gain design we want to remove the rows. 
+            # Retaining zeros means y = 0*x, which isn't right if y is random/missing.
+            # Best pattern: Return FULL C, let Observer handle slicing or R-matrix.
+            pass
+
+        return C
+    
+    def h_meas(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
+        """
+        Measurement function y = h(x, u, w) for 8D system
+        
+        Args:
+            x: State [vx, vy, psi, r, X, Y, ax, ay]
+            
+        Returns:
+            y: [vx, r, psi, X, Y, ay, ax]
+        """
+        # Linear direct measurement assumption for 8D state
+        y = np.zeros(MEAS_DIM_7D)
+        
+        y[MEAS8_IDX_VX] = x[IDX8_VX]
+        y[MEAS8_IDX_R] = x[IDX8_R]
+        y[MEAS8_IDX_PSI] = x[IDX8_PSI]
+        y[MEAS8_IDX_X] = x[IDX8_X]
+        y[MEAS8_IDX_Y] = x[IDX8_Y]
+        y[MEAS8_IDX_AY] = x[IDX8_AY]
+        y[MEAS8_IDX_AX] = x[IDX8_AX]
+        
+        return y
+    
+    def f_kinematic(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+        """
+        Kinematic bicycle model for 8D system at low speeds.
+        
+        State: [v_x, v_y, ψ, r, X, Y, a_x, a_y]
+        
+        Args:
+            x: State vector (8D)
+            u: Control [δ, a]
+        
+        Returns:
+            State derivative ẋ (8D)
+        """
+        # Use 6D kinematic for physical states (inherits damping behavior)
+        x_6d = x[:STATE_DIM]
+        x_dot_6d = super().f_kinematic(x_6d, u)
+        
+        # Acceleration states: decay towards zero when stopped
+        vx = x[IDX8_VX]
+        accel = u[1] if len(u) > 1 else 0.0
+        
+        # Damping coefficient (same as 6D model)
+        damping = 2.0
+        
+        # Target accelerations based on kinematic model
+        # ax should match vx_dot from kinematic model
+        ax_target = accel - damping * vx
+        ay_target = 0.0  # Kinematic: no lateral acceleration
+        
+        # First-order dynamics to drive accelerations towards target
+        tau = 0.1  # Time constant
+        ax_dot = (ax_target - x[IDX8_AX]) / tau
+        ay_dot = (ay_target - x[IDX8_AY]) / tau
+        
+        return np.concatenate([x_dot_6d, [ax_dot, ay_dot]])
+    
+    def f_blended(self, x: np.ndarray, u: np.ndarray, w: np.ndarray,
+                  blend_vx_low: float = 0.1, blend_vx_high: float = 0.3) -> np.ndarray:
+        """
+        Blended dynamics for 8D system.
+        
+        Args:
+            x: State (8D)
+            u: Control [δ, a]
+            w: Tire residuals [wr, wf]
+            blend_vx_low: Pure kinematic threshold
+            blend_vx_high: Pure dynamic threshold
+        
+        Returns:
+            Blended state derivative (8D)
+        """
+        vx_abs = abs(x[IDX8_VX])
+        
+        # Compute blending factor
+        if vx_abs <= blend_vx_low:
+            alpha = 0.0
+        elif vx_abs >= blend_vx_high:
+            alpha = 1.0
+        else:
+            t = (vx_abs - blend_vx_low) / (blend_vx_high - blend_vx_low)
+            alpha = 0.5 * (1.0 - np.cos(np.pi * t))
+        
+        x_dot_kin = self.f_kinematic(x, u)
+        
+        if alpha < 1.0:
+            if alpha > 0.0:
+                x_dot_dyn = self.f_continuous(x, u, w)
+                return (1.0 - alpha) * x_dot_kin + alpha * x_dot_dyn
+            else:
+                return x_dot_kin
+        else:
+            return self.f_continuous(x, u, w)
+    
+    def h_meas_blended(self, x: np.ndarray, u: np.ndarray, w: np.ndarray,
+                       blend_vx_low: float = 0.1, blend_vx_high: float = 0.3) -> np.ndarray:
+        """
+        Blended measurement for 8D system (direct state measurement).
+        
+        For 8D system, accelerations are states measured directly, so blending
+        is less critical. Returns direct measurement.
+        """
+        return self.h_meas(x, u, w)
+
+    def compute_augmented_matrices(self, rho: SchedulingParameters) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Compute augmented system matrices for 8D system
+        
+        Returns:
+            Tuple of (A_a (10x10), B_a (10x2), C_a (7x10))
+        """
+        A = self.compute_A_matrix(rho)
+        B = self.compute_B_matrix(rho)
+        E = self.compute_E_matrix(rho)
+        C = self.compute_C_matrix(rho)
+        # For augmented system, F is typically 0 if w is state-augmented 
+        # unless direct feedthrough exists. In 6D model, F was used.
+        # Here w is part of state, so 'E' moves to 'A'.
+        
+        # Construct 10D matrices
+        A_a = np.zeros((AUGMENTED_DIM_10D, AUGMENTED_DIM_10D))
+        A_a[:STATE_DIM_8D, :STATE_DIM_8D] = A
+        A_a[:STATE_DIM_8D, STATE_DIM_8D:] = E
+        
+        B_a = np.zeros((AUGMENTED_DIM_10D, 2))
+        B_a[:STATE_DIM_8D, :] = B
+        
+        C_a = np.zeros((MEAS_DIM_7D, AUGMENTED_DIM_10D))
+        C_a[:, :STATE_DIM_8D] = C
+        # No direct feedthrough of w to y if using state a_y. 
+        # (In 6D, a_y dependend on w directly. In 8D, a_y is a state, 
+        # and we measure the state).
+        
+        return A_a, B_a, C_a
+
 # =============================================================================
 # Factory Functions
 # =============================================================================
 
+
 def create_qlpv_dynamics(vehicle_params: Optional[Dict] = None, 
-                          min_vx: Optional[float] = None) -> QLPVVehicleDynamicsObs:
+                          min_vx: Optional[float] = None,
+                          use_8d_system: bool = False) -> QLPVVehicleDynamicsObs:
     """
     Factory function to create qLPV vehicle dynamics instance
     
     Args:
         vehicle_params: Vehicle parameters dictionary
-        min_vx: Minimum velocity threshold [m/s]. If None, uses vx_min from YAML.
+        min_vx: Minimum velocity threshold [m/s]
+        use_8d_system: If True, returns QLPVVehicleDynamicsObs8D (8D state)
         
     Returns:
-        Configured QLPVVehicleDynamicsObs instance
+        Configured QLPVVehicleDynamicsObs (or subclass) instance
     """
+    if use_8d_system:
+        return QLPVVehicleDynamicsObs8D(vehicle_params=vehicle_params, min_vx=min_vx)
+        
     return QLPVVehicleDynamicsObs(
         vehicle_params=vehicle_params,
         min_vx=min_vx

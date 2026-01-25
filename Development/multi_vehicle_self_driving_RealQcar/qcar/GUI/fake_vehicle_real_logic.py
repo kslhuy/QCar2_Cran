@@ -63,11 +63,9 @@ from vehiclemodels.vehicle_parameters import VehicleParameters
 # Import qLPV vehicle dynamics for observer testing
 from vehiclemodels.vehicle_dynamics_qlpv import (
     vehicle_dynamics_qlpv, 
-    QLPVVehicleModel,
     get_tire_residuals,
     get_lateral_acceleration,
     compute_tire_forces_linear,
-    state_qlpv_to_observer
 )
 
 # Removed FakeVehicleStateMachine class - using real VehicleStateMachine instead
@@ -426,7 +424,7 @@ class MockQCar:
         # Integrate model
         try:
             derivatives = vehicle_dynamics_qlpv(
-                self.state_qlpv, self.control_input, self.params, tire_mode='dynamic_linear')
+                self.state_qlpv, self.control_input, self.params, tire_mode='pacejka')
             
             for i in range(len(self.state_qlpv)):
                 self.state_qlpv[i] += derivatives[i] * dt
@@ -618,7 +616,7 @@ class MockQCar:
 class MockQCarGPS:
     """Mock GPS that provides position data"""
     
-    def __init__(self, qcar: MockQCar, frequency: float = 5.0 , noise_enabled: bool = False):
+    def __init__(self, qcar: MockQCar, frequency: float = 200.0 , noise_enabled: bool = False):
         self.qcar = qcar
         self.x = qcar.x
         self.y = qcar.y
@@ -720,6 +718,9 @@ class FakeVehicleWithRealLogic:
         # Replace hardware with mocks AFTER VehicleLogic is created
         self._inject_mock_hardware()
         
+        # Monkey patch _observer_update to inject ground truth provider into estimator
+        self._patch_observer_update()
+
         # Initialize state for main loop
         self.running = True  # Start in running state
         self.ground_station_client = None  # Will be set by VehicleLogic
@@ -792,6 +793,29 @@ class FakeVehicleWithRealLogic:
         # The fake initialization state will handle mock hardware injection
         print(f"🔧 Car {self.car_id}: Mock hardware injection deferred to initialization state")
     
+    def _patch_observer_update(self):
+        """Monkey patch VehicleLogic._observer_update to inject ground truth provider"""
+        original_observer_update = self.vehicle_logic._observer_update
+        
+        def patched_observer_update(dt: float):
+            # Call original method
+            original_observer_update(dt)
+            
+            # Try to inject ground truth provider if not already set
+            try:
+                if hasattr(self.vehicle_logic, 'vehicle_observer'):
+                    est = self.vehicle_logic.vehicle_observer.get_local_estimator()
+                    # Check if it's a neural estimator and needs provider
+                    if est and hasattr(est, 'set_ground_truth_provider') and getattr(est, 'ground_truth_provider', None) is None:
+                        # Assuming NeuralLuenbergerEstimator or similar
+                        print(f"✅ [SIM] Injecting MockQCar as Ground Truth Provider into Observer")
+                        est.set_ground_truth_provider(self.mock_qcar)
+            except Exception:
+                pass
+                
+        # Apply the patch
+        self.vehicle_logic._observer_update = patched_observer_update
+
     def start_simulation(self):
         """Start the fake vehicle simulation using real VehicleLogic"""
         print("\\n" + "="*60)
@@ -913,9 +937,9 @@ def main():
             continue
     
     print("="*70)
-    print("[CAR] QCar Fake Vehicle with REAL VehicleLogic - SIMPLIFIED")
-    print("   Uses actual VehicleLogic + real StateMachine + real GroundStationClient")
-    print("   Only INITIALIZING state is fake for quick mock hardware injection")
+    print("[CAR] QCar Fake Vehicle with REAL VehicleLogic ")
+    # print("   Uses actual VehicleLogic + real StateMachine + real GroundStationClient")
+    # print("   Only INITIALIZING state is fake for quick mock hardware injection")
     print("   Vehicle dynamics from vehiclemodels folder (CommonRoad models)")
     print("="*70)
     print(f"Car ID: {car_id}")

@@ -619,7 +619,7 @@ def _create_local_layout(plt, car_id, field_names):
 
     # GPS path
     if 'x_gps' in field_names:
-        line_gps, = ax_traj.plot([], [], 'r--', lw=1, label='GPS')
+        line_gps, = ax_traj.plot([], [], 'r.', markersize=3, label='GPS')
         lines['trajectory_gps'] = line_gps
     ax_traj.legend(loc='upper right', fontsize=8)
 
@@ -631,7 +631,7 @@ def _create_local_layout(plt, car_id, field_names):
     
     for f, c, s in [('velocity', 'b', '-'), ('v_ref', 'k', '--')]:
         if f in field_names:
-            l, = ax_vel.plot([], [], color=c, linestyle=s, label=f)
+            l, = ax_vel.plot([], [], color=c, linestyle='None', marker='.', markersize=2, label=f)
             lines[f] = l
     ax_vel.legend(fontsize=8)
 
@@ -641,10 +641,15 @@ def _create_local_layout(plt, car_id, field_names):
     ax_th.grid(True, alpha=0.3)
     axes['heading'] = ax_th
     
-    for f, c, s in [('theta', 'g', '-'), ('theta_gps', 'r', '--')]:
-        if f in field_names:
-            l, = ax_th.plot([], [], color=c, linestyle=s, label=f)
-            lines[f] = l
+    # Estimated Heading
+    if 'theta' in field_names:
+        l, = ax_th.plot([], [], color='g', linestyle='None', marker='.', markersize=2, label='theta')
+        lines['theta'] = l
+        
+    # GPS Heading (Scatter)
+    if 'theta_gps' in field_names:
+        l, = ax_th.plot([], [], 'r.', markersize=2, label='theta_gps')
+        lines['theta_gps'] = l
     ax_th.legend(fontsize=8)
 
     # 4. Controls (Bottom Left 2 cols)
@@ -656,7 +661,7 @@ def _create_local_layout(plt, car_id, field_names):
     
     for f, c in [('throttle', 'g'), ('steering', 'r')]:
         if f in field_names:
-            l, = ax_ctrl.plot([], [], color=c, label=f)
+            l, = ax_ctrl.plot([], [], color=c, linestyle='None', marker='.', markersize=2, label=f)
             lines[f] = l
     ax_ctrl.legend(fontsize=8)
     
@@ -722,7 +727,7 @@ def _create_fleet_layout(plt, car_id, field_names):
         c = colors[i % len(colors)]
         f = f'fleet_v_{i}'
         if f in field_names:
-            l, = ax_vel.plot([], [], color=c, label=f'V{i}')
+            l, = ax_vel.plot([], [], color=c, linestyle='None', marker='.', markersize=2, label=f'V{i}')
             lines[f] = l
     
     # 3. Consensus (Mid Right)
@@ -732,7 +737,7 @@ def _create_fleet_layout(plt, car_id, field_names):
     axes['consensus'] = ax_con
     
     if 'consensus_error' in field_names:
-        l, = ax_con.plot([], [], 'k-', label='Error')
+        l, = ax_con.plot([], [], 'k.', markersize=2, label='Error')
         lines['consensus_error'] = l
     
     # 4. Trust (Bottom Left)
@@ -747,7 +752,7 @@ def _create_fleet_layout(plt, car_id, field_names):
         c = colors[i % len(colors)]
         f = f'trust_{i}'
         if f in field_names:
-            l, = ax_trust.plot([], [], color=c, linestyle='--', label=f'T{i}')
+            l, = ax_trust.plot([], [], color=c, linestyle='None', marker='.', markersize=2, label=f'T{i}')
             lines[f] = l
     ax_trust.legend(fontsize=8)
     

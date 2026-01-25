@@ -165,7 +165,7 @@ def vehicle_dynamics_qlpv(x, u_init, p,  tire_mode: str = 'pacejka' ):
         # Aerodynamic drag: F_drag = 0.5 * rho * Cd * Af * vx^2 (opposes motion)
         # Sign-preserving drag with safety clamp to prevent overflow
         F_roll = m * g * Cr_roll
-        vx_clamped = np.clip(vx, -100.0, 100.0) # Safety clamp for drag calculation only
+        vx_clamped = np.clip(vx, -10.0, 10.0) # Safety clamp for drag calculation only
         F_drag = 0.5 * rho_air * Cd_aero * Af * vx_clamped * abs(vx_clamped) 
         
         # Friction force direction (opposes velocity)

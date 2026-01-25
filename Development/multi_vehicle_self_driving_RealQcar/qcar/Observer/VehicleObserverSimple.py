@@ -394,7 +394,8 @@ class VehicleObserver:
                     
                     # Read GPS once here (centralized GPS reading)
                     gps_valid = False
-                    gps_position = np.zeros(3)  # [x, y, theta]
+                    # Initialize with last known position to prevent zero-flickering
+                    gps_position = self.sensor_data.get('gps_position', np.zeros(3))
                     
                     if self.gps is not None:
                         try:
@@ -495,7 +496,8 @@ class VehicleObserver:
                 throttle=last_u,
                 dt=dt,
                 gyro_z=self.sensor_data['gyro_z'],
-                gps_data=gps_data  # Pass GPS data from centralized sensor reading
+                gps_data=gps_data,  # Pass GPS data from centralized sensor reading
+                acceleration=self.sensor_data['accelerometer']
             )
             
             if not success:

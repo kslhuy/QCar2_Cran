@@ -38,6 +38,8 @@ longitudinal:
   # minimum velocity [m/s] - reverse capability
   v_min: -1.5
   # switching velocity [m/s] - threshold for kinematic/dynamic switching
+  # Also used as min_vx for observer singularity avoidance
+  # Lower value (0.05) allows estimation closer to zero when vehicle stops
   v_switch: 0.1
   # maximum braking deceleration magnitude [m/s^2]
   # brake_decel_mag : 3.0

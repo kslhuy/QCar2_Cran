@@ -61,6 +61,7 @@ observer:
   sample_time: 0.01
   
   # Minimum velocity threshold to avoid singularities [m/s]
+  # NOTE: Lower values allow estimation closer to zero but may cause numerical issues
   min_vx: 0.1
 
 # ============================================================================
@@ -119,8 +120,8 @@ observer_gain_design:
   delta_max: 0.5
   
   # Number of polytope vertices
-  n_vx_vertices: 3
-  n_delta_vertices: 3
+  n_vx_vertices: 4
+  n_delta_vertices: 4
   
 
 
@@ -133,7 +134,7 @@ observer_gain_design:
 #
 loss:
   # Loss function type
-  type: composite_uio
+  type: measurement_full
 
 # ============================================================================
 # Weight Matrices for Loss Functions
@@ -190,7 +191,10 @@ first_layer:
   
   # If true, bypasses the neural network and returns only the first-layer estimate.
   # Use this to run without neural correction/training while keeping logging structure.
-  output_first_layer_only: true
+  output_first_layer_only: false
+
+  # Use 8D system (accelerations as states) for first-layer observer
+  use_8d_system: false
 
 # ============================================================================
 # Model Persistence
@@ -219,5 +223,5 @@ recording:
   filename: "neural_obs_2layer"
   
   # Append to existing file instead of creating new one
-  append_mode: false
+  append_mode: true
 # ============================================================================

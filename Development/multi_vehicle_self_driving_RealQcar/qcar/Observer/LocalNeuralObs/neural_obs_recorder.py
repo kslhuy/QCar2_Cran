@@ -69,6 +69,11 @@ class NeuralObsRecorder:
         'steering', 'throttle',
         # Training statistics
         'loss', 'gps_valid',
+        # Observer Gain and Innovation (for debugging)
+        'L_psi', 'innov_psi',
+        # True Ground Truth (Sim only)
+        'vx_true', 'vy_true', 'psi_true', 'r_true', 'X_true', 'Y_true',
+        'w_r_true', 'w_f_true',
     ]
     
     def __init__(self, 
@@ -237,7 +242,11 @@ class NeuralObsRecorder:
                       steering: float = 0.0,
                       throttle: float = 0.0,
                       loss: float = 0.0,
-                      gps_valid: bool = False):
+                      gps_valid: bool = False,
+                      L_psi: float = 0.0,
+                      innov_psi: float = 0.0,
+                      state_true_6d: Optional[np.ndarray] = None,
+                      unknown_input_true: Optional[np.ndarray] = None):
         """
         Record a single data sample for 2-layer neural observer.
         
@@ -252,6 +261,10 @@ class NeuralObsRecorder:
             throttle: Throttle command
             loss: Training loss value
             gps_valid: Whether GPS was valid for this update
+            L_psi: Observer gain for yaw state from yaw measurement
+            innov_psi: Yaw innovation (measurement error)
+            state_true_6d: Optional ground truth state [vx, vy, psi, r, X, Y]
+            unknown_input_true: Optional ground truth unknown inputs [w_r, w_f]
         """
         if not self.recording or self.writer is None or self.mode != '2layer':
             return
@@ -313,6 +326,34 @@ class NeuralObsRecorder:
             row['loss'] = loss
             row['gps_valid'] = 1 if gps_valid else 0
             
+            # Observer Gain and Innovation (for debugging)
+            row['L_psi'] = L_psi
+            row['innov_psi'] = innov_psi
+
+            # Ground Truth
+            if state_true_6d is not None:
+                 row['vx_true'] = state_true_6d[0]
+                 row['vy_true'] = state_true_6d[1]
+                 row['psi_true'] = state_true_6d[2]
+                 row['r_true'] = state_true_6d[3]
+                 row['X_true'] = state_true_6d[4]
+                 row['Y_true'] = state_true_6d[5]
+            else:
+                 row['vx_true'] = 0.0
+                 row['vy_true'] = 0.0
+                 row['psi_true'] = 0.0
+                 row['r_true'] = 0.0
+                 row['X_true'] = 0.0
+                 row['Y_true'] = 0.0
+
+            if unknown_input_true is not None:
+                 w_true_flat = unknown_input_true.flatten()
+                 row['w_r_true'] = w_true_flat[0] if len(w_true_flat) > 0 else 0.0
+                 row['w_f_true'] = w_true_flat[1] if len(w_true_flat) > 1 else 0.0
+            else:
+                 row['w_r_true'] = 0.0
+                 row['w_f_true'] = 0.0
+            
             self.writer.writerow(row)
             self.record_count += 1
             
@@ -329,7 +370,11 @@ class NeuralObsRecorder:
                steering: float = 0.0,
                throttle: float = 0.0,
                loss: float = 0.0,
-               gps_valid: bool = False):
+               gps_valid: bool = False,
+               L_psi: float = 0.0,
+               innov_psi: float = 0.0,
+               state_true_6d: Optional[np.ndarray] = None,
+               unknown_input_true: Optional[np.ndarray] = None):
         """
         Legacy record method for backward compatibility with 2-layer mode.
         
@@ -345,7 +390,11 @@ class NeuralObsRecorder:
             steering=steering,
             throttle=throttle,
             loss=loss,
-            gps_valid=gps_valid
+            gps_valid=gps_valid,
+            L_psi=L_psi,
+            innov_psi=innov_psi,
+            state_true_6d=state_true_6d,
+            unknown_input_true=unknown_input_true
         )
     
     def stop(self) -> int:

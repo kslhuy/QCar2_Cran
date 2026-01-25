@@ -52,6 +52,9 @@ from qlpv_vehicle_dynamics_obs import (
     get_default_vehicle_params,
     IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
     MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
+    IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D,
+    MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D,
+    create_qlpv_dynamics,
 )
 
 try:
@@ -97,7 +100,27 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
     MEAS_IDX_Y = 4
     MEAS_IDX_AY = 5
     MEAS_DIM = 6
+    # 8D State indices
+    IDX8_VX = 0
+    IDX8_VY = 1
+    IDX8_PSI = 2
+    IDX8_R = 3
+    IDX8_X = 4
+    IDX8_Y = 5
+    IDX8_AX = 6
+    IDX8_AY = 7
+    STATE_DIM_8D = 8
     
+    # 7D Measurement indices
+    MEAS8_IDX_VX = 0
+    MEAS8_IDX_R = 1
+    MEAS8_IDX_PSI = 2
+    MEAS8_IDX_X = 3
+    MEAS8_IDX_Y = 4
+    MEAS8_IDX_AY = 5
+    MEAS8_IDX_AX = 6
+    MEAS_DIM_7D = 7
+
     def __init__(self, sample_time: float = 0.02,
                  vehicle_params: Optional[Dict] = None,
                  Q: Optional[np.ndarray] = None,
@@ -107,6 +130,7 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
                  ridge: float = 1e-6,
                  diff_type: str = 'highgain',  # Better differentiator
                  diff_params: Optional[Dict] = None,
+                 use_8d_system: bool = False,
                  **kwargs):
         """
         Initialize Differentiator + UIO Observer with EKF Gains
@@ -114,16 +138,25 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         Args:
             sample_time: Sample time Ts [s]
             vehicle_params: Vehicle parameters dict
-            Q: Process noise covariance (6×6)
-            R: Measurement noise covariance (6×6)
-            P0: Initial error covariance (6×6)
+            Q: Process noise covariance
+            R: Measurement noise covariance
+            P0: Initial error covariance
             tau_rdot: Time constant for dirty derivative [s]
             ridge: Ridge regularization for w estimation
             diff_type: Differentiator type ('dirty', 'highgain', 'sliding')
             diff_params: Additional parameters for differentiator
+            use_8d_system: Use 8D state vector
         """
+        self.use_8d_system = use_8d_system
+        if use_8d_system:
+            self.state_dim = self.STATE_DIM_8D
+            self.meas_dim = self.MEAS_DIM_7D
+        else:
+            self.state_dim = self.STATE_DIM
+            self.meas_dim = self.MEAS_DIM
+            
         super().__init__(
-            state_dim=self.STATE_DIM,
+            state_dim=self.state_dim,
             unknown_input_dim=2,
             sample_time=sample_time
         )
@@ -147,7 +180,7 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         self.g = 9.81
         
         # State estimate
-        self.state_hat = np.zeros(self.STATE_DIM)
+        self.state_hat = np.zeros(self.state_dim)
         
         # UIO-style w estimator with configurable differentiator
         diff_kwargs = diff_params or {}
@@ -171,9 +204,13 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         self.min_vx = self.params.get('vx_min', 0.1)  # Default fallback only for safety
         
         # Centralized vehicle dynamics (single source of truth)
-        self.dynamics = QLPVVehicleDynamicsObs(
-            vehicle_params=self.params,
-            min_vx=self.min_vx
+        # Centralized vehicle dynamics
+        # min_vx loaded from params
+        self.min_vx = self.params.get('vx_min', 0.1) 
+        self.dynamics = create_qlpv_dynamics(
+            vehicle_params=self.params, 
+            min_vx=self.min_vx,
+            use_8d_system=use_8d_system
         )
         
         # === EKF Components ===
@@ -187,7 +224,7 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         self.R = R if R is not None else self._default_R()
         
         # Kalman gain (computed dynamically)
-        self.K = np.zeros((self.STATE_DIM, self.MEAS_DIM))
+        self.K = np.zeros((self.state_dim, self.meas_dim))
         
         # Numerical Jacobian step size
         self.epsilon = 1e-6
@@ -195,7 +232,7 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         # Diagnostics
         self.rdot_hat = 0.0
         self.residual = np.zeros(2)
-        self.innovation = np.zeros(self.MEAS_DIM)
+        self.innovation = np.zeros(self.meas_dim)
     
     def _default_params(self) -> Dict:
         """Default vehicle parameters (QCar scale) - uses centralized defaults"""
@@ -204,7 +241,19 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         return params
     
     def _default_Q(self) -> np.ndarray:
-        """Default process noise covariance Q (6×6)"""
+        """Default process noise covariance Q"""
+        if self.use_8d_system:
+             return np.diag([
+                 0.01,   # vx
+                 0.1,    # vy
+                 1e-4,   # psi
+                 0.02,   # r
+                 0.01,   # X
+                 0.01,   # Y
+                 0.05,   # ax
+                 0.05,   # ay
+             ])
+        
         return np.diag([
             0.01,   # vx - well measured
             0.1,    # vy - less observable
@@ -215,7 +264,18 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         ])
     
     def _default_R(self) -> np.ndarray:
-        """Default measurement noise covariance R (6×6)"""
+        """Default measurement noise covariance R"""
+        if self.use_8d_system:
+             return np.diag([
+                 0.1**2,   # vx
+                 0.01**2,  # r
+                 0.02**2,  # psi
+                 0.2**2,   # X
+                 0.2**2,   # Y
+                 0.2**2,   # ay
+                 0.2**2,   # ax
+             ])
+             
         return np.diag([
             0.1**2,   # vx - encoder
             0.01**2,  # r - gyro
@@ -226,7 +286,19 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         ])
     
     def _default_P0(self) -> np.ndarray:
-        """Default initial error covariance P0 (6×6)"""
+        """Default initial error covariance P0"""
+        if self.use_8d_system:
+              return np.diag([
+                  1.0,    # vx
+                  1.0,    # vy
+                  0.1,    # psi
+                  0.1,    # r
+                  5.0,    # X
+                  5.0,    # Y
+                  1.0,    # ax
+                  1.0,    # ay
+              ])
+              
         return np.diag([
             1.0,    # vx
             1.0,    # vy
@@ -270,7 +342,7 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
     def _numerical_jacobian_H(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
         """Compute Jacobian of h wrt x using central differences"""
         n = len(x)
-        m = self.MEAS_DIM
+        m = self.meas_dim
         H = np.zeros((m, n))
         
         for j in range(n):
@@ -287,27 +359,49 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         return H
     
     def update(self, measurement: np.ndarray, 
-               control_input: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+               control_input: np.ndarray,
+               acceleration: Optional[np.ndarray] = None,
+               gps_available: bool = True) -> Tuple[np.ndarray, np.ndarray]:
         """
         Update observer with new measurement
         
         Args:
-            measurement: Measurement vector [vx, r, psi, X, Y, ay]
+            measurement: Measurement vector
             control_input: Control input [δ, a]
+            acceleration: Full acceleration [ax, ay, az]
+            gps_available: GPS validity flag
         
         Returns:
             Tuple of (state_estimate, tire_residuals)
         """
         # Process measurement
-        y = self._process_measurement(measurement)
+        y = self._process_measurement(measurement, acceleration)
         
+        # Determine R_effective based on GPS
+        R_effective = self.R.copy()
+        if not gps_available:
+             # Reduce confidence in GPS
+             if self.use_8d_system:
+                  R_effective[self.MEAS8_IDX_X, self.MEAS8_IDX_X] *= 1e6
+                  R_effective[self.MEAS8_IDX_Y, self.MEAS8_IDX_Y] *= 1e6
+                  R_effective[self.MEAS8_IDX_PSI, self.MEAS8_IDX_PSI] *= 1e6
+             else:
+                  R_effective[self.MEAS_IDX_X, self.MEAS_IDX_X] *= 1e6
+                  R_effective[self.MEAS_IDX_Y, self.MEAS_IDX_Y] *= 1e6
+                  R_effective[self.MEAS_IDX_PSI, self.MEAS_IDX_PSI] *= 1e6
+
         # Control input
         u = control_input.reshape(-1)
         delta = u[0]
         
         # === Step 1: UIO-Style w estimation ===
-        r_meas = y[self.MEAS_IDX_R]
-        ay_meas = y[self.MEAS_IDX_AY]
+        if self.use_8d_system:
+             r_meas = y[self.MEAS8_IDX_R]
+             ay_meas = y[self.MEAS8_IDX_AY]
+        else:
+             r_meas = y[self.MEAS_IDX_R]
+             ay_meas = y[self.MEAS_IDX_AY]
+             
         self.w_hat, self.rdot_hat, self.residual = self.w_estimator.estimate(
             self.state_hat, r_meas, ay_meas, delta
         )
@@ -321,7 +415,7 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         F = self._numerical_jacobian_F(self.state_hat, u, self.w_hat)
         
         # Discretize F: Φ ≈ I + F·Ts
-        Phi = np.eye(self.STATE_DIM) + F * self.Ts
+        Phi = np.eye(self.state_dim) + F * self.Ts
         
         # Covariance prediction
         P_pred = Phi @ self.P @ Phi.T + self.Q
@@ -331,7 +425,7 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         H = self._numerical_jacobian_H(x_pred, u, self.w_hat)
         
         # Innovation covariance
-        S = H @ P_pred @ H.T + self.R
+        S = H @ P_pred @ H.T + R_effective
         
         # Kalman gain
         try:
@@ -344,17 +438,45 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         y_pred = self.h_meas(x_pred, u, self.w_hat)
         self.innovation = y - y_pred
         
+        # Wrap heading innovation to [-pi, pi]
+        # Prevents instability when angle wraps from pi to -pi
+        if gps_available:
+            if self.use_8d_system:
+                idx_psi_y = self.MEAS8_IDX_PSI
+            else:
+                idx_psi_y = self.MEAS_IDX_PSI
+            self.innovation[idx_psi_y] = (self.innovation[idx_psi_y] + np.pi) % (2 * np.pi) - np.pi
+        
+        if not gps_available:
+             # Zero innovation for GPS components to be safe, though R boosting handles it
+             if self.use_8d_system:
+                  self.innovation[self.MEAS8_IDX_X] = 0.0
+                  self.innovation[self.MEAS8_IDX_Y] = 0.0
+                  self.innovation[self.MEAS8_IDX_PSI] = 0.0
+             else:
+                  self.innovation[self.MEAS_IDX_X] = 0.0
+                  self.innovation[self.MEAS_IDX_Y] = 0.0
+                  self.innovation[self.MEAS_IDX_PSI] = 0.0
+        
         # State update
         self.state_hat = x_pred + self.K @ self.innovation
         
+        # Wrap heading state to [-pi, pi]
+        # Ensures estimated yaw stays in the same range as GPS sensors
+        if self.use_8d_system:
+             idx_psi_state = self.IDX8_PSI
+        else:
+             idx_psi_state = self.IDX_PSI
+        self.state_hat[idx_psi_state] = (self.state_hat[idx_psi_state] + np.pi) % (2 * np.pi) - np.pi
+        
         # Covariance update (Joseph form for numerical stability)
-        I_KH = np.eye(self.STATE_DIM) - self.K @ H
-        self.P = I_KH @ P_pred @ I_KH.T + self.K @ self.R @ self.K.T
+        I_KH = np.eye(self.state_dim) - self.K @ H
+        self.P = I_KH @ P_pred @ I_KH.T + self.K @ R_effective @ self.K.T
         
         # === Step 4: State clamping for numerical stability ===
-        self.state_hat[self.IDX_VX] = np.clip(self.state_hat[self.IDX_VX], -10.0, 10.0)
-        self.state_hat[self.IDX_VY] = np.clip(self.state_hat[self.IDX_VY], -5.0, 5.0)
-        self.state_hat[self.IDX_R] = np.clip(self.state_hat[self.IDX_R], -10.0, 10.0)
+        self.state_hat[0] = np.clip(self.state_hat[0], -10.0, 10.0) # vx
+        self.state_hat[1] = np.clip(self.state_hat[1], -5.0, 5.0)   # vy
+        self.state_hat[3] = np.clip(self.state_hat[3], -10.0, 10.0) # r
         
         # Clamp w_hat too
         self.w_hat = np.clip(self.w_hat, -500.0, 500.0)
@@ -364,24 +486,101 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         
         return self.state_hat.copy(), self.w_hat.copy()
     
-    def _process_measurement(self, measurement: np.ndarray) -> np.ndarray:
-        """Process input measurement to get full 6D measurement vector"""
-        measurement = measurement.reshape(-1)
-        y = np.zeros(self.MEAS_DIM)
+    def _process_measurement(self, measurement: np.ndarray, 
+                             acceleration: Optional[np.ndarray] = None) -> np.ndarray:
+        """
+        Process input measurement to get full measurement vector.
         
-        if len(measurement) >= 6:
-            y = measurement[:6].copy()
-        elif len(measurement) == 5:
-            y[:5] = measurement[:5]
-            y[5] = self.state_hat[self.IDX_R] * self.state_hat[self.IDX_VX]
-        elif len(measurement) == 2:
-            y[self.MEAS_IDX_VX] = measurement[0]
-            y[self.MEAS_IDX_R] = measurement[1]
-            y[self.MEAS_IDX_PSI] = self.state_hat[self.IDX_PSI]
-            y[self.MEAS_IDX_X] = self.state_hat[self.IDX_X]
-            y[self.MEAS_IDX_Y] = self.state_hat[self.IDX_Y]
+        Handles:
+            - Full 7D: [v_x, r, ψ, X, Y, a_y, a_x]
+            - No GPS 4D: [v_x, r, a_y, a_x]
+            - Legacy 6D: [v_x, r, ψ, X, Y, a_y]
+            - Legacy 2D: [v_x, r]
+            
+        Args:
+            measurement: Input measurement (various formats)
+            acceleration: Optional 3D acceleration [a_x, a_y, a_z]
+            
+        Returns:
+            Full measurement vector y
+        """
+        measurement = measurement.reshape(-1)
+        n_input = len(measurement)
+        y = np.zeros(self.meas_dim)
+        
+        # 1. Basic Kinematics (always present)
+        val_vx = measurement[0]
+        val_r = measurement[1]
+        
+        if self.use_8d_system:
+            y[self.MEAS8_IDX_VX] = val_vx
+            y[self.MEAS8_IDX_R] = val_r
         else:
-            raise ValueError(f"Unsupported measurement dimension: {len(measurement)}")
+            y[self.MEAS_IDX_VX] = val_vx
+            y[self.MEAS_IDX_R] = val_r
+            
+        # 2. Extract values based on input dimension
+        val_psi = None
+        val_X = None
+        val_Y = None
+        val_ay = None
+        val_ax = None
+        
+        if n_input >= 7:
+            # Full 7D: [vx, r, psi, X, Y, ay, ax]
+            val_psi = measurement[2]
+            val_X = measurement[3]
+            val_Y = measurement[4]
+            val_ay = measurement[5]
+            val_ax = measurement[6]
+        elif n_input == 6:
+            # Legacy 6D: [vx, r, psi, X, Y, ay]
+            val_psi = measurement[2]
+            val_X = measurement[3]
+            val_Y = measurement[4]
+            val_ay = measurement[5]
+        elif n_input == 4:
+            # No GPS 4D: [vx, r, ay, ax]
+            val_ay = measurement[2]
+            val_ax = measurement[3]
+        elif n_input == 5:
+            # Partial 5D: [vx, r, psi, X, Y]
+            val_psi = measurement[2]
+            val_X = measurement[3]
+            val_Y = measurement[4]
+        
+        # 3. Fill from Acceleration argument if missing
+        if acceleration is not None:
+             if val_ax is None: val_ax = acceleration[0]
+             if val_ay is None: val_ay = acceleration[1]
+             
+        # 4. Fill missing GPS/State vars with current estimate
+        if self.use_8d_system:
+            idx_psi = self.IDX8_PSI
+            idx_X = self.IDX8_X
+            idx_Y = self.IDX8_Y
+        else:
+            idx_psi = self.IDX_PSI
+            idx_X = self.IDX_X
+            idx_Y = self.IDX_Y
+            
+        if val_psi is None: val_psi = self.state_hat[idx_psi]
+        if val_X is None: val_X = self.state_hat[idx_X]
+        if val_Y is None: val_Y = self.state_hat[idx_Y]
+        
+        # 5. Populate Result Vector
+        if self.use_8d_system:
+            y[self.MEAS8_IDX_PSI] = val_psi
+            y[self.MEAS8_IDX_X] = val_X
+            y[self.MEAS8_IDX_Y] = val_Y
+            y[self.MEAS8_IDX_AY] = val_ay if val_ay is not None else 0.0
+            y[self.MEAS8_IDX_AX] = val_ax if val_ax is not None else 0.0
+        else:
+            y[self.MEAS_IDX_PSI] = val_psi
+            y[self.MEAS_IDX_X] = val_X
+            y[self.MEAS_IDX_Y] = val_Y
+            y[self.MEAS_IDX_AY] = val_ay if val_ay is not None else (val_r * val_vx)
+            # 6D system typically doesn't hold AX in y
         
         return y
     
@@ -409,17 +608,25 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         """Get error covariance matrix"""
         return self.P.copy()
     
-    def reset(self, initial_state: Optional[np.ndarray] = None):
+    def reset(self, initial_state: Optional[np.ndarray] = None, 
+              initial_position: Optional[np.ndarray] = None):
         """Reset observer state"""
         if initial_state is not None:
             initial_state = initial_state.reshape(-1)
-            if len(initial_state) >= self.STATE_DIM:
-                self.state_hat = initial_state[:self.STATE_DIM].copy()
+            if len(initial_state) >= self.state_dim:
+                self.state_hat = initial_state[:self.state_dim].copy()
             else:
-                self.state_hat = np.zeros(self.STATE_DIM)
+                self.state_hat = np.zeros(self.state_dim)
                 self.state_hat[:len(initial_state)] = initial_state
         else:
-            self.state_hat = np.zeros(self.STATE_DIM)
+            self.state_hat = np.zeros(self.state_dim)
+            if initial_position is not None:
+                if self.use_8d_system:
+                     self.state_hat[self.IDX8_X] = initial_position[0]
+                     self.state_hat[self.IDX8_Y] = initial_position[1]
+                else:
+                     self.state_hat[self.IDX_X] = initial_position[0]
+                     self.state_hat[self.IDX_Y] = initial_position[1]
         
         # Reset covariance
         self.P = self._default_P0()
@@ -431,12 +638,12 @@ class DifferentiatorUIOEKF(FirstLayerObserverBase):
         # Reset estimates
         self.w_hat = np.zeros(2)
         self.f_uk_hat = np.zeros(2)
-        self.K = np.zeros((self.STATE_DIM, self.MEAS_DIM))
+        self.K = np.zeros((self.state_dim, self.meas_dim))
         
         # Reset diagnostics
         self.rdot_hat = 0.0
         self.residual = np.zeros(2)
-        self.innovation = np.zeros(self.MEAS_DIM)
+        self.innovation = np.zeros(self.meas_dim)
 
 
 def create_differentiator_uio_ekf(sample_time: float = 0.02,

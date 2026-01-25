@@ -136,6 +136,7 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     flat['use_first_layer'] = fl.get('enabled', True)
     flat['first_layer_type'] = fl.get('type', 'qlpv')
     flat['output_first_layer_only'] = fl.get('output_first_layer_only', False)
+    flat['use_8d_system'] = fl.get('use_8d_system', False)
     
     # Model persistence
     model = config.get('model', {})

@@ -43,7 +43,7 @@ class FakeInitializingState(StateBase):
     # Timing constants (faster than real init for testing)
     INITIAL_DELAY = 0.3  # Wait before starting initialization (faster than real: 1.0s)
     STEP_DELAY = 0.2  # Delay between initialization steps (faster than real: 0.5s)
-    TIMEOUT = 15.0  # Maximum initialization time (faster than real: 30.0s)
+    TIMEOUT = 30.0  # Maximum initialization time (faster than real: 30.0s)
     
     def enter(self) -> bool:
         """Initialize fake vehicle components (matches real InitializingState structure)"""
@@ -191,7 +191,7 @@ class FakeInitializingState(StateBase):
     def _wait_for_mock_gps(self) -> bool:
         """Wait for initial mock GPS reading (matches real _wait_for_gps)"""
         self.logger.logger.info("Waiting for initial mock GPS reading...")
-        self.logger.logger.info(f"Calibration pose: {self.config.path.calibration_pose}")
+        # self.logger.logger.info(f"Calibration pose: {self.config.path.calibration_pose}")
 
         # Mock GPS is always ready - just read once
         if self.vehicle_logic.gps.readGPS():

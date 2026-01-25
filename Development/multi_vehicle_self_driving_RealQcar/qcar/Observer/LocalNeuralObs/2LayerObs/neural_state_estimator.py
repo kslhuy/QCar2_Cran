@@ -95,7 +95,8 @@ try:
     from Observer.local_state_estimators import LocalStateEstimatorBase
 except ImportError:
     # Fallback for direct execution or testing
-    sys.path.insert(0, str(parent_dir.parent))
+    # qcar/Observer/LocalNeuralObs/2LayerObs -> qcar/Observer
+    sys.path.insert(0, str(parent_dir.parent.parent))
     from local_state_estimators import LocalStateEstimatorBase
 
 # Import centralized qLPV vehicle dynamics
@@ -211,7 +212,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         self.Cr = self.vehicle_params['Cr']
         
         # Minimum velocity threshold (from parameters_qcar.yaml)
-        self.min_vx = self.vehicle_params.get('vx_min', 0.5)
+        # Lower value allows estimation closer to zero when vehicle stops
+        self.min_vx = self.vehicle_params['vx_min']
         
         # Centralized vehicle dynamics (single source of truth)
         # MUST be created before _initialize_gradient_solver which calls _compute_E_matrix
@@ -237,6 +239,13 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # First-layer observer (optional, for two-layer architecture)
         self.use_first_layer = self.config.get('use_first_layer', True)
         self.output_first_layer_only = self.config.get('output_first_layer_only', False)
+        
+        # Safety check: Cannot output first layer only if first layer is disabled
+        if self.output_first_layer_only and not self.use_first_layer:
+            if self.logger:
+                self.logger.logger.warning("Config Warning: output_first_layer_only=True but use_first_layer=False. Disabling output_first_layer_only to prevent stall.")
+            self.output_first_layer_only = False
+
         self.first_layer_observer = None
         if self.use_first_layer:
             self._initialize_first_layer_observer()
@@ -310,6 +319,13 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 else:
                    self.logger.logger.info(f"Started neural observer recording to: {filepath}")
             self._recording_start_time = time.time()
+        
+        # Ground truth provider for simulation (injected by fake_vehicle)
+        self.ground_truth_provider = None
+
+    def set_ground_truth_provider(self, provider):
+        """Set a provider for ground truth state (e.g., MockQCar)"""
+        self.ground_truth_provider = provider
     
     def _load_config(self, config: Dict) -> Dict:
         """Load configuration from YAML file and merge with overrides."""
@@ -649,7 +665,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             self.first_layer_observer = create_first_layer_observer(
                 observer_type=observer_type,
                 sample_time=self.config['sample_time'],
-                vehicle_params=self.vehicle_params
+                vehicle_params=self.vehicle_params,
+                use_8d_system=self.config.get('use_8d_system', False)
             )
             
             if self.logger:
@@ -659,6 +676,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             if self.logger:
                 self.logger.log_error("Failed to initialize first-layer observer", e)
             self.use_first_layer = False
+            self.output_first_layer_only = False
+
     
     def _initialize_gradient_solver(self):
         """
@@ -707,6 +726,50 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             dummy_state = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             rho = self.dynamics.compute_scheduling_params(dummy_state, 0.0)
         return self.dynamics.compute_E_matrix(rho)
+    
+    def _predict_state_blended(self, x: np.ndarray, u: np.ndarray, 
+                                w: np.ndarray, dt: float) -> np.ndarray:
+        """
+        Predict next state using blended kinematic/dynamic model.
+        
+        At low speeds, uses kinematic model to avoid singularities.
+        At high speeds, uses full qLPV dynamic model.
+        
+        Args:
+            x: Current state [vx, vy, psi, r, X, Y]
+            u: Control [δ, a]
+            w: Tire residuals [wr, wf]
+            dt: Time step
+            
+        Returns:
+            Predicted state at next time step
+        """
+        # Blending thresholds
+        blend_vx_low = 0.1
+        blend_vx_high = 0.3
+        VELOCITY_DEAD_ZONE = 0.02  # Below this, snap to zero
+        
+        # RK4 integration with blended dynamics
+        k1 = self.dynamics.f_blended(x, u, w, blend_vx_low, blend_vx_high)
+        k2 = self.dynamics.f_blended(x + 0.5 * dt * k1, u, w, blend_vx_low, blend_vx_high)
+        k3 = self.dynamics.f_blended(x + 0.5 * dt * k2, u, w, blend_vx_low, blend_vx_high)
+        k4 = self.dynamics.f_blended(x + dt * k3, u, w, blend_vx_low, blend_vx_high)
+        
+        x_next = x + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
+        
+        # Clamp very small velocities to zero (dead zone)
+        vx_abs = abs(x_next[self.IDX_VX])
+        if vx_abs < VELOCITY_DEAD_ZONE:
+            x_next[self.IDX_VX] = 0.0
+            x_next[self.IDX_VY] = 0.0
+            x_next[self.IDX_R] = 0.0
+        elif vx_abs < blend_vx_low:
+            # Faster decay of lateral velocity and yaw rate at low speeds
+            decay_rate = 0.85
+            x_next[self.IDX_VY] *= decay_rate
+            x_next[self.IDX_R] *= decay_rate
+        
+        return x_next
     
     def _discretize_system(self, rho: SchedulingParameters, dt: float
                            ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -830,7 +893,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     
     def update(self, motor_tach: float, steering: float, throttle: float, dt: float,
                gyro_z: float = 0.0, gps_data: Optional[Dict] = None,
-               accel: Optional[np.ndarray] = None) -> bool:
+               acceleration: Optional[np.ndarray] = None) -> bool:
         """
         Update state estimate with sensor data and neural learning.
         
@@ -859,12 +922,14 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             # Store inputs for training phase
             self._last_steering = steering
             self._last_throttle = throttle
+            control_u = np.array([steering, throttle])
+
             
             # ========== PHASE 1: SENSOR PROCESSING ==========
             # IMU data (always available at high rate)
             vx_meas = motor_tach
             r_meas = gyro_z
-            ay_meas = self._compute_ay(accel, vx_meas, r_meas)
+            ax_meas, ay_meas = self._compute_acceleration(acceleration, vx_meas, r_meas)
             
             # GPS validity check (position/orientation only when valid)
             gps_valid = gps_data is not None and gps_data.get('valid', False)
@@ -881,7 +946,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             
             # ========== PHASE 2: NEURAL NETWORK PREDICTION ==========
             if not self.output_first_layer_only:
-                nn_input = self._prepare_nn_input(steering, throttle, accel)
+                nn_input = self._prepare_nn_input(steering, throttle, acceleration)
                 self.f_nn = self._get_nn_prediction(nn_input)
             else:
                 self.f_nn = np.zeros((self.output_dim, 1))
@@ -890,18 +955,28 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             w_hat = self.f_nn.squeeze()  # Default: use NN prediction
             
             if self.use_first_layer and self.first_layer_observer is not None:
-                # Build measurement for first-layer observer: [v_x, r, ψ, X, Y, a_y]
-                measurement_1L = np.array([vx_meas, r_meas, psi_meas, X_meas, Y_meas, ay_meas])
-                control = np.array([steering, throttle])
+                # Build measurement for first-layer observer
+                if gps_valid:
+                    # Full measurement: [v_x, r, ψ, X, Y, a_y , a_x]
+                    measurement_1L = np.array([vx_meas, r_meas, psi_meas, X_meas, Y_meas, ay_meas])
+                else:
+                    # IMU-only measurement: [v_x, r]
+                    # The 1st layer observer handles partial measurements by using its own predictions
+                    measurement_1L = np.array([vx_meas, r_meas])
+                    
                 
                 # Update first-layer observer
                 state_uio, w_uio = self.first_layer_observer.update(
-                    measurement_1L, control, 
-                    acceleration=accel
+                    measurement_1L, control_u, 
+                    acceleration=acceleration,
+                    gps_available=gps_valid
                 )
                 
                 # Store first-layer state for composite loss calculation
-                self.state_uio = state_uio
+                if len(state_uio) > self.INTERNAL_STATE_DIM:
+                     self.state_uio = state_uio[:self.INTERNAL_STATE_DIM].copy()
+                else:
+                     self.state_uio = state_uio
                 
                 # Use first-layer w estimate for observer dynamics
                 w_hat = w_uio
@@ -931,8 +1006,6 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 #   - IMU (vx, r): always available at high rate
                 #   - GPS (ψ, X, Y): only when valid
                 
-                u = np.array([steering, throttle])
-                
                 # Get sensor-dependent C and L matrices
                 C_avail = self._compute_C_matrix_avail(gps_valid)
                 L_avail = self._get_L_avail(gps_valid)
@@ -946,14 +1019,23 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     y_avail = np.array([vx_meas, r_meas])
                 
                 # Discrete-time prediction: x̂_pred = A_d·x̂ + B_d·u + E_d·w
-                state_pred = A_d @ self.state_nn_6d + B_d @ u + E_d @ self.f_nn.squeeze()
+                state_pred = A_d @ self.state_nn_6d + B_d @ control_u + E_d @ self.f_nn.squeeze()
                 
                 # Innovation: y - C·x̂[k] (computed at current state, not predicted)
                 # This is the "current measurement" form for discrete observer
                 innovation = y_avail - C_avail @ self.state_nn_6d
                 
+                # Wrap heading innovation to [-pi, pi]
+                if gps_valid:
+                    # Yaw measurement is at index 2 in 5D GPS measurement vector
+                    innovation[2] = (innovation[2] + np.pi) % (2 * np.pi) - np.pi
+                
                 # Correction: x̂[k+1] = x̂_pred + L·innovation
                 self.state_nn_6d = state_pred + L_avail @ innovation
+                
+                # Wrap heading state to [-pi, pi]
+                # Ensures estimated yaw stays in the same range as GPS sensors
+                self.state_nn_6d[self.IDX_PSI] = (self.state_nn_6d[self.IDX_PSI] + np.pi) % (2 * np.pi) - np.pi
                 
                 # Sync with base class state (4D)
                 self.state = self._extract_4d_state()
@@ -984,7 +1066,26 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 }
                 # Get last loss from history if available
                 last_loss = self.loss_history[-1] if self.loss_history else 0.0
-                self.recorder.record(
+                # Debug: Extract Yaw Gain and Innovation of 2 layer
+                L_psi_val = 0.0
+                innov_psi_val = 0.0
+                if not self.output_first_layer_only:
+                    if gps_valid:
+                        # L_avail is full 6x5. Psi state is row 2. Psi meas is col 2.
+                        L_psi_val = float(L_avail[self.IDX_PSI, 2])
+                    innov_psi_val = float(innovation[2])
+                
+                # Fetch Ground Truth if available (Sim only)
+                state_true_6d = None
+                unknown_input_true = None
+                if self.ground_truth_provider is not None:
+                    try:
+                        state_true_6d = self.ground_truth_provider.get_observer_state()
+                        unknown_input_true = self.ground_truth_provider.get_true_residuals()
+                    except Exception:
+                        pass
+
+                self.recorder.record_2layer(
                     t=t,
                     state_6d=self.state_nn_6d,
                     measurements=measurements,
@@ -993,7 +1094,11 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     steering=steering,
                     throttle=throttle,
                     loss=last_loss,
-                    gps_valid=gps_valid
+                    gps_valid=gps_valid,
+                    L_psi=L_psi_val,
+                    innov_psi=innov_psi_val,
+                    state_true_6d=state_true_6d,
+                    unknown_input_true=unknown_input_true
                 )
             
             self.last_update_time = time.time()
@@ -1006,7 +1111,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 self.logger.log_error("Neural observer update error", e)
             return False
     
-    def _compute_ay(self, accel: Optional[np.ndarray], vx: float, r: float) -> float:
+    def _compute_acceleration(self, accel: Optional[np.ndarray], vx: float, r: float) -> float:
         """
         Compute lateral acceleration from IMU or approximation.
         
@@ -1020,21 +1125,13 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             r: Yaw rate
             
         Returns:
-            Lateral acceleration a_y
+            acceleration  ax and ay
         """
         if accel is not None:
             # Direct IMU measurement (preferred)
-            return float(accel[1])
+            return float(accel[0]), float(accel[1])
         
-        # Centripetal approximation: a_y ≈ r·v_x
-        # Only valid for small slip angles, protect against small v_x
-        MIN_VX_FOR_AY = 0.3  # Avoid numerical issues
-        vx_safe = max(abs(vx), MIN_VX_FOR_AY)
-        ay_raw = r * vx_safe
-        
-        # Clip to reasonable bounds (typical vehicle limits)
-        MAX_AY = 5.0  # m/s²
-        return float(np.clip(ay_raw, -MAX_AY, MAX_AY))
+        return 0, 0
     
     def _get_nn_prediction(self, nn_input: np.ndarray) -> np.ndarray:
         """

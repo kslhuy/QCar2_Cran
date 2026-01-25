@@ -60,6 +60,9 @@ from qlpv_vehicle_dynamics_obs import (
     get_default_vehicle_params,
     IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
     MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
+    IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D,
+    MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D,
+    create_qlpv_dynamics,
 )
 
 # Import CVXPY for LMI-based gain design
@@ -717,15 +720,13 @@ class WEstimatorUIOStyle:
     def compute_lin_terms(self, xhat: np.ndarray, delta: float) -> Tuple[float, float]:
         """
         Compute linear prediction terms for rdot and ay
-        
-        Args:
-            xhat: State estimate [vx, vy, psi, r, X, Y]
-            delta: Steering angle
-            
-        Returns:
-            Tuple of (rdot_lin, ay_lin)
         """
-        vx, vy, psi, r, X, Y = xhat
+        # Generic state extraction
+        # xhat can be 6D or 8D
+        vx = xhat[IDX_VX]
+        vy = xhat[IDX_VY]
+        psi = xhat[IDX_PSI]
+        r = xhat[IDX_R]
         
         m = self.p["m"]
         Iz = self.p["Iz"]
@@ -858,6 +859,27 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
     MEAS_IDX_AY = 5
     MEAS_DIM = 6
     
+    # 8D State indices
+    IDX8_VX = 0
+    IDX8_VY = 1
+    IDX8_PSI = 2
+    IDX8_R = 3
+    IDX8_X = 4
+    IDX8_Y = 5
+    IDX8_AX = 6
+    IDX8_AY = 7
+    STATE_DIM_8D = 8
+    
+    # 7D Measurement indices
+    MEAS8_IDX_VX = 0
+    MEAS8_IDX_R = 1
+    MEAS8_IDX_PSI = 2
+    MEAS8_IDX_X = 3
+    MEAS8_IDX_Y = 4
+    MEAS8_IDX_AY = 5
+    MEAS8_IDX_AX = 6
+    MEAS_DIM_7D = 7
+    
     def __init__(self, sample_time: float = 0.02, 
                  vehicle_params: Optional[Dict] = None,
                  observer_gains: Optional[Dict] = None,
@@ -873,37 +895,40 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
                  n_vx_vertices: int = 3,
                  n_delta_vertices: int = 3,
                  use_common_lyapunov: bool = True,
+                 use_8d_system: bool = False,
                  **kwargs):
         """
-        Initialize Differentiator + UIO-Style Observer with qLPV Gain Scheduling
+        Initialize Differentiator + UIO-Style Observer
         
         Args:
-            sample_time: Sample time Ts [s]
-            vehicle_params: Vehicle parameters dict with keys:
-                - 'lf': Distance from CG to front axle [m]
-                - 'lr': Distance from CG to rear axle [m]
-                - 'm': Vehicle mass [kg]
-                - 'Iz': Yaw moment of inertia [kg·m²]
-                - 'Cf': Front cornering stiffness [N/rad]
-                - 'Cr': Rear cornering stiffness [N/rad]
-            observer_gains: Observer gain parameters (ignored if use_lmi_gains=True)
-            tau_rdot: Time constant for rdot filtering [s] (for dirty derivative)
-            ridge: Ridge regularization for w estimation
-            diff_type: Differentiator type ('dirty', 'highgain', 'sliding')
-            diff_params: Additional parameters for the differentiator
-            use_lmi_gains: If True, compute observer gains using LMI (requires cvxpy)
-            use_gain_scheduling: If True, use polytopic qLPV gain scheduling
-                                 If False, use single LMI gain at nominal point
-            lmi_decay_rate: Minimum decay rate γ for LMI-based gain design
-            vx_range: (vx_min, vx_max) velocity range for gain scheduling [m/s]
-            delta_max: Maximum steering angle for gain scheduling [rad]
-            n_vx_vertices: Number of velocity grid points for polytope
-            n_delta_vertices: Number of steering grid points for polytope
-            use_common_lyapunov: Use single Lyapunov matrix for robust stability
+            sample_time: Sample time
+            vehicle_params: Vehicle parameters
+            observer_gains: Custom observer gains
+            tau_rdot: rdot filter constant
+            ridge: Ridge reg parameter
+            diff_type: Differentiator type
+            diff_params: Differentiator params
+            use_lmi_gains: Use LMI to compute gains
+            use_gain_scheduling: Use gain scheduling
+            lmi_decay_rate: LMI decay rate
+            vx_range: Velocity range
+            delta_max: Steering range
+            n_vx_vertices: Number of velocity vertices
+            n_delta_vertices: Number of steering vertices
+            use_common_lyapunov: Robust stability flag
+            use_8d_system: Use 8D state vector
         """
-        # Initialize base class with 6D state
+        self.use_8d_system = use_8d_system
+        if use_8d_system:
+            self.state_dim = self.STATE_DIM_8D
+            self.meas_dim = self.MEAS_DIM_7D
+        else:
+            self.state_dim = self.STATE_DIM
+            self.meas_dim = self.MEAS_DIM
+            
+        # Initialize base class
         super().__init__(
-            state_dim=self.STATE_DIM,
+            state_dim=self.state_dim,
             unknown_input_dim=2,  # [w_r, w_f]
             sample_time=sample_time
         )
@@ -925,12 +950,16 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         self.Cr = self.params['Cr']
         
         # Centralized qLPV dynamics for matrix computation
-        # min_vx loaded from params (from parameters_qcar.yaml)
-        self.min_vx = self.params.get('vx_min', 0.1)  # Default fallback only for safety
-        self._dynamics = QLPVVehicleDynamicsObs(self.params, min_vx=self.min_vx)
+        # min_vx loaded from params
+        self.min_vx = self.params.get('vx_min', 0.1) 
+        self._dynamics = create_qlpv_dynamics(
+            vehicle_params=self.params, 
+            min_vx=self.min_vx,
+            use_8d_system=use_8d_system
+        )
         
         # Initialize state estimate
-        self.state_hat = np.zeros(self.STATE_DIM)
+        self.state_hat = np.zeros(self.state_dim)
         
         # UIO-style w estimator with configurable differentiator
         self.w_estimator = WEstimatorUIOStyle(
@@ -976,6 +1005,22 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
     
     def _default_gains(self) -> Dict:
         """Default observer gains - well-tuned for typical vehicle dynamics"""
+        
+        if self.use_8d_system:
+             # 8D state [vx, vy, psi, r, X, Y, ax, ay]
+             # 7D meas [vx, r, psi, X, Y, ay, ax]
+             L = np.zeros((8, 7))
+             L[0, 0] = 10.0 # vx -> vx
+             L[1, 1] = 5.0  # r -> vy
+             L[3, 1] = 10.0 # r -> r
+             L[2, 2] = 10.0 # psi -> psi
+             L[4, 3] = 5.0  # X -> X
+             L[5, 4] = 5.0  # Y -> Y
+             L[1, 5] = 2.0  # ay -> vy
+             L[6, 6] = 5.0  # ax -> ax
+             L[7, 5] = 5.0  # ay -> ay
+             return {'L_state': L}
+             
         # Construct a well-tuned gain matrix for the measurement -> state mapping
         # Measurements: y = [vx, r, psi, X, Y, a_y]
         # States: x = [vx, vy, psi, r, X, Y]
@@ -1033,8 +1078,12 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         # Try polytopic qLPV gain scheduling
         if self.use_gain_scheduling and self.use_lmi_gains and CVXPY_AVAILABLE:
             try:
+                # Ensure flag is in params for QLPVGainScheduler
+                params_sched = self.params.copy()
+                params_sched['use_8d_system'] = self.use_8d_system
+                
                 self._gain_scheduler = QLPVGainScheduler(
-                    vehicle_params=self.params,
+                    vehicle_params=params_sched,
                     vx_range=self.vx_range,
                     delta_max=self.delta_max,
                     n_vx_vertices=n_vx_vertices,
@@ -1094,7 +1143,11 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         """
         # Nominal operating point: straight driving at mid-range vx
         nominal_vx = (self.vx_range[0] + self.vx_range[1]) / 2
-        nominal_state = np.array([nominal_vx, 0.0, 0.0, 0.0, 0.0, 0.0])
+        if self.use_8d_system:
+             nominal_state = np.zeros(8)
+             nominal_state[0] = nominal_vx
+        else:
+             nominal_state = np.array([nominal_vx, 0.0, 0.0, 0.0, 0.0, 0.0])
         nominal_delta = 0.0
         
         # Compute A matrix at nominal point
@@ -1180,43 +1233,37 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
     
     def update(self, measurement: np.ndarray, control_input: np.ndarray,
                f_nn: Optional[np.ndarray] = None,
-               acceleration: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
+               acceleration: Optional[np.ndarray] = None,
+               gps_available: bool = True) -> Tuple[np.ndarray, np.ndarray]:
         """
         Update observer with new measurement using qLPV gain scheduling.
-        
-        Observer equation:
-            x̂[k+1] = x̂[k] + Ts·(A(ρ̂)·x̂ + B(ρ̂)·u + E(ρ̂)·ŵ + L(ρ̂)·(y - C·x̂))
-        
-        where L(ρ̂) is the scheduled observer gain based on current vx and δ.
-        
-        UIO-style w estimation:
-            ŵ = argmin ||M·w - b||² where b = [rdot_res, ay_res]
-
-
-            #     Uses the same flow as DifferentiatorUIOEKF:
-            # 1. UIO-Style w estimation via differentiator
-            # 2. Predict: x_pred = x + Ts * f(x, u, w) using nonlinear dynamics
-            # 3. Correct: x = x_pred + Ts * L(ρ) * (y - h(x_pred, u, w))
-        
-        Args:
-            measurement: Measurement vector (various formats supported)
-            control_input: Control [δ, a] (steering, acceleration)
-            f_nn: Neural network output (for interface compatibility)
-            acceleration: Full 3D acceleration [a_x, a_y, a_z]
-            
-        Returns:
-            Tuple of (state_estimate, tire_residual_estimate)
         """
-        # Process measurement to get full 6D vector
-        y = self._process_measurement(measurement, acceleration)
+        # Process measurement to get full measurement vector
+        y_full = self._process_measurement(measurement, acceleration)
+        y = y_full
         
+        # If GPS unavailable, handle
+        if not gps_available:
+             # Reduce Y and L for correction
+             # But here we do simpler: Zero out innovation for missing sensors
+             pass # Logic handled in L or Y? 
+             # For qLPV observer, usually we just keep Y fixed but rely on L being robust or zeroing out.
+             # Or we can zero out the innovation components corresponding to [X, Y, psi]
+             # This is simpler than changing dimensions of L
+             
         # Control input
         u = control_input.reshape(-1)
         delta = u[0]
         
         # === Step 1: UIO-Style w estimation ===
-        r_meas = y[self.MEAS_IDX_R]
-        ay_meas = y[self.MEAS_IDX_AY]
+        # Use full measurement y
+        if self.use_8d_system:
+             r_meas = y[self.MEAS8_IDX_R]
+             ay_meas = y[self.MEAS8_IDX_AY]
+        else:
+             r_meas = y[self.MEAS_IDX_R]
+             ay_meas = y[self.MEAS_IDX_AY]
+             
         self.w_hat, self.rdot_hat, self.residual = self.w_estimator.estimate(
             self.state_hat, r_meas, ay_meas, delta
         )
@@ -1235,8 +1282,28 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         # Innovation (measurement residual)
         innovation = y - y_pred
         
+        # Wrap heading innovation to [-pi, pi]
+        # Prevents instability when angle wraps from pi to -pi
+        if gps_available:
+            if self.use_8d_system:
+                idx_psi_y = self.MEAS8_IDX_PSI
+            else:
+                idx_psi_y = self.MEAS_IDX_PSI
+            innovation[idx_psi_y] = (innovation[idx_psi_y] + np.pi) % (2 * np.pi) - np.pi
+        
+        if not gps_available:
+             # Zero out innovation for GPS states
+             if self.use_8d_system:
+                  innovation[self.MEAS8_IDX_X] = 0.0
+                  innovation[self.MEAS8_IDX_Y] = 0.0
+                  innovation[self.MEAS8_IDX_PSI] = 0.0
+             else:
+                  innovation[self.MEAS_IDX_X] = 0.0
+                  innovation[self.MEAS_IDX_Y] = 0.0
+                  innovation[self.MEAS_IDX_PSI] = 0.0
+        
         # Get scheduled observer gain L(ρ) based on predicted state
-        vx_pred = max(abs(x_pred[self.IDX_VX]), self.min_vx)
+        vx_pred = max(abs(x_pred[0]), self.min_vx) # Index 0 is always vx
         self._current_L = self.get_scheduled_gain(vx_pred, delta)
         
         # Correction step (scale by Ts for proper discrete-time application)
@@ -1244,10 +1311,18 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         # Discretized: x[k+1] = x_pred + Ts * L * innovation
         self.state_hat = x_pred + self.Ts * self._current_L @ innovation
         
+        # Wrap heading state to [-pi, pi]
+        # Ensures estimated yaw stays in the same range as GPS sensors
+        if self.use_8d_system:
+             idx_psi_state = self.IDX8_PSI
+        else:
+             idx_psi_state = self.IDX_PSI
+        self.state_hat[idx_psi_state] = (self.state_hat[idx_psi_state] + np.pi) % (2 * np.pi) - np.pi
+        
         # === Step 4: State clamping for numerical stability ===
-        self.state_hat[self.IDX_VX] = np.clip(self.state_hat[self.IDX_VX], -10.0, 10.0)
-        self.state_hat[self.IDX_VY] = np.clip(self.state_hat[self.IDX_VY], -5.0, 5.0)
-        self.state_hat[self.IDX_R] = np.clip(self.state_hat[self.IDX_R], -10.0, 10.0)
+        self.state_hat[0] = np.clip(self.state_hat[0], -10.0, 10.0) # vx
+        self.state_hat[1] = np.clip(self.state_hat[1], -5.0, 5.0)   # vy
+        self.state_hat[3] = np.clip(self.state_hat[3], -10.0, 10.0) # r
         
         # Clamp w_hat too
         self.w_hat = np.clip(self.w_hat, -500.0, 500.0)
@@ -1260,39 +1335,98 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
     def _process_measurement(self, measurement: np.ndarray, 
                              acceleration: Optional[np.ndarray] = None) -> np.ndarray:
         """
-        Process input measurement to get full 6D measurement vector
+        Process input measurement to get full measurement vector.
         
+        Handles:
+            - Full 7D: [v_x, r, ψ, X, Y, a_y, a_x]
+            - No GPS 4D: [v_x, r, a_y, a_x]
+            - Legacy 6D: [v_x, r, ψ, X, Y, a_y]
+            - Legacy 2D: [v_x, r]
+            
         Args:
             measurement: Input measurement (various formats)
             acceleration: Optional 3D acceleration [a_x, a_y, a_z]
             
         Returns:
-            Full 6D measurement [v_x, r, ψ, X, Y, a_y]
+            Full measurement vector y
         """
         measurement = measurement.reshape(-1)
-        y = np.zeros(self.MEAS_DIM)
+        n_input = len(measurement)
+        y = np.zeros(self.meas_dim)
         
-        if len(measurement) >= 6:
-            # Full measurement provided
-            y = measurement[:6].copy()
-        elif len(measurement) == 5:
-            # [v_x, r, ψ, X, Y] - need a_y from acceleration
-            y[:5] = measurement[:5]
-            if acceleration is not None:
-                y[5] = acceleration[1]  # Extract a_y
-            else:
-                y[5] = self.state_hat[self.IDX_R] * self.state_hat[self.IDX_VX]
-        elif len(measurement) == 2:
-            # Minimal: [v_x, r]
-            y[self.MEAS_IDX_VX] = measurement[0]
-            y[self.MEAS_IDX_R] = measurement[1]
-            y[self.MEAS_IDX_PSI] = self.state_hat[self.IDX_PSI]
-            y[self.MEAS_IDX_X] = self.state_hat[self.IDX_X]
-            y[self.MEAS_IDX_Y] = self.state_hat[self.IDX_Y]
-            if acceleration is not None:
-                y[self.MEAS_IDX_AY] = acceleration[1]
+        # 1. Basic Kinematics (always present)
+        val_vx = measurement[0]
+        val_r = measurement[1]
+        
+        if self.use_8d_system:
+            y[self.MEAS8_IDX_VX] = val_vx
+            y[self.MEAS8_IDX_R] = val_r
         else:
-            raise ValueError(f"Unsupported measurement dimension: {len(measurement)}")
+            y[self.MEAS_IDX_VX] = val_vx
+            y[self.MEAS_IDX_R] = val_r
+            
+        # 2. Extract values based on input dimension
+        val_psi = None
+        val_X = None
+        val_Y = None
+        val_ay = None
+        val_ax = None
+        
+        if n_input >= 7:
+            # Full 7D: [vx, r, psi, X, Y, ay, ax]
+            val_psi = measurement[2]
+            val_X = measurement[3]
+            val_Y = measurement[4]
+            val_ay = measurement[5]
+            val_ax = measurement[6]
+        elif n_input == 6:
+            # Legacy 6D: [vx, r, psi, X, Y, ay]
+            val_psi = measurement[2]
+            val_X = measurement[3]
+            val_Y = measurement[4]
+            val_ay = measurement[5]
+        elif n_input == 4:
+            # No GPS 4D: [vx, r, ay, ax]
+            val_ay = measurement[2]
+            val_ax = measurement[3]
+        elif n_input == 5:
+            # Partial 5D: [vx, r, psi, X, Y]
+            val_psi = measurement[2]
+            val_X = measurement[3]
+            val_Y = measurement[4]
+        
+        # 3. Fill from Acceleration argument if missing
+        if acceleration is not None:
+             if val_ax is None: val_ax = acceleration[0]
+             if val_ay is None: val_ay = acceleration[1]
+             
+        # 4. Fill missing GPS/State vars with current estimate
+        if self.use_8d_system:
+            idx_psi = self.IDX8_PSI
+            idx_X = self.IDX8_X
+            idx_Y = self.IDX8_Y
+        else:
+            idx_psi = self.IDX_PSI
+            idx_X = self.IDX_X
+            idx_Y = self.IDX_Y
+            
+        if val_psi is None: val_psi = self.state_hat[idx_psi]
+        if val_X is None: val_X = self.state_hat[idx_X]
+        if val_Y is None: val_Y = self.state_hat[idx_Y]
+        
+        # 5. Populate Result Vector
+        if self.use_8d_system:
+            y[self.MEAS8_IDX_PSI] = val_psi
+            y[self.MEAS8_IDX_X] = val_X
+            y[self.MEAS8_IDX_Y] = val_Y
+            y[self.MEAS8_IDX_AY] = val_ay if val_ay is not None else 0.0
+            y[self.MEAS8_IDX_AX] = val_ax if val_ax is not None else 0.0
+        else:
+            y[self.MEAS_IDX_PSI] = val_psi
+            y[self.MEAS_IDX_X] = val_X
+            y[self.MEAS_IDX_Y] = val_Y
+            y[self.MEAS_IDX_AY] = val_ay if val_ay is not None else (val_r * val_vx)
+            # 6D system typically doesn't hold AX in y
         
         return y
     
@@ -1327,18 +1461,20 @@ class DifferentiatorUIOObserver(FirstLayerObserverBase):
         """
         if initial_state is not None:
             initial_state = initial_state.reshape(-1)
-            if len(initial_state) >= self.STATE_DIM:
-                self.state_hat = initial_state[:self.STATE_DIM].copy()
+            if len(initial_state) >= self.state_dim:
+                self.state_hat = initial_state[:self.state_dim].copy()
             else:
+                self.state_hat = np.zeros(self.state_dim)
                 self.state_hat[:len(initial_state)] = initial_state
-                if initial_position is not None:
-                    self.state_hat[self.IDX_X] = initial_position[0]
-                    self.state_hat[self.IDX_Y] = initial_position[1]
         else:
-            self.state_hat = np.zeros(self.STATE_DIM)
+            self.state_hat = np.zeros(self.state_dim)
             if initial_position is not None:
-                self.state_hat[self.IDX_X] = initial_position[0]
-                self.state_hat[self.IDX_Y] = initial_position[1]
+                if self.use_8d_system:
+                     self.state_hat[self.IDX8_X] = initial_position[0]
+                     self.state_hat[self.IDX8_Y] = initial_position[1]
+                else:
+                     self.state_hat[self.IDX_X] = initial_position[0]
+                     self.state_hat[self.IDX_Y] = initial_position[1]
         
         # Reset w estimator
         r0 = self.state_hat[self.IDX_R] if initial_state is not None else 0.0

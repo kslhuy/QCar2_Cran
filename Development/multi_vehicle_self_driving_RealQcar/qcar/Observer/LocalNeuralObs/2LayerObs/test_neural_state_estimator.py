@@ -219,7 +219,7 @@ def test_observer_update_without_gps():
     
     from neural_state_estimator import NeuralLuenbergerEstimator
     
-    config = {'use_first_layer': False}  # Disable first-layer for isolated test
+    config = {'use_first_layer': False, 'output_first_layer_only': False}  # Disable first-layer for isolated test
     estimator = NeuralLuenbergerEstimator(
         initial_pose=np.array([0.0, 0.0, 0.0]),
         config=config
@@ -264,7 +264,7 @@ def test_observer_update_with_gps():
     
     from neural_state_estimator import NeuralLuenbergerEstimator
     
-    config = {'use_first_layer': False}
+    config = {'use_first_layer': False, 'output_first_layer_only': False}
     estimator = NeuralLuenbergerEstimator(
         initial_pose=np.array([0.0, 0.0, 0.0]),
         config=config

@@ -658,7 +658,7 @@ class InteractiveDataViewer:
         self.axes['velocity'].set_ylim(-5, 5)
         self.axes['velocity'].grid(True)
         self.axes['velocity'].tick_params(labelsize=8)
-        self.lines['velocity'], = self.axes['velocity'].plot([], [], 'b-', lw=1.5)
+        self.lines['velocity'], = self.axes['velocity'].plot([], [], 'b.', markersize=2)
         
         # Heading (right middle) - deg=(-180,180)
         self.axes['heading'] = self.fig.add_subplot(gs[1, 2])
@@ -666,7 +666,7 @@ class InteractiveDataViewer:
         self.axes['heading'].set_ylim(-180, 180)
         self.axes['heading'].grid(True)
         self.axes['heading'].tick_params(labelsize=8)
-        self.lines['theta'], = self.axes['heading'].plot([], [], 'g-', lw=1.5)
+        self.lines['theta'], = self.axes['heading'].plot([], [], 'g.', markersize=2)
         
         # Controls (bottom left) - (-1,1)
         self.axes['control'] = self.fig.add_subplot(gs[2, 0:2])
@@ -675,8 +675,8 @@ class InteractiveDataViewer:
         self.axes['control'].set_ylim(-1, 1)
         self.axes['control'].grid(True)
         self.axes['control'].tick_params(labelsize=8)
-        self.lines['steering'], = self.axes['control'].plot([], [], 'r-', lw=1.5, label='Steering')
-        self.lines['throttle'], = self.axes['control'].plot([], [], 'k--', lw=1.5, label='Throttle')
+        self.lines['steering'], = self.axes['control'].plot([], [], 'r.', markersize=2, label='Steering')
+        self.lines['throttle'], = self.axes['control'].plot([], [], 'k.', markersize=2, label='Throttle')
         self.axes['control'].legend(loc='upper right', fontsize=8)
         
         # Info panel (bottom right)
@@ -730,7 +730,7 @@ class InteractiveDataViewer:
         for v_idx in vehicle_indices:
             color = colors[v_idx]
             self.lines[f'vel_{v_idx}'], = self.axes['velocity'].plot(
-                [], [], '-', color=color, lw=1.5
+                [], [], '.', color=color, markersize=2
             )
         
         # Consensus error
@@ -738,7 +738,7 @@ class InteractiveDataViewer:
         self.axes['consensus'].set_ylabel('Consensus Error', fontsize=9)
         self.axes['consensus'].grid(True)
         self.axes['consensus'].tick_params(labelsize=8)
-        self.lines['consensus'], = self.axes['consensus'].plot([], [], 'k-', lw=2)
+        self.lines['consensus'], = self.axes['consensus'].plot([], [], 'k.', markersize=2)
         
         # Trust scores - range (-1, 1)
         self.axes['trust'] = self.fig.add_subplot(gs[2, 0])
@@ -751,7 +751,7 @@ class InteractiveDataViewer:
         for v_idx in vehicle_indices:
             color = colors[v_idx]
             self.lines[f'trust_{v_idx}'], = self.axes['trust'].plot(
-                [], [], '-', color=color, lw=1.5, label=f'V{v_idx}'
+                [], [], '.', color=color, markersize=2, label=f'V{v_idx}'
             )
         self.axes['trust'].legend(fontsize=7, loc='upper right')
         

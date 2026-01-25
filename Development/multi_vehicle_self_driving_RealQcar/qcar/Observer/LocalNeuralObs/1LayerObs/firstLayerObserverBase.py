@@ -23,16 +23,20 @@ class FirstLayerObserverBase(ABC):
     Base class for first-layer observers
     
     Estimates:
-        - State x̂ = [v_x, v_y, ψ, r, X, Y]ᵀ (6D)
+        - State x̂ (6D or 8D)
         - Unknown input ŵ = [w_r, w_f]ᵀ (tire force residuals)
     
-    The 6D state includes:
-        - v_x: Longitudinal velocity (body frame)
-        - v_y: Lateral velocity (body frame)
-        - ψ: Yaw angle
-        - r: Yaw rate
-        - X: Global X position
-        - Y: Global Y position
+    The 6D state includes: 
+        - v_x, v_y, ψ, r, X, Y
+        where  - v_x: Longitudinal velocity
+               - v_y: Lateral velocity
+               - ψ: Yaw angle
+               - r: Yaw rate
+               - X: X-coordinate
+               - Y: Y-coordinate
+    
+    The 8D state adds:
+        - a_x, a_y (Accelerations)
     """
     
     def __init__(self, state_dim: int = 6, unknown_input_dim: int = 2,
@@ -64,7 +68,8 @@ class FirstLayerObserverBase(ABC):
     @abstractmethod
     def update(self, measurement: np.ndarray, control_input: np.ndarray,
                f_nn: Optional[np.ndarray] = None,
-               acceleration: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
+               acceleration: Optional[np.ndarray] = None,
+               gps_available: bool = True) -> Tuple[np.ndarray, np.ndarray]:
         """
         Update observer with new measurement
         
@@ -120,6 +125,7 @@ AVAILABLE_OBSERVER_TYPES = [
     'qlpv_kalman',       # qLPV with EKF-style Kalman gains
     'differentiator_uio',     # Differentiator + UIO with LMI gains
     'differentiator_uio_ekf', # Differentiator + UIO with EKF gains
+    'z_layer1',               # Z-style Sample-and-Hold Observer
 ]
 
 
@@ -133,6 +139,7 @@ def create_first_layer_observer(observer_type: str = 'qlpv', **kwargs) -> FirstL
             - 'qlpv_kalman': qLPV Augmented-State Observer with EKF Kalman gains
             - 'differentiator_uio': Differentiator + UIO-style observer with LMI gains
             - 'differentiator_uio_ekf': Differentiator + UIO observer with EKF gains
+            - 'z_layer1': Z-style Sample-and-Hold Observer
         **kwargs: Additional arguments for observer initialization
             - sample_time: Sample time [s] (default 0.02)
             - vehicle_params: Vehicle parameters dict
@@ -154,7 +161,7 @@ def create_first_layer_observer(observer_type: str = 'qlpv', **kwargs) -> FirstL
         return qLPVAugmentedObserver(**kwargs)
     elif observer_type == 'qlpv_kalman':
         # Import here to avoid circular imports
-        from qlpv_observer_kalma import qLPVAugmentedObserver as qLPVKalmanObserver
+        from qlpv_observer_kalma import qLPVKalmanObserver
         return qLPVKalmanObserver(**kwargs)
     elif observer_type == 'differentiator_uio':
         # Import here to avoid circular imports
@@ -164,6 +171,10 @@ def create_first_layer_observer(observer_type: str = 'qlpv', **kwargs) -> FirstL
         # Import here to avoid circular imports
         from differentiator_uio_ekf import DifferentiatorUIOEKF
         return DifferentiatorUIOEKF(**kwargs)
+    elif observer_type == 'z_layer1':
+        # Import here to avoid circular imports
+        from z_layer1_observer import ZLayer1Observer
+        return ZLayer1Observer(**kwargs)
     else:
         raise ValueError(f"Unknown observer type: {observer_type}. "
                         f"Available: {AVAILABLE_OBSERVER_TYPES}")
