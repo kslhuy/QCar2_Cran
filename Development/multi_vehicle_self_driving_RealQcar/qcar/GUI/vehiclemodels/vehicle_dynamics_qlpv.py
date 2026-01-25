@@ -4,213 +4,136 @@ qLPV Vehicle Dynamics Model for Observer Testing
 This vehicle dynamics model exactly matches the qLPV observer equations,
 enabling proper testing of the observer's state and tire residual estimation.
 
-State: x = [X, Y, δ, v_x, ψ, r, v_y]ᵀ (7D, CommonRoad convention)
-       Indices: 0=X, 1=Y, 2=δ, 3=vx, 4=ψ, 5=r, 6=vy
+State Vector Conventions:
+    qLPV:     x = [X, Y, δ, v_x, ψ, r, v_y]ᵀ  (7D, CommonRoad convention)
+    Observer: x = [v_x, v_y, ψ, r, X, Y]       (6D)
 
-Observer State: [v_x, v_y, ψ, r, X, Y] (6D)
-                Mapping: x[3]=vx, x[6]=vy, x[4]=ψ, x[5]=r, x[0]=X, x[1]=Y
+Control Input: u = [δ_dot, a]ᵀ (steering rate, acceleration)
 
-Key difference from observer:
-- Fake vehicle KNOWS true tire forces and residuals (w_r, w_f)
-- Observer ESTIMATES tire residuals from measurements
-
-Control input: u = [δ_dot, a]ᵀ (steering rate, acceleration)
+Tire Models:
+    - 'static_linear':  F = C * α (simple, no load transfer)
+    - 'dynamic_linear': F = μ * Cs * Fz * α (with load transfer)
+    - 'pacejka':        Magic formula (nonlinear, most realistic)
 
 References:
     - qLPV vehicle dynamics from qlpv_observer.py
     - CommonRoad vehicle model conventions
 """
 __author__ = "Observer Test Framework"
-__version__ = "1.0"
+__version__ = "2.0"
 __status__ = "Development"
 
 import math
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Dict
+from dataclasses import dataclass
+from enum import Enum
 
-
-# Apply steering and acceleration constraints
 from .utils.steering_constraints import steering_constraints
 from .utils.acceleration_constraints import acceleration_constraints
 
-def vehicle_dynamics_qlpv(x, u_init, p,  tire_mode: str = 'pacejka' ):
-    """
-    qLPV vehicle dynamics matching observer model
-    
-    This model uses the EXACT same equations as the qLPV observer,
-    but can optionally compute true nonlinear tire forces for ground truth.
-    
-    Syntax:
-        f = vehicle_dynamics_qlpv(x, u, p)
-    
-    Inputs:
-        :param x: vehicle state vector [X, Y, δ, v_x, ψ, r, v_y]
-        :param u_init: vehicle input vector [δ_dot, a]
-        :param p: vehicle parameter object
-        :param tire_mode: Tire model selection: 'static_linear', 'dynamic_linear', 'pacejka'
-                         If None, falls back to use_pacejka for backward compatibility
-    
-    Outputs:
-        :return f: right-hand side of differential equations (7D)
-    
-    State definitions match CommonRoad convention:
-        x[0] = X     - x-position in global coordinate system [m]
-        x[1] = Y     - y-position in global coordinate system [m]
-        x[2] = δ     - steering angle of front wheels [rad]
-        x[3] = v_x   - velocity in x-direction (body frame) [m/s]
-        x[4] = ψ     - yaw angle [rad]
-        x[5] = r     - yaw rate [rad/s]
-        x[6] = v_y   - lateral velocity (body frame) [m/s]
-    """
-    # Gravity constant
-    g = 9.81  # [m/s^2]
-    
-    # Extract vehicle parameters
-    lf = p.a           # Distance from CG to front axle [m]
-    lr = p.b           # Distance from CG to rear axle [m]
-    m = p.m            # Vehicle mass [kg]
-    Iz = p.I_z         # Yaw moment of inertia [kg·m²]
-    
-    # Get cornering stiffness from parameters or use defaults
-    Cf = getattr(p, 'Cf', 120.0)  # Increased from 50.0 for better grip
-    Cr = getattr(p, 'Cr', 120.0)  # Increased from 50.0 for better grip
-    
-    # Road friction coefficient for load transfer effects (small value)
-    mu = getattr(p, 'mu', 0.01)  # Road friction coefficient 
-    
-    # Rolling resistance and drag coefficients for realistic stopping behavior
-    Cr_roll = getattr(p, 'Cr_roll', 0.015)  # Rolling resistance coefficient (typical: 0.01-0.02)
-    Cd_aero = getattr(p, 'Cd_aero', 0.3)    # Aerodynamic drag coefficient
-    Af = getattr(p, 'Af', 0.05)             # Frontal area [m^2] (scaled for QCar)
-    rho_air = 1.225                          # Air density [kg/m³]
-    
-    # Extract states
-    X, Y, delta, vx, psi, r, vy = x
-    
-    # Robustness: Handle potential NaNs by returning zero derivatives
-    if np.isnan(x).any():
-        return [0.0] * 7
 
+# =============================================================================
+# Constants
+# =============================================================================
+GRAVITY = 9.81  # m/s²
+AIR_DENSITY = 1.225  # kg/m³
+
+# Velocity thresholds
+VX_KINEMATIC_THRESHOLD = 0.1  # Switch to kinematic model below this
+VX_STOP_THRESHOLD = 0.05  # Consider stopped below this
+VX_MIN_SAFE = 0.5  # Minimum for slip angle calculation
+
+
+class TireMode(Enum):
+    """Tire model selection enumeration."""
+    STATIC_LINEAR = 'static_linear'
+    DYNAMIC_LINEAR = 'dynamic_linear'
+    PACEJKA = 'pacejka'
+
+
+@dataclass
+class StateIndices:
+    """State vector indices for qLPV model (CommonRoad convention)."""
+    X: int = 0      # Global X position [m]
+    Y: int = 1      # Global Y position [m]
+    DELTA: int = 2  # Steering angle [rad]
+    VX: int = 3     # Longitudinal velocity [m/s]
+    PSI: int = 4    # Yaw angle [rad]
+    R: int = 5      # Yaw rate [rad/s]
+    VY: int = 6     # Lateral velocity [m/s]
+    DIM: int = 7    # State dimension
+
+
+# Global state index instance
+IDX = StateIndices()
+
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+def _get_param(obj, name: str, default: float) -> float:
+    """Safely get parameter with default value."""
+    return getattr(obj, name, default)
+
+
+def _compute_slip_angles(vy: float, r: float, delta: float,
+                         lf: float, lr: float, vx_safe: float) -> Tuple[float, float]:
+    """
+    Compute front and rear slip angles.
     
-    u = list()
-    u.append(steering_constraints(delta, u_init[0], p.steering))
-    u.append(acceleration_constraints(vx, u_init[1], p.longitudinal))
+    Args:
+        vy: Lateral velocity [m/s]
+        r: Yaw rate [rad/s]
+        delta: Steering angle [rad]
+        lf: Distance CG to front axle [m]
+        lr: Distance CG to rear axle [m]
+        vx_safe: Safe longitudinal velocity (clamped) [m/s]
     
-    # Minimum velocity to avoid singularity (from parameters_qcar.yaml longitudinal.v_switch)
-    vx_min = getattr(p.longitudinal, 'v_switch', 0.5) if hasattr(p, 'longitudinal') else 0.5
-    vx_safe = max(abs(vx), vx_min)
-    
-    # Compute slip angles
-    # α_f = δ - (v_y + l_f·r) / v_x
-    # α_r = -(v_y - l_r·r) / v_x
+    Returns:
+        (alpha_f, alpha_r): Front and rear slip angles [rad]
+    """
     alpha_f = delta - (vy + lf * r) / vx_safe
     alpha_r = -(vy - lr * r) / vx_safe
-    
-    # Compute tire forces
-    a_long = u[1]
-    
-
-    
-    if tire_mode == 'static_linear':
-        # Simple linear model: F = C * alpha (no load transfer)
-        Fyf, Fyr = compute_tire_forces_linear(alpha_f, alpha_r, Cf, Cr)
-    elif tire_mode == 'dynamic_linear':
-        # Linear model with load transfer
-        Fyf, Fyr = compute_tire_forces_load_transfer(alpha_f, alpha_r, p, a_long)
-    elif tire_mode == 'pacejka' and hasattr(p, 'tire'):
-        # Pacejka nonlinear tire model
-        Fyf, Fyr = compute_tire_forces_pacejka(alpha_f, alpha_r, p, vx, a_long)
-    else:
-        # Fallback to dynamic linear if pacejka requested but no tire params
-        Fyf, Fyr = compute_tire_forces_load_transfer(alpha_f, alpha_r, p, a_long)
-    
-    # Trigonometric functions
-    cos_psi = math.cos(psi)
-    sin_psi = math.sin(psi)
-    cos_delta = math.cos(delta)
-    sin_delta = math.sin(delta)
-    
-    # Switch to kinematic model for very low velocities
-    if abs(vx) < 0.1:
-        # Simplified kinematic model
-        lwb = lf + lr  # wheelbase
-        beta = math.atan2(lr * math.tan(delta), lwb) if abs(delta) > 0.001 else 0.0
-        
-        # Apply friction even in kinematic mode for proper stopping
-        F_roll_kin = m * g * Cr_roll
-        if abs(vx) > 0.01:
-            friction_decel_kin = F_roll_kin / m * np.sign(vx)
-        else:
-            friction_decel_kin = 0.0
-        
-        # Velocity derivative with friction (stops the vehicle)
-        vx_dot_kin = u[1] - friction_decel_kin
-        
-        # Force complete stop when very slow and no acceleration commanded
-        if abs(vx) < 0.02 and abs(u[1]) < 0.01:
-            vx_dot_kin = -vx / 0.1  # Damp to zero quickly
-        
-        f = [
-            vx * math.cos(psi + beta),          # Ẋ
-            vx * math.sin(psi + beta),          # Ẏ
-            u[0],                                # δ̇
-            vx_dot_kin,                          # v̇_x (with friction)
-            vx / lwb * math.tan(delta) * math.cos(beta) if abs(vx) > 0.01 else 0.0,  # ψ̇
-            0.0,                                 # ṙ (simplified)
-            0.0,                                 # v̇_y (simplified)
-        ]
-    else:
-        # Full qLPV dynamics (matching observer equations)
-        
-        # Aerodynamic drag: F_drag = 0.5 * rho * Cd * Af * vx^2 (opposes motion)
-        # Sign-preserving drag with safety clamp to prevent overflow
-        F_roll = m * g * Cr_roll
-        vx_clamped = np.clip(vx, -10.0, 10.0) # Safety clamp for drag calculation only
-        F_drag = 0.5 * rho_air * Cd_aero * Af * vx_clamped * abs(vx_clamped) 
-        
-        # Friction force direction (opposes velocity)
-        if abs(vx) > 0.01:  # Only apply when moving
-            friction_decel = (F_roll + F_drag) / m * np.sign(vx)
-        else:
-            friction_decel = 0.0
-            # Also damp out residual velocity when nearly stopped
-            if abs(vx) < 0.05:
-                vx = 0.0  # Stop completely when very slow
-        
-        # v̇_x = a - μg + r·v_y - (F_yf·sin(δ))/m - friction_decel
-        vx_dot = u[1] - mu * g + r * vy - (Fyf * sin_delta) / m - friction_decel
-        
-        # v̇_y = (F_yr + F_yf·cos(δ))/m - r·v_x
-        vy_dot = (Fyr + Fyf * cos_delta) / m - r * vx
-        
-        # ψ̇ = r
-        psi_dot = r
-        
-        # ṙ = (l_f·F_yf·cos(δ) - l_r·F_yr) / I_z
-        r_dot = (lf * Fyf * cos_delta - lr * Fyr) / Iz
-        
-        # Ẋ = v_x·cos(ψ) - v_y·sin(ψ)
-        X_dot = vx * cos_psi - vy * sin_psi
-        
-        # Ẏ = v_x·sin(ψ) + v_y·cos(ψ)
-        Y_dot = vx * sin_psi + vy * cos_psi
-        
-        # State derivatives in CommonRoad order
-        f = [
-            X_dot,      # x[0] = X
-            Y_dot,      # x[1] = Y
-            u[0],       # x[2] = δ (steering rate)
-            vx_dot,     # x[3] = v_x
-            psi_dot,    # x[4] = ψ
-            r_dot,      # x[5] = r
-            vy_dot,     # x[6] = v_y
-        ]
-    
-    return f
+    return alpha_f, alpha_r
 
 
+def _compute_normal_loads(m: float, lf: float, lr: float,
+                          h_cg: float, a_long: float) -> Tuple[float, float]:
+    """
+    Compute vertical tire loads with longitudinal load transfer.
+    
+    Args:
+        m: Vehicle mass [kg]
+        lf: Distance CG to front axle [m]
+        lr: Distance CG to rear axle [m]
+        h_cg: Center of gravity height [m]
+        a_long: Longitudinal acceleration [m/s²]
+    
+    Returns:
+        (Fz_f, Fz_r): Front and rear normal loads [N]
+    """
+    wheelbase = lf + lr
+    Fz_f = (m * GRAVITY * lr - m * a_long * h_cg) / wheelbase
+    Fz_r = (m * GRAVITY * lf + m * a_long * h_cg) / wheelbase
+    return max(Fz_f, 0.01), max(Fz_r, 0.01)
+
+
+def _magic_formula(alpha: float, B: float, C: float, D: float, E: float) -> float:
+    """
+    Pacejka Magic Formula for tire lateral force.
+    
+    F = D * sin(C * arctan(B*α - E*(B*α - arctan(B*α))))
+    """
+    Ba = B * alpha
+    return D * math.sin(C * math.atan(Ba - E * (Ba - math.atan(Ba))))
+
+
+# =============================================================================
+# Tire Force Models
+# =============================================================================
 def compute_tire_forces_linear(alpha_f: float, alpha_r: float,
-                                Cf: float, Cr: float) -> Tuple[float, float]:
+                               Cf: float, Cr: float) -> Tuple[float, float]:
     """
     Linear tire model: F_y = C * α
     
@@ -221,206 +144,179 @@ def compute_tire_forces_linear(alpha_f: float, alpha_r: float,
         Cr: Rear cornering stiffness [N/rad]
     
     Returns:
-        Tuple of (Fyf, Fyr) - lateral tire forces [N]
+        (Fyf, Fyr): Lateral tire forces [N]
     """
-    Fyf = Cf * alpha_f
-    Fyr = Cr * alpha_r
-    return Fyf, Fyr
+    return Cf * alpha_f, Cr * alpha_r
 
 
 def compute_tire_forces_load_transfer(alpha_f: float, alpha_r: float,
-                                       p, a_long: float) -> Tuple[float, float]:
+                                      p, a_long: float) -> Tuple[float, float]:
     """
-    New tire model based on dynamic load transfer and normalized stiffness.
+    Linear tire model with dynamic load transfer.
     
-    Formula: Fy,i = mu * Cs,i * Fz,i * alpha_i
+    Formula: Fy = μ_road * Cs * Fz * α
     
-    Load transfer:
-        Fzf = (m*g*lr - m*a_long*h_cg) / (lf + lr)
-        Fzr = (m*g*lf + m*a_long*h_cg) / (lf + lr)
+    Args:
+        alpha_f: Front slip angle [rad]
+        alpha_r: Rear slip angle [rad]
+        p: Vehicle parameters
+        a_long: Longitudinal acceleration [m/s²]
+    
+    Returns:
+        (Fyf, Fyr): Lateral tire forces [N]
     """
-    g = 9.81
-    m = p.m
-    lf = p.a
-    lr = p.b
-    h_cg = getattr(p, 'h_cg', 0.07) # Center of gravity height
-    mu_road = getattr(p, 'mu_road', 1.0) # Friction coefficient
+    # Vehicle parameters
+    h_cg = _get_param(p, 'h_cg', 0.07)
+    mu_road = _get_param(p, 'mu_road', 1.0)
+    Csf = _get_param(p, 'Csf', 30.0)  # Normalized stiffness [N/N/rad]
+    Csr = _get_param(p, 'Csr', 30.0)
     
-    # Normalized cornering stiffness (N/N/rad)
-    Csf = getattr(p, 'Csf', 30.0) 
-    Csr = getattr(p, 'Csr', 30.0)
-
-    # Vertical forces with longitudinal load transfer
-    Fzf = (m * g * lr - m * a_long * h_cg) / (lf + lr)
-    Fzr = (m * g * lf + m * a_long * h_cg) / (lf + lr)
+    # Compute normal loads
+    Fz_f, Fz_r = _compute_normal_loads(p.m, p.a, p.b, h_cg, a_long)
     
-    # Non-negative check
-    Fzf = max(Fzf, 0.0)
-    Fzr = max(Fzr, 0.0)
+    # Dynamic cornering stiffness: C_dyn = μ * Cs * Fz
+    Cf_dyn = mu_road * Csf * Fz_f
+    Cr_dyn = mu_road * Csr * Fz_r
     
-    # Dynamic Cornering Stiffness (Ci = mu_road * Cs_i * Fz_i)
-    Cf_dyn = mu_road * Csf * Fzf
-    Cr_dyn = mu_road * Csr * Fzr
-    
-    # Lateral tire forces
-    Fyf = Cf_dyn * alpha_f
-    Fyr = Cr_dyn * alpha_r
-    
-    return Fyf, Fyr
+    return Cf_dyn * alpha_f, Cr_dyn * alpha_r
 
 
 def compute_tire_forces_pacejka(alpha_f: float, alpha_r: float,
-                                 p, vx: float, a_long: float = 0.0) -> Tuple[float, float]:
+                                p, vx: float, a_long: float = 0.0) -> Tuple[float, float]:
     """
-    Pacejka tire model with longitudinal load transfer
+    Pacejka Magic Formula tire model with load transfer.
     
     Args:
         alpha_f: Front slip angle [rad]
         alpha_r: Rear slip angle [rad]
         p: Vehicle parameters with tire sub-object
         vx: Longitudinal velocity [m/s]
-        a_long: Longitudinal acceleration for load transfer [m/s^2]
-
+        a_long: Longitudinal acceleration [m/s²]
     
     Returns:
-        Tuple of (Fyf, Fyr) - lateral tire forces [N]
+        (Fyf, Fyr): Lateral tire forces [N]
     """
-    g = 9.81
-    m = p.m
-    lf = p.a
-    lr = p.b
-    h_cg = getattr(p, 'h_cg', 0.1)
+    h_cg = _get_param(p, 'h_cg', 0.1)
     
     # Tire parameters
     tire = p.tire
-    mu = tire.p_dy1       # Peak friction coefficient
-    Cy = tire.p_cy1       # Shape factor C
-    Ky = tire.p_ky1       # Stiffness factor for B computation
-    Ey = tire.p_ey1       # Curvature factor E
+    mu = tire.p_dy1   # Peak friction coefficient
+    Cy = tire.p_cy1   # Shape factor
+    Ky = tire.p_ky1   # Stiffness factor
+    Ey = tire.p_ey1   # Curvature factor
     
-    # Compute normal forces with dynamic load transfer
-    Fz_f = (m * g * lr - m * a_long * h_cg) / (lf + lr)
-    Fz_r = (m * g * lf + m * a_long * h_cg) / (lf + lr)
+    # Normal loads with load transfer
+    Fz_f, Fz_r = _compute_normal_loads(p.m, p.a, p.b, h_cg, a_long)
     
-    # Ensure loads are non-negative
-    Fz_f = max(Fz_f, 0.01)
-    Fz_r = max(Fz_r, 0.01)
+    # Peak lateral forces
+    Dyf, Dyr = mu * Fz_f, mu * Fz_r
     
-    # Peak lateral force
-    Dyf = mu * Fz_f
-    Dyr = mu * Fz_r
-    
-    # Stiffness factor B = Ky / (Cy * Dy)
+    # Stiffness factors: B = Ky / (Cy * Dy)
     Byf = -Ky / (Cy * Dyf) if abs(Dyf) > 0.1 else 20.0
     Byr = -Ky / (Cy * Dyr) if abs(Dyr) > 0.1 else 20.0
     
-    # Magic formula: F = D * sin(C * arctan(B*α - E*(B*α - arctan(B*α))))
-    def magic_formula(alpha, B, C, D, E):
-        Ba = B * alpha
-        Fy = D * math.sin(C * math.atan(Ba - E * (Ba - math.atan(Ba))))
-        return Fy
-    
-    Fyf = magic_formula(alpha_f, Byf, Cy, Dyf, Ey)
-    Fyr = magic_formula(alpha_r, Byr, Cy, Dyr, Ey)
-    
-    return Fyf, Fyr
+    return _magic_formula(alpha_f, Byf, Cy, Dyf, Ey), _magic_formula(alpha_r, Byr, Cy, Dyr, Ey)
 
 
+def compute_tire_forces(alpha_f: float, alpha_r: float, p,
+                        tire_mode: str, vx: float = 1.0,
+                        a_long: float = 0.0) -> Tuple[float, float]:
+    """
+    Unified tire force computation with mode selection.
+    
+    Args:
+        alpha_f: Front slip angle [rad]
+        alpha_r: Rear slip angle [rad]
+        p: Vehicle parameters
+        tire_mode: 'static_linear', 'dynamic_linear', or 'pacejka'
+        vx: Longitudinal velocity [m/s]
+        a_long: Longitudinal acceleration [m/s²]
+    
+    Returns:
+        (Fyf, Fyr): Lateral tire forces [N]
+    """
+    Cf = _get_param(p, 'Cf', 120.0)
+    Cr = _get_param(p, 'Cr', 120.0)
+    
+    if tire_mode == 'static_linear':
+        return compute_tire_forces_linear(alpha_f, alpha_r, Cf, Cr)
+    elif tire_mode == 'dynamic_linear':
+        return compute_tire_forces_load_transfer(alpha_f, alpha_r, p, a_long)
+    elif tire_mode == 'pacejka' and hasattr(p, 'tire'):
+        return compute_tire_forces_pacejka(alpha_f, alpha_r, p, vx, a_long)
+    else:
+        # Fallback to dynamic linear
+        return compute_tire_forces_load_transfer(alpha_f, alpha_r, p, a_long)
+
+
+# =============================================================================
+# Tire Residuals and Measurements
+# =============================================================================
 def get_tire_residuals(alpha_f: float, alpha_r: float,
                        Cf: float, Cr: float, p,
                        vx: float = 1.0, a_long: float = 0.0) -> Tuple[float, float]:
     """
-    Compute tire residuals (ground truth for observer testing)
+    Compute tire residuals (ground truth for observer testing).
     
-    w_r = F_yr_pacejka - F_yr_linear = F_yr_true - C_r * α_r
-    w_f = F_yf_pacejka - F_yf_linear = F_yf_true - C_f * α_f
-    
-    These are the TRUE residuals that the observer should estimate.
+    Residual = True tire force - Linear tire force
+        w_r = F_yr_true - C_r * α_r
+        w_f = F_yf_true - C_f * α_f
     
     Args:
         alpha_f: Front slip angle [rad]
         alpha_r: Rear slip angle [rad]
         Cf: Front cornering stiffness [N/rad]
         Cr: Rear cornering stiffness [N/rad]
-        p: Vehicle parameters with tire sub-object
+        p: Vehicle parameters
         vx: Longitudinal velocity [m/s]
-        a_long: Longitudinal acceleration for load transfer [m/s^2]
+        a_long: Longitudinal acceleration [m/s²]
     
     Returns:
-        Tuple of (w_r, w_f) - tire force residuals [N]
+        (w_r, w_f): Tire force residuals [N]
     """
-    # Linear tire forces (Reference model used by observer)
+    # Linear (reference) forces
     Fyf_linear, Fyr_linear = compute_tire_forces_linear(alpha_f, alpha_r, Cf, Cr)
     
-    # True nonlinear tire forces (Truth model)
+    # True (nonlinear) forces
     if hasattr(p, 'tire'):
         Fyf_true, Fyr_true = compute_tire_forces_pacejka(alpha_f, alpha_r, p, vx, a_long)
     else:
-        # If no Pacejka, use the dynamic linear model as truth
         Fyf_true, Fyr_true = compute_tire_forces_load_transfer(alpha_f, alpha_r, p, a_long)
     
-    # Residuals = True - Linear
-    w_r = Fyr_true - Fyr_linear
-    w_f = Fyf_true - Fyf_linear
-    
-    return w_r, w_f
+    return Fyr_true - Fyr_linear, Fyf_true - Fyf_linear
 
 
-def get_lateral_acceleration(Fyf: float, Fyr: float, delta: float,
-                              m: float) -> float:
+def get_lateral_acceleration(Fyf: float, Fyr: float, delta: float, m: float) -> float:
     """
-    Compute lateral acceleration for observer measurement
-    
-    a_y = (F_yr + F_yf * cos(δ)) / m
-    
-    Args:
-        Fyf: Front lateral tire force [N]
-        Fyr: Rear lateral tire force [N]
-        delta: Steering angle [rad]
-        m: Vehicle mass [kg]
-    
-    Returns:
-        a_y: Lateral acceleration [m/s²]
+    Compute lateral acceleration: a_y = (F_yr + F_yf·cos(δ)) / m
     """
     return (Fyr + Fyf * math.cos(delta)) / m
 
 
+# =============================================================================
+# State Conversion Utilities
+# =============================================================================
 def state_qlpv_to_observer(x_qlpv: np.ndarray) -> np.ndarray:
     """
-    Convert qLPV state vector to observer state order
+    Convert qLPV state to observer state format.
     
-    qLPV:     [X, Y, δ, v_x, ψ, r, v_y] (7D)
-    Observer: [v_x, v_y, ψ, r, X, Y]    (6D)
-    
-    Args:
-        x_qlpv: qLPV state vector (7D)
-    
-    Returns:
-        Observer state vector (6D)
+    qLPV:     [X, Y, δ, v_x, ψ, r, v_y] → Observer: [v_x, v_y, ψ, r, X, Y]
     """
     return np.array([
-        x_qlpv[3],  # v_x
-        x_qlpv[6],  # v_y
-        x_qlpv[4],  # ψ
-        x_qlpv[5],  # r
-        x_qlpv[0],  # X
-        x_qlpv[1],  # Y
+        x_qlpv[IDX.VX],   # v_x
+        x_qlpv[IDX.VY],   # v_y
+        x_qlpv[IDX.PSI],  # ψ
+        x_qlpv[IDX.R],    # r
+        x_qlpv[IDX.X],    # X
+        x_qlpv[IDX.Y],    # Y
     ])
 
 
 def state_observer_to_qlpv(x_obs: np.ndarray, delta: float = 0.0) -> np.ndarray:
     """
-    Convert observer state vector to qLPV state order
+    Convert observer state to qLPV state format.
     
-    Observer: [v_x, v_y, ψ, r, X, Y]    (6D)
-    qLPV:     [X, Y, δ, v_x, ψ, r, v_y] (7D)
-    
-    Args:
-        x_obs: Observer state vector (6D)
-        delta: Steering angle to include [rad]
-    
-    Returns:
-        qLPV state vector (7D)
+    Observer: [v_x, v_y, ψ, r, X, Y] → qLPV: [X, Y, δ, v_x, ψ, r, v_y]
     """
     return np.array([
         x_obs[4],   # X
@@ -433,168 +329,348 @@ def state_observer_to_qlpv(x_obs: np.ndarray, delta: float = 0.0) -> np.ndarray:
     ])
 
 
+# =============================================================================
+# Dynamics Sub-functions
+# =============================================================================
+def _kinematic_dynamics(vx: float, psi: float, delta: float, u: list,
+                        lf: float, lr: float, m: float, Cr_roll: float) -> list:
+    """
+    Simplified kinematic model for low velocities.
+    
+    Args:
+        vx: Longitudinal velocity [m/s]
+        psi: Yaw angle [rad]
+        delta: Steering angle [rad]
+        u: Control inputs [δ_dot, a]
+        lf, lr: Axle distances [m]
+        m: Vehicle mass [kg]
+        Cr_roll: Rolling resistance coefficient
+    
+    Returns:
+        State derivatives (7D list)
+    """
+    wheelbase = lf + lr
+    beta = math.atan2(lr * math.tan(delta), wheelbase) if abs(delta) > 0.001 else 0.0
+    
+    # Friction deceleration
+    F_roll = m * GRAVITY * Cr_roll
+    friction_decel = (F_roll / m * np.sign(vx)) if abs(vx) > 0.01 else 0.0
+    
+    # Velocity derivative
+    vx_dot = u[1] - friction_decel
+    
+    # Damp to zero when nearly stopped with no throttle
+    if abs(vx) < 0.02 and abs(u[1]) < 0.01:
+        vx_dot = -vx / 0.1
+    
+    # Yaw rate (kinematic)
+    psi_dot = (vx / wheelbase * math.tan(delta) * math.cos(beta)) if abs(vx) > 0.01 else 0.0
+    
+    return [
+        vx * math.cos(psi + beta),  # Ẋ
+        vx * math.sin(psi + beta),  # Ẏ
+        u[0],                        # δ̇
+        vx_dot,                      # v̇_x
+        psi_dot,                     # ψ̇
+        0.0,                         # ṙ (simplified)
+        0.0,                         # v̇_y (simplified)
+    ]
+
+
+def _dynamic_qlpv(vx: float, vy: float, psi: float, r: float, delta: float,
+                  u: list, Fyf: float, Fyr: float,
+                  lf: float, lr: float, m: float, Iz: float,
+                  mu: float, Cr_roll: float, Cd_aero: float, Af: float,
+                  cos_psi: float, sin_psi: float,
+                  cos_delta: float, sin_delta: float) -> list:
+    """
+    Full qLPV dynamic model equations.
+    
+    Args:
+        vx, vy: Body-frame velocities [m/s]
+        psi: Yaw angle [rad]
+        r: Yaw rate [rad/s]
+        delta: Steering angle [rad]
+        u: Control inputs [δ_dot, a]
+        Fyf, Fyr: Lateral tire forces [N]
+        lf, lr: Axle distances [m]
+        m: Mass [kg]
+        Iz: Yaw inertia [kg·m²]
+        mu: Road friction coefficient
+        Cr_roll: Rolling resistance coefficient
+        Cd_aero: Aerodynamic drag coefficient
+        Af: Frontal area [m²]
+        cos_psi, sin_psi: Precomputed trig values
+        cos_delta, sin_delta: Precomputed trig values
+    
+    Returns:
+        State derivatives (7D list)
+    """
+    # Rolling resistance and aerodynamic drag
+    F_roll = m * GRAVITY * Cr_roll
+    vx_clamped = np.clip(vx, -10.0, 10.0)
+    F_drag = 0.5 * AIR_DENSITY * Cd_aero * Af * vx_clamped * abs(vx_clamped)
+    
+    # Total friction deceleration
+    if abs(vx) > 0.01:
+        friction_decel = (F_roll + F_drag) / m * np.sign(vx)
+    else:
+        friction_decel = 0.0
+        if abs(vx) < VX_STOP_THRESHOLD:
+            vx = 0.0
+    
+    # State derivatives (qLPV equations)
+    vx_dot = u[1] - mu * GRAVITY + r * vy - (Fyf * sin_delta) / m - friction_decel
+    vy_dot = (Fyr + Fyf * cos_delta) / m - r * vx
+    psi_dot = r
+    r_dot = (lf * Fyf * cos_delta - lr * Fyr) / Iz
+    X_dot = vx * cos_psi - vy * sin_psi
+    Y_dot = vx * sin_psi + vy * cos_psi
+    
+    return [X_dot, Y_dot, u[0], vx_dot, psi_dot, r_dot, vy_dot]
+
+
+# =============================================================================
+# Main Dynamics Function
+# =============================================================================
+def vehicle_dynamics_qlpv(x, u_init, p, tire_mode: str = 'pacejka'):
+    """
+    qLPV vehicle dynamics matching observer model.
+    
+    Args:
+        x: State vector [X, Y, δ, v_x, ψ, r, v_y] (7D)
+        u_init: Control input [δ_dot, a] (steering rate, acceleration)
+        p: Vehicle parameters object
+        tire_mode: Tire model ('static_linear', 'dynamic_linear', 'pacejka')
+    
+    Returns:
+        f: State derivatives (7D list)
+    
+    State Definitions (CommonRoad):
+        x[0] = X     - Global x-position [m]
+        x[1] = Y     - Global y-position [m]
+        x[2] = δ     - Steering angle [rad]
+        x[3] = v_x   - Longitudinal velocity [m/s]
+        x[4] = ψ     - Yaw angle [rad]
+        x[5] = r     - Yaw rate [rad/s]
+        x[6] = v_y   - Lateral velocity [m/s]
+    """
+    # Handle NaN inputs
+    if np.isnan(x).any():
+        return [0.0] * IDX.DIM
+    
+    # Extract states
+    X, Y, delta, vx, psi, r, vy = x
+    
+    # Vehicle parameters
+    lf, lr = p.a, p.b
+    m, Iz = p.m, p.I_z
+    mu = _get_param(p, 'mu', 0.01)
+    Cr_roll = _get_param(p, 'Cr_roll', 0.015)
+    Cd_aero = _get_param(p, 'Cd_aero', 0.3)
+    Af = _get_param(p, 'Af', 0.05)
+    
+    # Apply constraints to control inputs
+    u = [
+        steering_constraints(delta, u_init[0], p.steering),
+        acceleration_constraints(vx, u_init[1], p.longitudinal)
+    ]
+    
+    # Minimum velocity for slip angle calculation
+    vx_min = _get_param(p.longitudinal, 'v_switch', 0.5) if hasattr(p, 'longitudinal') else 0.5
+    vx_safe = max(abs(vx), vx_min)
+    
+    # Compute slip angles and tire forces
+    alpha_f, alpha_r = _compute_slip_angles(vy, r, delta, lf, lr, vx_safe)
+    Fyf, Fyr = compute_tire_forces(alpha_f, alpha_r, p, tire_mode, vx, u[1])
+    
+    # Precompute trig functions
+    cos_psi, sin_psi = math.cos(psi), math.sin(psi)
+    cos_delta, sin_delta = math.cos(delta), math.sin(delta)
+    
+    # Switch to kinematic model at low velocities
+    if abs(vx) < VX_KINEMATIC_THRESHOLD:
+        return _kinematic_dynamics(vx, psi, delta, u, lf, lr, m, Cr_roll)
+    
+    # Full dynamic model
+    return _dynamic_qlpv(
+        vx, vy, psi, r, delta, u, Fyf, Fyr,
+        lf, lr, m, Iz, mu, Cr_roll, Cd_aero, Af,
+        cos_psi, sin_psi, cos_delta, sin_delta
+    )
+
+
+# =============================================================================
+# Vehicle Model Class
+# =============================================================================
 class QLPVVehicleModel:
     """
-    Class wrapper for qLPV vehicle dynamics with tire residual tracking
+    qLPV vehicle dynamics wrapper with tire residual tracking.
     
-    This class maintains the vehicle state and provides:
-    - State integration with qLPV dynamics
-    - True tire residual computation (ground truth)
-    - Measurement generation for observer testing
+    Provides:
+        - State integration with qLPV dynamics
+        - True tire residual computation (ground truth)
+        - Measurement generation for observer testing
+    
+    Attributes:
+        state: Current state vector [X, Y, δ, v_x, ψ, r, v_y]
+        w_r, w_f: Tire residuals (rear, front)
+        Fyf, Fyr: True tire forces
+        a_y: Lateral acceleration
     """
     
-    # State indices (CommonRoad convention)
-    IDX_X = 0
-    IDX_Y = 1
-    IDX_DELTA = 2
-    IDX_VX = 3
-    IDX_PSI = 4
-    IDX_R = 5
-    IDX_VY = 6
-    STATE_DIM = 7
-    
-    def __init__(self, params, sample_time: float = 0.02,
-                  tire_mode= 'pacejka'):
+    def __init__(self, params, sample_time: float = 0.02, tire_mode: str = 'pacejka'):
         """
-        Initialize qLPV vehicle model
+        Initialize qLPV vehicle model.
         
         Args:
             params: Vehicle parameters object
             sample_time: Integration time step [s]
-            tire_mode: Tire model selection: 'static_linear', 'dynamic_linear', 'pacejka'
+            tire_mode: Tire model selection
         """
         self.params = params
         self.Ts = sample_time
         self.tire_mode = tire_mode
-        # Extract cornering stiffness for residual computation
-        self.Cf = getattr(params, 'Cf', 120.0)
-        self.Cr = getattr(params, 'Cr', 120.0)
         
-        # State vector [X, Y, δ, v_x, ψ, r, v_y]
-        self.state = np.zeros(self.STATE_DIM)
+        # Cornering stiffness for residual computation
+        self.Cf = _get_param(params, 'Cf', 120.0)
+        self.Cr = _get_param(params, 'Cr', 120.0)
         
-        # True tire residuals (ground truth)
-        self.w_r = 0.0  # Rear tire residual
-        self.w_f = 0.0  # Front tire residual
-        
-        # True tire forces
-        self.Fyf = 0.0  # Front lateral force
-        self.Fyr = 0.0  # Rear lateral force
-        
-        # Lateral acceleration (for observer measurement)
+        # Initialize state and tire variables
+        self._reset_variables()
+    
+    def _reset_variables(self):
+        """Reset all state and tire variables to zero."""
+        self.state = np.zeros(IDX.DIM)
+        self.w_r = self.w_f = 0.0
+        self.Fyf = self.Fyr = 0.0
+        self.Fyf_linear = self.Fyr_linear = 0.0
         self.a_y = 0.0
-        
-        # Slip angles
-        self.alpha_f = 0.0
-        self.alpha_r = 0.0
+        self.alpha_f = self.alpha_r = 0.0
     
     def reset(self, initial_state: np.ndarray):
         """
-        Reset vehicle state
+        Reset vehicle state.
         
         Args:
-            initial_state: Initial state vector (7D qLPV or 6D observer format)
+            initial_state: Initial state (7D qLPV or 6D observer format)
         """
-        if len(initial_state) == 7:
+        if len(initial_state) == IDX.DIM:
             self.state = initial_state.copy()
         elif len(initial_state) == 6:
-            # Convert from observer format
             self.state = state_observer_to_qlpv(initial_state, 0.0)
         else:
-            raise ValueError(f"Invalid state dimension: {len(initial_state)}")
+            raise ValueError(f"Invalid state dimension: {len(initial_state)}, expected 6 or 7")
         
-        self.w_r = 0.0
-        self.w_f = 0.0
-        self.Fyf = 0.0
-        self.Fyr = 0.0
+        # Reset tire variables
+        self.w_r = self.w_f = 0.0
+        self.Fyf = self.Fyr = 0.0
+        self.Fyf_linear = self.Fyr_linear = 0.0
         self.a_y = 0.0
     
     def step(self, control_input: np.ndarray) -> np.ndarray:
         """
-        Integrate vehicle dynamics for one time step
+        Integrate dynamics for one time step.
         
         Args:
-            control_input: Control [δ_dot, a] (steering rate, acceleration)
+            control_input: Control [δ_dot, a]
         
         Returns:
             New state vector (7D)
         """
-        # Compute derivatives
+        # Compute and apply derivatives
         f = vehicle_dynamics_qlpv(self.state, control_input, self.params,
-                                   tire_mode=self.tire_mode)
+                                  tire_mode=self.tire_mode)
+        self.state += np.array(f) * self.Ts
         
-        # Euler integration
-        for i in range(self.STATE_DIM):
-            self.state[i] += f[i] * self.Ts
-        
-        # Update tire forces and residuals with dynamic load transfer
+        # Update tire information
         self._update_tire_info(control_input[1])
         
         return self.state.copy()
     
     def _update_tire_info(self, a_long: float = 0.0):
         """
-        Update tire forces, residuals, and lateral acceleration
+        Update tire forces, residuals, and lateral acceleration.
         
         Args:
-            a_long: Longitudinal acceleration for load transfer [m/s^2]
+            a_long: Longitudinal acceleration for load transfer [m/s²]
         """
-        vx = max(abs(self.state[self.IDX_VX]), 0.5)
-        vy = self.state[self.IDX_VY]
-        r = self.state[self.IDX_R]
-        delta = self.state[self.IDX_DELTA]
-        
-        lf = self.params.a
-        lr = self.params.b
+        vx = max(abs(self.state[IDX.VX]), VX_MIN_SAFE)
+        vy = self.state[IDX.VY]
+        r = self.state[IDX.R]
+        delta = self.state[IDX.DELTA]
         
         # Slip angles
-        self.alpha_f = delta - (vy + lf * r) / vx
-        self.alpha_r = -(vy - lr * r) / vx
+        self.alpha_f, self.alpha_r = _compute_slip_angles(
+            vy, r, delta, self.params.a, self.params.b, vx)
         
-        # True tire forces (Truth model)
-        if self.tire_mode == 'pacejka' and hasattr(self.params, 'tire'):
-            self.Fyf, self.Fyr = compute_tire_forces_pacejka(
-                self.alpha_f, self.alpha_r, self.params, vx, a_long)
-        elif self.tire_mode == 'static_linear':
-            self.Fyf, self.Fyr = compute_tire_forces_load_transfer(
-                self.alpha_f, self.alpha_r, self.params, vx, a_long)
-        elif self.tire_mode == 'dynamic_linear':
-            self.Fyf, self.Fyr = compute_tire_forces_linear(
-                self.alpha_f, self.alpha_r, self.params, vx, a_long)
+        # True tire forces
+        self.Fyf, self.Fyr = compute_tire_forces(
+            self.alpha_f, self.alpha_r, self.params, self.tire_mode, vx, a_long)
         
-        # Tire residuals (ground truth)
-        # Compares Truth model with Static Linear reference (Cf, Cr)
-        self.w_r, self.w_f = get_tire_residuals(
-            self.alpha_f, self.alpha_r, self.Cf, self.Cr, self.params, vx, a_long)
+        # Linear (reference) tire forces
+        self.Fyf_linear, self.Fyr_linear = compute_tire_forces_linear(
+            self.alpha_f, self.alpha_r, self.Cf, self.Cr)
+        
+        # Residuals: w = F_true - F_linear
+        self.w_r = self.Fyr - self.Fyr_linear
+        self.w_f = self.Fyf - self.Fyf_linear
         
         # Lateral acceleration
-        self.a_y = get_lateral_acceleration(
-            self.Fyf, self.Fyr, delta, self.params.m)
+        self.a_y = get_lateral_acceleration(self.Fyf, self.Fyr, delta, self.params.m)
     
+    # -------------------------------------------------------------------------
+    # State Getters
+    # -------------------------------------------------------------------------
     def get_observer_state(self) -> np.ndarray:
-        """Get state in observer format [v_x, v_y, ψ, r, X, Y]"""
+        """Get state in observer format [v_x, v_y, ψ, r, X, Y]."""
         return state_qlpv_to_observer(self.state)
     
     def get_observer_measurement(self) -> np.ndarray:
-        """
-        Get measurement vector for observer [v_x, r, ψ, X, Y, a_y]
-        
-        Returns:
-            Measurement vector (6D)
-        """
+        """Get measurement vector [v_x, r, ψ, X, Y, a_y]."""
         return np.array([
-            self.state[self.IDX_VX],   # v_x
-            self.state[self.IDX_R],    # r
-            self.state[self.IDX_PSI],  # ψ
-            self.state[self.IDX_X],    # X
-            self.state[self.IDX_Y],    # Y
-            self.a_y,                   # a_y
+            self.state[IDX.VX],
+            self.state[IDX.R],
+            self.state[IDX.PSI],
+            self.state[IDX.X],
+            self.state[IDX.Y],
+            self.a_y,
         ])
     
+    # -------------------------------------------------------------------------
+    # Tire Information Getters
+    # -------------------------------------------------------------------------
     def get_true_residuals(self) -> np.ndarray:
-        """Get true tire residuals [w_r, w_f]"""
+        """Get true tire residuals [w_r, w_f]."""
         return np.array([self.w_r, self.w_f])
     
     def get_true_tire_forces(self) -> np.ndarray:
-        """Get true tire forces [Fyr, Fyf]"""
+        """Get true tire forces [Fyr, Fyf]."""
         return np.array([self.Fyr, self.Fyf])
+    
+    def get_linear_tire_forces(self) -> np.ndarray:
+        """Get linear (reference) tire forces [Fyr_linear, Fyf_linear]."""
+        return np.array([self.Fyr_linear, self.Fyf_linear])
+    
+    def get_slip_angles(self) -> np.ndarray:
+        """Get slip angles [alpha_r, alpha_f] in radians."""
+        return np.array([self.alpha_r, self.alpha_f])
+    
+    def get_tire_info(self) -> Dict[str, float]:
+        """
+        Get complete tire information dictionary.
+        
+        Returns:
+            Dict with keys: Fyr_true, Fyf_true, Fyr_linear, Fyf_linear,
+                           w_r, w_f, alpha_r, alpha_f
+        """
+        return {
+            'Fyr_true': self.Fyr,
+            'Fyf_true': self.Fyf,
+            'Fyr_linear': self.Fyr_linear,
+            'Fyf_linear': self.Fyf_linear,
+            'w_r': self.w_r,
+            'w_f': self.w_f,
+            'alpha_r': self.alpha_r,
+            'alpha_f': self.alpha_f,
+        }

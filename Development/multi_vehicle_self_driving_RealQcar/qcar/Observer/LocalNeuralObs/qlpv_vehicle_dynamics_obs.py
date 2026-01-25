@@ -997,6 +997,36 @@ class QLPVVehicleDynamicsObs8D(QLPVVehicleDynamicsObs):
         
         return E
     
+    def compute_F_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+        """
+        Compute residual feedthrough matrix F(ρ) for 8D system
+        
+        Maps tire residuals [w_r, w_f] to measurements.
+        This is CRITICAL for UIO-style residual estimation!
+        
+        Even though a_y is a state in 8D system, the physical relationship
+        is: a_y = (F_yr + F_yf·cos(δ))/m = ... + (w_r + w_f·cos(δ))/m
+        
+        Without F in C_a, residuals have NO observability through measurements.
+        
+        Args:
+            rho: Scheduling parameters
+            
+        Returns:
+            F matrix (7×2) - feedthrough from [w_r, w_f] to measurements
+        """
+        F = np.zeros((MEAS_DIM_7D, 2))
+        
+        cos_d = rho.cos_delta
+        
+        # a_y measurement depends on tire residuals:
+        # a_y = (F_yr + F_yf·cos(δ))/m = (C_r·α_r + w_r + (C_f·α_f + w_f)·cos(δ))/m
+        # Therefore: ∂a_y/∂w_r = 1/m, ∂a_y/∂w_f = cos(δ)/m
+        F[MEAS8_IDX_AY, 0] = 1.0 / self.m  # w_r contribution to a_y
+        F[MEAS8_IDX_AY, 1] = cos_d / self.m  # w_f contribution to a_y
+        
+        return F
+    
     def compute_C_matrix(self, rho: SchedulingParameters, gps_available: bool = True) -> np.ndarray:
         """
         Compute output matrix C(ρ) for 8D system
@@ -1065,13 +1095,21 @@ class QLPVVehicleDynamicsObs8D(QLPVVehicleDynamicsObs):
         """
         Measurement function y = h(x, u, w) for 8D system
         
+        CRITICAL: Includes tire residual contribution to a_y measurement!
+        
+        Physical model: a_y_measured = a_y_state + (w_r + w_f·cos(δ))/m
+        
+        This ensures consistency with the F matrix in C_a, where the tire
+        residuals contribute to the predicted a_y measurement.
+        
         Args:
             x: State [vx, vy, psi, r, X, Y, ax, ay]
+            u: Control [δ, a] - needed for cos(δ) term
+            w: Tire residuals [w_r, w_f]
             
         Returns:
-            y: [vx, r, psi, X, Y, ay, ax]
+            y: [vx, r, psi, X, Y, ay, ax] where ay includes residual contribution
         """
-        # Linear direct measurement assumption for 8D state
         y = np.zeros(MEAS_DIM_7D)
         
         y[MEAS8_IDX_VX] = x[IDX8_VX]
@@ -1079,8 +1117,15 @@ class QLPVVehicleDynamicsObs8D(QLPVVehicleDynamicsObs):
         y[MEAS8_IDX_PSI] = x[IDX8_PSI]
         y[MEAS8_IDX_X] = x[IDX8_X]
         y[MEAS8_IDX_Y] = x[IDX8_Y]
-        y[MEAS8_IDX_AY] = x[IDX8_AY]
         y[MEAS8_IDX_AX] = x[IDX8_AX]
+        
+        # CRITICAL FIX: Include tire residual contribution to a_y
+        # a_y = a_y_state + F·w = a_y_state + (w_r + w_f·cos(δ))/m
+        delta = u[0] if len(u) > 0 else 0.0
+        cos_delta = np.cos(delta)
+        wr = w[0] if len(w) > 0 else 0.0
+        wf = w[1] if len(w) > 1 else 0.0
+        y[MEAS8_IDX_AY] = x[IDX8_AY] + (wr + wf * cos_delta) / self.m
         
         return y
     
@@ -1171,6 +1216,16 @@ class QLPVVehicleDynamicsObs8D(QLPVVehicleDynamicsObs):
         """
         Compute augmented system matrices for 8D system
         
+        CRITICAL FIX: Include F matrix in C_a for tire residual observability!
+        
+        Without F in C_a, the a_y measurement provides NO information to
+        update tire residual estimates w_r, w_f. This causes Kalman gain
+        for residuals to be effectively zero, resulting in w estimates
+        stuck at their initial values (typically zero).
+        
+        Physical relationship: a_y = (F_yr + F_yf·cos(δ))/m
+                             = (C_r·α_r + w_r + (C_f·α_f + w_f)·cos(δ))/m
+        
         Returns:
             Tuple of (A_a (10x10), B_a (10x2), C_a (7x10))
         """
@@ -1178,9 +1233,7 @@ class QLPVVehicleDynamicsObs8D(QLPVVehicleDynamicsObs):
         B = self.compute_B_matrix(rho)
         E = self.compute_E_matrix(rho)
         C = self.compute_C_matrix(rho)
-        # For augmented system, F is typically 0 if w is state-augmented 
-        # unless direct feedthrough exists. In 6D model, F was used.
-        # Here w is part of state, so 'E' moves to 'A'.
+        F = self.compute_F_matrix(rho)  # CRITICAL: F provides observability of w!
         
         # Construct 10D matrices
         A_a = np.zeros((AUGMENTED_DIM_10D, AUGMENTED_DIM_10D))
@@ -1192,9 +1245,10 @@ class QLPVVehicleDynamicsObs8D(QLPVVehicleDynamicsObs):
         
         C_a = np.zeros((MEAS_DIM_7D, AUGMENTED_DIM_10D))
         C_a[:, :STATE_DIM_8D] = C
-        # No direct feedthrough of w to y if using state a_y. 
-        # (In 6D, a_y dependend on w directly. In 8D, a_y is a state, 
-        # and we measure the state).
+        # CRITICAL FIX: Include F matrix for tire residual observability!
+        # Even though a_y is a state, the physical coupling means:
+        # y_ay = a_y_state + (w_r + w_f·cos(δ))/m (residual contribution)
+        C_a[:, STATE_DIM_8D:] = F
         
         return A_a, B_a, C_a
 

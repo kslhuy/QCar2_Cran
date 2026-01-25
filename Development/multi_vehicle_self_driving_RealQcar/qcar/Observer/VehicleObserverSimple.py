@@ -23,6 +23,7 @@ from collections import defaultdict
 
 from Observer.local_state_estimators import LocalEstimatorFactory, LocalStateEstimatorBase
 from Observer.fleet_state_estimators import FleetEstimatorFactory, FleetStateEstimatorBase
+from Observer.relative_state_estimators import RelativeEstimatorFactory, RelativeStateEstimatorBase
 from Observer.estimation_scopes import ScopeDataRecorder
 
 
@@ -114,6 +115,24 @@ class VehicleObserver:
         # Observer configuration (external per-vehicle overrides)
         self.observer_config = self._get_observer_config()
 
+        # Load relative estimator defaults
+        self.relative_config_defaults = {}
+        self.enable_relative = False
+        self.relative_estimator_type = 'sa_acc_uio'
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), 'config_relative_estimators.yaml')
+            with open(config_path, 'r') as f:
+                loaded = yaml.safe_load(f)
+                self.relative_config_defaults = loaded.get('relative', {})
+                self.relative_estimator_type = loaded.get('relative_estimator_type', 'sa_acc_uio')
+                self.enable_relative = loaded.get('enable_relative', False)
+                
+                self.vehicle_logger.logger.info(f"Loaded relative estimator config: {self.relative_estimator_type}, Enabled: {self.enable_relative}")
+        except Exception as e:
+            if self.vehicle_logger:
+                self.vehicle_logger.log_warning(f"Failed to load relative config file: {e}")
+
+
 
         
         # ===== Local State Estimator (pluggable) =====
@@ -126,6 +145,11 @@ class VehicleObserver:
         # This saves resources and ensures clean state when V2V starts
         self.v2v_active = False  # Track if V2V is active
         
+        # ===== Relative State Estimator (pluggable) =====
+        self.relative_estimator: Optional[RelativeStateEstimatorBase] = None
+        # Will be initialized if enabled
+
+        
         # ===== State Cache (for quick access) =====
         self.local_state = np.zeros(self.state_dim)
         self.position = np.zeros(3)  # [x, y, theta]
@@ -135,7 +159,11 @@ class VehicleObserver:
         # Fleet states (managed by fleet_estimator but cached here)
         self.fleet_states = np.zeros((self.state_dim , self.fleet_size))
         
+        # Relative states
+        self.relative_state = np.zeros(4) # Default size [delta, delta_dot, delta_ddot, f_c]
+        
         # ===== Sensor Data Cache =====
+
         self.sensor_data = {
             'motor_tach': 0.0,
             'gyro_z': 0.0,
@@ -144,7 +172,10 @@ class VehicleObserver:
             'timestamp': 0.0,
             'gps_valid': False,
             'gps_position': np.zeros(3),  # [x, y, theta]
+            'relative_measurement': np.zeros(2), # [delta, delta_dot] from YOLO etc.
+            'relative_measurement_valid': False,
         }
+
 
         
         # ===== Control and Dynamics Cache =====
@@ -170,7 +201,7 @@ class VehicleObserver:
         
         self.vehicle_logger.logger.info(
             # f"VehicleObserver initialized: vehicle_id={vehicle_id}, "
-            f"Observer config: {self.config.observer}, "
+            f"Observer config: {self.config.get('observer', {}) if isinstance(self.config, dict) else getattr(self.config, 'observer', {})}, "
             # f"local_estimator={local_estimator_type}, fleet_estimator={fleet_estimator_type}"
         )
 
@@ -261,6 +292,34 @@ class VehicleObserver:
                 logger=self.vehicle_logger
             )
     
+    def initialize_relative_estimator(self, config_overrides: Dict = None):
+        """
+        Initialize relative state estimator if enabled.
+        """
+        if not self.enable_relative:
+            return False
+            
+        try:
+            params = self.relative_config_defaults.get(self.relative_estimator_type, {})
+            if config_overrides:
+                params.update(config_overrides)
+                
+            self.relative_estimator = RelativeEstimatorFactory.create(
+                estimator_type=self.relative_estimator_type,
+                config=params,
+                logger=self.vehicle_logger
+            )
+            
+            self.vehicle_logger.logger.info(
+                f"Relative estimator initialized: {self.relative_estimator_type}"
+            )
+            return True
+        except Exception as e:
+            self.vehicle_logger.log_error(
+                f"Relative estimator initialization failed: {self.relative_estimator_type}", e
+            )
+            return False
+
     def initialize_local_estimator(self, gps=None, initial_pose=None, 
                                    estimator_params: Dict = None):
         """
@@ -455,6 +514,10 @@ class VehicleObserver:
             if self._should_update_fleet_observer(current_time):
                 self._update_fleet_observer_internal(dt) # Distributed
             
+            # Update relative observer (if enabled and measurements available)
+            self._update_relative_observer(dt)
+
+            
             return state_info
             
         except Exception as e:
@@ -624,6 +687,68 @@ class VehicleObserver:
             
         except Exception as e:
             self.vehicle_logger.log_error("Fleet observer update error", e)
+
+    def _update_relative_observer(self, dt: float):
+        """
+        Update relative state observer.
+        """
+        try:
+            if not self.enable_relative or self.relative_estimator is None:
+                return
+            
+            # Check for valid measurement (YOLO/Radar)
+            # If not valid, we might skip update or update with prediction only (if supported)
+            # The SA_ACC_UIO requires measurement y(k)
+            
+            # Need measurement: [delta, delta_dot]
+            # y_meas = self.sensor_data.get('relative_measurement')
+            # valid = self.sensor_data.get('relative_measurement_valid', False)
+            
+            # TEMP: If not valid, just return for now (or implement hold?)
+            # if not valid:
+            #    return
+                
+            # For now, let's assume if it's enabled, we try to use cached data
+            # Ideally this comes from vehicle_logic loop feeding update_sensor_data with new Yolo info
+            
+            y_meas = self.sensor_data['relative_measurement']
+            
+            # Preceding vehicle state (from V2V via fleet estimator)
+            # Assuming predecessor is id - 1. 
+            # TODO: logic to determine predecessor ID dynamically
+            pre_id = self.vehicle_id - 1
+            pre_state = None
+            if pre_id >= 0 and self.fleet_estimator:
+                # Get from fleet estimator cache
+                # fleet_states is [state_dim x fleet_size]
+                if pre_id < self.fleet_states.shape[1]:
+                    pre_state = self.fleet_states[:, pre_id]
+            
+            # Host state
+            host_state = self.local_state # [x, y, theta, v, a]
+            
+            # Update
+            self.relative_state = self.relative_estimator.update(
+                measurement=y_meas,
+                dt=dt,
+                control_input=self.control_input,
+                pre_vehicle_state=pre_state,
+                host_vehicle_state=host_state
+            )
+            
+        except Exception as e:
+            self.vehicle_logger.log_error("Relative observer update error", e)
+
+    def update_relative_measurement(self, measurement: np.ndarray):
+        """
+        Update relative measurement (e.g. from YOLO).
+        Args:
+            measurement: [delta, delta_dot]
+        """
+        with self.lock:
+            self.sensor_data['relative_measurement'] = measurement
+            self.sensor_data['relative_measurement_valid'] = True
+
 
     def set_local_estimator(self, estimator: LocalStateEstimatorBase):
         """

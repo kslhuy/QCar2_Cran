@@ -114,12 +114,12 @@ def run_simulation(scenario_name, throttle_profile, steering_profile, dt=0.001, 
     return t_log, results
 
 def plot_comparison(t, results, title):
-    fig, axs = plt.subplots(2, 2, figsize=(15, 10))
+    fig, axs = plt.subplots(3, 2, figsize=(16, 14))
     fig.suptitle(title, fontsize=16)
     
     # Trajectory
     for name, data in results.items():
-        axs[0, 0].plot(data['x'], data['y'], label=name)
+        axs[0, 0].plot(data['x'], data['y'], label=name, linewidth=2)
     axs[0, 0].set_title('Trajectory (X-Y)')
     axs[0, 0].set_xlabel('X [m]')
     axs[0, 0].set_ylabel('Y [m]')
@@ -127,62 +127,193 @@ def plot_comparison(t, results, title):
     axs[0, 0].grid(True)
     axs[0, 0].axis('equal')
     
-    # Velocity
+    # Longitudinal Velocity
     for name, data in results.items():
-        axs[0, 1].plot(t, data['vx'], label=name)
+        axs[0, 1].plot(t, data['vx'], label=name, linewidth=2)
     axs[0, 1].set_title('Longitudinal Velocity (vx)')
     axs[0, 1].set_xlabel('Time [s]')
     axs[0, 1].set_ylabel('vx [m/s]')
     axs[0, 1].legend()
     axs[0, 1].grid(True)
     
-    # Front Tire Force
+    # Lateral Velocity
     for name, data in results.items():
-        axs[1, 0].plot(t, data['Fyf'], label=name)
-    axs[1, 0].set_title('Front Lateral Tire Force (Fyf)')
+        axs[1, 0].plot(t, data['vy'], label=name, linewidth=2)
+    axs[1, 0].set_title('Lateral Velocity (vy)')
     axs[1, 0].set_xlabel('Time [s]')
-    axs[1, 0].set_ylabel('Force [N]')
+    axs[1, 0].set_ylabel('vy [m/s]')
     axs[1, 0].legend()
     axs[1, 0].grid(True)
     
-    # Rear Tire Force
+    # Slip Angles
     for name, data in results.items():
-        axs[1, 1].plot(t, data['Fyr'], label=name)
-    axs[1, 1].set_title('Rear Lateral Tire Force (Fyr)')
+        axs[1, 1].plot(t, np.rad2deg(data['alpha_f']), label=f'{name} - Front', linewidth=2)
+        axs[1, 1].plot(t, np.rad2deg(data['alpha_r']), label=f'{name} - Rear', linewidth=2, linestyle='--')
+    axs[1, 1].set_title('Slip Angles (αf, αr)')
     axs[1, 1].set_xlabel('Time [s]')
-    axs[1, 1].set_ylabel('Force [N]')
+    axs[1, 1].set_ylabel('Slip Angle [deg]')
     axs[1, 1].legend()
     axs[1, 1].grid(True)
     
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    # Front Tire Force
+    for name, data in results.items():
+        axs[2, 0].plot(t, data['Fyf'], label=name, linewidth=2)
+    axs[2, 0].set_title('Front Lateral Tire Force (Fyf)')
+    axs[2, 0].set_xlabel('Time [s]')
+    axs[2, 0].set_ylabel('Force [N]')
+    axs[2, 0].legend()
+    axs[2, 0].grid(True)
+    
+    # Rear Tire Force
+    for name, data in results.items():
+        axs[2, 1].plot(t, data['Fyr'], label=name, linewidth=2)
+    axs[2, 1].set_title('Rear Lateral Tire Force (Fyr)')
+    axs[2, 1].set_xlabel('Time [s]')
+    axs[2, 1].set_ylabel('Force [N]')
+    axs[2, 1].legend()
+    axs[2, 1].grid(True)
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.97])
     
     # Save plot
     filename = title.lower().replace(' ', '_').replace('-', '_') + ".png"
-    plt.savefig(filename)
+    plt.savefig(filename, dpi=150, bbox_inches='tight')
     print(f"Saved plot to {filename}")
     plt.show()
 
+def plot_combined_comparison(scenarios_data):
+    """Plot all scenarios in a single comparison figure"""
+    fig, axs = plt.subplots(4, 4, figsize=(24, 20))
+    fig.suptitle('Complete Tire Model Comparison - All Scenarios', fontsize=18)
+    
+    colors = {'Static Linear': 'blue', 'Dynamic Linear': 'red', 'Pacejka': 'green'}
+    
+    for i, (scenario_name, (t, results)) in enumerate(scenarios_data.items()):
+        row = i
+        
+        # Trajectory
+        for name, data in results.items():
+            axs[row, 0].plot(data['x'], data['y'], label=name, color=colors[name], linewidth=2)
+        axs[row, 0].set_title(f'{scenario_name} - Trajectory')
+        axs[row, 0].set_xlabel('X [m]')
+        axs[row, 0].set_ylabel('Y [m]')
+        if row == 0:
+            axs[row, 0].legend()
+        axs[row, 0].grid(True)
+        axs[row, 0].axis('equal')
+        
+        # Longitudinal Velocity
+        for name, data in results.items():
+            axs[row, 1].plot(t, data['vx'], label=name, color=colors[name], linewidth=2)
+        axs[row, 1].set_title(f'{scenario_name} - Long. Velocity')
+        axs[row, 1].set_xlabel('Time [s]')
+        axs[row, 1].set_ylabel('vx [m/s]')
+        if row == 0:
+            axs[row, 1].legend()
+        axs[row, 1].grid(True)
+        
+        # Lateral Velocity
+        for name, data in results.items():
+            axs[row, 2].plot(t, data['vy'], label=name, color=colors[name], linewidth=2)
+        axs[row, 2].set_title(f'{scenario_name} - Lat. Velocity')
+        axs[row, 2].set_xlabel('Time [s]')
+        axs[row, 2].set_ylabel('vy [m/s]')
+        if row == 0:
+            axs[row, 2].legend()
+        axs[row, 2].grid(True)
+        
+        # Slip Angles
+        for name, data in results.items():
+            axs[row, 3].plot(t, np.rad2deg(data['alpha_f']), label=f'{name} - αf', color=colors[name], linewidth=2)
+            axs[row, 3].plot(t, np.rad2deg(data['alpha_r']), label=f'{name} - αr', color=colors[name], linewidth=2, linestyle='--')
+        axs[row, 3].set_title(f'{scenario_name} - Slip Angles')
+        axs[row, 3].set_xlabel('Time [s]')
+        axs[row, 3].set_ylabel('Slip Angle [deg]')
+        if row == 0:
+            axs[row, 3].legend()
+        axs[row, 3].grid(True)
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+    plt.savefig("complete_tire_model_comparison.png", dpi=150, bbox_inches='tight')
+    print("Saved combined comparison to complete_tire_model_comparison.png")
+    plt.show()
+
 if __name__ == "__main__":
-    duration = 5.0
+    duration = 6.0
     dt = 0.001
     steps = int(duration / dt)
     
-    # --- Scenario 1: Steady Turn ---
-    throttle_1 = np.ones(steps) * 0.1
-    throttle_1[:int(0.5/dt)] = 0.5 # Initial push
+    # Store all scenarios for combined plot
+    scenarios_data = {}
+    
+    print("="*60)
+    print("ENHANCED TIRE MODEL COMPARISON - HIGH SPEED TESTS")
+    print("="*60)
+    
+    # --- Scenario 1: High-Speed Steady Turn ---
+    throttle_1 = np.ones(steps) * 0.6  # Much higher base throttle
+    throttle_1[:int(1.0/dt)] = 1.2     # Strong initial acceleration
     steering_1 = np.zeros(steps)
-    steering_1[int(0.5/dt):int(1.0/dt)] = 0.4 # Slowly start turning
+    steering_1[int(1.0/dt):int(2.0/dt)] = 0.6  # Sharper turn
+    steering_1[int(2.0/dt):] = 0.6             # Maintain turn
     
-    t1, res1 = run_simulation("Steady Turn", throttle_1, steering_1, dt, duration)
-    plot_comparison(t1, res1, "Tire Model Comparison - Steady Turn")
+    t1, res1 = run_simulation("High-Speed Steady Turn", throttle_1, steering_1, dt, duration)
+    plot_comparison(t1, res1, "Tire Model Comparison - High-Speed Steady Turn")
+    scenarios_data["High-Speed Steady Turn"] = (t1, res1)
     
-    # --- Scenario 2: Acceleration Turn ---
-    # Accelerating while mid-turn to see load transfer effect (reducing front grip, increasing rear)
-    throttle_2 = np.ones(steps) * 0.3
-    throttle_2[int(1.5/dt):int(3.5/dt)] = 0.8 # Sudden acceleration mid-turn
+    # --- Scenario 2: Aggressive Acceleration Turn ---
+    # Very aggressive acceleration while turning to stress tire models
+    throttle_2 = np.ones(steps) * 0.5
+    throttle_2[:int(0.8/dt)] = 1.5     # Very strong initial acceleration
+    throttle_2[int(2.0/dt):int(4.0/dt)] = 1.8  # Extreme acceleration mid-turn
     steering_2 = np.zeros(steps)
-    steering_2[int(0.5/dt):int(1.5/dt)] = 0.4 # Start turn
-    steering_2[int(1.5/dt):] = 0.4 # Keep steering constant to see path drift
+    steering_2[int(0.8/dt):int(2.0/dt)] = 0.7  # Sharp turn
+    steering_2[int(2.0/dt):] = 0.7             # Maintain sharp turn during acceleration
     
-    t2, res2 = run_simulation("Acceleration Turn", throttle_2, steering_2, dt, duration)
-    plot_comparison(t2, res2, "Tire Model Comparison - Acceleration Turn")
+    t2, res2 = run_simulation("Aggressive Acceleration Turn", throttle_2, steering_2, dt, duration)
+    plot_comparison(t2, res2, "Tire Model Comparison - Aggressive Acceleration Turn")
+    scenarios_data["Aggressive Acceleration Turn"] = (t2, res2)
+    
+    # --- Scenario 3: Extreme High-Speed Slalom ---
+    # High-speed weaving to really stress the nonlinear tire effects
+    throttle_3 = np.ones(steps) * 0.8
+    throttle_3[:int(1.0/dt)] = 2.0     # Maximum acceleration start
+    steering_3 = np.zeros(steps)
+    # Create slalom pattern with high frequency steering
+    for i in range(int(1.0/dt), steps):
+        t_current = i * dt
+        steering_3[i] = 0.8 * np.sin(4 * np.pi * (t_current - 1.0))  # High amplitude, fast slalom
+    
+    t3, res3 = run_simulation("Extreme High-Speed Slalom", throttle_3, steering_3, dt, duration)
+    plot_comparison(t3, res3, "Tire Model Comparison - Extreme High-Speed Slalom")
+    scenarios_data["Extreme High-Speed Slalom"] = (t3, res3)
+    
+    # --- Scenario 4: Extreme Lateral Maneuvers ---
+    # Sharp rapid turns with braking to maximize lateral forces and slip angles
+    throttle_4 = np.ones(steps) * 0.4
+    throttle_4[:int(0.5/dt)] = 1.8     # Very strong acceleration
+    throttle_4[int(2.5/dt):int(3.5/dt)] = -0.5  # Braking during turn
+    throttle_4[int(4.5/dt):int(5.5/dt)] = -0.8  # Heavy braking during opposite turn
+    
+    steering_4 = np.zeros(steps)
+    # Create extreme alternating sharp turns
+    steering_4[int(1.0/dt):int(2.5/dt)] = 1.0    # Maximum right turn
+    steering_4[int(2.5/dt):int(4.0/dt)] = -1.0   # Maximum left turn  
+    steering_4[int(4.0/dt):int(5.5/dt)] = 1.2    # Even sharper right turn
+    
+    t4, res4 = run_simulation("Extreme Lateral Maneuvers", throttle_4, steering_4, dt, duration)
+    plot_comparison(t4, res4, "Tire Model Comparison - Extreme Lateral Maneuvers")
+    scenarios_data["Extreme Lateral Maneuvers"] = (t4, res4)
+    
+    # Create combined comparison plot
+    print("\n" + "="*60)
+    print("GENERATING COMBINED COMPARISON PLOT...")
+    print("="*60)
+    plot_combined_comparison(scenarios_data)
+    
+    print("\n" + "="*60)
+    print("ANALYSIS COMPLETE!")
+    print("- All individual scenario plots saved")
+    print("- Combined comparison plot saved as 'complete_tire_model_comparison.png'")
+    print("- Check for significant differences in high-speed scenarios")
+    print("="*60)

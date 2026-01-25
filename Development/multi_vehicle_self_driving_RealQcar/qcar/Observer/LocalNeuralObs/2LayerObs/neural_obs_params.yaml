@@ -37,7 +37,7 @@ learning:
   weight_decay: 0.0
   
   # Regularization coefficient for f_nn - f_uk term
-  lambda_regularization: 0.2
+  lambda_regularization: 5.0
   
   # Learning mode: 'learningby_dict' (batch) or 'continuous_learning' (online)
   learning_mode: learningby_dict
@@ -48,7 +48,7 @@ learning:
   # Gradient computation method:
   #   - 'autodiff': PyTorch automatic differentiation (recommended, requires PyTorch)
   #   - 'analytical': Manual sensitivity propagation (faster, no PyTorch needed)
-  gradient_method: autodiff
+  gradient_method: analytical
 
 # ============================================================================
 # Observer Parameters

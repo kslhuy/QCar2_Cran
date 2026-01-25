@@ -37,11 +37,18 @@ pid:
   ei_max: 1.0                # Integral anti-windup limit
   v_ref: 0.6                # Default reference velocity (m/s)
 
-# Hybrid Longitudinal Controller Parameters (uses both CACC and PID)
-hybrid_longitudinal:
-  # Uses CACC when leader available, PID when not
-  use_cacc_params: true      # Use params from 'cacc' section
-  use_pid_params: true        # Use params from 'pid' section
+
+
+# SA-ACC Controller Parameters
+sa_acc:
+  tau: 0.4
+  h: 0.5
+  k1: -0.8
+  k2: 2.5
+  li: 5.0
+  Li: 8.0
+  acc_to_throttle_gain: 0.65
+  max_throttle: 0.30
 
 fix:
   throttle: 0.075

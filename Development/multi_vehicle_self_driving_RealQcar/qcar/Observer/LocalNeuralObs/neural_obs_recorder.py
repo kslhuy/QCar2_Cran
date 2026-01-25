@@ -74,6 +74,12 @@ class NeuralObsRecorder:
         # True Ground Truth (Sim only)
         'vx_true', 'vy_true', 'psi_true', 'r_true', 'X_true', 'Y_true',
         'w_r_true', 'w_f_true',
+        # True tire forces (from selected tire model: pacejka, dynamic_linear, etc.)
+        'Fyr_true', 'Fyf_true',
+        # Linear tire forces (reference model: F = C * alpha)
+        'Fyr_linear', 'Fyf_linear',
+        # Slip angles (for verification)
+        'alpha_r', 'alpha_f',
     ]
     
     def __init__(self, 
@@ -246,7 +252,8 @@ class NeuralObsRecorder:
                       L_psi: float = 0.0,
                       innov_psi: float = 0.0,
                       state_true_6d: Optional[np.ndarray] = None,
-                      unknown_input_true: Optional[np.ndarray] = None):
+                      unknown_input_true: Optional[np.ndarray] = None,
+                      tire_info: Optional[Dict] = None):
         """
         Record a single data sample for 2-layer neural observer.
         
@@ -265,6 +272,8 @@ class NeuralObsRecorder:
             innov_psi: Yaw innovation (measurement error)
             state_true_6d: Optional ground truth state [vx, vy, psi, r, X, Y]
             unknown_input_true: Optional ground truth unknown inputs [w_r, w_f]
+            tire_info: Optional dict with tire force data for debugging:
+                       {'Fyr_true', 'Fyf_true', 'Fyr_linear', 'Fyf_linear', 'alpha_r', 'alpha_f'}
         """
         if not self.recording or self.writer is None or self.mode != '2layer':
             return
@@ -353,6 +362,25 @@ class NeuralObsRecorder:
             else:
                  row['w_r_true'] = 0.0
                  row['w_f_true'] = 0.0
+            
+            # Tire force information (for debugging tire residual estimation)
+            # F_true: actual forces from selected tire model (pacejka, etc.)
+            # F_linear: reference forces from linear model (F = C * alpha)
+            # Residual should be: w = F_true - F_linear
+            if tire_info is not None:
+                row['Fyr_true'] = tire_info.get('Fyr_true', 0.0)
+                row['Fyf_true'] = tire_info.get('Fyf_true', 0.0)
+                row['Fyr_linear'] = tire_info.get('Fyr_linear', 0.0)
+                row['Fyf_linear'] = tire_info.get('Fyf_linear', 0.0)
+                row['alpha_r'] = tire_info.get('alpha_r', 0.0)
+                row['alpha_f'] = tire_info.get('alpha_f', 0.0)
+            else:
+                row['Fyr_true'] = 0.0
+                row['Fyf_true'] = 0.0
+                row['Fyr_linear'] = 0.0
+                row['Fyf_linear'] = 0.0
+                row['alpha_r'] = 0.0
+                row['alpha_f'] = 0.0
             
             self.writer.writerow(row)
             self.record_count += 1

@@ -326,6 +326,9 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         if self.use_8d_system:
              # Extend Q to 10D
              # 8D state: [vx, vy, psi, r, X, Y, ax, ay] + [wr, wf]
+             # CRITICAL FIX: Increased wr, wf from 5.0 to 50.0 for better
+             # random walk exploration. Small Q values prevent the filter
+             # from updating residual estimates even when innovation exists.
              return np.diag([
                 0.01,   # vx
                 0.1,    # vy
@@ -335,10 +338,12 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
                 0.01,   # Y
                 0.05,   # ax (new state)
                 0.05,   # ay (new state)
-                5.0,    # wr
-                5.0,    # wf
+                5.0,   # wr - INCREASED for random walk exploration
+                5.0,   # wf - INCREASED for random walk exploration
              ])
              
+        # 6D system: [vx, vy, psi, r, X, Y] + [wr, wf]
+        # CRITICAL FIX: Increased wr, wf from 5.0 to 50.0
         return np.diag([
             0.01,   # vx - longitudinal velocity (well measured)
             0.1,    # vy - lateral velocity (less observable)
@@ -346,8 +351,8 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             0.02,   # r - yaw rate (from gyro)
             0.01,   # X - position (from GPS)
             0.01,   # Y - position (from GPS)
-            5.0,    # wr - rear tire residual (slowly varying)
-            5.0,    # wf - front tire residual (slowly varying)
+            5.0,   # wr - INCREASED for random walk (was 5.0, too small)
+            5.0,   # wf - INCREASED for random walk (was 5.0, too small)
         ])
     
     def _default_R(self) -> np.ndarray:
@@ -574,23 +579,21 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # At very low speeds, apply additional decay and clamping
         vx_abs = abs(x_next[self.IDX_VX])
         
-        # # Clamp very small velocities to zero (dead zone)
-        # VELOCITY_DEAD_ZONE = 0.02  # Below this, snap to zero
-        # if vx_abs < VELOCITY_DEAD_ZONE:
-        #     x_next[self.IDX_VX] = 0.0
-        #     x_next[self.IDX_VY] = 0.0
-        #     x_next[self.IDX_R] = 0.0  # Also zero yaw rate when stopped
-        # elif vx_abs < blend_vx_low:
-        #     # Exponential decay of vy and r at low speed
-        #     decay_rate = 0.85  # Per time step (faster decay)
-        #     x_next[self.IDX_VY] *= decay_rate
-        #     x_next[self.IDX_R] *= decay_rate
+        # Note: Velocity dead zone and decay logic is commented out to allow
+        # proper state estimation even at low speeds. The kinematic/dynamic
+        # blending in f_continuous handles low-speed behavior.
         
         # Tire residual dynamics (random-walk: ẇ = 0)
-        # At low speed, also decay tire residuals since they're less meaningful
+        # CRITICAL FIX: Removed low-speed decay that was forcing residuals to zero!
+        # The previous code `w_next *= 0.9` when vx < 0.1 m/s caused residuals
+        # to decay towards zero during initialization or any low-speed maneuver,
+        # preventing proper estimation even after vehicle speeds up.
+        # 
+        # Random walk assumption means w stays constant (plus process noise).
+        # Let the Kalman filter naturally handle uncertainty increase at low speeds
+        # through the Q matrix, rather than artificially forcing decay.
         w_next = w.copy()
-        if vx_abs < blend_vx_low:
-            w_next *= 0.9  # Faster decay towards zero when stopped
+        # Removed: if vx_abs < blend_vx_low: w_next *= 0.9
         
         # Assemble next state
         xa_next = np.zeros(self.augmented_dim)

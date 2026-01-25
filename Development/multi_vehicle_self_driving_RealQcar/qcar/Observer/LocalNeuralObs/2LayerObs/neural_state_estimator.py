@@ -1073,15 +1073,28 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     if gps_valid:
                         # L_avail is full 6x5. Psi state is row 2. Psi meas is col 2.
                         L_psi_val = float(L_avail[self.IDX_PSI, 2])
-                    innov_psi_val = float(innovation[2])
+                    # innov_psi_val = float(innovation[2])
                 
                 # Fetch Ground Truth if available (Sim only)
                 state_true_6d = None
                 unknown_input_true = None
+                tire_info = None
                 if self.ground_truth_provider is not None:
                     try:
                         state_true_6d = self.ground_truth_provider.get_observer_state()
                         unknown_input_true = self.ground_truth_provider.get_true_residuals()
+                        # Get tire force info for debugging residual estimation
+                        # This includes: F_true, F_linear, slip angles
+                        if hasattr(self.ground_truth_provider, 'get_tire_info'):
+                            tire_info = self.ground_truth_provider.get_tire_info()
+                    except Exception:
+                        pass
+
+                # Get first-layer unknown input (w_uio) if available
+                uio_unknown_input = None
+                if self.use_first_layer and self.first_layer_observer is not None:
+                    try:
+                        uio_unknown_input = w_uio
                     except Exception:
                         pass
 
@@ -1091,6 +1104,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     measurements=measurements,
                     nn_outputs=self.f_nn,
                     uio_state=self.state_uio if self.use_first_layer else None,
+                    uio_unknown_input=uio_unknown_input,  # First-layer tire residual estimates
                     steering=steering,
                     throttle=throttle,
                     loss=last_loss,
@@ -1098,7 +1112,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     L_psi=L_psi_val,
                     innov_psi=innov_psi_val,
                     state_true_6d=state_true_6d,
-                    unknown_input_true=unknown_input_true
+                    unknown_input_true=unknown_input_true,
+                    tire_info=tire_info  # Tire force data for debugging
                 )
             
             self.last_update_time = time.time()
@@ -1487,6 +1502,59 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     def get_tire_residuals(self) -> np.ndarray:
         """Get current tire residual estimates from NN [w_r, w_f]"""
         return self.f_nn.squeeze().copy()
+    
+    def get_estimated_tire_forces(self, steering: float = 0.0) -> dict:
+        """
+        Get estimated tire forces: F_estimated = F_linear + w_estimated
+        
+        This allows comparison with true tire forces to verify observer accuracy.
+        
+        Args:
+            steering: Current steering angle [rad] (needed for slip angle computation)
+            
+        Returns:
+            Dict with:
+            - Fyr_est: Estimated rear lateral tire force [N]
+            - Fyf_est: Estimated front lateral tire force [N]
+            - Fyr_linear: Linear reference force (Cr * alpha_r) [N]
+            - Fyf_linear: Linear reference force (Cf * alpha_f) [N]
+            - w_r: Estimated rear tire residual [N]
+            - w_f: Estimated front tire residual [N]
+            - alpha_r: Estimated rear slip angle [rad]
+            - alpha_f: Estimated front slip angle [rad]
+        """
+        # Get current state estimates
+        vx = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
+        vy = self.state_nn_6d[self.IDX_VY]
+        r = self.state_nn_6d[self.IDX_R]
+        
+        # Compute slip angles (same formula as observer dynamics)
+        alpha_f = steering - (vy + self.lf * r) / vx
+        alpha_r = -(vy - self.lr * r) / vx
+        
+        # Linear tire forces (reference model)
+        Fyf_linear = self.Cf * alpha_f
+        Fyr_linear = self.Cr * alpha_r
+        
+        # Estimated residuals from NN
+        w = self.f_nn.squeeze()
+        w_r = w[0] if len(w) > 0 else 0.0
+        w_f = w[1] if len(w) > 1 else 0.0
+        
+        # Estimated total forces
+        Fyr_est = Fyr_linear + w_r
+        Fyf_est = Fyf_linear + w_f
+        
+        return {
+            'Fyr_est': Fyr_est,
+            'Fyf_est': Fyf_est,
+            'Fyr_linear': Fyr_linear,
+            'Fyf_linear': Fyf_linear,
+            'w_r': w_r,
+            'w_f': w_f,
+            'alpha_r': alpha_r,
+            'alpha_f': alpha_f,
+        }
     
     def set_trajectory_reference(self, ref_pose: np.ndarray, 
                                   ref_velocity: Optional[float] = None,

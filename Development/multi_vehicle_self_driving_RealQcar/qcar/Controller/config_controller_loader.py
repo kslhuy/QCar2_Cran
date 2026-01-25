@@ -60,8 +60,8 @@ class ControllerConfig:
             types.append('cacc')
         if 'pid' in self.config:
             types.append('pid')
-        if 'hybrid_longitudinal' in self.config:
-            types.append('hybrid')
+        if 'sa_acc' in self.config:
+            types.append('sa_acc')
         return types
 
     def get_available_lateral_types(self) -> list:
@@ -73,8 +73,6 @@ class ControllerConfig:
             types.append('stanley')
         if 'lookahead' in self.config:
             types.append('lookahead')
-        if 'hybrid_lateral' in self.config:
-            types.append('hybrid')
         if 'fusion_lateral' in self.config:
             types.append('fusion')
         return types
@@ -96,8 +94,9 @@ class ControllerConfig:
             return self._get_cacc_params()
         elif controller_type == 'pid':
             return self._get_pid_params()
-        elif controller_type == 'hybrid':
-            return self._get_hybrid_longitudinal_params()
+
+        elif controller_type == 'sa_acc':
+            return self._get_sa_acc_params()
         else:
             raise ValueError(f"Unknown longitudinal controller type: {controller_type}")
     
@@ -171,6 +170,21 @@ class ControllerConfig:
         return {
             'cacc_params': cacc_params,
             'pid_params': pid_params,
+        }
+
+    def _get_sa_acc_params(self) -> Dict[str, Any]:
+        """Get SA-ACC controller parameters"""
+        sa_acc_config = self.config.get('sa_acc', {})
+        
+        return {
+            'tau': sa_acc_config.get('tau', 0.4),
+            'h': sa_acc_config.get('h', 0.5),
+            'k1': sa_acc_config.get('k1', -0.8),
+            'k2': sa_acc_config.get('k2', 2.5),
+            'li': sa_acc_config.get('li', 5.0),
+            'Li': sa_acc_config.get('Li', 8.0),
+            'acc_to_throttle_gain': sa_acc_config.get('acc_to_throttle_gain', 0.65),
+            'max_throttle': sa_acc_config.get('max_throttle', 0.3),
         }
     
     # ========================================================================
