@@ -23,6 +23,8 @@ Date: 2026-01-21
 import numpy as np
 from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
+from scipy.signal import cont2discrete
+
 
 # Import CVXPY for LMI-based gain design
 try:
@@ -464,7 +466,6 @@ def discretize_system_zoh(A_c: np.ndarray, B_c: np.ndarray, E_c: np.ndarray,
     Returns:
         Tuple of (A_d, B_d, E_d) discrete-time matrices
     """
-    from scipy.signal import cont2discrete
     
     n = A_c.shape[0]
     m_u = B_c.shape[1]
@@ -940,7 +941,8 @@ class NeuralQLPVGainScheduler:
                  discrete: bool = True,
                  sample_time: float = 0.01,
                  contraction_rate: float = 0.95,
-                 verbose: bool = False):
+                 verbose: bool = False,
+                 disturbance_mode: str = 'tire'):
         """
         Initialize polytopic qLPV gain scheduler for neural observer
         
@@ -958,6 +960,7 @@ class NeuralQLPVGainScheduler:
             sample_time: Sample time for discretization [s] (default: 0.01)
             contraction_rate: λ ∈ (0, 1) for discrete contraction (smaller = faster)
             verbose: Print solver output
+            disturbance_mode: 'tire' (default) or 'general'
         """
         self.params = vehicle_params
         self.vx_range = vx_range
@@ -970,11 +973,13 @@ class NeuralQLPVGainScheduler:
         self.sample_time = sample_time
         self.contraction_rate = contraction_rate
         self.verbose = verbose
+        self.disturbance_mode = disturbance_mode
         
         # Centralized vehicle dynamics (single source of truth)
         self.dynamics = QLPVVehicleDynamicsObs(
             vehicle_params=vehicle_params,
-            min_vx=vx_range[0]
+            min_vx=vx_range[0],
+            disturbance_mode=disturbance_mode
         )
         
         # Generate polytope vertices

@@ -53,7 +53,13 @@ class GradientSolver:
         
         # State dimension
         self.state_dim = self.A.shape[0] if self.A is not None else 4
-        self.output_dim = 2  # Tire force compensation dimension
+        
+        # Output dimension (unknown input dimension)
+        # Try to infer from D matrix if available, otherwise default to 2
+        if self.D is not None:
+             self.output_dim = self.D.shape[1]
+        else:
+             self.output_dim = 2  # Default (tire force residuals)
         
         # Loss scaling factor
         self.K_loss = 1.0

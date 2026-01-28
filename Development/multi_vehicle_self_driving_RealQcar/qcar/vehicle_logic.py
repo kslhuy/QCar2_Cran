@@ -700,6 +700,9 @@ class VehicleLogic:
                 'longitudinal_ctrl_type': self.controller_manager.get_longitudinal_type() if hasattr(self, 'controller_manager') else 'unknown',
                 'lateral_ctrl_type': self.controller_manager.get_lateral_type() if hasattr(self, 'controller_manager') else 'unknown',
                 
+                # Path information
+                'node_sequence': getattr(self, 'node_sequence', None),
+
                 # Payload for the handler
                 'data': v2v_details
             }

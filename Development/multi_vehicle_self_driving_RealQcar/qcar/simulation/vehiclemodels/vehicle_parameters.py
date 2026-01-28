@@ -142,7 +142,7 @@ def setup_vehicle_parameters(vehicle_id: int, dir_params: str = None) -> Vehicle
     conf_tires = OmegaConf.load(path_root / "parameters_tire.yaml")
 
     # create merged configuration and set as Read-only
-    p = OmegaConf.merge(structured_conf, conf_vehicle, conf_tires)
+    p = OmegaConf.merge(structured_conf, conf_tires, conf_vehicle)
     OmegaConf.set_readonly(p, True)
 
     return OmegaConf.to_object(p)

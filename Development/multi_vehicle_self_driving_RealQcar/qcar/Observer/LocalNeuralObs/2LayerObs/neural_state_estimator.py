@@ -168,6 +168,17 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # Adjust input dim if using acceleration
         if self.use_acceleration:
             self.input_dim = 8  # [v_x, v_y, ψ, r, δ, a, a_x, a_y]
+
+        # Adjust output dim based on disturbance mode
+        self.disturbance_mode = self.config.get('disturbance_mode', 'tire')
+        expected_udim = 3 if self.disturbance_mode == 'general' else 2
+        
+        if self.output_dim != expected_udim:
+            if self.logger:
+                 self.logger.logger.info(f"Overriding configured output_dim ({self.output_dim}) with {expected_udim} for mode '{self.disturbance_mode}'")
+            self.output_dim = expected_udim
+            # Update config to reflect reality
+            self.config['output_dim'] = expected_udim
         
         # Initialize neural network
         self.model = NeuralObserverNet(
@@ -219,7 +230,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # MUST be created before _initialize_gradient_solver which calls _compute_E_matrix
         self.dynamics = QLPVVehicleDynamicsObs(
             vehicle_params=self.vehicle_params,
-            min_vx=self.min_vx
+            min_vx=self.min_vx,
+            disturbance_mode=self.disturbance_mode
         )
         
         # 6D Internal state: [v_x, v_y, ψ, r, X, Y]
@@ -306,7 +318,11 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         self._recording_start_time = 0.0
         if self.config.get('enable_recording', False):
             output_dir = self.config.get('recording_output_dir', 'neural_obs_recordings')
-            self.recorder = NeuralObsRecorder(output_dir=output_dir, mode='2layer')
+            self.recorder = NeuralObsRecorder(
+                output_dir=output_dir, 
+                mode='2layer',
+                disturbance_mode=self.disturbance_mode
+            )
             
             filename = self.config.get('recording_filename')
             append_mode = self.config.get('recording_append_mode', False)
@@ -487,6 +503,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             contraction_rate = self.config.get('contraction_rate', 0.95)
             hinf_gamma = self.config.get('hinf_gamma', 2.0)
             lmi_method = self.config.get('gain_design_method', 'hinf')
+            disturbance_mode = self.config.get('disturbance_mode', 'tire')
             
             self._gain_scheduler = NeuralQLPVGainScheduler(
                 vehicle_params=self.vehicle_params,
@@ -501,7 +518,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 discrete=True,  # Use discrete-time design
                 sample_time=sample_time,
                 contraction_rate=contraction_rate,
-                verbose=False
+                verbose=False,
+                disturbance_mode=disturbance_mode
             )
             
             if self._gain_scheduler.compute_gains_lmi():
@@ -661,16 +679,30 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         """Initialize first-layer observer (qLPV or Differentiator-UIO)"""
         try:
             observer_type = self.config.get('first_layer_type', 'qlpv')
+            disturbance_mode = self.config.get('disturbance_mode', 'tire')
+            
+            # Validation: output_dim must match disturbance_mode
+            expected_udim = 3 if disturbance_mode == 'general' else 2
+            if self.output_dim != expected_udim:
+                 if self.logger:
+                     self.logger.logger.warning(
+                         f"Config Mismatch: output_dim={self.output_dim} but disturbance_mode='{disturbance_mode}' "
+                         f"(expected {expected_udim})."
+                     )
             
             self.first_layer_observer = create_first_layer_observer(
                 observer_type=observer_type,
                 sample_time=self.config['sample_time'],
                 vehicle_params=self.vehicle_params,
-                use_8d_system=self.config.get('use_8d_system', False)
+                use_8d_system=self.config.get('use_8d_system', False),
+                disturbance_mode=disturbance_mode
             )
             
+            # Alias for compatibility with external tools (including fake_vehicle monkey patcher)
+            self.observer = self.first_layer_observer
+            
             if self.logger:
-                self.logger.logger.info(f"Initialized first-layer observer ({observer_type})")
+                self.logger.logger.info(f"Initialized first-layer observer ({observer_type}, mode={disturbance_mode})")
         
         except Exception as e:
             if self.logger:
@@ -969,7 +1001,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 state_uio, w_uio = self.first_layer_observer.update(
                     measurement_1L, control_u, 
                     acceleration=acceleration,
-                    gps_available=gps_valid
+                    gps_available=gps_valid,
+                    dt=dt
                 )
                 
                 # Store first-layer state for composite loss calculation
@@ -1078,13 +1111,17 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 # Fetch Ground Truth if available (Sim only)
                 state_true_6d = None
                 unknown_input_true = None
+                disturbances_true = None
                 tire_info = None
                 if self.ground_truth_provider is not None:
                     try:
                         state_true_6d = self.ground_truth_provider.get_observer_state()
                         unknown_input_true = self.ground_truth_provider.get_true_residuals()
+                        
+                        if hasattr(self.ground_truth_provider, 'get_true_disturbances'):
+                            disturbances_true = self.ground_truth_provider.get_true_disturbances()
+                            
                         # Get tire force info for debugging residual estimation
-                        # This includes: F_true, F_linear, slip angles
                         if hasattr(self.ground_truth_provider, 'get_tire_info'):
                             tire_info = self.ground_truth_provider.get_tire_info()
                     except Exception:
@@ -1109,10 +1146,9 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     throttle=throttle,
                     loss=last_loss,
                     gps_valid=gps_valid,
-                    L_psi=L_psi_val,
-                    innov_psi=innov_psi_val,
                     state_true_6d=state_true_6d,
                     unknown_input_true=unknown_input_true,
+                    disturbances_true=disturbances_true,
                     tire_info=tire_info  # Tire force data for debugging
                 )
             

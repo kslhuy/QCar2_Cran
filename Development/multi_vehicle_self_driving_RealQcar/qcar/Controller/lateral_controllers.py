@@ -60,7 +60,7 @@ class PurePursuitController(LateralControllerBase):
     """
     
     def __init__(self, lookahead_distance=1.0, k_steering=1.0, 
-                 max_steering=0.55, adaptive_lookahead=True, 
+                 max_steering=0.5, adaptive_lookahead=True, 
                  curvature_threshold=0.3, turn_lookahead_offset=0.1,
                  turn_lookahead_gain=1.5, config=None, logger=None):
         """
@@ -665,7 +665,7 @@ class FusionLateralController(LateralControllerBase):
     
     def __init__(self, mode='path_primary', path_weight=0.7, leader_weight=0.3,
                  deviation_threshold=0.3, smoothing_factor=0.8, 
-                 max_steering=0.55, config=None, logger=None):
+                 max_steering=0.5, config=None, logger=None):
         """
         Initialize Fusion lateral controller
         

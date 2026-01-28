@@ -101,7 +101,16 @@ AUGMENTED_DIM_10D = 10
 import yaml
 from pathlib import Path
 
-_YAML_PARAMS_PATH = Path(__file__).parent.parent.parent / "GUI" / "vehiclemodels" / "parameters" / "parameters_qcar.yaml"
+# Correct path relative to this file: ../../simulation/vehiclemodels/parameters/parameters_qcar.yaml
+_CUR_DIR = Path(__file__).parent
+_YAML_PARAMS_PATH = _CUR_DIR.parent.parent / "simulation" / "vehiclemodels" / "parameters" / "parameters_qcar.yaml"
+
+# Fallback check for robustness
+if not _YAML_PARAMS_PATH.exists():
+    # Try legacy location if it moved back
+    _LEGACY_PATH = _CUR_DIR / "vehiclemodels" / "parameters" / "parameters_qcar.yaml"
+    if _LEGACY_PATH.exists():
+        _YAML_PARAMS_PATH = _LEGACY_PATH
 
 # Required parameter keys
 _REQUIRED_YAML_KEYS = ['a', 'b', 'm', 'I_z', 'Cf', 'Cr']
@@ -250,13 +259,15 @@ class QLPVVehicleDynamicsObs:
     Measurements: y = [v_x, r, ψ, X, Y, a_y]ᵀ
     """
     
-    def __init__(self, vehicle_params: Optional[Dict] = None, min_vx: Optional[float] = None):
+    def __init__(self, vehicle_params: Optional[Dict] = None, min_vx: Optional[float] = None, 
+                 disturbance_mode: str = 'tire'):
         """
         Initialize qLPV vehicle dynamics
         
         Args:
             vehicle_params: Vehicle parameters dict (uses defaults if None)
             min_vx: Minimum velocity threshold [m/s]. If None, uses vx_min from YAML.
+            disturbance_mode: 'tire' (2D residuals) or 'general' (3D velocity disturbances)
         """
         # Vehicle parameters
         self.params = get_default_vehicle_params()
@@ -270,6 +281,9 @@ class QLPVVehicleDynamicsObs:
         self.Iz = self.params['Iz']
         self.Cf = self.params['Cf']
         self.Cr = self.params['Cr']
+        # self.Cf = 100   #Fake 
+        # self.Cr = 100   #Fake 
+
         self.mu = self.params.get('mu', 0.01)
         self.g = 9.81  # Gravity [m/s²]
         
@@ -277,8 +291,89 @@ class QLPVVehicleDynamicsObs:
         # Lower value allows estimation closer to zero when vehicle stops
         self.min_vx = min_vx if min_vx is not None else self.params['vx_min']
         
+        # Disturbance Mode
+        self.disturbance_mode = disturbance_mode
+        self.udim = 3 if disturbance_mode == 'general' else 2
+        
         # Default system type
         self.use_8d_system = False
+
+    def process_control_inputs(self, 
+                             throttle_cmd: float, 
+                             steering_cmd: float, 
+                             current_state_obs: np.ndarray, 
+                             current_steering_angle: float,
+                             dt: float) -> Tuple[float, float, float]:
+        """
+        Process raw normalized control inputs into physical model inputs.
+        
+        Handles:
+        1. Throttle -> Acceleration conversion (with friction/braking)
+        2. Steering -> Steering Rate & Angle (with servo dynamics)
+        
+        Args:
+            throttle_cmd: Normalized throttle [-1, 1]
+            steering_cmd: Normalized steering [-1, 1]
+            current_state_obs: Current state vector [vx, vy, psi, r, X, Y]
+            current_steering_angle: Current physical steering angle [rad]
+            dt: Time step [s]
+            
+        Returns:
+            Tuple of (acceleration, steering_rate, new_steering_angle)
+        """
+        # 1. Physics limits
+        max_steering_angle = float(self.params['steering']['max']) if 'steering' in self.params else 0.5
+        max_accel = float(self.params['longitudinal']['a_max']) if 'longitudinal' in self.params else 3.0
+        max_steering_rate = float(self.params['steering']['v_max']) if 'steering' in self.params else 5.0
+        
+        # 2. Acceleration Logic
+        target_accel = 0.0
+        current_vx = current_state_obs[IDX_VX]
+        
+        if abs(throttle_cmd) > 0.01:
+            # Driving mode
+            # Simple friction model
+            c_rolling = 0.08
+            c_air_drag = 0.1
+            friction_val = c_rolling + (c_air_drag * abs(current_vx))
+            
+            # Raw acceleration from motor
+            target_accel = throttle_cmd * max_accel
+            
+            # # Subtract friction (opposing motion)
+            # if abs(current_vx) > 0.01:
+            #     target_accel -= np.sign(current_vx) * friction_val
+                
+        else:
+            # Drag Braking mode (active braking when throttle is zero)
+            brake_strength = 3.0
+            if abs(current_vx) > 0.05:
+                # Apply braking force against motion
+                target_accel = -np.sign(current_vx) * brake_strength
+            else:
+                # Stop completely if slow enough
+                target_accel = 0.0
+                # We can't set state directly here, caller must handle zero velocity clamping
+                
+        acceleration = np.clip(target_accel, -5.0, 5.0)
+        
+        # 3. Steering Logic (Servo Dynamics)
+        # Convert [-1, 1] command to target angle
+        target_steering_angle = steering_cmd 
+        
+        # Proportional controller to simulate servo speed
+        # steering_rate = Kp * error
+        K_p_steering = 10.0 # Fast server response
+        steering_error = target_steering_angle - current_steering_angle
+        
+        steering_rate = K_p_steering * steering_error
+        steering_rate = np.clip(steering_rate, -max_steering_rate, max_steering_rate)
+        
+        # Integrate steering angle
+        new_steering_angle = current_steering_angle + steering_rate * dt
+        new_steering_angle = np.clip(new_steering_angle, -max_steering_angle, max_steering_angle)
+        
+        return acceleration, steering_rate, new_steering_angle
     
     def compute_scheduling_params(self, state: np.ndarray, delta: float) -> SchedulingParameters:
         """Compute scheduling parameters from current state and input"""
@@ -401,21 +496,29 @@ class QLPVVehicleDynamicsObs:
         """
         Compute residual injection matrix E(ρ)
         
-        Residual: w = [w_r, w_f]ᵀ (rear and front tire force residuals)
-        
-        E(ρ) = [[0,        -sin(δ)/m     ],
-                [1/m,       cos(δ)/m     ],
-                [0,         0            ],
-                [-l_r/I_z,  l_f·cos(δ)/I_z],
-                [0,         0            ],
-                [0,         0            ]]
+        If mode='tire':
+            Residual: w = [w_r, w_f]ᵀ (rear and front tire force residuals)
+        If mode='general':
+            Residual: w = [d_vx, d_vy, d_r]ᵀ (additive velocity disturbances)
+            E = Identity mapping to vx, vy, r rows.
         
         Args:
             rho: Scheduling parameters
             
         Returns:
-            E matrix (6×2)
+            E matrix (6×2 or 6×3)
         """
+        if self.disturbance_mode == 'general':
+            E = np.zeros((STATE_DIM, 3))
+            # d_vx -> vx_dot
+            E[IDX_VX, 0] = 1.0
+            # d_vy -> vy_dot
+            E[IDX_VY, 1] = 1.0
+            # d_r -> r_dot
+            E[IDX_R, 2] = 1.0
+            return E
+        
+        # Default: Tire residual mode (2D)
         E = np.zeros((STATE_DIM, 2))
         
         cos_d = rho.cos_delta
@@ -495,17 +598,24 @@ class QLPVVehicleDynamicsObs:
         """
         Compute residual-to-output matrix F(ρ)
         
-        Only a_y is affected by tire residuals:
-            F_ay = [1/m, cos(δ)/m]
-        
-        This is KEY for UIO-style residual estimation!
+        If mode='general':
+            a_y = v_y_dot + r*vx = (fy + d_vy) + r*vx
+            So d_vy affects a_y directly.
+            F = [[0, 0, 0], ..., [0, 1, 0]]
         
         Args:
             rho: Scheduling parameters
             
         Returns:
-            F matrix (6×2)
+            F matrix (6×2 or 6×3)
         """
+        if self.disturbance_mode == 'general':
+            F = np.zeros((MEAS_DIM, 3))
+            # d_vy -> a_y
+            F[MEAS_IDX_AY, 1] = 1.0
+            return F
+
+        # Default: Tire residual mode
         F = np.zeros((MEAS_DIM, 2))
         
         cos_d = rho.cos_delta
@@ -541,20 +651,24 @@ class QLPVVehicleDynamicsObs:
         C = self.compute_C_matrix(rho)
         F = self.compute_F_matrix(rho)
         
-        # Augmented state matrix (8×8)
-        A_a = np.zeros((AUGMENTED_DIM, AUGMENTED_DIM))
+        dim_w = self.udim
+        aug_dim = STATE_DIM + dim_w
+        
+        # Augmented state matrix
+        A_a = np.zeros((aug_dim, aug_dim))
         A_a[:STATE_DIM, :STATE_DIM] = A
         A_a[:STATE_DIM, STATE_DIM:] = E
         # Lower right block is zeros (ẇ = 0 assumption)
         
-        # Augmented input matrix (8×2)
-        B_a = np.zeros((AUGMENTED_DIM, 2))
+        # Augmented input matrix
+        B_a = np.zeros((aug_dim, 2))
         B_a[:STATE_DIM, :] = B
         
-        # Augmented output matrix (6×8)
-        C_a = np.zeros((MEAS_DIM, AUGMENTED_DIM))
+        # Augmented output matrix (6×aug_dim)
+        C_a = np.zeros((MEAS_DIM, aug_dim))
         C_a[:, :STATE_DIM] = C
         C_a[:, STATE_DIM:] = F
+
         
         return A_a, B_a, C_a
     
@@ -575,7 +689,7 @@ class QLPVVehicleDynamicsObs:
         r = x[IDX_R]
         
         delta = u[0]
-        accel = u[1] if len(u) > 1 else 0.0
+        accel = u[1] 
         
         lf = self.lf
         lr = self.lr
@@ -583,43 +697,17 @@ class QLPVVehicleDynamicsObs:
         m = self.m
         g = self.g
         
-        # Get Rolling resistance (default from vehicle_dynamics_qlpv logic)
-        Cr_roll = self.params.get('Cr_roll', 0.015)
-        
-        # Compute beta (sideslip angle)
-        # matches: beta = math.atan2(lr * math.tan(delta), lwb)
-        if abs(delta) > 0.001:
-            beta = np.arctan2(lr * np.tan(delta), lwb)
-        else:
-            beta = 0.0
-        
-        # Apply friction even in kinematic mode for proper stopping
-        F_roll_kin = m * g * Cr_roll
-        if abs(vx) > 0.02:
-            friction_decel_kin = F_roll_kin / m * np.sign(vx)
-        else:
-            friction_decel_kin = 0.0
-            
         # Velocity derivative with friction
-        vx_dot = accel - friction_decel_kin
+        vx_dot = accel 
         
-        # Force complete stop when very slow and no acceleration commanded
-        if abs(vx) < 0.02 and abs(accel) < 0.01:
-            vx_dot = -vx / 0.1  # Damp to zero quickly
-            
         # Position derivatives (incorporating beta)
-        # matches: vx * math.cos(psi + beta)
-        X_dot = vx * np.cos(psi + beta)
-        
-        # matches: vx * math.sin(psi + beta)
-        Y_dot = vx * np.sin(psi + beta)
-        
-        # Yaw rate (psi_dot)
-        # matches: vx / lwb * math.tan(delta) * math.cos(beta)
-        if abs(vx) > 0.01:
-            psi_dot = vx / lwb * np.tan(delta) * np.cos(beta)
-        else:
-            psi_dot = 0.0
+        # matches: vx * math.cos(psi )
+        # matches: vx * math.sin(psi )
+
+        X_dot = vx * np.cos(psi )
+        Y_dot = vx * np.sin(psi )
+
+        psi_dot = 0.0
             
         # Simplified dynamics for other states
         # matches: 0.0 for r_dot and vy_dot
@@ -1259,7 +1347,8 @@ class QLPVVehicleDynamicsObs8D(QLPVVehicleDynamicsObs):
 
 def create_qlpv_dynamics(vehicle_params: Optional[Dict] = None, 
                           min_vx: Optional[float] = None,
-                          use_8d_system: bool = False) -> QLPVVehicleDynamicsObs:
+                          use_8d_system: bool = False,
+                          disturbance_mode: str = 'tire') -> QLPVVehicleDynamicsObs:
     """
     Factory function to create qLPV vehicle dynamics instance
     
@@ -1267,16 +1356,20 @@ def create_qlpv_dynamics(vehicle_params: Optional[Dict] = None,
         vehicle_params: Vehicle parameters dictionary
         min_vx: Minimum velocity threshold [m/s]
         use_8d_system: If True, returns QLPVVehicleDynamicsObs8D (8D state)
+        disturbance_mode: 'tire' (2D) or 'general' (3D)
         
     Returns:
         Configured QLPVVehicleDynamicsObs (or subclass) instance
     """
     if use_8d_system:
+        # 8D system likely doesn't support generic disturbance mode yet or needs update
+        # For now we assume disturbance_mode applies to base class mostly
         return QLPVVehicleDynamicsObs8D(vehicle_params=vehicle_params, min_vx=min_vx)
         
     return QLPVVehicleDynamicsObs(
         vehicle_params=vehicle_params,
-        min_vx=min_vx
+        min_vx=min_vx,
+        disturbance_mode=disturbance_mode
     )
 
 

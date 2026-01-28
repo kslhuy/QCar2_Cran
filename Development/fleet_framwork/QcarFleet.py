@@ -267,7 +267,7 @@ class VehicleConfigBuilder:
             'gps_server_port': getattr(self.config, 'gps_server_port', 8001),
             
             # Control parameters
-            'max_steering': getattr(self.config, 'max_steering', 0.6),
+            'max_steering': getattr(self.config, 'max_steering', 0.5),
             'lookahead_distance': getattr(self.config, 'lookahead_distance', 7.0),
             'general_update_rate': getattr(self.config, 'update_rate', 100),
             'controller_rate': getattr(self.config, 'control_rate', 50),

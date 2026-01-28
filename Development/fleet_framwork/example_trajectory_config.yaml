@@ -11,7 +11,7 @@ vehicles:
     K_p: 0.1  # Speed controller proportional gain
     K_i: 0.08  # Speed controller integral gain
     K_stanley: 0.8  # Stanley steering gain
-    max_steering: 0.6
+    max_steering: 0.5
     startDelay: 1
 
   - id: 1
@@ -23,7 +23,7 @@ vehicles:
     K_p: 0.1  # Speed controller proportional gain
     K_i: 0.08  # Speed controller integral gain
     K_stanley: 0.8  # Stanley steering gain
-    max_steering: 0.55
+    max_steering: 0.5
     startDelay: 1
 
   - id: 2
@@ -33,7 +33,7 @@ vehicles:
     road_type: "Studio"
     enable_steering_control: true
     lookahead_distance: 0.4
-    max_steering: 0.55
+    max_steering: 0.5
     k_steering: 2.0
 
 # Notes:

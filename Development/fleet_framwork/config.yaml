@@ -38,7 +38,7 @@ fleet:
 # =============================================================================
 control:
   max_velocity: 0.4               # Maximum vehicle velocity (m/s)
-  max_steering: 0.6               # Maximum steering angle (radians)
+  max_steering: 0.5               # Maximum steering angle (radians)
   lookahead_distance: 0.5         # Path following lookahead distance (meters)
   enable_steering_control: false  # Enable steering control (false for OpenRoad straight path)
   

@@ -28,7 +28,7 @@ steering:
 # longitudinal constraints
 longitudinal:
   # maximum absolute acceleration [m/s^2] - scaled for small vehicle
-  a_max: 3.0
+  a_max: 2.0
   # maximum longitudinal jerk [m/s^3]
   j_max: 10.0
   # maximum longitudinal jerk change [m/s^4]
@@ -78,8 +78,9 @@ Cf: 120.0
 Cr: 120.0
 
 # Normalized cornering stiffness (for load transfer law)
-Csf: 30.0
-Csr: 30.0
+# Consistent with Cf=120 and Fz_nom=7.35N -> Cs = 120/7.35 = 16.32
+Csf: 16.32
+Csr: 16.32
 
 mu: 0.01 # Rolling resistance internal (for vx_dot equations)
 mu_road: 1.0 # Tire-Road friction coefficient (for lateral forces)
@@ -181,3 +182,12 @@ E_r: 0.0
 #                'width': 0.31,
 #                'length': 0.58}
 # env = gym.make('f110_gym:f110-v0', params=params_dict)
+
+# Tire Parameters Override
+# # Override Pacejka stiffness coefficient to match linear Cf=120 for consistent observer testing
+# tire:
+#   # Lateral stiffness coefficient (sign must be negative for Magic Formula)
+#   # Value set to -120.0 to match Cf=120.0
+#   p_ky1: -120.0
+  # Ensure p_dy1 (peak friction) is consistent if needed, but p_ky1 dominates linear stiffness
+  # p_dy1: 1.0489 (default from parameters_tire.yaml)

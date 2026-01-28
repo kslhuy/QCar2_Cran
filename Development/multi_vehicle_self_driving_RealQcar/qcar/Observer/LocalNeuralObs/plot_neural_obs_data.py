@@ -493,22 +493,43 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
-    # 6. Tire Residuals (Swapped with Trajectory, now BIGGER)
+    # 6. Tire Residuals / General Disturbances
     if is_active(['debug']):
         pos = gs[1, 0:2] if plot_type == 'all' else gs[0, 0]
         ax = fig.add_subplot(pos)
-        ax.plot(time, data.get('w_r', []), 'b.', label='$w_r$ (est)', markersize=2)
-        ax.plot(time, data.get('w_f', []), 'r.', label='$w_f$ (est)', markersize=2)
         
-        # Plot true values if available
-        if 'w_r_true' in data and np.any(data['w_r_true']):
-             ax.plot(time, data['w_r_true'], 'b.', label='$w_r$ (true)', markersize=1, alpha=0.5)
-        if 'w_f_true' in data and np.any(data['w_f_true']):
-             ax.plot(time, data['w_f_true'], 'r.', label='$w_f$ (true)', markersize=1, alpha=0.5)
-             
+        # Check for general disturbance columns
+        if 'd_vx' in data:
+            # 3D General Disturbances
+            ax.plot(time, data.get('d_vx', []), 'b-', label='$d_{vx}$ (Est)', linewidth=1)
+            ax.plot(time, data.get('d_vy', []), 'g-', label='$d_{vy}$ (Est)', linewidth=1)
+            ax.plot(time, data.get('d_r', []), 'm-', label='$d_{r}$ (Est)', linewidth=1)
+            
+            # True values if available
+            if 'd_vx_true' in data:
+                ax.plot(time, data['d_vx_true'], 'b:', label='$d_{vx}$ (True)', linewidth=1, alpha=0.6)
+            if 'd_vy_true' in data:
+                ax.plot(time, data['d_vy_true'], 'g:', label='$d_{vy}$ (True)', linewidth=1, alpha=0.6)
+            if 'd_r_true' in data:
+                ax.plot(time, data['d_r_true'], 'm:', label='$d_{r}$ (True)', linewidth=1, alpha=0.6)
+                
+            ax.set_ylabel('Disturbance')
+            ax.set_title('General Disturbance Estimates')
+        else:
+            # 2D Tire Residuals (Legacy/Tire Mode)
+            ax.plot(time, data.get('w_r', []), 'b.', label='$w_r$ (est)', markersize=2)
+            ax.plot(time, data.get('w_f', []), 'r.', label='$w_f$ (est)', markersize=2)
+            
+            # Plot true values if available
+            if 'w_r_true' in data and np.any(data['w_r_true']):
+                 ax.plot(time, data['w_r_true'], 'b.', label='$w_r$ (true)', markersize=1)
+            if 'w_f_true' in data and np.any(data['w_f_true']):
+                 ax.plot(time, data['w_f_true'], 'r.', label='$w_f$ (true)', markersize=1)
+                 
+            ax.set_ylabel('Tire Residual [N]')
+            ax.set_title('Unknown Input Estimates (Tire Residuals)')
+            
         ax.set_xlabel('Time [s]')
-        ax.set_ylabel('Tire Residual [N]')
-        ax.set_title('Unknown Input Estimates (Tire Residuals)')
         ax.legend(loc='upper right', fontsize=8)
         ax.grid(True, alpha=0.3)
         axes.append(ax)
@@ -577,6 +598,8 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
     plt.show()
 
 
+
+
 def plot_2layer_data(data: Dict[str, np.ndarray], 
                      title: str = "2-Layer Neural Observer Analysis",
                      save_path: Optional[str] = None,
@@ -620,15 +643,15 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         pos = gs[0, 0] if plot_type == 'all' else gs[0, 0]
         ax = fig.add_subplot(pos)
         # Plot Measured first (background)
-        ax.plot(time, data.get('vx_meas', []), 'k.', label='Measured', markersize=1, alpha=0.3)
+        ax.plot(time, data.get('vx_meas', []), 'r.', label='Measured', markersize=1)
         # Plot 1st Layer
         if 'vx_uio' in data:
-            ax.plot(time, data['vx_uio'], 'c.', label='1st Layer', markersize=1, alpha=0.5)
+            ax.plot(time, data['vx_uio'], 'c.', label='1st Layer', markersize=1)
         # Plot Neural Estimate
         ax.plot(time, data.get('vx_est', []), 'b.', label='Neural', markersize=2)
         # Plot True (Foreground)
         if 'vx_true' in data and np.any(data['vx_true']):
-             ax.plot(time, data['vx_true'], 'g--', label='True', linewidth=1.5, alpha=0.8)
+             ax.plot(time, data['vx_true'], 'g--', label='True', linewidth=1.5)
         
         # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$v_x$ [m/s]')
@@ -642,10 +665,10 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         pos = gs[0, 1] if plot_type == 'all' else gs[0, 1]
         ax = fig.add_subplot(pos)
         if 'vy_uio' in data:
-            ax.plot(time, data['vy_uio'], 'c.', label='1st Layer', markersize=1, alpha=0.5)
+            ax.plot(time, data['vy_uio'], 'c.', label='1st Layer', markersize=1)
         ax.plot(time, data.get('vy_est', []), 'b.', label='Neural', markersize=2)
         if 'vy_true' in data and np.any(data['vy_true']):
-            ax.plot(time, data['vy_true'], 'g--', label='True', linewidth=1.5, alpha=0.8)
+            ax.plot(time, data['vy_true'], 'g--', label='True', linewidth=1.5)
         
         # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$v_y$ [m/s]')
@@ -658,12 +681,12 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
     if is_active(['states']):
         pos = gs[0, 2] if plot_type == 'all' else gs[0, 2]
         ax = fig.add_subplot(pos)
-        ax.plot(time, data.get('r_meas', []), 'k.', label='Measured', markersize=1, alpha=0.3)
+        ax.plot(time, data.get('r_meas', []), 'r.', label='Measured', markersize=1)
         if 'r_uio' in data:
-            ax.plot(time, data['r_uio'], 'c.', label='1st Layer', markersize=1, alpha=0.5)
+            ax.plot(time, data['r_uio'], 'c.', label='1st Layer', markersize=1)
         ax.plot(time, data.get('r_est', []), 'b.', label='Neural', markersize=2)
         if 'r_true' in data and np.any(data['r_true']):
-            ax.plot(time, data['r_true'], 'g.', label='True', markersize=2, alpha=0.6)
+            ax.plot(time, data['r_true'], 'g.', label='True', markersize=2)
         
         # ax.set_xlabel('Time [s]')
         ax.set_ylabel('$r$ [rad/s]')
@@ -676,60 +699,92 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
     if plot_type == 'all':
         # X Position
         ax4 = fig.add_subplot(gs[1, 0])
-        ax4.plot(time, data.get('X_meas', []), 'k.', label='GPS', markersize=1, alpha=0.3)
-        if 'X_uio' in data:
-            ax4.plot(time, data['X_uio'], 'c.', label='1st Layer', markersize=1, alpha=0.5)
-        ax4.plot(time, data.get('X_est', []), 'b.', label='Neural', markersize=2)
+        # ax4.plot(time, data.get('X_meas', []), 'r.', label='GPS', markersize=1)
         if 'X_true' in data and np.any(data['X_true']):
-            ax4.plot(time, data['X_true'], 'g.', label='True', markersize=2, alpha=0.6)
+            ax4.plot(time, data['X_true'], 'r.', label='True', markersize=2, alpha=0.6)
+        if 'X_uio' in data:
+            ax4.plot(time, data['X_uio'], 'c.', label='1st Layer', markersize=1)
+        ax4.plot(time, data.get('X_est', []), 'b.', label='Neural', markersize=1)
         # ax4.set_title('X Position'); ax4.grid(True, alpha=0.3); axes.append(ax4)
         ax4.set_ylabel('$X$ [m]')
         ax4.legend(loc='upper right', fontsize='small')
 
         # Y Position
         ax5 = fig.add_subplot(gs[1, 1])
-        ax5.plot(time, data.get('Y_meas', []), 'k.', label='GPS', markersize=1, alpha=0.3)
-        if 'Y_uio' in data:
-            ax5.plot(time, data['Y_uio'], 'c.', label='1st Layer', markersize=1, alpha=0.5)
-        ax5.plot(time, data.get('Y_est', []), 'b.', label='Neural', markersize=2)
+        # ax5.plot(time, data.get('Y_meas', []), 'r.', label='GPS', markersize=1)
         if 'Y_true' in data and np.any(data['Y_true']):
-            ax5.plot(time, data['Y_true'], 'g.', label='True', markersize=2, alpha=0.6)
+            ax5.plot(time, data['Y_true'], 'r.', label='True', markersize=2, alpha=0.6)
+        if 'Y_uio' in data:
+            ax5.plot(time, data['Y_uio'], 'c.', label='1st Layer', markersize=1)
+        ax5.plot(time, data.get('Y_est', []), 'b.', label='Neural', markersize=1)
         # ax5.set_title('Y Position'); ax5.grid(True, alpha=0.3); axes.append(ax5)
         ax5.set_ylabel('$Y$ [m]')
         ax5.legend(loc='upper right', fontsize='small')
 
         # Yaw Angle
         ax6 = fig.add_subplot(gs[1, 2])
-        psi_est = data.get('psi_est', []); psi_meas = data.get('psi_meas', [])
+        psi_est = data.get('psi_est', []); 
+        # psi_meas = data.get('psi_meas', [])
         if len(psi_est) > 0:
-            ax6.plot(time, np.rad2deg(psi_meas), 'k.', label='GPS', markersize=1, alpha=0.3)
-            if 'psi_uio' in data:
-                ax6.plot(time, np.rad2deg(data['psi_uio']), 'c.', label='1st Layer', markersize=1, alpha=0.5)
-            ax6.plot(time, np.rad2deg(psi_est), 'b.', label='Neural', markersize=2)
+            # ax6.plot(time, np.rad2deg(psi_meas), 'r.', label='GPS', markersize=1)
             if 'psi_true' in data and np.any(data['psi_true']):
-                ax6.plot(time, np.rad2deg(data['psi_true']), 'g.', label='True', markersize=2, alpha=0.6)
+                ax6.plot(time, np.rad2deg(data['psi_true']), 'r.', label='True', markersize=2 , alpha = 0.6)
+            if 'psi_uio' in data:
+                ax6.plot(time, np.rad2deg(data['psi_uio']), 'c.', label='1st Layer', markersize=1)
+            ax6.plot(time, np.rad2deg(psi_est), 'b.', label='Neural', markersize=1)
         # ax6.set_title('Yaw Angle'); ax6.grid(True, alpha=0.3); axes.append(ax6)
         ax6.set_ylabel('$yaw$ [deg]')
         ax6.legend(loc='upper right', fontsize='small')
 
-    # 7. NN Tire Residuals (Swapped with Trajectory, now BIGGER)
+    # 7. NN Tire Residuals / General Disturbances
     if is_active(['debug']):
         pos = gs[3, 0:2] if plot_type == 'all' else gs[0, 0]
         ax = fig.add_subplot(pos)
-        ax.plot(time, data.get('w_r_nn', []), 'b.', label='$w_r$ (NN)', markersize=2)
-        ax.plot(time, data.get('w_f_nn', []), 'r.', label='$w_f$ (NN)', markersize=2)
-        if 'w_r_uio' in data:
-            ax.plot(time, data.get('w_r_uio', []), 'c.', label='$w_r$ (1st)', markersize=1, alpha=0.3)
-            ax.plot(time, data.get('w_f_uio', []), 'm.', label='$w_f$ (1st)', markersize=1, alpha=0.3)
-        if 'w_r_true' in data and np.any(data['w_r_true']):
-            ax.plot(time, data['w_r_true'], 'g.', label='$w_r$ (True)', markersize=2, alpha=0.6)
-        if 'w_f_true' in data and np.any(data['w_f_true']):
-            ax.plot(time, data['w_f_true'], 'y.', label='$w_f$ (True)', markersize=2, alpha=0.6)
-
+        
+        # Check for general disturbance columns (NN output)
+        if 'd_vx_nn' in data:
+            # 3D General Disturbances
+            
+            # True Disturbances (Solid lines)
+            if 'd_vx_true' in data:
+                ax.plot(time, data['d_vx_true'], 'b-', label='$d_{vx}$ (True)', linewidth=1.5, alpha=0.9)
+            if 'd_vy_true' in data:
+                ax.plot(time, data['d_vy_true'], 'g-', label='$d_{vy}$ (True)', linewidth=1.5, alpha=0.9)
+            if 'd_r_true' in data:
+                ax.plot(time, data['d_r_true'], 'm-', label='$d_{r}$ (True)', linewidth=1.5, alpha=0.9)
+            
+            # Neural Estimates (Dashed/Points)
+            ax.plot(time, data.get('d_vx_nn', []), 'b.', label='$d_{vx}$ (NN)', markersize=2)
+            ax.plot(time, data.get('d_vy_nn', []), 'g.', label='$d_{vy}$ (NN)', markersize=2)
+            ax.plot(time, data.get('d_r_nn', []), 'm.', label='$d_{r}$ (NN)', markersize=2)
+            
+            # First Layer Estimates (Cyan/Yellow/Thin) - if available
+            if 'd_vx_uio' in data:
+                 ax.plot(time, data['d_vx_uio'], 'c--', label='$d_{vx}$ (1st)', linewidth=1, alpha=0.7)
+            if 'd_vy_uio' in data:
+                 ax.plot(time, data['d_vy_uio'], 'y--', label='$d_{vy}$ (1st)', linewidth=1, alpha=0.7)
+            
+            ax.set_ylabel('Disturbance')
+            ax.set_title('General Disturbance Estimates (NN vs True)')
+        else:
+            # 2D Tire Residuals (Legacy)
+            if 'w_r_true' in data and np.any(data['w_r_true']):
+                ax.plot(time, data['w_r_true'], 'r.', label='$w_r$ (True)', markersize=2)
+            if 'w_f_true' in data and np.any(data['w_f_true']):
+                ax.plot(time, data['w_f_true'], 'y.', label='$w_f$ (True)', markersize=2)
+            
+            if 'w_r_uio' in data:
+                ax.plot(time, data.get('w_r_uio', []), 'c.', label='$w_r$ (1st)', markersize=1)
+                ax.plot(time, data.get('w_f_uio', []), 'm.', label='$w_f$ (1st)', markersize=1)
+                
+            ax.plot(time, data.get('w_r_nn', []), 'b.', label='$w_r$ (NN)', markersize=1)
+            ax.plot(time, data.get('w_f_nn', []), 'g.', label='$w_f$ (NN)', markersize=1)
+    
+            ax.set_ylabel('Tire Residual [N]')
+            ax.set_title('Tire Force Residuals (NN vs 1st Layer vs True)')
+            
         ax.set_xlabel('Time [s]')
-        ax.set_ylabel('Tire Residual [N]')
-        ax.set_title('Tire Force Residuals (NN vs 1st Layer vs True)')
-        ax.legend(loc='upper right')
+        ax.legend(loc='upper right' , fontsize= 8)
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 

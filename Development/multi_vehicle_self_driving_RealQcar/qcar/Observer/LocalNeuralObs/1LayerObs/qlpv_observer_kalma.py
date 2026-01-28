@@ -178,19 +178,22 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             use_8d_system: Use 8D state system
         """
         self.use_8d_system = use_8d_system
+        self.disturbance_mode = kwargs.get('disturbance_mode', 'tire')
+        self.udim = 3 if self.disturbance_mode == 'general' else 2
+        
         if use_8d_system:
              self.state_dim = self.STATE_DIM_8D
-             self.augmented_dim = self.AUGMENTED_DIM_10D
+             self.augmented_dim = self.STATE_DIM_8D + self.udim
              self.meas_dim = self.MEAS_DIM_7D
         else:
              self.state_dim = self.STATE_DIM
-             self.augmented_dim = self.AUGMENTED_DIM
+             self.augmented_dim = self.STATE_DIM + self.udim
              self.meas_dim = self.MEAS_DIM
 
         # Initialize base class
         super().__init__(
             state_dim=self.state_dim,
-            unknown_input_dim=2,  # [w_r, w_f]
+            unknown_input_dim=self.udim,
             sample_time=sample_time
         )
         
@@ -216,7 +219,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         self.state_hat = np.zeros(self.state_dim)
         
         # Tire residual estimates
-        self.w_hat = np.zeros(2)  # [w_r, w_f]
+        self.w_hat = np.zeros(self.udim)  # [w_r, w_f] or [d_vx, d_vy, d_r]
         
         # =====================================================
         # EKF Covariance Matrices (Q, R, P)
@@ -262,11 +265,15 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         self.dynamics = create_qlpv_dynamics(
             vehicle_params=self.params,
             min_vx=self.min_vx,
-            use_8d_system=use_8d_system
+            use_8d_system=use_8d_system,
+            disturbance_mode=self.disturbance_mode
         )
         
         # Numerical Jacobian step size
         self.epsilon = 1e-6
+        
+        # Internal state for control processing
+        self.current_steering_angle = 0.0
         
 
     
@@ -338,22 +345,26 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
                 0.01,   # Y
                 0.05,   # ax (new state)
                 0.05,   # ay (new state)
-                5.0,   # wr - INCREASED for random walk exploration
-                5.0,   # wf - INCREASED for random walk exploration
+                200.0,   # wr - INCREASED for random walk exploration
+                200.0,   # wf - INCREASED for random walk exploration
              ])
              
-        # 6D system: [vx, vy, psi, r, X, Y] + [wr, wf]
-        # CRITICAL FIX: Increased wr, wf from 5.0 to 50.0
-        return np.diag([
+        # 6D system: [vx, vy, psi, r, X, Y] + [w...]
+        Q_diag = [
             0.01,   # vx - longitudinal velocity (well measured)
             0.1,    # vy - lateral velocity (less observable)
             1e-4,   # psi - yaw angle (kinematic)
             0.02,   # r - yaw rate (from gyro)
             0.01,   # X - position (from GPS)
             0.01,   # Y - position (from GPS)
-            5.0,   # wr - INCREASED for random walk (was 5.0, too small)
-            5.0,   # wf - INCREASED for random walk (was 5.0, too small)
-        ])
+        ]
+        
+        # Add unknown input noise (Large for random walk)
+        # For general disturbances (vx, vy, r), we treat them as random walks too
+        # If udim=2, assumes [wr, wf]. If udim=3, assumes [d_vx, d_vy, d_r]
+        Q_diag.extend([200.0] * self.udim)
+        
+        return np.diag(Q_diag)
     
     def _default_R(self) -> np.ndarray:
         """
@@ -381,7 +392,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             0.02**2,  # psi - heading noise (integrated gyro)
             0.2**2,   # X - position noise (reduced for small vehicle)
             0.2**2,   # Y - position noise (reduced for small vehicle)
-            0.2**2,   # ay - accelerometer noise
+            0.1**2,   # ay - accelerometer noise
         ])
     
     def _default_P0(self) -> np.ndarray:
@@ -400,8 +411,8 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
                  5.0,    # Y
                  1.0,    # ax
                  1.0,    # ay
-                 100.0,  # wr
-                 100.0,  # wf
+                 5.0,  # wr
+                 5.0,  # wf
              ])
              
         return np.diag([
@@ -411,26 +422,25 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             0.1,    # r
             5.0,    # X
             5.0,    # Y
-            100.0,  # wr - high initial uncertainty
-            100.0,  # wf - high initial uncertainty
+            5.0,  # wr - high initial uncertainty
+            5.0,  # wf - high initial uncertainty
         ])
+        
+        # Adjust for dynamic unknown input dimension
+        # If udim=3, remove last 2 and add 3, or just reconstruct
+        P0_diag = [
+            1.0,    # vx
+            1.0,    # vy
+            0.1,    # psi
+            0.1,    # r
+            5.0,    # X
+            5.0,    # Y
+        ]
+        P0_diag.extend([5.0] * self.udim)
+        
+        return np.diag(P0_diag)
     
-        if self.use_8d_system:
-             P0_8d = np.diag([
-                 1.0,    # vx
-                 1.0,    # vy
-                 0.1,    # psi
-                 0.1,    # r
-                 5.0,    # X
-                 5.0,    # Y
-                 1.0,    # ax
-                 1.0,    # ay
-                 100.0,  # wr
-                 100.0,  # wf
-             ])
-             return P0_8d
-             
-        return P0_default
+
     
     # =========================================================
     # Numerical Jacobian Computation
@@ -533,104 +543,14 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         
         return ay_innovation
     
-    # =========================================================
-    # Discrete Dynamics for EKF
-    # =========================================================
-    
-    def f_discrete(self, xa: np.ndarray, u: np.ndarray) -> np.ndarray:
-        """
-        Discrete-time state transition function with kinematic/dynamic blending.
-        
-        xa[k+1] = f(xa[k], u[k])
-        
-        At low speeds, uses kinematic bicycle model to avoid singularities.
-        At higher speeds, uses full qLPV dynamic model.
-        Smooth blending in transition region.
-        
-        Args:
-            xa: Augmented state [vx, vy, psi, r, X, Y, wr, wf]
-            u: Control input [δ, a]
-            
-        Returns:
-            Predicted augmented state at next time step
-        """
-        # Extract 6D state and tire residuals
-        x = xa[:self.state_dim]
-        w = xa[self.state_dim:]
-        
-        # Use blended dynamics (kinematic at low speed, dynamic at high speed)
-        # Thresholds: pure kinematic below 0.1 m/s, pure dynamic above 0.3 m/s
-        blend_vx_low = 0.1   # Pure kinematic below this
-        blend_vx_high = 0.3  # Pure dynamic above this
-        
-        # # RK4 Integration with blended dynamics
-        # k1 = self.dynamics.f_continuous(x, u, w)
-        # k2 = self.dynamics.f_continuous(x + 0.5 * self.Ts * k1, u, w)
-        # k3 = self.dynamics.f_continuous(x + 0.5 * self.Ts * k2, u, w)
-        # k4 = self.dynamics.f_continuous(x + self.Ts * k3, u, w)
-        
-        # x_next = x + (self.Ts / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
 
-        x_next = x + self.dynamics.f_continuous(x, u, w)*self.Ts
-        
-
-
-        
-        # At very low speeds, apply additional decay and clamping
-        vx_abs = abs(x_next[self.IDX_VX])
-        
-        # Note: Velocity dead zone and decay logic is commented out to allow
-        # proper state estimation even at low speeds. The kinematic/dynamic
-        # blending in f_continuous handles low-speed behavior.
-        
-        # Tire residual dynamics (random-walk: ẇ = 0)
-        # CRITICAL FIX: Removed low-speed decay that was forcing residuals to zero!
-        # The previous code `w_next *= 0.9` when vx < 0.1 m/s caused residuals
-        # to decay towards zero during initialization or any low-speed maneuver,
-        # preventing proper estimation even after vehicle speeds up.
-        # 
-        # Random walk assumption means w stays constant (plus process noise).
-        # Let the Kalman filter naturally handle uncertainty increase at low speeds
-        # through the Q matrix, rather than artificially forcing decay.
-        w_next = w.copy()
-        # Removed: if vx_abs < blend_vx_low: w_next *= 0.9
-        
-        # Assemble next state
-        xa_next = np.zeros(self.augmented_dim)
-        xa_next[:self.state_dim] = x_next
-        xa_next[self.state_dim:] = w_next
-        
-        return xa_next
-    
-    def h_meas(self, xa: np.ndarray, u: np.ndarray) -> np.ndarray:
-        """
-        Measurement function with kinematic/dynamic blending.
-        
-        y = h(xa, u) = [vx, r, psi, X, Y, ay]
-        
-        At low speeds, uses kinematic approximation for ay.
-        At high speeds, uses full tire force model.
-        
-        Args:
-            xa: Augmented state [vx, vy, psi, r, X, Y, wr, wf]
-            u: Control input [δ, a]
-            
-        Returns:
-            Predicted measurement vector
-        """
-        # Extract state and tire residuals
-        x = xa[:self.state_dim]
-        w = xa[self.state_dim:]
-        
-        # Use centralized measurement function
-        return self.dynamics.h_meas(x, u, w)
     
     # =========================================================
     # EKF Predict + Update
     # =========================================================
     
     def ekf_predict(self, xa: np.ndarray, P: np.ndarray, 
-                    u: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+                    u: np.ndarray, dt: float) -> Tuple[np.ndarray, np.ndarray]:
         """
         EKF Prediction Step
         
@@ -641,6 +561,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             xa: Current augmented state estimate
             P: Current error covariance
             u: Control input
+            dt: Sample time
             
         Returns:
             Tuple of (predicted state, predicted covariance)
@@ -653,7 +574,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         A_a, B_a, _ = self.compute_augmented_matrices(rho)
         
         # Discretize using ZOH
-        A_ad, B_ad = self._discretize_augmented(A_a, B_a, self.Ts)
+        A_ad, B_ad = self._discretize_augmented(A_a, B_a, dt)
         
         # State prediction using discrete linear dynamics: x[k+1] = A_d·x[k] + B_d·u[k]
         xa_pred = A_ad @ xa + B_ad @ u
@@ -662,6 +583,11 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         F = A_ad
         
         # Covariance prediction
+        # Scale Q with dt if needed, but self.Q is already initialized via defaults * sample_time
+        # If dt varies significantly, we should ideally recompute Q = Q_continuous * dt
+        # For small variations, using fixed Q is often acceptable, but let's be precise if possible
+        # However, self.Q is stored as discrete Q. Recomputing it on fly might be expensive or require Q_cont.
+        # Let's stick to fixed Q for now to avoid complexity, assuming dt doesn't vary wildly (e.g. 10x).
         P_pred = F @ P @ F.T + self.Q
         
         return xa_pred, P_pred
@@ -706,9 +632,9 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # dynamics.compute_D_matrix returns 6x2 (for 6D system) which might be wrong shape for 8D (7x8)
         # So we handle D dimension carefully
         if self.use_8d_system:
-             D = np.zeros((self.meas_dim, 2))
+            D = np.zeros((self.meas_dim, 2))
         else:
-             D = self.compute_D_matrix(rho)
+            D = self.compute_D_matrix(rho)
              
         # Measurement prediction using Linear/qLPV model: y = C_a·x_a + D·u
         y_pred = C_a @ xa_pred + D @ u
@@ -751,21 +677,26 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
     def update(self, measurement: np.ndarray, control_input: np.ndarray,
                f_nn: Optional[np.ndarray] = None,
                acceleration: Optional[np.ndarray] = None,
-               gps_available: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+               gps_available: bool = True,
+               dt: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray]:
         """
         Update qLPV augmented-state observer with EKF predict-update cycle
         
         Args:
             measurement: Measurement vector.
-            control_input: Control [δ, a] 
+            control_input: Control [δ, a] OR [steering_cmd, throttle_cmd] if process_control=True
             f_nn: Neural network output (not used)
             acceleration: Full 3D acceleration [a_x, a_y, a_z] if a_y not in measurement
             gps_available: Whether GPS measurements [X, Y] (and possibly ψ) are valid
+            dt: Sample time (if None, use self.Ts)
             
         Returns:
             Tuple of (state_estimate, tire_residual_estimate)
         """
         measurement = measurement.reshape(-1)
+        
+        # Determine current time step
+        current_dt = dt if dt is not None else self.Ts
         
         # Determine effective R matrix and handle missing measurements
         # If gps_available is False, we boost variance for X, Y (, psi?)
@@ -789,25 +720,49 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             # Assuming psi is untrusted too for consistency with C-matrix logic
             R_effective[idx_PSI, idx_PSI] = high_variance
         
-        # Also handle partial measurements (e.g. initialisation)
-        # This logic overrides the 'process_measurement' padding if we trust R scaling
-        
-        # if len(measurement) == 2:
-        #     # Minimal fallback
-        #     # indices for vx, r
-        #      pass 
-             
+ 
+
         # Process measurement to get full vector
         y = self._process_measurement(measurement, acceleration)
         
-        # Control input
-        u = control_input.reshape(-1)
+        # Process Control Input
+        u_raw = control_input.reshape(-1)
+        # Input is [steering_cmd, throttle_cmd] (normalized -1 to 1)
+        # Need to convert to physical [delta, accel] using current state
+        
+        # Construct state vector for dynamics module (needs correct format)
+        # We use state_hat (estimated state) for this calculation
+        current_state = self.state_hat.copy()
+        
+        throttle_cmd = u_raw[1] if len(u_raw) > 1 else 0.0
+        steering_cmd = u_raw[0]
+        
+        # Use centralized dynamics to process control
+        accel, _, new_steering_angle = self.dynamics.process_control_inputs(
+            throttle_cmd, steering_cmd, current_state, 
+            self.current_steering_angle, current_dt
+        )
+        
+        # Update internal steering state
+        self.current_steering_angle = new_steering_angle
+        
+        # Form physical control vector for EKF [delta, a]
+        u = np.array([self.current_steering_angle, accel])
+        
+        # # CRITICAL FIX: Override integrated steering with measurement if available
+        # # This prevents the open-loop servo model from drifting away from the true plant
+        # if len(u_raw) > 2:
+        #     # print("direct u", u_raw)
+        #     # If control_input passed as [steering_cmd, throttle_cmd, true_delta]
+        #     self.current_steering_angle = u_raw[2]
+        #     u[0] = self.current_steering_angle
+        
         delta = u[0]
         
         # =====================================================
         # EKF PREDICT
         # =====================================================
-        xa_pred, P_pred = self.ekf_predict(self.state_augmented, self.P, u)
+        xa_pred, P_pred = self.ekf_predict(self.state_augmented, self.P, u, current_dt)
         
         # =====================================================
         # EKF UPDATE
@@ -823,6 +778,8 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # self.IDX_PSI = 2 same for 6d and 8d
         self.state_augmented[self.IDX_PSI] = (self.state_augmented[self.IDX_PSI] + np.pi) % (2 * np.pi) - np.pi
         
+
+        #  ---------------- JUST for DEBUG ----------------
         # Store Kalman gain for diagnostics - recompute using R_effective
         # Store Kalman gain for diagnostics - recompute using R_effective and analytical matrices
         try:
@@ -1017,6 +974,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         
         return rank_stacked == rank_E == 2
     
+    
     def reset(self, initial_state: Optional[np.ndarray] = None, 
               initial_position: Optional[np.ndarray] = None):
         """
@@ -1049,14 +1007,14 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
                 else:
                      self.state_hat[self.IDX_X] = initial_position[0]
                      self.state_hat[self.IDX_Y] = initial_position[1]
-        
+        self.current_steering_angle = 0.0
         # Reset augmented state
         self.state_augmented = np.zeros(self.augmented_dim)
         self.state_augmented[:self.state_dim] = self.state_hat
         
         # Reset tire residuals
-        self.w_hat = np.zeros(2)
-        self.f_uk_hat = np.zeros(2)
+        self.w_hat = np.zeros(self.udim)
+        self.f_uk_hat = np.zeros(self.udim)
         
         # Reset EKF covariance to initial
         self.P = self._default_P0()
@@ -1066,6 +1024,17 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         
         # Reset innovation
         self.innovation = np.zeros(self.meas_dim)
+
+    def get_unknown_input_estimate(self) -> np.ndarray:
+        """Get estimate of unknown inputs (tire residuals or disturbances)"""
+        # Extract from augmented state
+        start_idx = self.state_dim
+        end_idx = self.state_dim + self.udim
+        return self.state_augmented[start_idx:end_idx].copy()
+
+    def get_tire_residual_estimate(self) -> np.ndarray:
+        """Alias for get_unknown_input_estimate (compatibility)"""
+        return self.get_unknown_input_estimate()
         
         # Reset gyro bias
         self.gyro_bias = 0.0

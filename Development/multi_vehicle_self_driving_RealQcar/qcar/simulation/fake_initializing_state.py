@@ -172,9 +172,12 @@ class FakeInitializingState(StateBase):
                 self.vehicle_logic.yolo_manager.yolo_drive = None
                 self.logger.logger.info("Mock perception disabled (fake vehicle has no camera)")
             
-            # Initialize mock GPS reading (simulate _wait_for_gps)
-            if not self._wait_for_mock_gps():
-                return False
+            self.init_pose = self.vehicle_logic.gps.last_data
+            self.logger.logger.info(
+                f"Initial pose: x={self.init_pose[0]:.2f}, "
+                f"y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}"
+            )
+
             
             # Initialize state estimator with mock GPS (matches real _initialize_state_estimator)
             if not self._initialize_state_estimator():
@@ -188,26 +191,7 @@ class FakeInitializingState(StateBase):
             traceback.print_exc()
             return False
     
-    def _wait_for_mock_gps(self) -> bool:
-        """Wait for initial mock GPS reading (matches real _wait_for_gps)"""
-        self.logger.logger.info("Waiting for initial mock GPS reading...")
-        # self.logger.logger.info(f"Calibration pose: {self.config.path.calibration_pose}")
 
-        # Mock GPS is always ready - just read once
-        if self.vehicle_logic.gps.readGPS():
-            self.init_pose = np.array([
-                self.vehicle_logic.gps.position[0],
-                self.vehicle_logic.gps.position[1],
-                self.vehicle_logic.gps.orientation[2]
-            ])
-            self.logger.logger.info(
-                f"Initial pose: x={self.init_pose[0]:.2f}, "
-                f"y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}"
-            )
-            return True
-        
-        self.logger.log_error("Mock GPS reading failed")
-        return False
     
     def _initialize_state_estimator(self) -> bool:
         """Initialize local state estimator (matches real InitializingState)"""

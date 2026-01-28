@@ -36,56 +36,12 @@ class NeuralObsRecorder:
     Supports both 1-layer (first-layer only) and 2-layer (neural + first-layer)
     recording modes.
     """
-    
-    # Column definitions for 1-layer mode
-    COLUMNS_1LAYER = [
-        # Estimated 6D state from first-layer observer
-        'vx_est', 'vy_est', 'psi_est', 'r_est', 'X_est', 'Y_est',
-        # Unknown input estimates (tire residuals from first-layer)
-        'w_r', 'w_f',
-        # True unknown inputs (for ground truth comparison in sims)
-        'w_r_true', 'w_f_true',
-        # Measurements
-        'vx_meas', 'r_meas', 'psi_meas', 'X_meas', 'Y_meas', 'ay_meas',
-        # Control inputs
-        'steering', 'throttle',
-        # GPS status
-        'gps_valid',
-    ]
-    
-    # Column definitions for 2-layer mode (includes everything from 1-layer plus NN/training data)
-    COLUMNS_2LAYER = [
-        # Estimated 6D state from neural layer (second layer)
-        'vx_est', 'vy_est', 'psi_est', 'r_est', 'X_est', 'Y_est',
-        # Measurements
-        'vx_meas', 'r_meas', 'psi_meas', 'X_meas', 'Y_meas', 'ay_meas',
-        # Neural network outputs (learned tire residuals)
-        'w_r_nn', 'w_f_nn',
-        # First-layer observer state (UIO/qLPV)
-        'vx_uio', 'vy_uio', 'psi_uio', 'r_uio', 'X_uio', 'Y_uio',
-        # First-layer unknown input estimates
-        'w_r_uio', 'w_f_uio',
-        # Control inputs
-        'steering', 'throttle',
-        # Training statistics
-        'loss', 'gps_valid',
-        # Observer Gain and Innovation (for debugging)
-        'L_psi', 'innov_psi',
-        # True Ground Truth (Sim only)
-        'vx_true', 'vy_true', 'psi_true', 'r_true', 'X_true', 'Y_true',
-        'w_r_true', 'w_f_true',
-        # True tire forces (from selected tire model: pacejka, dynamic_linear, etc.)
-        'Fyr_true', 'Fyf_true',
-        # Linear tire forces (reference model: F = C * alpha)
-        'Fyr_linear', 'Fyf_linear',
-        # Slip angles (for verification)
-        'alpha_r', 'alpha_f',
-    ]
-    
+
     def __init__(self, 
                  output_dir: str = "neural_obs_recordings", 
                  name: str = "neural_obs",
-                 mode: RecordingMode = '2layer'):
+                 mode: RecordingMode = '2layer',
+                 disturbance_mode: str = 'tire'):
         """
         Initialize the neural observer recorder.
         
@@ -93,6 +49,7 @@ class NeuralObsRecorder:
             output_dir: Directory to save recordings
             name: Prefix for the recording file name
             mode: Recording mode - '1layer' for first-layer only, '2layer' for full
+            disturbance_mode: 'tire' (2D) or 'general' (3D)
         """
         if os.path.isabs(output_dir):
             base_output_dir = output_dir
@@ -110,6 +67,7 @@ class NeuralObsRecorder:
             
         self.name = name
         self.mode = mode
+        self.disturbance_mode = disturbance_mode
         self.file = None
         self.writer = None
         self.recording = False
@@ -117,8 +75,57 @@ class NeuralObsRecorder:
         self.record_count = 0
         self.filepath = None
         
-        # Select columns based on mode
-        self.columns = self.COLUMNS_1LAYER if mode == '1layer' else self.COLUMNS_2LAYER
+        # Define base column sets
+        self.columns = self._get_columns()
+
+    def _get_columns(self) -> List[str]:
+        """Generate column list based on mode and disturbances"""
+        cols = []
+        
+        # 1. State Estimates (Common)
+        cols.extend(['vx_est', 'vy_est', 'psi_est', 'r_est', 'X_est', 'Y_est'])
+        
+        # 2. Unknown Inputs / Disturbances
+        if self.disturbance_mode == 'general':
+            # 3D General Disturbances
+            dist_cols = ['d_vx', 'd_vy', 'd_r']
+        else:
+            # 2D Tire Residuals
+            dist_cols = ['w_r', 'w_f']
+            
+        # Add NN outputs for 2-layer mode first (primary interest)
+        if self.mode == '2layer':
+            cols.extend([f"{c}_nn" for c in dist_cols])
+            
+        # 3. First-Layer / Single Layer components
+        if self.mode == '2layer':
+            cols.extend(['vx_uio', 'vy_uio', 'psi_uio', 'r_uio', 'X_uio', 'Y_uio'])
+            # UIO 1st layer estimates
+            cols.extend([f"{c}_uio" for c in dist_cols])
+        else:
+            # 1-layer mode: estimated unknowns are just the base names or _est?
+            # Classically 1-layer output was saved as 'w_r', 'w_f'.
+            cols.extend(dist_cols)
+
+        # 4. True Ground Truths (Sim only)
+        # Always record both types of truth if available for debugging
+        cols.extend(['d_vx_true', 'd_vy_true', 'd_r_true'])
+        cols.extend(['w_r_true', 'w_f_true'])
+        # Force/Slip debugging (Only relevant for tire mode really, but kept for legacy)
+        if self.disturbance_mode == 'tire':
+            cols.extend(['Fyr_true', 'Fyf_true', 'Fyr_linear', 'Fyf_linear', 'alpha_r', 'alpha_f'])
+            
+        # 5. Measurements & Inputs & Stats
+        cols.extend(['vx_meas', 'r_meas', 'psi_meas', 'X_meas', 'Y_meas', 'ay_meas'])
+        cols.extend(['steering', 'throttle', 'gps_valid'])
+        
+        if self.mode == '2layer':
+            cols.extend(['loss'])
+            
+        # Ground truth states
+        cols.extend(['vx_true', 'vy_true', 'psi_true', 'r_true', 'X_true', 'Y_true'])
+        
+        return cols
     
     def start(self, filename: Optional[str] = None, append: bool = False) -> str:
         """
@@ -166,6 +173,29 @@ class NeuralObsRecorder:
         
         return self.filepath
     
+    
+    def _fill_dist_to_row(self, row: Dict, values: Optional[np.ndarray], suffix: str = ""):
+        """Helper to fill disturbance columns based on mode"""
+        if values is None:
+            vals = []
+        else:
+            vals = np.asarray(values).flatten()
+
+        if self.disturbance_mode == 'general':
+            # 3D: d_vx, d_vy, d_r
+            names = ['d_vx', 'd_vy', 'd_r']
+        else:
+            # 2D: w_r, w_f
+            names = ['w_r', 'w_f']
+            
+        full_names = [f"{n}{suffix}" for n in names]
+        
+        for i, name in enumerate(full_names):
+            if i < len(vals):
+                row[name] = float(vals[i])
+            else:
+                row[name] = 0.0
+
     def record_1layer(self,
                       t: float,
                       state_6d: np.ndarray,
@@ -203,18 +233,10 @@ class NeuralObsRecorder:
             row['Y_est'] = state_6d[5]
             
             # Unknown input estimates (first-layer tire residuals)
-            w = np.asarray(unknown_input).flatten()
-            row['w_r'] = w[0] if len(w) > 0 else 0.0
-            row['w_f'] = w[1] if len(w) > 1 else 0.0
+            self._fill_dist_to_row(row, unknown_input, suffix="")
             
             # True unknown inputs (if available)
-            if true_unknown_input is not None:
-                w_true = np.asarray(true_unknown_input).flatten()
-                row['w_r_true'] = w_true[0] if len(w_true) > 0 else 0.0
-                row['w_f_true'] = w_true[1] if len(w_true) > 1 else 0.0
-            else:
-                 row['w_r_true'] = 0.0
-                 row['w_f_true'] = 0.0
+            self._fill_dist_to_row(row, true_unknown_input, suffix="_true")
             
             # Measurements
             row['vx_meas'] = measurements.get('vx', 0.0)
@@ -249,10 +271,9 @@ class NeuralObsRecorder:
                       throttle: float = 0.0,
                       loss: float = 0.0,
                       gps_valid: bool = False,
-                      L_psi: float = 0.0,
-                      innov_psi: float = 0.0,
                       state_true_6d: Optional[np.ndarray] = None,
                       unknown_input_true: Optional[np.ndarray] = None,
+                      disturbances_true: Optional[np.ndarray] = None,
                       tire_info: Optional[Dict] = None):
         """
         Record a single data sample for 2-layer neural observer.
@@ -268,10 +289,9 @@ class NeuralObsRecorder:
             throttle: Throttle command
             loss: Training loss value
             gps_valid: Whether GPS was valid for this update
-            L_psi: Observer gain for yaw state from yaw measurement
-            innov_psi: Yaw innovation (measurement error)
             state_true_6d: Optional ground truth state [vx, vy, psi, r, X, Y]
-            unknown_input_true: Optional ground truth unknown inputs [w_r, w_f]
+            unknown_input_true: Optional ground truth tire residuals [w_r, w_f]
+            disturbances_true: Optional ground truth general disturbances [d_vx, d_vy, d_r]
             tire_info: Optional dict with tire force data for debugging:
                        {'Fyr_true', 'Fyf_true', 'Fyr_linear', 'Fyf_linear', 'alpha_r', 'alpha_f'}
         """
@@ -298,9 +318,7 @@ class NeuralObsRecorder:
             row['ay_meas'] = measurements.get('ay', 0.0)
             
             # Neural network outputs
-            nn_flat = nn_outputs.flatten() if hasattr(nn_outputs, 'flatten') else nn_outputs
-            row['w_r_nn'] = nn_flat[0] if len(nn_flat) > 0 else 0.0
-            row['w_f_nn'] = nn_flat[1] if len(nn_flat) > 1 else 0.0
+            self._fill_dist_to_row(row, nn_outputs, suffix="_nn")
             
             # UIO state
             if uio_state is not None and len(uio_state) >= 6:
@@ -319,13 +337,7 @@ class NeuralObsRecorder:
                 row['Y_uio'] = 0.0
             
             # UIO unknown input estimates
-            if uio_unknown_input is not None:
-                uio_w = np.asarray(uio_unknown_input).flatten()
-                row['w_r_uio'] = uio_w[0] if len(uio_w) > 0 else 0.0
-                row['w_f_uio'] = uio_w[1] if len(uio_w) > 1 else 0.0
-            else:
-                row['w_r_uio'] = 0.0
-                row['w_f_uio'] = 0.0
+            self._fill_dist_to_row(row, uio_unknown_input, suffix="_uio")
             
             # Control inputs
             row['steering'] = steering
@@ -334,10 +346,6 @@ class NeuralObsRecorder:
             # Training stats
             row['loss'] = loss
             row['gps_valid'] = 1 if gps_valid else 0
-            
-            # Observer Gain and Innovation (for debugging)
-            row['L_psi'] = L_psi
-            row['innov_psi'] = innov_psi
 
             # Ground Truth
             if state_true_6d is not None:
@@ -354,33 +362,41 @@ class NeuralObsRecorder:
                  row['r_true'] = 0.0
                  row['X_true'] = 0.0
                  row['Y_true'] = 0.0
-
-            if unknown_input_true is not None:
-                 w_true_flat = unknown_input_true.flatten()
-                 row['w_r_true'] = w_true_flat[0] if len(w_true_flat) > 0 else 0.0
-                 row['w_f_true'] = w_true_flat[1] if len(w_true_flat) > 1 else 0.0
+            
+            # True unknown inputs (tire residuals)
+            self._fill_dist_to_row(row, unknown_input_true, suffix="_true")
+            
+            # True general disturbances (always record if available)
+            if disturbances_true is not None:
+                # Manually fill strictly 3D disturbances
+                d_vals = np.asarray(disturbances_true).flatten()
+                row['d_vx_true'] = float(d_vals[0]) if len(d_vals) > 0 else 0.0
+                row['d_vy_true'] = float(d_vals[1]) if len(d_vals) > 1 else 0.0
+                row['d_r_true'] = float(d_vals[2]) if len(d_vals) > 2 else 0.0
             else:
-                 row['w_r_true'] = 0.0
-                 row['w_f_true'] = 0.0
+                row['d_vx_true'] = 0.0
+                row['d_vy_true'] = 0.0
+                row['d_r_true'] = 0.0
             
             # Tire force information (for debugging tire residual estimation)
             # F_true: actual forces from selected tire model (pacejka, etc.)
             # F_linear: reference forces from linear model (F = C * alpha)
             # Residual should be: w = F_true - F_linear
-            if tire_info is not None:
-                row['Fyr_true'] = tire_info.get('Fyr_true', 0.0)
-                row['Fyf_true'] = tire_info.get('Fyf_true', 0.0)
-                row['Fyr_linear'] = tire_info.get('Fyr_linear', 0.0)
-                row['Fyf_linear'] = tire_info.get('Fyf_linear', 0.0)
-                row['alpha_r'] = tire_info.get('alpha_r', 0.0)
-                row['alpha_f'] = tire_info.get('alpha_f', 0.0)
-            else:
-                row['Fyr_true'] = 0.0
-                row['Fyf_true'] = 0.0
-                row['Fyr_linear'] = 0.0
-                row['Fyf_linear'] = 0.0
-                row['alpha_r'] = 0.0
-                row['alpha_f'] = 0.0
+            if self.disturbance_mode == 'tire':
+                if tire_info is not None:
+                    row['Fyr_true'] = tire_info.get('Fyr_true', 0.0)
+                    row['Fyf_true'] = tire_info.get('Fyf_true', 0.0)
+                    row['Fyr_linear'] = tire_info.get('Fyr_linear', 0.0)
+                    row['Fyf_linear'] = tire_info.get('Fyf_linear', 0.0)
+                    row['alpha_r'] = tire_info.get('alpha_r', 0.0)
+                    row['alpha_f'] = tire_info.get('alpha_f', 0.0)
+                else:
+                    row['Fyr_true'] = 0.0
+                    row['Fyf_true'] = 0.0
+                    row['Fyr_linear'] = 0.0
+                    row['Fyf_linear'] = 0.0
+                    row['alpha_r'] = 0.0
+                    row['alpha_f'] = 0.0
             
             self.writer.writerow(row)
             self.record_count += 1
@@ -399,8 +415,6 @@ class NeuralObsRecorder:
                throttle: float = 0.0,
                loss: float = 0.0,
                gps_valid: bool = False,
-               L_psi: float = 0.0,
-               innov_psi: float = 0.0,
                state_true_6d: Optional[np.ndarray] = None,
                unknown_input_true: Optional[np.ndarray] = None):
         """
@@ -419,8 +433,6 @@ class NeuralObsRecorder:
             throttle=throttle,
             loss=loss,
             gps_valid=gps_valid,
-            L_psi=L_psi,
-            innov_psi=innov_psi,
             state_true_6d=state_true_6d,
             unknown_input_true=unknown_input_true
         )

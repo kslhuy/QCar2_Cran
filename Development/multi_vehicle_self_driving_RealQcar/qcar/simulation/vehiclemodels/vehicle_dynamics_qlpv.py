@@ -252,7 +252,7 @@ def compute_tire_forces(alpha_f: float, alpha_r: float, p,
 # =============================================================================
 # Tire Residuals and Measurements
 # =============================================================================
-def get_tire_residuals(alpha_f: float, alpha_r: float,
+def get_tire_residuals(type_true_tire : str,alpha_f: float, alpha_r: float,
                        Cf: float, Cr: float, p,
                        vx: float = 1.0, a_long: float = 0.0) -> Tuple[float, float]:
     """
@@ -274,14 +274,17 @@ def get_tire_residuals(alpha_f: float, alpha_r: float,
     Returns:
         (w_r, w_f): Tire force residuals [N]
     """
-    # Linear (reference) forces
+    # Linear forces (Fake from observer)
     Fyf_linear, Fyr_linear = compute_tire_forces_linear(alpha_f, alpha_r, Cf, Cr)
     
-    # True (nonlinear) forces
-    if hasattr(p, 'tire'):
+    # True forces
+    
+    if type_true_tire == 'pacejka':
         Fyf_true, Fyr_true = compute_tire_forces_pacejka(alpha_f, alpha_r, p, vx, a_long)
-    else:
+    elif type_true_tire == 'dynamic_linear':
         Fyf_true, Fyr_true = compute_tire_forces_load_transfer(alpha_f, alpha_r, p, a_long)
+    elif type_true_tire == 'static_linear':
+        Fyf_true, Fyr_true = compute_tire_forces_linear(alpha_f, alpha_r, Cf, Cr)
     
     return Fyr_true - Fyr_linear, Fyf_true - Fyf_linear
 
@@ -345,33 +348,25 @@ def _kinematic_dynamics(vx: float, psi: float, delta: float, u: list,
         lf, lr: Axle distances [m]
         m: Vehicle mass [kg]
         Cr_roll: Rolling resistance coefficient
-    
     Returns:
         State derivatives (7D list)
     """
-    wheelbase = lf + lr
-    beta = math.atan2(lr * math.tan(delta), wheelbase) if abs(delta) > 0.001 else 0.0
-    
-    # Friction deceleration
-    F_roll = m * GRAVITY * Cr_roll
-    friction_decel = (F_roll / m * np.sign(vx)) if abs(vx) > 0.01 else 0.0
+    # wheelbase = lf + lr
+    # beta = math.atan2(lr * math.tan(delta), wheelbase) if abs(delta) > 0.001 else 0.0
+    # beta : Slip angle
+
     
     # Velocity derivative
-    vx_dot = u[1] - friction_decel
+    vx_dot = u[1]
     
-    # Damp to zero when nearly stopped with no throttle
-    if abs(vx) < 0.02 and abs(u[1]) < 0.01:
-        vx_dot = -vx / 0.1
-    
-    # Yaw rate (kinematic)
-    psi_dot = (vx / wheelbase * math.tan(delta) * math.cos(beta)) if abs(vx) > 0.01 else 0.0
-    
+
+
     return [
-        vx * math.cos(psi + beta),  # Ẋ
-        vx * math.sin(psi + beta),  # Ẏ
+        vx * math.cos(psi ),  # Ẋ
+        vx * math.sin(psi ),  # Ẏ
         u[0],                        # δ̇
         vx_dot,                      # v̇_x
-        psi_dot,                     # ψ̇
+        0.0,                     # ψ̇
         0.0,                         # ṙ (simplified)
         0.0,                         # v̇_y (simplified)
     ]
@@ -382,7 +377,8 @@ def _dynamic_qlpv(vx: float, vy: float, psi: float, r: float, delta: float,
                   lf: float, lr: float, m: float, Iz: float,
                   mu: float, Cr_roll: float, Cd_aero: float, Af: float,
                   cos_psi: float, sin_psi: float,
-                  cos_delta: float, sin_delta: float) -> list:
+                  cos_delta: float, sin_delta: float,
+                  disturbances: list = None) -> list:
     """
     Full qLPV dynamic model equations.
     
@@ -402,6 +398,7 @@ def _dynamic_qlpv(vx: float, vy: float, psi: float, r: float, delta: float,
         Af: Frontal area [m²]
         cos_psi, sin_psi: Precomputed trig values
         cos_delta, sin_delta: Precomputed trig values
+        disturbances: Optional [d_vx, d_vy, d_r] additive disturbances
     
     Returns:
         State derivatives (7D list)
@@ -410,14 +407,14 @@ def _dynamic_qlpv(vx: float, vy: float, psi: float, r: float, delta: float,
     F_roll = m * GRAVITY * Cr_roll
     vx_clamped = np.clip(vx, -10.0, 10.0)
     F_drag = 0.5 * AIR_DENSITY * Cd_aero * Af * vx_clamped * abs(vx_clamped)
-    
-    # Total friction deceleration
-    if abs(vx) > 0.01:
-        friction_decel = (F_roll + F_drag) / m * np.sign(vx)
-    else:
-        friction_decel = 0.0
-        if abs(vx) < VX_STOP_THRESHOLD:
-            vx = 0.0
+    friction_decel = 0.0
+    # # Total friction deceleration
+    # if abs(vx) > 0.01:
+    #     friction_decel = (F_roll + F_drag) / m * np.sign(vx)
+    # else:
+    #     friction_decel = 0.0
+    #     if abs(vx) < VX_STOP_THRESHOLD:
+    #         vx = 0.0
     
     # State derivatives (qLPV equations)
     vx_dot = u[1] - mu * GRAVITY + r * vy - (Fyf * sin_delta) / m - friction_decel
@@ -427,13 +424,21 @@ def _dynamic_qlpv(vx: float, vy: float, psi: float, r: float, delta: float,
     X_dot = vx * cos_psi - vy * sin_psi
     Y_dot = vx * sin_psi + vy * cos_psi
     
+    # Apply General Disturbances if provided
+    # disturbances = [d_vx, d_vy, d_r]
+    if disturbances is not None and len(disturbances) >= 3:
+        vx_dot += disturbances[0]
+        vy_dot += disturbances[1]
+        r_dot += disturbances[2]
+    
     return [X_dot, Y_dot, u[0], vx_dot, psi_dot, r_dot, vy_dot]
 
 
 # =============================================================================
 # Main Dynamics Function
 # =============================================================================
-def vehicle_dynamics_qlpv(x, u_init, p, tire_mode: str = 'pacejka'):
+def vehicle_dynamics_qlpv(x, u_init, p, tire_mode: str = 'pacejka', 
+                          disturbances: list = None):
     """
     qLPV vehicle dynamics matching observer model.
     
@@ -442,18 +447,12 @@ def vehicle_dynamics_qlpv(x, u_init, p, tire_mode: str = 'pacejka'):
         u_init: Control input [δ_dot, a] (steering rate, acceleration)
         p: Vehicle parameters object
         tire_mode: Tire model ('static_linear', 'dynamic_linear', 'pacejka')
+        disturbances: Optional [d_vx, d_vy, d_r] additive disturbances to derivatives
     
     Returns:
         f: State derivatives (7D list)
     
-    State Definitions (CommonRoad):
-        x[0] = X     - Global x-position [m]
-        x[1] = Y     - Global y-position [m]
-        x[2] = δ     - Steering angle [rad]
-        x[3] = v_x   - Longitudinal velocity [m/s]
-        x[4] = ψ     - Yaw angle [rad]
-        x[5] = r     - Yaw rate [rad/s]
-        x[6] = v_y   - Lateral velocity [m/s]
+
     """
     # Handle NaN inputs
     if np.isnan(x).any():
@@ -471,10 +470,11 @@ def vehicle_dynamics_qlpv(x, u_init, p, tire_mode: str = 'pacejka'):
     Af = _get_param(p, 'Af', 0.05)
     
     # Apply constraints to control inputs
-    u = [
-        steering_constraints(delta, u_init[0], p.steering),
-        acceleration_constraints(vx, u_init[1], p.longitudinal)
-    ]
+    # u = [
+    #     steering_constraints(delta, u_init[0], p.steering),
+    #     acceleration_constraints(vx, u_init[1], p.longitudinal)
+    # ]
+    u = u_init
     
     # Minimum velocity for slip angle calculation
     vx_min = _get_param(p.longitudinal, 'v_switch', 0.5) if hasattr(p, 'longitudinal') else 0.5
@@ -490,13 +490,23 @@ def vehicle_dynamics_qlpv(x, u_init, p, tire_mode: str = 'pacejka'):
     
     # Switch to kinematic model at low velocities
     if abs(vx) < VX_KINEMATIC_THRESHOLD:
-        return _kinematic_dynamics(vx, psi, delta, u, lf, lr, m, Cr_roll)
+        f = _kinematic_dynamics(vx, psi, delta, u, lf, lr, m, Cr_roll)
+        # Apply disturbances to kinematic model too if applicable?
+        # Kinematic model derivatives: [X_dot, Y_dot, delta_dot, vx_dot, psi_dot, r_dot, vy_dot]
+        # vx_dot is at index 3
+        # vy_dot is 6, r_dot is 5
+        if disturbances is not None and len(disturbances) >= 3:
+             f[3] += disturbances[0] # vx_dot
+             f[6] += disturbances[1] # vy_dot (0 for kin)
+             f[5] += disturbances[2] # r_dot (0 for kin)
+        return f
     
     # Full dynamic model
     return _dynamic_qlpv(
         vx, vy, psi, r, delta, u, Fyf, Fyr,
         lf, lr, m, Iz, mu, Cr_roll, Cd_aero, Af,
-        cos_psi, sin_psi, cos_delta, sin_delta
+        cos_psi, sin_psi, cos_delta, sin_delta,
+        disturbances=disturbances
     )
 
 
@@ -568,19 +578,21 @@ class QLPVVehicleModel:
         self.Fyf_linear = self.Fyr_linear = 0.0
         self.a_y = 0.0
     
-    def step(self, control_input: np.ndarray) -> np.ndarray:
+    def step(self, control_input: np.ndarray, disturbances: list = None) -> np.ndarray:
         """
         Integrate dynamics for one time step.
         
         Args:
             control_input: Control [δ_dot, a]
+            disturbances: Optional [d_vx, d_vy, d_r] additive disturbances
         
         Returns:
             New state vector (7D)
         """
         # Compute and apply derivatives
         f = vehicle_dynamics_qlpv(self.state, control_input, self.params,
-                                  tire_mode=self.tire_mode)
+                                  tire_mode=self.tire_mode,
+                                  disturbances=disturbances)
         self.state += np.array(f) * self.Ts
         
         # Update tire information

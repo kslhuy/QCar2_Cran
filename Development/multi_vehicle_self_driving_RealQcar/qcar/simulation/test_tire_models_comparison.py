@@ -31,6 +31,11 @@ def run_simulation(scenario_name, throttle_profile, steering_profile, dt=0.001, 
     mass = getattr(p, 'm', 1.5) or 1.5
     h_cg = getattr(p, 'h_cg', 0.07) or 0.07
     print(f"   [+] Loaded QCar parameters: mass={mass}kg, h_cg={h_cg}m")
+    print(f"       I_z={getattr(p, 'I_z', 'N/A')}, L={getattr(p, 'l', 'N/A')}, W={getattr(p, 'w', 'N/A')}")
+    print(f"       Cf={getattr(p, 'Cf', 'N/A')}, Cr={getattr(p, 'Cr', 'N/A')}")
+    if hasattr(p, 'tire'):
+        print(f"       Tire Params: p_ky1={getattr(p.tire, 'p_ky1', 'N/A')}, p_dy1={getattr(p.tire, 'p_dy1', 'N/A')}")
+        print(f"                    p_cy1={getattr(p.tire, 'p_cy1', 'N/A')}, p_ey1={getattr(p.tire, 'p_ey1', 'N/A')}")
     
     t_span = np.arange(0, duration, dt)
     num_steps = len(t_span)
@@ -239,7 +244,7 @@ def plot_combined_comparison(scenarios_data):
     plt.show()
 
 if __name__ == "__main__":
-    duration = 6.0
+    duration = 12.0
     dt = 0.001
     steps = int(duration / dt)
     
@@ -251,11 +256,11 @@ if __name__ == "__main__":
     print("="*60)
     
     # --- Scenario 1: High-Speed Steady Turn ---
-    throttle_1 = np.ones(steps) * 0.6  # Much higher base throttle
-    throttle_1[:int(1.0/dt)] = 1.2     # Strong initial acceleration
+    throttle_1 = np.ones(steps) * 0.2  # Much higher base throttle
+    throttle_1[:int(1.0/dt)] = 1     # Strong initial acceleration
     steering_1 = np.zeros(steps)
-    steering_1[int(1.0/dt):int(2.0/dt)] = 0.6  # Sharper turn
-    steering_1[int(2.0/dt):] = 0.6             # Maintain turn
+    steering_1[int(1.0/dt):int(2.0/dt)] = 0.4  # Sharper turn
+    steering_1[int(2.0/dt):] = 0.1             # Maintain turn
     
     t1, res1 = run_simulation("High-Speed Steady Turn", throttle_1, steering_1, dt, duration)
     plot_comparison(t1, res1, "Tire Model Comparison - High-Speed Steady Turn")
@@ -263,47 +268,61 @@ if __name__ == "__main__":
     
     # --- Scenario 2: Aggressive Acceleration Turn ---
     # Very aggressive acceleration while turning to stress tire models
-    throttle_2 = np.ones(steps) * 0.5
-    throttle_2[:int(0.8/dt)] = 1.5     # Very strong initial acceleration
-    throttle_2[int(2.0/dt):int(4.0/dt)] = 1.8  # Extreme acceleration mid-turn
+    throttle_2 = np.ones(steps) * 0.4
+    throttle_2[:int(0.8/dt)] = 1.0    # Very strong initial acceleration
+    throttle_2[int(2.0/dt):int(4.0/dt)] = 1.0  # Extreme acceleration mid-turn
     steering_2 = np.zeros(steps)
-    steering_2[int(0.8/dt):int(2.0/dt)] = 0.7  # Sharp turn
-    steering_2[int(2.0/dt):] = 0.7             # Maintain sharp turn during acceleration
+    steering_2[int(0.8/dt):int(2.0/dt)] = 0.5  # Sharp turn
+    steering_2[int(2.0/dt):] = 0.2             # Maintain sharp turn during acceleration
     
     t2, res2 = run_simulation("Aggressive Acceleration Turn", throttle_2, steering_2, dt, duration)
     plot_comparison(t2, res2, "Tire Model Comparison - Aggressive Acceleration Turn")
     scenarios_data["Aggressive Acceleration Turn"] = (t2, res2)
     
-    # --- Scenario 3: Extreme High-Speed Slalom ---
-    # High-speed weaving to really stress the nonlinear tire effects
-    throttle_3 = np.ones(steps) * 0.8
-    throttle_3[:int(1.0/dt)] = 2.0     # Maximum acceleration start
+    # --- Scenario 3: Successive Lane Changes ---
+    # Accelerate to speed, then perform multiple lane changes
+    throttle_3 = np.zeros(steps)
+    throttle_3[:int(2.0/dt)] = 1.0     # Accelerate for 2s
+    throttle_3[int(2.0/dt):] = 0.2     # Maintain speed (cruise)
+    
     steering_3 = np.zeros(steps)
-    # Create slalom pattern with high frequency steering
-    for i in range(int(1.0/dt), steps):
-        t_current = i * dt
-        steering_3[i] = 0.8 * np.sin(4 * np.pi * (t_current - 1.0))  # High amplitude, fast slalom
+    # Lane change 1 at t=3s
+    # Sine wave pulse for lane change
+    period = 1.0 # 1 second duration
+    start_idx = int(3.0/dt)
+    end_idx = int(4.0/dt)
+    t_pulse = np.linspace(0, 2*np.pi, end_idx - start_idx)
+    steering_3[start_idx:end_idx] = 0.5 * np.sin(t_pulse)
     
-    t3, res3 = run_simulation("Extreme High-Speed Slalom", throttle_3, steering_3, dt, duration)
-    plot_comparison(t3, res3, "Tire Model Comparison - Extreme High-Speed Slalom")
-    scenarios_data["Extreme High-Speed Slalom"] = (t3, res3)
+    # Lane change 2 (back) at t=6s
+    start_idx = int(6.0/dt)
+    end_idx = int(7.0/dt)
+    steering_3[start_idx:end_idx] = -0.5 * np.sin(t_pulse)
+
+    # Lane change 3 (again) at t=9s
+    start_idx = int(9.0/dt)
+    end_idx = int(10.0/dt)
+    steering_3[start_idx:end_idx] = 0.5 * np.sin(t_pulse)
     
-    # --- Scenario 4: Extreme Lateral Maneuvers ---
-    # Sharp rapid turns with braking to maximize lateral forces and slip angles
-    throttle_4 = np.ones(steps) * 0.4
-    throttle_4[:int(0.5/dt)] = 1.8     # Very strong acceleration
-    throttle_4[int(2.5/dt):int(3.5/dt)] = -0.5  # Braking during turn
-    throttle_4[int(4.5/dt):int(5.5/dt)] = -0.8  # Heavy braking during opposite turn
+    t3, res3 = run_simulation("Successive Lane Changes", throttle_3, steering_3, dt, duration)
+    plot_comparison(t3, res3, "Tire Model Comparison - Successive Lane Changes")
+    scenarios_data["Successive Lane Changes"] = (t3, res3)
     
-    steering_4 = np.zeros(steps)
-    # Create extreme alternating sharp turns
-    steering_4[int(1.0/dt):int(2.5/dt)] = 1.0    # Maximum right turn
-    steering_4[int(2.5/dt):int(4.0/dt)] = -1.0   # Maximum left turn  
-    steering_4[int(4.0/dt):int(5.5/dt)] = 1.2    # Even sharper right turn
+    # --- Scenario 4: Extreme Lateral Maneuvers (REMOVED) ---
+    # throttle_4 = np.ones(steps) * 0.4
+    # throttle_4[:int(0.5/dt)] = 1.8     # Very strong acceleration
+    # throttle_4[int(2.5/dt):int(3.5/dt)] = -0.5  # Braking during turn
+    # throttle_4[int(4.5/dt):int(5.5/dt)] = -0.8  # Heavy braking during opposite turn
     
-    t4, res4 = run_simulation("Extreme Lateral Maneuvers", throttle_4, steering_4, dt, duration)
-    plot_comparison(t4, res4, "Tire Model Comparison - Extreme Lateral Maneuvers")
-    scenarios_data["Extreme Lateral Maneuvers"] = (t4, res4)
+    # steering_4 = np.zeros(steps)
+    # # Create extreme alternating sharp turns
+    # steering_4[int(1.0/dt):int(2.5/dt)] = 1.0    # Maximum right turn
+    # steering_4[int(2.5/dt):int(4.0/dt)] = -1.0   # Maximum left turn  
+    # steering_4[int(4.0/dt):int(5.5/dt)] = 1.2    # Even sharper right turn
+    
+    # t4, res4 = run_simulation("Extreme Lateral Maneuvers", throttle_4, steering_4, dt, duration)
+    # plot_comparison(t4, res4, "Tire Model Comparison - Extreme Lateral Maneuvers")
+    # scenarios_data["Extreme Lateral Maneuvers"] = (t4, res4)
     
     # Create combined comparison plot
     print("\n" + "="*60)

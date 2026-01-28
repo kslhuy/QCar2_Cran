@@ -23,6 +23,9 @@ neural_network:
   # Include IMU acceleration [a_x, a_y] in NN input (changes input_dim to 8)
   use_acceleration: false
 
+  # Disturbance estimation mode: 'tire' (default 2D: [w_r, w_f]) or 'general' (3D: [d_vx, d_vy, d_r])
+  disturbance_mode: 'tire'
+
 # ============================================================================
 # Learning Parameters
 # ============================================================================

@@ -161,7 +161,7 @@ class SimpleFleetConfig:
             },
             'control': {
                 'max_velocity': 0.5,
-                'max_steering': 0.6,
+                'max_steering': 0.5,
                 'lookahead_distance': 0.5,
                 'enable_steering_control': True,
                 'update_rate': 100,

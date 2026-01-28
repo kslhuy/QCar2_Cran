@@ -528,6 +528,10 @@ class QCarRemoteController:
             if 'type' not in ws_data:
                 ws_data['type'] = 'telemetry'
             self._broadcast_to_websockets(ws_data)
+            
+            # Update scope manager with vehicle info (e.g. node sequence for path plotting)
+            if self.scope_manager and 'node_sequence' in data:
+                 self.scope_manager.update_vehicle_info(car_id, data)
 
             self._handle_special_message(car_id, msg_type, data)
             

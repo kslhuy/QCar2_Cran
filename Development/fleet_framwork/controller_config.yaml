@@ -62,7 +62,7 @@ vehicle_following:
   enable_steering_control: true  # Enable steering control
   lookahead_distance: 1         # Path following lookahead distance (meters)
 
-  max_steering: 0.55              # Maximum steering angle (radians)
+  max_steering: 0.5              # Maximum steering angle (radians)
   k_steering: 0.5                 # Steering control gain
   k_steering_openroad: 0.2        # Steering control gain for OpenRoad (straight path)
 
@@ -125,7 +125,7 @@ control:
   
   # Steering and velocity limits
   max_velocity: 0.4               # Maximum vehicle velocity (m/s)
-  max_steering: 0.6               # Maximum steering angle (radians)
+  max_steering: 0.5               # Maximum steering angle (radians)
   enable_steering_control: false  # Enable steering control (false for OpenRoad straight path)
   tau : 0.1                        # Actuator time constant (seconds)
   max_throttle_cmd: 0.7           # Maximum throttle command per control step 
