@@ -14,13 +14,16 @@ from pal.products.qcar import  IS_PHYSICAL_QCAR
 class ControllerConfig:
     """Loads and manages controller configuration from YAML file"""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, vehicle_id: Optional[int] = None):
         """
         Initialize configuration loader
         
         Args:
             config_path: Path to YAML config file. If None, uses default location.
+            vehicle_id: ID of the vehicle for per-vehicle config override
         """
+        self.vehicle_id = vehicle_id
+        
         if config_path is None:
             # Default to controller_config.yaml in the same directory
             config_dir = os.path.dirname(os.path.abspath(__file__))
@@ -31,6 +34,10 @@ class ControllerConfig:
         
         self.config_path = config_path
         self.config = self._load_config()
+        
+        # Apply per-vehicle overrides if vehicle_id is provided
+        if vehicle_id is not None:
+            self._apply_per_vehicle_config(vehicle_id)
     
     def _load_config(self) -> Dict[str, Any]:
         """Load YAML configuration file"""
@@ -44,6 +51,37 @@ class ControllerConfig:
             config = yaml.safe_load(f)
         
         return config
+    
+    def _apply_per_vehicle_config(self, vehicle_id: int):
+        """
+        Apply per-vehicle configuration overrides
+        
+        Args:
+            vehicle_id: ID of the vehicle to apply config for
+        """
+        per_vehicle = self.config.get('per_vehicle_controllers', {})
+        vehicle_config = per_vehicle.get(vehicle_id, {})
+        
+        if not vehicle_config:
+            # No per-vehicle config for this vehicle
+            return
+        
+        # Override controller types if specified
+        if 'longitudinal_controller_type' in vehicle_config:
+            self.config['longitudinal_controller_type'] = vehicle_config['longitudinal_controller_type']
+        
+        if 'lateral_controller_type' in vehicle_config:
+            self.config['lateral_controller_type'] = vehicle_config['lateral_controller_type']
+        
+        # Merge controller-specific parameters
+        for controller_type in ['cacc', 'pid', 'hybrid_longitudinal', 'fix', 'state_feedback',
+                               'pure_pursuit', 'stanley', 'lookahead', 'hybrid_lateral', 
+                               'fusion_lateral', 'fix_lateral']:
+            if controller_type in vehicle_config:
+                if controller_type not in self.config:
+                    self.config[controller_type] = {}
+                # Deep merge: vehicle-specific params override global defaults
+                self.config[controller_type].update(vehicle_config[controller_type])
     
     def get_longitudinal_controller_type(self) -> str:
         """Get the selected longitudinal controller type"""
@@ -305,22 +343,33 @@ class ControllerConfig:
         )
 
 
-# Singleton instance for easy access
+# Singleton instance for easy access (deprecated - use per-vehicle config instead)
 _default_config = None
 
-def get_controller_config(config_path: Optional[str] = None) -> ControllerConfig:
+def get_controller_config(config_path: Optional[str] = None, vehicle_id: Optional[int] = None) -> ControllerConfig:
     """
-    Get controller configuration (singleton pattern)
+    Get controller configuration
     
     Args:
         config_path: Path to config file. If None, uses default.
+        vehicle_id: Vehicle ID for per-vehicle config override
         
     Returns:
         ControllerConfig instance
+        
+    Note:
+        If vehicle_id is provided, returns a new instance with vehicle-specific config.
+        Otherwise uses singleton pattern for backward compatibility.
     """
     global _default_config
     
+    # If vehicle_id specified, always create new instance with per-vehicle config
+    if vehicle_id is not None:
+        return ControllerConfig(config_path, vehicle_id)
+    
+    # Otherwise use singleton for backward compatibility
     if _default_config is None or config_path is not None:
         _default_config = ControllerConfig(config_path)
     
     return _default_config
+    

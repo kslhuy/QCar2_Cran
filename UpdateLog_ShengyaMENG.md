@@ -1,10 +1,58 @@
+# Update Log 2026/01/29 (Shengya)
+
+Commit Message: Implement per-vehicle controller configuration system with distributed observer integration and enhanced testing
+
+## Completed Tasks
+
+- [x] **Per-vehicle controller configuration system implemented** - Each vehicle can now have independent controller types and parameters through [per_vehicle_controllers](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/config_controller_sim.yaml) section in [config_controller_sim.yaml](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/config_controller_sim.yaml)
+  - Modified [config_controller_loader.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/config_controller_loader.py) to support per-vehicle configuration with fallback to global defaults
+  - Updated [controller_manager.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/controller_manager.py) to pass vehicle_id for configuration loading
+  - Created [test_config.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/test_config.py) for comprehensive testing (bilingual output)
+  - Added [PER_VEHICLE_CONFIG_GUIDE.md](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/PER_VEHICLE_CONFIG_GUIDE.md) documentation
+
+- [x] **Distributed Luenberger observer injection into state feedback controller** - Successfully integrated observer for CACC-based control
+  - Modified [state_feedback_controller.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/ShengyaCtr/state_feedback_controller.py) to match `LongitudinalControllerBase` interface signature
+  - Fixed `compute_throttle()` to accept `(follower_state, leader_state, dt)` instead of `(fleet_states, dt, current_time_ns)`
+  - Changed observer access from `get_estimated_state()` method to `estimated_state` property
+  - Observer is externally injected by [ControllerManager](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/controller_manager.py) from `vehicle_logic.vehicle_observer.fleet_estimator`
+
+- [x] **Enhanced controller configuration testing** - Comprehensive test suite with bilingual output
+  - [test_config.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/test_config.py) now includes 4 test suites:
+    1. Basic configuration loading / 基础配置加载
+    2. Per-vehicle configuration system / Per-vehicle配置系统  
+    3. Parameter fallback to defaults / 参数回退到默认值
+    4. Controller creation with per-vehicle config / Per-vehicle配置下的控制器创建
+  - All outputs formatted in Chinese/English for better readability
+
+- [x] **Fixed FixConstantLateralController compatibility** - Added `get_errors()` method
+  - Implemented [get_errors()](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/lateral_controllers.py) returning `(0.0, 0.0)` for interface consistency
+  - Prevents `AttributeError` in [following_path_state.py](Development/multi_vehicle_self_driving_RealQcar/qcar/StateMachine/following_path_state.py) `_periodic_logging()`
+
+## Pending Tasks
+
+- [ ] **Leader path generation using RoadMap** - Use `hal.utilities.path_planning.RoadMap` to generate trajectory for the leader vehicle (suggested by Huy)
+  - Current implementation uses fixed lateral or look ahead controller
+  - Need to integrate proper path planning utilities
+
+- [ ] **GUI local plot improvements** - Beautify the real-time plotting in the GUI
+  - Enhance visualization quality
+  - Add more informative displays
+
+- [ ] **Controller and observer parameter tuning** - Adjust parameters to increase inter-vehicle distance
+  - Modify K matrices in [state_feedback_controller.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/ShengyaCtr/state_feedback_controller.py)
+  - Adjust observer gains in [extra_configs](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/extra_configs)
+  - Update spacing parameters 
+
+
+
+
 # Update Log 2026/01/24 (Shengya)
 
 - [x] Remove Writing the throttle and steering directly in [vehicle_logic.py](Development\multi_vehicle_self_driving_RealQcar\qcar\vehicle_logic.py)
 
 - [x] Config the fixed lateral and longitudinal controller in [config_controller_loader/py](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\config_controller_loader.py)
 
--[x] Remove the following path stratege for the leader in [controller_manager.py](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\controller_manager.py), using the [config file](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\config_controller_sim.yaml)
+- [x] Remove the following path stratege for the leader in [controller_manager.py](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\controller_manager.py), using the [config file](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\config_controller_sim.yaml)
 
 - [x] Add the [fix constant lateral controller](Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\lateral_controllers.py), to match the leader, add the following:
 ```

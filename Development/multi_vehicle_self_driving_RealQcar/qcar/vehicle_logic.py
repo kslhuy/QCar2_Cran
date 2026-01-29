@@ -107,9 +107,10 @@ class VehicleLogic:
         # Platoon controller
         platoon_config = PlatoonConfig()
         self.platoon_controller = PlatoonController(platoon_config, self.vehicle_logger)
-        # Controller Manager - centralized tracking of active controllers
+        # Controller Manager - centralized tracking of active controllers with per-vehicle config
         self.controller_manager = ControllerManager(
-            logger=self.vehicle_logger
+            logger=self.vehicle_logger,
+            vehicle_id=config.network.car_id  # Pass vehicle ID for per-vehicle config
         )
 
         pid_params = self.controller_manager.config._get_pid_params()

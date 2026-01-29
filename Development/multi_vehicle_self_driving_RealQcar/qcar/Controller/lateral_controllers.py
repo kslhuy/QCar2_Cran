@@ -824,6 +824,20 @@ class FixConstantLateralController(LateralControllerBase):
         """
         return 0
     
+    def get_errors(self) -> tuple:
+        """
+        Get current control errors.
+        
+        NOTE: FixConstantLateralController does not compute path-following errors
+        since it outputs constant steering. This method exists for compatibility
+        with FOLLOWING_PATH state logging. Returns (0.0, 0.0) to indicate no
+        tracking errors are computed.
+        
+        Returns:
+            tuple: (cross_track_error, heading_error) both set to 0.0
+        """
+        return (0.0, 0.0)
+    
     def reset(self):
         """Reset controller state (no-op for constant controller)"""
         pass

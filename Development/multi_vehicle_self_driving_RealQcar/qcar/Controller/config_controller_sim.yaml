@@ -15,7 +15,7 @@ enable_steering_control: true  # Enable/disable steering control system
 # ============================================================================
 
 # Controller type options: 'cacc', 'pid', 'hybrid', 'fix', 'state_feedback'
-longitudinal_controller_type: 'fix'
+longitudinal_controller_type: 'state_feedback'
 
 # CACC Controller Parameters
 cacc:
@@ -45,6 +45,13 @@ hybrid_longitudinal:
 
 fix:
   throttle: 0.075
+
+# State Feedback Controller Parameters (CACC-based with distributed Luenberger observer)
+state_feedback:
+  max_throttle: 0.3           # Maximum throttle output
+  throttle_smoothing: 0.7     # Exponential smoothing factor (0-1, higher = smoother)
+  # Note: Observer (DistributedLuenbergerEstimator) is automatically injected by ControllerManager
+  # K matrices are defined in state_feedback_controller.py based on vehicle_id
 
 # ============================================================================
 # LATERAL CONTROLLER CONFIGURATION
@@ -163,3 +170,69 @@ vehicle:
 #   k1: 1.2
 #   k2: 1.0
 #   ri: 1.5
+
+# ============================================================================
+# PER-VEHICLE CONTROLLER CONFIGURATION
+# ============================================================================
+# Override controller settings for specific vehicles
+# Follows the same structure as observer per-vehicle config
+# If a vehicle is not listed here, it uses the global defaults above
+
+per_vehicle_controllers:
+  # Vehicle 0 (Leader in most formations)
+  0:
+    longitudinal_controller_type: 'fix'  # Fixed throttle for leader
+    lateral_controller_type: 'fix_lateral'  # Straight line
+    fix:
+      throttle: 0.075  # Constant speed
+    fix_lateral:
+      steering: 0.0
+  
+  # Vehicle 1 (First Follower)
+  1:
+    longitudinal_controller_type: 'state_feedback'
+    lateral_controller_type: 'fix_lateral'
+    state_feedback:
+      max_throttle: 0.3
+      throttle_smoothing: 0.7
+    fix_lateral:
+      steering: 0.0
+    lookahead:
+        ri: 0.4              # Desired inter-vehicle spacing (meters)
+        hi: 1                # Time headway (seconds)
+  
+  # Vehicle 2 (Second Follower)
+  2:
+    longitudinal_controller_type: 'state_feedback'
+    lateral_controller_type: 'fix_lateral'
+    state_feedback:
+      max_throttle: 0.3
+      throttle_smoothing: 0.75  # Slightly smoother than vehicle 1
+    fix_lateral:
+      steering: 0.0
+    lookahead:
+        ri: 0.4              # Desired inter-vehicle spacing (meters)
+        hi: 1                # Time headway (seconds)
+
+  # Vehicle 3 (Third Follower)
+  3:
+    longitudinal_controller_type: 'state_feedback'
+    lateral_controller_type: 'fix_lateral'
+    state_feedback:
+      max_throttle: 0.28  # Slightly lower max throttle
+      throttle_smoothing: 0.8  # Smoothest
+    fix_lateral:
+      steering: 0.0
+    lookahead:
+        ri: 0.4              # Desired inter-vehicle spacing (meters)
+        hi: 1                # Time headway (seconds)
+
+# Notes on per-vehicle configuration:
+# 1. Any parameter not specified for a vehicle uses the global default
+# 2. You can override controller type per vehicle
+# 3. You can fine-tune individual parameters per vehicle
+# 4. This is useful for:
+#    - Assigning different roles (leader vs follower)
+#    - Compensating for hardware differences
+#    - Testing different control strategies
+#    - Optimizing formation stability

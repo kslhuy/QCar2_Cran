@@ -477,7 +477,7 @@ class ControllerFactory:
     }
     
     @staticmethod
-    def create(controller_type: str, params: Dict[str, Any] = None, logger=None):
+    def create(controller_type: str, params: Dict[str, Any] = None, logger=None, observer=None):
         """
         Create a longitudinal controller
         
@@ -485,6 +485,7 @@ class ControllerFactory:
             controller_type: One of 'pid', 'cacc', 'hybrid', 'fix', 'state_feedback'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
+            observer: Observer instance (for state_feedback controller)
             
         Returns:
             Longitudinal controller instance
@@ -498,4 +499,12 @@ class ControllerFactory:
             )
         
         controller_class = ControllerFactory.CONTROLLER_TYPES[controller_type]
-        return controller_class(logger=logger, **params)
+        
+        # Special handling for state_feedback controller - pass observer
+        if controller_type == 'state_feedback':
+            # Remove 'observer' from params if it exists to avoid duplicate argument
+            params_copy = params.copy()
+            params_copy.pop('observer', None)
+            return controller_class(logger=logger, observer=observer, **params_copy)
+        else:
+            return controller_class(logger=logger, **params)

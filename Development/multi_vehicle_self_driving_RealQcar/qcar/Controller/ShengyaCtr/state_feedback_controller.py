@@ -100,22 +100,19 @@ class StateFeedbackController(LongitudinalControllerBase):
             if self.logger:
                 self.logger.warning("No observer instance, K matrices not initialized")
         
-    def compute_throttle(self, fleet_states: np.ndarray,  
-                        dt: float, current_time_ns: int) -> float:
+    def compute_throttle(self, follower_state: Dict[str, float], 
+                        leader_state: Optional[Dict[str, float]], 
+                        dt: float) -> float:
         """
         Compute throttle using state feedback controller based on distributed luenberger observer states.
         
         Args:
-            - fleet_states: Complete fleet state matrix [state_dim x fleet_size], the first column is the leader vehicle state. The meaning of each row is defined as 
-                - postion x 
-                - position y
-                - theta
-                - velocity
-                - acceleration
-            - dt: Time step (seconds)
-            - current_time_ns: Current time in nanoseconds
+            follower_state: Dict with keys 'x', 'y', 'theta', 'velocity' (following base controller interface)
+            leader_state: Dict with keys 'x', 'y', 'theta', 'velocity' (not used - gets data from observer)
+            dt: Time step (seconds)
+            
         Returns:
-            - throttle: Computed throttle command (0 to max_throttle)
+            throttle: Computed throttle command (0 to max_throttle)
         """
         # Check if observer is available
         if self.observer is None:
@@ -123,11 +120,21 @@ class StateFeedbackController(LongitudinalControllerBase):
                 self.logger.warning("StateFeedbackController: No observer instance provided, returning zero throttle")
             return 0.0
         
-        # Transform fleet states to the distributed luenberger observer states
-        estimated_states, _ = self.observer._transfer_fleet_states_to_estimated_states(fleet_states, current_time_ns)
-
+        # Get fleet states from observer's fleet estimator
+        # The observer maintains estimated states for all vehicles
+        estimated_states = self.observer.estimated_state
+        
+        # Check if we have valid estimated states
+        if estimated_states is None or len(estimated_states) == 0:
+            if self.logger:
+                self.logger.warning("StateFeedbackController: No estimated states available from observer")
+            return 0.0
+        
+        # Get vehicle information
         vehicle_id = self.observer.vehicle_id
-        num_vehicles = self.observer.fleet_size - 1
+        num_vehicles = self.observer.observer_size  # Number of follower vehicles (not including leader)
+        
+        # Calculate index matrix Fi for this vehicle
         Fi = self.calculate_Fi(num_vehicles=num_vehicles, vehicle_index=vehicle_id)
     
         # State feedback control law: u_i = sum_{j=0}^{i-1} K_{ij} * (F_i - F_j) * estimated_states
@@ -135,16 +142,20 @@ class StateFeedbackController(LongitudinalControllerBase):
         throttle_raw = 0.0
         
         # First term: K_{i0} * F_i * estimated_states (j=0)
+        # This represents control based on this vehicle's relative state to leader
         if len(self.K_matrices) > 0 and self.K_matrices[0] is not None:
             K_i0 = self.K_matrices[0]
-            throttle_raw += (K_i0 @ (Fi @ estimated_states))[0]
+            control_input = K_i0 @ (Fi @ estimated_states)
+            throttle_raw += control_input[0]
         
         # Sum over preceding vehicles j=1 to i-1
+        # This represents control based on relative states between this vehicle and preceding vehicles
         for j in range(1, vehicle_id):
             if j < len(self.K_matrices) and self.K_matrices[j] is not None:
                 K_ij = self.K_matrices[j]
                 Fj = self.calculate_Fi(num_vehicles=num_vehicles, vehicle_index=j)
-                throttle_raw += (K_ij @ ((Fi - Fj) @ estimated_states))[0]
+                control_input = K_ij @ ((Fi - Fj) @ estimated_states)
+                throttle_raw += control_input[0]
 
         # Special handling for braking (negative throttle)
         if throttle_raw < 0:

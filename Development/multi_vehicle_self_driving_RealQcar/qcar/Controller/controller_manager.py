@@ -52,15 +52,23 @@ class ControllerManager:
         long_type = vehicle_logic.controller_manager.get_longitudinal_type()
     """
     
-    def __init__(self, logger=None, config=None):
+    def __init__(self, logger=None, config=None, vehicle_id: int = None):
         """
         Initialize ControllerManager.
         
         Args:
             logger: Logger instance
+            config: Optional pre-loaded config (if None, will load from file)
+            vehicle_id: Vehicle ID for per-vehicle config override
         """
-        self.config = config if config else get_controller_config()
+        # Load config with vehicle-specific overrides if vehicle_id provided
+        if config is None:
+            self.config = get_controller_config(vehicle_id=vehicle_id)
+        else:
+            self.config = config
+        
         self.logger = logger
+        self.vehicle_id = vehicle_id
         
         # Active controllers
         self._longitudinal: Optional[ControllerInfo] = None
@@ -121,10 +129,28 @@ class ControllerManager:
             if self.config:
                 params = self.config.get_longitudinal_params(ctrl_type)
             
+            # Special handling for state_feedback controller - needs observer
+            observer = None
+            if ctrl_type == 'state_feedback':
+                if self.vehicle_logic and hasattr(self.vehicle_logic, 'vehicle_observer'):
+                    # Get the fleet estimator (DistributedLuenbergerEstimator)
+                    observer = getattr(self.vehicle_logic.vehicle_observer, 'fleet_estimator', None)
+                    if observer is not None and self.logger:
+                        self.logger.logger.info(
+                            f"[ControllerManager] Passing observer to state_feedback controller: "
+                            f"type={type(observer).__name__}, vehicle_id={getattr(observer, 'vehicle_id', 'N/A')}"
+                        )
+                    elif self.logger:
+                        self.logger.logger.warning(
+                            "[ControllerManager] state_feedback controller requires observer, "
+                            "but fleet_estimator not found in vehicle_observer"
+                        )
+            
             controller = ControllerFactory.create(
                 ctrl_type,
                 params,
-                logger=self.logger.logger if self.logger else None
+                logger=self.logger.logger if self.logger else None,
+                observer=observer  # Pass observer for state_feedback controller
             )
             
             self._longitudinal = ControllerInfo(
