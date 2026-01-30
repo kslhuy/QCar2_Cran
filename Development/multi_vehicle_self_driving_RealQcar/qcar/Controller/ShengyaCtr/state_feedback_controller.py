@@ -64,16 +64,16 @@ class StateFeedbackController(LongitudinalControllerBase):
         # K_matrices[vehicle_id][j] = K_{vehicle_id,j}
         self.K_all_vehicles = {
             1: {
-                0: np.array([[-0.1572, -0.4379, -0.0683]])
+                0: np.array([[-0.1729,-0.4856,-0.0746]])
             },
             2: {
-                0: np.array([[-0.1602, -0.3715, -0.0888]]),
-                1: np.array([[-0.0084, -0.0189, 0.0109]])
+                0: np.array([[-0.1766,-0.4659,-0.0822]]),
+                1: np.array([[-0.0028,-0.0056,0.0038]])
             },
             3: {
-                0: np.array([[-0.1733, -0.4259, -0.1236]]),
-                1: np.array([[-0.0086, -0.0193, 0.0126]]),
-                2: np.array([[-0.0053, -0.0045, 0.0156]])
+                0: np.array([[-0.1895,-0.5314,-0.0981]]),
+                1: np.array([[-0.0026,-0.0053,0.0039]]),
+                2: np.array([[-0.001,-0.001,0.0049]])
             }
         }
         
@@ -170,7 +170,7 @@ class StateFeedbackController(LongitudinalControllerBase):
                    (1 - self.throttle_smoothing) * throttle_raw)
         
         # Ensure throttle is non-negative
-        throttle = max(throttle, 0.0)
+        throttle = min(max(throttle, 0.0), self.max_throttle)
         
         # Store for next iteration
         self.prev_throttle = throttle

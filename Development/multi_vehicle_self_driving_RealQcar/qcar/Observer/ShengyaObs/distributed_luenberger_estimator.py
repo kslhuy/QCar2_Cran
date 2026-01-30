@@ -73,7 +73,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 
         # System matrices of the longitudinal model
         tau = self.tau_i  # Time constant
-        self.h = 1.0     # time headway
+        self.h = 0.3     # time headway
         self.d = 0.4    # Desired distance
         self.observer_size = self.fleet_size - 1  # Exclude leader from observer size
 
@@ -135,10 +135,34 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                             [0, 0, 0]])
         self.local_measurement_dim = 2 # measuring relative position and velocity pi - pi-1 vi
 
-        if self.logger:
-            self.logger.logger.info(
-                f"Vehicle {self.vehicle_id}: Observer gain: {self.observer_gain}, Consensus gain: {self.consensus_gain}"
-            )
+        # CRITICAL: Validate and correct gain matrix dimensions
+        dim_distributed_observer = 3 * self.observer_size
+        
+        # Validate observer_gain: should be [dim_distributed_observer x local_measurement_dim]
+        expected_observer_gain_shape = (dim_distributed_observer, self.local_measurement_dim)
+        if hasattr(self.observer_gain, 'shape'):
+            if self.observer_gain.shape != expected_observer_gain_shape:
+                if self.logger:
+                    self.logger.logger.error(
+                        f"Vehicle {self.vehicle_id}: observer_gain shape mismatch! "
+                        f"Expected {expected_observer_gain_shape}, got {self.observer_gain.shape}. "
+                        f"Using default identity-based gain."
+                    )
+                # Use a simple default gain matrix
+                self.observer_gain = np.eye(dim_distributed_observer, self.local_measurement_dim) * 0.1
+        
+        # Validate consensus_gain: should be [dim_distributed_observer x dim_distributed_observer]
+        expected_consensus_gain_shape = (dim_distributed_observer, dim_distributed_observer)
+        if hasattr(self.consensus_gain, 'shape'):
+            if self.consensus_gain.shape != expected_consensus_gain_shape:
+                if self.logger:
+                    self.logger.logger.error(
+                        f"Vehicle {self.vehicle_id}: consensus_gain shape mismatch! "
+                        f"Expected {expected_consensus_gain_shape}, got {self.consensus_gain.shape}. "
+                        f"Using default identity-based gain."
+                    )
+                # Use a simple default gain matrix
+                self.consensus_gain = np.eye(dim_distributed_observer) * 0.2
 
         # Communication weights (uniform for now)
         self.weights = np.ones(self.observer_size) / self.observer_size
@@ -150,19 +174,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             # Default chain topology
             self.adjacency_matrix = self._create_chain_topology()
 
-        if self.logger:
-            self.logger.logger.info(
-                f"Vehicle {self.vehicle_id}: Adjacency matrix initialized "
-                f"[{self.observer_size}x{self.observer_size}]:\n{self.adjacency_matrix}"
-            )
-
         # Validate adjacency matrix dimensions
         if self.adjacency_matrix.shape != (self.observer_size, self.observer_size):
-            if self.logger:
-                self.logger.logger.warning(
-                    f"Adjacency matrix shape {self.adjacency_matrix.shape} doesn't match observer_size {self.observer_size}. "
-                    f"Using default chain topology."
-                )
             self.adjacency_matrix = self._create_chain_topology()
         
         # Cache neighbor list at initialization
@@ -170,14 +183,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # Cache output matrix Ci at initialization
         self.Ci = self.compute_output_matrix_Ci(self.vehicle_id)
-        
-        if self.logger:
-            self.logger.logger.info(
-                f"Vehicle {self.vehicle_id}: Neighbors list initialized: {self.my_neighbors}"
-            )
-            self.logger.logger.info(
-                f"Vehicle {self.vehicle_id}: Output matrix Ci computed: {self.Ci}. System matrices A_delta: {self.A_delta}, Input matrix B_delta: {self.B_delta}."
-            )
         
         # === Debug Data Storage and Recording ===
         # Dictionary to store internal data for each update cycle for debugging
@@ -191,7 +196,44 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # Auto-start recorder if debug_recording is enabled in config
         if self.debug_recording_enabled:
             self._init_recorder()
+        
+        # Initialize estimated_state (will be updated in the first update() call)
+        # Distributed observer state dimension: 3 * observer_size
+        self.estimated_state = np.zeros(3 * self.observer_size)
+        
+        # CRITICAL: Force fleet_states to correct dimensions
+        # The parent class initializes it, but we must ensure it's correct
+        # fleet_size includes leader (vehicle 0) + all followers
+        if self.fleet_states.shape != (self.state_dim, self.fleet_size):
+            self.fleet_states = np.zeros((self.state_dim, self.fleet_size))
     
+        # Controller input
+           # Store K matrices directly for each vehicle
+        # K_matrices[vehicle_id][j] = K_{vehicle_id,j}
+        self.K_all_vehicles = {
+            1: {
+                0: np.array([[-0.1729,-0.4856,-0.0746]])
+            },
+            2: {
+                0: np.array([[-0.1766,-0.4659,-0.0822]]),
+                1: np.array([[-0.0028,-0.0056,0.0038]])
+            },
+            3: {
+                0: np.array([[-0.1895,-0.5314,-0.0981]]),
+                1: np.array([[-0.0026,-0.0053,0.0039]]),
+                2: np.array([[-0.001,-0.001,0.0049]])
+            }
+        }
+
+        # Extract K matrices for current vehicle
+        self.K_matrices = []
+        if self.vehicle_id in self.K_all_vehicles:
+            # Get K_i0, K_i1, ..., K_i(i-1) for vehicle i
+            for j in range(self.vehicle_id):
+                if j in self.K_all_vehicles[self.vehicle_id]:
+                    self.K_matrices.append(self.K_all_vehicles[self.vehicle_id][j])
+                else:
+                    self.K_matrices.append(None)
     def _init_recorder(self):
         """Initialize and start the debug data recorder."""
         try:
@@ -205,11 +247,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             )
             filepath = self.recorder.start()
             self._recording_start_time = 0.0
-            
-            if self.logger:
-                self.logger.logger.info(
-                    f"Vehicle {self.vehicle_id}: Debug recording started, saving to {filepath}"
-                )
         except Exception as e:
             if self.logger:
                 self.logger.log_error(f"Failed to initialize debug recorder", e)
@@ -218,14 +255,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
     def stop_recording(self):
         """Stop the debug data recorder and close the file."""
         if self.recorder is not None:
-            stats = self.recorder.stop()
-            if self.logger:
-                self.logger.logger.info(
-                    f"Vehicle {self.vehicle_id}: Debug recording stopped - "
-                    f"recorded={stats.get('record_count', 0)}, "
-                    f"dropped={stats.get('dropped_count', 0)}, "
-                    f"file={stats.get('filepath', 'unknown')}"
-                )
+            self.recorder.stop()
             self.recorder = None
     
     def __del__(self):
@@ -363,9 +393,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             config_file = os.path.join(config_dir, f'car{self.vehicle_id}.yaml')
             
             if os.path.exists(config_file):
-                if self.logger:
-                    self.logger.logger.info(f"Vehicle {self.vehicle_id}: Loading extra config from {config_file}")
-                
                 with open(config_file, 'r') as f:
                     extra_conf = yaml.safe_load(f)
                     
@@ -374,8 +401,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                     
                     # Check if we should use ConsensusFleetEstimator logic instead
                     if obs_conf.get('fleet_estimator_type') == 'consensus':
-                        if self.logger:
-                            self.logger.logger.info(f"Vehicle {self.vehicle_id}: Switching to ConsensusFleetEstimator logic.")
                         self.consensus_estimator = ConsensusFleetEstimator(
                             self.vehicle_id, self.fleet_size, self.state_dim, 
                             config=obs_conf, logger=self.logger
@@ -395,10 +420,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                         if param in obs_conf:
                             setattr(self, param, obs_conf[param])
             else:
-                if self.logger:
-                    self.logger.logger.warning(
-                        f"Vehicle {self.vehicle_id}: Extra config file {config_file} not found. Using defaults."
-                    )
+                pass
         except Exception as e:
             if self.logger:
                 self.logger.log_error(f"Error loading extra config for vehicle {self.vehicle_id}", e)
@@ -427,9 +449,24 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             self._ensure_fleet_capacity(self.vehicle_id)
             
             # Distributed observer for this vehicle
-            self.estimated_state = self._distributed_luenberger_observer_update(
+            estimated_state_new = self._distributed_luenberger_observer_update(
                 local_state, current_time_ns, control, dt
             )
+            
+            # CRITICAL: Validate the returned estimated_state size before assignment
+            expected_size = 3 * self.observer_size
+            if estimated_state_new.size != expected_size:
+                if self.logger:
+                    self.logger.logger.error(
+                        f"Vehicle {self.vehicle_id}: CRITICAL - _distributed_luenberger_observer_update returned "
+                        f"wrong size! Expected {expected_size}, got {estimated_state_new.size}. "
+                        f"Keeping previous estimated_state. observer_size={self.observer_size}"
+                    )
+                # Don't update if size is wrong
+            else:
+                # Size is correct, safe to update
+                self.estimated_state = estimated_state_new
+            
             # Transfer the estimated states back to fleet_states. 
             self.fleet_states, _ = self._transfer_estimated_states_to_fleet_states(self.estimated_state, local_state, current_time_ns)
             # Cleanup old data
@@ -473,6 +510,17 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             estimated_state: Distributed observer state vector [3*observer_size]
             di0_values: Array of di0 values for each follower vehicle [observer_size]
         """
+        # Validate input dimensions BEFORE processing
+        if fleet_states.shape[1] != self.fleet_size:
+            if self.logger:
+                self.logger.logger.error(
+                    f"Vehicle {self.vehicle_id}: CRITICAL - fleet_states dimension mismatch in _transfer_fleet_states_to_estimated_states! "
+                    f"Expected fleet_size={self.fleet_size}, got shape={fleet_states.shape}. "
+                    f"This will cause observer_size mismatch. Using self.fleet_states instead."
+                )
+            # Use the instance fleet_states which should have correct dimensions
+            fleet_states = self.fleet_states
+        
         # Get leader (vehicle 0) absolute state
         state_leader = self._get_latest_received_state(0, current_time_ns)
         if state_leader is not None:
@@ -483,10 +531,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             p0 = fleet_states[0, 0]
             v0 = fleet_states[3, 0]
             a0 = fleet_states[4, 0]
-            if self.logger:
-                self.logger.logger.warning(
-                    f"Vehicle {self.vehicle_id}: No recent leader state, using current estimate"
-                )
         
         # Initialize estimated state matrix [3 x observer_size]
         estimated_state_mat = np.zeros((3, self.observer_size))
@@ -552,6 +596,19 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         Returns:
             fleet_states: Complete fleet state matrix [state_dim x fleet_size]
         """
+        # CRITICAL: Validate estimated_state dimensions
+        expected_size = 3 * self.observer_size
+        if estimated_state.size != expected_size:
+            if self.logger:
+                self.logger.logger.error(
+                    f"Vehicle {self.vehicle_id}: CRITICAL - estimated_state size mismatch! "
+                    f"Expected {expected_size} (3 * observer_size={self.observer_size}), "
+                    f"got {estimated_state.size}. "
+                    f"fleet_size={self.fleet_size}, self.fleet_states.shape={self.fleet_states.shape}"
+                )
+            # Return current fleet_states without update to avoid crash
+            return self.fleet_states, np.zeros(self.observer_size)
+        
         # Reshape estimated state to [3 x observer_size] matrix (column-major)
         estimated_state_mat = estimated_state.reshape((3, self.observer_size), order="F")
         
@@ -635,6 +692,17 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 
         # Distributed observer state (x_vec: pi-p0+di0, vi-v0, ai-a0)
         x_vec, di0_values_before = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
+        
+        # Validate x_vec size
+        if x_vec.size != dim_distributed_observer:
+            if self.logger:
+                self.logger.logger.error(
+                    f"Vehicle {self.vehicle_id}: CRITICAL x_vec size mismatch! "
+                    f"Expected {dim_distributed_observer}, got {x_vec.size}. "
+                    f"observer_size={self.observer_size}, fleet_states.shape={self.fleet_states.shape}"
+                )
+            # Return self.estimated_state unchanged to avoid crash
+            return self.estimated_state
 
         # Get leader state with fallback to current estimate
         state_leader = self._get_latest_received_state(0, current_time_ns)
@@ -644,18 +712,40 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         else:
             v0 = self.fleet_states[3, 0]
             p0 = self.fleet_states[0, 0]
-            if self.logger:
-                self.logger.logger.warning(
-                    f"Vehicle {self.vehicle_id}: No recent leader state of the leader 0, using current estimate"
-                )
 
-        # Get the control input of all follower vehicles
-        # TODO: get the latest control input from V2V messages
-        throttle_value = control[1]
+        # Calculate collective control input for all follower vehicles
+        # Vehicle 1: u1 = K10 @ F1 @ x_vec
+        # Vehicle 2: u2 = K20 @ F2 @ x_vec + K21 @ (F2-F1) @ x_vec
+        # Vehicle 3: u3 = K30 @ F3 @ x_vec + K31 @ (F3-F1) @ x_vec + K32 @ (F3-F2) @ x_vec
         collective_control = np.zeros(self.observer_size)
-        for i in range(self.observer_size):
-            collective_control[i] = throttle_value
-           
+        
+        for vehicle_id in range(1, self.observer_size + 1):
+            # Calculate Fi for current vehicle
+            Fi = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=vehicle_id)
+            
+            # Check if K matrices exist for this vehicle
+            if vehicle_id in self.K_all_vehicles:
+                # First term: Ki0 @ Fi @ x_vec
+                if 0 in self.K_all_vehicles[vehicle_id]:
+                    Ki0 = self.K_all_vehicles[vehicle_id][0]
+                    collective_control[vehicle_id - 1] = (Ki0 @ (Fi @ x_vec))[0]
+                
+                # Sum over preceding vehicles j=1 to i-1
+                # Add terms: Kij @ (Fi - Fj) @ x_vec
+                for j in range(1, vehicle_id):
+                    if j in self.K_all_vehicles[vehicle_id]:
+                        Kij = self.K_all_vehicles[vehicle_id][j]
+                        Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
+                        collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]
+        
+        # Keep collective_control as 1D array to avoid dimension issues
+        # collective_control shape: (observer_size,) = (3,)
+        # B_delta shape: (9, 3), so B_delta @ collective_control will be (9,) 1D array
+
+        # Use throttle as control input for all follower vehicles
+        collective_control = np.full(self.observer_size, control[1])
+        # collective_control = np.full(self.observer_size, 0.7)
+
         # 1. Dynamics prediction (collective longitudinal model)
         dynamics_term = self.A_delta @ x_vec + self.B_delta @ collective_control
         
@@ -673,10 +763,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             p_prev = state_prev[0]
         else:
             p_prev = self.fleet_states[0, self.vehicle_id - 1]
-            if self.logger:
-                self.logger.logger.warning(
-                    f"Vehicle {self.vehicle_id}: No recent local state of previous vehicle {self.vehicle_id - 1}, using current estimate"
-                )
         
         local_measurement[0] = p_i - p_prev  # relative position
         local_measurement[1] = v_i  # velocity 
@@ -684,7 +770,21 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         estimated_measurement = self.Ci @ x_vec + self.Cv * v0 + self.Cd * self.d
 
         measurement_error = local_measurement - estimated_measurement
-        measurement_term = self.observer_gain @ measurement_error
+        
+        # CRITICAL: Validate observer_gain dimensions before multiplication
+        # observer_gain should be [dim_distributed_observer x local_measurement_dim]
+        # i.e., [9 x 2] for observer_size=3
+        expected_gain_shape = (dim_distributed_observer, self.local_measurement_dim)
+        if hasattr(self.observer_gain, 'shape') and self.observer_gain.shape != expected_gain_shape:
+            if self.logger:
+                self.logger.logger.error(
+                    f"Vehicle {self.vehicle_id}: CRITICAL - observer_gain shape mismatch! "
+                    f"Expected {expected_gain_shape}, got {self.observer_gain.shape}. "
+                    f"This will cause dimension explosion. Using zero measurement term."
+                )
+            measurement_term = np.zeros(dim_distributed_observer)
+        else:
+            measurement_term = self.observer_gain @ measurement_error
         
         # 3. Consensus term - based on adjacency matrix
         consensus_term = np.zeros(dim_distributed_observer)
@@ -707,32 +807,13 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 
                 if not missing_vehicles:
                     is_complete_fleet = True
-                    # if self.logger:
-                    #     self.logger.logger.info(
-                    #         f"Vehicle {self.vehicle_id}: Complete fleet_state from neighbor {neighbor_id}"
-                    #     )
-                # else:
-                #     if self.logger:
-                #         self.logger.logger.warning(
-                #             f"Vehicle {self.vehicle_id}: Incomplete fleet_state from neighbor {neighbor_id}, "
-                #             f"missing vehicles: {missing_vehicles}"
-                #         )
             
             # --- Step 2: Fallback to LOCAL states if needed ---
             # Only need it when stop the cars
             if not is_complete_fleet:
-                if self.logger:
-                    self.logger.logger.warning(
-                        f"Vehicle {self.vehicle_id}: Using fallback strategy for neighbor {neighbor_id}"
-                    )
                 # Only need it when stop the cars
                 if neighbor_fleet_dict is None:
                     neighbor_fleet_dict = {}
-                    if self.logger:
-                        self.logger.logger.warning(
-                            f"Vehicle {self.vehicle_id}: No fleet_state from neighbor {neighbor_id}, "
-                            f"building from scratch"
-                        )
                 
                 # Fill missing vehicles with local state broadcasts or current estimates
                 for vid in missing_vehicles:
@@ -746,10 +827,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                             'velocity': float(vehicle_local_state[3]),
                             'acceleration': float(vehicle_local_state[4] if len(vehicle_local_state) > 4 else 0.0)
                         }
-                        if self.logger:
-                            self.logger.logger.info(
-                                f"Vehicle {self.vehicle_id}: Filled vehicle_{vid} using its local_state"
-                            )
                     else:
                         neighbor_fleet_dict[vid] = {
                             'x': float(self.fleet_states[0, vid]),
@@ -758,12 +835,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                             'velocity': float(self.fleet_states[3, vid]),
                             'acceleration': float(self.fleet_states[4, vid])
                         }
-                        # Never happens
-                        if self.logger:
-                            self.logger.logger.info(
-                                f"Vehicle {self.vehicle_id}: Filled vehicle_{vid} using current estimate "
-                                f"(no local_state available)"
-                            )
             
             # --- Step 3: Build neighbor's complete fleet_states matrix ---
             neighbor_fleet_states = np.zeros((self.state_dim, self.fleet_size))
@@ -802,30 +873,28 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # --- Step 6: Apply consensus gain (normalize by neighbor count) ---
         if neighbor_count > 0:
-            consensus_term = self.consensus_gain  @ consensus_accum
+            # CRITICAL: Validate consensus_gain dimensions before multiplication
+            # consensus_gain should be [dim_distributed_observer x dim_distributed_observer]
+            # i.e., [9 x 9] for observer_size=3
+            expected_gain_shape = (dim_distributed_observer, dim_distributed_observer)
+            if hasattr(self.consensus_gain, 'shape') and self.consensus_gain.shape != expected_gain_shape:
+                if self.logger:
+                    self.logger.logger.error(
+                        f"Vehicle {self.vehicle_id}: CRITICAL - consensus_gain shape mismatch! "
+                        f"Expected {expected_gain_shape}, got {self.consensus_gain.shape}. "
+                        f"This will cause dimension explosion. Using zero consensus term."
+                    )
+                consensus_term = np.zeros(dim_distributed_observer)
+            else:
+                consensus_term = self.consensus_gain @ consensus_accum
             
             # Numerical protection: prevent consensus term explosion
             consensus_norm = np.linalg.norm(consensus_term)
             max_consensus_threshold = 50.0
             if consensus_norm > max_consensus_threshold:
-                # if self.logger:
-                #     self.logger.logger.warning(
-                #         f"Vehicle {self.vehicle_id}: Consensus term too large ({consensus_norm:.2f}), "
-                #         f"clamping to {max_consensus_threshold}"
-                #     )
                 consensus_term = consensus_term / consensus_norm * max_consensus_threshold
-        
-            # if self.logger:
-            #     self.logger.logger.info(
-            #         f"Vehicle {self.vehicle_id}: Final consensus term applied, "
-            #         f"neighbor_count={neighbor_count}, consensus_norm={np.linalg.norm(consensus_term):.4f}"
-            #     )
         else:
             consensus_term = np.zeros(dim_distributed_observer)
-            if self.logger:
-                self.logger.logger.warning(
-                    f"Vehicle {self.vehicle_id}: No valid neighbors for consensus"
-                )
         
         # Combine all terms (note: consensus term is subtracted, per theory)
         # consensus_term = np.zeros(dim_distributed_observer) 
@@ -896,3 +965,25 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
     def enable_debug_recording(self, enable: bool = True):
         """Enable or disable debug data recording."""
         self.debug_recording_enabled = enable
+
+    def calculate_Fi(self, num_vehicles: int, vehicle_index: int) -> np.ndarray:
+        """
+        Calculate the index matrix Fi for vehicle i in a platoon of num_vehicles
+        
+        Args:
+            num_vehicles: Total number of vehicles in the platoon, not including the leader
+            vehicle_index: Index of the current vehicle (1-based)
+        
+        Returns:
+            Fi: Index matrix as a numpy array of shape (n0, n) where n0=3, n=3*num_vehicles
+            The matrix places a 3x3 identity matrix at the i-th block position, zeros elsewhere
+        """
+        n0 = 3
+        n = n0 * num_vehicles
+        Fi = np.zeros((n0, n))
+        
+        # Place n0 x n0 identity matrix at the i-th block position
+        block_start = n0 * (vehicle_index - 1)
+        Fi[:, block_start:block_start + n0] = np.eye(n0)
+        
+        return Fi

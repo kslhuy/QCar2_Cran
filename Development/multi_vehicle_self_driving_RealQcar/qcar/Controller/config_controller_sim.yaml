@@ -184,7 +184,7 @@ per_vehicle_controllers:
     longitudinal_controller_type: 'fix'  # Fixed throttle for leader
     lateral_controller_type: 'fix_lateral'  # Straight line
     fix:
-      throttle: 0.075  # Constant speed
+      throttle: 0.5  # Constant speed 2 m/s
     fix_lateral:
       steering: 0.0
   
@@ -193,39 +193,39 @@ per_vehicle_controllers:
     longitudinal_controller_type: 'state_feedback'
     lateral_controller_type: 'fix_lateral'
     state_feedback:
-      max_throttle: 0.3
-      throttle_smoothing: 0.7
+      max_throttle: 0.9
+      throttle_smoothing: 0.2
     fix_lateral:
       steering: 0.0
     lookahead:
-        ri: 0.4              # Desired inter-vehicle spacing (meters)
-        hi: 1                # Time headway (seconds)
+        ri: 0.8              # Desired inter-vehicle spacing (meters)
+        hi: 0.3                # Time headway (seconds)
   
   # Vehicle 2 (Second Follower)
   2:
     longitudinal_controller_type: 'state_feedback'
     lateral_controller_type: 'fix_lateral'
     state_feedback:
-      max_throttle: 0.3
+      max_throttle: 0.9
       throttle_smoothing: 0.75  # Slightly smoother than vehicle 1
     fix_lateral:
       steering: 0.0
     lookahead:
-        ri: 0.4              # Desired inter-vehicle spacing (meters)
-        hi: 1                # Time headway (seconds)
+        ri: 0.8              # Desired inter-vehicle spacing (meters)
+        hi: 0.3                # Time headway (seconds)
 
   # Vehicle 3 (Third Follower)
   3:
     longitudinal_controller_type: 'state_feedback'
     lateral_controller_type: 'fix_lateral'
     state_feedback:
-      max_throttle: 0.28  # Slightly lower max throttle
+      max_throttle: 0.9
       throttle_smoothing: 0.8  # Smoothest
     fix_lateral:
       steering: 0.0
     lookahead:
-        ri: 0.4              # Desired inter-vehicle spacing (meters)
-        hi: 1                # Time headway (seconds)
+        ri: 0.8              # Desired inter-vehicle spacing (meters)
+        hi: 0.3                # Time headway (seconds)
 
 # Notes on per-vehicle configuration:
 # 1. Any parameter not specified for a vehicle uses the global default
