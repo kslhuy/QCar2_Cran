@@ -52,14 +52,15 @@ IDX_WR = 6  # Rear tire residual
 IDX_WF = 7  # Front tire residual
 AUGMENTED_DIM = 8
 
-# Measurement indices (6D measurement)
+# Measurement indices (7D measurement)
 MEAS_IDX_VX = 0
 MEAS_IDX_R = 1
 MEAS_IDX_PSI = 2
 MEAS_IDX_X = 3
 MEAS_IDX_Y = 4
 MEAS_IDX_AY = 5
-MEAS_DIM = 6
+MEAS_IDX_AX = 6
+MEAS_DIM = 7
 
 # =============================================================================
 # 8D System Constants (New System)
@@ -92,7 +93,19 @@ IDX8_WR = 8
 IDX8_WF = 9
 AUGMENTED_DIM_10D = 10
 
+C_MATRIX_MODES = {
+    "5D_GPS_IMU": [MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y],
+    "4D_IMU_ONLY": [MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_AY, MEAS_IDX_AX],
+    "6D_WITH_AY": [MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY],
+    "7D_FULL": [MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_IDX_AX],
+}
 
+MODE_DESCRIPTIONS = {
+    "5D_GPS_IMU": "vx, r, ψ, X, Y (GPS + IMU)",
+    "4D_IMU_ONLY": "vx, r, ay, ax (IMU only, no GPS)",
+    "6D_WITH_AY": "vx, r, ψ, X, Y, ay (full except ax)",
+    "7D_FULL": "vx, r, ψ, X, Y, ay, ax (all measurements)",
+}
 # =============================================================================
 # Vehicle Parameters (Single Source of Truth: parameters_qcar.yaml)
 # =============================================================================
@@ -212,6 +225,7 @@ class SchedulingParameters:
     vy: float          # v_y
     sin_psi: float     # sin(ψ)
     cos_psi: float     # cos(ψ)
+    stiffness_scale: float = 1.0 # Stiffness scaling factor for low speed [0, 1]
 
     @classmethod
     def from_state_and_input(cls, state: np.ndarray, delta: float, 
@@ -231,6 +245,13 @@ class SchedulingParameters:
         vy = state[IDX_VY]
         psi = state[IDX_PSI]
         
+        # Compute stiffness scaling to avoid singularity at low speed
+        # Linear ramp from 0.0 at min_vx (0.1) to 1.0 at blend_vx (2.0)
+        # This effectively fades out lateral tire forces when stopping
+        blend_min = min_vx
+        blend_max = 1.0 
+        stiffness_scale = np.clip((vx - blend_min) / (blend_max - blend_min), 0.0, 1.0)
+        
         return cls(
             inv_vx=1.0 / vx,
             sin_delta=np.sin(delta),
@@ -238,7 +259,8 @@ class SchedulingParameters:
             vx=vx,
             vy=vy,
             sin_psi=np.sin(psi),
-            cos_psi=np.cos(psi)
+            cos_psi=np.cos(psi),
+            stiffness_scale=stiffness_scale
         )
 
 
@@ -256,7 +278,8 @@ class QLPVVehicleDynamicsObs:
     State vector: x = [v_x, v_y, ψ, r, X, Y]ᵀ
     Control input: u = [δ, a]ᵀ (steering, acceleration)
     Tire residuals: w = [w_r, w_f]ᵀ
-    Measurements: y = [v_x, r, ψ, X, Y, a_y]ᵀ
+    Measurements full: y = [v_x, r, ψ, X, Y, a_y, a_x]ᵀ
+    Measurements: y = [v_x, r, ψ, X, Y]ᵀ
     """
     
     def __init__(self, vehicle_params: Optional[Dict] = None, min_vx: Optional[float] = None, 
@@ -281,8 +304,7 @@ class QLPVVehicleDynamicsObs:
         self.Iz = self.params['Iz']
         self.Cf = self.params['Cf']
         self.Cr = self.params['Cr']
-        # self.Cf = 100   #Fake 
-        # self.Cr = 100   #Fake 
+
 
         self.mu = self.params.get('mu', 0.01)
         self.g = 9.81  # Gravity [m/s²]
@@ -331,11 +353,11 @@ class QLPVVehicleDynamicsObs:
         current_vx = current_state_obs[IDX_VX]
         
         if abs(throttle_cmd) > 0.01:
-            # Driving mode
-            # Simple friction model
-            c_rolling = 0.08
-            c_air_drag = 0.1
-            friction_val = c_rolling + (c_air_drag * abs(current_vx))
+            # # Driving mode
+            # # Simple friction model
+            # c_rolling = 0.08
+            # c_air_drag = 0.1
+            # friction_val = c_rolling + (c_air_drag * abs(current_vx))
             
             # Raw acceleration from motor
             target_accel = throttle_cmd * max_accel
@@ -431,25 +453,29 @@ class QLPVVehicleDynamicsObs:
         cos_psi = rho.cos_psi
         sin_psi = rho.sin_psi
         
+        # Scale tire stiffness for low speed
+        Cf = self.Cf * rho.stiffness_scale
+        Cr = self.Cr * rho.stiffness_scale
+        
         # v_x dynamics: v̇_x = accel - μg + r·v_y - Fyf·sin(δ)/m
         # where Fyf = Cf·αf = Cf·(δ - vy/vx - lf·r/vx)
         # ∂vx_dot/∂vx = -μg/vx (friction approximation)
         # ∂vx_dot/∂vy = r + Cf·sin(δ)/(m·vx) (from r·vy and -Fyf·sin(δ)/m)
         # ∂vx_dot/∂r = vy + Cf·lf·sin(δ)/(m·vx) (from r·vy and -Fyf·sin(δ)/m)
         A[IDX_VX, IDX_VX] = -self.mu * self.g / vx  # Longitudinal friction approx
-        A[IDX_VX, IDX_VY] =  self.Cf * sin_d / (self.m * vx)  # Note: r term omitted (scheduling param)
-        A[IDX_VX, IDX_R] = vy + self.Cf * self.lf * sin_d / (self.m * vx)  # vy from r·vy coupling
+        A[IDX_VX, IDX_VY] =  Cf * sin_d / (self.m * vx)  # Note: r term omitted (scheduling param)
+        A[IDX_VX, IDX_R] = vy + Cf * self.lf * sin_d / (self.m * vx)  # vy from r·vy coupling
         
         # v_y dynamics: v̇_y = F_yr/m + F_yf·cos(δ)/m - r·v_x
-        A[IDX_VY, IDX_VY] = -(self.Cr + self.Cf * cos_d) / (self.m * vx)
-        A[IDX_VY, IDX_R] = -(self.Cf * self.lf * cos_d - self.Cr * self.lr) / (self.m * vx) - vx
+        A[IDX_VY, IDX_VY] = -(Cr + Cf * cos_d) / (self.m * vx)
+        A[IDX_VY, IDX_R] = -(Cf * self.lf * cos_d - Cr * self.lr) / (self.m * vx) - vx
         
         # ψ dynamics: ψ̇ = r
         A[IDX_PSI, IDX_R] = 1.0
         
         # r dynamics: ṙ = (l_f·F_yf·cos(δ) - l_r·F_yr) / I_z
-        A[IDX_R, IDX_VY] = -(self.Cf * self.lf * cos_d - self.Cr * self.lr) / (self.Iz * vx)
-        A[IDX_R, IDX_R] = -(self.Cf * self.lf**2 * cos_d + self.Cr * self.lr**2) / (self.Iz * vx)
+        A[IDX_R, IDX_VY] = -(Cf * self.lf * cos_d - Cr * self.lr) / (self.Iz * vx)
+        A[IDX_R, IDX_R] = -(Cf * self.lf**2 * cos_d + Cr * self.lr**2) / (self.Iz * vx)
         
         # X dynamics: Ẋ = v_x·cos(ψ) - v_y·sin(ψ)
         A[IDX_X, IDX_VX] = cos_psi
@@ -480,15 +506,18 @@ class QLPVVehicleDynamicsObs:
         cos_d = rho.cos_delta
         sin_d = rho.sin_delta
         
+        # Scale tire stiffness
+        Cf = self.Cf * rho.stiffness_scale
+        
         # v_x: affected by steering and acceleration
-        B[IDX_VX, 0] = -self.Cf * sin_d / self.m  # ∂/∂δ (steering effect)
+        B[IDX_VX, 0] = -Cf * sin_d / self.m  # ∂/∂δ (steering effect)
         B[IDX_VX, 1] = 1.0  # ∂/∂a (direct acceleration)
         
         # v_y: affected by steering (front tire force direction change)
-        B[IDX_VY, 0] = self.Cf * cos_d / self.m
+        B[IDX_VY, 0] = Cf * cos_d / self.m
         
         # r: affected by steering through front tire moment
-        B[IDX_R, 0] = self.Cf * self.lf * cos_d / self.Iz
+        B[IDX_R, 0] = Cf * self.lf * cos_d / self.Iz
         
         return B
     
@@ -537,21 +566,24 @@ class QLPVVehicleDynamicsObs:
         
         return E
     
-    def compute_C_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+    def compute_C_matrix(self, rho: SchedulingParameters, active_indices: Optional[list] = None) -> np.ndarray:
         """
         Compute output matrix C(ρ)
         
-        Measurements: y = [v_x, r, ψ, X, Y, a_y]ᵀ
+        Measurements: y = [v_x, r, ψ, X, Y, a_y , a_x]ᵀ
         
         First 5 rows are simple state selections.
         Row 6 (a_y) is computed from lateral dynamics:
             a_y = v̇_y + r·v_x = F_yr/m + F_yf·cos(δ)/m
+        Row 7 (a_x) is computed from longitudinal dynamics:
+            a_x = v̇_x - r·v_y + μg = F_xr/m + F_xf·cos(δ)/m
         
         Args:
             rho: Scheduling parameters
+            active_indices: List of active measurement indices. If None, returns full matrix.
             
         Returns:
-            C matrix (6×6)
+            C matrix (N_meas × 6) where N_meas is len(active_indices) or MEAS_DIM
         """
         C = np.zeros((MEAS_DIM, STATE_DIM))
         
@@ -562,17 +594,31 @@ class QLPVVehicleDynamicsObs:
         C[MEAS_IDX_X, IDX_X] = 1.0       # X
         C[MEAS_IDX_Y, IDX_Y] = 1.0       # Y
         
+        
         # a_y measurement: C_ay(ρ)·x
         # C_ay = [0, -(C_r + C_f·cos(δ))/(m·v_x), 0, (C_r·l_r - C_f·l_f·cos(δ))/(m·v_x), 0, 0]
         cos_d = rho.cos_delta
         vx = rho.vx
         
-        C[MEAS_IDX_AY, IDX_VY] = -(self.Cr + self.Cf * cos_d) / (self.m * vx)
-        C[MEAS_IDX_AY, IDX_R] = (self.Cr * self.lr - self.Cf * self.lf * cos_d) / (self.m * vx)
+        # Scale tire stiffness
+        Cf = self.Cf * rho.stiffness_scale
+        Cr = self.Cr * rho.stiffness_scale
+        
+        C[MEAS_IDX_AY, IDX_VY] = -(Cr + Cf * cos_d) / (self.m * vx)
+        C[MEAS_IDX_AY, IDX_R] =  (Cr * self.lr - Cf * self.lf * cos_d) / (self.m * vx)
+
+        # a_x measurement: C_ax(ρ)·x
+
+        sin_d = rho.sin_delta
+        C[MEAS8_IDX_AX, IDX_VY] = (Cf * sin_d) / (self.m * vx)
+        C[MEAS8_IDX_AX, IDX_R ] = (Cf * self.lf * sin_d) / (self.m * vx)
+        
+        if active_indices is not None:
+            return C[active_indices, :]
         
         return C
     
-    def compute_D_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+    def compute_D_matrix(self, rho: SchedulingParameters, active_indices: Optional[list] = None) -> np.ndarray:
         """
         Compute feedthrough matrix D(ρ) from input to output
         
@@ -581,56 +627,87 @@ class QLPVVehicleDynamicsObs:
         
         Args:
             rho: Scheduling parameters
+            active_indices: List of active measurement indices.
             
         Returns:
-            D matrix (6×2)
+            D matrix (N_meas × 2)
         """
         D = np.zeros((MEAS_DIM, 2))
         
         cos_d = rho.cos_delta
+        sin_d = rho.sin_delta
+        
+        # Scale tire stiffness
+        Cf = self.Cf * rho.stiffness_scale
         
         # Only a_y row has feedthrough
-        D[MEAS_IDX_AY, 0] = self.Cf * cos_d / self.m  # Steering effect
+        D[MEAS_IDX_AY, 0] = Cf * cos_d / self.m  # Steering effect
+        D[MEAS_IDX_AX, 0] = - Cf * sin_d / self.m  # Steering effect
+        D[MEAS_IDX_AX, 1] = 1.0
+        
+        if active_indices is not None:
+            return D[active_indices, :]
         
         return D
     
-    def compute_F_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+    def compute_F_matrix(self, rho: SchedulingParameters, active_indices: Optional[list] = None) -> np.ndarray:
         """
         Compute residual-to-output matrix F(ρ)
         
         If mode='general':
-            a_y = v_y_dot + r*vx = (fy + d_vy) + r*vx
-            So d_vy affects a_y directly.
-            F = [[0, 0, 0], ..., [0, 1, 0]]
+            a_x = v_x_dot - r*vy = ... + d_vx
+            a_y = v_y_dot + r*vx = ... + d_vy
+            
+            F maps [d_vx, d_vy, d_r] to measurements.
+            F = [[1, 0, 0],   (for a_x)
+                 [0, 1, 0],   (for a_y)
+                 ...]
         
         Args:
             rho: Scheduling parameters
+            active_indices: List of active measurement indices.
             
         Returns:
-            F matrix (6×2 or 6×3)
+            F matrix (N_meas × 2 or N_meas × 3)
         """
+        # Always use 7D measurement space internally to handle ax (idx 6)
+        # y_full = [vx, r, psi, X, Y, ay, ax]
+        n_meas_full = MEAS_DIM_7D # 7
+        
         if self.disturbance_mode == 'general':
-            F = np.zeros((MEAS_DIM, 3))
+            F = np.zeros((n_meas_full, 3))
+            # d_vx -> a_x
+            F[MEAS8_IDX_AX, 0] = 1.0
             # d_vy -> a_y
-            F[MEAS_IDX_AY, 1] = 1.0
-            return F
-
-        # Default: Tire residual mode
-        F = np.zeros((MEAS_DIM, 2))
+            F[MEAS8_IDX_AY, 1] = 1.0
+        else:
+            # Default: Tire residual mode (2D residuals)
+            # w = [w_r, w_f]
+            F = np.zeros((n_meas_full, 2))
+            
+            cos_d = rho.cos_delta
+            sin_d = rho.sin_delta
+            
+            # a_y row: a_y = ... + w_r/m + w_f·cos(δ)/m
+            F[MEAS_IDX_AY, 0] = 1.0 / self.m  # w_r contribution
+            F[MEAS_IDX_AY, 1] = cos_d / self.m  # w_f contribution
+            F[MEAS_IDX_AX, 1] = -sin_d / self.m  # w_f affects a_x through sin(δ)
+            
+            # a_x row: roughly 0 for tire residuals in this simplified model
+            
+        if active_indices is not None:
+             return F[active_indices, :]
         
-        cos_d = rho.cos_delta
-        
-        # a_y row: a_y = ... + w_r/m + w_f·cos(δ)/m
-        F[MEAS_IDX_AY, 0] = 1.0 / self.m  # w_r contribution
-        F[MEAS_IDX_AY, 1] = cos_d / self.m  # w_f contribution
-        
-        return F
+        # If no active_indices provided, we return the standard 6D slice for backward compatibility
+        # unless 8D system is implied? 
+        # Safest is to return 6D part if MEAS_DIM is 6, or just slice to MEAS_DIM
+        return F[:MEAS_DIM, :]
     
     # =========================================================================
     # Augmented System Matrices
     # =========================================================================
     
-    def compute_augmented_matrices(self, rho: SchedulingParameters) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def compute_augmented_matrices(self, rho: SchedulingParameters, active_indices: Optional[list] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Compute augmented system matrices for x_a = [x; w]
         
@@ -641,6 +718,7 @@ class QLPVVehicleDynamicsObs:
         
         Args:
             rho: Scheduling parameters
+            active_indices: List of active measurement indices for C_a.
             
         Returns:
             Tuple of (A_a, B_a, C_a)
@@ -648,8 +726,8 @@ class QLPVVehicleDynamicsObs:
         A = self.compute_A_matrix(rho)
         B = self.compute_B_matrix(rho)
         E = self.compute_E_matrix(rho)
-        C = self.compute_C_matrix(rho)
-        F = self.compute_F_matrix(rho)
+        C = self.compute_C_matrix(rho, active_indices=active_indices)
+        F = self.compute_F_matrix(rho, active_indices=active_indices)
         
         dim_w = self.udim
         aug_dim = STATE_DIM + dim_w
@@ -665,103 +743,15 @@ class QLPVVehicleDynamicsObs:
         B_a[:STATE_DIM, :] = B
         
         # Augmented output matrix (6×aug_dim)
-        C_a = np.zeros((MEAS_DIM, aug_dim))
+        n_meas = C.shape[0] if active_indices is not None else MEAS_DIM
+        C_a = np.zeros((n_meas, aug_dim))
         C_a[:, :STATE_DIM] = C
         C_a[:, STATE_DIM:] = F
-
         
         return A_a, B_a, C_a
     
-    # =========================================================================
-    # Kinematic Model (for Low-Speed Operation)
-    # =========================================================================
-    
-    def f_kinematic(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
-        """
-        Kinematic bicycle model for low-speed operation.
-        Matches vehicle_dynamics_qlpv.py simplified kinematic model.
-        
-        State: [vx, vy, psi, r, X, Y]
-        """
-        vx = x[IDX_VX]
-        vy = x[IDX_VY]
-        psi = x[IDX_PSI]
-        r = x[IDX_R]
-        
-        delta = u[0]
-        accel = u[1] 
-        
-        lf = self.lf
-        lr = self.lr
-        lwb = lf + lr
-        m = self.m
-        g = self.g
-        
-        # Velocity derivative with friction
-        vx_dot = accel 
-        
-        # Position derivatives (incorporating beta)
-        # matches: vx * math.cos(psi )
-        # matches: vx * math.sin(psi )
 
-        X_dot = vx * np.cos(psi )
-        Y_dot = vx * np.sin(psi )
 
-        psi_dot = 0.0
-            
-        # Simplified dynamics for other states
-        # matches: 0.0 for r_dot and vy_dot
-        r_dot = 0.0
-        vy_dot = 0.0
-        
-        return np.array([vx_dot, vy_dot, psi_dot, r_dot, X_dot, Y_dot])
-    
-    def f_blended(self, x: np.ndarray, u: np.ndarray, w: np.ndarray,
-                  blend_vx_low: float = 0.1, blend_vx_high: float = 0.3) -> np.ndarray:
-        """
-        Blended dynamics that smoothly transitions between kinematic and dynamic models.
-        
-        Uses smooth blending function to avoid discontinuities:
-            - |vx| < blend_vx_low: Pure kinematic model
-            - |vx| > blend_vx_high: Pure dynamic model
-            - blend_vx_low <= |vx| <= blend_vx_high: Smooth blend
-        
-        Args:
-            x: State [vx, vy, psi, r, X, Y]
-            u: Control [δ, a]
-            w: Tire residuals [wr, wf] (used only in dynamic model)
-            blend_vx_low: Velocity threshold for pure kinematic [m/s]
-            blend_vx_high: Velocity threshold for pure dynamic [m/s]
-        
-        Returns:
-            Blended state derivative ẋ (6D)
-        """
-        vx_abs = abs(x[IDX_VX])
-        
-        # Compute blending factor (0 = kinematic, 1 = dynamic)
-        if vx_abs <= blend_vx_low:
-            alpha = 0.0
-        elif vx_abs >= blend_vx_high:
-            alpha = 1.0
-        else:
-            # Smooth cosine blend
-            t = (vx_abs - blend_vx_low) / (blend_vx_high - blend_vx_low)
-            alpha = 0.5 * (1.0 - np.cos(np.pi * t))
-        
-        # Compute both models
-        x_dot_kin = self.f_kinematic(x, u)
-        
-        if alpha < 1.0:
-            # Need kinematic contribution
-            if alpha > 0.0:
-                # Need dynamic contribution too
-                x_dot_dyn = self.f_continuous(x, u, w)
-                return (1.0 - alpha) * x_dot_kin + alpha * x_dot_dyn
-            else:
-                return x_dot_kin
-        else:
-            # Pure dynamic
-            return self.f_continuous(x, u, w)
     
     def is_low_speed(self, vx: float, threshold: float = 0.15) -> bool:
         """
@@ -828,6 +818,52 @@ class QLPVVehicleDynamicsObs:
         
         return np.array([vx_dot, vy_dot, psi_dot, r_dot, X_dot, Y_dot])
     
+
+    # =========================================================================
+    # Kinematic Model (for Low-Speed Operation)
+    # =========================================================================
+    
+    def f_kinematic(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+        """
+        Kinematic bicycle model for low-speed operation.
+        Matches vehicle_dynamics_qlpv.py simplified kinematic model.
+        
+        State: [vx, vy, psi, r, X, Y]
+        """
+        vx = x[IDX_VX]
+        vy = x[IDX_VY]
+        psi = x[IDX_PSI]
+        r = x[IDX_R]
+        
+        delta = u[0]
+        accel = u[1] 
+        
+        lf = self.lf
+        lr = self.lr
+        lwb = lf + lr
+        m = self.m
+        g = self.g
+        
+        # Velocity derivative with friction
+        vx_dot = accel 
+        
+        # Position derivatives (incorporating beta)
+        # matches: vx * math.cos(psi )
+        # matches: vx * math.sin(psi )
+
+        X_dot = vx * np.cos(psi )
+        Y_dot = vx * np.sin(psi )
+
+        psi_dot = 0.0
+            
+        # Simplified dynamics for other states
+        # matches: 0.0 for r_dot and vy_dot
+        r_dot = 0.0
+        vy_dot = 0.0
+        
+        return np.array([vx_dot, vy_dot, psi_dot, r_dot, X_dot, Y_dot])
+    
+    
     def h_meas(self, x: np.ndarray, u: np.ndarray, w: np.ndarray) -> np.ndarray:
         """
         Measurement function y = h(x, u, w)
@@ -870,134 +906,6 @@ class QLPVVehicleDynamicsObs:
             ay,
         ])
     
-    def h_meas_blended(self, x: np.ndarray, u: np.ndarray, w: np.ndarray,
-                       blend_vx_low: float = 0.1, blend_vx_high: float = 0.3) -> np.ndarray:
-        """
-        Blended measurement function for kinematic/dynamic transition.
-        
-        At low speeds, lateral acceleration is approximated as centripetal: ay ≈ r·vx
-        At high speeds, uses full tire force model.
-        
-        Args:
-            x: State [vx, vy, psi, r, X, Y]
-            u: Control [δ, a]
-            w: Tire residuals [wr, wf]
-            blend_vx_low: Velocity threshold for pure kinematic [m/s]
-            blend_vx_high: Velocity threshold for pure dynamic [m/s]
-        
-        Returns:
-            Predicted measurement [vx, r, psi, X, Y, ay]
-        """
-        vx = x[IDX_VX]
-        vx_abs = abs(vx)
-        r = x[IDX_R]
-        
-        # Compute blending factor (0 = kinematic, 1 = dynamic)
-        if vx_abs <= blend_vx_low:
-            alpha = 0.0
-        elif vx_abs >= blend_vx_high:
-            alpha = 1.0
-        else:
-            t = (vx_abs - blend_vx_low) / (blend_vx_high - blend_vx_low)
-            alpha = 0.5 * (1.0 - np.cos(np.pi * t))
-        
-        # Kinematic ay (centripetal approximation)
-        ay_kin = r * vx
-        
-        # Dynamic ay (full tire model)
-        if alpha > 0:
-            y_dyn = self.h_meas(x, u, w)
-            ay_dyn = y_dyn[MEAS_IDX_AY]
-            ay = (1.0 - alpha) * ay_kin + alpha * ay_dyn
-        else:
-            ay = ay_kin
-        
-        return np.array([
-            vx,
-            r,
-            x[IDX_PSI],
-            x[IDX_X],
-            x[IDX_Y],
-            ay,
-        ])
-    
-    # =========================================================================
-    # UIO-Style Residual Computation Helpers
-    # =========================================================================
-    
-    def compute_rdot_linear(self, xhat: np.ndarray, delta: float) -> float:
-        """
-        Compute linear prediction for yaw rate derivative
-        
-        ṙ_lin = f(vx, vy, r, delta, params)
-        
-        Args:
-            xhat: State estimate [vx, vy, psi, r, X, Y]
-            delta: Steering angle
-            
-        Returns:
-            rdot_lin: Linear predicted yaw rate derivative
-        """
-        vx, vy, psi, r, X, Y = xhat
-        vx_eff = max(abs(vx), self.min_vx)
-        c = np.cos(delta)
-        
-        rdot_lin = (
-            - (self.lf*self.Cf*c - self.lr*self.Cr) / (self.Iz*vx_eff) * vy
-            - (self.lf**2 * self.Cf*c + self.lr**2 * self.Cr) / (self.Iz*vx_eff) * r
-            + (self.lf*self.Cf*c) / self.Iz * delta
-        )
-        
-        return rdot_lin
-    
-    def compute_ay_linear(self, xhat: np.ndarray, delta: float) -> float:
-        """
-        Compute linear prediction for lateral acceleration
-        
-        a_y_lin = f(vx, vy, r, delta, params)
-        
-        Args:
-            xhat: State estimate [vx, vy, psi, r, X, Y]
-            delta: Steering angle
-            
-        Returns:
-            ay_lin: Linear predicted lateral acceleration
-        """
-        vx, vy, psi, r, X, Y = xhat
-        vx_eff = max(abs(vx), self.min_vx)
-        c = np.cos(delta)
-        
-        ay_lin = (
-            - (self.Cr + self.Cf*c) / (self.m*vx_eff) * vy
-            + (self.Cr*self.lr - self.Cf*self.lf*c) / (self.m*vx_eff) * r
-            + (self.Cf*c) / self.m * delta
-        )
-        
-        return ay_lin
-    
-    def compute_w_estimation_matrix(self, delta: float) -> np.ndarray:
-        """
-        Compute M matrix for w estimation from residuals
-        
-        M·w = b, where b = [rdot_res, ay_res]ᵀ
-        
-        M = [[-lr/Iz, lf·cos(δ)/Iz],
-             [1/m,    cos(δ)/m    ]]
-        
-        Args:
-            delta: Steering angle
-            
-        Returns:
-            M matrix (2×2)
-        """
-        c = np.cos(delta)
-        
-        M = np.array([
-            [-self.lr/self.Iz,  self.lf*c/self.Iz],
-            [1.0/self.m,        c/self.m         ]
-        ], dtype=float)
-        
-        return M
 
 
 

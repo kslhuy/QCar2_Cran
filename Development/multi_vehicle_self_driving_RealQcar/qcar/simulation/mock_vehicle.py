@@ -3,6 +3,7 @@ import math
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
+from dataclasses import asdict, is_dataclass
 from omegaconf import OmegaConf
 
 # Internal imports
@@ -44,16 +45,24 @@ class MockQCar:
         self.use_qlpv_legacy = (self.model_type == 'qlpv_legacy')
         self.use_dynamic = (self.model_type == 'dynamic')
         
+        # Disturbance Mode
+        dist_conf = config.get('disturbances', {})
+        self.disturbance_mode = dist_conf.get('mode', 'tire') # 'tire' or 'general'
+        
         # Load Parameters
         self._load_parameters()
         
         # Initialize Components
         self.disturbance_gen = DisturbanceGenerator(config.get('disturbances'))
-        self.gps = MockQCarGPS(initial_pose=[0.0, 0.0, 0.0]) # Will be updated
+        self.gps = MockQCarGPS(initial_pose=[0.0, 0.0, 0.0], config=config['sensors']['gps']) # Will be updated
         
-        # Initialize qLPV Observer Model if needed
-        self.qlpv_obs_model = None
-        self._init_qlpv_obs_model()
+        # Initialize qLPV Observer Model with correct params and mode
+        params_dict = asdict(self.params) if is_dataclass(self.params) else self.params
+        self.qlpv_obs_model = QLPVVehicleDynamicsObs(
+            vehicle_params=params_dict,
+            disturbance_mode=self.disturbance_mode
+        )
+
         
         # State Initialization
         self._init_states()
@@ -83,8 +92,15 @@ class MockQCar:
         self.w_f_true = 0.0
         # Last time read 
         self.last_time = time.time()
-        
-        print(f"🔧 MockQCar {self.car_id}: Initialized with {self.model_type} model")
+
+        print("="*70)
+        print("[CAR] QCar Fake Vehicle with REAL VehicleLogic ")
+        print("   Vehicle dynamics from vehiclemodels folder (CommonRoad models)")
+        print(f"Car ID: {self.car_id}")
+        print(f"Vehicle Model: {self.model_type}")
+        print(f"Tire Model: {self.tire_model}")
+        print(f"Disturbance Mode: {self.disturbance_mode}")
+        print("="*70)
 
     def _load_parameters(self):
         """Load vehicle parameters."""
@@ -107,32 +123,6 @@ class MockQCar:
             print(f"Error loading parameters: {e}. Using default.")
             self.params = setup_vehicle_parameters(vehicle_id=1)
 
-    def _init_qlpv_obs_model(self):
-        """Initialize centralized qLPV model helper."""
-        # Convert params to dict for QLPV model
-        params_dict = {}
-        try:
-            # Basic conversion
-            params_dict = {
-                'steering': {'max': getattr(self.params.steering, 'max', 0.5), 
-                             'v_max': getattr(self.params.steering, 'v_max', 5.0)},
-                'longitudinal': {'a_max': getattr(self.params.longitudinal, 'a_max', 3.0),
-                                 'v_max': getattr(self.params.longitudinal, 'v_max', 2.0),
-                                 'v_min': getattr(self.params.longitudinal, 'v_min', -2.0)},
-                # Physical params
-                'a': getattr(self.params, 'a', 0.16),
-                'b': getattr(self.params, 'b', 0.16),
-                'm': getattr(self.params, 'm', 2.5),
-                'lf': getattr(self.params, 'a', 0.16),
-                'lr': getattr(self.params, 'b', 0.16),
-                'Iz': getattr(self.params, 'I_z', 0.05),
-                'Cf': getattr(self.params, 'Cf', 100),
-                'Cr': getattr(self.params, 'Cr', 100),
-            }
-        except:
-            pass
-            
-        self.qlpv_obs_model = QLPVVehicleDynamicsObs(vehicle_params=params_dict)
 
     def _init_states(self):
         """Initialize state vectors based on configuration."""
@@ -274,30 +264,45 @@ class MockQCar:
         n_steps = max(1, int(dt / dt_sub))
         dt_step = dt / n_steps
         
-        # Get disturbances
+        # Determine disturbance vector based on mode
         d = self.disturbance_gen.get_disturbance(time.time())
-        self.true_disturbances = d # Store [d_vx, d_vy, d_r]
-        d_vec = np.array(d).reshape(3, 1) # 3x1 vector
+        if self.disturbance_mode == 'general':
+            # Check conditions for general disturbance (less aggressive gating)
+            if abs(self.velocity) < 0.05 and abs(acc) < 0.01:
+                d = [0.0, 0.0, 0.0]
+            # d is already 3D for general mode
+            d_vec = np.array(d).reshape(3, 1)
+            self.true_disturbances = d
+            self.w_r_true = 0.0
+            self.w_f_true = 0.0
+        else:
+            # Tire mode: we don't inject external tire residuals in this simulation loop currently
+            # Default to zero residuals (perfect model)
+            d_tire = [0.0, 0.0] 
+            d_vec = np.array(d_tire).reshape(2, 1)
+            
+            self.true_disturbances = [0.0, 0.0, 0.0]
+            self.w_r_true = d_tire[0]
+            self.w_f_true = d_tire[1]
         
+        x_dot_final = np.zeros(6) # To store last derivative for IMU
+
         for _ in range(n_steps):
             rho = self.qlpv_obs_model.compute_scheduling_params(self.state_obs, u_vec[0])
-            # A(rho), B(rho) are continuous
+            # A(rho), B(rho), E(rho) are continuous
             A_c = self.qlpv_obs_model.compute_A_matrix(rho)
             B_c = self.qlpv_obs_model.compute_B_matrix(rho) 
+            E_c = self.qlpv_obs_model.compute_E_matrix(rho)
             
             # x_dot = A x + B u + E d
-            # E map for disturbances: Identity to first 3 states (vx, vy, r)?
-            # Assuming simple additive disturbances on derivatives
-            # State: [v_x, v_y, ψ, r, X, Y]
-            # dist: [d_vx, d_vy, d_r] -> add to index 0, 1, 3 (r)
+            x_dot = (A_c @ self.state_obs.reshape(-1,1) + 
+                     B_c @ u_vec.reshape(-1,1) + 
+                     E_c @ d_vec).flatten()
             
-            x_dot = A_c @ self.state_obs.reshape(-1,1) + B_c @ u_vec.reshape(-1,1)
-            x_dot = x_dot.flatten()
-            
-            # Add disturbances
-            x_dot[0] += d[0] # vx
-            x_dot[1] += d[1] # vy
-            x_dot[3] += d[2] # r (index 3 is r in this state vector)
+            x_dot_final = x_dot # Save for IMU
+
+            # Disturbances are now included via E_c @ d_vec
+            # No manual addition needed
             # state_obs is [v_x, v_y, ψ, r, X, Y].
             # Indices: 0:vx, 1:vy, 2:psi, 3:r.
             
@@ -305,6 +310,20 @@ class MockQCar:
             
             # Wrap yaw
             self.state_obs[2] = (self.state_obs[2] + np.pi) % (2*np.pi) - np.pi
+        
+        # Update IMU (Accelerometer)
+        # x_dot = [v̇_x, v̇_y, ψ̇, ṙ, Ẋ, Ẏ]
+        # a_x = v̇_x - r·v_y
+        # a_y = v̇_y + r·v_x
+        vx_dot = x_dot_final[0]
+        vy_dot = x_dot_final[1]
+        r = self.state_obs[3]
+        vx = self.state_obs[0]
+        vy = self.state_obs[1]
+        
+        self.accelerometer[0] = vx_dot - r * vy
+        self.accelerometer[1] = vy_dot + r * vx
+        self.accelerometer[2] = 9.81
 
     def _update_physics_qlpv(self, dt: float):
         """Legacy qLPV update."""
@@ -326,8 +345,13 @@ class MockQCar:
         dt_step = dt / n_steps
         
         d = self.disturbance_gen.get_disturbance(time.time())
+        # Zero out additive disturbances if in 'tire' mode
+        # Apply checks: only apply when command accel is active AND car is moving
+        if self.disturbance_mode != 'general' or (abs(self.velocity) < 0.05 and abs(acc) < 0.01):
+            d = [0.0, 0.0, 0.0]
         self.true_disturbances = d
         
+        derivs = np.zeros(7)
         for _ in range(n_steps):
             derivs = vehicle_dynamics_qlpv(
                 self.state_qlpv, control, self.params, 
@@ -335,78 +359,216 @@ class MockQCar:
             )
             self.state_qlpv += derivs * dt_step
         
+        # Update IMU
+        # derivs: [X_dot, Y_dot, delta_dot, vx_dot, psi_dot, r_dot, vy_dot]
+        vx_dot = derivs[3]
+        vy_dot = derivs[6]
+        vx = self.state_qlpv[3]
+        r = self.state_qlpv[5]
+        vy = self.state_qlpv[6]
+        
+        self.accelerometer[0] = vx_dot - r * vy
+        self.accelerometer[1] = vy_dot + r * vx
+        self.accelerometer[2] = 9.81
+        
 
         
     def _update_physics_dynamic(self, dt: float):
-        """Standard Dynamic ST model update."""
-        # [x, y, δ, v, ψ, r, β]
-        control_in = np.array([0.0, 0.0]) # [steer_rate, acc] needs computation
-        # ... Simplified: just assume we track inputs
-        # But vehicle_dynamics_st expects [steering_rate, acceleration]
-        # We need the controller helper
-        current_obs_state = np.array([
-            self.state_st[3], self.state_st[3]*math.sin(self.state_st[6]),
-            self.state_st[4], self.state_st[5], self.state_st[0], self.state_st[1]
+        """
+        Standard Dynamic ST model update. 
+        Matches flow of _update_physics_qlpv_matrix: sub-stepping + shared control logic.
+        """
+        # 1. Process Control Inputs (Shared Logic)
+        current_st_obs = np.array([
+            self.state_st[3], 0.0, 0.0, 0.0, 0.0, 0.0
         ])
-        acc, steer_rate, _ = self.qlpv_obs_model.process_control_inputs(
-            self._throttle, self._steering, current_obs_state, self.state_st[2], dt
+        
+        acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
+            self._throttle, self._steering, current_st_obs, self.state_st[2], dt
         )
-        control_in = np.array([steer_rate, acc])
         
-        derivs = np.array(vehicle_dynamics_st(self.state_st, control_in, self.params))
+        self.control_input[0] = steer_rate
+        self.control_input[1] = acc
         
-        # Add disturbances? ST model doesn't support them natively usually.
-        # We can add them to derivatives of v, r, beta?
-        # d_vx -> add to v dot? d_r -> add to r dot?
+        # 2. Sub-stepping
+        dt_sub = 0.001
+        n_steps = max(1, int(dt / dt_sub))
+        dt_step = dt / n_steps
+        
+        # 3. Disturbance Injection
         d = self.disturbance_gen.get_disturbance(time.time())
-        self.true_disturbances = d
-        
-        # indices: 3:v, 5:r, 6:beta
-        # v dot += d_vx (approx)
-        derivs[3] += d[0]
-        derivs[5] += d[2]
-        # d_vy affects beta dot ~ d_vy / v
-        if abs(self.state_st[3]) > 0.1:
-            derivs[6] += d[1] / self.state_st[3]
+        if self.disturbance_mode == 'general':
+            if abs(self.state_st[3]) < 0.05 and abs(acc) < 0.01:
+                d = [0.0, 0.0, 0.0]
+            self.true_disturbances = d
+            self.w_r_true = 0.0
+            self.w_f_true = 0.0
+        else:
+            d_tire = [0.0, 0.0]
+            self.true_disturbances = [0.0, 0.0, 0.0]
+            self.w_r_true = d_tire[0]
+            self.w_f_true = d_tire[1]
+            d = [0.0, 0.0, 0.0]
             
-        self.state_st += derivs * dt
-        
+        # 4. Integration Loop
+        derivatives = None
+        for _ in range(n_steps):
+            try:
+                derivatives = np.array(vehicle_dynamics_st(self.state_st, self.control_input, self.params))
+                
+                if any(np.isnan(derivatives)) or any(np.isinf(derivatives)):
+                    self._simple_kinematic_update(dt)
+                    return
+
+                # Apply disturbances
+                # derivatives: [x_dot, y_dot, delta_dot, v_dot, psi_dot, r_dot, beta_dot]
+                derivatives[3] += d[0] # v_dot
+                derivatives[5] += d[2] # r_dot
+                if abs(self.state_st[3]) > 0.1:
+                    derivatives[6] += d[1] / self.state_st[3] # beta_dot approx
+
+                # Euler integration
+                self.state_st += derivatives * dt_step # State update
+                
+                # Safety clamps
+                v_max = float(self.params.longitudinal.v_max)
+                v_min = float(self.params.longitudinal.v_min)
+                self.state_st[3] = np.clip(self.state_st[3], v_min, v_max)
+                self.state_st[5] = np.clip(self.state_st[5], -5.0, 5.0) # r
+                self.state_st[6] = np.clip(self.state_st[6], -0.5, 0.5) # beta
+                
+            except Exception as e:
+                print(f"⚠️ Dynamic model error: {e}, falling back to kinematic")
+                self._simple_kinematic_update(dt)
+                return
+                
+        # 5. Update IMU
+        if derivatives is not None:
+            self._update_imu_sensors(derivatives, acc)
+
     def _update_physics_kinematic(self, dt: float):
-        """Kinematic update."""
-        # [x, y, δ, v, ψ]
-        # Simply set v and delta based on inputs? No, we integrate.
+        """
+        Kinematic model update.
+        Matches flow of _update_physics_qlpv_matrix.
+        """
+        # 1. Control Inputs
+        current_ks_obs = np.array([
+            self.state_ks[3], 0.0, 0.0, 0.0, 0.0, 0.0
+        ])
         
-        # Use simple bicycle model logic from legacy code
-        # ... kept simple for brevity
-        max_v = 3.0
-        target_v = self._throttle * max_v
+        acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
+            self._throttle, self._steering, current_ks_obs, self.state_ks[2], dt
+        )
         
-        # Simple P control for velocity
-        acc = 2.0 * (target_v - self.state_ks[3])
+        self.control_input = np.array([steer_rate, acc])
         
-        # Steering is direct?
-        self.state_ks[2] = self._steering * 0.5 # Max steer
+        # 2. Sub-stepping
+        dt_sub = 0.001
+        n_steps = max(1, int(dt / dt_sub))
+        dt_step = dt / n_steps
         
+        # 3. Disturbance
         d = self.disturbance_gen.get_disturbance(time.time())
-        self.true_disturbances = d
-        acc += d[0] # additive vx disturbance
+        if self.disturbance_mode == 'general':
+            if abs(self.state_ks[3]) < 0.05 and abs(acc) < 0.01:
+                d = [0.0, 0.0, 0.0]
+            self.true_disturbances = d
+            self.w_r_true = 0.0
+            self.w_f_true = 0.0
+        else:
+            d = [0.0, 0.0, 0.0]
+            self.true_disturbances = [0.0, 0.0, 0.0]
+            self.w_r_true = 0.0
+            self.w_f_true = 0.0
+
+        # 4. Loop
+        derivatives = None
+        for _ in range(n_steps):
+            derivatives = vehicle_dynamics_ks(self.state_ks, self.control_input, self.params)
+            
+            # Apply disturbances
+            # KS derivs: [x_dot, y_dot, delta_dot, v_dot, psi_dot]
+            derivatives[3] += d[0] # v_dot
+            derivatives[4] += d[2] # psi_dot (approx yaw rate disturbance)
+            
+            for i in range(len(self.state_ks)):
+                self.state_ks[i] += derivatives[i] * dt_step
+                
+            # Safety clamps
+            v_max = float(self.params.longitudinal.v_max)
+            v_min = float(self.params.longitudinal.v_min)
+            self.state_ks[3] = np.clip(self.state_ks[3], v_min, v_max)
+            
+        # 5. IMU
+        if derivatives is not None:
+            self._update_imu_sensors(derivatives, acc)
+
+    def _simple_kinematic_update(self, dt: float):
+        """Fallback simple kinematic update when dynamic model fails"""
+        max_velocity = 3.0
+        target_velocity = self._throttle * max_velocity
         
-        self.state_ks[3] += acc * dt
+        # Apply friction and braking
+        friction_coeff = 0.8
+        if abs(self.velocity) > 0.01:
+            friction_decel = -np.sign(self.velocity) * friction_coeff * dt
+            self.velocity += friction_decel
         
-        v = self.state_ks[3]
-        delta = self.state_ks[2]
-        psi = self.state_ks[4]
-        wb = 0.3
+        # Active braking
+        if abs(self._throttle) < 0.01 and abs(self.velocity) > 0.01:
+            brake_decel = -np.sign(self.velocity) * 4.0 * dt
+            self.velocity += brake_decel
+            
+        if abs(self.velocity) < 0.05 and abs(self._throttle) < 0.01:
+            self.velocity = 0.0
+        else:
+            velocity_error = target_velocity - self.velocity
+            acceleration = 2.0 * velocity_error
+            self.velocity += acceleration * dt
+            
+        self.velocity = np.clip(self.velocity, -max_velocity, max_velocity)
         
-        beta = math.atan(0.5 * math.tan(delta))
+        self.x += self.velocity * math.cos(self.heading) * dt
+        self.y += self.velocity * math.sin(self.heading) * dt
         
-        x_dot = v * math.cos(psi + beta) + d[1] # additive vy disturbance effect?
-        y_dot = v * math.sin(psi + beta)
-        psi_dot = (v / wb) * math.cos(beta) * math.tan(delta) + d[2]
+        if abs(self.velocity) > 0.1:
+            wheelbase = 0.3
+            self.angular_velocity = (self.velocity / wheelbase) * math.tan(self._steering * 0.3)
+            self.heading += self.angular_velocity * dt
+        else:
+            self.angular_velocity = 0.0
+
+    def _update_imu_sensors(self, derivatives: np.ndarray, commanded_accel: float):
+        """Compute realistic IMU sensor readings."""
+        g = 9.81
+        vx = self.velocity
+        vy = self.lateral_velocity
+        r = self.angular_velocity
         
-        self.state_ks[0] += x_dot * dt
-        self.state_ks[1] += y_dot * dt  
-        self.state_ks[4] += psi_dot * dt
+        if self.use_qlpv_legacy or self.use_qlpv_matrix:
+             # qLPV derivatives: [Ẋ, Ẏ, δ̇, v̇_x, ψ̇, ṙ, v̇_y] -> indices depend on vector
+             # This helper is mostly for ST/KS models here. 
+             # For qLPV, derivatives logic in those functions handles IMU usually?
+             # In mock_vehicle, qLPV updates don't call this yet.
+             # We assume this is called by dynamic/kinematic.
+             return
+
+        if self.use_dynamic:
+            # ST derivatives: [Ẋ, Ẏ, δ̇, v̇, ψ̇, ṙ, β̇]
+            v_dot = derivatives[3]
+            beta_dot = derivatives[6]
+            vx_dot = v_dot 
+            vy_dot = self.velocity * beta_dot 
+        else:
+            # KS derivatives: [Ẋ, Ẏ, δ̇, v̇, ψ̇]
+            vx_dot = derivatives[3] if len(derivatives) > 3 else commanded_accel
+            vy_dot = 0.0
+            
+        self.accelerometer[0] = float(vx_dot - r * vy)
+        self.accelerometer[1] = float(vy_dot + r * vx)
+        self.accelerometer[2] = g
+        self.gyroscope[2] = float(r)
+
         
     def read(self):
         """Simulate reading sensors and update physics"""

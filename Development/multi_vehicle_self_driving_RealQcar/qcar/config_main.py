@@ -76,7 +76,7 @@ class PathPlanningConfig:
         elif self.path_number == 1:
             return [0, 2, 4, 6, 8, 10 , 2 ,4 ,6 ,0]
         else :
-            return [2 , 4 ,6 , 8 , 10 , 2 ]
+            return [0 , 2 , 4, 6, 8, 10 ,1,10,2,4,6]
     
     @property
     def calibration_pose(self) -> List[float]:

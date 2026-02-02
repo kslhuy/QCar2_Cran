@@ -235,7 +235,7 @@ class VehicleLogic:
     
     def run(self):
         """Main control loop"""
-        self.vehicle_logger.logger.info("Starting control loop...")
+        # self.vehicle_logger.logger.info("Starting control loop...")
         
         # Start the state machine in INITIALIZING state
         # The state machine will handle all initialization through its states

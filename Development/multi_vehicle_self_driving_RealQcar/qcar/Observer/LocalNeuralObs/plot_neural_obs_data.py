@@ -51,7 +51,7 @@ except ImportError:
 
 
 RecordingMode = Literal['1layer', '2layer']
-PlotType = Literal['all', 'trajectory', 'states', 'errors', 'debug']
+PlotType = Literal['all', 'trajectory', 'states', 'errors', 'debug', 'acceleration']
 
 
 def load_data(filepath: str) -> Dict[str, np.ndarray]:
@@ -272,13 +272,16 @@ def select_plot_type_interactive() -> PlotType:
     print("3. States (Velocity, Yaw Rate)")
     print("4. Estimation Errors")
     print("5. Debug (NN Outputs / Tire Residuals)")
+    print("6. Acceleration")
+
     
     mapping = {
         '1': 'all',
         '2': 'trajectory',
         '3': 'states',
         '4': 'errors',
-        '5': 'debug'
+        '5': 'debug',
+        '6': 'acceleration'
     }
     
     while True:
@@ -362,26 +365,27 @@ def make_plot_interactive(fig, axes_list):
             
     fig.canvas.mpl_connect('pick_event', on_pick)
     
-    # 2. Hover Cursors
-    if MPLCURSORS_AVAILABLE:
-        cursor = mplcursors.cursor(hover=True)
+    # # 2. Hover Cursors
+    # if MPLCURSORS_AVAILABLE:
+    #     cursor = mplcursors.cursor(hover=True)
         
-        @cursor.connect("add")
-        def on_add(sel):
-            # Customize tooltip text
-            # sel.target is (x, y)
-            # sel.artist.get_label() gives line label
-            label = sel.artist.get_label()
-            sel.annotation.set_text(f"{label}\nt={sel.target[0]:.2f}, y={sel.target[1]:.4f}")
+    #     @cursor.connect("add")
+    #     def on_add(sel):
+    #         # Customize tooltip text
+    #         # sel.target is (x, y)
+    #         # sel.artist.get_label() gives line label
+    #         label = sel.artist.get_label()
+    #         sel.annotation.set_text(f"{label}\nt={sel.target[0]:.2f}, y={sel.target[1]:.4f}")
             
-    else:
-        print("\nTip: Install 'mplcursors' for hover-over values: pip install mplcursors")
+    # else:
+    #     print("\nTip: Install 'mplcursors' for hover-over values: pip install mplcursors")
 
 
 def plot_1layer_data(data: Dict[str, np.ndarray], 
                      title: str = "1-Layer Observer Analysis",
                      save_path: Optional[str] = None,
-                     plot_type: PlotType = 'all'):
+                     plot_type: PlotType = 'all',
+                     dist_mode: Optional[str] = None):
     """
     Create plots for 1-layer observer data.
     """
@@ -403,6 +407,10 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
     elif plot_type == 'debug':
         fig = plt.figure(figsize=(16, 6))
         gs = fig.add_gridspec(1, 3, wspace=0.3)
+    elif plot_type == 'acceleration':
+        fig = plt.figure(figsize=(12, 6))
+        gs = fig.add_gridspec(1, 2, wspace=0.3)
+
     # Apply global small font for better visualization
     plt.rcParams.update({'font.size': 8, 'axes.titlesize': 9, 'axes.labelsize': 8, 'legend.fontsize': 7})
     
@@ -498,8 +506,17 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
         pos = gs[1, 0:2] if plot_type == 'all' else gs[0, 0]
         ax = fig.add_subplot(pos)
         
-        # Check for general disturbance columns
-        if 'd_vx' in data:
+        # Determine disturbance mode
+        use_general = False
+        if dist_mode == 'general':
+            use_general = True
+        elif dist_mode == 'tire':
+            use_general = False
+        else:
+            # Auto-detect
+            use_general = 'd_vx' in data
+
+        if use_general:
             # 3D General Disturbances
             ax.plot(time, data.get('d_vx', []), 'b-', label='$d_{vx}$ (Est)', linewidth=1)
             ax.plot(time, data.get('d_vy', []), 'g-', label='$d_{vy}$ (Est)', linewidth=1)
@@ -531,7 +548,7 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
             
         ax.set_xlabel('Time [s]')
         ax.legend(loc='upper right', fontsize=8)
-        ax.grid(True, alpha=0.3)
+        # ax.grid(True, alpha=0.3)
         axes.append(ax)
 
     # 7. Control Inputs (Simplified: no twin axis)
@@ -581,6 +598,30 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
             ax.set_title('GPS Availability')
             ax.set_ylim(-0.1, 1.1)
             ax.grid(True, alpha=0.3)
+            ax.grid(True, alpha=0.3)
+            axes.append(ax)
+
+    # 10. Acceleration (New)
+    if is_active(['acceleration']):
+        pos_ax = gs[0, 0] if plot_type == 'acceleration' else None
+        pos_ay = gs[0, 1] if plot_type == 'acceleration' else None
+        
+        if pos_ax:
+            ax = fig.add_subplot(pos_ax)
+            ax.plot(time, data.get('ax_meas', []), 'r.', label='Measured', markersize=2)
+            ax.set_ylabel('$a_x$ [m/s^2]')
+            ax.set_title('Longitudinal Acceleration')
+            ax.legend(loc='upper right', fontsize=8)
+            ax.grid(True, alpha=0.3)
+            axes.append(ax)
+            
+        if pos_ay:
+            ax = fig.add_subplot(pos_ay)
+            ax.plot(time, data.get('ay_meas', []), 'r.', label='Measured', markersize=2)
+            ax.set_ylabel('$a_y$ [m/s^2]')
+            ax.set_title('Lateral Acceleration')
+            ax.legend(loc='upper right', fontsize=8)
+            ax.grid(True, alpha=0.3)
             axes.append(ax)
 
     # Add interactivity
@@ -603,7 +644,8 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
 def plot_2layer_data(data: Dict[str, np.ndarray], 
                      title: str = "2-Layer Neural Observer Analysis",
                      save_path: Optional[str] = None,
-                     plot_type: PlotType = 'all'):
+                     plot_type: PlotType = 'all',
+                     dist_mode: Optional[str] = None):
     """
     Create comprehensive plots for 2-layer neural observer data.
     """
@@ -625,6 +667,10 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
     elif plot_type == 'debug':
         fig = plt.figure(figsize=(16, 10)) # larger for 2 layer debug
         gs = fig.add_gridspec(2, 3, hspace=0.35, wspace=0.3)
+    elif plot_type == 'acceleration':
+        fig = plt.figure(figsize=(12, 6))
+        gs = fig.add_gridspec(1, 2, wspace=0.3)
+
     # Apply global small font for better visualization
     plt.rcParams.update({'font.size': 7, 'axes.titlesize': 8, 'axes.labelsize': 8, 'legend.fontsize': 6})
     
@@ -741,8 +787,17 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         pos = gs[3, 0:2] if plot_type == 'all' else gs[0, 0]
         ax = fig.add_subplot(pos)
         
-        # Check for general disturbance columns (NN output)
-        if 'd_vx_nn' in data:
+        # Determine disturbance mode
+        use_general = False
+        if dist_mode == 'general':
+            use_general = True
+        elif dist_mode == 'tire':
+            use_general = False
+        else:
+            # Auto-detect
+            use_general = 'd_vx_nn' in data
+
+        if use_general:
             # 3D General Disturbances
             
             # True Disturbances (Solid lines)
@@ -751,42 +806,66 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
             if 'd_vy_true' in data:
                 ax.plot(time, data['d_vy_true'], 'g-', label='$d_{vy}$ (True)', linewidth=1.5, alpha=0.9)
             if 'd_r_true' in data:
-                ax.plot(time, data['d_r_true'], 'm-', label='$d_{r}$ (True)', linewidth=1.5, alpha=0.9)
+                ax.plot(time, data['d_r_true'], 'r-', label='$d_{r}$ (True)', linewidth=1.5, alpha=0.9)
             
             # Neural Estimates (Dashed/Points)
-            ax.plot(time, data.get('d_vx_nn', []), 'b.', label='$d_{vx}$ (NN)', markersize=2)
-            ax.plot(time, data.get('d_vy_nn', []), 'g.', label='$d_{vy}$ (NN)', markersize=2)
-            ax.plot(time, data.get('d_r_nn', []), 'm.', label='$d_{r}$ (NN)', markersize=2)
+            ax.plot(time, data.get('d_vx_nn', []), 'b.', label='$d_{vx}$ (NN)', markersize=3)
+            ax.plot(time, data.get('d_vy_nn', []), 'g.', label='$d_{vy}$ (NN)', markersize=3)
+            ax.plot(time, data.get('d_r_nn', []), 'r.', label='$d_{r}$ (NN)', markersize=3)
             
             # First Layer Estimates (Cyan/Yellow/Thin) - if available
             if 'd_vx_uio' in data:
-                 ax.plot(time, data['d_vx_uio'], 'c--', label='$d_{vx}$ (1st)', linewidth=1, alpha=0.7)
-            if 'd_vy_uio' in data:
-                 ax.plot(time, data['d_vy_uio'], 'y--', label='$d_{vy}$ (1st)', linewidth=1, alpha=0.7)
-            
+                ax.plot(time, data['d_vx_uio'], 'b--', label='$d_{vx}$ (1st)', linewidth=2, alpha=0.75)
+                ax.plot(time, data['d_vy_uio'], 'g--', label='$d_{vy}$ (1st)', linewidth=2, alpha=0.75)
+                ax.plot(time, data['d_r_uio'], 'r--', label='$d_{r}$ (1st)', linewidth=2, alpha=0.75)
+        
             ax.set_ylabel('Disturbance')
+            ax.legend(loc='upper right', fontsize=8)
+
             ax.set_title('General Disturbance Estimates (NN vs True)')
         else:
             # 2D Tire Residuals (Legacy)
             if 'w_r_true' in data and np.any(data['w_r_true']):
-                ax.plot(time, data['w_r_true'], 'r.', label='$w_r$ (True)', markersize=2)
+                ax.plot(time, data['w_r_true'], 'b-', label='$w_r$ (True)', linewidth=1.5)
             if 'w_f_true' in data and np.any(data['w_f_true']):
-                ax.plot(time, data['w_f_true'], 'y.', label='$w_f$ (True)', markersize=2)
+                ax.plot(time, data['w_f_true'], 'g-', label='$w_f$ (True)', linewidth=1.5)
             
             if 'w_r_uio' in data:
-                ax.plot(time, data.get('w_r_uio', []), 'c.', label='$w_r$ (1st)', markersize=1)
-                ax.plot(time, data.get('w_f_uio', []), 'm.', label='$w_f$ (1st)', markersize=1)
+                ax.plot(time, data.get('w_r_uio', []), 'b-', label='$w_r$ (1st)', linewidth=2, alpha=0.75)
+                ax.plot(time, data.get('w_f_uio', []), 'g-', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
                 
-            ax.plot(time, data.get('w_r_nn', []), 'b.', label='$w_r$ (NN)', markersize=1)
-            ax.plot(time, data.get('w_f_nn', []), 'g.', label='$w_f$ (NN)', markersize=1)
-    
-            ax.set_ylabel('Tire Residual [N]')
-            ax.set_title('Tire Force Residuals (NN vs 1st Layer vs True)')
+                ax.plot(time, data.get('w_f_uio', []), 'g-', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
+                
+                ax.plot(time, data.get('w_f_uio', []), 'g-', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
+                
+            ax.plot(time, data.get('w_r_nn', []), 'b.', label='$w_r$ (NN)', markersize=3)
+
+            ax.legend(loc='upper right', fontsize=8)
+
+    # 8. Acceleration (New - for acceleration view or all)
+    if is_active(['acceleration']):
+         pos_ax = gs[0, 0] if plot_type == 'acceleration' else None
+         pos_ay = gs[0, 1] if plot_type == 'acceleration' else None
+         
+         if pos_ax:
+            ax = fig.add_subplot(pos_ax)
+            ax.plot(time, data.get('ax_meas', []), 'r.', label='Measured', markersize=2)
+            ax.set_ylabel('$a_x$ [m/s^2]')
+            ax.set_title('Longitudinal Acceleration')
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.3)
+            axes.append(ax)
             
-        ax.set_xlabel('Time [s]')
-        ax.legend(loc='upper right' , fontsize= 8)
-        ax.grid(True, alpha=0.3)
-        axes.append(ax)
+         if pos_ay:
+            ax = fig.add_subplot(pos_ay)
+            ax.plot(time, data.get('ay_meas', []), 'r.', label='Measured', markersize=2)
+            ax.set_ylabel('$a_y$ [m/s^2]')
+            ax.set_title('Lateral Acceleration')
+            ax.legend(loc='upper right')
+            ax.grid(True, alpha=0.3)
+            axes.append(ax)
+
+
 
     # 8. Control Inputs (Simplified: no twin axis)
     if is_active(['debug']):
@@ -795,7 +874,7 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         ax.plot(time, data.get('steering', []), 'b.', label='Steering [rad]', markersize=2)
         ax.plot(time, data.get('throttle', []), 'r.', label='Throttle', markersize=2)
         ax.set_title('Control Inputs')
-        ax.legend(loc='upper right')
+        ax.legend(loc='upper right', fontsize=8)
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
@@ -881,16 +960,17 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
 def plot_neural_obs_data(data: Dict[str, np.ndarray], 
                           title: str = "Neural Observer Analysis",
                           save_path: Optional[str] = None,
-                          plot_type: PlotType = 'all'):
+                          plot_type: PlotType = 'all',
+                          dist_mode: Optional[str] = None):
     """
     Auto-detect mode and create appropriate plots.
     """
     mode = detect_recording_mode(data)
     
     if mode == '1layer':
-        plot_1layer_data(data, title=title, save_path=save_path, plot_type=plot_type)
+        plot_1layer_data(data, title=title, save_path=save_path, plot_type=plot_type, dist_mode=dist_mode)
     else:
-        plot_2layer_data(data, title=title, save_path=save_path, plot_type=plot_type)
+        plot_2layer_data(data, title=title, save_path=save_path, plot_type=plot_type, dist_mode=dist_mode)
 
 
 def main():
@@ -906,6 +986,8 @@ def main():
                         help='Plot type to show')
     parser.add_argument('--list', '-l', action='store_true',
                         help='List available recordings and exit')
+    parser.add_argument('--dist-mode', choices=['tire', 'general', 'auto'], default='auto',
+                        help='Select disturbance plotting mode (tire=2D residuals, general=3D disturbances)')
     
     args = parser.parse_args()
     
@@ -985,7 +1067,8 @@ def main():
     print(f"Plot type: {plot_type}")
     
     title = f"{'1-Layer' if mode == '1layer' else '2-Layer Neural'} Observer - {Path(filepath).stem}"
-    plot_neural_obs_data(data, title=title, save_path=args.save, plot_type=plot_type)
+    dist_mode = args.dist_mode if args.dist_mode != 'auto' else None
+    plot_neural_obs_data(data, title=title, save_path=args.save, plot_type=plot_type, dist_mode=dist_mode)
 
 
 if __name__ == '__main__':

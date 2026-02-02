@@ -72,8 +72,8 @@ paths:
     nodes: [0, 2, 4, 6, 8, 10, 2, 4, 6, 0]
     description: "Longer path with multiple loops"
   2:
-    name: "Outter 2 Circuit"
-    nodes: [2, 4, 6, 8, 10, 2]
+    name: "Inner2Outter Circuit"
+    nodes: [0 , 2 , 4, 6, 8, 10 ,1]
     description: "Inner circuit without node 0"
 
 # Node Definitions (Reference Information)

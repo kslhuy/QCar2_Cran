@@ -4,7 +4,7 @@ import random
 
 class MockQCarGPS:
     """Mock QCar GPS sensor."""
-    def __init__(self, initial_pose=None):
+    def __init__(self, initial_pose=None, config=None):
         if initial_pose is None:
             initial_pose = [0.0, 0.0, 0.0]
         self.x = initial_pose[0]
@@ -12,10 +12,10 @@ class MockQCarGPS:
         self.theta = initial_pose[2]
         
         # Configuration
-        self.update_rate = 5.0  # Hz
-        self.noise_std_pos = 0.05
-        self.noise_std_theta = 0.02
-        self.apply_noise = True
+        self.update_rate = config.get('update_rate', 5.0)  # Hz
+        self.noise_std_pos = config.get('noise_pos', 0.05)
+        self.noise_std_theta = config.get('noise_theta', 0.02)
+        self.apply_noise = config.get('has_noise', True)
         
         self.last_update_time = time.time()
         self.last_data = np.array([self.x, self.y, self.theta])
@@ -23,7 +23,7 @@ class MockQCarGPS:
 
     def readGPS(self):
         """
-        Simulate GPS read with 5Hz update rate.
+        Simulate GPS read with update rate.
         Returns: [valid, x, y, theta]
         """
         current_time = time.time()

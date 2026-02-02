@@ -1056,18 +1056,19 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
     MEAS_DIM_7D = 7
     
     def __init__(self, sample_time: float = 0.02, 
-                 vehicle_params: Optional[Dict] = None,
-                 observer_gains: Optional[Dict] = None,
-                 include_gyro_bias: bool = False,
-                 use_gain_scheduling: bool = False,
-                 lmi_decay_rate: float = 0.5,
-                 vx_range: Tuple[float, float] = (0.5, 3.0),
-                 delta_max: float = 0.4,
-                 n_vx_vertices: int = 3,
-                 n_delta_vertices: int = 3,
-                 verbose: bool = False,
-                 use_8d_system: bool = False,
-                 **kwargs):
+                vehicle_params: Optional[Dict] = None,
+                observer_gains: Optional[Dict] = None,
+                include_gyro_bias: bool = False,
+                use_gain_scheduling: bool = False,
+                lmi_decay_rate: float = 0.5,
+                vx_range: Tuple[float, float] = (0.5, 3.0),
+                delta_max: float = 0.4,
+                n_vx_vertices: int = 3,
+                n_delta_vertices: int = 3,
+                verbose: bool = False,
+                use_8d_system: bool = False,
+                dynamics_model = None,
+                **kwargs):
         """
         Initialize qLPV Augmented-State Observer
         
@@ -1084,6 +1085,7 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
             n_delta_vertices: Number of steering grid points
             verbose: Print solver/debug output
             use_8d_system: Use 8D state vector (including ax, ay)
+            dynamics_model: Existing QLPVVehicleDynamicsObs instance (optional)
         """
         self.use_8d_system = use_8d_system
         if use_8d_system:
@@ -1144,6 +1146,8 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
             vehicle_params_sched = vehicle_params.copy()
             vehicle_params_sched['use_8d_system'] = use_8d_system
             
+            # Note: Gain scheduler creates its own internal dynamics for gain computation
+            # This is acceptable as it's separate from the runtime dynamics model
             self.gain_scheduler = QLPVGainScheduler(
                 vehicle_params=vehicle_params_sched,
                 vx_range=vx_range,
@@ -1171,11 +1175,14 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
         self.min_vx = self.params.get('vx_min', 0.1)  # Default fallback only for safety
         
         # Centralized vehicle dynamics (single source of truth)
-        self.dynamics = create_qlpv_dynamics(
-            vehicle_params=self.params,
-            min_vx=self.min_vx,
-            use_8d_system=use_8d_system
-        )
+        if dynamics_model is not None:
+             self.dynamics = dynamics_model
+        else:
+             self.dynamics = create_qlpv_dynamics(
+                vehicle_params=self.params,
+                min_vx=self.min_vx,
+                use_8d_system=use_8d_system
+            )
     
     def _default_params(self) -> Dict:
         """Default vehicle parameters - uses centralized defaults"""
@@ -1537,8 +1544,8 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
         
         # 3. Fill from Acceleration argument if missing
         if acceleration is not None:
-             if val_ax is None: val_ax = acceleration[0]
-             if val_ay is None: val_ay = acceleration[1]
+            if val_ax is None: val_ax = acceleration[0]
+            if val_ay is None: val_ay = acceleration[1]
              
         # 4. Fill missing GPS/State vars with current estimate
         if self.use_8d_system:
@@ -1704,9 +1711,9 @@ class qLPVAugmentedObserver(FirstLayerObserverBase):
 
 
 def create_qlpv_observer(sample_time: float = 0.02,
-                         vehicle_params: Optional[Dict] = None,
-                         use_gain_scheduling: bool = False,
-                         **kwargs) -> qLPVAugmentedObserver:
+                        vehicle_params: Optional[Dict] = None,
+                        use_gain_scheduling: bool = False,
+                        **kwargs) -> qLPVAugmentedObserver:
     """
     Factory function to create qLPV augmented-state observer
     

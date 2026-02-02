@@ -198,16 +198,23 @@ class FakeInitializingState(StateBase):
         try:
             parent_fake_vehicle = getattr(self.vehicle_logic, '_parent_fake_vehicle', None)
             
+            # Retrieve disturbance mode from mock vehicle to ensure observer matches simulation
+            disturbance_mode = parent_fake_vehicle.mock_qcar.disturbance_mode
+            
             success = self.vehicle_logic.vehicle_observer.initialize_local_estimator(
                 gps=parent_fake_vehicle.mock_gps,
                 initial_pose=self.init_pose,
-                estimator_params={'use_qcar_ekf': False}  # Use fallback EKF for simulation
+                estimator_params={
+                    'use_qcar_ekf': False, # Use fallback EKF for simulation
+                    'disturbance_mode': disturbance_mode 
+                }  
             )
             
             if success:
                 self.logger.logger.info(
                     f"Local estimator initialized at pose: "
-                    f"x={self.init_pose[0]:.2f}, y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}"
+                    f"x={self.init_pose[0]:.2f}, y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f} "
+                    f"(Mode: {disturbance_mode})"
                 )
             else:
                 self.logger.log_error("Local estimator initialization failed")

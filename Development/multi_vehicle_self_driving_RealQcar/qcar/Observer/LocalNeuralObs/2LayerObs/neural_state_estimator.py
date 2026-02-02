@@ -72,19 +72,8 @@ from firstLayerObserverBase import create_first_layer_observer, FirstLayerObserv
 
 
 from Design_LMI_neural import (
-    # Continuous-time LMI (legacy)
-    compute_hinf_lmi_observer_gain,
-    compute_l2_lmi_observer_gain,
-    compute_lmi_observer_gain,
-    compute_pole_placement_gain,
-    validate_observer_gain,
-    # Discrete-time LMI (new)
+    # Discrete-time LMI 
     discretize_system_zoh,
-    compute_discrete_hinf_lmi_observer_gain,
-    compute_discrete_l2_lmi_observer_gain,
-    compute_discrete_contraction_lmi,
-    compute_discrete_h2_lmi_observer_gain,
-    validate_discrete_observer_gain,
     # Gain scheduler
     NeuralQLPVGainScheduler,
 )
@@ -107,8 +96,6 @@ from qlpv_vehicle_dynamics_obs import (
     IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
     MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
 )
-
-# Note: H∞ and L2 functions now imported above with other LMI utilities
 
 
 class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
@@ -251,6 +238,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # First-layer observer (optional, for two-layer architecture)
         self.use_first_layer = self.config.get('use_first_layer', True)
         self.output_first_layer_only = self.config.get('output_first_layer_only', False)
+        print(f"use_first_layer: {self.use_first_layer}")
+        print(f"output_first_layer_only: {self.output_first_layer_only}")
         
         # Safety check: Cannot output first layer only if first layer is disabled
         if self.output_first_layer_only and not self.use_first_layer:
@@ -338,6 +327,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         # Ground truth provider for simulation (injected by fake_vehicle)
         self.ground_truth_provider = None
+        self.logger.logger.info(f"Observer Neural 2-Layer initialized")
+
 
     def set_ground_truth_provider(self, provider):
         """Set a provider for ground truth state (e.g., MockQCar)"""
@@ -400,24 +391,14 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     
     def _initialize_observer_gains(self):
         """
-        Initialize observer gain matrices using configurable design method.
+        - 'qlpv_scheduled': Polytopic qLPV gain scheduling with LMI
         
-        Supported methods (from config['gain_design_method']):
-            - 'default': Simple diagonal gains based on observer_gain parameter
-            - 'lmi': Standard LMI-based Lyapunov design
-            - 'hinf': H∞ LMI design with bounded disturbance attenuation
-            - 'l2': L2-gain bounded LMI design
-            - 'qlpv_scheduled': Polytopic qLPV gain scheduling with LMI
-        
-        Falls back gracefully if advanced methods fail (LMI -> pole placement -> default)
         """
         method = self.config.get('gain_design_method', 'default')
         self._gain_method = method
         self._gain_scheduler = None
         
         # Get LMI parameters from config
-        hinf_gamma = self.config.get('hinf_gamma', 1.0)
-        l2_gamma = self.config.get('l2_gamma', 2.0)
         lmi_decay_rate = self.config.get('lmi_decay_rate', 0.5)
         use_gain_scheduling = self.config.get('use_gain_scheduling', False)
         
@@ -435,51 +416,22 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             
             # Compute discrete matrices: x[k+1] = A_d x[k] + ...
             # Note: C matrix is static and doesn't change with discretization
-            A_c = self._compute_A_matrix(rho)
-            C = self._compute_C_matrix()
-            E_c = self._compute_E_matrix(rho)
+            A_c = self.dynamics.compute_A_matrix(rho)
+            C = self.dynamics.compute_C_matrix(rho , )
+            E_c = self.dynamics.compute_E_matrix(rho)
             
             # Discretize
             A_d, _, E_d = self._discretize_system(rho, sample_time)
 
-            # Get design parameters
-            contraction_rate = self.config.get('contraction_rate', 0.95)
+            # # Get design parameters
+            # contraction_rate = self.config.get('contraction_rate', 0.95)
             
             # Try qLPV scheduled gains first if requested
             if method == 'qlpv_scheduled' or use_gain_scheduling:
                 if self._try_qlpv_scheduled_gains(lmi_decay_rate):
                     return
             
-            # Try Discrete H∞ LMI design
-            if method == 'hinf':
-                if self._try_discrete_hinf_design(A_d, C, E_d, hinf_gamma, contraction_rate):
-                    return
-            
-            # Try Discrete L2 LMI design
-            if method == 'l2':
-                if self._try_discrete_l2_design(A_d, C, E_d, l2_gamma, contraction_rate):
-                    return
-            
-            # Try standard Discrete LMI design (Contraction)
-            if method == 'lmi':
-                if self._try_discrete_contraction_design(A_d, C, contraction_rate):
-                    return
-            
-            # For pole placement, we still use continuous formulation or discrete mapping
-            # Using continuous pole placement and mapping to discrete is easier for intuitive tuning
-            # but here we'll stick to continuous fallback if LMI fails
-            if SCIPY_AVAILABLE:
-                try:
-                    # Fallback to continuous pole placement (converted to discrete gain approx)
-                    # or just use continuous design on A_c
-                    self.L = compute_pole_placement_gain(A_c, C)
-                    # No discrete check here as it's a rough fallback
-                    if validate_observer_gain(A_c, C, self.L):
-                        self._gain_method = 'pole_placement'
-                        return
-                except Exception:
-                    pass
-        
+
         # Default: simple diagonal gains
         self._set_default_gains()
     
@@ -519,7 +471,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 sample_time=sample_time,
                 contraction_rate=contraction_rate,
                 verbose=False,
-                disturbance_mode=disturbance_mode
+                disturbance_mode=disturbance_mode,
+                dynamics_model=self.dynamics  # Pass shared dynamics model
             )
             
             if self._gain_scheduler.compute_gains_lmi():
@@ -527,75 +480,18 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 nominal_vx = (vx_range[0] + vx_range[1]) / 2
                 self.L = self._gain_scheduler.get_scheduled_gain(nominal_vx, 0.0)
                 self._gain_method = 'qlpv_scheduled_discrete'
+                # self.logger.logger.info("Success qLPV gain scheduling self.L: ", self.L)
                 return True
             else:
                 self._gain_scheduler = None
-                return False
+                raise ValueError("Optimization failed: Could not find feasible LMI solution for qLPV gains.")
         except Exception as e:
             self._gain_scheduler = None
             if self.logger:
                 self.logger.log_error("qLPV gain scheduling failed", e)
-            return False
+            raise ValueError(f"CRITICAL: qLPV gain scheduling failed: {e}. Default gains are forbidden.")
     
-    def _try_discrete_hinf_design(self, A_d: np.ndarray, C: np.ndarray, E_d: np.ndarray,
-                          gamma: float, contraction_rate: float) -> bool:
-        """Try Discrete H∞ LMI design"""
-        if not CVXPY_AVAILABLE:
-            return False
-        
-        try:
-            self.L = compute_discrete_hinf_lmi_observer_gain(
-                A_d, C, E_d, gamma=gamma,
-                contraction_rate=contraction_rate, verbose=False
-            )
-            self._gain_method = 'discrete_hinf'
-            self._hinf_gamma_achieved = gamma
-            return True
-        except Exception as e:
-            # Try with relaxed gamma
-            try:
-                relaxed_gamma = gamma * 2.0
-                self.L = compute_discrete_hinf_lmi_observer_gain(
-                    A_d, C, E_d, gamma=relaxed_gamma,
-                    contraction_rate=contraction_rate, verbose=False
-                )
-                self._gain_method = 'discrete_hinf_relaxed'
-                self._hinf_gamma_achieved = relaxed_gamma
-                return True
-            except Exception:
-                return False
 
-    def _try_discrete_l2_design(self, A_d: np.ndarray, C: np.ndarray, E_d: np.ndarray,
-                        gamma: float, contraction_rate: float) -> bool:
-        """Try Discrete L2 LMI design"""
-        if not CVXPY_AVAILABLE:
-            return False
-        
-        try:
-            self.L = compute_discrete_l2_lmi_observer_gain(
-                A_d, C, E_d, gamma=gamma,
-                contraction_rate=contraction_rate, verbose=False
-            )
-            self._gain_method = 'discrete_l2'
-            return True
-        except Exception:
-            return False
-
-    def _try_discrete_contraction_design(self, A_d: np.ndarray, C: np.ndarray, 
-                                 contraction_rate: float) -> bool:
-        """Try Discrete Contraction LMI design (Pure Stability)"""
-        if not CVXPY_AVAILABLE:
-            return False
-        
-        try:
-            self.L = compute_discrete_contraction_lmi(
-                A_d, C, contraction_rate=contraction_rate, verbose=False
-            )
-            self._gain_method = 'discrete_contraction'
-            return True
-        except Exception:
-            return False
-    
     def _set_default_gains(self):
         """
         Set simple default observer gains.
@@ -632,13 +528,9 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         self.L = L
         self._gain_method = 'default'
     
-    def get_gain_method(self) -> str:
-        """Return the method used to compute observer gains"""
-        return getattr(self, '_gain_method', 'unknown')
+
     
-    def get_observer_gain(self) -> np.ndarray:
-        """Return the current observer gain matrix L"""
-        return self.L.copy()
+
     
     def get_scheduled_gain(self, vx: float, delta: float) -> np.ndarray:
         """
@@ -659,22 +551,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         else:
             return self.L.copy()
     
-    def get_gain_info(self) -> Dict:
-        """Get detailed information about the observer gain design"""
-        info = {
-            'method': self.get_gain_method(),
-            'L_matrix': self.L,
-            'gain_scheduler_active': self._gain_scheduler is not None,
-        }
-        
-        if hasattr(self, '_hinf_gamma_achieved'):
-            info['hinf_gamma'] = self._hinf_gamma_achieved
-        
-        if self._gain_scheduler is not None:
-            info['scheduler_info'] = self._gain_scheduler.get_vertex_info()
-        
-        return info
-    
+
     def _initialize_first_layer_observer(self):
         """Initialize first-layer observer (qLPV or Differentiator-UIO)"""
         try:
@@ -695,6 +572,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 sample_time=self.config['sample_time'],
                 vehicle_params=self.vehicle_params,
                 use_8d_system=self.config.get('use_8d_system', False),
+                dynamics_model=self.dynamics,  # Pass shared dynamics model
                 disturbance_mode=disturbance_mode
             )
             
@@ -731,12 +609,11 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             'A': A,
             'C': C,
             'D': E,  # D in gradient solver corresponds to E (residual injection)
-            'K': self.L
         }
         
         self.gradient_solver = GradientSolver(
-            observer_matrices,
-            self.config['sample_time']
+            self.config['sample_time'],
+            observer_matrices
         )
     
     def _compute_scheduling_params(self, state: np.ndarray, delta: float) -> SchedulingParameters:
@@ -759,49 +636,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             rho = self.dynamics.compute_scheduling_params(dummy_state, 0.0)
         return self.dynamics.compute_E_matrix(rho)
     
-    def _predict_state_blended(self, x: np.ndarray, u: np.ndarray, 
-                                w: np.ndarray, dt: float) -> np.ndarray:
-        """
-        Predict next state using blended kinematic/dynamic model.
-        
-        At low speeds, uses kinematic model to avoid singularities.
-        At high speeds, uses full qLPV dynamic model.
-        
-        Args:
-            x: Current state [vx, vy, psi, r, X, Y]
-            u: Control [δ, a]
-            w: Tire residuals [wr, wf]
-            dt: Time step
-            
-        Returns:
-            Predicted state at next time step
-        """
-        # Blending thresholds
-        blend_vx_low = 0.1
-        blend_vx_high = 0.3
-        VELOCITY_DEAD_ZONE = 0.02  # Below this, snap to zero
-        
-        # RK4 integration with blended dynamics
-        k1 = self.dynamics.f_blended(x, u, w, blend_vx_low, blend_vx_high)
-        k2 = self.dynamics.f_blended(x + 0.5 * dt * k1, u, w, blend_vx_low, blend_vx_high)
-        k3 = self.dynamics.f_blended(x + 0.5 * dt * k2, u, w, blend_vx_low, blend_vx_high)
-        k4 = self.dynamics.f_blended(x + dt * k3, u, w, blend_vx_low, blend_vx_high)
-        
-        x_next = x + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
-        
-        # Clamp very small velocities to zero (dead zone)
-        vx_abs = abs(x_next[self.IDX_VX])
-        if vx_abs < VELOCITY_DEAD_ZONE:
-            x_next[self.IDX_VX] = 0.0
-            x_next[self.IDX_VY] = 0.0
-            x_next[self.IDX_R] = 0.0
-        elif vx_abs < blend_vx_low:
-            # Faster decay of lateral velocity and yaw rate at low speeds
-            decay_rate = 0.85
-            x_next[self.IDX_VY] *= decay_rate
-            x_next[self.IDX_R] *= decay_rate
-        
-        return x_next
+
     
     def _discretize_system(self, rho: SchedulingParameters, dt: float
                            ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -990,11 +825,11 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 # Build measurement for first-layer observer
                 if gps_valid:
                     # Full measurement: [v_x, r, ψ, X, Y, a_y , a_x]
-                    measurement_1L = np.array([vx_meas, r_meas, psi_meas, X_meas, Y_meas, ay_meas])
+                    measurement_1L = np.array([vx_meas, r_meas, psi_meas, X_meas, Y_meas , ay_meas , ax_meas ])
                 else:
-                    # IMU-only measurement: [v_x, r]
+                    # IMU-only measurement: [v_x, r, a_y, a_x]
                     # The 1st layer observer handles partial measurements by using its own predictions
-                    measurement_1L = np.array([vx_meas, r_meas])
+                    measurement_1L = np.array([vx_meas, r_meas, ay_meas , ax_meas ])
                     
                 
                 # Update first-layer observer
@@ -1014,11 +849,10 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 # Use first-layer w estimate for observer dynamics
                 w_hat = w_uio
             
-            if self.output_first_layer_only:
+            if self.output_first_layer_only and self.use_first_layer and self.first_layer_observer is not None:
                 # Bypass mode: directly use first-layer state
-                if self.use_first_layer and self.first_layer_observer is not None:
-                    self.state_nn_6d = self.state_uio.copy()
-                    self.state = self._extract_4d_state()
+                self.state_nn_6d = self.state_uio.copy()
+                self.state = self._extract_4d_state()
             else:
                 # ========== PHASE 4: COMPUTE DISCRETE SYSTEM MATRICES ==========
                 rho = self._compute_scheduling_params(self.state_nn_6d, steering)
@@ -1096,6 +930,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     'X': X_meas,
                     'Y': Y_meas,
                     'ay': ay_meas,
+                    'ax': ax_meas,
                 }
                 # Get last loss from history if available
                 last_loss = self.loss_history[-1] if self.loss_history else 0.0
@@ -1656,6 +1491,25 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         if self.trajectory_ref is not None:
             return self.trajectory_ref.copy(), self.ref_indices.copy()
         return None
+
+    def get_gain_info(self) -> Dict:
+        """Get detailed information about the observer gain design"""
+        info = {
+            'method': getattr(self, '_gain_method', 'unknown'),
+            'L_matrix': self.L,
+            'gain_scheduler_active': self._gain_scheduler is not None,
+        }
+        
+        if hasattr(self, '_hinf_gamma_achieved'):
+            info['hinf_gamma'] = self._hinf_gamma_achieved
+        
+        if self._gain_scheduler is not None:
+            info['scheduler_info'] = self._gain_scheduler.get_vertex_info()
+        
+        return info
+    def get_observer_gain(self) -> np.ndarray:
+        """Return the current observer gain matrix L"""
+        return self.L.copy()
     
     def reset(self, initial_pose: Optional[np.ndarray] = None):
         """Reset estimator state"""

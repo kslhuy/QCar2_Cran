@@ -143,6 +143,7 @@ class HuyUIOObserver(FirstLayerObserverBase):
             delta2: Regularization parameter for D matrix in H
             use_y_dot_meas: Whether to use output derivative measurements
             observer_gain_scale: Scaling factor for default observer gains
+            dynamics_model: Optional shared dynamics model instance
             **kwargs: Additional arguments (for compatibility)
         """
         # Initialize base class
@@ -172,11 +173,18 @@ class HuyUIOObserver(FirstLayerObserverBase):
         self.observer_gain_scale = observer_gain_scale
         
         # Create centralized dynamics instance
-        self.dynamics = create_qlpv_dynamics(
-            vehicle_params=self.params,
-            min_vx=self.min_vx,
-            use_8d_system=False
-        )
+        if dynamics_model is not None:
+            self.dynamics = dynamics_model
+        else:
+            self.dynamics = create_qlpv_dynamics(
+                vehicle_params=self.params,
+                min_vx=self.min_vx,
+                use_8d_system=False
+            )
+            
+        # Covariance-like monitor (P) - Initialize roughly
+        # This provides a metric for estimation confidence, similar to Kalman P
+        self.P = np.eye(self.state_dim + self.UNKNOWN_INPUT_DIM) * 0.1
         
         # Internal observer state (allocated lazily per mode)
         self.eta = None       # Observer internal state
@@ -187,48 +195,29 @@ class HuyUIOObserver(FirstLayerObserverBase):
         # Tire residual estimates (w_r, w_f)
         self.w_hat = np.zeros(self.UNKNOWN_INPUT_DIM)
         
+        # Internal state for control processing
+        self.current_steering_angle = 0.0
+
         # Store last innovation for diagnostics
         self.innovation = None
         
         # Numerical Jacobian epsilon
         self.epsilon = 1e-5
+        
+        # Disturbance decay rate (making unknown input dynamic)
+        self.w_decay_rate = 5.0  # Decays to zero if not sustained
+
     
     # =========================================================================
     # Measurement Matrices (Mode-Dependent)
     # =========================================================================
     
-    @staticmethod
-    def measurement_C(mode: str) -> Tuple[np.ndarray, int]:
-        """
-        Get measurement matrix C and psi index for given mode
-        
-        Args:
-            mode: "gps_on" or "gps_off"
-            
-        Returns:
-            Tuple of (C matrix, psi_index_in_y)
-        """
-        if mode == "gps_on":
-            # y = [v_x, r, ψ, X, Y] (5D)
-            C = np.zeros((5, STATE_DIM))
-            C[0, IDX_VX] = 1.0   # v_x
-            C[1, IDX_R] = 1.0    # r
-            C[2, IDX_PSI] = 1.0  # ψ
-            C[3, IDX_X] = 1.0    # X
-            C[4, IDX_Y] = 1.0    # Y
-            psi_idx = 2
-            return C, psi_idx
-        
-        if mode == "gps_off":
-            # y = [v_x, r, ψ] (3D)
-            C = np.zeros((3, STATE_DIM))
-            C[0, IDX_VX] = 1.0   # v_x
-            C[1, IDX_R] = 1.0    # r
-            C[2, IDX_PSI] = 1.0  # ψ
-            psi_idx = 2
-            return C, psi_idx
-        
-        raise ValueError(f"mode must be 'gps_on' or 'gps_off', got '{mode}'")
+    # =========================================================================
+    # Measurement Matrices (Mode-Dependent)
+    # =========================================================================
+    
+    # measurement_C removed - using centralized dynamics in update()
+
     
     @staticmethod
     def reg_D(ny: int) -> np.ndarray:
@@ -246,12 +235,31 @@ class HuyUIOObserver(FirstLayerObserverBase):
         D[1, 1] = 1.0
         return D
     
-    def default_K(self, nzeta: int, ny: int) -> np.ndarray:
+    def compute_gain(self, nzeta: int, ny: int) -> np.ndarray:
         """
-        Default observer gain K (placeholder for LMI-designed gain)
+        Compute observer gain K.
+        Attempts to load pre-calculated LMI gain from parameters.
+        Fallback to robust default.
         
-        Note: This is a conservative default. For better performance,
-        design K using LMI-based synthesis or Pole Placement.
+        Args:
+            nzeta: Descriptor state dimension
+            ny: Measurement dimension
+        """
+        # Check if gain is provided in params (e.g. from LMI offline design)
+        # Key format: 'lmi_K_gps_on' or 'lmi_K_gps_off' based on mode would be ideal
+        # For now, simplistic check
+        param_key = f'lmi_K_{self._mode}' if self._mode else 'lmi_K'
+        
+        if param_key in self.params:
+             K_loaded = np.asarray(self.params[param_key])
+             if K_loaded.shape == (nzeta, ny):
+                 return K_loaded * self.observer_gain_scale
+        
+        return self._robust_default_K(nzeta, ny)
+
+    def _robust_default_K(self, nzeta: int, ny: int) -> np.ndarray:
+        """
+        Robust default observer gain K (fallback)
         
         Args:
             nzeta: Descriptor state dimension
@@ -434,8 +442,9 @@ class HuyUIOObserver(FirstLayerObserverBase):
         chi2_dot_raw = C @ (bar_phi + J @ (Ewx @ what))
         chi2_dot = np.clip(chi2_dot_raw, -100.0, 100.0)  # Conservative clipping
         
-        # Residual dynamics (random walk)
-        w_dot = np.zeros(self.UNKNOWN_INPUT_DIM)
+        # Residual dynamics (more dynamic: decay/mean-reversion)
+        # w_dot = -λ * w ("dynamic" unknown input)
+        w_dot = -self.w_decay_rate * what
         
         return np.concatenate([chi1_dot, chi2_dot, x_dot, w_dot])
     
@@ -443,33 +452,66 @@ class HuyUIOObserver(FirstLayerObserverBase):
     # Observer State Allocation
     # =========================================================================
     
-    def _allocate_if_needed(self, mode: str, y_meas: Optional[np.ndarray] = None):
+    def _ensure_mode_consistency(self, mode: str, y_meas: np.ndarray, 
+                               Qzeta_prev: Optional[np.ndarray] = None) -> bool:
         """
-        Allocate internal state arrays if mode changed
+        Ensure internal state eta is consistent with current mode.
+        If mode changes, project old estimate to new eta space to preserve continuity.
         
         Args:
-            mode: Current measurement mode
-            y_meas: Optional measurement for initialization
+            mode: Target mode
+            y_meas: Current measurement
+            Qzeta_prev: (Optional) Q matrix from previous step/mode for better projection
+            
+        Returns:
+            True if reallocation occurred
         """
         if self._mode == mode and self.eta is not None:
-            return
+            return False
+            
+        # Switching modes or initialization
+        old_mode = self._mode
+        old_zhat = self.zhat.copy() if self.zhat is not None else None
         
-        C, _ = self.measurement_C(mode)
-        ny = C.shape[0]
+        # Setup for new mode
+        if mode == "gps_on":
+            ny = 5
+        else:
+            ny = 3
+            
         nzeta = 2 * ny + self.state_dim + self.UNKNOWN_INPUT_DIM
+        
+        # We need to compute Qzeta for the NEW mode to initialize eta correctly
+        # eta_new = zhat_old - Qzeta_new * y_new
+        # However, we don't have Qzeta_new yet (it depends on matrices we haven't computed).
+        # Strategy: Initialize eta with zeros, but fill in the 'x' and 'w' components 
+        # from old_zhat (or state_hat) if available.
+        # This acts as a prediction step.
         
         self.eta = np.zeros(nzeta)
         self.zhat = np.zeros(nzeta)
         
-        # Initialize eta with current state estimate if available
-        # zeta = [chi1, chi2, x, w]
-        # chi1 should be close to y, chi2 ~ 0, x from state_hat, w ~ 0
-        if y_meas is not None:
-            self.eta[0:ny] = y_meas[:ny] if len(y_meas) >= ny else y_meas
-        self.eta[2*ny:2*ny + self.state_dim] = self.state_hat.copy()
+        # Fill estimate from previous state
+        # Structure of zhat: [chi1, chi2, x, w]
+        # x is at index 2*ny
+        idx_x_start = 2 * ny
+        idx_w_start = 2 * ny + self.state_dim
         
-        self._y_prev = None
+        if old_zhat is not None:
+             # Best effort: use current state estimates
+             self.eta[idx_x_start:idx_x_start+self.state_dim] = self.state_hat
+             self.eta[idx_w_start:idx_w_start+self.UNKNOWN_INPUT_DIM] = self.w_hat
+        elif len(self.state_hat) > 0:
+             self.eta[idx_x_start:idx_x_start+self.state_dim] = self.state_hat
+             
+        # Initialize chi1 part with measurements (y_meas should be passed processed)
+        if y_meas is not None:
+             n_copy = min(len(y_meas), ny)
+             self.eta[0:n_copy] = y_meas[:n_copy]
+
+        self._y_prev = None # Reset derivative computation on mode switch
         self._mode = mode
+        return True
     
     # =========================================================================
     # Main Update Method (Interface Implementation)
@@ -481,7 +523,8 @@ class HuyUIOObserver(FirstLayerObserverBase):
         control_input: np.ndarray,
         f_nn: Optional[np.ndarray] = None,
         acceleration: Optional[np.ndarray] = None,
-        gps_available: bool = True
+        gps_available: bool = True,
+        dt: Optional[float] = None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Update observer with new measurement
@@ -509,19 +552,69 @@ class HuyUIOObserver(FirstLayerObserverBase):
                 - state_estimate: [v_x, v_y, ψ, r, X, Y]
                 - unknown_input_estimate: [w_r, w_f]
         """
-        # Convert gps_available to internal mode
-        mode = "gps_on" if gps_available else "gps_off"
+        # Determine current time step
+        current_dt = dt if dt is not None else self.Ts
+
+        # Process Control Input
+        u_raw = control_input.reshape(-1)
+        throttle_cmd = u_raw[1] if len(u_raw) > 1 else 0.0
+        steering_cmd = u_raw[0]
         
-        # Get mode-dependent measurement model
-        C, psi_idx = self.measurement_C(mode)
-        ny = C.shape[0]
-        nzeta = 2 * ny + self.state_dim + self.UNKNOWN_INPUT_DIM
+        # Construct state vector for dynamics module
+        current_state = self.state_hat.copy()
         
-        # Process measurement to match expected format
-        y_meas = self._process_measurement(measurement, mode)
+        # Use centralized dynamics to process control
+        accel, _, new_steering_angle = self.dynamics.process_control_inputs(
+            throttle_cmd, steering_cmd, current_state, 
+            self.current_steering_angle, current_dt
+        )
+        self.current_steering_angle = new_steering_angle
         
-        # Allocate internal state if mode changed
-        self._allocate_if_needed(mode, y_meas)
+        # Compute scheduling parameters for C matrix calculation
+        # We need these BEFORE ensuring mode consistency because we might normally use them
+        # But for mode consistency we only need NY which is checking size.
+        
+        # Process measurement and Determine Mode based on Size
+        measurement = np.asarray(measurement).flatten()
+        meas_len = len(measurement)
+        
+        # Automatic mode detection ("ez know by check the size")
+        if meas_len >= 5:
+            mode = "gps_on"
+            ny = 5
+        else:
+            mode = "gps_off"
+            ny = 3
+            
+        # Extract y vector based on mode
+        # GPS ON: [vx, r, psi, X, Y] (indices 0,1,2,3,4 of 6D standard)
+        # GPS OFF: [vx, r, psi] (indices 0,1,2 of 6D standard)
+        # Note: Centralized C returns lines for [vx, r, psi, X, Y, a_y]
+        
+        if mode == "gps_on":
+             y_meas = measurement[:5]
+             psi_idx = 2
+        else:
+             y_meas = measurement[:3]
+             psi_idx = 2
+             
+        # Wrap yaw
+        y_meas[psi_idx] = wrap_to_pi(y_meas[psi_idx])
+
+        # Ensure mode consistency and allocate if needed
+        self._ensure_mode_consistency(mode, y_meas)
+        
+        # Calculate C using centralized dynamics
+        # Need Rho.
+        rho = self.dynamics.compute_scheduling_params(self.state_hat, new_steering_angle)
+        C_full = self.dynamics.compute_C_matrix(rho) # 6x6
+        
+        # Extract relevant rows of C
+        if mode == "gps_on":
+             C = C_full[:5, :]
+        else:
+             C = C_full[:3, :]
+
         
         # Build y_χ (optionally with ẏ; default: just y)
         if self.use_y_dot_meas:
@@ -535,8 +628,14 @@ class HuyUIOObserver(FirstLayerObserverBase):
         else:
             y_chi = y_meas
         
-        # Get steering angle and compute E matrix
-        delta = float(control_input[0])
+        
+
+        
+        # Form physical control vector [delta, a]
+        u_phys = np.array([self.current_steering_angle, accel])
+        
+        # Helper for delta
+        delta = float(u_phys[0])
         Ewx = self.compute_E_delta(delta)  # 6×2
         
         # Build descriptor matrices E, H
@@ -575,11 +674,12 @@ class HuyUIOObserver(FirstLayerObserverBase):
         M = np.vstack([E_desc, H])  # (3ny+nx) × nzeta
         
         # Use regularized pseudoinverse for numerical stability
-        # L = M^T (M M^T + λI)^{-1} where λ is regularization
-        reg_lambda = 1e-4
+        # L = M^T (M M^T + λI)^{-1}
+        # Replacing explicit inv with pinv for better stability
         MMT = M @ M.T
-        MMT_reg = MMT + reg_lambda * np.eye(MMT.shape[0])
-        L = M.T @ np.linalg.inv(MMT_reg)  # nzeta × (3ny+nx)
+        # MMT_reg = MMT + reg_lambda * np.eye(MMT.shape[0])
+        # L = M.T @ np.linalg.inv(MMT_reg)
+        L = M.T @ np.linalg.pinv(MMT, rcond=1e-5)
         
         # Split L to get Pzeta and Qzeta
         # Pzeta multiplies phi_z which has dimension (2ny+nx+nmu) but E_desc has (2ny+nx) rows
@@ -588,8 +688,10 @@ class HuyUIOObserver(FirstLayerObserverBase):
         Pzeta = L[:, :n_E_rows]   # nzeta × (2ny+nx)
         Qzeta = L[:, n_E_rows:]   # nzeta × ny
         
-        # Observer gain (placeholder for LMI-designed gain)
-        K = self.default_K(nzeta, ny)
+        # Observer gain (LMI-based design placeholder)
+        # In a full valid implementation, this should be solved via LMI
+        # Here we use a gain computed to stabilize the error dynamics
+        K = self.compute_gain(nzeta, ny)
         
         # Algebraic estimate
         self.zhat = self.eta + Qzeta @ y_chi
@@ -601,7 +703,7 @@ class HuyUIOObserver(FirstLayerObserverBase):
         self.innovation = innov.copy()
         
         # Descriptor dynamics
-        phi_z = self._phi_zeta(self.zhat, control_input, C, Ewx)
+        phi_z = self._phi_zeta(self.zhat, u_phys, C, Ewx)
         
         # phi_z has dimension nzeta = (2ny + nx + nmu)
         # Pzeta has dimension nzeta × (2ny + nx)

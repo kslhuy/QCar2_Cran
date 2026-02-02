@@ -129,7 +129,9 @@ AVAILABLE_OBSERVER_TYPES = [
 ]
 
 
-def create_first_layer_observer(observer_type: str = 'qlpv', **kwargs) -> FirstLayerObserverBase:
+def create_first_layer_observer(observer_type: str = 'qlpv', 
+                              dynamics_model = None,
+                              **kwargs) -> FirstLayerObserverBase:
     """
     Factory function to create first-layer observer instances
     
@@ -140,6 +142,7 @@ def create_first_layer_observer(observer_type: str = 'qlpv', **kwargs) -> FirstL
             - 'differentiator_uio': Differentiator + UIO-style observer with LMI gains
             - 'differentiator_uio_ekf': Differentiator + UIO observer with EKF gains
             - 'z_layer1': Z-style Sample-and-Hold Observer
+        dynamics_model: Optional QLPVVehicleDynamicsObs instance to share
         **kwargs: Additional arguments for observer initialization
             - sample_time: Sample time [s] (default 0.02)
             - vehicle_params: Vehicle parameters dict
@@ -155,6 +158,10 @@ def create_first_layer_observer(observer_type: str = 'qlpv', **kwargs) -> FirstL
         >>> # Or use EKF-based observer
         >>> observer = create_first_layer_observer('qlpv_kalman', sample_time=0.02)
     """
+    # Add dynamics_model to kwargs if provided
+    if dynamics_model is not None:
+        kwargs['dynamics_model'] = dynamics_model
+
     if observer_type == 'qlpv':
         # Import here to avoid circular imports
         from qlpv_observer import qLPVAugmentedObserver
@@ -175,6 +182,10 @@ def create_first_layer_observer(observer_type: str = 'qlpv', **kwargs) -> FirstL
         # Import here to avoid circular imports
         from z_layer1_observer import ZLayer1Observer
         return ZLayer1Observer(**kwargs)
+    elif observer_type == 'huy_uio':
+        # Import here to avoid circular imports
+        from huy_uio_observer import HuyUIOObserver
+        return HuyUIOObserver(**kwargs)
     else:
         raise ValueError(f"Unknown observer type: {observer_type}. "
                         f"Available: {AVAILABLE_OBSERVER_TYPES}")

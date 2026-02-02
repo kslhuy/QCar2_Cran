@@ -15,7 +15,7 @@ EKF Observer Equations:
     Predict:
         x̂_a⁻ = f(x̂_a, u)
         P⁻ = F·P·Fᵀ + Q
-    
+
     Update:
         K = P⁻·Hᵀ·(H·P⁻·Hᵀ + R)⁻¹
         x̂_a = x̂_a⁻ + K·(y - h(x̂_a⁻, u))
@@ -65,15 +65,16 @@ except ImportError:
 sys.path.insert(0, str(parent_dir.parent))
 from qlpv_vehicle_dynamics_obs import (
     SchedulingParameters,
-    QLPVVehicleDynamicsObs,
     get_default_vehicle_params,
-    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM, AUGMENTED_DIM, IDX_WR, IDX_WF,
+    create_qlpv_dynamics,
+    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
     MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
     IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D,
-    MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D,
-    AUGMENTED_DIM_10D, IDX8_WR, IDX8_WF,
-    create_qlpv_dynamics,
+    MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS_IDX_AX, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D,
 )
+
+# Optional differentiator for r_dot pseudo-measurement
+from differentiators import create_differentiator_from_config
 
 
 # Note: SchedulingParameters is imported from qlpv_vehicle_dynamics_obs
@@ -82,11 +83,11 @@ from qlpv_vehicle_dynamics_obs import (
 class qLPVKalmanObserver(FirstLayerObserverBase):
     """
     qLPV Augmented-State Observer with EKF-style Kalman Gain Computation
-    
+
     Estimates both vehicle states and unknown tire force residuals using
     an augmented-state qLPV observer structure with dynamically computed
     Kalman gains based on error covariance propagation.
-    
+
     State vector: x = [v_x, v_y, ψ, r, X, Y]ᵀ
         - v_x: Longitudinal velocity (body frame)
         - v_y: Lateral velocity (body frame)
@@ -94,69 +95,28 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         - r: Yaw rate
         - X: Global X position
         - Y: Global Y position
-    
+
     Tire residuals: w = [w_r, w_f]ᵀ
         - w_r: Rear tire force residual = F_yr - C_r·α_r
         - w_f: Front tire force residual = F_yf - C_f·α_f
-    
+
     Augmented state: x_a = [x; w]ᵀ (8-dimensional)
-    
+
     Measurements: y = [v_x, r, ψ, X, Y, a_y]ᵀ
         - a_y: Lateral acceleration (gives algebraic handle on w)
-    
+
     Key Feature: Kalman gain K is computed at each time step using the
     EKF predict-update cycle, providing optimal state estimation.
     """
-    
-    # State indices (6D state)
-    IDX_VX = 0
-    IDX_VY = 1
-    IDX_PSI = 2
-    IDX_R = 3
-    IDX_X = 4
-    IDX_Y = 5
-    STATE_DIM = 6
-    
-    # Augmented state includes tire residuals
-    IDX_WR = 6  # Rear tire residual
-    IDX_WF = 7  # Front tire residual
-    AUGMENTED_DIM = 8
-    
-    # Measurement indices (6D measurement)
-    MEAS_IDX_VX = 0
-    MEAS_IDX_R = 1
-    MEAS_IDX_PSI = 2
-    MEAS_IDX_X = 3
-    MEAS_IDX_Y = 4
-    MEAS_IDX_AY = 5
-    MEAS_DIM = 6
 
-    # 8D State indices
-    IDX8_VX = 0
-    IDX8_VY = 1
-    IDX8_PSI = 2
-    IDX8_R = 3
-    IDX8_X = 4
-    IDX8_Y = 5
-    IDX8_AX = 6
-    IDX8_AY = 7
-    STATE_DIM_8D = 8
-    
-    # 8D Augmented state
-    IDX8_WR = 8
-    IDX8_WF = 9
-    AUGMENTED_DIM_10D = 10
-    
-    # 7D Measurement indices
-    MEAS8_IDX_VX = 0
-    MEAS8_IDX_R = 1
-    MEAS8_IDX_PSI = 2
-    MEAS8_IDX_X = 3
-    MEAS8_IDX_Y = 4
-    MEAS8_IDX_AY = 5
-    MEAS8_IDX_AX = 6
-    MEAS_DIM_7D = 7
-    
+    # State indices (using imported constants for consistency)
+    # The class will rely on the imported constants where possible, 
+    # ensuring consistency with qlpv_vehicle_dynamics_obs.py
+
+    # We keep local references for convenience if needed, 
+    # but primarily we should use the imported ones.
+
+
     def __init__(self, sample_time: float = 0.02, 
                  vehicle_params: Optional[Dict] = None,
                  Q: Optional[np.ndarray] = None,
@@ -164,10 +124,11 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
                  P0: Optional[np.ndarray] = None,
                  include_gyro_bias: bool = False,
                  use_8d_system: bool = False,
+                 dynamics_model = None,
                  **kwargs):
         """
         Initialize qLPV Augmented-State Observer with EKF-style Gain Computation
-        
+
         Args:
             sample_time: Sample time Ts [s]
             vehicle_params: Vehicle parameters dict
@@ -176,19 +137,20 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             P0: Initial error covariance
             include_gyro_bias: Whether to include gyro bias state
             use_8d_system: Use 8D state system
+            dynamics_model: Existing QLPVVehicleDynamicsObs instance (optional)
         """
         self.use_8d_system = use_8d_system
         self.disturbance_mode = kwargs.get('disturbance_mode', 'tire')
         self.udim = 3 if self.disturbance_mode == 'general' else 2
-        
+
         if use_8d_system:
-             self.state_dim = self.STATE_DIM_8D
-             self.augmented_dim = self.STATE_DIM_8D + self.udim
-             self.meas_dim = self.MEAS_DIM_7D
+             self.state_dim = STATE_DIM_8D
+             self.augmented_dim = STATE_DIM_8D + self.udim
+             self.meas_dim = MEAS_DIM_7D
         else:
-             self.state_dim = self.STATE_DIM
-             self.augmented_dim = self.STATE_DIM + self.udim
-             self.meas_dim = self.MEAS_DIM
+             self.state_dim = STATE_DIM
+             self.augmented_dim = STATE_DIM + self.udim
+             self.meas_dim = MEAS_DIM
 
         # Initialize base class
         super().__init__(
@@ -196,12 +158,12 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             unknown_input_dim=self.udim,
             sample_time=sample_time
         )
-        
+
         # Vehicle parameters
         self.params = self._default_params()
         if vehicle_params is not None:
             self.params.update(vehicle_params)
-        
+
         # Extract commonly used parameters
         self.lf = self.params['lf']
         self.lr = self.params['lr']
@@ -211,72 +173,141 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         self.Cr = self.params['Cr']
         self.mu = self.params.get('mu', 0.01) # Default small friction
         self.g = 9.81  # Gravity
-        
+
         # Augmented state
         self.state_augmented = np.zeros(self.augmented_dim)
-        
+
         # Initialize state estimate
         self.state_hat = np.zeros(self.state_dim)
-        
+
         # Tire residual estimates
         self.w_hat = np.zeros(self.udim)  # [w_r, w_f] or [d_vx, d_vy, d_r]
-        
+
         # =====================================================
         # EKF Covariance Matrices (Q, R, P)
         # =====================================================
-        
+
+        # Process noise covariance Q
         # Process noise covariance Q
         if Q is not None:
-            self.Q = Q
+            self.Q_base = Q
         else:
-            self.Q = self._default_Q() * sample_time
-        
+            self.Q_base = self._default_Q() # Base Q per second (continuous approximation)
+
         # Measurement noise covariance R
         if R is not None:
             self.R = R
         else:
             self.R = self._default_R()
-        
+
         # Error covariance matrix P
         if P0 is not None:
             self.P = P0.copy()
         else:
             self.P = self._default_P0()
-        
+
         # Kalman gain K - computed dynamically
         self.K = np.zeros((self.augmented_dim, self.meas_dim))
-        
+
         # Store last innovation for diagnostics
         self.innovation = np.zeros(self.meas_dim)
-        
+
         # Gyro bias estimation (optional)
         self.include_gyro_bias = include_gyro_bias
         self.gyro_bias = 0.0
-        
+
         # UIO residual for a_y constraint
         self.ay_innovation = 0.0
         self.w_constraint = 0.0  # m·ã_y ≈ w_r + cos(δ)·w_f
-        
+
         # Minimum velocity threshold (from parameters_qcar.yaml)
         # Lower value allows estimation closer to zero when vehicle stops
         self.min_vx = self.params['vx_min']
-        
+
         # Centralized vehicle dynamics
-        self.dynamics = create_qlpv_dynamics(
-            vehicle_params=self.params,
-            min_vx=self.min_vx,
-            use_8d_system=use_8d_system,
-            disturbance_mode=self.disturbance_mode
-        )
-        
+        if dynamics_model is not None:
+            self.dynamics = dynamics_model
+        else:
+            self.dynamics = create_qlpv_dynamics(
+                vehicle_params=self.params,
+                min_vx=self.min_vx,
+                use_8d_system=use_8d_system,
+                disturbance_mode=self.disturbance_mode
+            )
+
         # Numerical Jacobian step size
         self.epsilon = 1e-6
-        
+
         # Internal state for control processing
         self.current_steering_angle = 0.0
-        
 
-    
+        # =====================================================
+        # Optional r_dot differentiator (pseudo-measurement)
+        # =====================================================
+        self.use_rdot_differentiator = kwargs.get('use_rdot_differentiator', False)
+        self.rdot_diff_type = kwargs.get('rdot_diff_type', 'highgain')
+        self.rdot_diff_config_path = kwargs.get('rdot_diff_config_path', None)
+        self.rdot_diff_overrides = kwargs.get('rdot_diff_overrides', {})
+        # Allow direct overrides via kwargs (rdot_diff_omega, rdot_diff_zeta, etc.)
+        rdot_override = dict(self.rdot_diff_overrides) if isinstance(self.rdot_diff_overrides, dict) else {}
+        for key in ('omega', 'zeta', 'ydot_max', 'tau', 'k1', 'k2', 'epsilon', 'smoothing', 'v_max'):
+            kw_key = f'rdot_diff_{key}'
+            if kw_key in kwargs:
+                rdot_override[key] = kwargs[kw_key]
+        self.rdot_diff_overrides = rdot_override
+        self.rdot_meas_var = kwargs.get('rdot_meas_var', 0.25)  # (rad/s^2)^2
+        self.rdot_diff = None
+        self.rdot_meas = 0.0
+        if self.use_rdot_differentiator:
+            self.rdot_diff = create_differentiator_from_config(
+                diff_type=self.rdot_diff_type,
+                Ts=self.Ts,
+                config_path=self.rdot_diff_config_path,
+                **self.rdot_diff_overrides
+            )
+
+        # =====================================================
+        # Excitation gating + decay for general disturbances (LEGACY)
+        # =====================================================
+        self.enable_excitation_gating = kwargs.get('enable_excitation_gating', False)
+        self.ay_excitation_threshold = kwargs.get('ay_excitation_threshold', 0.1)
+        self.rdot_excitation_threshold = kwargs.get('rdot_excitation_threshold', 0.1)
+        self.r_excitation_threshold = kwargs.get('r_excitation_threshold', 0.05)
+
+        self.enable_disturbance_decay = kwargs.get('enable_disturbance_decay', False)
+        self.decay_only_when_unexcited = kwargs.get('decay_only_when_unexcited', True)
+        self.decay_rate_dvx = kwargs.get('decay_rate_dvx', 0.5)
+        self.decay_rate_dvy = kwargs.get('decay_rate_dvy', 0.5)
+        self.decay_rate_dr = kwargs.get('decay_rate_dr', 0.5)
+
+        # =====================================================
+        # NEW: Observability-based gating (v_x, delta, yaw wrap)
+        # =====================================================
+        self.enable_observability_gating = kwargs.get('enable_observability_gating', True)
+        
+        # Velocity threshold: below this, lateral dynamics poorly observable
+        self.vx_min_observable = kwargs.get('vx_min_observable', 0.3)  # m/s
+        
+        # Steering threshold: below this + low r, front/rear split unobservable
+        self.delta_min_observable = kwargs.get('delta_min_observable', 0.02)  # rad (~1.1 deg)
+        self.r_min_observable = kwargs.get('r_min_observable', 0.05)  # rad/s
+        
+        # Yaw wrap detection
+        self.yaw_wrap_window = kwargs.get('yaw_wrap_window', 5)  # samples to gate after wrap
+        self.yaw_wrap_threshold = kwargs.get('yaw_wrap_threshold', 2.5)  # rad jump to detect wrap
+        self.yaw_wrap_counter = 0
+        self.prev_psi_meas = 0.0
+        
+        # Per-component observability flags: [g_dvx, g_dvy, g_dr] or [g_wr, g_wf]
+        self.observability_flags = np.ones(self.udim)
+        
+        # Decay rates when unobservable (faster decay when gated)
+        self.gated_decay_rate_dvx = kwargs.get('gated_decay_rate_dvx', 2.0)
+        self.gated_decay_rate_dvy = kwargs.get('gated_decay_rate_dvy', 3.0)
+        self.gated_decay_rate_dr = kwargs.get('gated_decay_rate_dr', 5.0)
+
+
+
     def _safe_inverse(self, S: np.ndarray) -> np.ndarray:
         """Compute safe inverse of S"""
         try:
@@ -285,175 +316,289 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             # Add small regularization
             S_reg = S + np.eye(S.shape[0]) * 1e-6
             return np.linalg.inv(S_reg)
+
+    def _apply_decay(self, value: float, rate: float, dt: float) -> float:
+        """Exponential decay helper for disturbance states."""
+        # print("Debug: apply_decay called with value =", value, "rate =", rate, "dt =", dt)
+        if rate is None or rate <= 0.0:
+            return value
+        return value * np.exp(-rate * dt)
+
+    def _compute_observability_flags(self, vx: float, delta: float, r: float,
+                                      psi_meas: float) -> np.ndarray:
+        """
+        Compute per-component observability flags based on driving conditions.
+        
+        Observability analysis:
+        - d_vx: Generally observable from encoder (always g=1)
+        - d_vy: Requires lateral motion → needs sufficient v_x for slip angles
+        - d_r: Requires yaw dynamics → needs steering or rotation
+        
+        For tire mode [w_r, w_f]:
+        - Both require slip angles → need v_x > v_min
+        - Front/rear separation requires steering or rotation
+        
+        Args:
+            vx: Longitudinal velocity [m/s]
+            delta: Steering angle [rad]
+            r: Yaw rate [rad/s]
+            psi_meas: Measured heading [rad] (for wrap detection)
             
+        Returns:
+            Observability flags array (1=observable, 0=unobservable)
+        """
+        flags = np.ones(self.udim)
+        
+        # --- Yaw wrap detection ---
+        # Detect large jump in heading measurement (wrap from +π to -π or vice versa)
+        psi_jump = abs(psi_meas - self.prev_psi_meas)
+        if psi_jump > self.yaw_wrap_threshold:
+            self.yaw_wrap_counter = self.yaw_wrap_window
+        
+        yaw_wrapping = self.yaw_wrap_counter > 0
+        
+        # --- Low speed condition ---
+        low_speed = abs(vx) < self.vx_min_observable
+        
+        # --- Straight driving condition ---
+        # When steering and yaw rate are both small, front/rear separation is weak
+        straight_driving = (abs(delta) < self.delta_min_observable and 
+                           abs(r) < self.r_min_observable)
+        
+        if self.disturbance_mode == 'general':
+            # [d_vx, d_vy, d_r]
+            # d_vx (index 0): Always observable from encoder
+            flags[0] = 1.0
+            
+            # d_vy (index 1): Needs lateral dynamics → requires v_x for slip angles
+            if low_speed:
+                flags[1] = 0.0
+            
+            # d_r (index 2): Needs yaw dynamics
+            # - At low speed: yaw dynamics decouple from lateral
+            # - During straight driving: weak excitation
+            # - During yaw wrap: temporarily gate
+            if low_speed or straight_driving or yaw_wrapping:
+                flags[2] = 0.0
+                
+        else:
+            # Tire mode: [w_r, w_f]
+            # Both need slip angles which require forward motion
+            if low_speed:
+                flags[0] = 0.0  # w_r
+                flags[1] = 0.0  # w_f
+            
+            # Front/rear separation needs steering
+            if straight_driving:
+                # Can still estimate sum, but not individual components
+                # Reduce confidence in front tire (more sensitive to steering)
+                flags[1] = 0.5  # Partial observability for w_f
+        
+        return flags
+
+    def _apply_observability_gating(self, w_new: np.ndarray, w_prev: np.ndarray,
+                                     flags: np.ndarray, dt: float) -> np.ndarray:
+        """
+        Apply observability gating to disturbance estimates.
+        
+        When a component is unobservable (flag=0), decay it toward zero
+        instead of letting it drift from process noise.
+        
+        Args:
+            w_new: Updated disturbance estimate from EKF
+            w_prev: Previous disturbance estimate
+            flags: Observability flags [0, 1] per component
+            dt: Time step
+            
+        Returns:
+            Gated disturbance estimate
+        """
+        w_gated = w_new.copy()
+        
+        if self.disturbance_mode == 'general' and self.udim >= 3:
+            decay_rates = [self.gated_decay_rate_dvx, 
+                          self.gated_decay_rate_dvy, 
+                          self.gated_decay_rate_dr]
+        else:
+            # Tire mode
+            decay_rates = [self.gated_decay_rate_dvy, self.gated_decay_rate_dvy]
+        
+        for i in range(min(len(flags), len(w_gated))):
+            if flags[i] < 1.0:
+                if flags[i] == 0.0:
+                    # Fully unobservable: decay toward zero
+                    w_gated[i] = self._apply_decay(w_prev[i], decay_rates[i], dt)
+                else:
+                    # Partially observable: blend between EKF update and decay
+                    w_decayed = self._apply_decay(w_prev[i], decay_rates[i], dt)
+                    w_gated[i] = flags[i] * w_new[i] + (1.0 - flags[i]) * w_decayed
+        
+        return w_gated
+
+    def _unwrap_angle(self, angle: float, reference: float) -> float:
+        """
+        Unwrap angle to be continuous with reference.
+        
+        Args:
+            angle: Angle to unwrap [rad]
+            reference: Reference angle [rad]
+            
+        Returns:
+            Unwrapped angle [rad]
+        """
+        diff = angle - reference
+        while diff > np.pi:
+            diff -= 2 * np.pi
+        while diff < -np.pi:
+            diff += 2 * np.pi
+        return reference + diff
+
     def _discretize_augmented(self, A_a: np.ndarray, B_a: np.ndarray, dt: float) -> Tuple[np.ndarray, np.ndarray]:
         """
         Discretize continuous augmented system matrices using ZOH.
-        
+
         Args:
             A_a: Continuous augmented state matrix
             B_a: Continuous augmented input matrix
             dt: Sample time
-            
+
         Returns:
             Tuple of (A_ad, B_ad)
         """
         n_states = A_a.shape[0]
         n_inputs = B_a.shape[1]
-        
+
         # Van Loan's matrix exponential method
         # M = [[A_a, B_a], [0, 0]]
         M = np.zeros((n_states + n_inputs, n_states + n_inputs))
         M[:n_states, :n_states] = A_a
         M[:n_states, n_states:] = B_a
-        
+
         # Compute matrix exponential
         M_exp = expm(M * dt)
-        
+
         # Extract discrete matrices
         A_ad = M_exp[:n_states, :n_states]
         B_ad = M_exp[:n_states, n_states:]
-        
+
         return A_ad, B_ad
-    
+
     def _default_params(self) -> Dict:
         """Default vehicle parameters - uses centralized defaults"""
         return get_default_vehicle_params()
-    
+
     def _default_Q(self) -> np.ndarray:
         """
-        Default process noise covariance Q (8×8) or (10×10)
-        
-        xa = [vx, vy, psi, r, X, Y, wr, wf] or [vx, vy, psi, r, X, Y, ax, ay, wr, wf]
-        
-        - Small for kinematics (vx, psi, X, Y)
-        - Moderate for dynamics (vy, r)
-        - Large for tire residuals w (random-walk assumption)
+        Default process noise covariance Q (8×8 or 9×9)
+
+        For 6D+tire mode: xa = [vx, vy, psi, r, X, Y, wr, wf] (8D)
+        For 6D+general mode: xa = [vx, vy, psi, r, X, Y, d_vx, d_vy, d_r] (9D)
+
+        TUNING GUIDE for 1/10 scale car:
+        - Small for well-measured states (vx, psi, X, Y)
+        - HIGH for v_y (weakly observable - only through a_y coupling)
+        - HIGH for disturbances (random-walk, need to track changes)
         """
         if self.use_8d_system:
-             # Extend Q to 10D
-             # 8D state: [vx, vy, psi, r, X, Y, ax, ay] + [wr, wf]
-             # CRITICAL FIX: Increased wr, wf from 5.0 to 50.0 for better
-             # random walk exploration. Small Q values prevent the filter
-             # from updating residual estimates even when innovation exists.
-             return np.diag([
-                0.01,   # vx
-                0.1,    # vy
-                1e-4,   # psi
-                0.02,   # r
-                0.01,   # X
-                0.01,   # Y
-                0.05,   # ax (new state)
-                0.05,   # ay (new state)
-                200.0,   # wr - INCREASED for random walk exploration
-                200.0,   # wf - INCREASED for random walk exploration
-             ])
-             
-        # 6D system: [vx, vy, psi, r, X, Y] + [w...]
+             # 8D state: [vx, vy, psi, r, X, Y, ax, ay] + disturbances
+             Q_diag = [
+                0.05,   # vx - encoder accurate
+                1.0,    # vy - HIGH: weakly observable!
+                0.001,  # psi - heading well-measured
+                0.1,    # r - gyro good
+                0.02,   # X - GPS
+                0.02,   # Y - GPS
+                0.1,    # ax (new state)
+                0.1,    # ay (new state)
+             ]
+             Q_diag.extend([5.0] * self.udim)
+             return np.diag(Q_diag)
+
+        # 6D system: [vx, vy, psi, r, X, Y] + disturbances
         Q_diag = [
-            0.01,   # vx - longitudinal velocity (well measured)
-            0.1,    # vy - lateral velocity (less observable)
-            1e-4,   # psi - yaw angle (kinematic)
-            0.02,   # r - yaw rate (from gyro)
-            0.01,   # X - position (from GPS)
-            0.01,   # Y - position (from GPS)
+            0.05,   # vx - encoder is accurate
+            0.01,    # vy - HIGH: weakly observable, let filter adapt quickly
+            0.001,  # psi - heading well-measured by GPS/IMU
+            0.1,    # r - gyro is good but model has uncertainty
+            0.02,   # X - GPS
+            0.02,   # Y - GPS
         ]
-        
-        # Add unknown input noise (Large for random walk)
-        # For general disturbances (vx, vy, r), we treat them as random walks too
-        # If udim=2, assumes [wr, wf]. If udim=3, assumes [d_vx, d_vy, d_r]
-        Q_diag.extend([200.0] * self.udim)
-        
+
+        # Add disturbance noise (random-walk assumption)
+        if self.disturbance_mode == 'general':
+            # [d_vx, d_vy, d_r] - general additive disturbances
+            # d_vy needs HIGH Q because it's key for v_y estimation
+            Q_diag.extend([2.0, 1.0, 1.0])  # d_vx, d_vy, d_r
+        else:
+            # [wr, wf] - tire residuals
+            Q_diag.extend([2.0, 2.0])
+
         return np.diag(Q_diag)
-    
+
     def _default_R(self) -> np.ndarray:
         """
-        Default measurement noise covariance R (6×6) or (7×7)
+        Default measurement noise covariance R (7×7)
+
+        y = [vx, r, psi, X, Y, ay, ax]
+
+        TUNING GUIDE for 1/10 scale QCar sensors:
+        - Encoder: very accurate (~0.01 m/s std)
+        - IMU gyro: very accurate (~0.01 rad/s std)
+        - IMU accel: moderate (~0.1 m/s² std)
+        - GPS: moderate (~0.2m position std)
         
-        y = [vx, r, psi, X, Y, ay] (+ ax)
-        
-        Tune based on actual sensor characteristics.
+        Smaller R = trust sensor more (use for accurate sensors)
+        Larger R = trust model more (use for noisy sensors)
         """
-        if self.use_8d_system:
-             # y = [vx, r, psi, X, Y, ay, ax]
-             return np.diag([
-                 0.1**2,   # vx
-                 0.01**2,  # r
-                 0.02**2,  # psi
-                 0.2**2,   # X
-                 0.2**2,   # Y
-                 0.2**2,   # ay
-                 0.2**2,   # ax
-             ])
-        
         return np.diag([
-            0.1**2,   # vx - velocity sensor noise (good encoder)
-            0.01**2,  # r - gyroscope noise (good IMU)
-            0.02**2,  # psi - heading noise (integrated gyro)
-            0.2**2,   # X - position noise (reduced for small vehicle)
-            0.2**2,   # Y - position noise (reduced for small vehicle)
-            0.1**2,   # ay - accelerometer noise
+            0.01,     # vx - encoder variance (m/s)² - very accurate
+            0.0001,   # r - gyro variance (rad/s)² - IMU is very accurate!
+            0.0004,   # psi - heading variance (rad)² - from GPS/IMU fusion
+            0.04,     # X - GPS variance (m)² - ~0.2m std dev
+            0.04,     # Y - GPS variance (m)²
+            0.01,     # ay - lateral accel variance (m/s²)²
+            0.01,     # ax - longitudinal accel variance (m/s²)²
         ])
-    
+
     def _default_P0(self) -> np.ndarray:
         """
         Default initial error covariance P0
-        
-        Reflects initial uncertainty in state estimate.
-        """
-        if self.use_8d_system:
-             return np.diag([
-                 1.0,    # vx
-                 1.0,    # vy
-                 0.1,    # psi
-                 0.1,    # r
-                 5.0,    # X
-                 5.0,    # Y
-                 1.0,    # ax
-                 1.0,    # ay
-                 5.0,  # wr
-                 5.0,  # wf
-             ])
-             
-        return np.diag([
-            1.0,    # vx
-            1.0,    # vy
-            0.1,    # psi
-            0.1,    # r
-            5.0,    # X
-            5.0,    # Y
-            5.0,  # wr - high initial uncertainty
-            5.0,  # wf - high initial uncertainty
-        ])
-        
-        # Adjust for dynamic unknown input dimension
-        # If udim=3, remove last 2 and add 3, or just reconstruct
-        P0_diag = [
-            1.0,    # vx
-            1.0,    # vy
-            0.1,    # psi
-            0.1,    # r
-            5.0,    # X
-            5.0,    # Y
-        ]
-        P0_diag.extend([5.0] * self.udim)
-        
-        return np.diag(P0_diag)
-    
 
-    
+        Reflects initial uncertainty in state estimate.
+        Higher values = more uncertainty = faster initial convergence
+        """
+        # 6D state base P0
+        P0_diag = [
+            0.5,    # vx - fairly certain
+            0.01,    # vy - HIGH: very certain about initial lateral velocity
+            0.1,    # psi - fairly certain from GPS
+            0.1,    # r - fairly certain from gyro
+            1.0,    # X - uncertain position
+            1.0,    # Y - uncertain position
+        ]
+
+        # Add disturbance initial uncertainty
+        if self.disturbance_mode == 'general':
+            P0_diag.extend([1.0, 5.0, 2.0])  # d_vx, d_vy (high), d_r
+        else:
+            P0_diag.extend([5.0, 5.0])  # wr, wf
+
+        return np.diag(P0_diag)
+
+
+
     # =========================================================
     # Numerical Jacobian Computation
     # =========================================================
-    
+
     def _numerical_jacobian(self, func, x: np.ndarray) -> np.ndarray:
         """
         Compute numerical Jacobian of func at x using central differences
-        
+
         Args:
             func: Function f(x) -> y
             x: Point to compute Jacobian at
-            
+
         Returns:
             Jacobian matrix J[i,j] = df_i/dx_j
         """
@@ -461,219 +606,229 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         f0 = func(x)
         m = len(f0)
         J = np.zeros((m, n))
-        
+
         for j in range(n):
             x_plus = x.copy()
             x_minus = x.copy()
             x_plus[j] += self.epsilon
             x_minus[j] -= self.epsilon
             J[:, j] = (func(x_plus) - func(x_minus)) / (2 * self.epsilon)
-        
+
         return J
-    
+
     def compute_scheduling_params(self, state: np.ndarray, delta: float) -> SchedulingParameters:
         """Compute scheduling parameters from current state and input"""
         return self.dynamics.compute_scheduling_params(state, delta)
-    
+
     def compute_slip_angles(self, state: np.ndarray, delta: float) -> Tuple[float, float]:
         """Compute front and rear slip angles - delegates to centralized dynamics"""
         return self.dynamics.compute_slip_angles(state, delta)
-    
+
     def compute_A_matrix(self, rho: SchedulingParameters) -> np.ndarray:
         """Compute state matrix A(ρ) - delegates to centralized dynamics"""
         return self.dynamics.compute_A_matrix(rho)
-    
+
     def compute_B_matrix(self, rho: SchedulingParameters) -> np.ndarray:
         """Compute input matrix B(ρ) - delegates to centralized dynamics"""
         return self.dynamics.compute_B_matrix(rho)
-    
+
     def compute_E_matrix(self, rho: SchedulingParameters) -> np.ndarray:
         """Compute residual injection matrix E(ρ) - delegates to centralized dynamics"""
         return self.dynamics.compute_E_matrix(rho)
-    
-    def compute_C_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+
+    def compute_C_matrix(self, rho: SchedulingParameters, active_indices: Optional[list] = None) -> np.ndarray:
         """Compute output matrix C(ρ) - delegates to centralized dynamics"""
-        return self.dynamics.compute_C_matrix(rho)
-    
-    def compute_D_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+        return self.dynamics.compute_C_matrix(rho, active_indices=active_indices)
+
+    def compute_D_matrix(self, rho: SchedulingParameters, active_indices: Optional[list] = None) -> np.ndarray:
         """Compute feedthrough matrix D(ρ) - delegates to centralized dynamics"""
-        return self.dynamics.compute_D_matrix(rho)
-    
-    def compute_F_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+        return self.dynamics.compute_D_matrix(rho, active_indices=active_indices)
+
+    def compute_F_matrix(self, rho: SchedulingParameters, active_indices: Optional[list] = None) -> np.ndarray:
         """Compute residual-to-output matrix F(ρ) - delegates to centralized dynamics"""
-        return self.dynamics.compute_F_matrix(rho)
-    
-    def compute_augmented_matrices(self, rho: SchedulingParameters) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        return self.dynamics.compute_F_matrix(rho, active_indices=active_indices)
+
+    def compute_augmented_matrices(self, rho: SchedulingParameters, active_indices: Optional[list] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute augmented system matrices - delegates to centralized dynamics"""
-        return self.dynamics.compute_augmented_matrices(rho)
-    
+        return self.dynamics.compute_augmented_matrices(rho, active_indices=active_indices)
+
     def compute_ay_innovation(self, measurement: np.ndarray, state_hat: np.ndarray,
                               control_input: np.ndarray, rho: SchedulingParameters) -> float:
         """
         Compute lateral acceleration innovation for UIO-style residual estimation
-        
+
         ã_y = a_y - (C_ay·x̂ + D_ay·u)
-        
+
         Constraint: m·ã_y ≈ w_r + cos(δ)·w_f
-        
+
         Args:
             measurement: Measurement vector [v_x, r, ψ, X, Y, a_y]
             state_hat: State estimate [v_x, v_y, ψ, r, X, Y]
             control_input: Control [δ, a]
             rho: Scheduling parameters
-            
+
         Returns:
             a_y innovation value
         """
         C = self.compute_C_matrix(rho)
         D = self.compute_D_matrix(rho)
-        
+
         # Extract a_y row
-        C_ay = C[self.MEAS_IDX_AY, :]
-        D_ay = D[self.MEAS_IDX_AY, :]
-        
+        C_ay = C[MEAS_IDX_AY, :]
+        D_ay = D[MEAS_IDX_AY, :]
         # Predicted a_y from linear model
         ay_predicted = C_ay @ state_hat + D_ay @ control_input
-        
+
         # Actual a_y measurement
-        ay_measured = measurement[self.MEAS_IDX_AY]
-        
+        ay_measured = measurement[MEAS_IDX_AY]
         # Innovation
         ay_innovation = ay_measured - ay_predicted
-        
-        return ay_innovation
-    
 
-    
+        return ay_innovation
+
+
+
     # =========================================================
     # EKF Predict + Update
     # =========================================================
-    
+
     def ekf_predict(self, xa: np.ndarray, P: np.ndarray, 
                     u: np.ndarray, dt: float) -> Tuple[np.ndarray, np.ndarray]:
         """
         EKF Prediction Step
-        
+
         x̂⁻ = f(x̂, u)
         P⁻ = F·P·Fᵀ + Q
-        
+
         Args:
             xa: Current augmented state estimate
             P: Current error covariance
             u: Control input
             dt: Sample time
-            
+
         Returns:
             Tuple of (predicted state, predicted covariance)
         """
         # Calculate scheduling parameters
         # xa is augmented state, we need first 6 elements
         rho = self.compute_scheduling_params(xa[:self.state_dim], u[0])
-        
+
         # Compute continuous augmented matrices
         A_a, B_a, _ = self.compute_augmented_matrices(rho)
-        
+
         # Discretize using ZOH
         A_ad, B_ad = self._discretize_augmented(A_a, B_a, dt)
-        
+
         # State prediction using discrete linear dynamics: x[k+1] = A_d·x[k] + B_d·u[k]
         xa_pred = A_ad @ xa + B_ad @ u
-        
+
         # Jacobian F is just the discrete state matrix A_ad
         F = A_ad
-        
+
         # Covariance prediction
         # Scale Q with dt if needed, but self.Q is already initialized via defaults * sample_time
-        # If dt varies significantly, we should ideally recompute Q = Q_continuous * dt
-        # For small variations, using fixed Q is often acceptable, but let's be precise if possible
-        # However, self.Q is stored as discrete Q. Recomputing it on fly might be expensive or require Q_cont.
-        # Let's stick to fixed Q for now to avoid complexity, assuming dt doesn't vary wildly (e.g. 10x).
-        P_pred = F @ P @ F.T + self.Q
-        
+        # Scale Q with dt
+        Q_k = self.Q_base * dt
+        P_pred = F @ P @ F.T + Q_k
+
         return xa_pred, P_pred
-    
+
     def ekf_update(self, xa_pred: np.ndarray, P_pred: np.ndarray,
                    y_meas: np.ndarray, u: np.ndarray,
-                   R_matrix: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                   R_matrix: Optional[np.ndarray] = None,
+                   active_indices: Optional[list] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         EKF Update Step
-        
+
         K = P⁻·Hᵀ·(H·P⁻·Hᵀ + R)⁻¹
         x̂ = x̂⁻ + K·(y - h(x̂⁻, u))
         P = (I - K·H)·P⁻·(I - K·H)ᵀ + K·R·Kᵀ  (Joseph form)
-        
+
         Args:
             xa_pred: Predicted augmented state
             P_pred: Predicted error covariance
-            y_meas: Actual measurement vector
+            y_meas: Actual measurement vector (sliced to match active_indices)
             u: Control input
-            R_matrix: Optional R matrix to use (ovverrides self.R)
-            
+            R_matrix: Optional R matrix to use (must override self.R)
+            active_indices: List of active measurement indices
+
         Returns:
             Tuple of (updated state, updated covariance, innovation, predicted measurement)
         """
-        # Use provided R or default
+        # Use provided R or default (must match active dimensions)
         R = R_matrix if R_matrix is not None else self.R
-        
+
+
         # Calculate scheduling parameters from predicted state
         # xa_pred is augmented state, we need first 6 elements
         rho = self.compute_scheduling_params(xa_pred[:self.state_dim], u[0])
-        
+
         # Compute analytical C matrix (qLPV)
         # We need augmented C matrix to account for tire residuals w
         # compute_augmented_matrices returns C_a (meas_dim x augmented_dim)
-        _, _, C_a = self.compute_augmented_matrices(rho)
-        
+        _, _, C_a = self.compute_augmented_matrices(rho, active_indices=active_indices)
+
         # H is simply C_a in the linear/qLPV update
         H = C_a
-        
+
         # Compute Feedthrough D matrix 
         # If 8D system, D assumption is usually 0 if measurements are states
         # dynamics.compute_D_matrix returns 6x2 (for 6D system) which might be wrong shape for 8D (7x8)
         # So we handle D dimension carefully
-        if self.use_8d_system:
-            D = np.zeros((self.meas_dim, 2))
-        else:
-            D = self.compute_D_matrix(rho)
-             
+
+        D = self.compute_D_matrix(rho, active_indices=active_indices)
+
         # Measurement prediction using Linear/qLPV model: y = C_a·x_a + D·u
         y_pred = C_a @ xa_pred + D @ u
-        
+
         # Innovation (measurement residual)
         innov = y_meas - y_pred
-        
+
         # Wrap heading innovation to [-pi, pi]
         # Prevents instability when angle wraps from pi to -pi
         if self.use_8d_system:
-            idx_psi_meas = self.MEAS8_IDX_PSI
+            idx_psi_meas = MEAS8_IDX_PSI
         else:
-            idx_psi_meas = self.MEAS_IDX_PSI
-             
-        innov[idx_psi_meas] = (innov[idx_psi_meas] + np.pi) % (2 * np.pi) - np.pi
-        
+            idx_psi_meas = MEAS_IDX_PSI
+
+        # We need to find where PSI is in the active vector
+        psi_in_meas = False
+        idx_in_innov = -1
+
+        if active_indices is not None:
+            if idx_psi_meas in active_indices:
+                idx_in_innov = active_indices.index(idx_psi_meas)
+                psi_in_meas = True
+        else:
+            idx_in_innov = idx_psi_meas
+            psi_in_meas = True
+
+        if psi_in_meas and idx_in_innov < len(innov):
+            innov[idx_in_innov] = (innov[idx_in_innov] + np.pi) % (2 * np.pi) - np.pi
+
         # Innovation covariance S = H·P⁻·Hᵀ + R
         S = H @ P_pred @ H.T + R
-        
+
         # Kalman gain K = P⁻·Hᵀ·S⁻¹
         try:
             K = P_pred @ H.T @ self._safe_inverse(S)
         except np.linalg.LinAlgError:
             # Fallback: use pseudo-inverse
             K = P_pred @ H.T @ np.linalg.pinv(S)
-        
+
         # State update
         xa_upd = xa_pred + K @ innov
-        
+
         # Covariance update (Joseph form for numerical stability)
         I = np.eye(P_pred.shape[0])
         IKH = I - K @ H
         P_upd = IKH @ P_pred @ IKH.T + K @ R @ K.T
-        
+
         # Enforce symmetry and PSD
         P_upd = 0.5 * (P_upd + P_upd.T)
-        
+
         return xa_upd, P_upd, innov, y_pred
-    
+
     def update(self, measurement: np.ndarray, control_input: np.ndarray,
                f_nn: Optional[np.ndarray] = None,
                acceleration: Optional[np.ndarray] = None,
@@ -681,7 +836,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
                dt: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray]:
         """
         Update qLPV augmented-state observer with EKF predict-update cycle
-        
+
         Args:
             measurement: Measurement vector.
             control_input: Control [δ, a] OR [steering_cmd, throttle_cmd] if process_control=True
@@ -689,178 +844,348 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             acceleration: Full 3D acceleration [a_x, a_y, a_z] if a_y not in measurement
             gps_available: Whether GPS measurements [X, Y] (and possibly ψ) are valid
             dt: Sample time (if None, use self.Ts)
-            
+
         Returns:
             Tuple of (state_estimate, tire_residual_estimate)
         """
         measurement = measurement.reshape(-1)
-        
+        y_full = self._process_measurement(measurement, acceleration)
         # Determine current time step
         current_dt = dt if dt is not None else self.Ts
-        
-        # Determine effective R matrix and handle missing measurements
-        # If gps_available is False, we boost variance for X, Y (, psi?)
-        
-        R_effective = self.R.copy()
-        
-        # Identify indices based on system
-        # Indice are the same for 6d and 8d
-        idx_X = self.MEAS8_IDX_X 
-        idx_Y = self.MEAS8_IDX_Y
-        idx_PSI = self.MEAS8_IDX_PSI
-             
-        if not gps_available or len(measurement) <= 4:
-            # Boost variance for GPS related measurements
-            # If measurement is 4D (no GPS), we force this logic even if gps_available was passed as True
-            high_variance = 1e6
-            R_effective[idx_X, idx_X] = high_variance
-            R_effective[idx_Y, idx_Y] = high_variance
-            # Often psi comes from magnetometer/IMU so it might still be valid? 
-            # But prompt implies different C, so maybe psi is also untrusted or linked to GPS heading?
-            # Assuming psi is untrusted too for consistency with C-matrix logic
-            R_effective[idx_PSI, idx_PSI] = high_variance
-        
- 
+        # Determine active indices and slice R and y
+        idx_X = MEAS8_IDX_X 
+        idx_Y = MEAS8_IDX_Y
+        idx_PSI = MEAS8_IDX_PSI
+        idx_R = MEAS8_IDX_R
+        idx_VX = MEAS8_IDX_VX
+        idx_AY = MEAS8_IDX_AY
+        idx_AX = MEAS8_IDX_AX
+        n_meas_in = len(measurement)
+        gps_meas_available = False
+        imu_ay_available = False
+        imu_ax_available = False
+        if n_meas_in >= 7:
+            # Full 7D: [vx, r, psi, X, Y, ay, ax]
+            gps_meas_available = True
+            imu_ay_available = True
+            imu_ax_available = True
+        elif n_meas_in == 6:
+            # Legacy 6D: [vx, r, psi, X, Y, ay]
+            gps_meas_available = True
+            imu_ay_available = True
+        elif n_meas_in == 5:
+            # Partial 5D: [vx, r, psi, X, Y]
+            gps_meas_available = True
+        elif n_meas_in == 4:
+            # IMU-only 4D: [vx, r, ay, ax]
+            imu_ay_available = True
+            imu_ax_available = True
+        elif n_meas_in == 2:
+            # Minimal 2D: [vx, r]
+            pass
+        # Respect GPS availability flag even if measurements exist
+        if not gps_available:
+            gps_meas_available = False
+        # Acceleration argument can provide IMU channels even if not in measurement vector
+        if acceleration is not None:
+            if len(acceleration) > 0:
+                imu_ax_available = True
+            if len(acceleration) > 1:
+                imu_ay_available = True
+        # Build active measurement indices in canonical order
+        active_indices = [idx_VX, idx_R]
+        if gps_meas_available:
+            active_indices.extend([idx_PSI, idx_X, idx_Y])
+        if imu_ay_available:
+            active_indices.append(idx_AY)
+        if imu_ax_available:
+            active_indices.append(idx_AX)
+        # Slice full measurement vector to active channels
+        y = y_full[active_indices]
+        # Slice R matrix
+        R_effective = self.R[np.ix_(active_indices, active_indices)]
+        # Process measurement handles [vx, r, psi, X, Y, ay, ax] mapping and IMU fallbacks
 
-        # Process measurement to get full vector
-        y = self._process_measurement(measurement, acceleration)
+        # Cached measurements for gating / r_dot estimation
+        r_meas = y_full[idx_R]
+        ay_meas = y_full[idx_AY]
+        psi_meas = y_full[idx_PSI]
+        w_prev = self.state_augmented[self.state_dim:].copy()
         
+        # Get current steering angle for observability check (will be updated below)
+        delta_for_gating = self.current_steering_angle
+
         # Process Control Input
         u_raw = control_input.reshape(-1)
         # Input is [steering_cmd, throttle_cmd] (normalized -1 to 1)
         # Need to convert to physical [delta, accel] using current state
-        
+
         # Construct state vector for dynamics module (needs correct format)
         # We use state_hat (estimated state) for this calculation
         current_state = self.state_hat.copy()
-        
+
         throttle_cmd = u_raw[1] if len(u_raw) > 1 else 0.0
         steering_cmd = u_raw[0]
-        
+
         # Use centralized dynamics to process control
         accel, _, new_steering_angle = self.dynamics.process_control_inputs(
             throttle_cmd, steering_cmd, current_state, 
             self.current_steering_angle, current_dt
         )
-        
+
         # Update internal steering state
         self.current_steering_angle = new_steering_angle
-        
+
         # Form physical control vector for EKF [delta, a]
         u = np.array([self.current_steering_angle, accel])
-        
+
         # # CRITICAL FIX: Override integrated steering with measurement if available
         # # This prevents the open-loop servo model from drifting away from the true plant
-        # if len(u_raw) > 2:
-        #     # print("direct u", u_raw)
-        #     # If control_input passed as [steering_cmd, throttle_cmd, true_delta]
-        #     self.current_steering_angle = u_raw[2]
-        #     u[0] = self.current_steering_angle
-        
+        if len(u_raw) > 2:
+            # print("direct u", u_raw)
+            # If control_input passed as [steering_cmd, throttle_cmd, true_delta]
+            self.current_steering_angle = u_raw[2]
+            u[0] = self.current_steering_angle
+
         delta = u[0]
-        
+
         # =====================================================
         # EKF PREDICT
         # =====================================================
         xa_pred, P_pred = self.ekf_predict(self.state_augmented, self.P, u, current_dt)
-        
+
         # =====================================================
         # EKF UPDATE
         # =====================================================
-        xa_upd, P_upd, innov, y_pred = self.ekf_update(xa_pred, P_pred, y, u, R_matrix=R_effective)
-        
+        xa_upd, P_upd, innov, y_pred = self.ekf_update(xa_pred, P_pred, y, u, R_matrix=R_effective, active_indices=active_indices)
+
+        # Optional r_dot pseudo-measurement update (improves d_r observability)
+        if self.use_rdot_differentiator and self.rdot_diff is not None and self.disturbance_mode == 'general':
+            self.rdot_meas = self.rdot_diff.update(r_meas)
+            use_rdot_update = True
+            if self.enable_excitation_gating:
+                use_rdot_update = abs(self.rdot_meas) >= self.rdot_excitation_threshold
+            if use_rdot_update:
+                rho_rdot = self.compute_scheduling_params(xa_upd[:self.state_dim], delta)
+                A_rdot = self.compute_A_matrix(rho_rdot)
+                B_rdot = self.compute_B_matrix(rho_rdot)
+                E_rdot = self.compute_E_matrix(rho_rdot)
+
+                H_rdot = np.zeros((1, self.augmented_dim))
+                H_rdot[0, :self.state_dim] = A_rdot[IDX_R, :]
+                H_rdot[0, self.state_dim:] = E_rdot[IDX_R, :]
+
+                y_rdot_pred = (H_rdot @ xa_upd + (B_rdot[IDX_R, :] @ u)).reshape(-1)
+                R_rdot = np.array([[self.rdot_meas_var]])
+                S_rdot = H_rdot @ P_upd @ H_rdot.T + R_rdot
+                K_rdot = P_upd @ H_rdot.T @ self._safe_inverse(S_rdot)
+
+                xa_upd = xa_upd + (K_rdot @ (self.rdot_meas - y_rdot_pred)).reshape(-1)
+                I = np.eye(P_upd.shape[0])
+                IKH = I - K_rdot @ H_rdot
+                P_upd = IKH @ P_upd @ IKH.T + K_rdot @ R_rdot @ K_rdot.T
+                P_upd = 0.5 * (P_upd + P_upd.T)
+        else:
+            self.rdot_meas = 0.0
+
         # Store updated state and covariance
         self.state_augmented = xa_upd
         self.P = P_upd
-        
+
         # Wrap heading state to [-pi, pi]
         # Ensures estimated yaw stays in the same range as GPS sensors
         # self.IDX_PSI = 2 same for 6d and 8d
-        self.state_augmented[self.IDX_PSI] = (self.state_augmented[self.IDX_PSI] + np.pi) % (2 * np.pi) - np.pi
-        
+        self.state_augmented[IDX_PSI] = (self.state_augmented[IDX_PSI] + np.pi) % (2 * np.pi) - np.pi
+
+        # =====================================================
+        # STILL CONDITION CHECK
+        # =====================================================
+        # If measured velocity is very low, force zero velocity and zero disturbances
+        # to prevent integrator drift from sensor noise.
+
+        # Determine measured vx
+        measured_vx = 0.0
+        if idx_VX in active_indices:
+            idx_in_y = active_indices.index(idx_VX)
+            measured_vx = y[idx_in_y]
+
+        if abs(measured_vx) < 0.05:
+            # Force velocities to zero
+            self.state_augmented[IDX_VX] = 0.0
+            self.state_augmented[IDX_VY] = 0.0
+            self.state_augmented[IDX_R] = 0.0
+            # Force disturbances to zero (avoid suppressing general-mode estimation)
+            # Disturbances are the last self.udim elements
+            if self.disturbance_mode != 'general':
+                self.state_augmented[-self.udim:] = 0.0
+
+        # =====================================================
+        # OBSERVABILITY-BASED GATING (new approach)
+        # =====================================================
+        if self.enable_observability_gating and self.udim >= 2:
+            d_start = self.state_dim
+            w_new = self.state_augmented[d_start:d_start + self.udim].copy()
+            
+            # Get current velocity estimate for observability check
+            vx_est = self.state_augmented[IDX_VX]
+            r_est = self.state_augmented[IDX_R]
+            
+            # Compute observability flags based on driving conditions
+            self.observability_flags = self._compute_observability_flags(
+                vx=vx_est,
+                delta=delta,
+                r=r_est,
+                psi_meas=psi_meas
+            )
+            
+            # Apply gating: decay unobservable components toward zero
+            w_gated = self._apply_observability_gating(w_new, w_prev, 
+                                                        self.observability_flags, current_dt)
+            
+            self.state_augmented[d_start:d_start + self.udim] = w_gated
+            
+            # Update yaw wrap counter
+            if self.yaw_wrap_counter > 0:
+                self.yaw_wrap_counter -= 1
+            self.prev_psi_meas = psi_meas
+            
+        # =====================================================
+        # LEGACY: Excitation gating + decay (if observability gating disabled)
+        # =====================================================
+        elif self.enable_excitation_gating and self.disturbance_mode == 'general' and self.udim >= 2:
+            d_start = self.state_dim
+            w_new = self.state_augmented[d_start:d_start + self.udim].copy()
+
+            ay_excited = imu_ay_available and abs(ay_meas) >= self.ay_excitation_threshold
+            if self.use_rdot_differentiator and self.rdot_diff is not None:
+                r_excited = abs(self.rdot_meas) >= self.rdot_excitation_threshold
+            else:
+                r_excited = abs(r_meas) >= self.r_excitation_threshold
+
+            # d_vy gating / decay
+            if self.udim >= 2 and not ay_excited:
+                base = w_prev[1]
+                if self.enable_disturbance_decay or self.decay_only_when_unexcited:
+                    w_new[1] = self._apply_decay(base, self.decay_rate_dvy, current_dt)
+                else:
+                    w_new[1] = base
+
+            # d_r gating / decay
+            if self.udim >= 3 and not r_excited:
+                base = w_prev[2]
+                if self.enable_disturbance_decay or self.decay_only_when_unexcited:
+                    w_new[2] = self._apply_decay(base, self.decay_rate_dr, current_dt)
+                else:
+                    w_new[2] = base
+
+            # Optional decay for d_vx
+            if self.enable_disturbance_decay and not self.decay_only_when_unexcited and self.udim >= 1:
+                w_new[0] = self._apply_decay(w_new[0], self.decay_rate_dvx, current_dt)
+
+            self.state_augmented[d_start:d_start + self.udim] = w_new
 
         #  ---------------- JUST for DEBUG ----------------
         # Store Kalman gain for diagnostics - recompute using R_effective
         # Store Kalman gain for diagnostics - recompute using R_effective and analytical matrices
         try:
             rho = self.compute_scheduling_params(xa_pred[:self.state_dim], delta)
-            _, _, C_a = self.compute_augmented_matrices(rho)
+            _, _, C_a = self.compute_augmented_matrices(rho, active_indices=active_indices)
             H_curr = C_a
-            
             S_curr = H_curr @ P_pred @ H_curr.T + R_effective
             self.K = P_pred @ H_curr.T @ np.linalg.pinv(S_curr)
         except Exception:
             self.K = np.zeros((self.augmented_dim, self.meas_dim))
-        
-        # Store innovation for diagnostics
-        self.innovation = innov
-        
+        # Store innovation for diagnostics (padding to full size for compatibility)
+        self.innovation = np.zeros(self.meas_dim)
+        if active_indices is not None and len(innov) == len(active_indices):
+            self.innovation[active_indices] = innov
+        else:
+            self.innovation[:len(innov)] = innov
+
         # Extract state and residual estimates
         self.state_hat = self.state_augmented[:self.state_dim].copy()
         self.w_hat = self.state_augmented[self.state_dim:].copy()
-        
+
         # Update UIO-style residual constraint
-        rho = self.compute_scheduling_params(self.state_hat, delta)
-        self.ay_innovation = self.compute_ay_innovation(y, self.state_hat, u, rho)
-        self.w_constraint = self.m * self.ay_innovation  # ≈ w_r + cos(δ)·w_f
-        
+        self.ay_innovation = 0.0
+        self.w_constraint = 0.0
+
+        if self.disturbance_mode == 'tire':
+            # Only relevant for tire residual mode
+            rho = self.compute_scheduling_params(self.state_hat, delta)
+
+            # Check if ay is in active_indices (using consistent measurement constant if possible)
+            # We used idx_AY above as MEAS8_IDX_AY which is 5.
+            # In 6D system MEAS_IDX_AY is 5. So idx_AY is correct.
+
+            if idx_AY in active_indices:
+                idx_ay_in_y = active_indices.index(idx_AY)
+                # Manually compute innovation for Ay
+                # ã_y = y[idx] - (C_ay @ x + D_ay @ u)
+                C_sliced = self.compute_C_matrix(rho, active_indices=[idx_AY])
+                D_sliced = self.compute_D_matrix(rho, active_indices=[idx_AY])
+                ay_pred = (C_sliced @ self.state_hat + D_sliced @ u).item()
+                self.ay_innovation = y[idx_ay_in_y] - ay_pred
+
+            self.w_constraint = self.m * self.ay_innovation  # ≈ w_r + cos(δ)·w_f
+
         # Copy tire residuals to base class attribute for interface compatibility
         self.f_uk_hat = self.w_hat.copy()
-        
+
         # Optional gyro bias update
         if self.include_gyro_bias:
             if self.use_8d_system:
-                 idx_r_meas = self.MEAS8_IDX_R
-                 idx_r_state = self.IDX8_R
+                idx_r_meas = MEAS8_IDX_R
+                idx_r_state = IDX8_R
             else:
-                 idx_r_meas = self.MEAS_IDX_R
-                 idx_r_state = self.IDX_R
-                 
+                idx_r_meas = MEAS_IDX_R
+                idx_r_state = IDX_R
+
             r_error = y[idx_r_meas] - self.state_hat[idx_r_state]
             self.gyro_bias += 0.001 * r_error
-        
+
         return self.state_hat.copy(), self.w_hat.copy()
-    
-    def _process_measurement(self, measurement: np.ndarray, 
+
+    def _process_measurement(self, measurement: np.ndarray,
                              acceleration: Optional[np.ndarray] = None) -> np.ndarray:
         """
         Process input measurement to get full measurement vector.
-        
+
         Handles:
-            - Full 7D: [v_x, r, ψ, X, Y, a_y, a_x]
+            - Full 7D: [v_x, r, psi, X, Y, a_y, a_x]
             - No GPS 4D: [v_x, r, a_y, a_x]
-            - Legacy 6D: [v_x, r, ψ, X, Y, a_y]
+            - Legacy 6D: [v_x, r, psi, X, Y, a_y]
             - Legacy 2D: [v_x, r]
-            
+
         Args:
             measurement: Input measurement (various formats)
             acceleration: Optional 3D acceleration [a_x, a_y, a_z]
-            
+
         Returns:
             Full measurement vector y
         """
         measurement = measurement.reshape(-1)
         n_input = len(measurement)
         y = np.zeros(self.meas_dim)
-        
+
         # 1. Basic Kinematics (always present)
-        val_vx = measurement[0]
-        val_r = measurement[1]
-        
+        val_vx = measurement[0] if n_input > 0 else 0.0
+        val_r = measurement[1] if n_input > 1 else 0.0
+
         if self.use_8d_system:
-            y[self.MEAS8_IDX_VX] = val_vx
-            y[self.MEAS8_IDX_R] = val_r
+            y[MEAS8_IDX_VX] = val_vx
+            y[MEAS8_IDX_R] = val_r
         else:
-            y[self.MEAS_IDX_VX] = val_vx
-            y[self.MEAS_IDX_R] = val_r
-            
+            y[MEAS_IDX_VX] = val_vx
+            y[MEAS_IDX_R] = val_r
+
         # 2. Extract values based on input dimension
         val_psi = None
         val_X = None
         val_Y = None
         val_ay = None
         val_ax = None
-        
+
         if n_input >= 7:
             # Full 7D: [vx, r, psi, X, Y, ay, ax]
             val_psi = measurement[2]
@@ -883,103 +1208,109 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             val_psi = measurement[2]
             val_X = measurement[3]
             val_Y = measurement[4]
-        
+
         # 3. Fill from Acceleration argument if missing
         if acceleration is not None:
-             if val_ax is None: val_ax = acceleration[0]
-             if val_ay is None: val_ay = acceleration[1]
-             
+             if val_ax is None and len(acceleration) > 0:
+                 val_ax = acceleration[0]
+             if val_ay is None and len(acceleration) > 1:
+                 val_ay = acceleration[1]
+
         # 4. Fill missing GPS/State vars with current estimate
         if self.use_8d_system:
-            idx_psi = self.IDX8_PSI
-            idx_X = self.IDX8_X
-            idx_Y = self.IDX8_Y
+            idx_psi = IDX8_PSI
+            idx_X = IDX8_X
+            idx_Y = IDX8_Y
         else:
-            idx_psi = self.IDX_PSI
-            idx_X = self.IDX_X
-            idx_Y = self.IDX_Y
-            
+            idx_psi = IDX_PSI
+            idx_X = IDX_X
+            idx_Y = IDX_Y
+
         if val_psi is None: val_psi = self.state_hat[idx_psi]
         if val_X is None: val_X = self.state_hat[idx_X]
         if val_Y is None: val_Y = self.state_hat[idx_Y]
-        
+
         # 5. Populate Result Vector
         if self.use_8d_system:
-            y[self.MEAS8_IDX_PSI] = val_psi
-            y[self.MEAS8_IDX_X] = val_X
-            y[self.MEAS8_IDX_Y] = val_Y
-            y[self.MEAS8_IDX_AY] = val_ay if val_ay is not None else 0.0
-            y[self.MEAS8_IDX_AX] = val_ax if val_ax is not None else 0.0
+            y[MEAS8_IDX_PSI] = val_psi
+            y[MEAS8_IDX_X] = val_X
+            y[MEAS8_IDX_Y] = val_Y
+            y[MEAS8_IDX_AY] = val_ay if val_ay is not None else 0.0
+            y[MEAS8_IDX_AX] = val_ax if val_ax is not None else 0.0
         else:
-            y[self.MEAS_IDX_PSI] = val_psi
-            y[self.MEAS_IDX_X] = val_X
-            y[self.MEAS_IDX_Y] = val_Y
-            y[self.MEAS_IDX_AY] = val_ay if val_ay is not None else (val_r * val_vx)
-            # 6D system typically doesn't hold AX in y
-        
+            y[MEAS_IDX_PSI] = val_psi
+            y[MEAS_IDX_X] = val_X
+            y[MEAS_IDX_Y] = val_Y
+            y[MEAS_IDX_AY] = val_ay if val_ay is not None else (val_r * val_vx)
+            # Optional a_x channel if available in measurement space
+            if val_ax is not None and self.meas_dim > MEAS_IDX_AX:
+                y[MEAS_IDX_AX] = val_ax
+
         return y
 
-    
+
+
+
     def get_state(self) -> np.ndarray:
         """Get current 6D state estimate [v_x, v_y, ψ, r, X, Y]"""
         return self.state_hat.copy()
-    
+
     def get_tire_residuals(self) -> np.ndarray:
         """Get current tire residual estimates [w_r, w_f]"""
         return self.w_hat.copy()
-    
+
     def get_augmented_state(self) -> np.ndarray:
         """Get full augmented state [x; w]"""
         return self.state_augmented.copy()
-    
+
     def get_unknown_input(self) -> np.ndarray:
         """Get unknown input estimate (alias for tire residuals)"""
         return self.w_hat.copy()
-    
+
     def get_ay_constraint(self) -> float:
         """
         Get the a_y-based constraint on tire residuals
-        
+
         Returns m·ã_y ≈ w_r + cos(δ)·w_f
         """
         return self.w_constraint
-    
+
     def check_uio_rank_condition(self, delta: float) -> bool:
         """
         Check UIO existence condition (rank condition)
-        
+
         rank([C·E; F]) = rank(E) = 2
-        
+
         This should be satisfied for normal driving conditions.
-        
+
         Args:
             delta: Current steering angle
-            
+
         Returns:
             True if rank condition is satisfied
         """
         rho = self.compute_scheduling_params(self.state_hat, delta)
-        
+
         C = self.compute_C_matrix(rho)
         E = self.compute_E_matrix(rho)
         F = self.compute_F_matrix(rho)
-        
+
         # Stack CE and F
         CE = C @ E
         stacked = np.vstack([CE, F])
-        
+
         # Compute ranks
         rank_stacked = np.linalg.matrix_rank(stacked)
         rank_E = np.linalg.matrix_rank(E)
-        
+
         return rank_stacked == rank_E == 2
-    
-    
+
+
     def reset(self, initial_state: Optional[np.ndarray] = None, 
               initial_position: Optional[np.ndarray] = None):
         """
         Reset observer state
-        
+
         Args:
             initial_state: Initial state [v_x, v_y, ψ, r, X, Y] or [v_x, v_y, ψ, r]
             initial_position: Initial position [X, Y] if not in initial_state
@@ -993,35 +1324,42 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
                 self.state_hat[:len(initial_state)] = initial_state
                 if initial_position is not None:
                     if self.use_8d_system:
-                         self.state_hat[self.IDX8_X] = initial_position[0]
-                         self.state_hat[self.IDX8_Y] = initial_position[1]
+                        self.state_hat[IDX8_X] = initial_position[0]
+                        self.state_hat[IDX8_Y] = initial_position[1]
                     else:
-                         self.state_hat[self.IDX_X] = initial_position[0]
-                         self.state_hat[self.IDX_Y] = initial_position[1]
+                        self.state_hat[IDX_X] = initial_position[0]
+                        self.state_hat[IDX_Y] = initial_position[1]
         else:
             self.state_hat = np.zeros(self.state_dim)
             if initial_position is not None:
                 if self.use_8d_system:
-                     self.state_hat[self.IDX8_X] = initial_position[0]
-                     self.state_hat[self.IDX8_Y] = initial_position[1]
+                    self.state_hat[IDX8_X] = initial_position[0]
+                    self.state_hat[IDX8_Y] = initial_position[1]
                 else:
-                     self.state_hat[self.IDX_X] = initial_position[0]
-                     self.state_hat[self.IDX_Y] = initial_position[1]
+                    self.state_hat[IDX_X] = initial_position[0]
+                    self.state_hat[IDX_Y] = initial_position[1]
         self.current_steering_angle = 0.0
+        if self.rdot_diff is not None:
+            self.rdot_diff.reset(0.0)
+            self.rdot_meas = 0.0
+        # Reset yaw wrap tracking
+        self.yaw_wrap_counter = 0
+        self.prev_psi_meas = 0.0
+        self.observability_flags = np.ones(self.udim)
         # Reset augmented state
         self.state_augmented = np.zeros(self.augmented_dim)
         self.state_augmented[:self.state_dim] = self.state_hat
-        
+
         # Reset tire residuals
         self.w_hat = np.zeros(self.udim)
         self.f_uk_hat = np.zeros(self.udim)
-        
+
         # Reset EKF covariance to initial
         self.P = self._default_P0()
-        
+
         # Reset Kalman gain
         self.K = np.zeros((self.augmented_dim, self.meas_dim))
-        
+
         # Reset innovation
         self.innovation = np.zeros(self.meas_dim)
 
@@ -1032,98 +1370,100 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         end_idx = self.state_dim + self.udim
         return self.state_augmented[start_idx:end_idx].copy()
 
-    def get_tire_residual_estimate(self) -> np.ndarray:
-        """Alias for get_unknown_input_estimate (compatibility)"""
-        return self.get_unknown_input_estimate()
-        
-        # Reset gyro bias
-        self.gyro_bias = 0.0
-        
-        # Reset innovations
-        self.ay_innovation = 0.0
-        self.w_constraint = 0.0
-    
+
     # =========================================================
     # EKF Diagnostic Getters
     # =========================================================
-    
+
     def get_covariance(self) -> np.ndarray:
         """Get current error covariance matrix P (8×8)"""
         return self.P.copy()
-    
+
     def get_kalman_gain(self) -> np.ndarray:
         """Get current Kalman gain matrix K (8×6)"""
         return self.K.copy()
-    
+
     def get_innovation(self) -> np.ndarray:
         """Get last innovation (measurement residual) vector"""
         return self.innovation.copy()
-    
+
     def get_state_uncertainty(self) -> np.ndarray:
         """
         Get state estimation uncertainty (standard deviations)
-        
         Returns diagonal of sqrt(P) for state portion
         """
-        return np.sqrt(np.diag(self.P)[:self.STATE_DIM])
-    
+        return np.sqrt(np.diag(self.P)[:self.state_dim])
     def get_residual_uncertainty(self) -> np.ndarray:
         """
         Get tire residual estimation uncertainty (standard deviations)
-        
         Returns diagonal of sqrt(P) for residual portion
         """
-        return np.sqrt(np.diag(self.P)[self.STATE_DIM:])
-    
+        return np.sqrt(np.diag(self.P)[self.state_dim:])
+
+    def get_observability_flags(self) -> np.ndarray:
+        """
+        Get current observability flags for disturbance components.
+        
+        Returns:
+            Array of flags [0, 1] per disturbance component:
+            - 1.0 = fully observable
+            - 0.0 = unobservable (being decayed)
+            - 0.5 = partially observable
+        """
+        return self.observability_flags.copy()
+
+    def get_yaw_wrap_status(self) -> Tuple[bool, int]:
+        """
+        Get yaw wrap gating status.
+        
+        Returns:
+            Tuple of (is_wrapping, samples_remaining)
+        """
+        return (self.yaw_wrap_counter > 0, self.yaw_wrap_counter)
+
     # =========================================================
     # Tuning Methods
     # =========================================================
-    
+
     def set_Q(self, Q: np.ndarray):
         """
         Set process noise covariance Q
-        
         Args:
             Q: Process noise covariance (8×8)
         """
-        if Q.shape != (self.AUGMENTED_DIM, self.AUGMENTED_DIM):
-            raise ValueError(f"Q must be {self.AUGMENTED_DIM}×{self.AUGMENTED_DIM}")
-        self.Q = Q.copy()
-    
+        if Q.shape != (self.augmented_dim, self.augmented_dim):
+            raise ValueError(f"Q must be {self.augmented_dim}×{self.augmented_dim}")
+        self.Q_base = Q.copy()
     def set_R(self, R: np.ndarray):
         """
         Set measurement noise covariance R
-        
         Args:
             R: Measurement noise covariance (6×6)
         """
-        if R.shape != (self.MEAS_DIM, self.MEAS_DIM):
-            raise ValueError(f"R must be {self.MEAS_DIM}×{self.MEAS_DIM}")
+        if R.shape != (self.meas_dim, self.meas_dim):
+            raise ValueError(f"R must be {self.meas_dim}×{self.meas_dim}")
         self.R = R.copy()
-    
     def set_P(self, P: np.ndarray):
         """
         Set error covariance P (for re-initialization)
-        
         Args:
             P: Error covariance (8×8)
         """
-        if P.shape != (self.AUGMENTED_DIM, self.AUGMENTED_DIM):
-            raise ValueError(f"P must be {self.AUGMENTED_DIM}×{self.AUGMENTED_DIM}")
+        if P.shape != (self.augmented_dim, self.augmented_dim):
+            raise ValueError(f"P must be {self.augmented_dim}×{self.augmented_dim}")
         self.P = P.copy()
-
 
 def create_qlpv_observer(sample_time: float = 0.02,
                          vehicle_params: Optional[Dict] = None,
                          **kwargs) -> qLPVKalmanObserver:
     """
     Factory function to create qLPV augmented-state observer
-    
+
     Args:
         sample_time: Sample time [s]
         vehicle_params: Vehicle parameters dictionary
         **kwargs: Additional arguments passed to constructor
-        
+
     Returns:
         Configured qLPVAugmentedObserver instance
     """
@@ -1132,3 +1472,178 @@ def create_qlpv_observer(sample_time: float = 0.02,
         vehicle_params=vehicle_params,
         **kwargs
     )
+
+
+# def create_realworld_observer(config_path: Optional[str] = None,
+#                                sample_time: float = 0.02,
+#                                vehicle_params: Optional[Dict] = None) -> qLPVKalmanObserver:
+#     """
+#     Factory function to create optimized observer for real-world 1/10 scale car.
+    
+#     This function creates a qLPVKalmanObserver with all improvements for real hardware:
+#     - Optimized Q/R/P0 matrices for 1/10 scale dynamics
+#     - Enabled r_dot differentiator for d_r observability
+#     - Proper excitation gating and decay
+#     - Tuned for typical QCar sensor characteristics
+    
+#     Args:
+#         config_path: Path to YAML config file. If None, uses built-in defaults.
+#         sample_time: Sample time [s] (default 0.02 = 50Hz)
+#         vehicle_params: Vehicle parameters dict (overrides config file)
+        
+#     Returns:
+#         Configured qLPVKalmanObserver optimized for real-world use
+        
+#     Example:
+#         >>> observer = create_realworld_observer()
+#         >>> state, disturbance = observer.update(measurement, control)
+#     """
+#     import yaml
+    
+#     # Default configuration optimized for 1/10 scale QCar
+#     default_config = {
+#         # Process noise Q (9D for general mode: 6 states + 3 disturbances)
+#         'Q_diag': [
+#             0.05,   # vx - encoder is accurate
+#             1.0,    # vy - HIGH: weakly observable, let filter adapt
+#             0.001,  # psi - heading well-measured
+#             0.1,    # r - gyro is good
+#             0.02,   # X - GPS
+#             0.02,   # Y - GPS
+#             2.0,    # d_vx - model uncertainty
+#             5.0,    # d_vy - HIGH: key for v_y estimation
+#             1.0,    # d_r - moderate
+#         ],
+#         # Measurement noise R (7D: vx, r, psi, X, Y, ay, ax)
+#         'R_diag': [
+#             0.01,    # vx (m/s)²
+#             0.0001,  # r (rad/s)² - IMU gyro very accurate
+#             0.0004,  # psi (rad)²
+#             0.04,    # X (m)² - GPS ~0.2m std
+#             0.04,    # Y (m)²
+#             0.01,    # ay (m/s²)²
+#             0.01,    # ax (m/s²)²
+#         ],
+#         # Initial covariance P0
+#         'P0_diag': [
+#             0.5,    # vx
+#             2.0,    # vy - uncertain
+#             0.1,    # psi
+#             0.1,    # r
+#             1.0,    # X
+#             1.0,    # Y
+#             1.0,    # d_vx
+#             5.0,    # d_vy - uncertain
+#             2.0,    # d_r
+#         ],
+#         # r_dot differentiator settings
+#         'use_rdot_differentiator': True,
+#         'rdot_diff_type': 'highgain',
+#         'rdot_diff_omega': 30.0,
+#         'rdot_diff_zeta': 0.9,
+#         'rdot_diff_ydot_max': 5.0,
+#         'rdot_meas_var': 0.1,
+#         # Excitation gating (disabled by default for debugging)
+#         'enable_excitation_gating': False,
+#         'ay_excitation_threshold': 0.05,
+#         'rdot_excitation_threshold': 0.1,
+#         'r_excitation_threshold': 0.02,
+#         # Disturbance decay
+#         'enable_disturbance_decay': True,
+#         'decay_only_when_unexcited': True,
+#         'decay_rate_dvx': 0.3,
+#         'decay_rate_dvy': 0.5,
+#         'decay_rate_dr': 1.0,
+#         # System mode
+#         'disturbance_mode': 'general',
+#         'use_8d_system': False,
+#     }
+    
+#     # Load config from YAML if provided
+#     if config_path is not None:
+#         with open(config_path, 'r', encoding='utf-8') as f:
+#             yaml_config = yaml.safe_load(f)
+        
+#         # Parse YAML structure into flat config
+#         if 'process_noise' in yaml_config:
+#             pn = yaml_config['process_noise']
+#             default_config['Q_diag'] = [
+#                 pn.get('vx', 0.05), pn.get('vy', 1.0), pn.get('psi', 0.001),
+#                 pn.get('r', 0.1), pn.get('X', 0.02), pn.get('Y', 0.02),
+#                 pn.get('d_vx', 2.0), pn.get('d_vy', 5.0), pn.get('d_r', 1.0),
+#             ]
+        
+#         if 'measurement_noise' in yaml_config:
+#             mn = yaml_config['measurement_noise']
+#             default_config['R_diag'] = [
+#                 mn.get('vx', 0.01), mn.get('r', 0.0001), mn.get('psi', 0.0004),
+#                 mn.get('X', 0.04), mn.get('Y', 0.04),
+#                 mn.get('ay', 0.01), mn.get('ax', 0.01),
+#             ]
+        
+#         if 'rdot_differentiator' in yaml_config:
+#             rd = yaml_config['rdot_differentiator']
+#             default_config['use_rdot_differentiator'] = rd.get('enable', True)
+#             default_config['rdot_diff_type'] = rd.get('type', 'highgain')
+#             default_config['rdot_diff_omega'] = rd.get('omega', 30.0)
+#             default_config['rdot_diff_zeta'] = rd.get('zeta', 0.9)
+#             default_config['rdot_diff_ydot_max'] = rd.get('ydot_max', 5.0)
+#             default_config['rdot_meas_var'] = rd.get('rdot_meas_var', 0.1)
+        
+#         if 'excitation_gating' in yaml_config:
+#             eg = yaml_config['excitation_gating']
+#             default_config['enable_excitation_gating'] = eg.get('enable', False)
+#             default_config['ay_excitation_threshold'] = eg.get('ay_threshold', 0.05)
+#             default_config['rdot_excitation_threshold'] = eg.get('rdot_threshold', 0.1)
+#             default_config['r_excitation_threshold'] = eg.get('r_threshold', 0.02)
+        
+#         if 'disturbance_decay' in yaml_config:
+#             dd = yaml_config['disturbance_decay']
+#             default_config['enable_disturbance_decay'] = dd.get('enable', True)
+#             default_config['decay_only_when_unexcited'] = dd.get('decay_only_when_unexcited', True)
+#             default_config['decay_rate_dvx'] = dd.get('d_vx_rate', 0.3)
+#             default_config['decay_rate_dvy'] = dd.get('d_vy_rate', 0.5)
+#             default_config['decay_rate_dr'] = dd.get('d_r_rate', 1.0)
+        
+#         if 'observer' in yaml_config:
+#             obs = yaml_config['observer']
+#             default_config['disturbance_mode'] = obs.get('disturbance_mode', 'general')
+#             default_config['use_8d_system'] = obs.get('use_8d_system', False)
+#             if 'sample_time' in obs:
+#                 sample_time = obs['sample_time']
+    
+#     # Build Q, R, P0 matrices
+#     Q = np.diag(default_config['Q_diag'])
+#     R = np.diag(default_config['R_diag'])
+#     P0 = np.diag(default_config['P0_diag'])
+    
+#     # Create observer with all improvements
+#     observer = qLPVKalmanObserver(
+#         sample_time=sample_time,
+#         vehicle_params=vehicle_params,
+#         Q=Q,
+#         R=R,
+#         P0=P0,
+#         use_8d_system=default_config['use_8d_system'],
+#         disturbance_mode=default_config['disturbance_mode'],
+#         # r_dot differentiator
+#         use_rdot_differentiator=default_config['use_rdot_differentiator'],
+#         rdot_diff_type=default_config['rdot_diff_type'],
+#         rdot_diff_omega=default_config['rdot_diff_omega'],
+#         rdot_diff_zeta=default_config['rdot_diff_zeta'],
+#         rdot_diff_ydot_max=default_config['rdot_diff_ydot_max'],
+#         rdot_meas_var=default_config['rdot_meas_var'],
+#         # Excitation gating
+#         enable_excitation_gating=default_config['enable_excitation_gating'],
+#         ay_excitation_threshold=default_config['ay_excitation_threshold'],
+#         rdot_excitation_threshold=default_config['rdot_excitation_threshold'],
+#         r_excitation_threshold=default_config['r_excitation_threshold'],
+#         # Disturbance decay
+#         enable_disturbance_decay=default_config['enable_disturbance_decay'],
+#         decay_only_when_unexcited=default_config['decay_only_when_unexcited'],
+#         decay_rate_dvx=default_config['decay_rate_dvx'],
+#         decay_rate_dvy=default_config['decay_rate_dvy'],
+#         decay_rate_dr=default_config['decay_rate_dr'],
+#     )
+    
+#     return observer

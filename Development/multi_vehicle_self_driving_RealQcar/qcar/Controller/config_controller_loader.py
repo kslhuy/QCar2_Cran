@@ -207,9 +207,10 @@ class ControllerConfig:
         stanley_config = self.config.get('stanley', {})
         
         return {
+            'lookahead_offset': stanley_config.get('lookahead_offset', 0.2),
             'k_e': stanley_config.get('k_e', 0.5),
             'k_soft': stanley_config.get('k_soft', 1.0),
-            'max_steering': stanley_config.get('max_steering', 0.55),
+            'max_steering': stanley_config.get('max_steering', 0.5),
         }
     
     def _get_lookahead_params(self) -> Dict[str, Any]:

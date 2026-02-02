@@ -24,7 +24,7 @@ neural_network:
   use_acceleration: false
 
   # Disturbance estimation mode: 'tire' (default 2D: [w_r, w_f]) or 'general' (3D: [d_vx, d_vy, d_r])
-  disturbance_mode: 'tire'
+  disturbance_mode: 'general'
 
 # ============================================================================
 # Learning Parameters
@@ -97,10 +97,11 @@ observer_gain_design:
   
   # H∞ performance bound γ: ||error|| ≤ γ||disturbance||
   # Smaller = better attenuation but harder to satisfy (typical: 1.0-5.0)
-  hinf_gamma: 3.0
+  # NOTE: Higher values needed for 'general' (3D) disturbance mode
+  hinf_gamma: 50.0
   
   # L2 gain bound (for 'l2' method, typical: 1.0-3.0)
-  l2_gamma: 3.0
+  l2_gamma: 50.0
   
   # Minimum exponential decay rate α for continuous LMI (controls convergence speed)
   # Larger = faster convergence but may be infeasible (typical: 0.1-2.0)
@@ -108,23 +109,24 @@ observer_gain_design:
   
   # Contraction rate λ for discrete-time design (0 < λ < 1)
   # Smaller = faster error decay, but may be infeasible (typical: 0.9-0.99)
-  contraction_rate: 0.95
+  contraction_rate: 0.96
   
   # Nominal velocity for single-point LMI design [m/s]
-  nominal_vx: 0.6
+  nominal_vx: 0.5
   
   # Enable qLPV polytopic gain scheduling (works with any method as enhancement)
   use_gain_scheduling: true
   
   # Velocity range for gain scheduling [m/s]
-  vx_range: [0.1, 2.0]
+  # NOTE: min_vx >= 0.5 recommended to avoid numerical issues in tire model
+  vx_range: [0.2, 2.0]
   
   # Maximum steering angle for scheduling [rad]
   delta_max: 0.5
   
   # Number of polytope vertices
-  n_vx_vertices: 4
-  n_delta_vertices: 4
+  n_vx_vertices: 3
+  n_delta_vertices: 3
   
 
 
@@ -137,7 +139,7 @@ observer_gain_design:
 #
 loss:
   # Loss function type
-  type: measurement_full
+  type: composite_uio
 
 # ============================================================================
 # Weight Matrices for Loss Functions
@@ -158,8 +160,8 @@ weights_measurement:
 weights_ref:
   v_x: 5.0
   v_y: 5.0
-  psi: 5.0
-  psi_dot: 5.0
+  psi: 3.0
+  psi_dot: 3.0
   X: 1.0
   Y: 1.0
 
@@ -176,6 +178,8 @@ weights_uio:
 # First-Layer Observer Configuration
 # ============================================================================
 # Available first-layer observer types:
+#   - 'huy_uio': Linear observer with LMI-based gain design
+#             Best for: Well-understood dynamics, robust stability guarantees
 #   - 'qlpv': qLPV Augmented-State Observer with LMI-based gain design
 #             Best for: Well-understood dynamics, robust stability guarantees
 #   - 'qlpv_kalman': qLPV Augmented-State Observer with EKF-style Kalman gains
@@ -187,7 +191,7 @@ weights_uio:
 #
 first_layer:
   # Enable two-layer architecture with first-layer observer
-  enabled: true
+  enabled: false
   
   # First-layer observer type (see options above)
   type: qlpv_kalman

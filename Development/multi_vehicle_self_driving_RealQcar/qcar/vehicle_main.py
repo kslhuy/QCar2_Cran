@@ -259,11 +259,11 @@ def main():
         vehicle_logic.v_ref = args.v_ref
         print(f"[CONFIG] Velocity reference overridden to: {args.v_ref} m/s")
     
-    print("\n[READY] Vehicle controller created and ready")
-    print("="*70)
-    print("Starting control loop... (Press Ctrl+C to stop)")
-    print("="*70)
-    print()
+    # print("\n[READY] Vehicle controller created and ready")
+    # print("="*70)
+    # print("Starting control loop... (Press Ctrl+C to stop)")
+    # print("="*70)
+    # print()
     
     # Start control loop directly
     try:

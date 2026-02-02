@@ -55,34 +55,10 @@ from qlpv_vehicle_dynamics_obs import (
 )
 
 
-# =============================================================================
-# Basic LMI Utilities
-# =============================================================================
 
-def validate_observer_gain(A: np.ndarray, C: np.ndarray, L: np.ndarray,
-                           max_real_part: float = -0.1) -> bool:
-    """
-    Validate that observer gain produces stable error dynamics.
-    
-    Checks that all eigenvalues of (A - L @ C) have negative real parts.
-    
-    Args:
-        A: State matrix (n × n)
-        C: Output matrix (m × n)  
-        L: Observer gain (n × m)
-        max_real_part: Maximum allowed real part of eigenvalues
-        
-    Returns:
-        True if gain is valid (all eigenvalues stable)
-    """
-    try:
-        A_cl = A - L @ C
-        eigenvalues = np.linalg.eigvals(A_cl)
-        max_eig_real = np.max(np.real(eigenvalues))
-        return max_eig_real < max_real_part
-    except:
-        return False
-
+# =============================================================================
+# Continuous-time LMI-based Observer Gain Design
+# =============================================================================
 
 
 def compute_lmi_observer_gain(A: np.ndarray, C: np.ndarray, 
@@ -175,10 +151,10 @@ def compute_lmi_observer_gain(A: np.ndarray, C: np.ndarray,
     
     return L
 
-
 # =============================================================================
 # H∞ and L2 LMI-based Observer Gain Design
 # =============================================================================
+
 
 def compute_hinf_lmi_observer_gain(A: np.ndarray, C: np.ndarray, E: np.ndarray,
                                     gamma: float = 2.0, decay_rate: float = 0.5,
@@ -448,30 +424,6 @@ def discretize_system_zoh(A_c: np.ndarray, B_c: np.ndarray, E_c: np.ndarray,
     
     return A_d, B_d, E_d
 
-
-def validate_discrete_observer_gain(A_d: np.ndarray, C: np.ndarray, L: np.ndarray,
-                                     max_spectral_radius: float = 0.99) -> bool:
-    """
-    Validate that discrete observer gain produces stable error dynamics.
-    
-    Checks that all eigenvalues of (A_d - L @ C) are inside the unit circle.
-    
-    Args:
-        A_d: Discrete state matrix (n × n)
-        C: Output matrix (m × n)  
-        L: Observer gain (n × m)
-        max_spectral_radius: Maximum allowed spectral radius (< 1 for stability)
-        
-    Returns:
-        True if gain is valid (all eigenvalues inside unit circle)
-    """
-    try:
-        A_cl = A_d - L @ C
-        eigenvalues = np.linalg.eigvals(A_cl)
-        spectral_radius = np.max(np.abs(eigenvalues))
-        return spectral_radius < max_spectral_radius
-    except:
-        return False
 
 
 def compute_discrete_hinf_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d: np.ndarray,
@@ -871,6 +823,60 @@ def compute_pole_placement_gain(A: np.ndarray, C: np.ndarray,
     except Exception:
         # Fallback to simple diagonal gain
         return np.diag([2.0, 2.0, 1.0, 2.0, 0.5, 0.5])[:n,:m]
+
+
+def validate_discrete_observer_gain(A_d: np.ndarray, C: np.ndarray, L: np.ndarray,
+                                     max_spectral_radius: float = 0.99) -> bool:
+    """
+    Validate that discrete observer gain produces stable error dynamics.
+    
+    Checks that all eigenvalues of (A_d - L @ C) are inside the unit circle.
+    
+    Args:
+        A_d: Discrete state matrix (n × n)
+        C: Output matrix (m × n)  
+        L: Observer gain (n × m)
+        max_spectral_radius: Maximum allowed spectral radius (< 1 for stability)
+        
+    Returns:
+        True if gain is valid (all eigenvalues inside unit circle)
+    """
+    try:
+        A_cl = A_d - L @ C
+        eigenvalues = np.linalg.eigvals(A_cl)
+        spectral_radius = np.max(np.abs(eigenvalues))
+        return spectral_radius < max_spectral_radius
+    except:
+        return False
+
+
+# =============================================================================
+# Basic LMI Utilities
+# =============================================================================
+
+def validate_observer_gain(A: np.ndarray, C: np.ndarray, L: np.ndarray,
+                           max_real_part: float = -0.1) -> bool:
+    """
+    Validate that observer gain produces stable error dynamics.
+    
+    Checks that all eigenvalues of (A - L @ C) have negative real parts.
+    
+    Args:
+        A: State matrix (n × n)
+        C: Output matrix (m × n)  
+        L: Observer gain (n × m)
+        max_real_part: Maximum allowed real part of eigenvalues
+        
+    Returns:
+        True if gain is valid (all eigenvalues stable)
+    """
+    try:
+        A_cl = A - L @ C
+        eigenvalues = np.linalg.eigvals(A_cl)
+        max_eig_real = np.max(np.real(eigenvalues))
+        return max_eig_real < max_real_part
+    except:
+        return False
 
 
 # =============================================================================

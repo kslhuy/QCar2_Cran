@@ -35,7 +35,7 @@ pid:
   kd: 0.005                  # Derivative gain
   max_throttle: 0.1          # Maximum throttle output
   ei_max: 1.0                # Integral anti-windup limit
-  v_ref: 0.6                # Default reference velocity (m/s)
+  v_ref: 1                # Default reference velocity (m/s)
 
 
 
@@ -73,7 +73,8 @@ pure_pursuit:
 
 # Stanley Controller Parameters
 stanley:
-  k_e: 0.5                   # Cross-track error gain
+  lookahead_offset: 0.2        # Lookahead distance offset (meters)
+  k_e: 0.7                   # Cross-track error gain
   k_soft: 1.0                # Softening gain to prevent division by zero
   max_steering: 0.5         # Maximum steering angle (radians)
 

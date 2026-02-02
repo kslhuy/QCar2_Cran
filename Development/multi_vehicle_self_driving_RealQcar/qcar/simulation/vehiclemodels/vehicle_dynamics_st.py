@@ -47,6 +47,22 @@ def vehicle_dynamics_st(x, uInit, p):
     m = p.m
     I = p.I_z
 
+    # Stiffness ramping to avoid low-speed singularity (matches observer logic)
+    # Blend from 0% at 0.1 m/s to 100% at 2.0 m/s
+    vx = abs(x[3])
+    blend_min = 0.1
+    blend_max = 1.0
+    
+    if vx <= blend_min:
+        stiffness_scale = 0.0
+    elif vx >= blend_max:
+        stiffness_scale = 1.0
+    else:
+        stiffness_scale = (vx - blend_min) / (blend_max - blend_min)
+        
+    C_Sf = C_Sf * stiffness_scale
+    C_Sr = C_Sr * stiffness_scale
+
     # states
     # x1 = x-position in a global coordinate system
     # x2 = y-position in a global coordinate system

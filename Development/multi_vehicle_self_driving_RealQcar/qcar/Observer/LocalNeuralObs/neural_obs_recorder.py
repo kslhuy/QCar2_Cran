@@ -116,7 +116,7 @@ class NeuralObsRecorder:
             cols.extend(['Fyr_true', 'Fyf_true', 'Fyr_linear', 'Fyf_linear', 'alpha_r', 'alpha_f'])
             
         # 5. Measurements & Inputs & Stats
-        cols.extend(['vx_meas', 'r_meas', 'psi_meas', 'X_meas', 'Y_meas', 'ay_meas'])
+        cols.extend(['vx_meas', 'r_meas', 'psi_meas', 'X_meas', 'Y_meas', 'ax_meas', 'ay_meas'])
         cols.extend(['steering', 'throttle', 'gps_valid'])
         
         if self.mode == '2layer':
@@ -245,6 +245,7 @@ class NeuralObsRecorder:
             row['X_meas'] = measurements.get('X', 0.0)
             row['Y_meas'] = measurements.get('Y', 0.0)
             row['ay_meas'] = measurements.get('ay', 0.0)
+            row['ax_meas'] = measurements.get('ax', 0.0)
             
             # Control inputs
             row['steering'] = steering
@@ -316,6 +317,7 @@ class NeuralObsRecorder:
             row['X_meas'] = measurements.get('X', 0.0)
             row['Y_meas'] = measurements.get('Y', 0.0)
             row['ay_meas'] = measurements.get('ay', 0.0)
+            row['ax_meas'] = measurements.get('ax', 0.0)
             
             # Neural network outputs
             self._fill_dist_to_row(row, nn_outputs, suffix="_nn")

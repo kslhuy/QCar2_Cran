@@ -33,9 +33,9 @@ class FakeVehicleWithRealLogic:
     """Fake vehicle that uses the real VehicleLogic class with modular MockQCar"""
     
     def __init__(self, car_id: int, host_ip: str, base_port: int, 
-                 dynamic_model_type: int = 0, 
-                 vehicle_params: str = 'qcar', 
-                 tire_model: str = 'pacejka'):
+                 dynamic_model_type: Optional[int] = None, 
+                 vehicle_params: Optional[str] = None, 
+                 tire_model: Optional[str] = None):
         self.car_id = car_id
         self.host_ip = host_ip
         self.base_port = base_port
@@ -51,11 +51,17 @@ class FakeVehicleWithRealLogic:
 
         # Override with arguments
         self.sim_config['vehicle']['id'] = car_id
-        # Map dynamic_model_type int to string config
-        model_map = {0: 'kinematic', 1: 'dynamic', 2: 'qlpv_legacy', 3: 'qlpv_matrix'}
-        self.sim_config['vehicle']['model_type'] = model_map.get(dynamic_model_type, 'kinematic')
-        self.sim_config['vehicle']['params_file'] = vehicle_params
-        self.sim_config['vehicle']['tire_model'] = tire_model
+        
+        # Map dynamic_model_type int to string config ONLY if provided
+        if dynamic_model_type is not None:
+            model_map = {0: 'kinematic', 1: 'dynamic', 2: 'qlpv_legacy', 3: 'qlpv_matrix'}
+            self.sim_config['vehicle']['model_type'] = model_map.get(dynamic_model_type, 'kinematic')
+            
+        if vehicle_params is not None:
+            self.sim_config['vehicle']['params_file'] = vehicle_params
+            
+        if tire_model is not None:
+            self.sim_config['vehicle']['tire_model'] = tire_model
         
         # Create mock hardware
         self.mock_qcar = MockQCar(self.sim_config)
@@ -93,7 +99,9 @@ class FakeVehicleWithRealLogic:
         config.logging.enable_telemetry_logging = True
         config.timing.controller_update_rate = 200
         config.timing.telemetry_send_rate = 20
-        config.timing.tf = 300.0
+        config.timing.tf = 500.0
+
+        config.path.path_number = 2 
         return config
     
     def _replace_initialization_state_only(self):
@@ -195,9 +203,9 @@ def main():
     car_id = 0
     host_ip = '127.0.0.1'
     base_port = 5000
-    dynamic_model_type = 1 
-    vehicle_params = 'qcar'
-    tire_model = 'static_linear'
+    dynamic_model_type = None 
+    vehicle_params = None
+    tire_model = None
     
     # Parse args (Backward functionality)
     args = sys.argv[1:]

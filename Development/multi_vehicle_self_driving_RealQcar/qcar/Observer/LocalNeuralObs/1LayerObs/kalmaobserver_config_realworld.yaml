@@ -1,0 +1,176 @@
+# =============================================================================
+# Observer Configuration for Real-World 1/10 Scale QCar
+# =============================================================================
+# This configuration is optimized for real hardware with:
+# - Proper sensor noise characteristics
+# - Improved observability for v_y and disturbances
+# - r_dot differentiator for d_r estimation
+# - Tuned gating/decay for practical operation
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Observer Selection
+# -----------------------------------------------------------------------------
+observer:
+  type: "qlpv_kalman"           # EKF-based qLPV observer (best for real-world)
+  sample_time: 0.02             # 50 Hz update rate (match your control loop)
+  
+  # State system dimension
+  use_8d_system: false          # Use 6D state (recommended for stability)
+  
+  # Disturbance mode: 'tire' (2D) or 'general' (3D)
+  # 'general' mode estimates [d_vx, d_vy, d_r] additive disturbances
+  disturbance_mode: "general"
+
+# -----------------------------------------------------------------------------
+# Process Noise Covariance Q (Augmented State: 9D for general mode)
+# -----------------------------------------------------------------------------
+# Q controls how much the filter trusts the model vs measurements
+# Larger Q = model is uncertain, trust measurements more
+# Smaller Q = model is accurate, trust model predictions
+#
+# For 1/10 scale car at ~1-2 m/s:
+# - v_y is WEAKLY observable (only through a_y coupling)
+# - d_r is WEAKLY observable (no direct measurement)
+# -----------------------------------------------------------------------------
+process_noise:
+  # State noise (6D: [vx, vy, psi, r, X, Y])
+  vx: 0.05                      # Good encoder measurement
+  vy: 1.0                       # HIGH: v_y is hard to estimate, let filter adapt
+  psi: 0.001                    # Low: Heading is well-measured by GPS/IMU fusion
+  r: 0.1                        # Moderate: Gyro is good but model has uncertainty
+  X: 0.02                       # GPS noise handled in R
+  Y: 0.02                       # GPS noise handled in R
+  
+  # Disturbance noise (3D for general mode: [d_vx, d_vy, d_r])
+  # These are modeled as random walks: larger Q allows faster tracking
+  d_vx: 2.0                     # Moderate: captures throttle/brake model error
+  d_vy: 5.0                     # HIGH: this is the key for v_y estimation!
+  d_r: 1.0                      # Moderate: r_dot differentiator helps observability
+
+# -----------------------------------------------------------------------------
+# Measurement Noise Covariance R (7D: [vx, r, psi, X, Y, ay, ax])
+# -----------------------------------------------------------------------------
+# R reflects actual sensor noise characteristics
+# Smaller R = trust sensor more
+# Larger R = sensor is noisy, rely more on model
+#
+# For QCar sensors:
+# - Encoder: good precision (~0.01 m/s)
+# - IMU gyro: good (~0.01 rad/s)
+# - IMU accel: moderate (~0.1 m/s²)
+# - GPS: moderate (~0.1-0.2 m position noise)
+# -----------------------------------------------------------------------------
+measurement_noise:
+  vx: 0.01                      # Encoder variance (m/s)²
+  r: 0.0001                     # Gyro variance (rad/s)² - IMU is very accurate
+  psi: 0.0004                   # Heading variance (rad)² - from GPS/IMU fusion
+  X: 0.04                       # GPS X variance (m)² - ~0.2m std dev
+  Y: 0.04                       # GPS Y variance (m)² - ~0.2m std dev
+  ay: 0.01                      # Lateral accel variance (m/s²)² - IMU
+  ax: 0.01                      # Longitudinal accel variance (m/s²)²
+
+# -----------------------------------------------------------------------------
+# Initial Covariance P0
+# -----------------------------------------------------------------------------
+initial_covariance:
+  vx: 0.5
+  vy: 2.0                       # High: uncertain about initial lateral velocity
+  psi: 0.1
+  r: 0.1
+  X: 1.0
+  Y: 1.0
+  d_vx: 1.0
+  d_vy: 5.0                     # High: uncertain about initial disturbance
+  d_r: 2.0
+
+# -----------------------------------------------------------------------------
+# r_dot Differentiator (CRITICAL for d_r observability)
+# -----------------------------------------------------------------------------
+# The differentiator estimates ṙ from r measurements, providing a 
+# "pseudo-measurement" that makes d_r observable.
+# Without this, d_r estimation will be very poor!
+# -----------------------------------------------------------------------------
+rdot_differentiator:
+  enable: true                  # MUST be true for good d_r estimation
+  type: "highgain"              # Options: highgain, levant, linear
+  
+  # High-gain differentiator parameters
+  # ẏ_est = -ω²(y_est - y_meas) + ẏ_est_dot
+  # ÿ_est = -2ζω·ẏ_est_dot - ω²·ẏ_est
+  omega: 30.0                   # Bandwidth [rad/s] - higher = faster but noisier
+  zeta: 0.9                     # Damping ratio - 0.7-1.0 typical
+  
+  # Output saturation (prevents noise amplification)
+  ydot_max: 5.0                 # Max |ṙ| estimate [rad/s²]
+  
+  # Measurement variance for r_dot pseudo-measurement
+  # Higher = less trust in differentiator output
+  rdot_meas_var: 0.1            # (rad/s²)² - tune based on noise level
+
+# -----------------------------------------------------------------------------
+# Excitation Gating (Prevents False Disturbance Estimation)
+# -----------------------------------------------------------------------------
+# When the vehicle drives straight with no lateral excitation, the 
+# disturbance states can drift due to noise. Gating prevents updates
+# when excitation is below threshold.
+#
+# IMPORTANT: Set thresholds LOW for real-world use!
+# -----------------------------------------------------------------------------
+excitation_gating:
+  enable: false                 # DISABLE for initial testing (see all behavior)
+  
+  # Only estimate d_vy when |a_y| exceeds this threshold
+  ay_threshold: 0.05            # [m/s²] - very low for 1/10 car
+  
+  # Only estimate d_r when |ṙ| (from differentiator) exceeds threshold
+  rdot_threshold: 0.1           # [rad/s²]
+  
+  # Fallback: if no differentiator, use |r| threshold
+  r_threshold: 0.02             # [rad/s]
+
+# -----------------------------------------------------------------------------
+# Disturbance Decay (Prevents Stuck Estimates)
+# -----------------------------------------------------------------------------
+# When excitation stops, slowly decay disturbance estimates toward zero.
+# Prevents old disturbance values from "sticking" forever.
+# -----------------------------------------------------------------------------
+disturbance_decay:
+  enable: true                  # Recommended: true
+  decay_only_when_unexcited: true  # Only decay when gating blocks updates
+  
+  # Decay time constants (λ = 1/τ)
+  # Value decays as: d(t) = d(0) * exp(-λ*t)
+  # τ=2s means ~63% decay in 2 seconds
+  d_vx_rate: 0.3                # [1/s] - slow decay
+  d_vy_rate: 0.5                # [1/s] - moderate decay
+  d_r_rate: 1.0                 # [1/s] - faster decay (less observable)
+
+# -----------------------------------------------------------------------------
+# Low-Speed Handling
+# -----------------------------------------------------------------------------
+# At very low speeds, the bicycle model becomes singular (1/vx → ∞)
+# These parameters handle the transition gracefully.
+# -----------------------------------------------------------------------------
+low_speed:
+  # Minimum velocity for dynamics (prevents division by zero)
+  min_vx: 0.1                   # [m/s]
+  
+  # Blending thresholds for kinematic/dynamic model
+  blend_vx_low: 0.1             # Below this: pure kinematic
+  blend_vx_high: 0.3            # Above this: pure dynamic
+  
+  # Force zero estimates when stopped
+  zero_velocity_threshold: 0.05 # [m/s]
+
+# -----------------------------------------------------------------------------
+# Vehicle Parameters Override (if different from parameters_qcar.yaml)
+# -----------------------------------------------------------------------------
+# Uncomment to override default vehicle parameters
+# vehicle_params:
+#   lf: 0.13                    # Distance from CG to front axle [m]
+#   lr: 0.13                    # Distance from CG to rear axle [m]
+#   m: 1.5                      # Mass [kg]
+#   Iz: 0.025                   # Yaw inertia [kg·m²]
+#   Cf: 120.0                   # Front cornering stiffness [N/rad]
+#   Cr: 120.0                   # Rear cornering stiffness [N/rad]
