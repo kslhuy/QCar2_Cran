@@ -225,6 +225,22 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             }
         }
 
+
+        # self.K_all_vehicles = {
+        #     1: {
+        #         0: np.array([[-0.0033,-0.1279,-0.0208]])
+        #     },
+        #     2: {
+        #         0: np.array([[-0.0072,-0.2365,-0.0383]]),
+        #         1: np.array([[0.0024,0.0854,0.0139]])
+        #     },
+        #     3: {
+        #         0: np.array([[-0.0048,0.0709,0.0116]]),
+        #         1: np.array([[-0.0045,-0.1581,-0.0256]]),
+        #         2: np.array([[-0.0063,-0.1938,-0.0313]])
+        #     }
+        # }
+
         # Extract K matrices for current vehicle
         self.K_matrices = []
         if self.vehicle_id in self.K_all_vehicles:
@@ -693,16 +709,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # Distributed observer state (x_vec: pi-p0+di0, vi-v0, ai-a0)
         x_vec, di0_values_before = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
         
-        # Validate x_vec size
-        if x_vec.size != dim_distributed_observer:
-            if self.logger:
-                self.logger.logger.error(
-                    f"Vehicle {self.vehicle_id}: CRITICAL x_vec size mismatch! "
-                    f"Expected {dim_distributed_observer}, got {x_vec.size}. "
-                    f"observer_size={self.observer_size}, fleet_states.shape={self.fleet_states.shape}"
-                )
-            # Return self.estimated_state unchanged to avoid crash
-            return self.estimated_state
 
         # Get leader state with fallback to current estimate
         state_leader = self._get_latest_received_state(0, current_time_ns)
@@ -728,7 +734,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 # First term: Ki0 @ Fi @ x_vec
                 if 0 in self.K_all_vehicles[vehicle_id]:
                     Ki0 = self.K_all_vehicles[vehicle_id][0]
-                    collective_control[vehicle_id - 1] = (Ki0 @ (Fi @ x_vec))[0]
+                    collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0], 0.5)  # Limit max control to 0.5
                 
                 # Sum over preceding vehicles j=1 to i-1
                 # Add terms: Kij @ (Fi - Fj) @ x_vec
@@ -737,14 +743,47 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                         Kij = self.K_all_vehicles[vehicle_id][j]
                         Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
                         collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]
+                        collective_control = np.clip(collective_control, 0, 0.5)  # Limit control input
         
         # Keep collective_control as 1D array to avoid dimension issues
         # collective_control shape: (observer_size,) = (3,)
         # B_delta shape: (9, 3), so B_delta @ collective_control will be (9,) 1D array
 
         # Use throttle as control input for all follower vehicles
-        collective_control = np.full(self.observer_size, control[1])
-        # collective_control = np.full(self.observer_size, 0.7)
+        # collective_control = np.full(self.observer_size, control[1])
+        # collective_control = np.full(self.observer_size, 0.15)
+
+        # Get actual control signals from V2V communication for all follower vehicles
+        # g = 0.33
+        for vehicle_id in range(1, self.fleet_size):
+            follower_idx = vehicle_id - 1
+            
+            if follower_idx >= self.observer_size:
+                break  # Safety check
+            
+            if vehicle_id == self.vehicle_id:
+                # Use own control signal
+                collective_control[follower_idx] = g*control[1]  # throttle
+            else:
+                # Get neighbor's control signal via V2V
+                neighbor_control = self._get_latest_received_control(vehicle_id, current_time_ns)
+                
+                if neighbor_control is not None:
+                    collective_control[follower_idx] = g*neighbor_control[1]  # throttle
+                    
+                    if self.logger and self.debug_recording_enabled:
+                        self.logger.logger.debug(
+                            f"Vehicle {self.vehicle_id}: Using V2V control from vehicle {vehicle_id}: "
+                            f"throttle={neighbor_control[1]:.3f}, steering={neighbor_control[0]:.3f}"
+                        )
+                else:
+                    # No V2V data: use default value (zero throttle)
+                    collective_control[follower_idx] = 0.0
+                    
+                    if self.logger:
+                        self.logger.logger.warning(
+                            f"Vehicle {self.vehicle_id}: No V2V control data from vehicle {vehicle_id}, using default"
+                        )
 
         # 1. Dynamics prediction (collective longitudinal model)
         dynamics_term = self.A_delta @ x_vec + self.B_delta @ collective_control

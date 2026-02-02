@@ -1,3 +1,32 @@
+# Update Log (2026/02/02) (Shengya)
+
+Commit Message: integrated V2V control signals in fleet estimator
+
+## Completed Tasks:
+
+- [x] **V2V control signal integration** / **V2V通信控制信号集成**
+  - Implemented V2V control signal retrieval in [distributed_luenberger_estimator.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/distributed_luenberger_estimator.py#L765)
+  - Using `g=3` gain factor: `collective_control[i] = g * throttle` converts throttle to control input u. **Maybe it is wrong**
+
+- [x] **Removed redundant state transformations** / **移除冗余状态转换**
+  - Cleaned up unnecessary conversions in fleet_state_estimator
+
+- [x] **Disabled excessive smoothing filters** / **禁用过度平滑滤波**
+  - Commented out unnecessary exponential smoothing in controller
+
+## Pending Tasks:
+
+- [ ] **Refactor gain configuration system in MTALAB** / **MATLAB重构增益配置系统**
+  - Rewrite all_gains.txt generation script
+  - Backup LMI constraints and parameters
+  - Align structure with existing config files
+
+- [ ] **Validate observer in MATLAB simulation** / **MATLAB仿真验证观测器**
+  - Implement vehicle longitudinal dynamics with fixed lateral control
+  - Simulate distributed observer using real QCar data
+  - Verify observer gains are correctly tuned
+  - Data organization: ✅ Observer dynamics implemented
+
 # Update Log (2026/01/30) (Shengya)
 
 Commit Message: validate control performance

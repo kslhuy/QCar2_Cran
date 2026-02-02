@@ -107,27 +107,34 @@ class FleetStateEstimatorBase(ABC):
         pass
     
     def add_received_local_state(self, sender_id: int, state: Dict, timestamp_ns: int) -> bool:
-        """Add a received LOCAL state (dict or ndarray) and store ndarray in history.
+        """Add a received LOCAL state (dict or ndarray) and store BOTH dict and ndarray.
 
-        Communication/log layers hand us dicts; algorithms want numpy arrays.
-        We normalize here so downstream consumers always see ndarray.
+        CRITICAL: We now store BOTH the original dict (with control_input) and the state array.
+        This allows _get_latest_received_control() to access control signals while
+        _get_latest_received_state() gets the state vector.
+        
+        Storage format: (timestamp_ns, state_data)
+        - If input is dict: state_data = original dict (preserves control_input)
+        - If input is array: state_data = normalized array
         """
         # # print(f"Adding received local state from vehicle_id {sender_id}")
         try:
             if sender_id == self.vehicle_id:
                 return False  # Don't store own state
 
-            state_vec: Optional[np.ndarray] = None
+            # IMPORTANT: Store the original data type to preserve control_input
             if isinstance(state, dict):
-                state_vec = _state_dict_to_array(state, self.state_dim, logger=self.logger)
+                # Store the complete dict (includes control_input if present)
+                state_data = state.copy()
             else:
+                # Normalize array
                 state_vec = _normalize_state_array(state, self.state_dim, logger=self.logger)
+                if state_vec is None:
+                    return False
+                state_data = state_vec.copy()
 
-            if state_vec is None:
-                return False
-
-            # Store timestamp in nanoseconds (keep ndarray only)
-            self.received_local_states[sender_id].append((timestamp_ns, state_vec.copy()))
+            # Store timestamp in nanoseconds with original data
+            self.received_local_states[sender_id].append((timestamp_ns, state_data))
 
             # Keep only recent history (default 10 entries)
             if len(self.received_local_states[sender_id]) > 10:
@@ -224,6 +231,63 @@ class FleetStateEstimatorBase(ABC):
             
         print(f"No valid recent state for vehicle_id {vehicle_id}")
         return None
+
+    def _get_latest_received_control(self, vehicle_id: int, current_time_ns: int) -> Optional[np.ndarray]:
+        """
+        Get the most recent control input from another vehicle via V2V communication.
+        
+        Control signals are transmitted in local_state broadcasts with the structure:
+        {
+            'vehicle_id': int,
+            'x': float, 'y': float, 'theta': float,
+            'velocity': float, 'acceleration': float,
+            'control_input': {
+                'steering': float,
+                'throttle': float
+            },
+            ...
+        }
+        
+        Args:
+            vehicle_id: ID of the vehicle to get control from
+            current_time_ns: Current timestamp in nanoseconds
+        
+        Returns:
+            np.array([steering, throttle]) or None if no recent data available
+        """
+        if vehicle_id not in self.received_local_states:
+            return None
+        
+        states_list = self.received_local_states[vehicle_id]
+        if not states_list:
+            return None
+        
+        # Iterate backwards (newest first) to find valid control data
+        for timestamp_ns, state in reversed(states_list):
+            age_ns = current_time_ns - timestamp_ns
+            if age_ns > self.max_state_age_ns:
+                continue
+            
+            # Extract control input if available
+            # Note: state can be dict (from V2V) or ndarray (normalized)
+            # We need the original dict to get control_input
+            if isinstance(state, dict) and 'control_input' in state:
+                control_dict = state['control_input']
+                try:
+                    return np.array([
+                        float(control_dict.get('steering', 0.0)),
+                        float(control_dict.get('throttle', 0.0))
+                    ])
+                except (ValueError, TypeError) as e:
+                    if self.logger:
+                        self.logger.logger.warning(
+                            f"Failed to extract control from vehicle {vehicle_id}: {e}"
+                        )
+                    continue
+        
+        return None
+    
+    
 
     
     def get_fleet_states(self) -> np.ndarray:

@@ -21,7 +21,7 @@ from qvl.free_camera import QLabsFreeCamera
 num_cars = 4
 car_type = "QC2"
 init_location = [40, -6.2, 1.131]
-init_distance = 15
+init_distance = 8  # distance between cars
 init_rotation = [0, 0, 0]
 
 qlabs = QuanserInteractiveLabs()
@@ -44,7 +44,7 @@ qlabs.destroy_all_spawned_actors()
 
 # create a camera in this qlabs instance
 camera = QLabsFreeCamera(qlabs)
-camera.spawn_degrees(location=[50, -16, 35], rotation=[0, 44, 141.502])
+camera.spawn_degrees(location=[-0.8, -28, 28], rotation=[0, 33, 64])
 # to switch our view from our current camera to the new camera we just initialized
 camera.possess()
 
@@ -73,6 +73,8 @@ for i in range(num_cars):
 mySpawns = MultiAgent(QCars)
 mySpawns.robotActors[0].set_led_strip_uniform(color=[40,0,0])
 mySpawns.robotActors[1].set_led_strip_uniform(color=[0,40,0])
+
+mySpawns.robotActors[3].possess()  # 跟随车辆3（最后一辆）
 
 # Set default transforms for all vehicles using predefined Location and Rotation
 print("\n=== Multi-Vehicle Default Transform Setup ===")

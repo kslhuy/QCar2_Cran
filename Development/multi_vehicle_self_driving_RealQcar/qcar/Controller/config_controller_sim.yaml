@@ -178,53 +178,63 @@ vehicle:
 # Follows the same structure as observer per-vehicle config
 # If a vehicle is not listed here, it uses the global defaults above
 
+# Constant throttle and Longitudinal speed 
+# 0.5 throttle --> Constant speed ~2 m/s
+# 0.25 throttle --> Constant speed ~1.6 m/s
+# 0.15 throttle --> Constant speed ~1 m/s
 per_vehicle_controllers:
   # Vehicle 0 (Leader in most formations)
   0:
     longitudinal_controller_type: 'fix'  # Fixed throttle for leader
     lateral_controller_type: 'fix_lateral'  # Straight line
     fix:
-      throttle: 0.5  # Constant speed 2 m/s
+      throttle: 0.15  # Constant speed
     fix_lateral:
       steering: 0.0
   
   # Vehicle 1 (First Follower)
   1:
-    longitudinal_controller_type: 'state_feedback'
+    longitudinal_controller_type: 'fix'
     lateral_controller_type: 'fix_lateral'
+    fix:
+      throttle: 0.15  # Constant speed
     state_feedback:
-      max_throttle: 0.9
-      throttle_smoothing: 0.2
+      max_throttle: 0.5
+      throttle_smoothing: 0.0
     fix_lateral:
       steering: 0.0
     lookahead:
-        ri: 0.8              # Desired inter-vehicle spacing (meters)
+        ri: 0.4              # Desired inter-vehicle spacing (meters)
         hi: 0.3                # Time headway (seconds)
   
   # Vehicle 2 (Second Follower)
   2:
-    longitudinal_controller_type: 'state_feedback'
+    longitudinal_controller_type: 'fix'
     lateral_controller_type: 'fix_lateral'
+    fix:
+      throttle: 0.15  # Constant speed
     state_feedback:
-      max_throttle: 0.9
-      throttle_smoothing: 0.75  # Slightly smoother than vehicle 1
+      max_throttle: 0.5
+      throttle_smoothing: 0.0 # Slightly smoother than vehicle 1
     fix_lateral:
       steering: 0.0
     lookahead:
-        ri: 0.8              # Desired inter-vehicle spacing (meters)
+        ri: 0.4              # Desired inter-vehicle spacing (meters)
         hi: 0.3                # Time headway (seconds)
 
   # Vehicle 3 (Third Follower)
   3:
-    longitudinal_controller_type: 'state_feedback'
+    longitudinal_controller_type: 'fix'
     lateral_controller_type: 'fix_lateral'
+    fix:
+      throttle: 0.15  # Constant speed
     state_feedback:
-      max_throttle: 0.9
-      throttle_smoothing: 0.8  # Smoothest
+      max_throttle: 0.5
+      throttle_smoothing: 0.0  # Smoothest
     fix_lateral:
       steering: 0.0
     lookahead:
-        ri: 0.8              # Desired inter-vehicle spacing (meters)
+        ri: 0.4              # Desired inter-vehicle spacing (meters)
         hi: 0.3                # Time headway (seconds)
 
 # Notes on per-vehicle configuration:

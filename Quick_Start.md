@@ -5,7 +5,7 @@
 1. Copy the folder "env" to into the folder "QCAR2_CRAN"
 2. Open a python script. After that, the environment will be active, usually.
 
-## Open the QLab, choose downscape lite
+## Open the QLab, choose open road for vehicle platoon simulation. 
 
 ## Run the following cmd in the powershell
 
