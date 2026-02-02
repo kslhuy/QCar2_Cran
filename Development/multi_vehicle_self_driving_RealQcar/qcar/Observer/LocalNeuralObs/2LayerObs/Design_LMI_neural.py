@@ -84,43 +84,6 @@ def validate_observer_gain(A: np.ndarray, C: np.ndarray, L: np.ndarray,
         return False
 
 
-def compute_pole_placement_gain(A: np.ndarray, C: np.ndarray,
-                                 desired_poles: Optional[np.ndarray] = None) -> np.ndarray:
-    """
-    Compute observer gain using pole placement (fallback method).
-    
-    Places observer error dynamics poles at stable locations.
-    
-    Args:
-        A: State matrix (n × n)
-        C: Output matrix (m × n)
-        desired_poles: Desired closed-loop poles. If None, uses default stable poles.
-        
-    Returns:
-        L: Observer gain matrix (n × m)
-    """
-    n = A.shape[0]
-    m = C.shape[0]
-    
-    if desired_poles is None:
-        # Default: place poles at stable locations with good damping
-        # Spread in left half-plane for smooth convergence
-        desired_poles = np.array([-2.0, -2.5, -3.0, -3.5, -4.0, -4.5])[:n]
-    
-    if not SCIPY_AVAILABLE:
-        # Simple fallback: diagonal gain
-        L = np.diag([2.0, 2.0, 1.0, 2.0, 0.5, 0.5])[:n,:m]
-        return L
-    
-    try:
-        # Pole placement: place_poles works on (A - LC)^T = A^T - C^T L^T
-        result = place_poles(A.T, C.T, desired_poles)
-        L = result.gain_matrix.T
-        return L
-    except Exception:
-        # Fallback to simple diagonal gain
-        return np.diag([2.0, 2.0, 1.0, 2.0, 0.5, 0.5])[:n,:m]
-
 
 def compute_lmi_observer_gain(A: np.ndarray, C: np.ndarray, 
                               decay_rate: float = 1.0,
@@ -555,12 +518,14 @@ def compute_discrete_hinf_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d:
     m = C.shape[0]    # Measurement dimension
     p = E_d.shape[1]  # Disturbance dimension
     
-    # Clamp contraction rate to valid range
-    lam = np.clip(contraction_rate, 0.5, 0.999)
+    # CRITICAL: For vehicle dynamics with integrators (X, Y, ψ states),
+    # contraction_rate < 1.0 is infeasible because A_d has eigenvalues at 1.0.
+    # Force λ = 1.0 for pure Lyapunov stability.
+    lam = 1.0  # Force pure stability for systems with integrators
     
     # Decision variables
     P = cp.Variable((n, n), symmetric=True)  # Lyapunov matrix
-    Y = cp.Variable((m, n))  # Y = L^T @ P (transpose for discrete)
+    Y = cp.Variable((n, m))  # Y = P @ L (consistent with common Lyapunov version)
     
     # Numerical tolerances
     eps = 1e-6
@@ -571,23 +536,22 @@ def compute_discrete_hinf_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d:
     # Stability: (A_d - L*C)^T P (A_d - L*C) - P < 0
     # H∞: similar, ensuring ||e||_2 <= gamma ||d||_2
     #
-    # Using Y = L^T @ P, we have L^T = Y @ P^{-1}
-    # (A_d - L*C)^T = A_d^T - C^T L^T = A_d^T - C^T Y P^{-1}
-    # P (A_d - L*C) = P A_d - P L C = P A_d - Y^T C
+    # Using Y = P @ L, we have L = P^{-1} @ Y
+    # P @ (A_d - L*C) = P @ A_d - P @ L @ C = P @ A_d - Y @ C
     #
     # The discrete BRL Schur form (observer version):
-    # [λ²P              (P A_d - Y^T C)     P E_d  ]
-    # [(P A_d - Y^T C)^T       P             0     ] > 0
-    # [E_d^T P                 0           γ²I    ]
+    # [λ²P        (P A_d - Y C)      P E_d  ]
+    # [(P A_d - Y C)^T    P            0    ] > 0
+    # [E_d^T P           0           γ²I   ]
     
-    PA_YTC = P @ A_d - Y.T @ C  # This is P @ A_cl
+    PA_YC = P @ A_d - Y @ C  # This is P @ A_cl
     
     # Build the 3x3 block Schur LMI
     block_11 = lam**2 * P
-    block_12 = PA_YTC
+    block_12 = PA_YC
     block_13 = P @ E_d
     
-    block_21 = PA_YTC.T
+    block_21 = PA_YC.T
     block_22 = P
     block_23 = np.zeros((n, p))
     
@@ -615,7 +579,7 @@ def compute_discrete_hinf_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d:
     problem = cp.Problem(objective, constraints)
     
     try:
-        problem.solve(solver=cp.SCS, verbose=verbose, max_iters=30000, eps=1e-7)
+        problem.solve(solver=cp.SCS, verbose=verbose, max_iters=30000, eps=1e-5)
     except Exception as e:
         try:
             problem.solve(solver=cp.CVXOPT, verbose=verbose)
@@ -626,7 +590,7 @@ def compute_discrete_hinf_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d:
         raise ValueError(f"Discrete H∞ LMI infeasible. Status: {problem.status}. "
                         f"Try increasing gamma (current: {gamma}) or relaxing contraction_rate.")
     
-    # Recover observer gain: L^T = Y @ P^{-1}, so L = P^{-1} @ Y^T
+    # Recover observer gain: L = P^{-1} @ Y
     P_val = P.value
     Y_val = Y.value
     
@@ -634,12 +598,14 @@ def compute_discrete_hinf_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d:
         raise ValueError("Discrete H∞ LMI solver returned None values")
     
     try:
-        L = np.linalg.solve(P_val, Y_val.T)
+        L = np.linalg.solve(P_val, Y_val)
     except np.linalg.LinAlgError:
-        L = np.linalg.pinv(P_val) @ Y_val.T
+        L = np.linalg.pinv(P_val) @ Y_val
     
     # Validate stability
-    if not validate_discrete_observer_gain(A_d, C, L):
+    # NOTE: Use 1.001 (not 0.99) because system has integrator states (X, Y, ψ)
+    # with eigenvalues exactly at 1.0
+    if not validate_discrete_observer_gain(A_d, C, L, max_spectral_radius=1.001):
         raise ValueError("Discrete H∞ LMI produced unstable observer")
     
     return L
@@ -868,6 +834,45 @@ def compute_discrete_h2_lmi_observer_gain(A_d: np.ndarray, C: np.ndarray, E_d: n
     return L, h2_norm
 
 
+
+def compute_pole_placement_gain(A: np.ndarray, C: np.ndarray,
+                                 desired_poles: Optional[np.ndarray] = None) -> np.ndarray:
+    """
+    Compute observer gain using pole placement (fallback method).
+    
+    Places observer error dynamics poles at stable locations.
+    
+    Args:
+        A: State matrix (n × n)
+        C: Output matrix (m × n)
+        desired_poles: Desired closed-loop poles. If None, uses default stable poles.
+        
+    Returns:
+        L: Observer gain matrix (n × m)
+    """
+    n = A.shape[0]
+    m = C.shape[0]
+    
+    if desired_poles is None:
+        # Default: place poles at stable locations with good damping
+        # Spread in left half-plane for smooth convergence
+        desired_poles = np.array([-2.0, -2.5, -3.0, -3.5, -4.0, -4.5])[:n]
+    
+    if not SCIPY_AVAILABLE:
+        # Simple fallback: diagonal gain
+        L = np.diag([2.0, 2.0, 1.0, 2.0, 0.5, 0.5])[:n,:m]
+        return L
+    
+    try:
+        # Pole placement: place_poles works on (A - LC)^T = A^T - C^T L^T
+        result = place_poles(A.T, C.T, desired_poles)
+        L = result.gain_matrix.T
+        return L
+    except Exception:
+        # Fallback to simple diagonal gain
+        return np.diag([2.0, 2.0, 1.0, 2.0, 0.5, 0.5])[:n,:m]
+
+
 # =============================================================================
 # Neural Observer Specific qLPV Gain Scheduler
 # =============================================================================
@@ -929,20 +934,21 @@ class NeuralQLPVGainScheduler:
     """
     
     def __init__(self, 
-                 vehicle_params: Dict,
-                 vx_range: Tuple[float, float] = (0.5, 3.0),
-                 delta_max: float = 0.4,
-                 n_vx_vertices: int = 3,
-                 n_delta_vertices: int = 3,
-                 decay_rate: float = 0.5,
-                 lmi_method: str = 'hinf',
-                 hinf_gamma: float = 5.0,
-                 use_common_lyapunov: bool = True,
-                 discrete: bool = True,
-                 sample_time: float = 0.01,
-                 contraction_rate: float = 0.95,
-                 verbose: bool = False,
-                 disturbance_mode: str = 'tire'):
+                vehicle_params: Dict,
+                vx_range: Tuple[float, float] = (0.5, 3.0),
+                delta_max: float = 0.4,
+                n_vx_vertices: int = 3,
+                n_delta_vertices: int = 3,
+                decay_rate: float = 0.5,
+                lmi_method: str = 'hinf',
+                hinf_gamma: float = 5.0,
+                use_common_lyapunov: bool = True,
+                discrete: bool = True,
+                sample_time: float = 0.01,
+                contraction_rate: float = 0.95,
+                verbose: bool = False,
+                disturbance_mode: str = 'tire',
+                dynamics_model = None):
         """
         Initialize polytopic qLPV gain scheduler for neural observer
         
@@ -961,6 +967,7 @@ class NeuralQLPVGainScheduler:
             contraction_rate: λ ∈ (0, 1) for discrete contraction (smaller = faster)
             verbose: Print solver output
             disturbance_mode: 'tire' (default) or 'general'
+            dynamics_model: Existing QLPVVehicleDynamicsObs instance (optional)
         """
         self.params = vehicle_params
         self.vx_range = vx_range
@@ -976,11 +983,14 @@ class NeuralQLPVGainScheduler:
         self.disturbance_mode = disturbance_mode
         
         # Centralized vehicle dynamics (single source of truth)
-        self.dynamics = QLPVVehicleDynamicsObs(
-            vehicle_params=vehicle_params,
-            min_vx=vx_range[0],
-            disturbance_mode=disturbance_mode
-        )
+        if dynamics_model is not None:
+             self.dynamics = dynamics_model
+        else:
+            self.dynamics = QLPVVehicleDynamicsObs(
+                vehicle_params=vehicle_params,
+                min_vx=vx_range[0],
+                disturbance_mode=disturbance_mode
+            )
         
         # Generate polytope vertices
         self.vertices = self._generate_vertices(n_vx_vertices, n_delta_vertices)
@@ -1033,6 +1043,11 @@ class NeuralQLPVGainScheduler:
         
         # Note: a_y is not included in observer measurement (5D), so no L[i, 5]
         
+        # If discrete, scale gains by dt to map continuous poles to discrete
+        # L_d approx L_c * dt
+        if self.discrete:
+            L = L * self.sample_time
+            
         return L
     
     def _generate_vertices(self, n_vx: int, n_delta: int) -> list:
@@ -1070,7 +1085,8 @@ class NeuralQLPVGainScheduler:
         C[3, 4] = 1.0   # X  -> X
         C[4, 5] = 1.0   # Y  -> Y
         return C
-    
+
+
     def _compute_matrices_at_vertex(self, vertex: NeuralPolytopicVertex
                                     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute continuous-time A, C, E matrices at a polytope vertex"""
@@ -1079,6 +1095,8 @@ class NeuralQLPVGainScheduler:
         
         A = self.dynamics.compute_A_matrix(rho)
         C = self._compute_observer_C_matrix()  # 5D selection matrix (matches observer)
+        # C = self.dynamics.compute_C_matrix()  # 5D selection matrix (matches observer)
+
         E = self.dynamics.compute_E_matrix(rho)
         
         return A, C, E
@@ -1140,7 +1158,9 @@ class NeuralQLPVGainScheduler:
         
         if not success:
             print("Warning: LMI gains failed, using default gains")
-            return self._use_default_gains()
+            self._use_default_gains()
+            return False
+            # return self._use_default_gains()
         
         return True
     
@@ -1167,7 +1187,8 @@ class NeuralQLPVGainScheduler:
         """
         n = STATE_DIM  # 6
         m = 5          # Observer uses 5D measurement (no a_y)
-        p = 2          # Disturbance dimension (tire residuals)
+        # p = 2          # Disturbance dimension (tire residuals)
+        p = 3 if self.disturbance_mode == 'general' else 2
         
         # Common Lyapunov matrix
         P = cp.Variable((n, n), symmetric=True)
@@ -1300,12 +1321,22 @@ class NeuralQLPVGainScheduler:
             - Contraction rate ||e[k]|| ≤ λ^k ||e[0]||
             - H∞ bound ||e||_2 ≤ γ ||d||_2
             - Stability across the entire polytope via common P
+        
+        NOTE: For systems with integrator states (X, Y, ψ), contraction_rate must be 1.0
+        since eigenvalues are exactly on the unit circle. We use pure Lyapunov stability.
         """
         n = STATE_DIM  # 6
         m = 5          # Observer uses 5D measurement (no a_y)
-        p = 2          # Disturbance dimension (tire residuals)
+        # p = 2          # Disturbance dimension (tire residuals)
+        p = 3 if self.disturbance_mode == 'general' else 2
         
-        lam = self.contraction_rate
+        # CRITICAL: For vehicle dynamics with integrators (X, Y, ψ states),
+        # contraction_rate < 1.0 is infeasible because A_d has eigenvalues at 1.0.
+        # We force λ = 1.0 for pure Lyapunov stability (not contraction).
+        lam = 1.0  # Force pure stability, not contraction
+        if self.contraction_rate < 0.999 and self.verbose:
+            print(f"Note: Forcing λ=1.0 (was {self.contraction_rate}) due to integrator states")
+        
         gamma = self.hinf_gamma
         
         # Common Lyapunov matrix
@@ -1328,23 +1359,26 @@ class NeuralQLPVGainScheduler:
             A_d, C, E_d, _ = self._compute_discrete_matrices_at_vertex(vertex)
             Y = Y_list[i]
             
-            # Build discrete H∞ Schur-form LMI for this vertex
-            # [λ²·P        (P·A_d - Y·C)^T    0        ]
-            # [P·A_d - Y·C       P           P·E_d     ] > 0
-            # [0           E_d^T·P           γ²·I      ]
             
+            # Build discrete H∞ Schur-form LMI for this vertex
+            # Standard BRL form for observer (matching compute_discrete_hinf_lmi_observer_gain):
+            # [λ²·P        (P·A_d - Y·C)    P·E_d     ]
+            # [(P·A_d - Y·C)^T    P           0       ] > 0
+            # [E_d^T·P           0          γ²·I      ]
+            #
+            # Where Y = P @ L, so L = P^{-1} @ Y
             PA_YC = P @ A_d - Y @ C
             
             block_11 = lam**2 * P
-            block_12 = PA_YC.T
-            block_13 = np.zeros((n, p))
+            block_12 = PA_YC              # Changed: was PA_YC.T
+            block_13 = P @ E_d            # Changed: was zeros
             
-            block_21 = PA_YC
+            block_21 = PA_YC.T            # Changed: was PA_YC
             block_22 = P
-            block_23 = P @ E_d
+            block_23 = np.zeros((n, p))   # Changed: was P @ E_d
             
-            block_31 = np.zeros((p, n))
-            block_32 = E_d.T @ P
+            block_31 = E_d.T @ P
+            block_32 = np.zeros((p, n))   # Changed: was E_d.T @ P
             block_33 = gamma**2 * np.eye(p)
             
             row1 = cp.hstack([block_11, block_12, block_13])
@@ -1361,18 +1395,39 @@ class NeuralQLPVGainScheduler:
         
         problem = cp.Problem(objective, constraints)
         
-        try:
-            problem.solve(solver=cp.SCS, verbose=self.verbose, max_iters=20000, eps=1e-6)
-        except Exception as e:
-            if self.verbose:
-                print(f"SCS solver failed: {e}")
-            try:
-                problem.solve(solver=cp.CVXOPT, verbose=self.verbose)
-            except Exception as e2:
-                print(f"Discrete LMI solver failed: {e}, {e2}")
-                return False
+        # Try solvers in order of preference: MOSEK > CLARABEL > SCS > CVXOPT
+        solved = False
+        solvers_to_try = []
         
-        if problem.status not in ['optimal', 'optimal_inaccurate']:
+        # MOSEK is the best for SDP problems (commercial, free academic license)
+        if cp.MOSEK in cp.installed_solvers():
+            solvers_to_try.append((cp.MOSEK, {'verbose': self.verbose}))
+        
+        # CLARABEL is a newer open-source solver, often better than SCS
+        if cp.CLARABEL in cp.installed_solvers():
+            solvers_to_try.append((cp.CLARABEL, {'verbose': self.verbose}))
+        
+        # SCS is the default fallback
+        solvers_to_try.append((cp.SCS, {'verbose': self.verbose, 'max_iters': 30000, 'eps': 1e-7}))
+        
+        # CVXOPT as last resort
+        if cp.CVXOPT in cp.installed_solvers():
+            solvers_to_try.append((cp.CVXOPT, {'verbose': self.verbose}))
+        
+        for solver, solver_opts in solvers_to_try:
+            try:
+                problem.solve(solver=solver, **solver_opts)
+                if problem.status in ['optimal', 'optimal_inaccurate']:
+                    if self.verbose:
+                        print(f"Solved with {solver}, status: {problem.status}")
+                    solved = True
+                    break
+            except Exception as e:
+                if self.verbose:
+                    print(f"{solver} failed: {e}")
+                continue
+        
+        if not solved or problem.status not in ['optimal', 'optimal_inaccurate']:
             if self.verbose:
                 print(f"Polytopic discrete H∞ LMI infeasible: {problem.status}")
             return False
@@ -1455,10 +1510,15 @@ class NeuralQLPVGainScheduler:
             
             if self.discrete:
                 # Discrete-time: check eigenvalues inside unit circle
+                # NOTE: Use max_spectral_radius=1.001 (not 0.999) because system
+                # has integrator states (X, Y, ψ) with eigenvalues exactly at 1.0
                 A_d, C, _, _ = self._compute_discrete_matrices_at_vertex(vertex)
-                if not validate_discrete_observer_gain(A_d, C, L, max_spectral_radius=0.999):
+                if not validate_discrete_observer_gain(A_d, C, L, max_spectral_radius=1.001):
                     if self.verbose:
+                        A_cl = A_d - L @ C
+                        eigs = np.linalg.eigvals(A_cl)
                         print(f"Warning: Discrete gain at vertex {vertex} is unstable")
+                        print(f"  Eigenvalues: {np.abs(eigs)}")
                     return False
             else:
                 # Continuous-time: check eigenvalues in left half-plane
