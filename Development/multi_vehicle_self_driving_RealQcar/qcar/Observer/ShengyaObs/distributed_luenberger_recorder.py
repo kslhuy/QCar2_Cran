@@ -164,13 +164,29 @@ class DistributedLuenbergerRecorder:
         for i in range(self.observer_size):
             vid = i + 1
             columns.append(f'di0_{vid}')
+
+        # Collective control input for each follower vehicle
+        for i in range(self.observer_size):
+            vid = i + 1
+            columns.append(f'collective_control_{vid}')
         
         # Fleet states
         for vid in range(self.fleet_size):
             columns.extend([f'fleet_x_{vid}', f'fleet_v_{vid}'])
-        
+
+        # Time step
         columns.append('dt')
-        
+
+        # Local vehicle states and local measurements (single vehicle running this estimator)
+        columns.extend([
+            'position',
+            'velocity',
+            'acceleration',
+            'control_input',
+            'local_measurement_p',
+            'local_measurement_v',
+        ])
+
         return columns
     
     def record(self, t: float, debug_data: Dict) -> bool:
@@ -249,6 +265,13 @@ class DistributedLuenbergerRecorder:
             for i in range(self.observer_size):
                 vid = i + 1
                 row[f'di0_{vid}'] = di0_data[i] if i < len(di0_data) else 0.0
+
+        # Collective control inputs
+        cc_data = debug_data.get('collective_control', None)
+        if cc_data is not None:
+            for i in range(self.observer_size):
+                vid = i + 1
+                row[f'collective_control_{vid}'] = cc_data[i] if i < len(cc_data) else 0.0
         
         # Fleet states
         fleet = debug_data.get('fleet_states', None)
@@ -257,9 +280,18 @@ class DistributedLuenbergerRecorder:
                 if vid < fleet.shape[1]:
                     row[f'fleet_x_{vid}'] = fleet[0, vid]
                     row[f'fleet_v_{vid}'] = fleet[3, vid]
-        
+
+        # Time step
         row['dt'] = debug_data.get('dt', 0.0)
-        
+
+        # Local vehicle states and local measurements
+        row['position'] = debug_data.get('position', 0.0)
+        row['velocity'] = debug_data.get('velocity', 0.0)
+        row['acceleration'] = debug_data.get('acceleration', 0.0)
+        row['control_input'] = debug_data.get('control_input', 0.0)
+        row['local_measurement_p'] = debug_data.get('local_measurement_p', 0.0)
+        row['local_measurement_v'] = debug_data.get('local_measurement_v', 0.0)
+
         return row
     
     def _writer_loop(self):

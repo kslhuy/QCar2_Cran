@@ -313,6 +313,28 @@ def plot_consensus_info(df: pd.DataFrame, ax: plt.Axes):
     ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right', ncol=2)
 
 
+def plot_collective_control(df: pd.DataFrame, observer_size: int, ax: plt.Axes):
+    """Plot collective control inputs for all follower vehicles."""
+    time = df['time'].values
+    colors = plt.cm.tab10(np.linspace(0, 1, max(observer_size, 1)))
+
+    any_plotted = False
+    for i in range(observer_size):
+        vid = i + 1
+        col = f'collective_control_{vid}'
+        if col in df.columns:
+            ax.plot(time, df[col], label=f'u{vid}', color=colors[i], linewidth=1.5)
+            any_plotted = True
+
+    if any_plotted:
+        ax.set_ylabel('Throttle')
+        ax.set_title('Collective Control Inputs')
+        ax.legend(loc='upper right', ncol=observer_size if observer_size <= 3 else 3)
+        ax.grid(True, alpha=0.3, linewidth=0.5)
+    else:
+        ax.set_visible(False)
+
+
 def create_full_plot(df: pd.DataFrame, title: str = "Observer Analysis", filepath: str = ""):
     """Create comprehensive multi-panel plot."""
     # Filter out last 10 seconds of data
@@ -327,13 +349,13 @@ def create_full_plot(df: pd.DataFrame, title: str = "Observer Analysis", filepat
     duration = df['time'].max() - df['time'].min()
     samples = len(df)
     
-    fig = plt.figure(figsize=(14, 10))
+    fig = plt.figure(figsize=(14, 12))
     
     # Title with stats (title already includes data source)
     stats_str = f"Duration: {format_duration(duration)} | Samples: {samples} | Fleet: {fleet_size} vehicles"
     fig.suptitle(f"{title}\n{stats_str}", fontsize=9, fontweight='bold')
     
-    gs = GridSpec(4, 2, figure=fig, hspace=0.4, wspace=0.3, 
+    gs = GridSpec(5, 2, figure=fig, hspace=0.4, wspace=0.3, 
                   top=0.92, bottom=0.06, left=0.08, right=0.95)
     
     ax_pos = fig.add_subplot(gs[0, 0])
@@ -353,8 +375,11 @@ def create_full_plot(df: pd.DataFrame, title: str = "Observer Analysis", filepat
     ax_fleet_vel = fig.add_subplot(gs[3, 1])
     plot_fleet_states(df, fleet_size, ax_fleet_pos, ax_fleet_vel)
     
-    ax_fleet_pos.set_xlabel('Time [s]')
-    ax_fleet_vel.set_xlabel('Time [s]')
+    # Collective control (all followers)
+    ax_ctrl = fig.add_subplot(gs[4, :])
+    plot_collective_control(df, observer_size, ax_ctrl)
+
+    ax_ctrl.set_xlabel('Time [s]')
     
     return fig
 
@@ -441,20 +466,44 @@ Examples:
     
     fig = create_full_plot(df, title, filepath)
     
-    # Auto-save figure to figure/ directory
+    # Default output path (can be overridden)
     script_dir = os.path.dirname(os.path.abspath(__file__))
     figure_dir = os.path.join(script_dir, 'figure')
     os.makedirs(figure_dir, exist_ok=True)
-    
-    # Generate output filename: replace 'dist' with 'figure' and .csv with .png
     figure_filename = basename.replace('dist_luenberger', 'figure_luenberger').replace('.csv', '.png')
-    output_path = os.path.join(figure_dir, figure_filename)
-    
-    fig.savefig(output_path, dpi=150, bbox_inches='tight')
-    print(f"Figure saved to: {output_path}")
-    
-    if not args.save:
+    default_output_path = os.path.join(figure_dir, figure_filename)
+
+    # Saving behavior
+    if args.save or args.output:
+        output_path = args.output if args.output else default_output_path
+        out_dir = os.path.dirname(output_path) or '.'
+        os.makedirs(out_dir, exist_ok=True)
+        fig.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"Figure saved to: {output_path}")
+        # In non-interactive save mode, do not force show()
+        if not args.save:
+            plt.show()
+    else:
+        # Interactive mode: show first, then ask whether to save
         plt.show()
+        try:
+            answer = input("Save figure to file? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = 'n'
+
+        if answer in ('y', 'yes'):
+            try:
+                custom_path = input(f"Enter output path (default: {default_output_path}): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                custom_path = ''
+
+            output_path = custom_path if custom_path else default_output_path
+            out_dir = os.path.dirname(output_path) or '.'
+            os.makedirs(out_dir, exist_ok=True)
+            fig.savefig(output_path, dpi=150, bbox_inches='tight')
+            print(f"Figure saved to: {output_path}")
+        else:
+            print("Figure not saved.")
 
 
 if __name__ == "__main__":

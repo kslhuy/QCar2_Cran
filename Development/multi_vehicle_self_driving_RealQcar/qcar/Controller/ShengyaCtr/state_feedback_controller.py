@@ -73,24 +73,10 @@ class StateFeedbackController(LongitudinalControllerBase):
             3: {
                 0: np.array([[-0.1895,-0.5314,-0.0981]]),
                 1: np.array([[-0.0026,-0.0053,0.0039]]),
-                2: np.array([[-0.001,-0.001,0.0049]])
+                2: np.array([[-0.0010,-0.0010,0.0049]])
             }
         }
 
-        # self.K_all_vehicles = {
-        #     1: {
-        #         0: np.array([[-0.0033,-0.1279,-0.0208]])
-        #     },
-        #     2: {
-        #         0: np.array([[-0.0072,-0.2365,-0.0383]]),
-        #         1: np.array([[0.0024,0.0854,0.0139]])
-        #     },
-        #     3: {
-        #         0: np.array([[-0.0048,0.0709,0.0116]]),
-        #         1: np.array([[-0.0045,-0.1581,-0.0256]]),
-        #         2: np.array([[-0.0063,-0.1938,-0.0313]])
-        #     }
-        # }
         
         # Extract K matrices for current vehicle
         self.K_matrices = []

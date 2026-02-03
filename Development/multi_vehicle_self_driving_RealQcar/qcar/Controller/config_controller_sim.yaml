@@ -188,13 +188,13 @@ per_vehicle_controllers:
     longitudinal_controller_type: 'fix'  # Fixed throttle for leader
     lateral_controller_type: 'fix_lateral'  # Straight line
     fix:
-      throttle: 0.15  # Constant speed
+      throttle: 0.15  # Constant speed 
     fix_lateral:
       steering: 0.0
   
   # Vehicle 1 (First Follower)
   1:
-    longitudinal_controller_type: 'fix'
+    longitudinal_controller_type: 'state_feedback'
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.15  # Constant speed
@@ -209,7 +209,7 @@ per_vehicle_controllers:
   
   # Vehicle 2 (Second Follower)
   2:
-    longitudinal_controller_type: 'fix'
+    longitudinal_controller_type: 'state_feedback'
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.15  # Constant speed
@@ -224,7 +224,7 @@ per_vehicle_controllers:
 
   # Vehicle 3 (Third Follower)
   3:
-    longitudinal_controller_type: 'fix'
+    longitudinal_controller_type: 'state_feedback'
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.15  # Constant speed

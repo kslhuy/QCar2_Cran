@@ -572,10 +572,11 @@ class VehicleObserver:
             
             current_time_ns = time.time_ns()  # Use nanoseconds for consistency with V2V timestamps
             
-            # Get control input (steering, throttle) - use zeros as default
-            # TODO : pass actual control inputs , have size of fleet and size of control input (steering, throttle)
-            control = np.array([0.0, 0.0])  # Will be passed from vehicle_logic in future
-            # control input can be estimated by observer state. Based on the co-design method
+            # Get control input (steering, throttle) from last command cached in update_observer
+            # Fallback to zeros if not available
+            steering = float(self.control_input.get('steering', 0.0)) if hasattr(self, 'control_input') else 0.0
+            throttle = float(self.control_input.get('throttle', 0.0)) if hasattr(self, 'control_input') else 0.0
+            control = np.array([steering, throttle])
             
             # Update fleet estimates using pluggable estimator
             current_local = self.local_state.copy()

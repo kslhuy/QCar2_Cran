@@ -14,11 +14,39 @@ import sys
 import argparse
 import signal
 import time
+import builtins
 from threading import Event
+
+
+# --- Auto-answer QCar1/QCar2 prompt from underlying libraries ---
+_real_input = builtins.input
+
+
+def _auto_select_qcar2(prompt: str = ""):
+    """Intercept specific QCar selection prompt and auto-select virtual QCar2.
+
+    Any other input() calls fall back to the original behavior.
+    """
+    text = str(prompt) if prompt is not None else ""
+    if ("QCar1" in text and "QCar2" in text) or "virtual QCar" in text:
+        # Echo the prompt and show the auto-selected answer for clarity
+        try:
+            # Ensure same newline behavior as built-in input
+            print(text, end="")
+        except Exception:
+            pass
+        print("2  (auto-selected)")
+        return "2"
+
+    return _real_input(prompt)
+
+
+builtins.input = _auto_select_qcar2
+
 
 from config_main import VehicleMainConfig
 from vehicle_logic import VehicleLogic
-from pal.products.qcar import  IS_PHYSICAL_QCAR
+from pal.products.qcar import IS_PHYSICAL_QCAR
 
 
 

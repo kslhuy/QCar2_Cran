@@ -1,3 +1,32 @@
+# Update Log (2026/02/03) (Shengya)
+
+Commit Message: export gains to YAML, improve observer prediction, add state plots
+
+## Completed Tasks:
+
+- [x] **Observer/controller gains exported to YAML** / **观测器/控制器增益导出为YAML配置**
+  - MATLAB exporter: [save_gain2python.m](Ctr_Obs_gain_from_Matlab/save_gain2python.m)
+  - Generated example: [car1.yaml](Ctr_Obs_gain_from_Matlab/gain_for_python_20260203_160335/car1.yaml), [car2.yaml](Ctr_Obs_gain_from_Matlab/gain_for_python_20260203_160335/car2.yaml), [car3.yaml](Ctr_Obs_gain_from_Matlab/gain_for_python_20260203_160335/car3.yaml)
+  - Runtime configs: [car1.yaml](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/extra_configs/car1.yaml), [car2.yaml](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/extra_configs/car2.yaml), [car3.yaml](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/extra_configs/car3.yaml)
+
+- [x] **Auto-select QCar2 in spawner** / **车辆生成脚本自动选择QCar2**
+  - Implementation: [initCars_new.py](Development/QCar2_multi-vehicle_control/initCars_new.py#L606)
+
+- [x] **Use control input in observer prediction** / **观测器状态预测中使用control input**
+  - Cached in update and reused in prediction: [VehicleObserverSimple.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/VehicleObserverSimple.py#L426-L579)
+
+- [x] **Plot true/local vehicle states from recordings** / **从记录文件绘制车辆真实/本地状态**
+  - Script: [plot_distributed_luenberger_vehicle_state.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/plot_distributed_luenberger_vehicle_state.py)
+  - Data: [observer_recordings](observer_recordings/)
+
+
+## Pending Tasks:
+
+- [ ] **Diagnose drift in observer estimate** / **分析观测器估计值漂移原因**
+  - Compare $p_i - p_0 + d_{i0}$: true vs estimated, decide whether drift comes from controller or observer.
+  - Use recordings and plotting entry: [observer_recordings](observer_recordings/) + [plot_distributed_luenberger_vehicle_state.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/plot_distributed_luenberger_vehicle_state.py)
+
+
 # Update Log (2026/02/02) (Shengya)
 
 Commit Message: integrated V2V control signals in fleet estimator
