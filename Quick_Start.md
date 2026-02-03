@@ -5,6 +5,28 @@
 1. Copy the folder "env" to into the folder "QCAR2_CRAN"
 2. Open a python script. After that, the environment will be active, usually.
 
+**If it doesen't work, and has the following error message:**
+```
+& : 无法加载文件 J:\Qcar_Development\QCar2_Cran\env\Scripts\Activate.ps1，因为在此系统上禁止运行脚本。有 
+关详细信息，请参
+阅 https:/go.microsoft.com/fwlink/?LinkID=135170 中的 about_Execution_Policies。
+所在位置 行:1 字符: 3
++ & J:/Qcar_Development/QCar2_Cran/env/Scripts/Activate.ps1
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : SecurityError: (:) []，PSSecurityException
+    + FullyQualifiedErrorId : UnauthorizedAccess
+```
+
+**You need to run the following cmd in terminal window**
+```
+#Allow to run the script in current terminal window
+
+ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass 
+
+#Then, run the activate script again:
+./env/Scripts/Activate.ps1
+ ```
+
 ## Open the QLab, choose open road for vehicle platoon simulation. 
 
 ## Run the following cmd in the powershell
