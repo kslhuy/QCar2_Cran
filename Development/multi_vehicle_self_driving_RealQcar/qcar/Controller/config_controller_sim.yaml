@@ -199,7 +199,7 @@ per_vehicle_controllers:
     fix:
       throttle: 0.15  # Constant speed
     state_feedback:
-      max_throttle: 0.5
+      max_throttle: 0.3
       throttle_smoothing: 0.0
     fix_lateral:
       steering: 0.0
@@ -214,7 +214,7 @@ per_vehicle_controllers:
     fix:
       throttle: 0.15  # Constant speed
     state_feedback:
-      max_throttle: 0.5
+      max_throttle: 0.3
       throttle_smoothing: 0.0 # Slightly smoother than vehicle 1
     fix_lateral:
       steering: 0.0
@@ -229,7 +229,7 @@ per_vehicle_controllers:
     fix:
       throttle: 0.15  # Constant speed
     state_feedback:
-      max_throttle: 0.5
+      max_throttle: 0.3
       throttle_smoothing: 0.0  # Smoothest
     fix_lateral:
       steering: 0.0

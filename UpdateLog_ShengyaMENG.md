@@ -1,3 +1,33 @@
+# Update Log (2026/02/05) (Shengya)
+
+Commit Message: fix observer state recording and plotting scripts
+
+## Completed Tasks / 已完成任务:
+
+- [x] **Add script to plot observer estimation error and calculate convergence time / 添加绘制观测器估计误差脚本并计算收敛时间**
+  - Script: [plot_observer_estimation_error.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/plot_observer_estimation_error.py)
+  - Generates subplots of estimation errors for each vehicle / 为每个车辆生成估计误差的子图
+  - Calculates convergence time and steady-state RMS error / 计算收敛时间和稳态RMS误差
+
+- [x] **Fix true state recording in observer recorder / 修正观测器记录器中的真实状态记录** - Now records all true position, velocity, and acceleration for all vehicles with synchronized data / 现在记录所有车辆的真实位置、速度和加速度, 保持数据同步
+  - Modified [distributed_luenberger_recorder.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/distributed_luenberger_recorder.py) methods `_create_log_row()` and `_initialize_log_file()` / 修改了 `_create_log_row()` 和 `_initialize_log_file()` 方法
+
+
+## Pending Tasks / 待完成任务:
+
+- [ ] **Analyze observer estimation error / 分析观测器估计误差** - Use new plotting script to analyze estimation error for each vehicle / 使用新的绘图脚本分析各车辆的估计误差
+  - Run script: `python plot_observer_estimation_error.py -i <recording_file.csv>`
+  - Check convergence time and steady-state RMS error for position, velocity, acceleration estimation error of each vehicle / 检查各车辆位置、速度、加速度估计误差的收敛时间和稳态RMS误差
+  - Diagnose observer performance issues based on error characteristics / 根据误差表现诊断观测器性能问题
+
+## The Performance Now / 当前性能:
+
+![Observer Estimation Error](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/observer_estimation_error_20260205_101532.png)
+
+**Analysis / 分析:**
+All errors converge rapidly, but the position estimation error exceeds 0.4m, indicating a large deviation between true inter-vehicle spacing error and estimated spacing error, which causes poor controller performance in regulating inter-vehicle distance. / 所有的误差能够快速收敛, 但是有关位置估计误差超过0.4. 这意味着估计的真实间距误差与估计间距误差之间的偏差较大.从而导致控制器无法很好地控制车辆间距. 
+
+
 # Update Log (2026/02/03) (Shengya)
 
 Commit Message: export gains to YAML, improve observer prediction, add state plots

@@ -187,6 +187,16 @@ class DistributedLuenbergerRecorder:
             'local_measurement_v',
         ])
 
+        # True states of all vehicles (via V2V)
+        # Synchronized to current vehicle's timestamp
+        # Includes leader (vehicle 0) and all followers (1 to fleet_size-1)
+        for vid in range(0, self.fleet_size):
+            columns.extend([
+                f'true_position_{vid}',
+                f'true_velocity_{vid}',
+                f'true_acceleration_{vid}',
+            ])
+
         return columns
     
     def record(self, t: float, debug_data: Dict) -> bool:
@@ -291,6 +301,13 @@ class DistributedLuenbergerRecorder:
         row['control_input'] = debug_data.get('control_input', 0.0)
         row['local_measurement_p'] = debug_data.get('local_measurement_p', 0.0)
         row['local_measurement_v'] = debug_data.get('local_measurement_v', 0.0)
+
+        # True states of all vehicles (via V2V)
+        # Includes leader (vehicle 0) and all followers (1 to fleet_size-1)
+        for vid in range(0, self.fleet_size):
+            row[f'true_position_{vid}'] = debug_data.get(f'true_position_{vid}', 0.0)
+            row[f'true_velocity_{vid}'] = debug_data.get(f'true_velocity_{vid}', 0.0)
+            row[f'true_acceleration_{vid}'] = debug_data.get(f'true_acceleration_{vid}', 0.0)
 
         return row
     

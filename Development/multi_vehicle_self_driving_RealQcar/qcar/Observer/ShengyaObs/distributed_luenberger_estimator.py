@@ -743,36 +743,36 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # collective_control = np.full(self.observer_size, 0.15)
 
         # Get actual control signals from V2V communication for all follower vehicles
-        # g = 1  # control gain
-        # for vehicle_id in range(1, self.fleet_size):
-            # follower_idx = vehicle_id - 1
+        g = 1  # control gain
+        for vehicle_id in range(1, self.fleet_size):
+            follower_idx = vehicle_id - 1
             
-            # if follower_idx >= self.observer_size:
-            #     break  # Safety check
+            if follower_idx >= self.observer_size:
+                break  # Safety check
             
-            # if vehicle_id == self.vehicle_id:
-            #     # Use own control signal
-            #     collective_control[follower_idx] = g*control[1]  # throttle
-            # else:
-            #     # Get neighbor's control signal via V2V
-            #     neighbor_control = self._get_latest_received_control(vehicle_id, current_time_ns)
+            if vehicle_id == self.vehicle_id:
+                # Use own control signal
+                collective_control[follower_idx] = g*control[1]  # throttle
+            else:
+                # Get neighbor's control signal via V2V
+                neighbor_control = self._get_latest_received_control(vehicle_id, current_time_ns)
                 
-            #     if neighbor_control is not None:
-            #         collective_control[follower_idx] = g*neighbor_control[1]  # throttle
+                if neighbor_control is not None:
+                    collective_control[follower_idx] = g*neighbor_control[1]  # throttle
                     
-            #         if self.logger and self.debug_recording_enabled:
-            #             self.logger.logger.debug(
-            #                 f"Vehicle {self.vehicle_id}: Using V2V control from vehicle {vehicle_id}: "
-            #                 f"throttle={neighbor_control[1]:.3f}, steering={neighbor_control[0]:.3f}"
-            #             )
-            #     else:
-            #         # No V2V data: use default value (zero throttle)
-            #         collective_control[follower_idx] = 0.0
+                    if self.logger and self.debug_recording_enabled:
+                        self.logger.logger.debug(
+                            f"Vehicle {self.vehicle_id}: Using V2V control from vehicle {vehicle_id}: "
+                            f"throttle={neighbor_control[1]:.3f}, steering={neighbor_control[0]:.3f}"
+                        )
+                else:
+                    # No V2V data: use default value (zero throttle)
+                    collective_control[follower_idx] = 0.0
                     
-            #         if self.logger:
-            #             self.logger.logger.warning(
-            #                 f"Vehicle {self.vehicle_id}: No V2V control data from vehicle {vehicle_id}, using default"
-            #             )
+                    if self.logger:
+                        self.logger.logger.warning(
+                            f"Vehicle {self.vehicle_id}: No V2V control data from vehicle {vehicle_id}, using default"
+                        )
 
         # 1. Dynamics prediction (collective longitudinal model)
         dynamics_term = self.A_delta @ x_vec + self.B_delta @ collective_control
@@ -911,6 +911,11 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # === Store debug data for recording ===
         if self.debug_recording_enabled:
+            # Get leader (vehicle 0) state for recording
+            leader_x = p0  # Already retrieved earlier in the function
+            leader_v = v0  # Already retrieved earlier in the function
+            leader_a = state_leader[4] if state_leader is not None and len(state_leader) > 4 else self.fleet_states[4, 0]
+            
             self.debug_data = {
                 'x_vec_before': x_vec.copy(),  # Observer state before update
                 'x_vec_after': x_i_new.copy(),  # Observer state after update
@@ -925,15 +930,42 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 'fleet_states': self.fleet_states.copy(),  # Current fleet states
                 'di0_values': di0_values_before.copy(),  # di0 values for each follower
                 'collective_control': collective_control.copy(),  # Control input for each follower
-                # State of the vehicle in the platoon
-                'position': local_state[0],
-                'velocity': local_state[3],
-                'acceleration': local_state[4],
+                # True throttle input for this vehicle
                 'control_input': control[1],  # Throttle input
                 'local_measurement_p': local_measurement[0],  # Local relative position measurement
                 'local_measurement_v': local_measurement[1],  # Local velocity measurement
                 'dt': dt,  # Time step
             }
+            
+            # Record true states of all vehicles via V2V communication
+            # This ensures all data is synchronized to current vehicle's timestamp
+            
+            # Record leader (vehicle 0) state
+            self.debug_data['true_position_0'] = leader_x  # Leader position (x)
+            self.debug_data['true_velocity_0'] = leader_v  # Leader velocity
+            self.debug_data['true_acceleration_0'] = leader_a  # Leader acceleration
+            
+            # Record follower vehicles' true states
+            for vehicle_id in range(1, self.fleet_size):
+                if vehicle_id == self.vehicle_id:
+                    # Own state already recorded above as position, velocity, acceleration
+                    self.debug_data[f'true_position_{vehicle_id}'] = local_state[0]
+                    self.debug_data[f'true_velocity_{vehicle_id}'] = local_state[3]
+                    self.debug_data[f'true_acceleration_{vehicle_id}'] = local_state[4] if len(local_state) > 4 else 0.0
+                    continue
+                
+                # Get latest received state from V2V communication
+                other_state = self._get_latest_received_state(vehicle_id, current_time_ns)
+                
+                if other_state is not None:
+                    self.debug_data[f'true_position_{vehicle_id}'] = other_state[0]
+                    self.debug_data[f'true_velocity_{vehicle_id}'] = other_state[3]
+                    self.debug_data[f'true_acceleration_{vehicle_id}'] = other_state[4] if len(other_state) > 4 else 0.0
+                else:
+                    # No V2V data available, use NaN to indicate missing data
+                    self.debug_data[f'true_position_{vehicle_id}'] = np.nan
+                    self.debug_data[f'true_velocity_{vehicle_id}'] = np.nan
+                    self.debug_data[f'true_acceleration_{vehicle_id}'] = np.nan
         
         return x_i_new
 
