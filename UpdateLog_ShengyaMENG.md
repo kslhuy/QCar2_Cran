@@ -1,3 +1,27 @@
+# Update Log (2026/02/06) (Shengya)
+
+Commit Message: Using fake observer to test the controller
+
+## Completed Tasks:
+
+- [x] **Added fake observer for testing state feedback controller** - Created a simple fake observer that outputs the true state with optional noise for testing purposes
+  - Implemented in [distributed_luenberger_estimator.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/distributed_luenberger_estimator.py) as `_fake_estimated_state_for_debugging()`
+  - Can be toggled on/off for testing vs real observer performance
+
+- [x] **Added the low pass filter on the distance and velocity measurement in the observer**
+  - Implemented in [distributed_luenberger_estimator.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/distributed_luenberger_estimator.py) as `_sensor_filter(s()`
+  - Helps smooth out noisy measurements and improve observer stability
+
+## Pending Tasks:
+
+- [ ] **Analyze controller performance with fake observer** 
+  - fix the problem of the distance between leader and vehicle 1 is large.
+  - The convergence time should be shorter.
+
+- [ ] **Add the filter of the control input in the observer**
+  - Implement a low-pass filter on the control input used in the observer prediction to reduce noise impact
+
+
 # Update Log (2026/02/05) (Shengya)
 
 Commit Message: fix observer state recording and plotting scripts

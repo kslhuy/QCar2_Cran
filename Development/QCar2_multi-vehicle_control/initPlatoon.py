@@ -20,7 +20,7 @@ from qvl.free_camera import QLabsFreeCamera
 # 
 num_cars = 4
 car_type = "QC2"
-init_location = [40, -6.2, 1.131]
+init_location = [75, -6.2, 1.131]
 init_distance = 15  # distance between cars
 init_rotation = [0, 0, 0]
 

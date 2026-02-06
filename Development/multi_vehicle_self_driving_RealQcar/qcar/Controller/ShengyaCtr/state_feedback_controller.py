@@ -171,7 +171,7 @@ class StateFeedbackController(LongitudinalControllerBase):
                    (1 - self.throttle_smoothing) * throttle_raw)
         
         # Ensure throttle is non-negative
-        throttle = min(max(throttle_raw, 0.0), self.max_throttle)
+        throttle = min(max(throttle, 0.0), self.max_throttle)
         
         # Store for next iteration
         self.prev_throttle = throttle

@@ -75,7 +75,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # System matrices of the longitudinal model
         tau = self.tau_i  # Time constant
         self.h = 0.3     # time headway
-        self.d = 0.5    # Desired distance
+        self.d = 0.4    # Desired distance
         self.observer_size = self.fleet_size - 1  # Exclude leader from observer size
 
         A_tau = np.array([
@@ -235,6 +235,17 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                     self.K_matrices.append(self.K_all_vehicles[self.vehicle_id][j])
                 else:
                     self.K_matrices.append(None)
+        
+        # Initialize filter variables for sensor measurements
+        self.prev_distance_measurement = 0.0
+        self.prev_velocity_measurement = 0.0
+        self.prev_v0 = 0.0  # Previous filtered leader velocity
+        self.prev_p0 = 0.0  # Previous filtered leader position
+        # Default filter coefficients for different sensor measurements
+        self.distance_filter_alpha = self.config.get('distance_filter_alpha', 0.3)  # Low-pass filter for distance (0-1)
+        self.velocity_filter_alpha = self.config.get('velocity_filter_alpha', 0.1)  # Low-pass filter for velocity (0-1)
+        self.leader_velocity_filter_alpha = self.config.get('leader_velocity_filter_alpha', 0.2)  # Low-pass filter for leader velocity (0-1)
+        self.leader_position_filter_alpha = self.config.get('leader_position_filter_alpha', 0.2)  # Low-pass filter for leader position (0-1)
     def _init_recorder(self):
         """Initialize and start the debug data recorder."""
         try:
@@ -334,6 +345,30 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 neighbors.append(neighbor_vehicle_id)
         
         return neighbors
+    
+    def _sensor_filter(self, current_measurement: float, prev_measurement: float, 
+                      filter_alpha: float, dt: float = None) -> float:
+        """
+        Generic low-pass filter for sensor measurements to suppress noise.
+        Uses exponential moving average (EMA) for smoothing.
+        
+        Args:
+            current_measurement: Current measurement from sensor
+            prev_measurement: Previous filtered measurement
+            filter_alpha: Filter coefficient (0-1)
+                         - closer to 1 = more responsive (less filtering)
+                         - closer to 0 = more smoothing (more filtering)
+            dt: Time step (optional, not used in this simple implementation, 
+                but can be used for adaptive filtering in future)
+        
+        Returns:
+            filtered_measurement: Filtered measurement value
+        """
+        # Simple exponential moving average (low-pass filter)
+        # filtered = alpha * current + (1 - alpha) * previous
+        filtered_measurement = filter_alpha * current_measurement + (1 - filter_alpha) * prev_measurement
+        
+        return filtered_measurement
     
     def compute_output_matrix_Ci(self, i: int) -> np.ndarray:
         """
@@ -450,23 +485,14 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             self._ensure_fleet_capacity(self.vehicle_id)
             
             # Distributed observer for this vehicle
-            estimated_state_new = self._distributed_luenberger_observer_update(
+            self.estimated_state = self._distributed_luenberger_observer_update(
                 local_state, current_time_ns, control, dt
             )
             
-            # CRITICAL: Validate the returned estimated_state size before assignment
-            expected_size = 3 * self.observer_size
-            if estimated_state_new.size != expected_size:
-                if self.logger:
-                    self.logger.logger.error(
-                        f"Vehicle {self.vehicle_id}: CRITICAL - _distributed_luenberger_observer_update returned "
-                        f"wrong size! Expected {expected_size}, got {estimated_state_new.size}. "
-                        f"Keeping previous estimated_state. observer_size={self.observer_size}"
-                    )
-                # Don't update if size is wrong
-            else:
-                # Size is correct, safe to update
-                self.estimated_state = estimated_state_new
+
+            # self.estimated_state = self._fake_estimated_state_for_debugging(
+            #     self.estimated_state, local_state, current_time_ns
+            # )
             
             # Transfer the estimated states back to fleet_states. 
             self.fleet_states, _ = self._transfer_estimated_states_to_fleet_states(self.estimated_state, local_state, current_time_ns)
@@ -489,6 +515,104 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             if self.logger:
                 self.logger.log_error("Distributed Luenberger update error", e)
             return self.fleet_states
+    
+    def _fake_estimated_state_for_debugging(self, estimated_state: np.ndarray, local_state: np.ndarray, 
+                                           current_time_ns: int) -> np.ndarray:
+        """
+        Calculate fake estimated state using true vehicle states from V2V communication for debugging.
+        This is used to compare observer estimates with ground truth.
+        
+        Format (column-major):
+        - estimated_state[0] = p1 - p0 + d10
+        - estimated_state[1] = v1 - v0
+        - estimated_state[2] = a1 - a0
+        - estimated_state[3] = p2 - p0 + d20
+        - estimated_state[4] = v2 - v0
+        - estimated_state[5] = a2 - a0
+        - ... and so on for all follower vehicles
+        
+        Args:
+            estimated_state: Current observer estimated state (not used, just for signature consistency)
+            local_state: Own vehicle state [x, y, theta, v, a]
+            current_time_ns: Current timestamp in nanoseconds
+        
+        Returns:
+            fake_estimated_state: "Ground truth" estimated state vector [3*observer_size]
+        """
+        # Get leader (vehicle 0) state from V2V communication
+        state_leader = self._get_latest_received_state(0, current_time_ns)
+        if state_leader is not None:
+            p0 = state_leader[0]
+            v0 = state_leader[3]
+            a0 = state_leader[4] 
+        else:
+            # Fallback to fleet_states if no V2V data available
+            p0 = self.fleet_states[0, 0]
+            v0 = self.fleet_states[3, 0]
+            a0 = self.fleet_states[4, 0]
+        
+        # Initialize fake estimated state matrix [3 x observer_size]
+        fake_estimated_state_mat = np.zeros((3, self.observer_size))
+        
+        # For each follower vehicle (vehicle_id >= 1), compute relative state from true states
+        for vehicle_id in range(1, self.observer_size + 1):
+            col_idx = vehicle_id - 1
+            
+            # Get true state from V2V communication or local state
+            if vehicle_id == self.vehicle_id:
+                # Use own local state
+                pi = local_state[0]
+                vi = local_state[3]
+                ai = local_state[4] 
+            else:
+                # Get state from V2V communication
+                state_i = self._get_latest_received_state(vehicle_id, current_time_ns)
+                if state_i is not None:
+                    pi = state_i[0]
+                    vi = state_i[3]
+                    ai = state_i[4] if len(state_i) > 4 else 0.0
+                else:
+                    # No V2V data available, use fleet_states estimate
+                    pi = self.fleet_states[0, vehicle_id]
+                    vi = self.fleet_states[3, vehicle_id]
+                    ai = self.fleet_states[4, vehicle_id]
+            
+            # Calculate di0 = vehicle_id * d + h * sum(v_k for k=1 to vehicle_id)
+            di0 = vehicle_id * self.d
+            
+            # Sum true absolute velocities from vehicle 1 to vehicle_id
+            velocity_sum = 0.0
+            for k in range(1, vehicle_id + 1):
+                if k == self.vehicle_id:
+                    # Use own velocity
+                    vk = local_state[3]
+                else:
+                    # Get from V2V communication
+                    state_k = self._get_latest_received_state(k, current_time_ns)
+                    if state_k is not None:
+                        vk = state_k[3]
+                    else:
+                        # Fallback to fleet_states
+                        vk = self.fleet_states[3, k]
+                
+                velocity_sum += vk
+            
+            di0 += self.h * velocity_sum
+            
+            # Calculate relative state (ground truth)
+            relative_position = pi - p0 + di0
+            relative_velocity = vi - v0
+            relative_accel = ai - a0
+            
+            # Store in fake estimated matrix
+            fake_estimated_state_mat[0, col_idx] = relative_position
+            fake_estimated_state_mat[1, col_idx] = relative_velocity
+            fake_estimated_state_mat[2, col_idx] = relative_accel
+        
+        # Flatten matrix to vector (column-major order)
+        fake_estimated_state = fake_estimated_state_mat.flatten(order="F")
+        
+        return fake_estimated_state
     
     def _transfer_fleet_states_to_estimated_states(self, fleet_states: np.ndarray, current_time_ns: int) -> np.ndarray:
         """
@@ -597,18 +721,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         Returns:
             fleet_states: Complete fleet state matrix [state_dim x fleet_size]
         """
-        # CRITICAL: Validate estimated_state dimensions
-        expected_size = 3 * self.observer_size
-        if estimated_state.size != expected_size:
-            if self.logger:
-                self.logger.logger.error(
-                    f"Vehicle {self.vehicle_id}: CRITICAL - estimated_state size mismatch! "
-                    f"Expected {expected_size} (3 * observer_size={self.observer_size}), "
-                    f"got {estimated_state.size}. "
-                    f"fleet_size={self.fleet_size}, self.fleet_states.shape={self.fleet_states.shape}"
-                )
-            # Return current fleet_states without update to avoid crash
-            return self.fleet_states, np.zeros(self.observer_size)
         
         # Reshape estimated state to [3 x observer_size] matrix (column-major)
         estimated_state_mat = estimated_state.reshape((3, self.observer_size), order="F")
@@ -698,15 +810,22 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # Get leader state with fallback to current estimate
         state_leader = self._get_latest_received_state(0, current_time_ns)
         if state_leader is not None:
-            v0 = state_leader[3]
-            p0 = state_leader[0]
+            v0_raw = state_leader[3]
+            p0_raw = state_leader[0]
         else:
             if self.logger:
                 self.logger.logger.warning(
                     f"Vehicle {self.vehicle_id}: When try to get the leader state, no V2V state data from vehicle 0, using fleet_states"
                 )
-            v0 = self.fleet_states[3, 0]
-            p0 = self.fleet_states[0, 0]
+            v0_raw = self.fleet_states[3, 0]
+            p0_raw = self.fleet_states[0, 0]
+        
+        # Apply sensor filter to leader state
+        v0 = self._sensor_filter(v0_raw, self.prev_v0, self.leader_velocity_filter_alpha, dt)
+        self.prev_v0 = v0  # Update for next iteration
+        
+        p0 = self._sensor_filter(p0_raw, self.prev_p0, self.leader_position_filter_alpha, dt)
+        self.prev_p0 = p0  # Update for next iteration
 
         # Calculate collective control input for all follower vehicles
         # Vehicle 1: u1 = K10 @ F1 @ x_vec
@@ -723,7 +842,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 # First term: Ki0 @ Fi @ x_vec
                 if 0 in self.K_all_vehicles[vehicle_id]:
                     Ki0 = self.K_all_vehicles[vehicle_id][0]
-                    collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0], 0.5)  # Limit max control to 0.5
+                    collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0], 0.15)  # Limit max control to 0.15
                 
                 # Sum over preceding vehicles j=1 to i-1
                 # Add terms: Kij @ (Fi - Fj) @ x_vec
@@ -732,7 +851,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                         Kij = self.K_all_vehicles[vehicle_id][j]
                         Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
                         collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]
-                        collective_control = np.clip(collective_control, 0, 0.5)  # Limit control input
+                        collective_control = np.clip(collective_control, 0, 0.15)  # Limit control input
         
         # Keep collective_control as 1D array to avoid dimension issues
         # collective_control shape: (observer_size,) = (3,)
@@ -743,7 +862,6 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # collective_control = np.full(self.observer_size, 0.15)
 
         # Get actual control signals from V2V communication for all follower vehicles
-        g = 1  # control gain
         for vehicle_id in range(1, self.fleet_size):
             follower_idx = vehicle_id - 1
             
@@ -752,13 +870,13 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             
             if vehicle_id == self.vehicle_id:
                 # Use own control signal
-                collective_control[follower_idx] = g*control[1]  # throttle
+                collective_control[follower_idx] = control[1]  # throttle
             else:
                 # Get neighbor's control signal via V2V
                 neighbor_control = self._get_latest_received_control(vehicle_id, current_time_ns)
                 
                 if neighbor_control is not None:
-                    collective_control[follower_idx] = g*neighbor_control[1]  # throttle
+                    collective_control[follower_idx] = neighbor_control[1]  # throttle
                     
                     if self.logger and self.debug_recording_enabled:
                         self.logger.logger.debug(
@@ -779,7 +897,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # 2. Measurement correction (if we have data from target)
         measurement_term = np.zeros(dim_distributed_observer)  
-        local_measurement = np.zeros(self.local_measurement_dim)
+        local_measurement = np.zeros(self.local_measurement_dim)  
         
         # Read self state from local_state input
         p_i = local_state[0]
@@ -796,8 +914,30 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 )
             p_prev = self.fleet_states[0, self.vehicle_id - 1]
         
-        local_measurement[0] = p_i - p_prev  # relative position
-        local_measurement[1] = v_i # velocity 
+        # local_measurement[0] = p_i - p_prev  # relative position
+        # local_measurement[1] = v_i # velocity 
+
+        distance_measurement = p_i - p_prev # relative position
+        velocity_measurement = v_i # velocity
+
+        # Sensor filter for the local measurement.
+        # Apply distance measurement filter
+        local_measurement[0] = self._sensor_filter(
+            distance_measurement, 
+            self.prev_distance_measurement, 
+            self.distance_filter_alpha,
+            dt
+        )
+        self.prev_distance_measurement = local_measurement[0]  # Update for next iteration
+        
+        # Apply velocity measurement filter (currently enabled)
+        local_measurement[1] = self._sensor_filter(
+            velocity_measurement,
+            self.prev_velocity_measurement,
+            self.velocity_filter_alpha,
+            dt
+        )
+        self.prev_velocity_measurement = local_measurement[1]  # Update for next iteration
         
         estimated_measurement = self.Ci @ x_vec + self.Cv * v0 + self.Cd * self.d
 
@@ -855,6 +995,12 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                             'velocity': float(self.fleet_states[3, vid]),
                             'acceleration': float(self.fleet_states[4, vid])
                         }
+                    if self.logger:
+                        self.logger.logger.warning(
+                            f"Vehicle {self.vehicle_id}: Missing state for vehicle {vid} from neighbor {neighbor_id}. "
+                            f"Falling back to local state or estimate. "
+                            f"Missing vehicles: {missing_vehicles}"
+                        )
             
             # --- Step 3: Build neighbor's complete fleet_states matrix ---
             neighbor_fleet_states = np.zeros((self.state_dim, self.fleet_size))
@@ -902,12 +1048,17 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         else:
             consensus_term = np.zeros(dim_distributed_observer)
         
-        # Combine all terms (note: consensus term is subtracted, per theory)
-        # consensus_term = np.zeros(dim_distributed_observer) 
+        # consensus_term = self.consensus_gain @ consensus_accum 
         x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
         
         # State constraint: prevent numerical overflow
         x_i_new = np.clip(x_i_new, -1e3, 1e3)
+
+        x_i_new = self._fake_estimated_state_for_debugging(
+                self.estimated_state, local_state, current_time_ns
+            )
+
+        
         
         # === Store debug data for recording ===
         if self.debug_recording_enabled:
