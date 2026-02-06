@@ -1125,60 +1125,60 @@ class VehicleObserver:
     
     # ===== Scope Integration for Visualization =====
     
-    def enable_scopes(self, preset_names: List[str] = None, fps: int = 30, 
-                      time_window: float = 60.0) -> bool:
-        """
-        Enable visualization scopes for estimator data.
+    # def enable_scopes(self, preset_names: List[str] = None, fps: int = 30, 
+    #                   time_window: float = 60.0) -> bool:
+    #     """
+    #     Enable visualization scopes for estimator data.
         
-        Args:
-            preset_names: List of preset names to enable. Options:
-                - 'local_state': x, y, theta, velocity estimation
-                - 'local_error': estimation vs GPS error
-                - 'local_control': steering, throttle, velocity
-                - 'fleet_position': XY plot of all vehicles
-                - 'fleet_state': fleet state time series
-                - 'fleet_consensus': consensus error and trust scores
-                If None, enables all presets.
-            fps: Refresh rate (frames per second)
-            time_window: Time window for plots in seconds
+    #     Args:
+    #         preset_names: List of preset names to enable. Options:
+    #             - 'local_state': x, y, theta, velocity estimation
+    #             - 'local_error': estimation vs GPS error
+    #             - 'local_control': steering, throttle, velocity
+    #             - 'fleet_position': XY plot of all vehicles
+    #             - 'fleet_state': fleet state time series
+    #             - 'fleet_consensus': consensus error and trust scores
+    #             If None, enables all presets.
+    #         fps: Refresh rate (frames per second)
+    #         time_window: Time window for plots in seconds
             
-        Returns:
-            True if scopes enabled successfully
-        """
-        try:
-            from Observer.estimation_scopes import (
-                EstimationScopeManager, 
-                create_scope_manager,
-                MULTISCOPE_AVAILABLE
-            )
+    #     Returns:
+    #         True if scopes enabled successfully
+    #     """
+    #     try:
+    #         from Observer.estimation_scopes import (
+    #             EstimationScopeManager, 
+    #             create_scope_manager,
+    #             MULTISCOPE_AVAILABLE
+    #         )
             
-            if not MULTISCOPE_AVAILABLE:
-                self.vehicle_logger.log_warning("MultiScope not available - scopes disabled")
-                return False
+    #         if not MULTISCOPE_AVAILABLE:
+    #             self.vehicle_logger.log_warning("MultiScope not available - scopes disabled")
+    #             return False
             
-            if preset_names is None:
-                preset_names = ['local_state', 'local_error', 'local_control',
-                               'fleet_position', 'fleet_state', 'fleet_consensus']
+    #         if preset_names is None:
+    #             preset_names = ['local_state', 'local_error', 'local_control',
+    #                            'fleet_position', 'fleet_state', 'fleet_consensus']
             
-            self.scope_manager = create_scope_manager(
-                preset_names=preset_names,
-                fps=fps,
-                time_window=time_window,
-                max_vehicles=self.fleet_size
-            )
-            self.scope_manager.start()
+    #         self.scope_manager = create_scope_manager(
+    #             preset_names=preset_names,
+    #             fps=fps,
+    #             time_window=time_window,
+    #             max_vehicles=self.fleet_size
+    #         )
+    #         self.scope_manager.start()
             
-            self.vehicle_logger.logger.info(
-                f"Estimation scopes enabled: {preset_names}"
-            )
-            return True
+    #         self.vehicle_logger.logger.info(
+    #             f"Estimation scopes enabled: {preset_names}"
+    #         )
+    #         return True
             
-        except ImportError as e:
-            self.vehicle_logger.log_warning(f"Could not import estimation_scopes: {e}")
-            return False
-        except Exception as e:
-            self.vehicle_logger.log_error("Failed to enable scopes", e)
-            return False
+    #     except ImportError as e:
+    #         self.vehicle_logger.log_warning(f"Could not import estimation_scopes: {e}")
+    #         return False
+    #     except Exception as e:
+    #         self.vehicle_logger.log_error("Failed to enable scopes", e)
+    #         return False
     
     def sample_scopes(self, t: float) -> None:
         """

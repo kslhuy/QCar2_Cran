@@ -20,7 +20,7 @@ from Controller.platoon_controller import PlatoonController, PlatoonConfig
 from command_handler import CommandHandler
 from V2V.v2v_manager import V2VManager, V2VBroadcastConfig
 from Observer.VehicleObserverSimple import VehicleObserver
-from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset
+# from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset
 from Controller.controller_manager import ControllerManager
 
 # Note: Controllers (PIDVelocityController, StanleyController) are now imported 
@@ -172,53 +172,53 @@ class VehicleLogic:
         ##### ========== # Another Visualization on Ground Station is used ========== #####
         #region Estimation Scopes 
         
-        # Check if plotting is enabled in observer config
-        self.scope_manager = None
+        # # Check if plotting is enabled in observer config
+        # self.scope_manager = None
         
-        # Check plotting config from vehicle observer (loaded from yaml)
-        local_plot_config = getattr(self.vehicle_observer, 'local_plotting_config', {})
-        fleet_plot_config = getattr(self.vehicle_observer, 'fleet_plotting_config', {})
+        # # Check plotting config from vehicle observer (loaded from yaml)
+        # local_plot_config = getattr(self.vehicle_observer, 'local_plotting_config', {})
+        # fleet_plot_config = getattr(self.vehicle_observer, 'fleet_plotting_config', {})
         
-        # Enable if either local or fleet plotting is enabled
-        local_enabled = local_plot_config.get('enabled', False)
-        fleet_enabled = fleet_plot_config.get('enabled', False)
+        # # Enable if either local or fleet plotting is enabled
+        # local_enabled = local_plot_config.get('enabled', False)
+        # fleet_enabled = fleet_plot_config.get('enabled', False)
         
-        if local_enabled or fleet_enabled:
-            from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset, FleetConsensusPreset
+        # if local_enabled or fleet_enabled:
+        #     from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset, FleetConsensusPreset
             
-            # Use local config params as default for manager
-            plot_params = local_plot_config.get('params', {})
-            fps = plot_params.get('fps', 30)
-            time_window = plot_params.get('time_window', 60.0)
+        #     # Use local config params as default for manager
+        #     plot_params = local_plot_config.get('params', {})
+        #     fps = plot_params.get('fps', 30)
+        #     time_window = plot_params.get('time_window', 60.0)
             
-            # Check for save_only mode (headless)
-            save_only = plot_params.get('save_only', False)
+        #     # Check for save_only mode (headless)
+        #     save_only = plot_params.get('save_only', False)
             
-            self.scope_manager = EstimationScopeManager(
-                fps=fps, 
-                time_window=time_window,
-                headless=save_only
-            )
+        #     self.scope_manager = EstimationScopeManager(
+        #         fps=fps, 
+        #         time_window=time_window,
+        #         headless=save_only
+        #     )
             
-            if local_enabled:
-                self.scope_manager.add_preset(LocalStatePreset())
-                self.scope_manager.add_preset(LocalControlPreset())
-                self.vehicle_logger.logger.info("Plotting enabled: Local State & Control")
+        #     if local_enabled:
+        #         self.scope_manager.add_preset(LocalStatePreset())
+        #         self.scope_manager.add_preset(LocalControlPreset())
+        #         self.vehicle_logger.logger.info("Plotting enabled: Local State & Control")
                 
-            if fleet_enabled:
-                fleet_params = fleet_plot_config.get('params', {})
-                max_vehicles = fleet_params.get('max_vehicles_plot', 5)
-                self.scope_manager.add_preset(FleetPositionPreset(max_vehicles=max_vehicles))
-                self.scope_manager.add_preset(FleetStatePreset(max_vehicles=max_vehicles))
-                self.scope_manager.add_preset(FleetConsensusPreset(max_vehicles=max_vehicles))
-                self.vehicle_logger.logger.info("Plotting enabled: Fleet State & Positions")
+        #     if fleet_enabled:
+        #         fleet_params = fleet_plot_config.get('params', {})
+        #         max_vehicles = fleet_params.get('max_vehicles_plot', 5)
+        #         self.scope_manager.add_preset(FleetPositionPreset(max_vehicles=max_vehicles))
+        #         self.scope_manager.add_preset(FleetStatePreset(max_vehicles=max_vehicles))
+        #         self.scope_manager.add_preset(FleetConsensusPreset(max_vehicles=max_vehicles))
+        #         self.vehicle_logger.logger.info("Plotting enabled: Fleet State & Positions")
             
-            # Start the scope manager
-            # If save_only is True, it runs without GUI window (headless)
-            self.scope_manager.start(threaded=False)
+        #     # Start the scope manager
+        #     # If save_only is True, it runs without GUI window (headless)
+        #     self.scope_manager.start(threaded=False)
             
-            if save_only:
-                 self.vehicle_logger.logger.info("Scope Manager running in HEADLESS mode (save_only=True)")
+        #     if save_only:
+        #          self.vehicle_logger.logger.info("Scope Manager running in HEADLESS mode (save_only=True)")
             #endregion Estimation Scopes 
         
 
@@ -280,10 +280,10 @@ class VehicleLogic:
                 self._process_queued_commands()  # No rate limit - process as fast as possible
                 self._broadcast_v2v_state()  # V2VManager handles internal rate-limiting
                 
-                # 5. Visualization Update (Main Thread)
-                # Only update if manager exists and is enabled
-                if self.scope_manager:
-                    self.scope_manager.update()
+                # # 5. Visualization Update (Main Thread)
+                # # Only update if manager exists and is enabled
+                # if self.scope_manager:
+                #     self.scope_manager.update()
 
                 
                 # Performance monitoring
@@ -311,9 +311,9 @@ class VehicleLogic:
 
             self._shutdown()
 
-            # Stop scope manager
-            if self.scope_manager:
-                self.scope_manager.stop()
+            # # Stop scope manager
+            # if self.scope_manager:
+            #     self.scope_manager.stop()
 
                 
     # ===== Component Update Rate Control Methods =====
@@ -367,29 +367,29 @@ class VehicleLogic:
                 last_u
             )
 
-            # Update visualization scope (if enabled)
-            if self.scope_manager and self.scope_manager.enabled:
-                # Gather visualization data
-                vis_data = state_info.copy()
+            # # Update visualization scope (if enabled)
+            # if self.scope_manager and self.scope_manager.enabled:
+            #     # Gather visualization data
+            #     vis_data = state_info.copy()
                 
-                # Add GPS reference if available
-                sensor_data = self.vehicle_observer.get_sensor_data()
-                if sensor_data.get('gps_valid', False):
-                    vis_data['x_gps'] = sensor_data['gps_position'][0]
-                    vis_data['y_gps'] = sensor_data['gps_position'][1]
-                    vis_data['theta_gps'] = sensor_data['gps_position'][2]
+            #     # Add GPS reference if available
+            #     sensor_data = self.vehicle_observer.get_sensor_data()
+            #     if sensor_data.get('gps_valid', False):
+            #         vis_data['x_gps'] = sensor_data['gps_position'][0]
+            #         vis_data['y_gps'] = sensor_data['gps_position'][1]
+            #         vis_data['theta_gps'] = sensor_data['gps_position'][2]
                 
-                # Add control signals
-                vis_data['v_ref'] = self.v_ref * self.yolo_manager.get_yolo_gain()
-                vis_data['steering'] = last_steering
-                vis_data['throttle'] = last_u
+            #     # Add control signals
+            #     vis_data['v_ref'] = self.v_ref * self.yolo_manager.get_yolo_gain()
+            #     vis_data['steering'] = last_steering
+            #     vis_data['throttle'] = last_u
                 
-                # Add fleet data for plotting
-                if self.vehicle_observer.v2v_active:
-                    vis_data['fleet_states'] = self.vehicle_observer.get_fleet_states()
+            #     # Add fleet data for plotting
+            #     if self.vehicle_observer.v2v_active:
+            #         vis_data['fleet_states'] = self.vehicle_observer.get_fleet_states()
                 
-                # Push to scope manager (non-blocking)
-                self.scope_manager.sample(self.elapsed_time(), vis_data)
+            #     # Push to scope manager (non-blocking)
+            #     self.scope_manager.sample(self.elapsed_time(), vis_data)
 
             # Stream scope data to Ground Station (if streaming enabled)
             if hasattr(self, 'scope_streamer') and self.scope_streamer and self.scope_streamer.is_streaming():

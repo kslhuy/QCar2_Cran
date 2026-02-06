@@ -42,6 +42,7 @@ class ConnectionCallbacks:
     on_upload_files: Callable[[VehicleConnectionConfig], None] = None
     on_start_vehicle: Callable[[VehicleConnectionConfig], None] = None
     on_stop_vehicle: Callable[[int, str, bool, bool], None] = None  # car_id, ip, stop_quarc, stop_hardware
+    on_calibrate: Callable[[VehicleConnectionConfig, bool], None] = None  # config, distribute_to_all
     on_test_connection: Callable[[str], None] = None
     on_config_changed: Callable[[VehicleConnectionConfig], None] = None
 
@@ -354,6 +355,33 @@ class VehicleConnectionPanel(BaseWidget):
             selectcolor=c.bg_light,
             font=self.theme.fonts.tiny()
         ).pack(side='left')
+        
+        # Button row 4: Calibration
+        row4 = tk.Frame(content, bg=c.bg_medium)
+        row4.pack(fill='x', pady=(5, 2))
+        
+        self._calibrate_btn = ThemedButton(
+            row4,
+            text="📐 Calibrate LiDAR",
+            button_type='warning',
+            command=self._on_calibrate,
+            padx=12,
+            pady=4
+        )
+        self._calibrate_btn.pack(side='left', expand=True, fill='x', padx=(0, 5))
+        self._calibrate_btn.config(state='disabled')
+        
+        # Distribute checkbox
+        self._distribute_var = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            row4,
+            text="📡 Distribute to all",
+            variable=self._distribute_var,
+            bg=c.bg_medium,
+            fg=c.fg_primary,
+            selectcolor=c.bg_light,
+            font=self.theme.fonts.small()
+        ).pack(side='left', padx=(5, 0))
     
     def _build_status_section(self) -> None:
         """Build the status section."""
@@ -470,6 +498,30 @@ class VehicleConnectionPanel(BaseWidget):
                 daemon=True
             ).start()
     
+    def _on_calibrate(self) -> None:
+        """Handle calibrate button click (LiDAR calibration like calibrate.bat)."""
+        config = self._get_current_config()
+        distribute_to_all = self._distribute_var.get()
+        
+        # Show confirmation
+        msg = f"This will run LiDAR calibration on vehicle {self.car_id} ({config.ip}).\n\n"
+        if distribute_to_all:
+            msg += "The calibration results (.mat files) will be distributed to ALL connected vehicles.\n\n"
+        msg += "The vehicle should be stationary in a known location.\n\nContinue?"
+        
+        if not messagebox.askyesno("Confirm Calibration", msg, icon='warning'):
+            return
+        
+        self._set_status("calibrating", "Running LiDAR calibration...")
+        self._calibrate_btn.config(state='disabled')
+        
+        if self.callbacks.on_calibrate:
+            threading.Thread(
+                target=self.callbacks.on_calibrate,
+                args=(config, distribute_to_all),
+                daemon=True
+            ).start()
+    
     # ========== State Management ==========
     
     def _get_current_config(self) -> VehicleConnectionConfig:
@@ -531,6 +583,7 @@ class VehicleConnectionPanel(BaseWidget):
                 self._upload_btn.config(state='normal')
                 self._start_btn.config(state='normal')
                 self._stop_btn.config(state='normal')
+                self._calibrate_btn.config(state='normal')
                 self._connect_btn.config(text="🔄 Reconnect")
             else:
                 self._connection_status = "error"
@@ -541,6 +594,7 @@ class VehicleConnectionPanel(BaseWidget):
                 self._upload_btn.config(state='disabled')
                 self._start_btn.config(state='disabled')
                 self._stop_btn.config(state='disabled')
+                self._calibrate_btn.config(state='disabled')
         
         # Schedule on main thread
         if self._status_label:
@@ -573,6 +627,19 @@ class VehicleConnectionPanel(BaseWidget):
             else:
                 self._set_status("connected", message or "Vehicle stopped")
                 self._start_btn.config(state='normal', text="▶️ Start Vehicle")
+        
+        if self._status_label:
+            self._status_label.after(0, _update)
+    
+    def set_calibration_complete(self, success: bool, message: str = "") -> None:
+        """Update after calibration attempt (thread-safe)."""
+        def _update():
+            if success:
+                self._set_status("calibrated", message or "✅ Calibration complete")
+            else:
+                self._set_status("error", message or "Calibration failed")
+            
+            self._calibrate_btn.config(state='normal')
         
         if self._status_label:
             self._status_label.after(0, _update)

@@ -290,6 +290,7 @@ class QCarFleetController:
             on_upload_files=lambda cfg: self._on_vehicle_upload(cfg),
             on_start_vehicle=lambda cfg: self._on_vehicle_start(cfg),
             on_stop_vehicle=lambda cid, ip, sq, sh: self._on_vehicle_stop(cid, ip, sq, sh),
+            on_calibrate=lambda cfg, dist: self._on_vehicle_calibrate(cfg, dist),
             on_test_connection=lambda ip: self._on_test_connection(ip),
         )
         
@@ -403,6 +404,50 @@ class QCarFleetController:
             panel.set_vehicle_running(False, message)
             # Re-enable stop button
             panel._stop_btn.config(state='normal')
+    
+    def _on_vehicle_calibrate(self, config: VehicleConnectionConfig, 
+                               distribute_to_all: bool = True) -> None:
+        """Handle vehicle calibration request (LiDAR calibration like calibrate.bat)."""
+        car_id = config.car_id
+        ip = config.ip
+        
+        self.log(f"Car {car_id}: Starting LiDAR calibration (distribute={distribute_to_all})...", 'INFO')
+        
+        # Set progress callback
+        panel = self._deployment_panels.get(car_id)
+        if panel:
+            self._vehicle_connector.progress_callback = panel.set_progress
+        
+        # Gather other vehicle IPs for distribution (only connected vehicles)
+        distribute_ips = []
+        if distribute_to_all:
+            for other_id, other_panel in self._deployment_panels.items():
+                if other_id != car_id and other_panel.is_connected:
+                    other_ip = other_panel.get_ip()
+                    if other_ip:
+                        distribute_ips.append(other_ip)
+            
+            if distribute_ips:
+                self.log(f"Will distribute calibration results to {len(distribute_ips)} connected vehicles: {distribute_ips}", 'INFO')
+            else:
+                self.log("No other connected vehicles to distribute to", 'WARNING')
+        
+        # Run calibration
+        success, message = self._vehicle_connector.calibrate_vehicle(
+            car_id=car_id,
+            ip=ip,
+            distribute_ips=distribute_ips if distribute_to_all else None
+        )
+        
+        # Update panel status
+        if panel:
+            panel.set_calibration_complete(success, message)
+            self._vehicle_connector.progress_callback = None
+        
+        if success:
+            self.log(f"Car {car_id}: {message}", 'SUCCESS')
+        else:
+            self.log(f"Car {car_id}: Calibration failed - {message}", 'ERROR')
     
     def _connect_all_vehicles(self) -> None:
         """Connect to all vehicles in deployment panels."""
@@ -594,6 +639,7 @@ class QCarFleetController:
             on_upload_files=lambda cfg: self._on_vehicle_upload(cfg),
             on_start_vehicle=lambda cfg: self._on_vehicle_start(cfg),
             on_stop_vehicle=lambda cid, ip, sq, sh: self._on_vehicle_stop(cid, ip, sq, sh),
+            on_calibrate=lambda cfg, dist: self._on_vehicle_calibrate(cfg, dist),
             on_test_connection=lambda ip: self._on_test_connection(ip, car_id),
         )
         
@@ -782,6 +828,7 @@ class QCarFleetController:
             on_update_control_type=self._update_control_type,
             on_platoon_position_change=self._update_platoon_position,
             on_toggle_perception=self._toggle_perception_car,
+            on_toggle_probing=self._toggle_probing_car,
             on_toggle_scopes=self._toggle_scopes_car,
             on_toggle_remote_plot_local=self._toggle_remote_plot_local,
             on_toggle_remote_plot_fleet=self._toggle_remote_plot_fleet,
@@ -891,6 +938,11 @@ class QCarFleetController:
         """Cleanup resources on application close."""
         self.log("Shutting down...", 'INFO')
         self._running = False
+        
+        # Stop all probing processes
+        if hasattr(self, '_probing_processes'):
+            for car_id in list(self._probing_processes.keys()):
+                self._stop_probing_car(car_id)
         
         # Stop all cars
         self._stop_all_cars()
@@ -1047,6 +1099,79 @@ class QCarFleetController:
         else:
             self._commands_failed_gui += 1
             self.log(f"Car {car_id}: Failed to disable perception", 'ERROR')
+    
+    # ========== Individual Probing Control ==========
+    
+    def _toggle_probing_car(self, car_id: int) -> None:
+        """Toggle probing for a specific car - opens observer window to see YOLO stream."""
+        # Check if probing process exists for this car
+        if not hasattr(self, '_probing_processes'):
+            self._probing_processes = {}
+        
+        if car_id in self._probing_processes and self._probing_processes[car_id] is not None:
+            # Stop probing
+            self._stop_probing_car(car_id)
+        else:
+            # Start probing
+            self._start_probing_car(car_id)
+    
+    def _start_probing_car(self, car_id: int) -> None:
+        """Start probing for a specific car - runs multi_probing.py."""
+        import subprocess
+        import os
+        
+        if not hasattr(self, '_probing_processes'):
+            self._probing_processes = {}
+        
+        try:
+            # Path to multi_probing.py
+            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            probing_script = os.path.join(base_path, 'python', 'multi_probing.py')
+            
+            if not os.path.exists(probing_script):
+                self.log(f"Car {car_id}: Probing script not found at {probing_script}", 'ERROR')
+                return
+            
+            # Start the probing process
+            cmd = ['python', probing_script, '--cars', str(car_id)]
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NEW_CONSOLE  # Opens in new window on Windows
+            )
+            
+            self._probing_processes[car_id] = process
+            self.log(f"Car {car_id}: Probing started - observer window opened", 'SUCCESS')
+            
+            # Update button state in car panel
+            if car_id in self._car_panels:
+                panel = self._car_panels[car_id]
+                if hasattr(panel, '_perception_ctrl') and panel._perception_ctrl:
+                    panel._perception_ctrl.set_probing_active(True)
+                    
+        except Exception as e:
+            self.log(f"Car {car_id}: Failed to start probing - {e}", 'ERROR')
+    
+    def _stop_probing_car(self, car_id: int) -> None:
+        """Stop probing for a specific car."""
+        if not hasattr(self, '_probing_processes'):
+            return
+        
+        if car_id in self._probing_processes and self._probing_processes[car_id] is not None:
+            try:
+                self._probing_processes[car_id].terminate()
+                self._probing_processes[car_id] = None
+                self.log(f"Car {car_id}: Probing stopped", 'INFO')
+                
+                # Update button state in car panel
+                if car_id in self._car_panels:
+                    panel = self._car_panels[car_id]
+                    if hasattr(panel, '_perception_ctrl') and panel._perception_ctrl:
+                        panel._perception_ctrl.set_probing_active(False)
+                        
+            except Exception as e:
+                self.log(f"Car {car_id}: Error stopping probing - {e}", 'ERROR')
     
     # ========== Individual Scopes Control ==========
     

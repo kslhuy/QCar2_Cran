@@ -309,27 +309,27 @@ class StateBase:
                 self.logger.log_error("[CMD] Error disabling perception", e)
             return None
         
-        elif command_type == CommandType.ACTIVATE_SCOPES:
-            self.logger.logger.info(f"[CMD] Activating estimation scopes")
-            try:
-                preset_names = data.get('preset_names', ['local_state', 'local_control'])
-                success = self._activate_estimation_scopes(preset_names)
-                if success:
-                    self.logger.logger.info(f"[CMD] Estimation scopes activated: {preset_names}")
-                else:
-                    self.logger.log_error("[CMD] Failed to activate estimation scopes")
-            except Exception as e:
-                self.logger.log_error("[CMD] Error activating scopes", e)
-            return None
+        # elif command_type == CommandType.ACTIVATE_SCOPES:
+        #     self.logger.logger.info(f"[CMD] Activating estimation scopes")
+        #     try:
+        #         preset_names = data.get('preset_names', ['local_state', 'local_control'])
+        #         success = self._activate_estimation_scopes(preset_names)
+        #         if success:
+        #             self.logger.logger.info(f"[CMD] Estimation scopes activated: {preset_names}")
+        #         else:
+        #             self.logger.log_error("[CMD] Failed to activate estimation scopes")
+        #     except Exception as e:
+        #         self.logger.log_error("[CMD] Error activating scopes", e)
+        #     return None
         
-        elif command_type == CommandType.DISABLE_SCOPES:
-            self.logger.logger.info(f"[CMD] Disabling estimation scopes")
-            try:
-                self._disable_estimation_scopes()
-                self.logger.logger.info(f"[CMD] Estimation scopes disabled")
-            except Exception as e:
-                self.logger.log_error("[CMD] Error disabling scopes", e)
-            return None
+        # elif command_type == CommandType.DISABLE_SCOPES:
+        #     self.logger.logger.info(f"[CMD] Disabling estimation scopes")
+        #     try:
+        #         self._disable_estimation_scopes()
+        #         self.logger.logger.info(f"[CMD] Estimation scopes disabled")
+        #     except Exception as e:
+        #         self.logger.log_error("[CMD] Error disabling scopes", e)
+        #     return None
         
         elif command_type == CommandType.ENABLE_SCOPE_STREAMING:
             self.logger.logger.info(f"[CMD] Enabling scope data streaming for remote plot")
@@ -747,6 +747,10 @@ class StateBase:
                     port=yolo_port
                 )
             else:
+
+
+
+                
                 # For physical vehicles, launch yolo_server.py with probing flag
                 yolo_script = os.path.join(
                     os.path.dirname(os.path.abspath(__file__)), 
@@ -757,10 +761,11 @@ class StateBase:
                 self.logger.logger.info(f"[PERCEPTION] Probing: {probing_enabled}, Car ID: {vehicle_id}")
                 
                 # Build command with probing flag
+                # Updated to match new YOLOServerPhysical arguments (-p, -idx)
                 yolo_cmd = [
                     'python', yolo_script,
-                    '--probing', probing_flag,
-                    '--car-id', str(vehicle_id)
+                    '-p', probing_flag,
+                    '-idx', str(vehicle_id)
                 ]
                 
                 # Set up logging - redirect to file for physical vehicles
@@ -797,12 +802,12 @@ class StateBase:
                     return False
                 
                 self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
-                
                 # Create YOLOReceiver to connect to the server
                 yolo_receiver = YOLOReceiver(
                     ip='localhost',
                     nonBlocking=True,
                 )
+
             
             # Create YOLO drive logic
             pulse_length = (

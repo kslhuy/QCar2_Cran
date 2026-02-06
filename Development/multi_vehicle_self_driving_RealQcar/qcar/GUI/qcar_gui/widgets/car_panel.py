@@ -57,6 +57,7 @@ class CarPanelCallbacks:
     on_update_control_type: Callable[[int, str], None] = None
     on_platoon_position_change: Callable[[int, int], None] = None
     on_toggle_perception: Callable[[int], None] = None
+    on_toggle_probing: Callable[[int], None] = None  # For viewing car's YOLO stream
     on_toggle_scopes: Callable[[int], None] = None
     on_toggle_remote_plot_local: Callable[[int], None] = None
     on_toggle_remote_plot_fleet: Callable[[int], None] = None
@@ -296,7 +297,9 @@ class PerceptionControl(BaseWidget):
         self.car_id = car_id
         self.callbacks = callbacks
         self._perception_btn: Optional[tk.Button] = None
+        self._probing_btn: Optional[tk.Button] = None
         self._perception_active = False
+        self._probing_active = False
         super().__init__(parent, theme)
     
     def _build(self) -> None:
@@ -312,21 +315,41 @@ class PerceptionControl(BaseWidget):
         content = tk.Frame(self.frame, bg=c.bg_medium)
         content.pack(fill='x', padx=6, pady=4)
         
+        # Button row frame
+        btn_row = tk.Frame(content, bg=c.bg_medium)
+        btn_row.pack(fill='x')
+        
         # Perception toggle button
         self._perception_btn = ThemedButton(
-            content,
+            btn_row,
             text="👁️ Activate YOLO",
             button_type='command',
             command=self._toggle_perception,
             padx=10,
             pady=3
         )
-        self._perception_btn.pack(fill='x')
+        self._perception_btn.pack(side='left', expand=True, fill='x', padx=(0, 3))
+        
+        # Probing button - to view what the car sees
+        self._probing_btn = ThemedButton(
+            btn_row,
+            text="📺 Probing",
+            button_type='command',
+            command=self._toggle_probing,
+            padx=10,
+            pady=3
+        )
+        self._probing_btn.pack(side='left', expand=True, fill='x', padx=(3, 0))
     
     def _toggle_perception(self) -> None:
         """Toggle perception system."""
         if self.callbacks.on_toggle_perception:
             self.callbacks.on_toggle_perception(self.car_id)
+    
+    def _toggle_probing(self) -> None:
+        """Toggle probing - view car's YOLO stream."""
+        if self.callbacks.on_toggle_probing:
+            self.callbacks.on_toggle_probing(self.car_id)
     
     def set_perception_active(self, active: bool) -> None:
         """Update perception button state."""
@@ -343,10 +366,30 @@ class PerceptionControl(BaseWidget):
                     bg=self.theme.colors.accent_blue
                 )
     
+    def set_probing_active(self, active: bool) -> None:
+        """Update probing button state."""
+        self._probing_active = active
+        if self._probing_btn:
+            if active:
+                self._probing_btn.config(
+                    text="📺 Probing: ON",
+                    bg=self.theme.colors.accent_green
+                )
+            else:
+                self._probing_btn.config(
+                    text="📺 Probing",
+                    bg=self.theme.colors.accent_blue
+                )
+    
     @property
     def is_active(self) -> bool:
         """Get whether perception is active."""
         return self._perception_active
+    
+    @property
+    def is_probing_active(self) -> bool:
+        """Get whether probing is active."""
+        return self._probing_active
 
 
 class ScopesControl(BaseWidget):

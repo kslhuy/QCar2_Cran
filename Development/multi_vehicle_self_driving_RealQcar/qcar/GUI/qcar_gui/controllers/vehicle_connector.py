@@ -10,7 +10,7 @@ import glob
 import time
 import threading
 import subprocess
-from typing import Callable, Dict, Optional, Tuple, Any
+from typing import Callable, Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 
 try:
@@ -643,6 +643,159 @@ except Exception as e:
             for car_id in list(self._connections.keys()):
                 self._close_connection(car_id)
         self._log("All connections closed", 'INFO')
+    
+    def calibrate_vehicle(self, car_id: int, ip: str, 
+                          distribute_ips: List[str] = None) -> Tuple[bool, str]:
+        """
+        Run LiDAR calibration on a vehicle (like calibrate.bat).
+        
+        This performs:
+        1. Upload scripts to the calibrating vehicle
+        2. Run vehicle_control.py -c True for calibration
+        3. Download the generated .mat files
+        4. Optionally distribute .mat files to other vehicles
+        
+        Args:
+            car_id: Vehicle identifier
+            ip: IP address of the vehicle to calibrate
+            distribute_ips: List of IPs to distribute results to (optional)
+            
+        Returns:
+            Tuple of (success, message)
+        """
+        if not PARAMIKO_AVAILABLE:
+            return False, "SSH not available (install paramiko)"
+        
+        # Reconnect if not connected
+        if not self.is_connected(car_id):
+            success, msg = self.connect(car_id, ip)
+            if not success:
+                return False, f"Connection failed: {msg}"
+        
+        with self._lock:
+            if car_id not in self._connections:
+                return False, "No connection available"
+            ssh, scp = self._connections[car_id]
+        
+        try:
+            # Step 1: Upload scripts
+            self._progress("Step 1/4: Uploading scripts...")
+            upload_success, upload_msg = self.upload_files(car_id, ip)
+            if not upload_success:
+                return False, f"Upload failed: {upload_msg}"
+            
+            # Step 2: Run calibration command
+            self._progress("Step 2/4: Running LiDAR calibration (this may take a while)...")
+            remote_path = self.remote_config.remote_path
+            cmd = f"cd {remote_path} && python vehicle_control.py -c True"
+            
+            self._log(f"Car {car_id}: Running calibration command: {cmd}", 'INFO')
+            stdin, stdout, stderr = ssh.exec_command(cmd, timeout=120)
+            output = stdout.read().decode()
+            error = stderr.read().decode()
+            
+            if error and "error" in error.lower():
+                return False, f"Calibration error: {error[:100]}"
+            
+            self._log(f"Car {car_id}: Calibration output: {output[:200]}", 'INFO')
+            
+            # Step 3: Download .mat files
+            self._progress("Step 3/4: Downloading calibration results...")
+            local_download_dir = os.path.join(
+                os.path.dirname(self.scripts_path), 
+                "reference_scan"
+            )
+            os.makedirs(local_download_dir, exist_ok=True)
+            
+            mat_files = ["angles_new.mat", "distance_new.mat"]
+            downloaded = []
+            
+            for mat_file in mat_files:
+                try:
+                    remote_file = f"{remote_path}/{mat_file}"
+                    local_file = os.path.join(local_download_dir, mat_file)
+                    scp.get(remote_file, local_file)
+                    downloaded.append(mat_file)
+                    self._log(f"Car {car_id}: Downloaded {mat_file}", 'INFO')
+                except Exception as e:
+                    self._log(f"Car {car_id}: Failed to download {mat_file}: {e}", 'WARNING')
+            
+            if not downloaded:
+                return False, "No .mat files were generated"
+            
+            # Step 4: Distribute to other vehicles (if requested)
+            if distribute_ips:
+                self._progress(f"Step 4/4: Distributing to {len(distribute_ips)} vehicles...")
+                dist_results = self._distribute_calibration_files(
+                    local_download_dir, 
+                    distribute_ips
+                )
+                self._log(f"Distribution results: {dist_results}", 'INFO')
+            else:
+                self._progress("Step 4/4: Skipped distribution (no other vehicles)")
+            
+            return True, f"Calibration complete! Downloaded: {', '.join(downloaded)}"
+            
+        except Exception as e:
+            return False, f"Calibration error: {str(e)}"
+    
+    def _distribute_calibration_files(self, local_dir: str, 
+                                       target_ips: List[str]) -> Dict[str, str]:
+        """
+        Distribute calibration .mat files to multiple vehicles.
+        
+        Args:
+            local_dir: Directory containing .mat files
+            target_ips: List of vehicle IPs to distribute to
+            
+        Returns:
+            Dictionary of ip -> result message
+        """
+        import glob
+        import time
+        
+        results = {}
+        mat_files = glob.glob(os.path.join(local_dir, "*.mat"))
+        
+        if not mat_files:
+            return {"error": "No .mat files found to distribute"}
+        
+        for ip in target_ips:
+            try:
+                self._progress(f"Distributing to {ip}...")
+                
+                # Create new connection for distribution
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(
+                    ip,
+                    username=self.remote_config.username,
+                    password=self.remote_config.password,
+                    timeout=self.remote_config.timeout
+                )
+                scp = SCPClient(ssh.get_transport())
+                
+                remote_path = self.remote_config.remote_path
+                
+                # Remove old .mat files
+                ssh.exec_command(f"rm -f {remote_path}/*.mat")
+                time.sleep(0.5)
+                
+                # Upload new .mat files
+                for mat_file in mat_files:
+                    scp.put(mat_file, remote_path)
+                
+                results[ip] = f"✓ Uploaded {len(mat_files)} files"
+                self._log(f"Distributed {len(mat_files)} .mat files to {ip}", 'SUCCESS')
+                
+                scp.close()
+                ssh.close()
+                
+            except Exception as e:
+                results[ip] = f"✗ Error: {str(e)}"
+                self._log(f"Failed to distribute to {ip}: {e}", 'ERROR')
+        
+        return results
     
     def set_ground_station_config(self, local_ip: str, base_port: int) -> None:
         """Update ground station configuration."""
