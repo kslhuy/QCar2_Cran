@@ -275,7 +275,7 @@ def get_tire_residuals(type_true_tire : str,alpha_f: float, alpha_r: float,
         (w_r, w_f): Tire force residuals [N]
     """
     # Linear forces (Fake from observer)
-    Fyf_linear, Fyr_linear = compute_tire_forces_linear(alpha_f, alpha_r, Cf, Cr)
+    Fyf_linear, Fyr_linear = compute_tire_forces_linear(alpha_f, alpha_r, 120, 120)
     
     # True forces
     
@@ -286,7 +286,7 @@ def get_tire_residuals(type_true_tire : str,alpha_f: float, alpha_r: float,
     elif type_true_tire == 'static_linear':
         Fyf_true, Fyr_true = compute_tire_forces_linear(alpha_f, alpha_r, Cf, Cr)
     
-    return Fyr_true - Fyr_linear, Fyf_true - Fyf_linear
+    return  Fyr_true - Fyr_linear, Fyf_true - Fyf_linear , Fyf_true, Fyr_true
 
 
 def get_lateral_acceleration(Fyf: float, Fyr: float, delta: float, m: float) -> float:
@@ -360,16 +360,16 @@ def _kinematic_dynamics(vx: float, psi: float, delta: float, u: list,
     vx_dot = u[1]
     
 
-
-    return [
-        vx * math.cos(psi ),  # Ẋ
-        vx * math.sin(psi ),  # Ẏ
-        u[0],                        # δ̇
-        vx_dot,                      # v̇_x
-        0.0,                     # ψ̇
-        0.0,                         # ṙ (simplified)
-        0.0,                         # v̇_y (simplified)
-    ]
+    
+    return np.array([
+        vx * math.cos(psi),  # Ẋ
+        vx * math.sin(psi),  # Ẏ
+        u[0],               # δ̇
+        vx_dot,              # v̇_x
+        0.0,                 # ψ̇
+        0.0,                 # ṙ (simplified)
+        0.0,                 # v̇_y (simplified)
+    ])
 
 
 def _dynamic_qlpv(vx: float, vy: float, psi: float, r: float, delta: float,
@@ -407,17 +407,10 @@ def _dynamic_qlpv(vx: float, vy: float, psi: float, r: float, delta: float,
     F_roll = m * GRAVITY * Cr_roll
     vx_clamped = np.clip(vx, -10.0, 10.0)
     F_drag = 0.5 * AIR_DENSITY * Cd_aero * Af * vx_clamped * abs(vx_clamped)
-    friction_decel = 0.0
-    # # Total friction deceleration
-    # if abs(vx) > 0.01:
-    #     friction_decel = (F_roll + F_drag) / m * np.sign(vx)
-    # else:
-    #     friction_decel = 0.0
-    #     if abs(vx) < VX_STOP_THRESHOLD:
-    #         vx = 0.0
+
     
     # State derivatives (qLPV equations)
-    vx_dot = u[1] - mu * GRAVITY + r * vy - (Fyf * sin_delta) / m - friction_decel
+    vx_dot = u[1] - mu * GRAVITY + r * vy - (Fyf * sin_delta) / m
     vy_dot = (Fyr + Fyf * cos_delta) / m - r * vx
     psi_dot = r
     r_dot = (lf * Fyf * cos_delta - lr * Fyr) / Iz
@@ -431,7 +424,7 @@ def _dynamic_qlpv(vx: float, vy: float, psi: float, r: float, delta: float,
         vy_dot += disturbances[1]
         r_dot += disturbances[2]
     
-    return [X_dot, Y_dot, u[0], vx_dot, psi_dot, r_dot, vy_dot]
+    return np.array([X_dot, Y_dot, u[0], vx_dot, psi_dot, r_dot, vy_dot])
 
 
 # =============================================================================
@@ -496,9 +489,9 @@ def vehicle_dynamics_qlpv(x, u_init, p, tire_mode: str = 'pacejka',
         # vx_dot is at index 3
         # vy_dot is 6, r_dot is 5
         if disturbances is not None and len(disturbances) >= 3:
-             f[3] += disturbances[0] # vx_dot
-             f[6] += disturbances[1] # vy_dot (0 for kin)
-             f[5] += disturbances[2] # r_dot (0 for kin)
+            f[3] += disturbances[0] # vx_dot
+            f[6] += disturbances[1] # vy_dot (0 for kin)
+            f[5] += disturbances[2] # r_dot (0 for kin)
         return f
     
     # Full dynamic model
@@ -634,7 +627,7 @@ class QLPVVehicleModel:
     # -------------------------------------------------------------------------
     # State Getters
     # -------------------------------------------------------------------------
-    def get_observer_state(self) -> np.ndarray:
+    def get_true_state(self) -> np.ndarray:
         """Get state in observer format [v_x, v_y, ψ, r, X, Y]."""
         return state_qlpv_to_observer(self.state)
     

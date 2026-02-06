@@ -148,11 +148,46 @@ def setup_vehicle_parameters(vehicle_id: int, dir_params: str = None) -> Vehicle
     return OmegaConf.to_object(p)
 
 
+def get_qcar_parameters(path_to_yaml: Optional[str] = None) -> VehicleParameters:
+    """
+    Load QCar specific parameters directly from parameters_qcar.yaml.
+    
+    Args:
+        path_to_yaml: Optional override path
+        
+    Returns:
+        VehicleParameters object with QCar settings
+    """
+    if path_to_yaml:
+        yaml_file = Path(path_to_yaml)
+    else:
+        # Default to parameters_qcar.yaml in parameters directory
+        yaml_file = Path(__file__).parent / "parameters" / "parameters_qcar.yaml"
+        
+    if not yaml_file.exists():
+        raise FileNotFoundError(f"QCar parameters file not found at: {yaml_file}")
+        
+    conf = OmegaConf.load(yaml_file)
+    
+    # Create structured config
+    structured_conf = OmegaConf.structured(VehicleParameters)
+    
+    # Merge (config overwrites defaults)
+    p = OmegaConf.merge(structured_conf, conf)
+    OmegaConf.set_readonly(p, True)
+    
+    return OmegaConf.to_object(p)
+
+
 # *******************************
 # Test parameter setup
 # *******************************
 if __name__ == "__main__":
+    # Test standard loading
     params1 = setup_vehicle_parameters(vehicle_id=1)
-    params2 = setup_vehicle_parameters(vehicle_id=2)
-    params3 = setup_vehicle_parameters(vehicle_id=3)
-    params4 = setup_vehicle_parameters(vehicle_id=4)
+    
+    # Test QCar loading
+    print("Loading QCar parameters...")
+    qcar_params = get_qcar_parameters()
+    print(f"Loaded QCar params: l={qcar_params.l}, w={qcar_params.w}, m={qcar_params.m}")
+

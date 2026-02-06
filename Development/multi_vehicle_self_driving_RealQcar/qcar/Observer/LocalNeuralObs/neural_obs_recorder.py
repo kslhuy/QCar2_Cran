@@ -108,12 +108,20 @@ class NeuralObsRecorder:
             cols.extend(dist_cols)
 
         # 4. True Ground Truths (Sim only)
-        # Always record both types of truth if available for debugging
-        cols.extend(['d_vx_true', 'd_vy_true', 'd_r_true'])
-        cols.extend(['w_r_true', 'w_f_true'])
-        # Force/Slip debugging (Only relevant for tire mode really, but kept for legacy)
-        if self.disturbance_mode == 'tire':
+        # Only record columns for the active disturbance mode
+        if self.disturbance_mode == 'general':
+            # General mode: 3D velocity disturbances
+            cols.extend(['d_vx_true', 'd_vy_true', 'd_r_true'])
+        else:
+            # Tire mode: 2D tire residuals + detailed tire debugging info
+            cols.extend(['w_r_true', 'w_f_true'])
+            # Tire force debugging columns (only for tire mode)
             cols.extend(['Fyr_true', 'Fyf_true', 'Fyr_linear', 'Fyf_linear', 'alpha_r', 'alpha_f'])
+            
+            # Layer 1 and Layer 2 tire force estimates (only in 2-layer mode)
+            if self.mode == '2layer':
+                cols.extend(['Fyr_layer_1', 'Fyf_layer_1', 'alpha_r_layer_1', 'alpha_f_layer_1'])
+                cols.extend(['Fyr_layer_2', 'Fyf_layer_2', 'alpha_r_layer_2', 'alpha_f_layer_2'])
             
         # 5. Measurements & Inputs & Stats
         cols.extend(['vx_meas', 'r_meas', 'psi_meas', 'X_meas', 'Y_meas', 'ax_meas', 'ay_meas'])
@@ -275,7 +283,9 @@ class NeuralObsRecorder:
                       state_true_6d: Optional[np.ndarray] = None,
                       unknown_input_true: Optional[np.ndarray] = None,
                       disturbances_true: Optional[np.ndarray] = None,
-                      tire_info: Optional[Dict] = None):
+                      tire_info_true: Optional[Dict] = None,
+                      tire_info_layer_1: Optional[dict] = None,
+                      tire_info_layer_2: Optional[dict] = None):
         """
         Record a single data sample for 2-layer neural observer.
         
@@ -351,47 +361,37 @@ class NeuralObsRecorder:
 
             # Ground Truth
             if state_true_6d is not None:
-                 row['vx_true'] = state_true_6d[0]
-                 row['vy_true'] = state_true_6d[1]
-                 row['psi_true'] = state_true_6d[2]
-                 row['r_true'] = state_true_6d[3]
-                 row['X_true'] = state_true_6d[4]
-                 row['Y_true'] = state_true_6d[5]
+                row['vx_true'] = state_true_6d[0]
+                row['vy_true'] = state_true_6d[1]
+                row['psi_true'] = state_true_6d[2]
+                row['r_true'] = state_true_6d[3]
+                row['X_true'] = state_true_6d[4]
+                row['Y_true'] = state_true_6d[5]
             else:
-                 row['vx_true'] = 0.0
-                 row['vy_true'] = 0.0
-                 row['psi_true'] = 0.0
-                 row['r_true'] = 0.0
-                 row['X_true'] = 0.0
-                 row['Y_true'] = 0.0
+                row['vx_true'] = 0.0
+                row['vy_true'] = 0.0
+                row['psi_true'] = 0.0
+                row['r_true'] = 0.0
+                row['X_true'] = 0.0
+                row['Y_true'] = 0.0
             
             # True unknown inputs (tire residuals)
             self._fill_dist_to_row(row, unknown_input_true, suffix="_true")
             
-            # True general disturbances (always record if available)
-            if disturbances_true is not None:
-                # Manually fill strictly 3D disturbances
-                d_vals = np.asarray(disturbances_true).flatten()
-                row['d_vx_true'] = float(d_vals[0]) if len(d_vals) > 0 else 0.0
-                row['d_vy_true'] = float(d_vals[1]) if len(d_vals) > 1 else 0.0
-                row['d_r_true'] = float(d_vals[2]) if len(d_vals) > 2 else 0.0
-            else:
-                row['d_vx_true'] = 0.0
-                row['d_vy_true'] = 0.0
-                row['d_r_true'] = 0.0
+
             
             # Tire force information (for debugging tire residual estimation)
             # F_true: actual forces from selected tire model (pacejka, etc.)
             # F_linear: reference forces from linear model (F = C * alpha)
             # Residual should be: w = F_true - F_linear
             if self.disturbance_mode == 'tire':
-                if tire_info is not None:
-                    row['Fyr_true'] = tire_info.get('Fyr_true', 0.0)
-                    row['Fyf_true'] = tire_info.get('Fyf_true', 0.0)
-                    row['Fyr_linear'] = tire_info.get('Fyr_linear', 0.0)
-                    row['Fyf_linear'] = tire_info.get('Fyf_linear', 0.0)
-                    row['alpha_r'] = tire_info.get('alpha_r', 0.0)
-                    row['alpha_f'] = tire_info.get('alpha_f', 0.0)
+                if tire_info_true is not None:
+                    row['Fyr_true'] = tire_info_true.get('Fyr_true', 0.0)
+                    row['Fyf_true'] = tire_info_true.get('Fyf_true', 0.0)
+                    row['Fyr_linear'] = tire_info_true.get('Fyr_linear', 0.0)
+                    row['Fyf_linear'] = tire_info_true.get('Fyf_linear', 0.0)
+                    row['alpha_r'] = tire_info_true.get('alpha_r', 0.0)
+                    row['alpha_f'] = tire_info_true.get('alpha_f', 0.0)
                 else:
                     row['Fyr_true'] = 0.0
                     row['Fyf_true'] = 0.0
@@ -399,7 +399,42 @@ class NeuralObsRecorder:
                     row['Fyf_linear'] = 0.0
                     row['alpha_r'] = 0.0
                     row['alpha_f'] = 0.0
-            
+                
+                # Layer 1 tire force estimates
+                if tire_info_layer_1 is not None:
+                    row['Fyr_layer_1'] = tire_info_layer_1.get('Fyr_linear_est', 0.0)
+                    row['Fyf_layer_1'] = tire_info_layer_1.get('Fyf_linear_est', 0.0)
+                    row['alpha_r_layer_1'] = tire_info_layer_1.get('alpha_r', 0.0)
+                    row['alpha_f_layer_1'] = tire_info_layer_1.get('alpha_f', 0.0)
+                else:
+                    row['Fyr_layer_1'] = 0.0
+                    row['Fyf_layer_1'] = 0.0
+                    row['alpha_r_layer_1'] = 0.0
+                    row['alpha_f_layer_1'] = 0.0
+                
+                # Layer 2 tire force estimates
+                if tire_info_layer_2 is not None:
+                    row['Fyr_layer_2'] = tire_info_layer_2.get('Fyr_linear_est', 0.0)
+                    row['Fyf_layer_2'] = tire_info_layer_2.get('Fyf_linear_est', 0.0)
+                    row['alpha_r_layer_2'] = tire_info_layer_2.get('alpha_r', 0.0)
+                    row['alpha_f_layer_2'] = tire_info_layer_2.get('alpha_f', 0.0)
+                else:
+                    row['Fyr_layer_2'] = 0.0
+                    row['Fyf_layer_2'] = 0.0
+                    row['alpha_r_layer_2'] = 0.0
+                    row['alpha_f_layer_2'] = 0.0
+            else : 
+                # True general disturbances (always record if available)
+                if disturbances_true is not None:
+                    # Manually fill strictly 3D disturbances
+                    d_vals = np.asarray(disturbances_true).flatten()
+                    row['d_vx_true'] = float(d_vals[0]) if len(d_vals) > 0 else 0.0
+                    row['d_vy_true'] = float(d_vals[1]) if len(d_vals) > 1 else 0.0
+                    row['d_r_true'] = float(d_vals[2]) if len(d_vals) > 2 else 0.0
+                else:
+                    row['d_vx_true'] = 0.0
+                    row['d_vy_true'] = 0.0
+                    row['d_r_true'] = 0.0
             self.writer.writerow(row)
             self.record_count += 1
             

@@ -77,6 +77,7 @@ class PathPlanningConfig:
             return [0, 2, 4, 6, 8, 10 , 2 ,4 ,6 ,0]
         else :
             return [0 , 2 , 4, 6, 8, 10 ,1,10,2,4,6]
+            # return [0 , 2 , 4, 6, 0,10,9]
     
     @property
     def calibration_pose(self) -> List[float]:

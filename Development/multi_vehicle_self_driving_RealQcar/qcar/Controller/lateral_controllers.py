@@ -771,6 +771,7 @@ class LateralControllerFactory:
         'lookahead': LookaheadController,
         'hybrid': HybridLateralController,
         'fusion': FusionLateralController,
+        # MPC will be added dynamically when mpc_wrappers is imported
     }
     
     @staticmethod
@@ -779,7 +780,7 @@ class LateralControllerFactory:
         Create a lateral controller
         
         Args:
-            controller_type: One of 'pure_pursuit', 'stanley', 'lookahead', 'hybrid'
+            controller_type: One of 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'mpc'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
             
@@ -787,6 +788,14 @@ class LateralControllerFactory:
             Lateral controller instance
         """
         params = params or {}
+        
+        # Lazy import MPC if requested but not yet registered
+        if controller_type == 'mpc' and 'mpc' not in LateralControllerFactory.CONTROLLER_TYPES:
+            try:
+                from .mpc_wrappers import MPCLateralWrapper
+                LateralControllerFactory.CONTROLLER_TYPES['mpc'] = MPCLateralWrapper
+            except ImportError:
+                raise ValueError("MPC controller requires casadi. Install with: pip install casadi")
         
         if controller_type not in LateralControllerFactory.CONTROLLER_TYPES:
             raise ValueError(

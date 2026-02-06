@@ -162,7 +162,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         if self.output_dim != expected_udim:
             if self.logger:
-                 self.logger.logger.info(f"Overriding configured output_dim ({self.output_dim}) with {expected_udim} for mode '{self.disturbance_mode}'")
+                self.logger.logger.info(f"Overriding configured output_dim ({self.output_dim}) with {expected_udim} for mode '{self.disturbance_mode}'")
             self.output_dim = expected_udim
             # Update config to reflect reality
             self.config['output_dim'] = expected_udim
@@ -247,9 +247,13 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 self.logger.logger.warning("Config Warning: output_first_layer_only=True but use_first_layer=False. Disabling output_first_layer_only to prevent stall.")
             self.output_first_layer_only = False
 
+        # Threshold for low-speed override (default 0.3 m/s)
+        self.override_threshold = self.config.get('override_threshold', 0.1)
+
         self.first_layer_observer = None
-        if self.use_first_layer:
-            self._initialize_first_layer_observer()
+        # if self.use_first_layer:
+        # Still creat first layer observer for 2-layer architecture (even not use)
+        self._initialize_first_layer_observer()
         
         # Gradient solver for neural network training
         self._initialize_gradient_solver()
@@ -301,6 +305,13 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         # First-layer state for composite loss
         self.state_uio = np.zeros(self.INTERNAL_STATE_DIM)
+
+        self.tire_info_layer_2 = {
+            'Fyr_linear_est': 0,
+            'Fyf_linear_est': 0,
+            'alpha_r': 0,
+            'alpha_f': 0,
+        }
         
         # Data recording for later plotting
         self.recorder = None
@@ -408,8 +419,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             nominal_vx = self.config.get('nominal_vx', 1.5)
             nominal_state = np.array([nominal_vx, 0.0, 0.0, 0.0, 0.0, 0.0])
             nominal_delta = 0.0
-            
-            rho = self._compute_scheduling_params(nominal_state, nominal_delta)
+            rho = self.dynamics.compute_scheduling_params(nominal_state, nominal_delta)
             
             # Use discrete-time system for design (more accurate for digital implementation)
             sample_time = self.config.get('sample_time', 0.01)
@@ -417,11 +427,12 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             # Compute discrete matrices: x[k+1] = A_d x[k] + ...
             # Note: C matrix is static and doesn't change with discretization
             A_c = self.dynamics.compute_A_matrix(rho)
-            C = self.dynamics.compute_C_matrix(rho , )
+            B_c = self.dynamics.compute_B_matrix(rho)
+            C = self.dynamics.compute_C_matrix(rho , mode='5D_GPS_IMU')
             E_c = self.dynamics.compute_E_matrix(rho)
             
             # Discretize
-            A_d, _, E_d = self._discretize_system(rho, sample_time)
+            A_d, _, E_d = discretize_system_zoh(A_c,B_c,E_c, sample_time)
 
             # # Get design parameters
             # contraction_rate = self.config.get('contraction_rate', 0.95)
@@ -528,10 +539,6 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         self.L = L
         self._gain_method = 'default'
     
-
-    
-
-    
     def get_scheduled_gain(self, vx: float, delta: float) -> np.ndarray:
         """
         Get interpolated observer gain for current operating point.
@@ -599,11 +606,11 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # Compute matrices at nominal operating point
         nominal_vx = self.config.get('nominal_vx', 1.5)
         nominal_state = np.array([nominal_vx, 0.0, 0.0, 0.0, 0.0, 0.0])
-        rho = self._compute_scheduling_params(nominal_state, 0.0)
+        rho = self.dynamics.compute_scheduling_params(nominal_state, 0.0)
         
-        A = self._compute_A_matrix(rho)
-        E = self._compute_E_matrix(rho)
-        C = self._compute_C_matrix()  # Fixed selection matrix (5×6)
+        A = self.dynamics.compute_A_matrix(rho)
+        E = self.dynamics.compute_E_matrix(rho)
+        C = self.dynamics.compute_C_matrix(rho, mode='5D_GPS_IMU')  # Fixed selection matrix (5×6)
         
         observer_matrices = {
             'A': A,
@@ -616,72 +623,6 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             observer_matrices
         )
     
-    def _compute_scheduling_params(self, state: np.ndarray, delta: float) -> SchedulingParameters:
-        """Compute scheduling parameters - delegates to centralized dynamics"""
-        return self.dynamics.compute_scheduling_params(state, delta)
-    
-    def _compute_A_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """Compute state matrix A(ρ) - delegates to centralized dynamics"""
-        return self.dynamics.compute_A_matrix(rho)
-    
-    def _compute_B_matrix(self, rho: SchedulingParameters) -> np.ndarray:
-        """Compute input matrix B(ρ) - delegates to centralized dynamics"""
-        return self.dynamics.compute_B_matrix(rho)
-    
-    def _compute_E_matrix(self, rho: Optional[SchedulingParameters]) -> np.ndarray:
-        """Compute residual injection matrix E(ρ) - delegates to centralized dynamics"""
-        if rho is None:
-            # Create default rho with delta=0 for initialization
-            dummy_state = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0])
-            rho = self.dynamics.compute_scheduling_params(dummy_state, 0.0)
-        return self.dynamics.compute_E_matrix(rho)
-    
-
-    
-    def _discretize_system(self, rho: SchedulingParameters, dt: float
-                           ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Discretize continuous-time system matrices via Zero-Order Hold (ZOH).
-        
-        Continuous: ẋ = A_c·x + B_c·u + E_c·w
-        Discrete:   x[k+1] = A_d·x[k] + B_d·u[k] + E_d·w[k]
-        
-        Args:
-            rho: Scheduling parameters for current operating point
-            dt: Sample time [seconds]
-            
-        Returns:
-            Tuple of (A_d, B_d, E_d) discrete-time matrices
-        """
-        A_c = self._compute_A_matrix(rho)
-        B_c = self._compute_B_matrix(rho)
-        E_c = self._compute_E_matrix(rho)
-        
-        return discretize_system_zoh(A_c, B_c, E_c, dt)
-    
-    def _compute_C_matrix(self) -> np.ndarray:
-        """
-        Compute fixed output/selection matrix C for observer design.
-        
-        This is a SELECTION MATRIX for directly measurable states, NOT the full
-        dynamics output matrix. The observer gain L is designed for this fixed C.
-        
-        Measurement ordering: y = [vx, r, ψ, X, Y] (5D)
-        State ordering:       x = [vx, vy, ψ, r, X, Y] (6D)
-        
-        This differs from dynamics.compute_C_matrix() which includes a_y with
-        nonlinear state dependence - that's inappropriate for L gain design.
-        
-        Returns:
-            C matrix (5×6) selecting directly measurable states
-        """
-        C = np.zeros((self.MEAS_DIM_FULL, self.INTERNAL_STATE_DIM))
-        C[0, self.IDX_VX] = 1.0   # vx -> vx (motor tach)
-        C[1, self.IDX_R] = 1.0    # r -> r (gyro)
-        C[2, self.IDX_PSI] = 1.0  # ψ -> ψ (GPS heading)
-        C[3, self.IDX_X] = 1.0    # X -> X (GPS)
-        C[4, self.IDX_Y] = 1.0    # Y -> Y (GPS)
-        return C
     
     def _compute_C_matrix_avail(self, gps_valid: bool) -> np.ndarray:
         """
@@ -696,14 +637,17 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         Returns:
             C matrix with appropriate rows for available sensors
         """
+        # Create a dummy rho since C might depend on it (though for these modes it actually doesn't much, 
+        # except a_y if we were using it, but here we are using selection matrices)
+        # We need rho to satisfy the interface.
+        vx = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
+        delta = getattr(self, '_last_steering', 0.0)
+        rho = self.dynamics.compute_scheduling_params(self.state_nn_6d, delta)
+        
         if gps_valid:
-            return self._compute_C_matrix()  # 5×6
+            return self.dynamics.compute_C_matrix(rho, mode='5D_GPS_IMU')
         else:
-            # IMU-only: select vx and r
-            C_imu = np.zeros((self.MEAS_DIM_IMU, self.INTERNAL_STATE_DIM))
-            C_imu[0, self.IDX_VX] = 1.0  # vx
-            C_imu[1, self.IDX_R] = 1.0   # r
-            return C_imu
+            return self.dynamics.compute_C_matrix(rho, mode='4D_IMU_ONLY')
     
     def _get_L_avail(self, gps_valid: bool) -> np.ndarray:
         """
@@ -814,7 +758,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             # ========== PHASE 2: NEURAL NETWORK PREDICTION ==========
             if not self.output_first_layer_only:
                 nn_input = self._prepare_nn_input(steering, throttle, acceleration)
-                self.f_nn = self._get_nn_prediction(nn_input)
+                self.f_nn = self._get_nn_prediction(nn_input).squeeze()
             else:
                 self.f_nn = np.zeros((self.output_dim, 1))
             
@@ -853,19 +797,56 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 # Bypass mode: directly use first-layer state
                 self.state_nn_6d = self.state_uio.copy()
                 self.state = self._extract_4d_state()
+            
+            # ========== LOW SPEED OVERRIDE CHECK ==========
+            # print("vx_meas", vx_meas   )
+
+            if self.use_first_layer and self.first_layer_observer is not None and abs(vx_meas) < self.override_threshold :
+                # Low speed / Start / Stop condition:
+                # Override Neural Observer with 1st Layer Observer (Analytic/Kalman)
+                # predictable behavior at low speeds.
+                
+                # 1. Override state
+                self.state_nn_6d = self.state_uio.copy()
+                
+                # 2. Override disturbance estimate (for consistency in plotting/logging)
+                self.f_nn = w_uio.reshape(self.output_dim, 1) if w_uio.ndim == 1 else w_uio
+                
+                # 3. Update public 4D state
+                self.state = self._extract_4d_state()
+                
+                # print("state_nn_6d", self.state_nn_6d)
+                # print("override", self.state)
+                # 4. Skip NN training for this step (don't train on override data)
+                # We still want to log data, so we don't return early, but we
+                # set a flag or just skip the update logic below
+                
+                # To skip the complex update logic below, we can use an else block
+                # for the standard update
+                # Define L_avail for logging consistency (set to zero as we are overriding)
+                if gps_valid:
+                    L_avail = np.zeros((self.INTERNAL_STATE_DIM, self.MEAS_DIM_FULL))
+                else:
+                    L_avail = np.zeros((self.INTERNAL_STATE_DIM, self.MEAS_DIM_IMU))
+
             else:
+
                 # ========== PHASE 4: COMPUTE DISCRETE SYSTEM MATRICES ==========
-                rho = self._compute_scheduling_params(self.state_nn_6d, steering)
+                rho = self.dynamics.compute_scheduling_params(self.state_nn_6d, steering)
                 
                 # Discretize system at current operating point (ZOH)
                 # This matches the discrete-time LMI gain design
-                A_d, B_d, E_d = self._discretize_system(rho, dt)
                 
                 # Keep continuous A, E for sensitivity update (gradient solver uses continuous)
-                A_c = self._compute_A_matrix(rho)
-                E_c = self._compute_E_matrix(rho)
+                A_c = self.dynamics.compute_A_matrix(rho)
+                B_c = self.dynamics.compute_B_matrix(rho)
+                E_c = self.dynamics.compute_E_matrix(rho)
+
+                A_d, B_d, E_d = discretize_system_zoh(A_c,B_c,E_c, dt)
                 
                 # ========== PHASE 5: STATE UPDATE (Discrete Predict + Correct) ==========
+                # self.f_nn = self.f_nn.squeeze()  # Ensure f_nn is correct shape for dynamics
+                self.tire_info_layer_2 =  self.dynamics._calculate_tire_info(self.state_nn_6d[IDX_VX] , self.state_nn_6d[IDX_VY] , self.state_nn_6d[IDX_R] , steering , self.f_nn[0] , self.f_nn[1] )
                 # Discrete-time observer: x̂[k+1] = A_d·x̂[k] + B_d·u[k] + E_d·w[k] + L·(y[k] - C·x̂[k])
                 # This structure matches the discrete-time LMI gain design.
                 #
@@ -900,6 +881,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 # Correction: x̂[k+1] = x̂_pred + L·innovation
                 self.state_nn_6d = state_pred + L_avail @ innovation
                 
+                # print("Normal", self.state_nn_6d)
+
                 # Wrap heading state to [-pi, pi]
                 # Ensures estimated yaw stays in the same range as GPS sensors
                 self.state_nn_6d[self.IDX_PSI] = (self.state_nn_6d[self.IDX_PSI] + np.pi) % (2 * np.pi) - np.pi
@@ -950,7 +933,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 tire_info = None
                 if self.ground_truth_provider is not None:
                     try:
-                        state_true_6d = self.ground_truth_provider.get_observer_state()
+                        state_true_6d = self.ground_truth_provider.get_true_state()
                         unknown_input_true = self.ground_truth_provider.get_true_residuals()
                         
                         if hasattr(self.ground_truth_provider, 'get_true_disturbances'):
@@ -962,6 +945,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     except Exception:
                         pass
 
+
                 # Get first-layer unknown input (w_uio) if available
                 uio_unknown_input = None
                 if self.use_first_layer and self.first_layer_observer is not None:
@@ -969,7 +953,9 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                         uio_unknown_input = w_uio
                     except Exception:
                         pass
-
+                            
+                # print("tire_info_layer_1", self.first_layer_observer.tire_info_layer_1)
+                # print("tire_info_layer_2", self.tire_info_layer_2)
                 self.recorder.record_2layer(
                     t=t,
                     state_6d=self.state_nn_6d,
@@ -984,7 +970,9 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     state_true_6d=state_true_6d,
                     unknown_input_true=unknown_input_true,
                     disturbances_true=disturbances_true,
-                    tire_info=tire_info  # Tire force data for debugging
+                    tire_info_true=tire_info , # Tire force data for debugging
+                    tire_info_layer_1= self.first_layer_observer.tire_info_layer_1 if self.first_layer_observer is not None else None,
+                    tire_info_layer_2= self.tire_info_layer_2
                 )
             
             self.last_update_time = time.time()
@@ -1062,10 +1050,10 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         steering = getattr(self, '_last_steering', 0.0)
         throttle = getattr(self, '_last_throttle', 0.0)
         
-        rho = self._compute_scheduling_params(self.state_nn_6d, steering)
-        A = self._compute_A_matrix(rho)
-        B = self._compute_B_matrix(rho)
-        E = self._compute_E_matrix(rho)
+        rho = self.dynamics.compute_scheduling_params(self.state_nn_6d, steering)
+        A = self.dynamics.compute_A_matrix(rho)
+        B = self.dynamics.compute_B_matrix(rho)
+        E = self.dynamics.compute_E_matrix(rho)
         vx_current = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
         L = self.get_scheduled_gain(vx_current, steering)
         u = np.array([steering, throttle])  # Use actual throttle

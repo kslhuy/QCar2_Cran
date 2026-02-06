@@ -708,7 +708,7 @@ class StateBase:
                 # Note: We don't use a test socket connection here because it can interfere
                 # with BasicStream's connection handling (connects then immediately disconnects)
                 self.logger.logger.info("[PERCEPTION] Waiting for YOLO server to initialize...")
-                max_wait = 6.0  # Maximum wait time for process to stabilize
+                max_wait = 10.0  # Maximum wait time for process to stabilize
                 check_interval = 0.5
                 waited = 0.0
                 

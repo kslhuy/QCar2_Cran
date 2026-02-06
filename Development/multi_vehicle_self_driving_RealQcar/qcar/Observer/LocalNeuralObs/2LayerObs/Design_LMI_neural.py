@@ -1072,25 +1072,7 @@ class NeuralQLPVGainScheduler:
         
         return vertices
     
-    def _compute_observer_C_matrix(self) -> np.ndarray:
-        """
-        Compute 5D selection matrix matching the neural observer.
-        
-        The observer uses y = [vx, r, ψ, X, Y] (5D), NOT the full 6D
-        dynamics measurement that includes a_y. This matrix must match
-        what the observer actually uses for innovation computation.
-        
-        Returns:
-            C matrix (5×6)
-        """
-        OBSERVER_MEAS_DIM = 5
-        C = np.zeros((OBSERVER_MEAS_DIM, STATE_DIM))
-        C[0, 0] = 1.0   # vx -> vx
-        C[1, 3] = 1.0   # r  -> r
-        C[2, 2] = 1.0   # ψ  -> ψ
-        C[3, 4] = 1.0   # X  -> X
-        C[4, 5] = 1.0   # Y  -> Y
-        return C
+
 
 
     def _compute_matrices_at_vertex(self, vertex: NeuralPolytopicVertex
@@ -1100,8 +1082,7 @@ class NeuralQLPVGainScheduler:
         rho = self.dynamics.compute_scheduling_params(x_dummy, vertex.delta)
         
         A = self.dynamics.compute_A_matrix(rho)
-        C = self._compute_observer_C_matrix()  # 5D selection matrix (matches observer)
-        # C = self.dynamics.compute_C_matrix()  # 5D selection matrix (matches observer)
+        C = self.dynamics.compute_C_matrix(rho, mode='5D_GPS_IMU')  # 5D selection matrix (matches observer)
 
         E = self.dynamics.compute_E_matrix(rho)
         

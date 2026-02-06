@@ -4,11 +4,11 @@ vehicle:
   id: 0
   model_type: "qlpv_matrix"   # Options: kinematic, dynamic, qlpv_legacy, qlpv_matrix
   params_file: "qcar"         # Options: qcar, vehicle1, vehicle2...
-  tire_model: "linear"       # Options: linear, pacejka
+  tire_model: "static_linear"       # Options: static_linear, dynamic_linear, pacejka
   dt: 0.01                    # Simulation timestep (s)
 
 disturbances:
-  mode: "general"        # Options: tire, general
+  mode: "tire"        # Options: tire, general
   vx:
     type: "none"        # Options: none, constant, sine, step, random
     value: 1.0          # Magnitude
@@ -26,11 +26,11 @@ sensors:
     update_rate: 200.0    # Hz
     noise_pos: 0.05     # Standard deviation (m)
     noise_theta: 0.02   # Standard deviation (rad)
-    has_noise: true
+    has_noise: false
   imu:
     noise_accel: 0.1    # m/s^2
     noise_gyro: 0.01    # rad/s
-    has_noise: true
+    has_noise: false
 
 initial_state:
   x: 0.0

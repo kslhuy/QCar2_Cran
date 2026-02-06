@@ -36,6 +36,13 @@ from dataclasses import dataclass
 import sys
 from pathlib import Path
 
+# Import CVXPY for LMI-based gain design (optional)
+try:
+    import cvxpy as cp
+    CVXPY_AVAILABLE = True
+except ImportError:
+    CVXPY_AVAILABLE = False
+
 # Setup path for imports
 parent_dir = Path(__file__).parent
 sys.path.insert(0, str(parent_dir))
@@ -76,6 +83,81 @@ from qlpv_vehicle_dynamics_obs import (
 def wrap_to_pi(angle_rad: float) -> float:
     """Wrap angle to (-π, π]."""
     return (angle_rad + np.pi) % (2 * np.pi) - np.pi
+
+
+# =============================================================================
+# LMI-based gain design helpers (optional, requires CVXPY)
+# =============================================================================
+
+def validate_observer_gain(A: np.ndarray, C: np.ndarray, L: np.ndarray,
+                           max_real_part: float = -0.1) -> bool:
+    """
+    Validate that observer gain produces stable error dynamics.
+    """
+    try:
+        A_cl = A - L @ C
+        eigenvalues = np.linalg.eigvals(A_cl)
+        max_eig_real = np.max(np.real(eigenvalues))
+        return max_eig_real < max_real_part
+    except Exception:
+        return False
+
+
+def compute_lmi_observer_gain(A: np.ndarray, C: np.ndarray,
+                              decay_rate: float = 1.0,
+                              verbose: bool = False) -> np.ndarray:
+    """
+    Compute observer gain L using Lyapunov LMI.
+
+    Solve for P > 0 and Y = P @ L such that:
+        A^T P + P A - C^T Y^T - Y C + decay_rate * P < 0
+    """
+    if not CVXPY_AVAILABLE:
+        raise ValueError("CVXPY is not available. Install with: pip install cvxpy")
+
+    n = A.shape[0]
+    m = C.shape[0]
+
+    P = cp.Variable((n, n), symmetric=True)
+    Y = cp.Variable((n, m))
+
+    eps = 1e-6
+    lmi_constraint = A.T @ P + P @ A - C.T @ Y.T - Y @ C + decay_rate * P
+
+    constraints = [
+        P >> eps * np.eye(n),
+        P << 1e4 * np.eye(n),
+        lmi_constraint << -eps * np.eye(n),
+    ]
+
+    objective = cp.Minimize(cp.trace(P) + 0.01 * cp.norm(Y, "fro"))
+    problem = cp.Problem(objective, constraints)
+
+    try:
+        problem.solve(solver=cp.SCS, verbose=verbose, max_iters=10000, eps=1e-6)
+    except Exception as e:
+        try:
+            problem.solve(solver=cp.CVXOPT, verbose=verbose)
+        except Exception:
+            raise ValueError(f"LMI solver failed: {e}")
+
+    if problem.status not in ["optimal", "optimal_inaccurate"]:
+        raise ValueError(f"LMI problem infeasible. Status: {problem.status}")
+
+    P_val = P.value
+    Y_val = Y.value
+    if P_val is None or Y_val is None:
+        raise ValueError("LMI solver returned None values")
+
+    try:
+        L = np.linalg.solve(P_val, Y_val)
+    except np.linalg.LinAlgError:
+        L = np.linalg.pinv(P_val) @ Y_val
+
+    if not validate_observer_gain(A, C, L):
+        raise ValueError("Computed gain does not produce stable observer")
+
+    return L
 
 
 # =============================================================================
@@ -132,6 +214,13 @@ class HuyUIOObserver(FirstLayerObserverBase):
         delta2: float = 1e-3,
         use_y_dot_meas: bool = False,
         observer_gain_scale: float = 1.0,
+        use_lmi_gain: bool = True,
+        lmi_decay_rate: float = 0.5,
+        lmi_recompute_interval: int = 0,
+        lmi_max_gain: float = 100.0,
+        print_lmi_gain: bool = False,
+        lmi_print_every: int = 1,
+        dynamics_model = None,
         **kwargs
     ):
         """
@@ -143,6 +232,12 @@ class HuyUIOObserver(FirstLayerObserverBase):
             delta2: Regularization parameter for D matrix in H
             use_y_dot_meas: Whether to use output derivative measurements
             observer_gain_scale: Scaling factor for default observer gains
+            use_lmi_gain: Enable LMI-based gain computation (requires CVXPY)
+            lmi_decay_rate: Decay rate used in LMI design
+            lmi_recompute_interval: Recompute LMI gain every N updates (0 = cache per mode)
+            lmi_max_gain: Clip magnitude of LMI gain for stability
+            print_lmi_gain: Print LMI gain when computed
+            lmi_print_every: Print LMI gain every N recomputations
             dynamics_model: Optional shared dynamics model instance
             **kwargs: Additional arguments (for compatibility)
         """
@@ -171,6 +266,12 @@ class HuyUIOObserver(FirstLayerObserverBase):
         self.delta2 = float(delta2)
         self.use_y_dot_meas = use_y_dot_meas
         self.observer_gain_scale = observer_gain_scale
+        self.use_lmi_gain = use_lmi_gain
+        self.lmi_decay_rate = float(lmi_decay_rate)
+        self.lmi_recompute_interval = int(lmi_recompute_interval)
+        self.lmi_max_gain = float(lmi_max_gain)
+        self.print_lmi_gain = bool(print_lmi_gain)
+        self.lmi_print_every = max(1, int(lmi_print_every))
         
         # Create centralized dynamics instance
         if dynamics_model is not None:
@@ -200,12 +301,27 @@ class HuyUIOObserver(FirstLayerObserverBase):
 
         # Store last innovation for diagnostics
         self.innovation = None
+
+        # LMI gain cache and diagnostics
+        self._lmi_gain_cache = {}
+        self._lmi_last_update = {}
+        self._last_lmi_error = None
+        self._step_count = 0
+        self._gain_method = "default"
         
         # Numerical Jacobian epsilon
         self.epsilon = 1e-5
         
         # Disturbance decay rate (making unknown input dynamic)
         self.w_decay_rate = 5.0  # Decays to zero if not sustained
+        
+        # Tire info for logging (compatibility with qlpv_observer_kalma)
+        self.tire_info_layer_1 = {
+            'Fyr_linear': 0.0,
+            'Fyf_linear': 0.0,
+            'alpha_r': 0.0,
+            'alpha_f': 0.0
+        }
 
     
     # =========================================================================
@@ -235,7 +351,17 @@ class HuyUIOObserver(FirstLayerObserverBase):
         D[1, 1] = 1.0
         return D
     
-    def compute_gain(self, nzeta: int, ny: int) -> np.ndarray:
+    def compute_gain(
+        self,
+        nzeta: int,
+        ny: int,
+        C: np.ndarray,
+        Ewx: np.ndarray,
+        H: np.ndarray,
+        Pzeta: np.ndarray,
+        zhat: Optional[np.ndarray],
+        u_phys: np.ndarray
+    ) -> np.ndarray:
         """
         Compute observer gain K.
         Attempts to load pre-calculated LMI gain from parameters.
@@ -253,8 +379,42 @@ class HuyUIOObserver(FirstLayerObserverBase):
         if param_key in self.params:
              K_loaded = np.asarray(self.params[param_key])
              if K_loaded.shape == (nzeta, ny):
+                 self._gain_method = "preloaded"
                  return K_loaded * self.observer_gain_scale
-        
+
+        # Avoid LMI near standstill where dynamics/observability can be ill-conditioned
+        try:
+            vx_now = float(self.state_hat[IDX_VX])
+        except Exception:
+            vx_now = 0.0
+        if abs(vx_now) < (self.min_vx + 1e-3):
+            self._gain_method = "default_low_speed"
+            return self._robust_default_K(nzeta, ny)
+
+        if self.use_lmi_gain and CVXPY_AVAILABLE:
+            cache_key = (self._mode, nzeta, ny)
+            if self.lmi_recompute_interval <= 0 and cache_key in self._lmi_gain_cache:
+                self._gain_method = "lmi_cached"
+                return self._lmi_gain_cache[cache_key]
+
+            if self.lmi_recompute_interval > 0:
+                last = self._lmi_last_update.get(cache_key, -1)
+                if (self._step_count - last) < self.lmi_recompute_interval and cache_key in self._lmi_gain_cache:
+                    self._gain_method = "lmi_cached"
+                    return self._lmi_gain_cache[cache_key]
+
+            try:
+                K_lmi = self._compute_lmi_gain(nzeta, ny, C, Ewx, H, Pzeta, zhat, u_phys)
+                self._lmi_gain_cache[cache_key] = K_lmi
+                self._lmi_last_update[cache_key] = self._step_count
+                self._gain_method = "lmi"
+                if self.print_lmi_gain and (self._step_count % self.lmi_print_every == 0):
+                    print(f"[HuyUIOObserver] LMI gain (mode={self._mode}, step={self._step_count}):\n{K_lmi}")
+                return K_lmi
+            except Exception as e:
+                self._last_lmi_error = str(e)
+
+        self._gain_method = "default"
         return self._robust_default_K(nzeta, ny)
 
     def _robust_default_K(self, nzeta: int, ny: int) -> np.ndarray:
@@ -294,6 +454,53 @@ class HuyUIOObserver(FirstLayerObserverBase):
         
         # No direct correction on w (tire residuals) - let the observer structure handle it
         
+        return K
+
+    def _jacobian_phi_zeta(self, zhat: np.ndarray, u: np.ndarray,
+                           C: np.ndarray, Ewx: np.ndarray) -> np.ndarray:
+        """
+        Numerical Jacobian of phi_zeta with respect to zeta.
+        """
+        n = zhat.size
+        f0 = self._phi_zeta(zhat, u, C, Ewx)
+        J = np.zeros((n, n))
+
+        for i in range(n):
+            dz = np.zeros(n)
+            dz[i] = self.epsilon
+            fi = self._phi_zeta(zhat + dz, u, C, Ewx)
+            J[:, i] = (fi - f0) / self.epsilon
+
+        return np.clip(J, -1e4, 1e4)
+
+    def _compute_lmi_gain(self, nzeta: int, ny: int, C: np.ndarray,
+                          Ewx: np.ndarray, H: np.ndarray,
+                          Pzeta: np.ndarray, zhat: Optional[np.ndarray],
+                          u_phys: np.ndarray) -> np.ndarray:
+        """
+        Compute LMI-based observer gain using local linearization.
+        """
+        if zhat is None:
+            raise ValueError("No zhat available for LMI gain computation")
+
+        if not np.all(np.isfinite(zhat)):
+            raise ValueError("Non-finite zhat for LMI gain computation")
+
+        J = self._jacobian_phi_zeta(zhat, u_phys, C, Ewx)
+        if not np.all(np.isfinite(J)):
+            raise ValueError("Non-finite Jacobian for LMI gain computation")
+
+        A_eff = Pzeta @ J
+        A_eff = np.clip(A_eff, -1e3, 1e3)
+
+        K = compute_lmi_observer_gain(A_eff, H, decay_rate=self.lmi_decay_rate, verbose=False)
+
+        if self.lmi_max_gain is not None:
+            K = np.clip(K, -self.lmi_max_gain, self.lmi_max_gain)
+
+        if K.shape != (nzeta, ny):
+            raise ValueError("LMI gain has incorrect shape")
+
         return K
     
     # =========================================================================
@@ -552,6 +759,7 @@ class HuyUIOObserver(FirstLayerObserverBase):
                 - state_estimate: [v_x, v_y, ψ, r, X, Y]
                 - unknown_input_estimate: [w_r, w_f]
         """
+        self._step_count += 1
         # Determine current time step
         current_dt = dt if dt is not None else self.Ts
 
@@ -639,6 +847,7 @@ class HuyUIOObserver(FirstLayerObserverBase):
         Ewx = self.compute_E_delta(delta)  # 6×2
         
         # Build descriptor matrices E, H
+        nzeta = 2 * ny + self.state_dim + self.UNKNOWN_INPUT_DIM
         CB = C @ Ewx  # ny × 2
         
         # Descriptor E matrix: (2ny+nx) × (2ny+nx+nmu)
@@ -688,13 +897,11 @@ class HuyUIOObserver(FirstLayerObserverBase):
         Pzeta = L[:, :n_E_rows]   # nzeta × (2ny+nx)
         Qzeta = L[:, n_E_rows:]   # nzeta × ny
         
-        # Observer gain (LMI-based design placeholder)
-        # In a full valid implementation, this should be solved via LMI
-        # Here we use a gain computed to stabilize the error dynamics
-        K = self.compute_gain(nzeta, ny)
-        
         # Algebraic estimate
         self.zhat = self.eta + Qzeta @ y_chi
+
+        # Observer gain (LMI-based when available)
+        K = self.compute_gain(nzeta, ny, C, Ewx, H, Pzeta, self.zhat, u_phys)
         
         # Innovation with yaw wrapping
         innov = y_chi - H @ self.zhat
@@ -738,6 +945,16 @@ class HuyUIOObserver(FirstLayerObserverBase):
         self.state_hat = xhat.copy()
         self.w_hat = what.copy()
         self.f_uk_hat = what.copy()  # Required for base class interface
+        
+        # Calculate tire info for logging (compatibility with qlpv_observer_kalma)
+        self.tire_info_layer_1 = self.dynamics._calculate_tire_info(
+            self.state_hat[IDX_VX], 
+            self.state_hat[IDX_VY], 
+            self.state_hat[IDX_R], 
+            self.current_steering_angle,
+            self.w_hat[0],  # w_r
+            self.w_hat[1]   # w_f
+        )
         
         return self.state_hat.copy(), self.w_hat.copy()
     
@@ -822,6 +1039,13 @@ class HuyUIOObserver(FirstLayerObserverBase):
         
         # Reset innovation
         self.innovation = None
+
+        # Reset LMI caches
+        self._lmi_gain_cache = {}
+        self._lmi_last_update = {}
+        self._last_lmi_error = None
+        self._step_count = 0
+        self._gain_method = "default"
     
     # =========================================================================
     # Diagnostic Getters
@@ -855,6 +1079,18 @@ class HuyUIOObserver(FirstLayerObserverBase):
             8D augmented state [v_x, v_y, ψ, r, X, Y, w_r, w_f]
         """
         return np.concatenate([self.state_hat, self.w_hat])
+    
+    def get_state(self) -> np.ndarray:
+        """Get current 6D state estimate [v_x, v_y, ψ, r, X, Y]"""
+        return self.state_hat.copy()
+    
+    def get_unknown_input(self) -> np.ndarray:
+        """Get unknown input estimate (alias for tire residuals)"""
+        return self.w_hat.copy()
+    
+    def get_unknown_input_estimate(self) -> np.ndarray:
+        """Get estimate of unknown inputs (tire residuals)"""
+        return self.w_hat.copy()
     
     # =========================================================================
     # Observer Tuning

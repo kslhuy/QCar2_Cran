@@ -428,7 +428,7 @@ class QLPVVehicleDynamicsObs:
     # State-Space Matrices
     # =========================================================================
     
-    def compute_A_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+    def compute_A_matrix(self, rho: SchedulingParameters , Cf: float = None, Cr: float = None) -> np.ndarray:
         """
         Compute state matrix A(ρ) for qLPV system
         
@@ -453,9 +453,13 @@ class QLPVVehicleDynamicsObs:
         cos_psi = rho.cos_psi
         sin_psi = rho.sin_psi
         
-        # Scale tire stiffness for low speed
-        Cf = self.Cf * rho.stiffness_scale
-        Cr = self.Cr * rho.stiffness_scale
+        if Cf is None:
+            Cf = self.Cf
+        if Cr is None:
+            Cr = self.Cr
+        # # Scale tire stiffness for low speed
+        # Cf = Cf * rho.stiffness_scale
+        # Cr = Cr * rho.stiffness_scale
         
         # v_x dynamics: v̇_x = accel - μg + r·v_y - Fyf·sin(δ)/m
         # where Fyf = Cf·αf = Cf·(δ - vy/vx - lf·r/vx)
@@ -489,7 +493,7 @@ class QLPVVehicleDynamicsObs:
         
         return A
     
-    def compute_B_matrix(self, rho: SchedulingParameters) -> np.ndarray:
+    def compute_B_matrix(self, rho: SchedulingParameters, Cf: float = None, Cr: float = None) -> np.ndarray:
         """
         Compute input matrix B(ρ)
         
@@ -507,7 +511,11 @@ class QLPVVehicleDynamicsObs:
         sin_d = rho.sin_delta
         
         # Scale tire stiffness
-        Cf = self.Cf * rho.stiffness_scale
+        if Cf is None:
+            Cf = self.Cf
+        if Cr is None:
+            Cr = self.Cr
+        # Cf = Cf * rho.stiffness_scale
         
         # v_x: affected by steering and acceleration
         B[IDX_VX, 0] = -Cf * sin_d / self.m  # ∂/∂δ (steering effect)
@@ -566,7 +574,7 @@ class QLPVVehicleDynamicsObs:
         
         return E
     
-    def compute_C_matrix(self, rho: SchedulingParameters, active_indices: Optional[list] = None) -> np.ndarray:
+    def compute_C_matrix(self, rho: SchedulingParameters, active_indices: Optional[list] = None, mode: Optional[str] = None , Cf: float = None, Cr: float = None) -> np.ndarray:
         """
         Compute output matrix C(ρ)
         
@@ -581,11 +589,12 @@ class QLPVVehicleDynamicsObs:
         Args:
             rho: Scheduling parameters
             active_indices: List of active measurement indices. If None, returns full matrix.
+            mode: Mode string from C_MATRIX_MODES to select active indices (overrides active_indices if provided).
             
         Returns:
             C matrix (N_meas × 6) where N_meas is len(active_indices) or MEAS_DIM
         """
-        C = np.zeros((MEAS_DIM, STATE_DIM))
+        C = np.zeros((MEAS_DIM_7D, STATE_DIM))
         
         # Direct measurements
         C[MEAS_IDX_VX, IDX_VX] = 1.0    # v_x
@@ -601,8 +610,12 @@ class QLPVVehicleDynamicsObs:
         vx = rho.vx
         
         # Scale tire stiffness
-        Cf = self.Cf * rho.stiffness_scale
-        Cr = self.Cr * rho.stiffness_scale
+        if Cf is None:
+            Cf = self.Cf
+        if Cr is None:
+            Cr = self.Cr
+        # Cf = Cf * rho.stiffness_scale
+        # Cr = Cr * rho.stiffness_scale
         
         C[MEAS_IDX_AY, IDX_VY] = -(Cr + Cf * cos_d) / (self.m * vx)
         C[MEAS_IDX_AY, IDX_R] =  (Cr * self.lr - Cf * self.lf * cos_d) / (self.m * vx)
@@ -613,8 +626,19 @@ class QLPVVehicleDynamicsObs:
         C[MEAS8_IDX_AX, IDX_VY] = (Cf * sin_d) / (self.m * vx)
         C[MEAS8_IDX_AX, IDX_R ] = (Cf * self.lf * sin_d) / (self.m * vx)
         
-        if active_indices is not None:
-            return C[active_indices, :]
+        # Determine indices to return
+        indices_to_use = None
+        if mode is not None:
+            if mode in C_MATRIX_MODES:
+                indices_to_use = C_MATRIX_MODES[mode]
+            else:
+                # Fallback or error? For now log warning or error if possible, but strict return is better
+                raise ValueError(f"Unknown C matrix mode: {mode}")
+        elif active_indices is not None:
+            indices_to_use = active_indices
+            
+        if indices_to_use is not None:
+            return C[indices_to_use, :]
         
         return C
     
@@ -638,7 +662,8 @@ class QLPVVehicleDynamicsObs:
         sin_d = rho.sin_delta
         
         # Scale tire stiffness
-        Cf = self.Cf * rho.stiffness_scale
+        Cf = self.Cf 
+        # Cf = self.Cf * rho.stiffness_scale
         
         # Only a_y row has feedthrough
         D[MEAS_IDX_AY, 0] = Cf * cos_d / self.m  # Steering effect
@@ -906,7 +931,53 @@ class QLPVVehicleDynamicsObs:
             ay,
         ])
     
+    def _calculate_tire_info(self, vx: float, vy: float, r: float, delta: float ,w_r , w_f, Cf: float = 200, Cr: float = 200):
+        """
+        Calculate and store tire information (ground truth and residuals).
+        
+        Called at the end of each physics update method to compute:
+        - Slip angles (alpha_f, alpha_r)
+        - Linear tire forces (Fyf_linear, Fyr_linear)
+        - True tire forces (Fyf_true, Fyr_true)
+        - Tire residuals (w_f, w_r) stored in self.w_f_true, self.w_r_true
+        
+        Args:
+            vx: Longitudinal velocity
+            vy: Lateral velocity  
+            r: Yaw rate
+            delta: Steering angle
+        """
+        lf = self.params['lf']
+        lr = self.params['lr']
+        if Cf is None:
+            Cf = self.params['Cf']
+        if Cr is None:
+            Cr = self.params['Cr']
+        
+        # Clamp vx to avoid division by zero
+        vx_safe = max(abs(vx), 0.1)
+        
+        # Compute slip angles
+        alpha_f = delta - (vy + lf * r) / vx_safe
+        alpha_r = -(vy - lr * r) / vx_safe
+        
+        #  Compute linear tire forces (in observer, we use linear tire forces)
+        
+        Fyf_linear  = Cf * alpha_f + w_r 
+        Fyr_linear = Cr * alpha_r + w_f
 
+        
+        # # Store residuals for observer access
+        # self.w_r_true = w_r
+        # self.w_f_true = w_f
+        
+        # Store complete tire info
+        return  {
+            'Fyr_linear_est': Fyr_linear,
+            'Fyf_linear_est': Fyf_linear,
+            'alpha_r': alpha_r,
+            'alpha_f': alpha_f,
+        }
 
 
 # =============================================================================
@@ -1161,52 +1232,8 @@ class QLPVVehicleDynamicsObs8D(QLPVVehicleDynamicsObs):
         
         return np.concatenate([x_dot_6d, [ax_dot, ay_dot]])
     
-    def f_blended(self, x: np.ndarray, u: np.ndarray, w: np.ndarray,
-                  blend_vx_low: float = 0.1, blend_vx_high: float = 0.3) -> np.ndarray:
-        """
-        Blended dynamics for 8D system.
-        
-        Args:
-            x: State (8D)
-            u: Control [δ, a]
-            w: Tire residuals [wr, wf]
-            blend_vx_low: Pure kinematic threshold
-            blend_vx_high: Pure dynamic threshold
-        
-        Returns:
-            Blended state derivative (8D)
-        """
-        vx_abs = abs(x[IDX8_VX])
-        
-        # Compute blending factor
-        if vx_abs <= blend_vx_low:
-            alpha = 0.0
-        elif vx_abs >= blend_vx_high:
-            alpha = 1.0
-        else:
-            t = (vx_abs - blend_vx_low) / (blend_vx_high - blend_vx_low)
-            alpha = 0.5 * (1.0 - np.cos(np.pi * t))
-        
-        x_dot_kin = self.f_kinematic(x, u)
-        
-        if alpha < 1.0:
-            if alpha > 0.0:
-                x_dot_dyn = self.f_continuous(x, u, w)
-                return (1.0 - alpha) * x_dot_kin + alpha * x_dot_dyn
-            else:
-                return x_dot_kin
-        else:
-            return self.f_continuous(x, u, w)
-    
-    def h_meas_blended(self, x: np.ndarray, u: np.ndarray, w: np.ndarray,
-                       blend_vx_low: float = 0.1, blend_vx_high: float = 0.3) -> np.ndarray:
-        """
-        Blended measurement for 8D system (direct state measurement).
-        
-        For 8D system, accelerations are states measured directly, so blending
-        is less critical. Returns direct measurement.
-        """
-        return self.h_meas(x, u, w)
+   
+
 
     def compute_augmented_matrices(self, rho: SchedulingParameters) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """

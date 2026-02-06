@@ -6,15 +6,16 @@
 
 Edit `config.txt` with your IPs , and the real car
 
-# Start GUI (in another terminal)
+#  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
-python .\enhanced_gui_controller.py
+python .\app_main.py
 
 # Start all vehicles (in another terminal)
 cd .\Development\multi_vehicle_self_driving_RealQcar      
 
-.\start_refactored.bat 
-
+# .\start_refactored.bat 
+.\start_enhanced.bat 
+fleet_config.yaml is that file need to put correct IP adresse
 
 (Wait its will run automatique)
 

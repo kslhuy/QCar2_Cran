@@ -16,7 +16,8 @@ from .vehiclemodels.vehicle_dynamics_st import vehicle_dynamics_st
 from .vehiclemodels.vehicle_dynamics_qlpv import (
     vehicle_dynamics_qlpv, 
     get_tire_residuals,
-    get_lateral_acceleration
+    get_lateral_acceleration,
+    compute_tire_forces_linear,
 )
 from .vehiclemodels.vehicle_parameters import setup_vehicle_parameters, VehicleParameters
 from Observer.LocalNeuralObs.qlpv_vehicle_dynamics_obs import QLPVVehicleDynamicsObs
@@ -39,7 +40,7 @@ class MockQCar:
         self.car_id = self.vehicle_conf.get('id', 0)
         self.model_type = self.vehicle_conf.get('model_type', 'kinematic')
         self.tire_model = self.vehicle_conf.get('tire_model', 'pacejka')
-        
+        print(f"Tire Model: {self.tire_model}")
         # Flags for optimization
         self.use_qlpv_matrix = (self.model_type == 'qlpv_matrix')
         self.use_qlpv_legacy = (self.model_type == 'qlpv_legacy')
@@ -90,6 +91,17 @@ class MockQCar:
         self.true_disturbances = [0.0, 0.0, 0.0] # [d_vx, d_vy, d_r]
         self.w_r_true = 0.0
         self.w_f_true = 0.0
+        
+        # Pre-calculated tire info (computed in each update method)
+        self._tire_info = {
+            'Fyr_true': 0.0,
+            'Fyf_true': 0.0,
+            'Fyr_linear': 0.0,
+            'Fyf_linear': 0.0,
+            'alpha_r': 0.0,
+            'alpha_f': 0.0,
+        }
+        
         # Last time read 
         self.last_time = time.time()
 
@@ -187,7 +199,7 @@ class MockQCar:
             'w_f_true': self.w_f_true
         }
 
-    def get_observer_state(self) -> np.ndarray:
+    def get_true_state(self) -> np.ndarray:
         """
         Get ground truth state vector [v_x, v_y, ψ, r, X, Y]
         Expected by NeuralLuenbergerEstimator
@@ -213,6 +225,101 @@ class MockQCar:
             self.true_disturbances[1],
             self.true_disturbances[2]
         ])
+
+    def get_tire_info(self) -> Dict[str, float]:
+        """
+        Get pre-calculated tire information dictionary for recorder.
+        
+        Returns the tire info computed during the last physics update step.
+        Each update method (_update_physics_*) calls _calculate_tire_info() internally.
+        
+        Returns:
+            Dict with keys: Fyr_true, Fyf_true, Fyr_linear, Fyf_linear, alpha_r, alpha_f
+        """
+        return self._tire_info.copy()
+    
+    def _calculate_tire_info(self, vx: float, vy: float, r: float, delta: float , Cf: float = 200, Cr: float = 200):
+        """
+        Calculate and store tire information (ground truth and residuals).
+        
+        Called at the end of each physics update method to compute:
+        - Slip angles (alpha_f, alpha_r)
+        - Linear tire forces (Fyf_linear, Fyr_linear)
+        - True tire forces (Fyf_true, Fyr_true)
+        - Tire residuals (w_f, w_r) stored in self.w_f_true, self.w_r_true
+        
+        Args:
+            vx: Longitudinal velocity
+            vy: Lateral velocity  
+            r: Yaw rate
+            delta: Steering angle
+        """
+        lf = self.params.a
+        lr = self.params.b
+        if Cf is None:
+            Cf = getattr(self.params, 'Cf', 120.0)
+        if Cr is None:
+            Cr = getattr(self.params, 'Cr', 120.0)
+        
+        # Clamp vx to avoid division by zero
+        vx_safe = max(abs(vx), 0.1)
+        
+        # Compute slip angles (using arctan for large angle safety)
+        alpha_f = delta - math.atan((vy + lf * r) / vx_safe)
+        alpha_r = -math.atan((vy - lr * r) / vx_safe) # equivalent to atan((lr*r - vy)/vx)
+        
+        # # Compute linear tire forces (in observer, we use linear tire forces)
+        Fyf_linear, Fyr_linear = compute_tire_forces_linear(alpha_f, alpha_r, Cf, Cr)
+        
+        # Get true tire residuals based on tire model
+        w_r, w_f, Fyf_true, Fyr_true = get_tire_residuals(
+            self.tire_model, alpha_f, alpha_r, Cf, Cr, self.params, vx_safe)
+
+        # # -------------------------------------------------------------------------
+        # # SMOOTHING / BLENDING LOGIC (Fix for Tire Force Spike at Low Speed)
+        # # -------------------------------------------------------------------------
+        # # The kinematic model (used < 0.1 m/s) assumes ZERO tire forces.
+        # # The qLPV/Dynamic models (used > 0.1 m/s) calculate full tire forces immediately.
+        # # This causes a discontinuity (spike) at 0.1 m/s.
+        # # We blend the forces from 0.0 (at switch point) to 1.0 (at nominal speed).
+        
+        # V_BLEND_START = 0.1  # Same as V_THRESHOLD in update loops
+        # V_BLEND_END = 0.5    # Nominal velocity is ~0.7, so full physics by 0.5 is safe
+        
+        # current_v = abs(vx)
+        # if current_v < V_BLEND_START:
+        #     blend_factor = 0.0
+        # elif current_v > V_BLEND_END:
+        #     blend_factor = 1.0
+        # else:
+        #     # Linear Blend
+        #     blend_factor = (current_v - V_BLEND_START) / (V_BLEND_END - V_BLEND_START)
+        
+        # # Apply blending
+        # Fyf_linear *= blend_factor
+        # Fyr_linear *= blend_factor
+        # Fyf_true *= blend_factor
+        # Fyr_true *= blend_factor
+        # w_r *= blend_factor
+        # w_f *= blend_factor
+        # # Also blend slip angles for plotting consistency
+        # alpha_f_blended = alpha_f * blend_factor
+        # alpha_r_blended = alpha_r * blend_factor
+        # # -------------------------------------------------------------------------
+        
+        # Store residuals for observer access
+        self.w_r_true = w_r
+        self.w_f_true = w_f
+        
+        # Store complete tire info
+        self._tire_info = {
+            'Fyr_true': Fyr_true,
+            'Fyf_true': Fyf_true,
+            'Fyr_linear': Fyr_linear,
+            'Fyf_linear': Fyf_linear,
+            'alpha_r': alpha_r,
+            'alpha_f': alpha_f,
+        }
 
     def _sync_state(self):
         """Synchronize public properties."""
@@ -249,10 +356,21 @@ class MockQCar:
         self.heading = (self.heading + math.pi) % (2 * math.pi) - math.pi
         
     def _update_physics_qlpv_matrix(self, dt: float):
-        """Matrix-based qLPV update."""
+        """Matrix-based qLPV update with kinematic fallback for low speeds."""
         if not self.qlpv_obs_model: return
         
         current_obs_state = self.state_obs
+        
+        # Low-speed threshold: qLPV model is unstable at start/stop
+        # because scheduling parameters depend on 1/vx
+        V_THRESHOLD = 0.1  # m/s - below this, use kinematic model
+        current_vx = abs(self.state_obs[0])
+        
+        if current_vx < V_THRESHOLD:
+            # Use kinematic model for low-speed (start/stop moments)
+            # print("Using kinematic model for low-speed")
+            self._kinematic_fallback_for_qlpv(dt)
+            return
         acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
             self._throttle, self._steering, current_obs_state, self.current_steering_angle, dt
         )
@@ -287,11 +405,29 @@ class MockQCar:
         
         x_dot_final = np.zeros(6) # To store last derivative for IMU
 
+        Cf = 120 # Custom different Cf
+        Cr = 120 # Custom different Cr
+
+        ###Calculate tire foroces fisrt to get true residuals for IMU calculation
+        vx_dot = x_dot_final[0]
+        vy_dot = x_dot_final[1]
+        r = self.state_obs[3]
+        vx = self.state_obs[0]
+        vy = self.state_obs[1]
+        
+        self.accelerometer[0] = vx_dot - r * vy
+        self.accelerometer[1] = vy_dot + r * vx
+        self.accelerometer[2] = 9.81
+        
+        # Calculate tire info at end of update
+        self._calculate_tire_info(vx, vy, r, u_vec[0] , Cf, Cr)
+
+        ###Calculate tire foroces fisrt to get true residuals for IMU calculation
         for _ in range(n_steps):
             rho = self.qlpv_obs_model.compute_scheduling_params(self.state_obs, u_vec[0])
             # A(rho), B(rho), E(rho) are continuous
-            A_c = self.qlpv_obs_model.compute_A_matrix(rho)
-            B_c = self.qlpv_obs_model.compute_B_matrix(rho) 
+            A_c = self.qlpv_obs_model.compute_A_matrix(rho, Cf=Cf, Cr=Cr)
+            B_c = self.qlpv_obs_model.compute_B_matrix(rho, Cf=Cf, Cr=Cr) 
             E_c = self.qlpv_obs_model.compute_E_matrix(rho)
             
             # x_dot = A x + B u + E d
@@ -324,6 +460,9 @@ class MockQCar:
         self.accelerometer[0] = vx_dot - r * vy
         self.accelerometer[1] = vy_dot + r * vx
         self.accelerometer[2] = 9.81
+        
+        # # Calculate tire info at end of update
+        # self._calculate_tire_info(vx, vy, r, u_vec[0] , Cf, Cr)
 
     def _update_physics_qlpv(self, dt: float):
         """Legacy qLPV update."""
@@ -370,6 +509,10 @@ class MockQCar:
         self.accelerometer[0] = vx_dot - r * vy
         self.accelerometer[1] = vy_dot + r * vx
         self.accelerometer[2] = 9.81
+        
+        # Calculate tire info at end of update
+        delta = self.state_qlpv[2]
+        self._calculate_tire_info(vx, vy, r, delta)
         
 
         
@@ -445,6 +588,14 @@ class MockQCar:
         # 5. Update IMU
         if derivatives is not None:
             self._update_imu_sensors(derivatives, acc)
+        
+        # 6. Calculate tire info
+        vx = max(abs(self.state_st[3]), 0.5)
+        beta = self.state_st[6]
+        vy = vx * math.tan(beta) if abs(beta) < 0.5 else vx * beta
+        r = self.state_st[5]
+        delta = self.state_st[2]
+        self._calculate_tire_info(vx, vy, r, delta)
 
     def _update_physics_kinematic(self, dt: float):
         """
@@ -502,6 +653,18 @@ class MockQCar:
         # 5. IMU
         if derivatives is not None:
             self._update_imu_sensors(derivatives, acc)
+        
+        # # 6. Kinematic model: set tire info to zeros (no lateral dynamics)
+        # self._tire_info = {
+        #     'Fyr_true': 0.0,
+        #     'Fyf_true': 0.0,
+        #     'Fyr_linear': 0.0,
+        #     'Fyf_linear': 0.0,
+        #     'alpha_r': 0.0,
+        #     'alpha_f': 0.0,
+        # }
+        # self.w_r_true = 0.0
+        # self.w_f_true = 0.0
 
     def _simple_kinematic_update(self, dt: float):
         """Fallback simple kinematic update when dynamic model fails"""
@@ -538,6 +701,116 @@ class MockQCar:
         else:
             self.angular_velocity = 0.0
 
+    def _compute_kinematic_step(self, dt: float, 
+                               vx: float, vy: float, psi: float, r: float, 
+                               X: float, Y: float, 
+                               acc: float, delta: float, 
+                               throttle_input: float) -> Tuple[float, float, float, float, float, float]:
+        """
+        Common kinematic step calculation with robust stopping logic.
+        
+        Updates velocity with inputs and friction, ensures complete stop at low speeds,
+        and kinematic updates for position/heading.
+        
+        Returns: 
+            Tuple(vx_new, vy_new, psi_new, r_new, X_new, Y_new)
+        """
+        # 1. Update velocity
+        # If trying to stop (no throttle), ignore any residual acceleration from model
+        if abs(throttle_input) < 0.01:
+             acc = 0.0
+             
+        vx_new = vx + acc * dt
+        
+        # 2. Friction/Stopping Logic
+        if abs(throttle_input) < 0.01:
+            if abs(vx_new) > 0.01:
+                # Apply stopping friction (deceleration) - increased for "almost instant" stop
+                # User wants very quick stop. 50.0 m/s^2 is ~5g, very strong braking.
+                friction_decel = -np.sign(vx_new) * 50.0 * dt
+                # Prevent overshoot across zero (if decel is larger than remaining speed)
+                if abs(friction_decel) > abs(vx_new):
+                    vx_new = 0.0
+                else:
+                    vx_new += friction_decel
+            
+            # Hard stop threshold increased
+            if abs(vx_new) < 0.1:
+                vx_new = 0.0
+                
+        # 3. Clamp Velocity
+        v_max = float(self.params.longitudinal.v_max)
+        v_min = float(self.params.longitudinal.v_min)
+        vx_new = np.clip(vx_new, v_min, v_max)
+        
+        # 4. Kinematic Yaw Rate (Bicycle Model)
+        wheelbase = self.params.a + self.params.b
+        if abs(vx_new) > 0.05:
+            r_new = (vx_new / wheelbase) * math.tan(delta)
+        else:
+            r_new = 0.0
+            
+        # 5. Update Heading
+        psi_new = psi + r_new * dt
+        psi_new = (psi_new + math.pi) % (2 * math.pi) - math.pi
+        
+        # 6. Update Position
+        # Use average heading for better integration accuracy
+        psi_avg = (psi + psi_new) / 2.0
+        X_new = X + vx_new * math.cos(psi_avg) * dt
+        Y_new = Y + vx_new * math.sin(psi_avg) * dt
+        
+        # 7. Lateral velocity decay (kinematic assumption)
+        vy_decay_rate = 5.0 # 1/s
+        vy_new = vy * math.exp(-vy_decay_rate * dt)
+        if abs(vy_new) < 0.01:
+            vy_new = 0.0
+            
+        return vx_new, vy_new, psi_new, r_new, X_new, Y_new
+
+    def _kinematic_fallback_for_qlpv(self, dt: float):
+        """
+        Kinematic fallback for qLPV matrix mode at low speeds.
+        Uses common _compute_kinematic_step.
+        """
+        # 1. Control Inputs
+        acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
+            self._throttle, self._steering, self.state_obs, self.current_steering_angle, dt
+        )
+        self.current_steering_angle = new_steer
+        delta = new_steer
+        
+        # 2. Current State
+        vx, vy, psi, r, X, Y = self.state_obs
+        
+        # 3. Compute Common Kinematic Step
+        vx_new, vy_new, psi_new, r_new, X_new, Y_new = self._compute_kinematic_step(
+            dt, vx, vy, psi, r, X, Y, acc, delta, self._throttle
+        )
+        
+        # 4. Update State [vx, vy, ψ, r, X, Y]
+        self.state_obs = np.array([vx_new, vy_new, psi_new, r_new, X_new, Y_new])
+        
+        # 5. Set disturbances to zero in kinematic mode
+        self.true_disturbances = [0.0, 0.0, 0.0]
+        self.w_r_true = 0.0
+        self.w_f_true = 0.0
+        
+        # 6. Update IMU (simple kinematic model)
+        self.accelerometer[0] = acc  # ax ≈ commanded acceleration
+        self.accelerometer[1] = 0.0  # ay ≈ 0 in kinematic
+        self.accelerometer[2] = 9.81
+        
+        # 7. Zero tire info in kinematic mode (no lateral dynamics)
+        self._tire_info = {
+            'Fyr_true': 0.0,
+            'Fyf_true': 0.0,
+            'Fyr_linear': 0.0,
+            'Fyf_linear': 0.0,
+            'alpha_r': 0.0,
+            'alpha_f': 0.0,
+        }
+
     def _update_imu_sensors(self, derivatives: np.ndarray, commanded_accel: float):
         """Compute realistic IMU sensor readings."""
         g = 9.81
@@ -546,12 +819,12 @@ class MockQCar:
         r = self.angular_velocity
         
         if self.use_qlpv_legacy or self.use_qlpv_matrix:
-             # qLPV derivatives: [Ẋ, Ẏ, δ̇, v̇_x, ψ̇, ṙ, v̇_y] -> indices depend on vector
-             # This helper is mostly for ST/KS models here. 
-             # For qLPV, derivatives logic in those functions handles IMU usually?
-             # In mock_vehicle, qLPV updates don't call this yet.
-             # We assume this is called by dynamic/kinematic.
-             return
+            # qLPV derivatives: [Ẋ, Ẏ, δ̇, v̇_x, ψ̇, ṙ, v̇_y] -> indices depend on vector
+            # This helper is mostly for ST/KS models here. 
+            # For qLPV, derivatives logic in those functions handles IMU usually?
+            # In mock_vehicle, qLPV updates don't call this yet.
+            # We assume this is called by dynamic/kinematic.
+            return
 
         if self.use_dynamic:
             # ST derivatives: [Ẋ, Ẏ, δ̇, v̇, ψ̇, ṙ, β̇]

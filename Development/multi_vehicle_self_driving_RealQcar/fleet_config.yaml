@@ -3,7 +3,7 @@
 
 # Ground Station Configuration
 ground_station:
-  local_ip: 192.168.137.1
+  local_ip: 192.168.2.200
   base_port: 5000
 
 # Remote QCar Configuration
@@ -27,8 +27,8 @@ upload:
 # vehicle_type can be: "Qcar" or "Limo"
 vehicles:
   - car_id: 0
-    # ip: 192.168.2.137
-    ip: 192.168.137.102
+    ip: 192.168.2.137
+    # ip: 192.168.137.102
     vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
     probing: true          # Enable YOLO probing (object detection)
@@ -39,7 +39,8 @@ vehicles:
     description: "Leader vehicle with probing"
     
   - car_id: 1
-    ip: 192.168.137.208
+    # ip: 192.168.137.208
+    ip: 192.168.2.108   # Car 67 alway need be center map
     vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
     probing: true         # Enable probing for follower

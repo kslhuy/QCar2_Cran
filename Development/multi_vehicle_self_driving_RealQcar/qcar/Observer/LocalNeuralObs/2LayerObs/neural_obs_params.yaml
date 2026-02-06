@@ -24,7 +24,7 @@ neural_network:
   use_acceleration: false
 
   # Disturbance estimation mode: 'tire' (default 2D: [w_r, w_f]) or 'general' (3D: [d_vx, d_vy, d_r])
-  disturbance_mode: 'general'
+  disturbance_mode: 'tire'
 
 # ============================================================================
 # Learning Parameters
@@ -149,30 +149,30 @@ loss:
 
 # Weights for standard measurement loss (6D state)
 weights_measurement:
-  v_x: 10.0
-  v_y: 1000.0 ## Seem not used , dont have v_y in measurement
-  psi: 10.0
-  psi_dot: 300.0
-  X: 1.0
-  Y: 1.0
-
-# Weights for composite UIO loss - reference tracking term
-weights_ref:
-  v_x: 5.0
-  v_y: 5.0
+  v_x: 3.0
+  v_y: 3.0 ## Seem not used , dont have v_y in measurement
   psi: 3.0
   psi_dot: 3.0
   X: 1.0
   Y: 1.0
 
+# Weights for composite UIO loss - reference tracking term
+weights_ref:
+  v_x: 5.0  ## Seem not used 
+  v_y: 5.0  ## Seem not used 
+  psi: 0.5
+  psi_dot: 3.0  ## Seem not used 
+  X: 1.0
+  Y: 1.0
+
 # Weights for composite UIO loss - UIO agreement term
 weights_uio:
-  v_x: 5.0
-  v_y: 10.0
-  psi: 15.0
-  psi_dot: 10.0
-  X: 5.0
-  Y: 5.0
+  v_x: 1.0
+  v_y: 1.0
+  psi: 1.0
+  psi_dot: 1.0
+  X: 1.0
+  Y: 1.0
 
 # ============================================================================
 # First-Layer Observer Configuration
@@ -191,7 +191,7 @@ weights_uio:
 #
 first_layer:
   # Enable two-layer architecture with first-layer observer
-  enabled: false
+  enabled: true
   
   # First-layer observer type (see options above)
   type: qlpv_kalman
@@ -202,6 +202,10 @@ first_layer:
 
   # Use 8D system (accelerations as states) for first-layer observer
   use_8d_system: false
+
+  # Velocity threshold below which 1st layer observer overrides 2nd layer [m/s]
+  # Useful for start/stop scenarios where NN might be unstable.
+  override_threshold: 0.1
 
 # ============================================================================
 # Model Persistence

@@ -6,7 +6,7 @@ all components of the fleet controller GUI.
 """
 
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 import threading
 import time
 from typing import Dict, Optional, Set, Any
@@ -19,8 +19,9 @@ from .widgets import (
     FleetControlCallbacks, FleetControlsWidget,
     FleetStatus, StatusPanelWidget, LogPanelWidget, HeaderWidget,
     ScrollableFrame, ThemedLabel,
+    VehicleConnectionConfig, ConnectionCallbacks, VehicleConnectionPanel, FleetConnectionPanel,
 )
-from .controllers import QCarRemoteController, ManualInputController
+from .controllers import QCarRemoteController, ManualInputController, VehicleConnector, RemoteConfig, GroundStationConfig
 
 
 @dataclass
@@ -62,6 +63,21 @@ class QCarFleetController:
         # Set callbacks
         self._remote.gui_controller = self  # For backward compatibility
         
+        # Initialize vehicle connector for deployment
+        self._vehicle_connector = VehicleConnector(
+            remote_config=RemoteConfig(
+                username=self.config.deployment.ssh_username,
+                password=self.config.deployment.ssh_password,
+                remote_path=self.config.deployment.remote_path,
+                timeout=self.config.deployment.ssh_timeout
+            ),
+            ground_station_config=GroundStationConfig(
+                local_ip=self.config.network.host_ip if self.config.network.host_ip != '0.0.0.0' else '192.168.2.200',
+                base_port=self.config.network.base_port
+            ),
+            log_callback=lambda msg, lvl: self.log(msg, lvl)
+        )
+        
         # State tracking
         self._connected_cars: Set[int] = set()
         self._car_panels: Dict[int, CarPanelWidget] = {}
@@ -81,6 +97,11 @@ class QCarFleetController:
         self._status_panel: Optional[StatusPanelWidget] = None
         self._log_panel: Optional[LogPanelWidget] = None
         self._no_cars_label: Optional[tk.Label] = None
+        
+        # Deployment tab components
+        self._notebook: Optional[ttk.Notebook] = None
+        self._deployment_panels: Dict[int, VehicleConnectionPanel] = {}
+        self._deployment_scrollable: Optional[ScrollableFrame] = None
         
         # Threading
         self._running = True
@@ -122,18 +143,43 @@ class QCarFleetController:
         main_frame = tk.Frame(self.root, bg=c.bg_dark)
         main_frame.pack(fill='both', expand=True, padx=15, pady=10)
         
-        # Left panel - Car controls
+        # Left panel - Car controls with tabs
         left_panel = tk.Frame(main_frame, bg=c.bg_dark)
         left_panel.pack(side='left', fill='both', expand=True, padx=(0, 10))
         
-        # Scrollable car panels
-        self._scrollable = ScrollableFrame(left_panel, theme=self.theme)
-        self._scrollable.pack(fill='both', expand=True, pady=(10, 0))
+        # Create notebook (tabs) for switching between connected vehicles and deployment
+        style = ttk.Style()
+        style.configure('Dark.TNotebook', background=c.bg_dark)
+        style.configure('Dark.TNotebook.Tab', 
+                       background=c.bg_medium, 
+                       foreground=c.fg_primary,
+                       padding=[15, 8])
+        style.map('Dark.TNotebook.Tab',
+                 background=[('selected', c.bg_light)],
+                 foreground=[('selected', c.fg_primary)])
+        
+        self._notebook = ttk.Notebook(left_panel, style='Dark.TNotebook')
+        self._notebook.pack(fill='both', expand=True, pady=(10, 0))
+        
+        # Tab 1: Connected Vehicles (existing functionality)
+        connected_tab = tk.Frame(self._notebook, bg=c.bg_dark)
+        self._notebook.add(connected_tab, text="📡 Connected Vehicles")
+        
+        # Scrollable car panels in connected tab
+        self._scrollable = ScrollableFrame(connected_tab, theme=self.theme)
+        self._scrollable.pack(fill='both', expand=True)
         
         # Initial "waiting for cars" message
         self._show_waiting_message()
         
-        # Fleet controls
+        # Tab 2: Deploy Vehicles (new functionality)
+        deploy_tab = tk.Frame(self._notebook, bg=c.bg_dark)
+        self._notebook.add(deploy_tab, text="🚀 Deploy Vehicles")
+        
+        # Build deployment tab content
+        self._build_deployment_tab(deploy_tab)
+        
+        # Fleet controls (below tabs)
         fleet_callbacks = FleetControlCallbacks(
             on_start_all=self._start_all_cars,
             on_stop_all=self._stop_all_cars,
@@ -169,6 +215,255 @@ class QCarFleetController:
         # Bind keyboard for manual control
         self._input.bind_keyboard(self.root)
     
+    def _build_deployment_tab(self, parent: tk.Frame) -> None:
+        """Build the vehicle deployment tab content."""
+        c = self.theme.colors
+        from .widgets.base import ThemedLabelFrame, ThemedButton, ThemedEntry, ThemedLabel
+        
+        # Master controls frame
+        master_frame = ThemedLabelFrame(parent, text="🎛️ Fleet Deployment Controls", theme=self.theme)
+        master_frame.pack(fill='x', padx=10, pady=10)
+        
+        master_content = tk.Frame(master_frame, bg=c.bg_medium)
+        master_content.pack(fill='x', padx=8, pady=8)
+        
+        # Ground Station IP configuration
+        gs_row = tk.Frame(master_content, bg=c.bg_medium)
+        gs_row.pack(fill='x', pady=(0, 5))
+        
+        ThemedLabel(gs_row, text="Ground Station IP:", style='muted', theme=self.theme).pack(side='left', padx=(0, 10))
+        self._gs_ip_entry = ThemedEntry(gs_row, width=15, theme=self.theme)
+        default_ip = self.config.network.host_ip if self.config.network.host_ip != '0.0.0.0' else '192.168.2.200'
+        self._gs_ip_entry.insert(0, default_ip)
+        self._gs_ip_entry.pack(side='left', padx=(0, 15))
+        
+        ThemedLabel(gs_row, text="Base Port:", style='muted', theme=self.theme).pack(side='left', padx=(0, 5))
+        self._gs_port_entry = ThemedEntry(gs_row, width=6, theme=self.theme)
+        self._gs_port_entry.insert(0, str(self.config.network.base_port))
+        self._gs_port_entry.pack(side='left')
+        
+        # Batch operations row
+        batch_row = tk.Frame(master_content, bg=c.bg_medium)
+        batch_row.pack(fill='x', pady=(5, 0))
+        
+        ThemedButton(
+            batch_row, text="➕ Add Vehicle", button_type='command',
+            command=self._add_deployment_panel, padx=10, pady=3
+        ).pack(side='left', padx=(0, 5))
+        
+        ThemedButton(
+            batch_row, text="🔌 Connect All", button_type='command',
+            command=self._connect_all_vehicles, padx=10, pady=3
+        ).pack(side='left', padx=5)
+        
+        ThemedButton(
+            batch_row, text="📤 Upload All", button_type='warning',
+            command=self._upload_all_vehicles, padx=10, pady=3
+        ).pack(side='left', padx=5)
+        
+        ThemedButton(
+            batch_row, text="▶️ Start All", button_type='start',
+            command=self._start_all_deployed_vehicles, padx=10, pady=3
+        ).pack(side='left', padx=5)
+        
+        ThemedButton(
+            batch_row, text="⬛ Stop All", button_type='stop',
+            command=self._stop_all_deployed_vehicles, padx=10, pady=3
+        ).pack(side='left', padx=5)
+        
+        # Scrollable area for vehicle deployment panels
+        self._deployment_scrollable = ScrollableFrame(parent, theme=self.theme)
+        self._deployment_scrollable.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        
+        # Add initial deployment panels (2 vehicles by default)
+        for i in range(2):
+            self._add_deployment_panel()
+    
+    def _add_deployment_panel(self) -> None:
+        """Add a new vehicle deployment panel."""
+        car_id = len(self._deployment_panels)
+        
+        # Create callbacks for this panel
+        callbacks = ConnectionCallbacks(
+            on_connect=lambda cfg: self._on_vehicle_connect(cfg),
+            on_disconnect=lambda cid: self._on_vehicle_disconnect(cid),
+            on_upload_files=lambda cfg: self._on_vehicle_upload(cfg),
+            on_start_vehicle=lambda cfg: self._on_vehicle_start(cfg),
+            on_stop_vehicle=lambda cid, ip, sq, sh: self._on_vehicle_stop(cid, ip, sq, sh),
+            on_test_connection=lambda ip: self._on_test_connection(ip),
+        )
+        
+        # Default config
+        default_config = VehicleConnectionConfig(
+            car_id=car_id,
+            ip=f"{self.config.deployment.default_ip_prefix}{100 + car_id}",
+            vehicle_type=self.config.deployment.default_vehicle_type,
+            initial_v_ref=self.config.deployment.default_velocity,
+        )
+        
+        panel = VehicleConnectionPanel(
+            self._deployment_scrollable.content,
+            car_id=car_id,
+            callbacks=callbacks,
+            default_config=default_config,
+            theme=self.theme
+        )
+        panel.pack(fill='x', pady=(0, 10))
+        self._deployment_panels[car_id] = panel
+        
+        self.log(f"Added deployment slot for Vehicle {car_id}", 'INFO')
+    
+    # ========== Deployment Callbacks ==========
+    
+    def _update_vehicle_connector_config(self) -> None:
+        """Update vehicle connector with current Ground Station settings."""
+        try:
+            gs_ip = self._gs_ip_entry.get().strip()
+            gs_port = int(self._gs_port_entry.get().strip())
+            self._vehicle_connector.set_ground_station_config(gs_ip, gs_port)
+        except (ValueError, AttributeError):
+            pass
+    
+    def _on_test_connection(self, ip: str) -> None:
+        """Handle test connection request."""
+        success, message = self._vehicle_connector.test_connection(ip)
+        self.log(f"Connection test to {ip}: {message}", 'SUCCESS' if success else 'ERROR')
+    
+    def _on_vehicle_connect(self, config: VehicleConnectionConfig) -> None:
+        """Handle vehicle connection request."""
+        self._update_vehicle_connector_config()
+        
+        success, message = self._vehicle_connector.connect(config.car_id, config.ip)
+        
+        # Update panel status (thread-safe)
+        if config.car_id in self._deployment_panels:
+            panel = self._deployment_panels[config.car_id]
+            panel.set_connected(success, message)
+    
+    def _on_vehicle_disconnect(self, car_id: int) -> None:
+        """Handle vehicle disconnection request."""
+        self._vehicle_connector.disconnect(car_id)
+        self.log(f"Vehicle {car_id}: Disconnected", 'INFO')
+    
+    def _on_vehicle_upload(self, config: VehicleConnectionConfig) -> None:
+        """Handle file upload request."""
+        self._update_vehicle_connector_config()
+        
+        # Update progress
+        if config.car_id in self._deployment_panels:
+            panel = self._deployment_panels[config.car_id]
+            panel.set_progress("Uploading files...")
+        
+        success, message = self._vehicle_connector.upload_files(config.car_id, config.ip)
+        
+        # Update panel status
+        if config.car_id in self._deployment_panels:
+            panel = self._deployment_panels[config.car_id]
+            panel.set_upload_complete(success, message)
+    
+    def _on_vehicle_start(self, config: VehicleConnectionConfig) -> None:
+        """Handle vehicle start request."""
+        self._update_vehicle_connector_config()
+        
+        success, message = self._vehicle_connector.start_vehicle(
+            car_id=config.car_id,
+            ip=config.ip,
+            vehicle_type=config.vehicle_type,
+            path_number=config.path_number,
+            calibrate=config.calibrate,
+            left_hand_traffic=config.left_hand_traffic,
+            initial_v_ref=config.initial_v_ref,
+            enable_logs=True
+        )
+        
+        # Update panel status
+        if config.car_id in self._deployment_panels:
+            panel = self._deployment_panels[config.car_id]
+            panel.set_vehicle_running(success, message)
+        
+        if success:
+            # Switch to Connected Vehicles tab after successful start
+            self.root.after(2000, lambda: self._notebook.select(0))
+    
+    def _on_vehicle_stop(self, car_id: int, ip: str, 
+                         stop_quarc: bool = True, 
+                         stop_hardware: bool = True) -> None:
+        """Handle vehicle stop request (enhanced - like stop_enhanced.bat)."""
+        self.log(f"Car {car_id}: Stopping (QUARC={stop_quarc}, Hardware={stop_hardware})...", 'INFO')
+        
+        success, message = self._vehicle_connector.stop_vehicle(
+            car_id, ip, 
+            stop_quarc=stop_quarc, 
+            stop_hardware=stop_hardware
+        )
+        
+        # Update panel status
+        if car_id in self._deployment_panels:
+            panel = self._deployment_panels[car_id]
+            panel.set_vehicle_running(False, message)
+            # Re-enable stop button
+            panel._stop_btn.config(state='normal')
+    
+    def _connect_all_vehicles(self) -> None:
+        """Connect to all vehicles in deployment panels."""
+        self._update_vehicle_connector_config()
+        self.log("Connecting to all vehicles...", 'INFO')
+        
+        for car_id, panel in self._deployment_panels.items():
+            config = panel._get_current_config()
+            if config.ip:
+                import threading
+                threading.Thread(
+                    target=self._on_vehicle_connect,
+                    args=(config,),
+                    daemon=True
+                ).start()
+    
+    def _upload_all_vehicles(self) -> None:
+        """Upload files to all connected vehicles."""
+        self.log("Uploading files to all connected vehicles...", 'INFO')
+        
+        for car_id, panel in self._deployment_panels.items():
+            if panel.is_connected:
+                config = panel._get_current_config()
+                import threading
+                threading.Thread(
+                    target=self._on_vehicle_upload,
+                    args=(config,),
+                    daemon=True
+                ).start()
+    
+    def _start_all_deployed_vehicles(self) -> None:
+        """Start all connected vehicles."""
+        self.log("Starting all connected vehicles...", 'INFO')
+        
+        for car_id, panel in self._deployment_panels.items():
+            if panel.is_connected:
+                config = panel._get_current_config()
+                import threading
+                threading.Thread(
+                    target=self._on_vehicle_start,
+                    args=(config,),
+                    daemon=True
+                ).start()
+    
+    def _stop_all_deployed_vehicles(self) -> None:
+        """Stop all running vehicles (with QUARC and hardware stopping)."""
+        self.log("Stopping all deployed vehicles...", 'INFO')
+        
+        for car_id, panel in self._deployment_panels.items():
+            if panel.is_running:
+                ip = panel.get_ip()
+                # Get stop options from panel checkboxes
+                stop_quarc = panel._stop_quarc_var.get() if hasattr(panel, '_stop_quarc_var') else True
+                stop_hardware = panel._stop_hardware_var.get() if hasattr(panel, '_stop_hardware_var') else True
+                import threading
+                threading.Thread(
+                    target=self._on_vehicle_stop,
+                    args=(car_id, ip, stop_quarc, stop_hardware),
+                    daemon=True
+                ).start()
+
     def _show_waiting_message(self) -> None:
         """Show waiting for vehicles message."""
         if self._scrollable:
@@ -192,6 +487,271 @@ class QCarFleetController:
         """Start the remote controller server."""
         self._remote.start_server(self.config.gui.default_num_cars)
         self.log(f"Server started on {self.config.network.host_ip}:{self.config.network.base_port}", 'SUCCESS')
+    
+    # ========== Deployment Tab Methods ==========
+    
+    def _build_deployment_tab(self, parent: tk.Frame) -> None:
+        """Build the vehicle deployment tab content."""
+        from .widgets.base import ThemedButton, ThemedLabelFrame
+        
+        c = self.theme.colors
+        
+        # Master controls frame
+        master_frame = ThemedLabelFrame(
+            parent,
+            text="🎛️ Deployment Controls",
+            theme=self.theme
+        )
+        master_frame.pack(fill='x', padx=10, pady=10)
+        
+        master_content = tk.Frame(master_frame, bg=c.bg_medium)
+        master_content.pack(fill='x', padx=8, pady=8)
+        
+        # Info row
+        info_row = tk.Frame(master_content, bg=c.bg_medium)
+        info_row.pack(fill='x', pady=(0, 5))
+        
+        self._deployment_count_label = tk.Label(
+            info_row,
+            text=f"Vehicles: {self.config.gui.default_num_cars}",
+            bg=c.bg_medium,
+            fg=c.fg_primary,
+            font=self.theme.fonts.body()
+        )
+        self._deployment_count_label.pack(side='left', padx=(0, 20))
+        
+        ThemedButton(
+            info_row,
+            text="➕ Add Vehicle",
+            button_type='command',
+            command=self._add_deployment_vehicle,
+            padx=10,
+            pady=3
+        ).pack(side='left', padx=(0, 5))
+        
+        ThemedButton(
+            info_row,
+            text="➖ Remove Last",
+            button_type='warning',
+            command=self._remove_deployment_vehicle,
+            padx=10,
+            pady=3
+        ).pack(side='left')
+        
+        # Batch operation buttons
+        batch_row = tk.Frame(master_content, bg=c.bg_medium)
+        batch_row.pack(fill='x', pady=(5, 0))
+        
+        ThemedButton(
+            batch_row,
+            text="🔌 Connect All",
+            button_type='command',
+            command=self._connect_all_vehicles,
+            padx=12,
+            pady=4
+        ).pack(side='left', expand=True, fill='x', padx=(0, 3))
+        
+        ThemedButton(
+            batch_row,
+            text="📤 Upload All",
+            button_type='warning',
+            command=self._upload_all_vehicles,
+            padx=12,
+            pady=4
+        ).pack(side='left', expand=True, fill='x', padx=3)
+        
+        ThemedButton(
+            batch_row,
+            text="▶️ Start All",
+            button_type='start',
+            command=self._start_all_deployed_vehicles,
+            padx=12,
+            pady=4
+        ).pack(side='left', expand=True, fill='x', padx=3)
+        
+        ThemedButton(
+            batch_row,
+            text="⬛ Stop All",
+            button_type='stop',
+            command=self._stop_all_deployed_vehicles,
+            padx=12,
+            pady=4
+        ).pack(side='left', expand=True, fill='x', padx=(3, 0))
+        
+        # Scrollable area for vehicle connection panels
+        self._deployment_scrollable = ScrollableFrame(parent, theme=self.theme)
+        self._deployment_scrollable.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        
+        # Create initial vehicle connection panels
+        for i in range(self.config.gui.default_num_cars):
+            self._add_deployment_panel(i)
+    
+    def _add_deployment_panel(self, car_id: int) -> None:
+        """Add a vehicle deployment panel."""
+        callbacks = ConnectionCallbacks(
+            on_connect=lambda cfg: self._on_vehicle_connect(cfg),
+            on_disconnect=lambda cid: self._on_vehicle_disconnect(cid),
+            on_upload_files=lambda cfg: self._on_vehicle_upload(cfg),
+            on_start_vehicle=lambda cfg: self._on_vehicle_start(cfg),
+            on_stop_vehicle=lambda cid, ip, sq, sh: self._on_vehicle_stop(cid, ip, sq, sh),
+            on_test_connection=lambda ip: self._on_test_connection(ip, car_id),
+        )
+        
+        # Default config with IP
+        default_config = VehicleConnectionConfig(
+            car_id=car_id,
+            ip=f"{self.config.deployment.default_ip_prefix}{100 + car_id}",
+            vehicle_type=self.config.deployment.default_vehicle_type,
+            initial_v_ref=self.config.deployment.default_velocity,
+        )
+        
+        panel = VehicleConnectionPanel(
+            self._deployment_scrollable.content,
+            car_id=car_id,
+            callbacks=callbacks,
+            default_config=default_config,
+            theme=self.theme
+        )
+        panel.pack(fill='x', pady=(0, 10))
+        self._deployment_panels[car_id] = panel
+    
+    def _add_deployment_vehicle(self) -> None:
+        """Add a new vehicle deployment slot."""
+        new_id = len(self._deployment_panels)
+        self._add_deployment_panel(new_id)
+        self._update_deployment_count()
+        self.log(f"Added Vehicle {new_id} deployment slot", 'INFO')
+    
+    def _remove_deployment_vehicle(self) -> None:
+        """Remove the last vehicle deployment slot."""
+        if len(self._deployment_panels) > 1:
+            last_id = len(self._deployment_panels) - 1
+            if last_id in self._deployment_panels:
+                self._deployment_panels[last_id].destroy()
+                del self._deployment_panels[last_id]
+            self._update_deployment_count()
+            self.log(f"Removed Vehicle {last_id} deployment slot", 'INFO')
+    
+    def _update_deployment_count(self) -> None:
+        """Update the deployment count label."""
+        if hasattr(self, '_deployment_count_label'):
+            self._deployment_count_label.config(text=f"Vehicles: {len(self._deployment_panels)}")
+    
+    # ========== Vehicle Connection Callbacks ==========
+    
+    def _on_test_connection(self, ip: str, car_id: int) -> None:
+        """Handle test connection request."""
+        success, message = self._vehicle_connector.test_connection(ip)
+        
+        panel = self._deployment_panels.get(car_id)
+        if panel:
+            panel.set_connected(success, message)
+    
+    def _on_vehicle_connect(self, config: VehicleConnectionConfig) -> None:
+        """Handle vehicle connect request."""
+        success, message = self._vehicle_connector.connect(config.car_id, config.ip)
+        
+        panel = self._deployment_panels.get(config.car_id)
+        if panel:
+            panel.set_connected(success, message)
+    
+    def _on_vehicle_disconnect(self, car_id: int) -> None:
+        """Handle vehicle disconnect request."""
+        self._vehicle_connector.disconnect(car_id)
+        
+        panel = self._deployment_panels.get(car_id)
+        if panel:
+            panel.set_connected(False, "Disconnected")
+    
+    def _on_vehicle_upload(self, config: VehicleConnectionConfig) -> None:
+        """Handle file upload request."""
+        # Set progress callback
+        panel = self._deployment_panels.get(config.car_id)
+        if panel:
+            self._vehicle_connector.progress_callback = panel.set_progress
+        
+        success, message = self._vehicle_connector.upload_files(config.car_id, config.ip)
+        
+        if panel:
+            panel.set_upload_complete(success, message)
+            self._vehicle_connector.progress_callback = None
+    
+    def _on_vehicle_start(self, config: VehicleConnectionConfig) -> None:
+        """Handle vehicle start request."""
+        panel = self._deployment_panels.get(config.car_id)
+        if panel:
+            self._vehicle_connector.progress_callback = panel.set_progress
+        
+        success, message = self._vehicle_connector.start_vehicle(
+            car_id=config.car_id,
+            ip=config.ip,
+            vehicle_type=config.vehicle_type,
+            path_number=config.path_number,
+            calibrate=config.calibrate,
+            left_hand_traffic=config.left_hand_traffic,
+            initial_v_ref=config.initial_v_ref,
+            enable_logs=True
+        )
+        
+        if panel:
+            panel.set_vehicle_running(success, message)
+            self._vehicle_connector.progress_callback = None
+        
+        if success:
+            # Switch to Connected Vehicles tab after starting
+            self.log(f"Vehicle {config.car_id} started - waiting for connection...", 'INFO')
+    
+    def _on_vehicle_stop(self, car_id: int, ip: str,
+                         stop_quarc: bool = True,
+                         stop_hardware: bool = True) -> None:
+        """Handle vehicle stop request (enhanced with QUARC/hardware options)."""
+        self.log(f"Car {car_id}: Stopping (QUARC={stop_quarc}, Hardware={stop_hardware})...", 'INFO')
+        
+        success, message = self._vehicle_connector.stop_vehicle(
+            car_id, ip,
+            stop_quarc=stop_quarc,
+            stop_hardware=stop_hardware
+        )
+        
+        panel = self._deployment_panels.get(car_id)
+        if panel:
+            panel.set_vehicle_running(False, message if success else "Stop command sent")
+            panel._stop_btn.config(state='normal')
+    
+    # ========== Batch Deployment Operations ==========
+    
+    def _connect_all_vehicles(self) -> None:
+        """Connect to all vehicles."""
+        self.log("🔌 Connecting to all vehicles...", 'INFO')
+        
+        for car_id, panel in self._deployment_panels.items():
+            config = panel._get_current_config()
+            if config.ip:
+                panel._on_connect()
+    
+    def _upload_all_vehicles(self) -> None:
+        """Upload files to all connected vehicles."""
+        self.log("📤 Uploading files to all connected vehicles...", 'INFO')
+        
+        for car_id, panel in self._deployment_panels.items():
+            if panel.is_connected:
+                panel._on_upload()
+    
+    def _start_all_deployed_vehicles(self) -> None:
+        """Start all connected vehicles."""
+        self.log("▶️ Starting all deployed vehicles...", 'INFO')
+        
+        for car_id, panel in self._deployment_panels.items():
+            if panel.is_connected and not panel.is_running:
+                panel._on_start()
+    
+    def _stop_all_deployed_vehicles(self) -> None:
+        """Stop all running vehicles."""
+        self.log("⬛ Stopping all deployed vehicles...", 'INFO')
+        
+        for car_id, panel in self._deployment_panels.items():
+            if panel.is_running:
+                panel._on_stop()
         self.log(f"Waiting for {self.config.gui.default_num_cars} cars to connect...", 'INFO')
     
     def _start_update_loop(self) -> None:
@@ -1043,6 +1603,10 @@ class QCarFleetController:
         
         # Cleanup input controller
         self._input.cleanup()
+        
+        # Cleanup vehicle connector
+        if self._vehicle_connector:
+            self._vehicle_connector.cleanup()
         
         # Close remote controller
         self._remote.close()

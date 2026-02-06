@@ -653,8 +653,8 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
     
     # Configure figure based on plot type
     if plot_type == 'all':
-        fig = plt.figure(figsize=(16, 12))
-        gs = fig.add_gridspec(4, 3, hspace=0.35, wspace=0.3)
+        fig = plt.figure(figsize=(16, 18))
+        gs = fig.add_gridspec(6, 3, hspace=0.4, wspace=0.3)
     elif plot_type == 'trajectory':
         fig = plt.figure(figsize=(10, 8))
         gs = fig.add_gridspec(1, 1)
@@ -665,8 +665,8 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         fig = plt.figure(figsize=(12, 6))
         gs = fig.add_gridspec(1, 2, wspace=0.3)
     elif plot_type == 'debug':
-        fig = plt.figure(figsize=(16, 10)) # larger for 2 layer debug
-        gs = fig.add_gridspec(2, 3, hspace=0.35, wspace=0.3)
+        fig = plt.figure(figsize=(16, 12)) # larger for 2 layer debug with tire forces
+        gs = fig.add_gridspec(3, 3, hspace=0.35, wspace=0.3)
     elif plot_type == 'acceleration':
         fig = plt.figure(figsize=(12, 6))
         gs = fig.add_gridspec(1, 2, wspace=0.3)
@@ -825,20 +825,16 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
             ax.set_title('General Disturbance Estimates (NN vs True)')
         else:
             # 2D Tire Residuals (Legacy)
-            if 'w_r_true' in data and np.any(data['w_r_true']):
-                ax.plot(time, data['w_r_true'], 'b-', label='$w_r$ (True)', linewidth=1.5)
-            if 'w_f_true' in data and np.any(data['w_f_true']):
-                ax.plot(time, data['w_f_true'], 'g-', label='$w_f$ (True)', linewidth=1.5)
-            
+            if 'w_r_true' in data :
+                ax.plot(time, data['w_r_true'], 'b-', label='$w_r$ (True)', linewidth=1.5 , alpha=0.9)
+                ax.plot(time, data['w_f_true'], 'g-', label='$w_f$ (True)', linewidth=1.5 , alpha=0.9)
+
             if 'w_r_uio' in data:
-                ax.plot(time, data.get('w_r_uio', []), 'b-', label='$w_r$ (1st)', linewidth=2, alpha=0.75)
-                ax.plot(time, data.get('w_f_uio', []), 'g-', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
-                
-                ax.plot(time, data.get('w_f_uio', []), 'g-', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
-                
-                ax.plot(time, data.get('w_f_uio', []), 'g-', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
+                ax.plot(time, data.get('w_r_uio', []), 'b--', label='$w_r$ (1st)', linewidth=2, alpha=0.75)
+                ax.plot(time, data.get('w_f_uio', []), 'g--', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
                 
             ax.plot(time, data.get('w_r_nn', []), 'b.', label='$w_r$ (NN)', markersize=3)
+            ax.plot(time, data.get('w_f_nn', []), 'r.', label='$w_f$ (NN)', markersize=3)
 
             ax.legend(loc='upper right', fontsize=8)
 
@@ -866,7 +862,6 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
             axes.append(ax)
 
 
-
     # 8. Control Inputs (Simplified: no twin axis)
     if is_active(['debug']):
         pos = gs[2, 1] if plot_type == 'all' else gs[0, 1]
@@ -878,9 +873,96 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         ax.grid(True, alpha=0.3)
         axes.append(ax)
 
+    # NEW: Tire Force Comparison Plots (Only in debug view and tire mode)
+    if is_active(['debug']) and 'Fyr_layer_1' in data:
+        # Check if we have layer data
+        has_layer_1 = 'Fyr_layer_1' in data and np.any(data['Fyr_layer_1'])
+        has_layer_2 = 'Fyr_layer_2' in data and np.any(data['Fyr_layer_2'])
+        has_true = 'Fyr_true' in data and np.any(data['Fyr_true'])
+        
+        if has_layer_1 or has_layer_2 or has_true:
+            # Determine grid positions based on plot type
+            if plot_type == 'all':
+                # In 'all' view, use dedicated new rows (4 and 5) to avoid overlay
+                pos_fyr = gs[4, 0]
+                pos_fyf = gs[4, 1]  
+                pos_alpha_r = gs[5, 0]
+                pos_alpha_f = gs[5, 1] 
+            else:
+                # In debug-only view, use the pairing layout
+                # Row 0: Tire residuals, Control inputs, Loss
+                # Row 1: Front Axle (Fyf, alpha_f)
+                # Row 2: Rear Axle (Fyr, alpha_r)
+                pos_fyf = gs[1, 0]
+                pos_alpha_f = gs[1, 1]
+                pos_fyr = gs[2, 0]
+                pos_alpha_r = gs[2, 1]
+            
+            # Plot 1: Rear Lateral Force (Fyr)
+            ax_fyr = fig.add_subplot(pos_fyr)
+            if has_true:
+                ax_fyr.plot(time, data['Fyr_true'], 'r-', label='True', linewidth=1.5, alpha=0.8)
+            if has_layer_1:
+                ax_fyr.plot(time, data['Fyr_layer_1'], 'c--', label='Layer 1', linewidth=1.5, alpha=0.7)
+            if has_layer_2:
+                ax_fyr.plot(time, data['Fyr_layer_2'], 'b.', label='Layer 2', markersize=2)
+            ax_fyr.set_ylabel('$F_{yr}$ [N]')
+            ax_fyr.set_title('Rear Lateral Force')
+            ax_fyr.legend(loc='best', fontsize=7)
+            ax_fyr.grid(True, alpha=0.3)
+            axes.append(ax_fyr)
+            
+            # Plot 2: Front Lateral Force (Fyf)
+            ax_fyf = fig.add_subplot(pos_fyf)
+            if has_true:
+                ax_fyf.plot(time, data['Fyf_true'], 'r-', label='True', linewidth=1.5, alpha=0.8)
+            if has_layer_1:
+                ax_fyf.plot(time, data['Fyf_layer_1'], 'c--', label='Layer 1', linewidth=1.5, alpha=0.7)
+            if has_layer_2:
+                ax_fyf.plot(time, data['Fyf_layer_2'], 'b.', label='Layer 2', markersize=2)
+            ax_fyf.set_ylabel('$F_{yf}$ [N]')
+            ax_fyf.set_title('Front Lateral Force')
+            ax_fyf.legend(loc='best', fontsize=7)
+            ax_fyf.grid(True, alpha=0.3)
+            axes.append(ax_fyf)
+            
+            # Plot 3: Rear Slip Angle (alpha_r)
+            ax_alpha_r = fig.add_subplot(pos_alpha_r)
+            if has_true and 'alpha_r' in data:
+                ax_alpha_r.plot(time, np.rad2deg(data['alpha_r']), 'r-', label='True', linewidth=1.5, alpha=0.8)
+            if has_layer_1 and 'alpha_r_layer_1' in data:
+                ax_alpha_r.plot(time, np.rad2deg(data['alpha_r_layer_1']), 'c--', label='Layer 1', linewidth=1.5, alpha=0.7)
+            if has_layer_2 and 'alpha_r_layer_2' in data:
+                ax_alpha_r.plot(time, np.rad2deg(data['alpha_r_layer_2']), 'b.', label='Layer 2', markersize=2)
+            ax_alpha_r.set_ylabel(r'$\alpha_r$ [deg]')
+            ax_alpha_r.set_title('Rear Slip Angle')
+            ax_alpha_r.legend(loc='best', fontsize=7)
+            ax_alpha_r.grid(True, alpha=0.3)
+            axes.append(ax_alpha_r)
+            
+            # Plot 4: Front Slip Angle (alpha_f)
+            ax_alpha_f = fig.add_subplot(pos_alpha_f)
+            if has_true and 'alpha_f' in data:
+                ax_alpha_f.plot(time, np.rad2deg(data['alpha_f']), 'r-', label='True', linewidth=1.5, alpha=0.8)
+            if has_layer_1 and 'alpha_f_layer_1' in data:
+                ax_alpha_f.plot(time, np.rad2deg(data['alpha_f_layer_1']), 'c--', label='Layer 1', linewidth=1.5, alpha=0.7)
+            if has_layer_2 and 'alpha_f_layer_2' in data:
+                ax_alpha_f.plot(time, np.rad2deg(data['alpha_f_layer_2']), 'b.', label='Layer 2', markersize=2)
+            ax_alpha_f.set_ylabel(r'$\alpha_f$ [deg]')
+            ax_alpha_f.set_title('Front Slip Angle')
+            ax_alpha_f.legend(loc='best', fontsize=7)
+            ax_alpha_f.grid(True, alpha=0.3)
+            axes.append(ax_alpha_f)
+
+
     # 9. Training Loss
     if is_active(['debug']):
-        pos = gs[2, 2] if plot_type == 'all' else gs[1, 0]
+        if plot_type == 'debug':
+            pos = gs[0, 2]
+        elif plot_type == 'all':
+            pos = gs[2, 2]
+        else:
+            pos = gs[1, 0]
         ax = fig.add_subplot(pos)
         loss = data.get('loss', [])
         if len(loss) > 0:

@@ -2,7 +2,7 @@
 # Default parameters for the local state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-local_estimator_type: neural_luenberger
+local_estimator_type: ekf
 
 # Plotting configuration
 enable_plotting: false # enable_plotting: Controls real-time visualization.

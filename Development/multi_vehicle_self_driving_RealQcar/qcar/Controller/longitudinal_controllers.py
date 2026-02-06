@@ -4,6 +4,7 @@ Longitudinal Controllers for Vehicle Following
 Provides different longitudinal control strategies with a common interface.
 Easy to switch between different controllers.
 """
+import math
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
@@ -142,8 +143,6 @@ class PIDVelocityController(LongitudinalControllerBase):
         self.prev_e = None
         self.last_error = 0.0
         
-        # if self.logger:
-        #     self.logger.log_control_event("speed_controller_reset", {})
 
 
 class CACCLongitudinalController(LongitudinalControllerBase):
@@ -492,48 +491,6 @@ class SA_ACCController(LongitudinalControllerBase):
         pass
 
 
-class HybridController(LongitudinalControllerBase):
-    """
-    Hybrid controller that switches between CACC and PI
-    """
-    
-    def __init__(self, cacc_params=None, pid_params=None, config=None, logger=None):
-        self.logger = logger
-        if config:
-            if hasattr(config, 'get_longitudinal_params'):
-                hybrid_params = config.get_longitudinal_params('hybrid')
-                cacc_params = hybrid_params.get('cacc_params', cacc_params or {})
-                pid_params = hybrid_params.get('pid_params', pid_params or {})
-        else:
-            cacc_params = cacc_params or {}
-            pid_params = pid_params or {}
-        
-        self.cacc = CACCLongitudinalController(config=config, logger=logger, **cacc_params)
-        self.pi = PIDVelocityController(config=config, logger=logger, **pid_params)
-        self.last_mode = "unknown"
-        
-    def compute_throttle(self, follower_state: Dict[str, float], 
-                        leader_state: Optional[Dict[str, float]], 
-                        dt: float) -> float:
-        if leader_state is not None:
-            if self.last_mode != "cacc":
-                self.last_mode = "cacc"
-                if self.logger:
-                    self.logger.info("[HYBRID] Switching to CACC mode")
-            return self.cacc.compute_throttle(follower_state, leader_state, dt)
-        else:
-            if self.last_mode != "pi":
-                self.last_mode = "pi"
-                if self.logger:
-                    self.logger.info("[HYBRID] Switching to PI mode")
-            return self.pi.compute_throttle(follower_state, leader_state, dt)
-    
-    def reset(self):
-        self.cacc.reset()
-        self.pi.reset()
-        self.last_mode = "unknown"
-
-
 class FixConstantController(LongitudinalControllerBase):
     def __init__(self, throttle: float, config=None, logger=None):
         self.throttle = throttle
@@ -552,6 +509,7 @@ class ControllerFactory:
         'cacc': CACCLongitudinalController,
         'sa_acc': SA_ACCController,
         'fix': FixConstantController,
+        # MPC will be added dynamically when mpc_wrappers is imported
     }
     
     @staticmethod
@@ -560,7 +518,7 @@ class ControllerFactory:
         Create a longitudinal controller
         
         Args:
-            controller_type: One of 'pid', 'cacc', 'hybrid'
+            controller_type: One of 'pid', 'cacc', 'sa_acc', 'fix', 'mpc'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
             
@@ -568,6 +526,14 @@ class ControllerFactory:
             Longitudinal controller instance
         """
         params = params or {}
+        
+        # Lazy import MPC if requested but not yet registered
+        if controller_type == 'mpc' and 'mpc' not in ControllerFactory.CONTROLLER_TYPES:
+            try:
+                from .mpc_wrappers import MPCLongitudinalWrapper
+                ControllerFactory.CONTROLLER_TYPES['mpc'] = MPCLongitudinalWrapper
+            except ImportError:
+                raise ValueError("MPC controller requires casadi. Install with: pip install casadi")
         
         if controller_type not in ControllerFactory.CONTROLLER_TYPES:
             raise ValueError(

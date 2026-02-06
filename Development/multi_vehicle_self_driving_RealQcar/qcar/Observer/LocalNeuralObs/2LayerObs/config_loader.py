@@ -83,6 +83,7 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     flat['hidden_dim'] = nn.get('hidden_dim', 24)
     flat['output_dim'] = nn.get('output_dim', 2)
     flat['use_acceleration'] = nn.get('use_acceleration', False)
+    flat['disturbance_mode'] = nn.get('disturbance_mode', 'tire')
     
     # Learning parameters
     learn = config.get('learning', {})
