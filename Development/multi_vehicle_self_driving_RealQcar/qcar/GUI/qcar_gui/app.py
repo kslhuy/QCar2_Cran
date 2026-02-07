@@ -1125,7 +1125,10 @@ class QCarFleetController:
         
         try:
             # Path to multi_probing.py
-            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            # app.py is at qcar/GUI/qcar_gui/app.py
+            # multi_probing.py is at python/multi_probing.py (under multi_vehicle_self_driving_RealQcar)
+            # So we need to go up 3 levels: qcar_gui -> GUI -> qcar -> multi_vehicle_self_driving_RealQcar
+            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
             probing_script = os.path.join(base_path, 'python', 'multi_probing.py')
             
             if not os.path.exists(probing_script):

@@ -63,22 +63,25 @@ class CasADiMPCController(MPCControllerBase):
                  horizon: int = 10,
                  dt_mpc: float = 0.05,
                  
-                 # Cost weights
-                 Q_pos: float = 10.0,      # Position tracking weight
-                 Q_heading: float = 50.0,  # Heading tracking weight  
-                 Q_vel: float = 5.0,       # Velocity tracking weight
-                 R_delta: float = 100.0,   # Steering input weight
-                 R_acc: float = 10.0,      # Acceleration input weight
-                 R_delta_rate: float = 200.0,  # Steering rate weight
-                 R_acc_rate: float = 50.0,     # Acceleration rate weight
+                 # Cost weights - Q (tracking) >> R (input) to prevent corner cutting
+                 Q_pos: float = 500.0,     # Position tracking (high = tight path following)
+                 Q_heading: float = 300.0,  # Heading tracking (high = align with path)  
+                 Q_vel: float = 10.0,      # Velocity tracking
+                 R_delta: float = 1.0,     # Steering penalty (low = allow steering freely)
+                 R_acc: float = 1.0,       # Acceleration penalty
+                 R_delta_rate: float = 3.0,    # Steering rate penalty (low = responsive)
+                 R_acc_rate: float = 3.0,      # Acceleration rate penalty
                  
                  # Terminal cost weights (typically higher for stability)
-                 Qf_pos: float = 20.0,
-                 Qf_heading: float = 100.0,
+                 Qf_pos: float = 500.0,
+                 Qf_heading: float = 500.0,
                  Qf_vel: float = 10.0,
                  
-                 # Constraints (some derived from vehicle params if not explicit)
-                 max_steering_rate: float = 0.5,   # Max steering rate (rad/s)
+                 # Constraints
+                 max_steering_rate: float = 3.0,   # Max steering rate (rad/s)
+                 
+                 # Path following tuning
+                 path_lookahead_scale: float = 0.4, # Compress ref lookahead (0.3=tight like Stanley, 1.0=full)
                  
                  # Following parameters
                  desired_spacing: float = 0.5,     # Desired following distance (m)
@@ -159,6 +162,7 @@ class CasADiMPCController(MPCControllerBase):
             self.Qf_heading = mpc_cfg.get('Qf_heading', Qf_heading)
             self.Qf_vel = mpc_cfg.get('Qf_vel', Qf_vel)
             self.max_steering_rate = mpc_cfg.get('max_steering_rate', max_steering_rate)
+            self.path_lookahead_scale = mpc_cfg.get('path_lookahead_scale', path_lookahead_scale)
             self.desired_spacing = mpc_cfg.get('desired_spacing', desired_spacing)
             self.time_headway = mpc_cfg.get('time_headway', time_headway)
         else:
@@ -175,6 +179,7 @@ class CasADiMPCController(MPCControllerBase):
             self.Qf_heading = Qf_heading
             self.Qf_vel = Qf_vel
             self.max_steering_rate = max_steering_rate
+            self.path_lookahead_scale = path_lookahead_scale
             self.desired_spacing = desired_spacing
             self.time_headway = time_headway
         
@@ -191,6 +196,13 @@ class CasADiMPCController(MPCControllerBase):
         
         # Warm start solution
         self.prev_solution = None
+        
+        # Waypoint path following support
+        # Waypoints shape: [2, N] (row 0 = x, row 1 = y), same as StanleyController
+        self.waypoints = None
+        self.n_waypoints = 0
+        self.wpi = 0  # Current waypoint index (like Stanley's wpi)
+        self.cyclic = True  # Loop around waypoints
         
         # Build the MPC solver
         self._build_solver()
@@ -254,6 +266,9 @@ class CasADiMPCController(MPCControllerBase):
         g.append(X[:, 0] - x0)
         
         # Build cost and constraints over horizon
+        # KEY: Decaying position weight — step k=0 gets full Q_pos, later steps
+        # get less. This makes MPC prioritize being ON the path NOW (like Stanley)
+        # rather than optimally smoothing through future curves (corner cutting).
         for k in range(self.N):
             # Extract reference for this step
             ref_idx = self.nx + k * self.nx
@@ -262,10 +277,15 @@ class CasADiMPCController(MPCControllerBase):
             # State error
             state_error = X[:, k] - ref_k
             
-            # Stage cost
-            cost += self.Q_pos * (state_error[0]**2 + state_error[1]**2)  # Position
-            cost += self.Q_heading * state_error[2]**2  # Heading
-            cost += self.Q_vel * state_error[3]**2  # Velocity
+            # Exponentially decaying position weight: step 0 = full, step N = ~30%
+            decay = 0.92 ** k  # e.g. k=0→1.0, k=5→0.66, k=10→0.43, k=15→0.29
+            
+            # Stage cost with decaying position weight
+            cost += self.Q_pos * decay * (state_error[0]**2 + state_error[1]**2)
+            # Heading: use (1 - cos(dpsi))^2 + sin(dpsi)^2 to handle wrapping
+            dpsi = X[2, k] - ref_k[2]
+            cost += self.Q_heading * decay * ((1 - ca.cos(dpsi))**2 + ca.sin(dpsi)**2)
+            cost += self.Q_vel * state_error[3]**2  # Velocity (no decay)
             
             # Input cost
             cost += self.R_delta * U[0, k]**2
@@ -292,7 +312,9 @@ class CasADiMPCController(MPCControllerBase):
         ref_terminal = P[self.nx + self.N * self.nx:self.nx + (self.N + 1) * self.nx]
         terminal_error = X[:, self.N] - ref_terminal
         cost += self.Qf_pos * (terminal_error[0]**2 + terminal_error[1]**2)
-        cost += self.Qf_heading * terminal_error[2]**2
+        # Terminal heading: same wrapping-safe formulation
+        dpsi_f = X[2, self.N] - ref_terminal[2]
+        cost += self.Qf_heading * ((1 - ca.cos(dpsi_f))**2 + ca.sin(dpsi_f)**2)
         cost += self.Qf_vel * terminal_error[3]**2
         
         # Flatten decision variables
@@ -366,6 +388,186 @@ class CasADiMPCController(MPCControllerBase):
         self.lbg = np.zeros(n_constraints)
         self.ubg = np.zeros(n_constraints)
         
+    # ======================== Waypoint Management ========================
+    
+    def set_waypoints(self, waypoints: np.ndarray, cyclic: bool = True):
+        """
+        Set waypoints for path following mode.
+        
+        Waypoints format matches StanleyController: shape [2, N]
+        Row 0 = x coordinates, Row 1 = y coordinates.
+        
+        Args:
+            waypoints: np.ndarray of shape [2, N]
+            cyclic: Whether to loop around when reaching the end
+        """
+        self.waypoints = waypoints
+        self.n_waypoints = waypoints.shape[1] if waypoints is not None else 0
+        self.cyclic = cyclic
+        self.wpi = 0
+        
+        if self.logger:
+            self.logger.info(f"[MPC] Waypoints set: {self.n_waypoints} points, cyclic={cyclic}")
+    
+    def get_waypoint_index(self) -> int:
+        """Get current waypoint index (same interface as StanleyController)."""
+        return self.wpi
+    
+    def _find_closest_waypoint(self, x: float, y: float):
+        """
+        Advance waypoint index using LOCAL forward-walk (like Stanley).
+        
+        NEVER does global search — that causes path-cutting on oval/loop paths
+        where a distant part of the path is geometrically close.
+        
+        Strategy: Walk forward from current wpi, advancing when we pass
+        each segment. Checks multiple segments ahead to handle fast movement.
+        Same logic as StanleyController.update() but checks a few more steps.
+        """
+        if self.waypoints is None or self.n_waypoints < 2:
+            return
+        
+        p = np.array([x, y])
+        
+        # Forward-walk from current wpi (like Stanley, but check more segments)
+        # At ~0.7 m/s with ~3ms waypoint spacing, we move ~5 waypoints per MPC call
+        max_advance = 15  # Check up to 15 segments ahead
+        
+        for _ in range(max_advance):
+            idx = self.wpi % (self.n_waypoints - 1) if self.cyclic else min(self.wpi, self.n_waypoints - 2)
+            wp_1 = self.waypoints[:, idx]
+            wp_2 = self.waypoints[:, (idx + 1) % self.n_waypoints]
+            
+            v = wp_2 - wp_1
+            v_mag = np.linalg.norm(v)
+            if v_mag < 1e-6:
+                # Zero-length segment, skip it
+                if self.cyclic or self.wpi < self.n_waypoints - 2:
+                    self.wpi += 1
+                else:
+                    break
+                continue
+            
+            v_uv = v / v_mag
+            s = np.dot(p - wp_1, v_uv)
+            
+            # Only advance if we've PASSED this segment
+            if s >= v_mag:
+                if self.cyclic or self.wpi < self.n_waypoints - 2:
+                    self.wpi += 1
+                else:
+                    break
+            else:
+                break
+        
+        # Handle cyclic wrap-around
+        if self.cyclic and self.wpi >= self.n_waypoints - 1:
+            self.wpi = self.wpi % (self.n_waypoints - 1)
+    
+    def _get_waypoint_reference(self, x: float, y: float, 
+                                 target_velocity: float) -> np.ndarray:
+        """
+        Generate MPC reference trajectory from waypoints.
+        
+        Like Stanley, projects position onto the current segment to get the
+        closest point on path. The first reference point IS that closest point
+        (giving MPC a "come back to path" target, like Stanley's cross-track error).
+        Then walks forward along waypoints, spacing reference points by
+        (target_velocity * dt_mpc) meters.
+        
+        Args:
+            x, y: Current vehicle position
+            target_velocity: Desired speed along the path
+            
+        Returns:
+            Reference trajectory [N+1, 4] with [x_ref, y_ref, psi_ref, v_ref]
+        """
+        ref = np.zeros((self.N + 1, self.nx))
+        
+        # Update closest waypoint (forward-walk only, never jumps)
+        self._find_closest_waypoint(x, y)
+        
+        # Step size along the path per MPC time step
+        # path_lookahead_scale < 1.0 compresses the lookahead: reference points
+        # stay closer to the vehicle, so MPC sees less of upcoming curves
+        # and doesn't try to cut corners. 0.4 = reference covers 40% of the
+        # distance the vehicle actually travels per horizon step.
+        step_dist = max(target_velocity, 0.1) * self.dt * self.path_lookahead_scale
+        
+        # Start walking from current segment
+        wi = self.wpi % (self.n_waypoints - 1) if self.cyclic else min(self.wpi, self.n_waypoints - 2)
+        wp_1 = self.waypoints[:, wi].copy()
+        wp_2 = self.waypoints[:, (wi + 1) % self.n_waypoints].copy()
+        
+        seg_vec = wp_2 - wp_1
+        seg_len = np.linalg.norm(seg_vec)
+        if seg_len < 1e-6:
+            seg_dir = np.array([np.cos(0.0), np.sin(0.0)])
+            seg_len = 1e-6
+        else:
+            seg_dir = seg_vec / seg_len
+        
+        # Project current position onto segment (like Stanley does)
+        p = np.array([x, y])
+        s_on_seg = np.dot(p - wp_1, seg_dir)
+        s_on_seg = np.clip(s_on_seg, 0.0, seg_len)
+        
+        # ref[0] = closest point on path (perpendicular projection)
+        # This is KEY: it tells MPC "go to this point on the path first"
+        # Same effect as Stanley's cross-track error
+        closest_on_path = wp_1 + seg_dir * s_on_seg
+        ref_heading = np.arctan2(seg_dir[1], seg_dir[0])
+        
+        ref[0, 0] = closest_on_path[0]
+        ref[0, 1] = closest_on_path[1]
+        ref[0, 2] = ref_heading
+        ref[0, 3] = target_velocity
+        
+        # ref[1..N] = lookahead points along the path
+        for k in range(1, self.N + 1):
+            # Advance along path by step_dist
+            s_on_seg += step_dist
+            
+            # Walk to next segments as needed
+            while s_on_seg > seg_len:
+                s_on_seg -= seg_len
+                wi += 1
+                
+                if wi >= self.n_waypoints - 1:
+                    if self.cyclic:
+                        wi = 0
+                    else:
+                        # Clamp to last waypoint, set velocity=0 (stop)
+                        ref_point = self.waypoints[:, -1]
+                        for kk in range(k, self.N + 1):
+                            ref[kk, 0] = ref_point[0]
+                            ref[kk, 1] = ref_point[1]
+                            ref[kk, 2] = ref_heading
+                            ref[kk, 3] = 0.0
+                        return ref
+                
+                wp_1 = self.waypoints[:, wi].copy()
+                wp_2 = self.waypoints[:, (wi + 1) % self.n_waypoints].copy()
+                seg_vec = wp_2 - wp_1
+                seg_len = np.linalg.norm(seg_vec)
+                if seg_len < 1e-6:
+                    seg_len = 1e-6
+                else:
+                    seg_dir = seg_vec / seg_len
+            
+            # Compute reference point on this segment
+            ref_point = wp_1 + seg_dir * s_on_seg
+            ref_heading = np.arctan2(seg_dir[1], seg_dir[0])
+            
+            ref[k, 0] = ref_point[0]
+            ref[k, 1] = ref_point[1]
+            ref[k, 2] = ref_heading
+            ref[k, 3] = target_velocity
+        
+        return ref
+    
+    # ======================== Reference Generation ========================
+    
     def _generate_reference_trajectory(self, 
                                         current_state: np.ndarray,
                                         leader_state: Optional[Dict[str, float]],
@@ -373,8 +575,10 @@ class CasADiMPCController(MPCControllerBase):
         """
         Generate reference trajectory for MPC.
         
-        For platoon following: project leader position over horizon
-        For path following: generate trajectory based on current heading
+        Modes:
+        1. LEADER FOLLOWING: leader_state is provided → track behind leader
+        2. PATH FOLLOWING:   waypoints are set → follow waypoint path
+        3. STRAIGHT LINE:    no waypoints, no leader → maintain heading (fallback)
         
         Args:
             current_state: Current [x, y, psi, v]
@@ -387,32 +591,36 @@ class CasADiMPCController(MPCControllerBase):
         ref = np.zeros((self.N + 1, self.nx))
         
         if leader_state is not None:
-            # Platoon following mode
+            # ---- MODE 1: Leader Following ----
             leader_x = leader_state['x']
             leader_y = leader_state['y']
             leader_theta = leader_state['theta']
             leader_v = leader_state.get('velocity', target_velocity)
             
-            # Calculate desired following position
-            # Behind the leader by desired_spacing + time_headway * velocity
+            # Desired following position: behind leader
             spacing = self.desired_spacing + self.time_headway * current_state[3]
             
             for k in range(self.N + 1):
                 t_pred = k * self.dt
                 
-                # Predict leader position (assuming constant velocity and heading)
+                # Predict leader position (constant velocity + heading)
                 pred_leader_x = leader_x + leader_v * np.cos(leader_theta) * t_pred
                 pred_leader_y = leader_y + leader_v * np.sin(leader_theta) * t_pred
                 
-                # Reference position is behind leader
                 ref[k, 0] = pred_leader_x - spacing * np.cos(leader_theta)
                 ref[k, 1] = pred_leader_y - spacing * np.sin(leader_theta)
                 ref[k, 2] = leader_theta
                 ref[k, 3] = leader_v
-        else:
-            # Path following mode (maintain current heading and velocity)
-            x, y, psi, v = current_state
+                
+        elif self.waypoints is not None and self.n_waypoints >= 2:
+            # ---- MODE 2: Waypoint Path Following ----
+            ref = self._get_waypoint_reference(
+                current_state[0], current_state[1], target_velocity
+            )
             
+        else:
+            # ---- MODE 3: Straight line fallback ----
+            x, y, psi, v = current_state
             for k in range(self.N + 1):
                 t_pred = k * self.dt
                 ref[k, 0] = x + target_velocity * np.cos(psi) * t_pred
@@ -488,10 +696,12 @@ class CasADiMPCController(MPCControllerBase):
             delta_opt = opt_sol[n_states]      # First steering
             acc_opt = opt_sol[n_states + 1]    # First acceleration
             
-            # Apply rate limiting
-            delta_rate = (delta_opt - self.prev_delta) / self.dt
+            # Apply rate limiting (soft: only clamp extreme jumps)
+            # Use actual dt for rate calc, not MPC dt, since control runs faster
+            effective_dt = max(dt, self.dt)
+            delta_rate = (delta_opt - self.prev_delta) / effective_dt
             if abs(delta_rate) > self.max_steering_rate:
-                delta_opt = self.prev_delta + np.sign(delta_rate) * self.max_steering_rate * self.dt
+                delta_opt = self.prev_delta + np.sign(delta_rate) * self.max_steering_rate * effective_dt
             
             # Update previous inputs
             self.prev_delta = delta_opt
@@ -536,6 +746,7 @@ class CasADiMPCController(MPCControllerBase):
         self.prev_delta = 0.0
         self.prev_acc = 0.0
         self.prev_solution = None
+        self.wpi = 0
 
 
 class DynamicBicycleMPCController(CasADiMPCController):
@@ -816,7 +1027,19 @@ class DynamicBicycleMPCController(CasADiMPCController):
         self.prev_solution = None
 
 
-from qcar.simulation.vehiclemodels.vehicle_parameters import get_qcar_parameters
+# Robust import: try multiple paths for vehicle_parameters
+try:
+    from qcar.simulation.vehiclemodels.vehicle_parameters import get_qcar_parameters
+except ImportError:
+    try:
+        import sys as _sys, os as _os
+        _sim_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), 'simulation')
+        if _sim_dir not in _sys.path:
+            _sys.path.insert(0, _sim_dir)
+        from vehiclemodels.vehicle_parameters import get_qcar_parameters
+    except ImportError:
+        get_qcar_parameters = None
+
 
 class MPCControllerFactory:
     """Factory to create MPC controllers by name."""

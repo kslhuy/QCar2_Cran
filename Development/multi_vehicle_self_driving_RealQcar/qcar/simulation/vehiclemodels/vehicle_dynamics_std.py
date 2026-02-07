@@ -1,8 +1,8 @@
 import math
-from vehiclemodels.utils.steering_constraints import steering_constraints
-from vehiclemodels.utils.acceleration_constraints import acceleration_constraints
-from vehiclemodels.utils.vehicle_dynamics_ks_cog import vehicle_dynamics_ks_cog
-import vehiclemodels.utils.tire_model as tire_model
+from .utils.steering_constraints import steering_constraints
+from .utils.acceleration_constraints import acceleration_constraints
+from .utils.vehicle_dynamics_ks_cog import vehicle_dynamics_ks_cog
+from .utils import tire_model
 
 __author__ = "Gerald Würsching"
 __copyright__ = "TUM Cyber-Physical Systems Group"

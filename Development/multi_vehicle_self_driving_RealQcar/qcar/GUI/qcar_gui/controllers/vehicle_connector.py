@@ -291,7 +291,7 @@ class VehicleConnector:
             self._log(f"Car {car_id}: Uploaded {len(txt_files)} text files", 'INFO')
             
             # Upload required folders
-            folders = ["StateMachine", "Yolo", "Observer", "V2V", "Controller"]
+            folders = ["StateMachine", "Yolo", "Observer", "V2V", "Controller","simulation"]
             for folder_name in folders:
                 folder_path = os.path.join(self.scripts_path, folder_name)
                 if os.path.exists(folder_path):

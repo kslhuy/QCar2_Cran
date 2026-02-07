@@ -16,7 +16,14 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-from qcar.simulation.vehiclemodels.vehicle_parameters import get_qcar_parameters
+try:
+    from qcar.simulation.vehiclemodels.vehicle_parameters import get_qcar_parameters
+except ImportError:
+    # When running directly from Controller/ directory, resolve via relative path
+    _sim_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'simulation')
+    if _sim_dir not in sys.path:
+        sys.path.insert(0, _sim_dir)
+    from vehiclemodels.vehicle_parameters import get_qcar_parameters
 
 def example_standalone_mpc():
     """Example: Using MPC as a standalone combined controller."""
@@ -151,27 +158,21 @@ def example_standalone_mpc():
     print(f"Final distance to leader: {distances[-1]:.3f} m")
 
 
-def example_with_wrappers():
-    """Example: Using MPC with existing controller interfaces."""
+def example_with_factory():
+    """Example: Using MPC via the factory (simplest approach)."""
     print("\n" + "=" * 60)
-    print("Example 2: MPC with Controller Wrappers")
+    print("Example 2: MPC via Factory (Standalone)")
     print("=" * 60)
     
-    from mpc_wrappers import MPCCombinedController
+    from mpc_controller import MPCControllerFactory
     
-    # Create combined MPC controller
-    # Note: 'params' key is missing, so it will use default QCar params automatically
-    mpc_params = {
+    # Create MPC controller via factory - auto-loads QCar vehicle params
+    mpc = MPCControllerFactory.create('mpc', params={
         'horizon': 15,
         'dt_mpc': 0.05,
         'Q_pos': 15.0,
         'Q_heading': 80.0,
-    }
-    
-    controller = MPCCombinedController(
-        mpc_type='mpc',
-        mpc_params=mpc_params
-    )
+    })
     
     # Test with a simple scenario
     follower_state = {
@@ -183,7 +184,7 @@ def example_with_wrappers():
         'x': 1.5, 'y': 0.0, 'theta': 0.0, 'velocity': 0.5
     }
     
-    throttle, steering = controller.compute_control(follower_state, leader_state, dt=0.05)
+    throttle, steering = mpc.compute_control(follower_state, leader_state, dt=0.05)
     
     print(f"Input states:")
     print(f"  Follower: x={follower_state['x']}, y={follower_state['y']}, "
@@ -195,17 +196,17 @@ def example_with_wrappers():
     print(f"  Steering: {steering:.4f} rad ({np.rad2deg(steering):.2f} deg)")
     
     # Reset and test again
-    controller.reset()
-    throttle2, steering2 = controller.compute_control(follower_state, leader_state, dt=0.05)
+    mpc.reset()
+    throttle2, steering2 = mpc.compute_control(follower_state, leader_state, dt=0.05)
     print(f"\nAfter reset:")
     print(f"  Throttle: {throttle2:.4f}")
     print(f"  Steering: {steering2:.4f} rad ({np.rad2deg(steering2):.2f} deg)")
 
 
 def example_path_following():
-    """Example: Using MPC for path following without leader."""
+    """Example: Using MPC for waypoint path following (like Stanley controller)."""
     print("\n" + "=" * 60)
-    print("Example 3: MPC Path Following (No Leader)")
+    print("Example 3: MPC Waypoint Path Following")
     print("=" * 60)
     
     from mpc_controller import CasADiMPCController
@@ -214,74 +215,113 @@ def example_path_following():
     qcar_params = get_qcar_parameters()
     
     # Create MPC controller
+    # Anti-corner-cutting tuning: Q (tracking) >>> R (input penalty)
+    # + decaying Q_pos over horizon + compressed lookahead
     mpc = CasADiMPCController(
         params=qcar_params,
-        horizon=15,
+        horizon=12,
         dt_mpc=0.05,
-        Q_pos=20.0,
-        Q_heading=100.0,
-        Q_vel=10.0,
+        Q_pos=500.0,        # Very high: stay ON the path
+        Q_heading=300.0,    # Very high: align with path heading
+        Q_vel=10.0,         # Moderate: reach target speed
+        R_delta=1.0,        # Very low: don't penalize steering
+        R_acc=1.0,          # Very low: don't penalize acceleration
+        R_delta_rate=3.0,   # Very low: allow fast steering changes
+        R_acc_rate=3.0,
+        max_steering_rate=3.0,
+        path_lookahead_scale=0.4,  # Compress lookahead to reduce curve preview
     )
+    
+    # # Create a figure-8 waypoint path (shape [2, N])
+    # t = np.linspace(0, 2 * np.pi, 200)
+    # scale = 2.0
+    # wp_x = scale * np.sin(t)
+    # wp_y = scale * np.sin(t) * np.cos(t)
+    # waypoints = np.vstack([wp_x, wp_y])  # [2, 200]
+
+    # Create an oval waypoint path (shape [2, N]) — easier to track than figure-8
+    t = np.linspace(0, 2 * np.pi, 300, endpoint=False)
+    rx, ry = 3.0, 1.5   # semi-axes of the oval
+    wp_x = rx * np.cos(t)
+    wp_y = ry * np.sin(t)
+    waypoints = np.vstack([wp_x, wp_y])  # [2, 300]
+    
+    # Set waypoints on MPC (same interface as StanleyController)
+    mpc.set_waypoints(waypoints, cyclic=True)
     
     # Simulation
     dt = 0.05
-    T = 15.0
+    T = 30.0
     steps = int(T / dt)
     
-    # Initial state
-    x, y, theta, v = 0.0, 0.0, 0.0, 0.0
+    # Start at the first waypoint with correct tangent heading
+    x, y = waypoints[0, 0], waypoints[1, 0]
+    dx = waypoints[0, 1] - waypoints[0, 0]
+    dy = waypoints[1, 1] - waypoints[1, 0]
+    theta = np.arctan2(dy, dx)  # Align with path direction
+    v = 0.0
+    target_v = 0.4
     
     # Storage
     trajectory_x = [x]
     trajectory_y = [y]
     
-    print(f"Running path following simulation for {T} seconds...")
+    print(f"Running waypoint path following for {T} seconds ({waypoints.shape[1]} waypoints)...")
     
     for i in range(steps):
-        # Change target velocity and heading over time
-        if i < steps // 3:
-            target_v = 0.5
-        elif i < 2 * steps // 3:
-            target_v = 0.8
-        else:
-            target_v = 0.3
-        
         follower_state = {
             'x': x, 'y': y, 'theta': theta, 'velocity': v,
             'target_velocity': target_v
         }
         
-        # No leader - path following mode
+        # No leader - MPC follows waypoints automatically
         throttle, steering = mpc.compute_control(follower_state, None, dt)
         
-        # Update state (simple kinematic)
-        acc = throttle * 2.0
-        v = max(0.0, min(2.0, v + acc * dt))
-        beta = np.arctan(qcar_params.a / (qcar_params.a + qcar_params.b) * np.tan(steering))
+        # Update state (simple kinematic bicycle model)
+        acc = throttle * qcar_params.longitudinal.a_max
+        v = max(0.0, min(qcar_params.longitudinal.v_max, v + acc * dt))
+        beta = np.arctan(qcar_params.b / (qcar_params.a + qcar_params.b) * np.tan(steering))
         x += v * np.cos(theta + beta) * dt
         y += v * np.sin(theta + beta) * dt
-        theta += v / qcar_params.a * np.sin(beta) * dt
+        theta += v / qcar_params.b * np.sin(beta) * dt
         
         trajectory_x.append(x)
         trajectory_y.append(y)
     
     # Plot
-    plt.figure(figsize=(10, 6))
-    plt.plot(trajectory_x, trajectory_y, 'b-', linewidth=2)
-    plt.plot(trajectory_x[0], trajectory_y[0], 'go', markersize=10, label='Start')
-    plt.plot(trajectory_x[-1], trajectory_y[-1], 'ro', markersize=10, label='End')
-    plt.xlabel('X [m]')
-    plt.ylabel('Y [m]')
-    plt.title('MPC Path Following (No Leader)')
-    plt.legend()
-    plt.grid(True)
-    plt.axis('equal')
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # Trajectory vs waypoints
+    axes[0].plot(waypoints[0], waypoints[1], 'r--', linewidth=1, alpha=0.5, label='Waypoints')
+    axes[0].plot(trajectory_x, trajectory_y, 'b-', linewidth=2, label='MPC trajectory')
+    axes[0].plot(trajectory_x[0], trajectory_y[0], 'go', markersize=10, label='Start')
+    axes[0].set_xlabel('X [m]')
+    axes[0].set_ylabel('Y [m]')
+    axes[0].set_title('MPC Waypoint Path Following')
+    axes[0].legend()
+    axes[0].grid(True)
+    axes[0].axis('equal')
+    
+    # Cross-track error over time
+    cte = []
+    for tx, ty in zip(trajectory_x, trajectory_y):
+        dists = np.sqrt((waypoints[0] - tx)**2 + (waypoints[1] - ty)**2)
+        cte.append(np.min(dists))
+    time_vec = np.arange(len(cte)) * dt
+    axes[1].plot(time_vec, cte, 'r-')
+    axes[1].set_xlabel('Time [s]')
+    axes[1].set_ylabel('Cross-Track Error [m]')
+    axes[1].set_title('Tracking Error')
+    axes[1].grid(True)
+    
+    plt.tight_layout()
     plt.savefig('mpc_example_path_following.png', dpi=150)
     plt.show()
     
     print(f"Simulation complete!")
     print(f"Final position: ({x:.3f}, {y:.3f})")
-    print(f"Total distance traveled: {trajectory_x[-1]:.3f} m")
+    print(f"Mean cross-track error: {np.mean(cte):.4f} m")
+    print(f"Max cross-track error: {np.max(cte):.4f} m")
 
 
 def example_dynamic_model():
@@ -328,17 +368,17 @@ def example_factory_usage():
     
     from mpc_controller import MPCControllerFactory
     
-    # Create kinematic MPC
+    # Create kinematic MPC (only pass valid MPC config keys, not vehicle params)
     mpc_kinematic = MPCControllerFactory.create(
         'casadi_kinematic',
-        params={'horizon': 10, 'max_steering': 0.4}
+        params={'horizon': 10, 'max_steering_rate': 0.4}
     )
     print(f"Created kinematic MPC: {type(mpc_kinematic).__name__}")
     
-    # Create dynamic MPC
+    # Create dynamic MPC (vehicle params loaded automatically from YAML)
     mpc_dynamic = MPCControllerFactory.create(
         'casadi_dynamic',
-        params={'horizon': 8, 'mass': 2.5}
+        params={'horizon': 8}
     )
     print(f"Created dynamic MPC: {type(mpc_dynamic).__name__}")
     
@@ -363,7 +403,7 @@ if __name__ == "__main__":
     # Run examples
     try:
         example_factory_usage()
-        example_with_wrappers()
+        example_with_factory()
         example_path_following()
         example_dynamic_model()
         example_standalone_mpc()

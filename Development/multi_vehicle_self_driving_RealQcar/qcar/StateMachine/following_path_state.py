@@ -47,6 +47,17 @@ except ImportError as e:
     get_lane_fusion_config = None
 
 
+# Import MPC controller directly (standalone, no wrappers needed)
+try:
+    from Controller.mpc_controller import CasADiMPCController, MPCControllerFactory
+    MPC_AVAILABLE = True
+except ImportError as e:
+    print(f"WARNING: MPC controller not available: {e}")
+    MPC_AVAILABLE = False
+    CasADiMPCController = None
+    MPCControllerFactory = None
+
+
 class FollowingPathState(StateBase):
     """Handler for FOLLOWING_PATH state with simplified event handling"""
     
@@ -63,6 +74,10 @@ class FollowingPathState(StateBase):
         # Lane detection runs in yolo_server, results received via yolo_data dict
         self.lane_fusion = None
         self._lane_fusion_enabled = False
+        
+        # MPC controller for combined throttle + steering (test mode)
+        self.mpc_controller = None
+        self._use_mpc = False  # Set to False to revert to original PID+Stanley control
     
     def _init_controllers(self, force: bool = False):
         """
@@ -92,6 +107,51 @@ class FollowingPathState(StateBase):
                 self.logger.logger.info("[PATH] Steering controller obtained from ControllerManager")
         else:
             self.logger.logger.warning("[PATH] ControllerManager not available")
+        
+        # Initialize MPC controller for combined throttle+steering (test mode)
+        if self._use_mpc and MPC_AVAILABLE:
+            try:
+                mpc_params = {
+                    'horizon': 12,           # 12×0.05=0.6s lookahead (shorter = less corner cutting)
+                    'dt_mpc': 0.05,
+                    'Q_pos': 500.0,          # Very high: stay ON the path (anti corner-cut)
+                    'Q_heading': 300.0,      # Very high: align with path tangent
+                    'Q_vel': 10.0,           # Moderate: reach target velocity
+                    'R_delta': 1.0,          # Very low: don't penalize steering
+                    'R_acc': 1.0,            # Very low: don't penalize acceleration
+                    'R_delta_rate': 3.0,     # Very low: allow fast steering changes
+                    'R_acc_rate': 3.0,       # Very low: allow throttle changes
+                    'Qf_pos': 500.0,         # Strong terminal position
+                    'Qf_heading': 500.0,     # Strong terminal heading
+                    'Qf_vel': 10.0,
+                    'path_lookahead_scale': 0.4,  # Compress lookahead (less curve preview)
+                    'desired_spacing': 0.5,
+                    'max_steering_rate': 3.0,  # Allow very fast steering
+                }
+                # Use factory to create standalone MPC (auto-loads QCar vehicle params)
+                self.mpc_controller = MPCControllerFactory.create(
+                    'mpc', 
+                    params=mpc_params,
+                    logger=self.logger.logger if self.logger else None,
+                )
+                
+                # Pass waypoints to MPC so it follows the path (like Stanley does)
+                if hasattr(self.vehicle_logic, 'waypoint_sequence') and self.vehicle_logic.waypoint_sequence is not None:
+                    self.mpc_controller.set_waypoints(self.vehicle_logic.waypoint_sequence, cyclic=True)
+                    self.logger.logger.info(
+                        f"[PATH] MPC loaded {self.vehicle_logic.waypoint_sequence.shape[1]} waypoints"
+                    )
+                else:
+                    self.logger.logger.warning("[PATH] MPC initialized but no waypoints available yet")
+                
+                self.logger.logger.info("[PATH] MPC controller initialized for path following (standalone)")
+            except Exception as e:
+                self.logger.log_error("Failed to initialize MPC controller, falling back to PID+Stanley", e)
+                self.mpc_controller = None
+                self._use_mpc = False
+        elif self._use_mpc and not MPC_AVAILABLE:
+            self.logger.logger.warning("[PATH] MPC requested but not available (casadi not installed?)")
+            self._use_mpc = False
         
         # Initialize Lane Fusion system for lane-assisted path following
         self._init_lane_fusion()
@@ -219,7 +279,13 @@ class FollowingPathState(StateBase):
             if self.steering_controller:
                 self.steering_controller.reset(new_waypoint_sequence)
                 self.logger.logger.info("[PATH] Steering controller updated with new path")
-            else:
+            
+            # Also update MPC controller waypoints
+            if self.mpc_controller is not None and hasattr(self.mpc_controller, 'set_waypoints'):
+                self.mpc_controller.set_waypoints(new_waypoint_sequence, cyclic=True)
+                self.logger.logger.info(f"[PATH] MPC updated with {new_waypoint_sequence.shape[1]} waypoints")
+            
+            if not self.steering_controller and self.mpc_controller is None:
                 # Try to initialize if not already done
                 self._init_controllers()
                 
@@ -285,17 +351,44 @@ class FollowingPathState(StateBase):
         
         # === CONTROL COMPUTATION ===
         
-        # Speed control
-        u = self._compute_speed_control(velocity, dt)
-        
-        # Steering control with lane fusion
-        # yolo_data = self.vehicle_logic.yolo_manager.get_yolo_data() if hasattr(self.vehicle_logic, 'yolo_manager') else None
-        yolo_data = sensor_data.get('yolo_data', None)
-        if yolo_data and not yolo_data.get('is_valid', True):  # Stale data
-            # Could skip lane fusion or use more conservative weight
-            yolo_data = None
+        if self._use_mpc and self.mpc_controller is not None:
+            # --- MPC path following (waypoints loaded in _init_controllers) ---
+            follower_state = {
+                'x': x,
+                'y': y,
+                'theta': theta,
+                'velocity': velocity,
+                'target_velocity': self.vehicle_logic.v_ref,
+            }
+            # leader_state=None → MPC uses waypoints for reference trajectory
+            u, delta = self.mpc_controller.compute_control(follower_state, leader_state=None, dt=dt)
             
-        delta = self._compute_steering_control(x, y, theta, velocity, yolo_data)
+            # Periodic MPC logging
+            if hasattr(self.vehicle_logic, 'loop_counter') and self.vehicle_logic.loop_counter % 200 == 0:
+                wpi = self.mpc_controller.get_waypoint_index()
+                n_wp = self.mpc_controller.n_waypoints
+                self.logger.logger.info(
+                    f"[MPC-PATH] throttle={u:.3f}, steer={delta:.3f}rad "
+                    f"({np.rad2deg(delta):.1f}°), v={velocity:.2f}, "
+                    f"v_ref={self.vehicle_logic.v_ref:.2f}, wp={wpi}/{n_wp}"
+                )
+        else:
+            # --- Original PID + Stanley control ---
+            # # Speed control
+            # u = self._compute_speed_control(velocity, dt)
+            # 
+            # # Steering control with lane fusion
+            # yolo_data = sensor_data.get('yolo_data', None)
+            # if yolo_data and not yolo_data.get('is_valid', True):
+            #     yolo_data = None
+            # delta = self._compute_steering_control(x, y, theta, velocity, yolo_data)
+            
+            # Fallback: original controllers (uncomment above to re-enable)
+            u = self._compute_speed_control(velocity, dt)
+            yolo_data = sensor_data.get('yolo_data', None)
+            if yolo_data and not yolo_data.get('is_valid', True):
+                yolo_data = None
+            delta = self._compute_steering_control(x, y, theta, velocity, yolo_data)
         
         # Monitor progress
         self._monitor_progress()
@@ -303,9 +396,6 @@ class FollowingPathState(StateBase):
         # Periodic logging
         self._periodic_logging(x, y, theta, velocity)
         
-        # # Control computation and periodic logging
-        # u = 0.05
-        # delta = 0
         return u, delta, None
     
     def handle_event(self, command_type, data: Dict[str, Any] = None) -> Optional[Tuple[VehicleState, StateTransitionReason]]:

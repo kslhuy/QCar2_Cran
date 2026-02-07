@@ -3,10 +3,10 @@ from typing import Optional
 from pathlib import Path
 from omegaconf import OmegaConf
 
-from vehiclemodels.utils.longitudinal_parameters import LongitudinalParameters
-from vehiclemodels.utils.steering_parameters import SteeringParameters
-from vehiclemodels.utils.tireParameters import TireParameters
-from vehiclemodels.utils.trailer_parameters import TrailerParameters
+from .utils.longitudinal_parameters import LongitudinalParameters
+from .utils.steering_parameters import SteeringParameters
+from .utils.tireParameters import TireParameters
+from .utils.trailer_parameters import TrailerParameters
 
 
 @dataclass

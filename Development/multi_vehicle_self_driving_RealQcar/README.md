@@ -9,7 +9,10 @@ Edit `config.txt` with your IPs , and the real car
 #  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\app_main.py
+# You can connect fully with the GUI 
 
+
+# -----  OLDS stuff -------
 # Start all vehicles (in another terminal)
 cd .\Development\multi_vehicle_self_driving_RealQcar      
 
