@@ -1,8 +1,0 @@
-network:
-  car_id: 0
-  base_port: 5000
-observer:
-  fleet_estimator_type: distributed_luenberger
-  local_estimator_type: luenberger
-  observer_gain: 0.5
-  consensus_gain: 0.2

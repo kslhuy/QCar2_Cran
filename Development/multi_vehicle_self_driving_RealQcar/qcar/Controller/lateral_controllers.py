@@ -60,7 +60,7 @@ class PurePursuitController(LateralControllerBase):
     """
     
     def __init__(self, lookahead_distance=1.0, k_steering=1.0, 
-                 max_steering=0.55, adaptive_lookahead=True, 
+                 max_steering=0.5, adaptive_lookahead=True, 
                  curvature_threshold=0.3, turn_lookahead_offset=0.1,
                  turn_lookahead_gain=1.5, config=None, logger=None):
         """
@@ -331,11 +331,15 @@ class StanleyController(LateralControllerBase):
             # Cross-track error vector
             ct = ep - p
             
-            # Direction of cross-track error
-            dir = wrap_to_pi(np.arctan2(ct[1], ct[0]) - tangent)
+            # # Direction of cross-track error
+            # dir = wrap_to_pi(np.arctan2(ct[1], ct[0]) - tangent)
+            # # Signed cross-track error
+            # ect = np.linalg.norm(ct) * np.sign(dir)
             
-            # Signed cross-track error
-            ect = np.linalg.norm(ct) * np.sign(dir)
+            # [FIX] Robust Cross-track error (No angles involved)
+            # Normal vector (rotated 90 deg CCW)
+            n_uv = np.array([-v_uv[1], v_uv[0]]) 
+            ect = np.dot(ct, n_uv)
             
             # Heading error
             psi = wrap_to_pi(tangent - th)
@@ -661,7 +665,7 @@ class FusionLateralController(LateralControllerBase):
     
     def __init__(self, mode='path_primary', path_weight=0.7, leader_weight=0.3,
                  deviation_threshold=0.3, smoothing_factor=0.8, 
-                 max_steering=0.55, config=None, logger=None):
+                 max_steering=0.5, config=None, logger=None):
         """
         Initialize Fusion lateral controller
         
@@ -767,6 +771,7 @@ class LateralControllerFactory:
         'lookahead': LookaheadController,
         'hybrid': HybridLateralController,
         'fusion': FusionLateralController,
+        # MPC will be added dynamically when mpc_wrappers is imported
     }
     
     @staticmethod
@@ -775,7 +780,7 @@ class LateralControllerFactory:
         Create a lateral controller
         
         Args:
-            controller_type: One of 'pure_pursuit', 'stanley', 'lookahead', 'hybrid'
+            controller_type: One of 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'mpc'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
             
@@ -783,6 +788,14 @@ class LateralControllerFactory:
             Lateral controller instance
         """
         params = params or {}
+        
+        # Lazy import MPC if requested but not yet registered
+        if controller_type == 'mpc' and 'mpc' not in LateralControllerFactory.CONTROLLER_TYPES:
+            try:
+                from .mpc_wrappers import MPCLateralWrapper
+                LateralControllerFactory.CONTROLLER_TYPES['mpc'] = MPCLateralWrapper
+            except ImportError:
+                raise ValueError("MPC controller requires casadi. Install with: pip install casadi")
         
         if controller_type not in LateralControllerFactory.CONTROLLER_TYPES:
             raise ValueError(

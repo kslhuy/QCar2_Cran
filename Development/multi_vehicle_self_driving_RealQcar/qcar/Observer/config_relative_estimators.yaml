@@ -1,0 +1,30 @@
+# Relative Estimator Configuration
+# Default parameters for the relative state estimators used by VehicleObserver
+# Place this file under qcar/Observer/ and load it when starting observers.
+
+relative_estimator_type: sa_acc_uio
+enable_relative: true
+
+# Plotting configuration (optional, for future use)
+enable_plotting: false
+plotting:
+  fps: 30
+  time_window: 20.0
+
+# Relative estimator defaults
+relative:
+  # ---------------------------------------------------------------------
+  # SA_ACC_UIO (Secure Aware ACC Unknown Input Observer)
+  # ---------------------------------------------------------------------
+  sa_acc_uio:
+    Ts: 0.01      # Sample time
+    tau: 0.4      # Time constant
+    li: 5.0       # Vehicle length / safety distance
+    Li: 8.0       # Desired distance (optional use in observer)
+    h: 0.5        # Headway time
+    k1: -0.8      # Controller gain 1
+    k2: 2.5       # Controller gain 2
+    alpha_lmi: 0.5 # LMI decay rate
+    
+    # Manual Gains (Optional - use if CVXPY is not available)
+    # K: [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]

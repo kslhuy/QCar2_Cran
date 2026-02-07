@@ -182,7 +182,8 @@ def create_neural_estimator(
     layer1_type: str,
     gain_method: str,
     loss_type: str,
-    initial_pose: np.ndarray = None
+    initial_pose: np.ndarray = None,
+    dt: float = 0.02
 ):
     """Create a NeuralLuenbergerEstimator with specific configuration"""
     config = {
@@ -197,6 +198,9 @@ def create_neural_estimator(
         'use_gain_scheduling': gain_method == 'qlpv_scheduled',
         'vx_range': [0.5, 3.0],
         'delta_max': 0.4,
+        # Discrete-time design (matches observer update structure)
+        'sample_time': dt,
+        'contraction_rate': 0.95,
     }
     
     if initial_pose is None:
@@ -397,7 +401,7 @@ def run_multilayer_comparison():
         return []
     
     dt = 0.02
-    vehicle = QLPVVehicleModel(params, sample_time=dt, use_pacejka=True)
+    vehicle = QLPVVehicleModel(params, sample_time=dt,tire_mode= 'pacejka')
     
     # Define configurations to test
     layer1_types = ['qLPV_Basic', 'qLPV_EKF', 'Diff_UIO', 'Diff_EKF']
@@ -428,7 +432,7 @@ def run_multilayer_comparison():
                 try:
                     # Create neural estimator
                     neural_estimator = create_neural_estimator(
-                        layer1_type, gain_method, loss_type
+                        layer1_type, gain_method, loss_type, dt=dt
                     )
                     
                     # Run test scenarios

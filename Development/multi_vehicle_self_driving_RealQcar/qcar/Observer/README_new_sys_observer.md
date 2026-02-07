@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">🎯 Vehicle Observer System</h1>
+  <h1 align="center"> Vehicle Observer System</h1>
   <p align="center">
     <strong>A modular, pluggable state estimation framework for multi-vehicle autonomous coordination</strong>
   </p>

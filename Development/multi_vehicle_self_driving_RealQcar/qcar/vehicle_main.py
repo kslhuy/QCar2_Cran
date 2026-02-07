@@ -173,7 +173,10 @@ def load_configuration(args) -> VehicleMainConfig:
     else:
         # Priority: 1) fleet_config.yaml (parent dir), 2) config_vehicle_main.yaml (same dir)
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        fleet_config_path = os.path.normpath(os.path.join(script_dir, '..', 'fleet_config.yaml'))
+        # fleet_config_path = os.path.normpath(os.path.join(script_dir, '..', 'fleet_config.yaml'))
+        # if fleet_config_path is None:
+        fleet_config_path = os.path.join(script_dir, 'fleet_config.yaml')
+        
         local_config_path = os.path.join(script_dir, 'config_vehicle_main.yaml')
         
         # print(f"[DEBUG] script_dir: {script_dir}")
@@ -182,10 +185,10 @@ def load_configuration(args) -> VehicleMainConfig:
         
         if os.path.exists(fleet_config_path):
             config_path = fleet_config_path
-            # print(f"[DEBUG] Using fleet_config.yaml")
+            print(f"[DEBUG] Using fleet_config.yaml")
         else:
             config_path = local_config_path
-            # print(f"[DEBUG] Using config_vehicle_main.yaml")
+            print(f"[DEBUG] Using config_vehicle_main.yaml")
     
     # Load from file if it exists
     if os.path.exists(config_path):
@@ -259,11 +262,11 @@ def main():
         vehicle_logic.v_ref = args.v_ref
         print(f"[CONFIG] Velocity reference overridden to: {args.v_ref} m/s")
     
-    print("\n[READY] Vehicle controller created and ready")
-    print("="*70)
-    print("Starting control loop... (Press Ctrl+C to stop)")
-    print("="*70)
-    print()
+    # print("\n[READY] Vehicle controller created and ready")
+    # print("="*70)
+    # print("Starting control loop... (Press Ctrl+C to stop)")
+    # print("="*70)
+    # print()
     
     # Start control loop directly
     try:

@@ -4,6 +4,7 @@ Longitudinal Controllers for Vehicle Following
 Provides different longitudinal control strategies with a common interface.
 Easy to switch between different controllers.
 """
+import math
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Any
@@ -142,8 +143,6 @@ class PIDVelocityController(LongitudinalControllerBase):
         self.prev_e = None
         self.last_error = 0.0
         
-        if self.logger:
-            self.logger.log_control_event("speed_controller_reset", {})
 
 
 class CACCLongitudinalController(LongitudinalControllerBase):
@@ -353,67 +352,154 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         self.spacing_integral = 0.0
 
 
-class HybridController(LongitudinalControllerBase):
+class IDMControl:
+    def __init__(self, alpha=1.0, beta=1.5, v0=1.0, delta=4, T=0.4, s0=7, logger=None):
+        """Simple IDM controller initialization."""
+        self.alpha = alpha
+        self.beta = beta
+        self.v0 = v0
+        self.delta = delta
+        self.T = T
+        self.s0 = s0
+        self.logger = logger
+
+    def compute_idm_acceleration(self, follower_state, leader_state):
+        """Compute IDM acceleration."""
+        x, y, theta, v = follower_state
+        x_j, y_j, theta_j, v_j = leader_state
+
+        # Calculate spacing and relative velocity
+        s = math.hypot(x_j - x, y_j - y)
+        delta_v = v - v_j
+        
+        # IDM formula
+        s_star = self.s0 + self.T * v + (v * delta_v) / (2 * (self.alpha * self.beta)**0.5)
+        acc = self.alpha * (1 - (v / self.v0)**self.delta - (s_star / s)**2)
+
+        if self.logger:
+            self.logger.debug(f"IDM: spacing={s:.2f}m, s_star={s_star:.2f}m, acc={acc:.2f}m/s²")
+
+        return acc
+
+
+
+class SA_ACCController(LongitudinalControllerBase):
     """
-    Hybrid controller that switches between CACC and PI
-    Uses CACC when leader is available, PI when not
+    Safety-Aware Adaptive Cruise Control (SA-ACC) Control Law.
+    
+    Implements the control law from SA_ACC_UIO.m
+    usync(i) = h*k1*k2*mu(i) - k2*xf(2,i) - (k1+h*k1*k2)*(ksi_hat(3,i)) + ...
+               k3/h*(xp(2,i)-xf(2,i)) + k2/h*(psi(1,i)) - k2/h*(Li-li) - (k1+h*k1*k2)*sat(ksi_hat(4,i),20,-20);
+               
+    Expects 'ksi_hat_3' and 'ksi_hat_4' in follower_state.
     """
     
-    
-    def __init__(self, cacc_params=None, pid_params=None, config=None, logger=None):
+    def __init__(self, tau=0.4, h=0.5, k1=-0.8, k2=2.5, li=5, Li=8, 
+                 acc_to_throttle_gain=0.65, 
+                 max_throttle=0.3,
+                 config=None, 
+                 logger=None,
+                 **kwargs):
         """
-        Initialize hybrid controller
+        Initialize SA-ACC Controller
         
         Args:
-            cacc_params: Dict of parameters for CACC controller
-            pid_params: Dict of parameters for PID controller
-            config: Optional config object (takes precedence)
-            logger: Logger instance
+            tau: Driveline time constant
+            h: Time headway
+            k1, k2: Control gains from SA_ACC logic
+            li: Length of vehicle i (or min spacing)
+            Li: Desired Spacing constant
+            acc_to_throttle_gain: Conversion gain
+            max_throttle: Max throttle
         """
         self.logger = logger
         
         # Use config if provided
-        if config:
-            if hasattr(config, 'get_longitudinal_params'):
-                # Get params for both controllers from config
-                hybrid_params = config.get_longitudinal_params('hybrid')
-                cacc_params = hybrid_params.get('cacc_params', cacc_params or {})
-                pid_params = hybrid_params.get('pid_params', pid_params or {})
+        if config and hasattr(config, 'get_longitudinal_params'):
+            params = config.get_longitudinal_params('sa_acc')
+            self.tau = params.get('tau', tau)
+            self.h = params.get('h', h)
+            self.k1 = params.get('k1', k1)
+            self.k2 = params.get('k2', k2)
+            self.li = params.get('li', li)
+            self.Li = params.get('Li', Li)
+            self.acc_to_throttle_gain = params.get('acc_to_throttle_gain', acc_to_throttle_gain)
+            self.max_throttle = params.get('max_throttle', max_throttle)
         else:
-            cacc_params = cacc_params or {}
-            pid_params = pid_params or {}
-        
-        self.cacc = CACCLongitudinalController(config=config, logger=logger, **cacc_params)
-        self.pi = PIDVelocityController(config=config, logger=logger, **pid_params)
-        
-        self.last_mode = "unknown"
+            self.tau = tau
+            self.h = h
+            self.k1 = k1
+            self.k2 = k2
+            self.li = li
+            self.Li = Li
+            self.acc_to_throttle_gain = acc_to_throttle_gain
+            self.max_throttle = max_throttle
+
+        # Derived parameter k3
+        self.k3 = (1 - self.h * self.k1 * self.k2)
         
     def compute_throttle(self, follower_state: Dict[str, float], 
                         leader_state: Optional[Dict[str, float]], 
                         dt: float) -> float:
-        """Switch between CACC and PI based on leader availability"""
         
-        if leader_state is not None:
-            # Leader available - use CACC
-            if self.last_mode != "cacc":
-                self.last_mode = "cacc"
-                if self.logger:
-                    self.logger.info("[HYBRID] Switching to CACC mode")
-            return self.cacc.compute_throttle(follower_state, leader_state, dt)
-        else:
-            # No leader - use PI velocity tracking
-            if self.last_mode != "pi":
-                self.last_mode = "pi"
-                if self.logger:
-                    self.logger.info("[HYBRID] Switching to PI mode")
-            return self.pi.compute_throttle(follower_state, leader_state, dt)
-    
-    def reset(self):
-        """Reset both controllers"""
-        self.cacc.reset()
-        self.pi.reset()
-        self.last_mode = "unknown"
+        if leader_state is None:
+             return 0.0
+             
+        xf_vel = follower_state['velocity']
+        
+        xp_vel = leader_state['velocity']
+        # mu is transmitted acceleration (potentially corrupted). 
+        # Assume leader_state['acceleration'] contains this.
+        mu = leader_state.get('acceleration', 0.0) 
+        
+        # Measurements / Estimates
+        dx = leader_state['x'] - follower_state['x']
+        dy = leader_state['y'] - follower_state['y']
+        spacing = np.hypot(dx, dy)
+        
+        # psi_1 = spacing - li
+        psi_1 = spacing - self.li
+        
+        # Estimates from UIO (passed in follower_state)
+        # Default to 0 if not present (reduces to nominal controller?)
+        ksi_hat_3 = follower_state.get('ksi_hat_3', 0.0)
+        ksi_hat_4 = follower_state.get('ksi_hat_4', 0.0)
+        
+        # Control Law
+        def sat(val, limit):
+            return np.clip(val, -limit, limit)
+            
+        term1 = self.h * self.k1 * self.k2 * mu
+        term2 = -self.k2 * xf_vel
+        term3 = -(self.k1 + self.h * self.k1 * self.k2) * ksi_hat_3
+        term4 = (self.k3 / self.h) * (xp_vel - xf_vel) # psi_2
+        term5 = (self.k2 / self.h) * psi_1
+        term6 = -(self.k2 / self.h) * (self.Li - self.li)
+        term7 = -(self.k1 + self.h * self.k1 * self.k2) * sat(ksi_hat_4, 20)
+        
+        usync = term1 + term2 + term3 + term4 + term5 + term6 + term7
+        
+        throttle = usync * self.acc_to_throttle_gain
+        throttle = np.clip(throttle, -self.max_throttle, self.max_throttle)
+        
+        if throttle < 0:
+             throttle = max(throttle, 0.0)
+             
+        return float(throttle)
 
+    def reset(self):
+        pass
+
+
+class FixConstantController(LongitudinalControllerBase):
+    def __init__(self, throttle: float, config=None, logger=None):
+        self.throttle = throttle
+        self.logger = logger
+    
+    def compute_throttle(self, follower_state: Dict[str, float], 
+                        leader_state: Optional[Dict[str, float]], 
+                        dt: float) -> float:
+        return self.throttle
 
 class ControllerFactory:
     """Factory to create longitudinal controllers by name"""
@@ -421,7 +507,9 @@ class ControllerFactory:
     CONTROLLER_TYPES = {
         'pid': PIDVelocityController,
         'cacc': CACCLongitudinalController,
-        'hybrid': HybridController,
+        'sa_acc': SA_ACCController,
+        'fix': FixConstantController,
+        # MPC will be added dynamically when mpc_wrappers is imported
     }
     
     @staticmethod
@@ -430,7 +518,7 @@ class ControllerFactory:
         Create a longitudinal controller
         
         Args:
-            controller_type: One of 'pid', 'cacc', 'hybrid'
+            controller_type: One of 'pid', 'cacc', 'sa_acc', 'fix', 'mpc'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
             
@@ -438,6 +526,14 @@ class ControllerFactory:
             Longitudinal controller instance
         """
         params = params or {}
+        
+        # Lazy import MPC if requested but not yet registered
+        if controller_type == 'mpc' and 'mpc' not in ControllerFactory.CONTROLLER_TYPES:
+            try:
+                from .mpc_wrappers import MPCLongitudinalWrapper
+                ControllerFactory.CONTROLLER_TYPES['mpc'] = MPCLongitudinalWrapper
+            except ImportError:
+                raise ValueError("MPC controller requires casadi. Install with: pip install casadi")
         
         if controller_type not in ControllerFactory.CONTROLLER_TYPES:
             raise ValueError(

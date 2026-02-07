@@ -54,3 +54,12 @@ logging:
   enable_state_logging: true
   log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
   console_output: true
+  
+  # Granular logging control
+  enable_fleet_estimation_logging: true
+  enable_local_estimation_logging: true
+  enable_following_leader_logging: true
+  enable_trust_weight_logging: true
+  
+  # File naming strategy
+  use_timestamped_log_files: true  # true = create new timestamped file/folder, false = use single static file (append/overwrite)

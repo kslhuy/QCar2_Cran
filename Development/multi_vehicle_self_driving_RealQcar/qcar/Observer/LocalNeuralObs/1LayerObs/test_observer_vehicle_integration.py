@@ -22,6 +22,7 @@ Test scenarios:
 
 import numpy as np
 import sys
+import time
 from pathlib import Path
 
 # Add paths
@@ -35,6 +36,10 @@ from qlpv_observer import qLPVAugmentedObserver as qLPVObserverBasic
 from qlpv_observer_kalma import qLPVAugmentedObserver as qLPVObserverEKF
 from differentiator_uio_observer import DifferentiatorUIOObserver
 from differentiator_uio_ekf import DifferentiatorUIOEKF
+
+# Import recorder
+sys.path.insert(0, str(parent_dir.parent))
+from neural_obs_recorder import NeuralObsRecorder
 
 # Import vehicle dynamics and fake vehicle components
 try:
@@ -149,12 +154,30 @@ def test_scenario_with_all_observers(scenario_name: str, vehicle: QLPVVehicleMod
     for obs in observers.values():
         obs.reset(wrong_initial)
     
+    # Initialize recorders
+    recorders = {}
+    print(f"\n--- Recording for scenario: {scenario_name} ---")
+    for name in observers.keys():
+        # Clean name for filename
+        clean_name = name.replace(" ", "_")
+        clean_scenario = scenario_name.replace(" ", "_")
+        rec_name = f"{clean_scenario}_{clean_name}"
+        
+        recorder = NeuralObsRecorder(output_dir="integration_test_recordings", 
+                                     name=rec_name, 
+                                     mode='1layer')
+        filepath = recorder.start()
+        recorders[name] = recorder
+        # print(f"Recording {name} to: {filepath}")
+    
     # Results storage
     results = {name: {'state_errors': [], 'residual_errors': [], 'w_est': []} 
                for name in observers.keys()}
     
     # Run simulation
     for i in range(n_steps):
+        t = i * dt
+        
         # Get control input
         control = control_func(i, dt)
         
@@ -175,6 +198,30 @@ def test_scenario_with_all_observers(scenario_name: str, vehicle: QLPVVehicleMod
             
             state_est, w_est = obs.update(measurement, control_obs)
             
+            # Record data
+            # Convert measurement array to dict
+            # keys: vx, r, psi, X, Y (assuming standard order from vehicle model)
+            meas_dict = {
+                'vx': measurement[0],
+                'r': measurement[1],
+                'psi': measurement[2],
+                'X': measurement[3],
+                'Y': measurement[4]
+            }
+            if len(measurement) > 5:
+                meas_dict['ay'] = measurement[5]
+
+            recorders[name].record_1layer(
+                t=t,
+                state_6d=state_est,
+                unknown_input=w_est,
+                measurements=meas_dict,
+                steering=control[0],
+                throttle=control[1],
+                gps_valid=True,
+                true_unknown_input=true_w.copy()
+            )
+            
             # Compute errors
             state_error = np.linalg.norm(state_est - true_state)
             residual_error = np.linalg.norm(w_est - true_w)
@@ -182,6 +229,10 @@ def test_scenario_with_all_observers(scenario_name: str, vehicle: QLPVVehicleMod
             results[name]['state_errors'].append(state_error)
             results[name]['residual_errors'].append(residual_error)
             results[name]['w_est'].append(w_est.copy())
+            
+    # Stop recorders
+    for name, recorder in recorders.items():
+        recorder.stop()
     
     # Add true residuals info
     results['true_w_final'] = true_w.copy()
@@ -206,7 +257,7 @@ def test_straight_driving_all():
         return True
     
     dt = 0.02
-    vehicle = QLPVVehicleModel(params, sample_time=dt, use_pacejka=True)
+    vehicle = QLPVVehicleModel(params, sample_time=dt)
     observers = create_all_observers(dt, create_observer_params(params))
     
     # Initial state: [X, Y, δ, v_x, ψ, r, v_y]
@@ -249,7 +300,7 @@ def test_lane_change_all():
         return True
     
     dt = 0.02
-    vehicle = QLPVVehicleModel(params, sample_time=dt, use_pacejka=True)
+    vehicle = QLPVVehicleModel(params, sample_time=dt)
     observers = create_all_observers(dt, create_observer_params(params))
     
     # Initial state: moving forward
@@ -301,7 +352,7 @@ def test_accelerating_turn_all():
         return True
     
     dt = 0.02
-    vehicle = QLPVVehicleModel(params, sample_time=dt, use_pacejka=True)
+    vehicle = QLPVVehicleModel(params, sample_time=dt)
     observers = create_all_observers(dt, create_observer_params(params))
     
     # Initial state: starting slowly
@@ -344,7 +395,7 @@ def test_observer_convergence_all():
         return True
     
     dt = 0.02
-    vehicle = QLPVVehicleModel(params, sample_time=dt, use_pacejka=True)
+    vehicle = QLPVVehicleModel(params, sample_time=dt)
     
     # Vehicle at specific state
     initial_qlpv = np.array([5.0, 2.0, 0.1, 1.5, 0.2, 0.1, 0.05])

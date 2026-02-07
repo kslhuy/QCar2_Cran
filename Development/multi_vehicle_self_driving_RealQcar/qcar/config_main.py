@@ -76,7 +76,8 @@ class PathPlanningConfig:
         elif self.path_number == 1:
             return [0, 2, 4, 6, 8, 10 , 2 ,4 ,6 ,0]
         else :
-            return [2 , 4 ,6 , 8 , 10 , 2 ]
+            return [0 , 2 , 4, 6, 8, 10 ,1,10,2,4,6]
+            # return [0 , 2 , 4, 6, 0,10,9]
     
     @property
     def calibration_pose(self) -> List[float]:
@@ -130,6 +131,15 @@ class LoggingConfig:
     enable_state_logging: bool = True
     log_level: str = "INFO"
     console_output: bool = True
+    
+    # Granular logging control
+    enable_fleet_estimation_logging: bool = True
+    enable_local_estimation_logging: bool = True
+    enable_following_leader_logging: bool = True
+    enable_trust_weight_logging: bool = True
+    
+    # File naming strategy
+    use_timestamped_log_files: bool = True  # If False, uses static filenames (single file/append mode)
 
 
 @dataclass
@@ -141,18 +151,10 @@ class ObserverConfig:
     """
     # Update rates (Hz)
     observer_rate: int = 100
-    fleet_observer_rate: int = 50
+    fleet_observer_rate: int = 30
 
-    # Selector for estimator implementations
-    local_estimator_type: str = "ekf"  # ekf, luenberger, dead_reckoning
-    fleet_estimator_type: str = "consensus"  # consensus, distributed_kalman, distributed_luenberger
 
-    # Enable/disable distributed observation (used by VehicleObserverSimple)
-    enable_distributed: bool = True
 
-    # Gains can be scalar, vector, or matrix (parsed later into numpy arrays)
-    consensus_gain: object = 0.3
-    observer_gain: object = 0.1
 
 
 @dataclass

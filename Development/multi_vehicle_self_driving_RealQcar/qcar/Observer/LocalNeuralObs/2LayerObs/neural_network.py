@@ -226,6 +226,29 @@ class ModelQueue:
         # Update weights (exponential decay)
         self._update_weights()
     
+    def push_model(self, source_model: NeuralObserverNet):
+        """
+        Push a snapshot of the source model into the queue.
+        
+        Args:
+           source_model: The model to snapshot
+        """
+        # Create a new instance with same architecture
+        new_model = NeuralObserverNet(self.input_dim, self.hidden_dim, self.output_dim)
+        
+        # Copy weights from source model
+        new_model.load_state_dict(source_model.state_dict())
+        
+        # Add to queue
+        self.models.append(new_model)
+        
+        # Remove oldest if exceeds queue size
+        if len(self.models) > self.queue_size:
+             self.models.pop(0)
+             
+        # Update ensemble weights
+        self._update_weights()
+    
     def _update_weights(self):
         """Update weights for model predictions (exponential decay)"""
         n = len(self.models)

@@ -30,6 +30,14 @@ if _qcar_dir not in sys.path:
 
 from command_types import CommandType
 
+# Import SDCSRoadMap for on-the-fly path generation
+try:
+    from hal.products.mats import SDCSRoadMap
+    ROADMAP_AVAILABLE = True
+except ImportError:
+    ROADMAP_AVAILABLE = False
+    print("[Ground Station] ⚠️  SDCSRoadMap not available - Path plotting disabled")
+
 # Import scope manager for remote plotting
 try:
     from .remote_scope_manager import RemoteScopeManager
@@ -210,6 +218,16 @@ class QCarRemoteController:
         self.scope_manager = None
         if SCOPE_MANAGER_AVAILABLE:
             self.scope_manager = RemoteScopeManager()
+            
+        # Roadmap for path generation
+        self.roadmap = None
+        if ROADMAP_AVAILABLE:
+            try:
+                # Initialize small map by default
+                self.roadmap = SDCSRoadMap(leftHandTraffic=False, useSmallMap=True)
+                print("[Ground Station] SDCSRoadMap initialized for path generation")
+            except Exception as e:
+                print(f"[Ground Station] Error initializing roadmap: {e}")
     
     # ========== Server Management ==========
     
@@ -297,6 +315,9 @@ class QCarRemoteController:
             self.websocket_clients.discard(websocket)
             print("[WS] Client disconnected")
 
+        # except Exception as e:
+        #     print(f"[WS] Error handling message: {e}")
+
     async def _handle_websocket_message(self, websocket, message):
         """Handle incoming WebSocket message."""
         try:
@@ -325,12 +346,69 @@ class QCarRemoteController:
                             telemetry['vehicle_id'] = f"qcar-{car_id}"
                             await websocket.send(json.dumps(telemetry))
                 return
+
+            elif msg_type == 'setup_platoon':
+                # Handle Setup Platoon request from Web GS
+                if self.gui_controller:
+                    # We need to run this on the main thread because it accesses GUI/Tkinter
+                    # But _setup_platoon might open dialogs or do logic. 
+                    # Actually, app.py's _setup_platoon reads from self._car_panels which are Tk widgets.
+                    # This is tricky without thread safety.
+                    # However, if we just trigger the logic that DOESN'T depend on GUI state, it's better.
+                    # But the User wants the Web GS button to act "like in python GS".
+                    # The Python GS _setup_platoon reads current platoon_position from the widgets.
+                    # If the Web GS sends the configuration, we can pass it to a new method.
+                    # But the user request said: "so GS python simulated the action clicked V2V button"
+                    # So we should try to invoke the existing method if possible, or a new thread-safe one.
+                    # Since we are in an async loop here, we can schedule it.
+                    print("[WS] Requesting Platoon Setup")
+                    if hasattr(self.gui_controller, '_setup_platoon'):
+                         self.gui_controller.root.after(0, self.gui_controller._setup_platoon)
+                return
+
+            elif msg_type == 'trigger_platoon':
+                # Handle Trigger Platoon request from Web GS
+                if self.gui_controller:
+                    print("[WS] Requesting Platoon Trigger")
+                    if hasattr(self.gui_controller, '_trigger_platoon'):
+                        self.gui_controller.root.after(0, self.gui_controller._trigger_platoon)
+                return
+                
+            elif msg_type == 'establish_v2v_network':
+                # Handle V2V Activation request from Web GS
+                if self.gui_controller:
+                    print("[WS] Requesting V2V Activation")
+                    if hasattr(self.gui_controller, '_activate_v2v'):
+                        self.gui_controller.root.after(0, self.gui_controller._activate_v2v)
+                return
+
+            elif msg_type == 'terminate_v2v_network':
+                # Handle V2V Deactivation request from Web GS
+                if self.gui_controller:
+                    print("[WS] Requesting V2V Deactivation")
+                    if hasattr(self.gui_controller, '_disable_v2v'):
+                        self.gui_controller.root.after(0, self.gui_controller._disable_v2v)
+                return
                 
             # Handle commands from browser
             target = data.get('target', 'all')
             # Extract actual command payload (remove protocol wrapper if needed)
             # The bridge passed 'action' or 'msg_type' as command
             
+            # Intercept V2V commands if sent as generic commands with target='all'
+            # (Backward compatibility if Web App sends 'activate_v2v' instead of specific type)
+            if msg_type == 'activate_v2v' and target == 'all':
+                 if self.gui_controller and hasattr(self.gui_controller, '_activate_v2v'):
+                    print("[WS] Intercepted activate_v2v command - routing to GUI controller")
+                    self.gui_controller.root.after(0, self.gui_controller._activate_v2v)
+                    return
+            
+            if msg_type == 'disable_v2v' and target == 'all':
+                 if self.gui_controller and hasattr(self.gui_controller, '_disable_v2v'):
+                    print("[WS] Intercepted disable_v2v command - routing to GUI controller")
+                    self.gui_controller.root.after(0, self.gui_controller._disable_v2v)
+                    return
+
             if target == 'all':
                 for car_id in self.cars:
                     self.send_command(car_id, data)
@@ -528,6 +606,27 @@ class QCarRemoteController:
             if 'type' not in ws_data:
                 ws_data['type'] = 'telemetry'
             self._broadcast_to_websockets(ws_data)
+            
+            # Update scope manager with vehicle info (e.g. node sequence for path plotting)
+            if self.scope_manager and 'node_sequence' in data:
+                 self.scope_manager.update_vehicle_info(car_id, data)
+
+            # Generate Path if node_sequence is present and roadmap is available
+            if self.roadmap and 'node_sequence' in data and data['node_sequence']:
+                try:
+                    # Generate path points (3xN array: x, y, z)
+                    waypoints = self.roadmap.generate_path(data['node_sequence'])
+                    
+                    # Add path points to data for WebSocket broadcast
+                    ws_data['path_x'] = waypoints[0, :].tolist()
+                    ws_data['path_y'] = waypoints[1, :].tolist()
+                    
+                    # Update cache in last_data so new clients get it immediately
+                    self.cars[car_id].last_data['path_x'] = ws_data['path_x']
+                    self.cars[car_id].last_data['path_y'] = ws_data['path_y']
+                    
+                except Exception as e:
+                    print(f"[Ground Station] Error generating path for Car {car_id}: {e}")
 
             self._handle_special_message(car_id, msg_type, data)
             

@@ -6,6 +6,8 @@ Easy to switch between different algorithms (Consensus, Kalman Consensus, etc.).
 """
 import numpy as np
 import time
+import os
+import yaml
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
@@ -65,7 +67,7 @@ class FleetStateEstimatorBase(ABC):
         Args:
             vehicle_id: ID of the host vehicle
             fleet_size: Total number of vehicles in fleet
-            state_dim: State dimension (default 5: x, y, theta, v, a)
+            state_dim: State dimension (default 5: x, y, theta, v, a) based on vehicle model
             config: Configuration dict
             logger: Logger instance
         """
@@ -76,8 +78,10 @@ class FleetStateEstimatorBase(ABC):
         self.logger = logger
         
         # Fleet state estimates [state_dim x fleet_size]
-        # state_dim = 5 for [x, y, theta, v, a]
-        self.fleet_states = np.zeros((state_dim, fleet_size))
+        # self.fleet_states = np.zeros((self.state_dim, fleet_size))
+        # Initialized with size 1 usually, will expand as needed
+        self.fleet_states = np.zeros((self.state_dim, fleet_size))
+        # self.logger.logger.debug(f"fleet_states initialized with shape: {self.fleet_states.shape}")
         
         # Communication data storage
         self.received_local_states = defaultdict(list)  # vehicle_id -> [(timestamp_ns, state)]
@@ -110,7 +114,7 @@ class FleetStateEstimatorBase(ABC):
         Communication/log layers hand us dicts; algorithms want numpy arrays.
         We normalize here so downstream consumers always see ndarray.
         """
-        # print(f"Adding received local state from vehicle_id {sender_id}")
+        # self.logger.logger.debug(f"Adding received local state from vehicle_id {sender_id}")
         try:
             if sender_id == self.vehicle_id:
                 return False  # Don't store own state
@@ -197,12 +201,14 @@ class FleetStateEstimatorBase(ABC):
         Returns None if no recent state is available or conversion fails.
         """
         if vehicle_id not in self.received_local_states:
-            print(f"vehicle_id {vehicle_id} not in self.received_local_states")
+            if self.logger:
+                self.logger.logger.warning(f"vehicle_id {vehicle_id} not in self.received_local_states")
             return None
 
         states_list = self.received_local_states[vehicle_id]
         if not states_list:
-            print(f"states_list for vehicle_id {vehicle_id} is empty")
+            if self.logger:
+                self.logger.logger.warning(f"states_list for vehicle_id {vehicle_id} is empty")
             return None
 
         # Iterate backwards (newest first) and return first valid entry
@@ -220,7 +226,8 @@ class FleetStateEstimatorBase(ABC):
             if state_vec is not None:
                 return state_vec
             
-        print(f"No valid recent state for vehicle_id {vehicle_id}")
+        # if self.logger:
+        #     self.logger.logger.debug(f"No valid recent state for vehicle_id {vehicle_id}")
         return None
 
     
@@ -406,194 +413,32 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
             return self.fleet_states.copy()
     
 
-
-
-class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
-    """
-    Distributed Lunberger Observer for fleet longitudinal estimation
-    More sophisticated, uses dynamics model and consensus
-    Inspired by VehicleObserver.py _distributed_observer_each
-    """
-    
-    def __init__(self, vehicle_id: int, fleet_size: int, state_dim: int = 3,
-                 config: Dict = None, logger=None):
-        """
-        Initialize distributed Lunberger Observer
-        
-        Args:
-            vehicle_id: ID of the host vehicle
-            fleet_size: Total number of vehicles in fleet
-            state_dim: State dimension
-            config: Configuration dict
-            logger: Logger instance
-        """
-        super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
-        
-        # System matrices of the longutinal model
-        Ai = np.array([[0, 1, 0],
-                     [0, 0, 1],
-                     [0, 0, 0]])
-        self.A = np.block([
-                        [Ai if i == j else np.zeros_like(Ai) for j in range(fleet_size)]
-                        for i in range(fleet_size)
-                    ])
-        Bi = np.array([0, 0, 1])
-        self.B = np.block([
-            [Bi if i == j else np.zeros_like(Bi) for j in range(fleet_size)]
-            for i in range(fleet_size)
-        ])
-
-        self.m_i = 0.5 # kg
-        self.tau_i = 0.16 
-        self.rho_i = 0.12
-        self.Cd_i = 0.035 
-        self.AF_i = 0.22
-        self.mu_i = 0.01
-
-        # Observer gains
-        self.observer_gain = self.config.get('observer_gain', 0.1)
-        self.consensus_gain = self.config.get('consensus_gain', 0.2)
-        
-        # Communication weights (uniform for now)
-        self.weights = np.ones(fleet_size) / fleet_size
-    
-    def update(self, local_state: np.ndarray, dt: float, 
-               current_time_ns: int, control: np.ndarray) -> np.ndarray:
-        """Update using distributed observer with dynamics
-        
-        Args:
-            local_state: Own vehicle state [x, y, theta, v]
-            dt: Time step in seconds
-            current_time_ns: Current time in nanoseconds
-            control: Control input [steering, throttle]
-        """
-        try:
-            # Ensure we have capacity and write our own latest local state into fleet_states
-            self._ensure_fleet_capacity(self.vehicle_id)
-            self.fleet_states[:, self.vehicle_id] = local_state.copy()
-
-            # Distributed observer for this vehicle
-            self.fleet_states = self._distributed_observer_update(
-                current_time_ns, control, dt
-            )
-            
-            # Cleanup old data
-            self._cleanup_old_data(current_time_ns)
-            
-            return self.fleet_states
-            
-        except Exception as e:
-            if self.logger:
-                self.logger.log_error("Distributed Kalman update error", e)
-            return self.fleet_states
-    
-    def _distributed_observer_update(self, current_time_ns: int,
-                                     collective_control: np.ndarray, dt: float) -> np.ndarray:
-        """
-        Distributed observer update for one target vehicle
-        Combines dynamics prediction, measurement correction, and consensus
-        """
-        # Distributed observer dimention
-        dim_distributed_observer = self.state_dim * self.fleet_size
-        # Current estimate
-        x_i_mat = self.fleet_states.copy()
-        x_vec = x_i_mat.flatten(order="F") # column-major flattening
-        own_state = x_i_mat[:, self.vehicle_id]
-
-        # Get the current estimate (position, velocity, acceleration) for all vehicles:
-        
-        
-        # 1. Dynamics prediction (collective longitudinal model)
-        u = collective_control if len(collective_control) > self.fleet_size else 0.0
-        
-        # collective longitudinal model
-        # dx = Ax + Bf
-        f = np.zeros(self.fleet_size)   
-        v_i = own_state[1]  # self velocity
-        a_i = own_state[2]  # self acceleration
-        f[self.vehicle_id] = self._get_nonlinear_term_phi_i(v_i, a_i)
-
-        # Loop over other vehicles only (skip self)
-        for i in range(self.fleet_size):
-            if i == self.vehicle_id:
-                continue
-            state = self._get_latest_received_state(i, current_time_ns)
-            v_i = state[1]  # velocity from received state (state_dim=3)
-            a_i = state[2]  # acceleration from received state (state_dim=3)
-            f[i] = self._get_nonlinear_term_phi_i(v_i, a_i)
-        
-
-        dynamics_term = x_vec + (self.A @ x_vec + self.B @ f) * dt
-        
-        # 2. Measurement correction (if we have data from target)
-        measurement_term = np.zeros(self.state_dim * self.fleet_size)
-        # Use latest self measurement (assumed available) to correct position
-        local_measurement = self._get_latest_received_state(self.vehicle_id, current_time_ns) # assume measurable
-        measure_position = local_measurement[0]  # measured position
-
-        # Measurement correction: apply only to this vehicle's position entry in the flattened vector
-        estimated_index = self.vehicle_id * self.state_dim  # starting index for this vehicle in x_vec
-        estimated_position = dynamics_term[estimated_index]
-        measurement_error = measure_position - estimated_position
-        measurement_term[estimated_index] = self.observer_gain * measurement_error
-
-        # 3. Consensus term (simple for now - can be enhanced)
-        # TODO : use the _get_latest_received_state to get the neibour's state, it is already the real communicarion
-        consensus_term = np.zeros(dim_distributed_observer)
-        
-        # Combine all terms
-        x_i_new = dynamics_term + measurement_term + consensus_term
-        # Reshape back to matrix form  
-        x_i_new = x_i_new.reshape((self.state_dim, self.fleet_size), order="F")      
-        return x_i_new
-
-    
-    def _get_nonlinear_term_phi_i(self, v_i, a_i, g_s: float = 9.81):
-        """
-        Compute the nonlinear term phi_i(v_i, a_i) using vehicle parameters on this estimator.
-
-        Args:
-            v_i: Velocity (scalar or numpy array)
-            a_i: Acceleration (scalar or numpy array)
-            g_s: Gravitational acceleration constant
-        """
-        v_i = np.asarray(v_i)
-        a_i = np.asarray(a_i)
-
-        try:
-            m_i = self.m_i
-            tau_i = self.tau_i
-            rho_i = self.rho_i
-            Cd_i = self.Cd_i
-            AF_i = self.AF_i
-            mu_i = self.mu_i
-        except AttributeError as exc:
-            raise AttributeError(
-                "Vehicle parameters (m_i, tau_i, rho_i, Cd_i, AF_i, mu_i) must be set on the estimator before calling nonlear_term_phi_i"
-            ) from exc
-
-        # Aerodynamic drag term: - (1 / (2 m_i tau_i)) * rho_i * Cd_i * AF_i * (v_i^2 + 2 tau_i v_i a_i)
-        drag_term = -(rho_i * Cd_i * AF_i / (2.0 * m_i * tau_i)) * (v_i**2 + 2.0 * tau_i * v_i * a_i)
-
-        # Acceleration damping term: - (1 / tau_i) * a_i
-        accel_term = -(1.0 / tau_i) * a_i
-
-        # Grade/rolling resistance term: + (1 / tau_i) * mu_i * g_s
-        grade_term = (1.0 / tau_i) * mu_i * g_s
-
-        return drag_term + accel_term + grade_term
-
 class FleetEstimatorFactory:
     """Factory to create fleet state estimators by name"""
     
     # Base estimator types (always available)
     ESTIMATOR_TYPES = {
         'consensus': ConsensusFleetEstimator,
-        'distributed_luenberger': DistributedLuenbergerEstimator,
+        # 'distributed_luenberger' is loaded lazily to avoid circular imports
     }
     
-    # Trust-based estimators are loaded lazily to avoid circular imports
+    # Lazy loading flags
+    _distributed_luenberger_loaded = False
     _trust_estimators_loaded = False
+    
+    @classmethod
+    def _load_distributed_luenberger(cls):
+        """Lazily load DistributedLuenbergerEstimator to avoid circular imports"""
+        if cls._distributed_luenberger_loaded:
+            return
+        
+        try:
+            from .ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
+            cls.ESTIMATOR_TYPES['distributed_luenberger'] = DistributedLuenbergerEstimator
+            cls._distributed_luenberger_loaded = True
+        except ImportError as e:
+            # print(f"Warning: Could not load DistributedLuenbergerEstimator: {e}")
+            pass
     
     @classmethod
     def _load_trust_estimators(cls):
@@ -631,6 +476,10 @@ class FleetEstimatorFactory:
         Returns:
             Fleet state estimator instance
         """
+        # Load distributed_luenberger lazily when requested
+        if estimator_type == 'distributed_luenberger':
+            FleetEstimatorFactory._load_distributed_luenberger()
+        
         # Try to load trust-based estimators if requesting one
         if estimator_type.startswith('trust_'):
             FleetEstimatorFactory._load_trust_estimators()
@@ -653,5 +502,6 @@ class FleetEstimatorFactory:
     @classmethod
     def get_available_types(cls) -> List[str]:
         """Get list of available estimator types"""
+        cls._load_distributed_luenberger()
         cls._load_trust_estimators()
         return list(cls.ESTIMATOR_TYPES.keys())

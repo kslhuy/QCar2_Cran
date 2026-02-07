@@ -60,8 +60,8 @@ class ControllerConfig:
             types.append('cacc')
         if 'pid' in self.config:
             types.append('pid')
-        if 'hybrid_longitudinal' in self.config:
-            types.append('hybrid')
+        if 'sa_acc' in self.config:
+            types.append('sa_acc')
         return types
 
     def get_available_lateral_types(self) -> list:
@@ -73,8 +73,6 @@ class ControllerConfig:
             types.append('stanley')
         if 'lookahead' in self.config:
             types.append('lookahead')
-        if 'hybrid_lateral' in self.config:
-            types.append('hybrid')
         if 'fusion_lateral' in self.config:
             types.append('fusion')
         return types
@@ -96,8 +94,9 @@ class ControllerConfig:
             return self._get_cacc_params()
         elif controller_type == 'pid':
             return self._get_pid_params()
-        elif controller_type == 'hybrid':
-            return self._get_hybrid_longitudinal_params()
+
+        elif controller_type == 'sa_acc':
+            return self._get_sa_acc_params()
         else:
             raise ValueError(f"Unknown longitudinal controller type: {controller_type}")
     
@@ -172,6 +171,21 @@ class ControllerConfig:
             'cacc_params': cacc_params,
             'pid_params': pid_params,
         }
+
+    def _get_sa_acc_params(self) -> Dict[str, Any]:
+        """Get SA-ACC controller parameters"""
+        sa_acc_config = self.config.get('sa_acc', {})
+        
+        return {
+            'tau': sa_acc_config.get('tau', 0.4),
+            'h': sa_acc_config.get('h', 0.5),
+            'k1': sa_acc_config.get('k1', -0.8),
+            'k2': sa_acc_config.get('k2', 2.5),
+            'li': sa_acc_config.get('li', 5.0),
+            'Li': sa_acc_config.get('Li', 8.0),
+            'acc_to_throttle_gain': sa_acc_config.get('acc_to_throttle_gain', 0.65),
+            'max_throttle': sa_acc_config.get('max_throttle', 0.3),
+        }
     
     # ========================================================================
     # Lateral Controller Parameter Getters
@@ -193,9 +207,10 @@ class ControllerConfig:
         stanley_config = self.config.get('stanley', {})
         
         return {
+            'lookahead_offset': stanley_config.get('lookahead_offset', 0.2),
             'k_e': stanley_config.get('k_e', 0.5),
             'k_soft': stanley_config.get('k_soft', 1.0),
-            'max_steering': stanley_config.get('max_steering', 0.55),
+            'max_steering': stanley_config.get('max_steering', 0.5),
         }
     
     def _get_lookahead_params(self) -> Dict[str, Any]:

@@ -11,6 +11,7 @@ __version__ = '1.0.0'
 __all__ = [
     'NeuralObserverNet',
     'NeuralLuenbergerEstimator',
+    'NeuralObsRecorder',
     'GradientSolver',
     'LearningBatch',
     'ModelQueue'
@@ -27,6 +28,10 @@ def __getattr__(name):
     elif name == 'NeuralLuenbergerEstimator':
         module = importlib.import_module('.2LayerObs.neural_state_estimator', package=__name__)
         return module.NeuralLuenbergerEstimator
+    elif name == 'NeuralObsRecorder':
+        # Import unified recorder (supports both 1-layer and 2-layer)
+        from .neural_obs_recorder import NeuralObsRecorder
+        return NeuralObsRecorder
     elif name == 'GradientSolver':
         module = importlib.import_module('.2LayerObs.gradient_solver', package=__name__)
         return module.GradientSolver

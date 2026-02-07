@@ -62,6 +62,7 @@ presets:
 recording:
   enabled: false
   output_dir: "scope_recordings"
+  overwrite: false
   columns:
     - x
     - y

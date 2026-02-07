@@ -32,8 +32,8 @@ class GradientSolver:
     Computes sensitivities through observer dynamics and applies chain rule
     for gradient-based learning.
     """
-    
-    def __init__(self, observer_matrices: dict, sample_time: float):
+
+    def __init__(self,sample_time: float, observer_matrices: dict):
         """
         Initialize gradient solver
         
@@ -48,12 +48,17 @@ class GradientSolver:
         self.A = observer_matrices.get('A')
         self.C = observer_matrices.get('C')
         self.D = observer_matrices.get('D')
-        self.K = observer_matrices.get('K')
         self.Ts = sample_time
         
         # State dimension
         self.state_dim = self.A.shape[0] if self.A is not None else 4
-        self.output_dim = 2  # Tire force compensation dimension
+        
+        # Output dimension (unknown input dimension)
+        # Try to infer from D matrix if available, otherwise default to 2
+        if self.D is not None:
+            self.output_dim = self.D.shape[1]
+        else:
+            self.output_dim = 2  # Default (tire force residuals)
         
         # Loss scaling factor
         self.K_loss = 1.0
@@ -76,71 +81,9 @@ class GradientSolver:
             self.C = observer_matrices['C']
         if 'D' in observer_matrices:
             self.D = observer_matrices['D']
-        if 'K' in observer_matrices:
-            self.K = observer_matrices['K']
+
     
-    def gradient_solver_continuous(self, sensitivity: np.ndarray) -> np.ndarray:
-        """
-        Update sensitivity for continuous-time observer
-        
-        Equation: dx/df[k+1] = ((A + K·C) · dx/df[k] + I) · Ts + dx/df[k]
-        
-        Args:
-            sensitivity: Current sensitivity matrix dx/df (state_dim × output_dim)
-        
-        Returns:
-            Updated sensitivity matrix
-        """
-        # Compute observer dynamics matrix
-        A_obs = self.A + self.K @ self.C
-        
-        # Update sensitivity (Euler integration)
-        sensitivity_new = (A_obs @ sensitivity + np.eye(self.state_dim, self.output_dim)) * self.Ts + sensitivity
-        
-        return sensitivity_new
-    
-    def gradient_solver_continuous_with_D(self, sensitivity: np.ndarray) -> np.ndarray:
-        """
-        Update sensitivity for continuous-time observer with disturbance matrix
-        
-        Equation: dx/df[k+1] = ((A + K·C) · dx/df[k] + D) · Ts + dx/df[k]
-        
-        Args:
-            sensitivity: Current sensitivity matrix dx/df (state_dim × output_dim)
-        
-        Returns:
-            Updated sensitivity matrix
-        """
-        # Compute observer dynamics matrix
-        A_obs = self.A + self.K @ self.C
-        
-        # Update sensitivity with D matrix
-        sensitivity_new = (A_obs @ sensitivity + self.D) * self.Ts + sensitivity
-        
-        return sensitivity_new
-    
-    def gradient_solver_discrete(self, sensitivity: np.ndarray) -> np.ndarray:
-        """
-        Update sensitivity for discrete-time observer (constant matrices version)
-        
-        Equation: dx/df[k+1] = (A + K·C) · dx/df[k] + D
-        
-        Note: This uses matrices set at initialization. For LPV systems,
-              use gradient_solver_discrete_lpv() instead.
-        
-        Args:
-            sensitivity: Current sensitivity matrix dx/df (state_dim × output_dim)
-        
-        Returns:
-            Updated sensitivity matrix
-        """
-        # Compute observer dynamics matrix
-        A_obs = self.A + self.K @ self.C
-        
-        # Update sensitivity (discrete)
-        sensitivity_new = A_obs @ sensitivity + self.D
-        
-        return sensitivity_new
+
     
     def gradient_solver_discrete_lpv(self, sensitivity: np.ndarray,
                                       A: np.ndarray, L: np.ndarray, 
@@ -221,6 +164,49 @@ class GradientSolver:
             A_cl = I + dt * A
         
         E_d = dt * E
+        return A_cl @ sensitivity + E_d
+    
+    def gradient_solver_luenberger_discrete(self, sensitivity: np.ndarray,
+                                            A_d: np.ndarray, L: np.ndarray, 
+                                            E_d: np.ndarray, C: np.ndarray,
+                                            gps_valid: bool) -> np.ndarray:
+        """
+        Sensitivity for discrete-time Luenberger observer (ZOH discretized).
+        
+        This method uses pre-discretized matrices (A_d, E_d) from ZOH discretization,
+        ensuring consistency with the observer update step which uses:
+            x̂[k+1] = A_d·x̂[k] + B_d·u[k] + E_d·w[k] + L·(y[k] - C·x̂[k])
+        
+        Rearranging the observer equation:
+            x̂[k+1] = (A_d - L·C)·x̂[k] + B_d·u[k] + E_d·w[k] + L·y[k]
+        
+        The closed-loop dynamics matrix is: A_cl = A_d - L·C
+        
+        Differentiating w.r.t. unknown input w (neural network output f_nn):
+            ∂x̂[k+1]/∂f = (A_d - L·C) · ∂x̂[k]/∂f + E_d
+        
+        When GPS is invalid, no correction is applied (prediction only):
+            x̂[k+1] = A_d·x̂[k] + B_d·u[k] + E_d·w[k]
+            ∂x̂[k+1]/∂f = A_d · ∂x̂[k]/∂f + E_d
+        
+        Args:
+            sensitivity: Current sensitivity matrix dx/df (state_dim × output_dim)
+            A_d: Discrete-time state matrix A_d from ZOH (state_dim × state_dim)
+            L: Observer gain L (state_dim × meas_dim)
+            E_d: Discrete-time residual input matrix E_d from ZOH (state_dim × output_dim)
+            C: Output matrix (meas_dim × state_dim)
+            gps_valid: Whether GPS measurement is valid (correction applied)
+        
+        Returns:
+            Updated sensitivity matrix dx/df[k+1]
+        """
+        if gps_valid:
+            # Correction applied: A_cl = A_d - L·C
+            A_cl = A_d - L @ C
+        else:
+            # Prediction only: A_cl = A_d
+            A_cl = A_d
+        
         return A_cl @ sensitivity + E_d
     
     def chain_rule_reference_tracking(self,

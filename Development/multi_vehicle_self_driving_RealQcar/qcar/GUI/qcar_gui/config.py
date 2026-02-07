@@ -72,6 +72,29 @@ class ManualControlConfig:
     deadzone: float = 0.05
 
 
+@dataclass(frozen=True)
+class VehicleDeploymentConfig:
+    """Configuration for vehicle deployment (SSH connection and remote execution)."""
+    # SSH credentials
+    ssh_username: str = "nvidia"
+    ssh_password: str = "nvidia"
+    ssh_timeout: int = 10
+    
+    # Remote paths
+    remote_path: str = "/home/nvidia/Documents/multi_vehicle_RealCar"
+    
+    # Local scripts path (relative to GUI folder)
+    scripts_path: str = "../../qcar"
+    
+    # Default vehicle settings
+    default_ip_prefix: str = "192.168.2."
+    default_vehicle_type: str = "Qcar"
+    default_velocity: float = 0.6
+    
+    # Upload settings
+    upload_folders: tuple = ("StateMachine", "Yolo", "Observer", "V2V", "Controller")
+
+
 @dataclass
 class AppConfig:
     """Main application configuration container."""
@@ -79,6 +102,7 @@ class AppConfig:
     gui: GUIConfig = field(default_factory=GUIConfig)
     vehicle: VehicleConfig = field(default_factory=VehicleConfig)
     manual_control: ManualControlConfig = field(default_factory=ManualControlConfig)
+    deployment: VehicleDeploymentConfig = field(default_factory=VehicleDeploymentConfig)
     
     @classmethod
     def default(cls) -> 'AppConfig':
@@ -92,12 +116,14 @@ class AppConfig:
         gui_cfg = config_dict.get('gui', {})
         vehicle_cfg = config_dict.get('vehicle', {})
         manual_cfg = config_dict.get('manual_control', {})
+        deployment_cfg = config_dict.get('deployment', {})
         
         return cls(
             network=NetworkConfig(**network_cfg) if network_cfg else NetworkConfig(),
             gui=GUIConfig(**gui_cfg) if gui_cfg else GUIConfig(),
             vehicle=VehicleConfig(**vehicle_cfg) if vehicle_cfg else VehicleConfig(),
-            manual_control=ManualControlConfig(**manual_cfg) if manual_cfg else ManualControlConfig()
+            manual_control=ManualControlConfig(**manual_cfg) if manual_cfg else ManualControlConfig(),
+            deployment=VehicleDeploymentConfig(**deployment_cfg) if deployment_cfg else VehicleDeploymentConfig()
         )
 
 

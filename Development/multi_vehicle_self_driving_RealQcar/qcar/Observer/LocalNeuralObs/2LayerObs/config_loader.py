@@ -83,6 +83,7 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     flat['hidden_dim'] = nn.get('hidden_dim', 24)
     flat['output_dim'] = nn.get('output_dim', 2)
     flat['use_acceleration'] = nn.get('use_acceleration', False)
+    flat['disturbance_mode'] = nn.get('disturbance_mode', 'tire')
     
     # Learning parameters
     learn = config.get('learning', {})
@@ -135,6 +136,8 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     fl = config.get('first_layer', {})
     flat['use_first_layer'] = fl.get('enabled', True)
     flat['first_layer_type'] = fl.get('type', 'qlpv')
+    flat['output_first_layer_only'] = fl.get('output_first_layer_only', False)
+    flat['use_8d_system'] = fl.get('use_8d_system', False)
     
     # Model persistence
     model = config.get('model', {})
@@ -159,6 +162,8 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     recording = config.get('recording', {})
     flat['enable_recording'] = recording.get('enable_recording', False)
     flat['recording_output_dir'] = recording.get('output_dir', 'neural_obs_recordings')
+    flat['filename'] = recording.get('filename', None)
+    flat['recording_append_mode'] = recording.get('append_mode', False)
     
     return flat
 

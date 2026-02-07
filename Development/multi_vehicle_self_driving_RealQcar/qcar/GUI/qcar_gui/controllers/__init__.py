@@ -22,6 +22,12 @@ from .input_controller import (
     PYGAME_AVAILABLE,
 )
 
+from .vehicle_connector import (
+    VehicleConnector,
+    RemoteConfig,
+    GroundStationConfig,
+)
+
 __all__ = [
     # Remote controller
     'QCarRemoteController',
@@ -37,4 +43,9 @@ __all__ = [
     'SteeringWheelController',
     'ManualInputController',
     'PYGAME_AVAILABLE',
+    
+    # Vehicle connector
+    'VehicleConnector',
+    'RemoteConfig',
+    'GroundStationConfig',
 ]

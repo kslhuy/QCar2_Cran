@@ -23,6 +23,9 @@ neural_network:
   # Include IMU acceleration [a_x, a_y] in NN input (changes input_dim to 8)
   use_acceleration: false
 
+  # Disturbance estimation mode: 'tire' (default 2D: [w_r, w_f]) or 'general' (3D: [d_vx, d_vy, d_r])
+  disturbance_mode: 'tire'
+
 # ============================================================================
 # Learning Parameters
 # ============================================================================
@@ -31,13 +34,13 @@ learning:
   learning_rate: 0.005
   
   # Batch size for gradient accumulation
-  batch_size: 3
+  batch_size: 5
   
-  # Weight decay (L2 regularization)
+  # Weight decay (L2 regularization adam optimizer)
   weight_decay: 0.0
   
   # Regularization coefficient for f_nn - f_uk term
-  lambda_regularization: 0.2
+  lambda_regularization: 5.0
   
   # Learning mode: 'learningby_dict' (batch) or 'continuous_learning' (online)
   learning_mode: learningby_dict
@@ -48,7 +51,7 @@ learning:
   # Gradient computation method:
   #   - 'autodiff': PyTorch automatic differentiation (recommended, requires PyTorch)
   #   - 'analytical': Manual sensitivity propagation (faster, no PyTorch needed)
-  gradient_method: autodiff
+  gradient_method: analytical
 
 # ============================================================================
 # Observer Parameters
@@ -58,54 +61,74 @@ observer:
   observer_gain: 0.5
   
   # Sample time [seconds]
-  sample_time: 0.02
+  sample_time: 0.01
   
   # Minimum velocity threshold to avoid singularities [m/s]
-  min_vx: 0.5
+  # NOTE: Lower values allow estimation closer to zero but may cause numerical issues
+  min_vx: 0.1
 
 # ============================================================================
 # Observer Gain Design Configuration
 # ============================================================================
-# Advanced LMI-based gain design with H∞/L2 performance criteria
+# Advanced LMI-based gain design with H∞/L2/H2 performance criteria
+# Now supports discrete-time Schur-form LMI for robust observer design.
 #
 observer_gain_design:
+
+  # Use common Lyapunov matrix for robust stability guarantee
+  #   - true: Solves for a single P matrix common to all vertices.
+  #           Guarantees Quadratic Stability under arbitrary fast switching.
+  #           More conservative (harder to find a solution).
+  #   - false: Solves for a different P_i matrix for each vertex.
+  #            Guarantees stability at each frozen operating point.
+  #            Less conservative (easier to find solution) but theoretically 
+  #            permits instability during very fast transitions.
+  use_common_lyapunov: true
+
   # Gain design method:
   #   - 'default': Simple diagonal gains (fastest, no external dependencies)
   #   - 'lmi': Standard LMI-based Lyapunov design (requires CVXPY)
   #   - 'hinf': H∞ LMI design with bounded disturbance attenuation (recommended)
   #   - 'l2': L2-gain bounded LMI design
+  #   - 'h2': H2 norm minimization (energy-optimal)
+  #   - 'contraction': Pure stability with contraction rate
   #   - 'qlpv_scheduled': Polytopic qLPV gain scheduling (robust across operating range)
-  method: "hinf"
+  method: "qlpv_scheduled"
   
   # H∞ performance bound γ: ||error|| ≤ γ||disturbance||
   # Smaller = better attenuation but harder to satisfy (typical: 1.0-5.0)
-  hinf_gamma: 2.0
+  # NOTE: Higher values needed for 'general' (3D) disturbance mode
+  hinf_gamma: 50.0
   
   # L2 gain bound (for 'l2' method, typical: 1.0-3.0)
-  l2_gamma: 3.0
+  l2_gamma: 50.0
   
-  # Minimum exponential decay rate α for LMI (controls convergence speed)
+  # Minimum exponential decay rate α for continuous LMI (controls convergence speed)
   # Larger = faster convergence but may be infeasible (typical: 0.1-2.0)
   lmi_decay_rate: 0.5
   
+  # Contraction rate λ for discrete-time design (0 < λ < 1)
+  # Smaller = faster error decay, but may be infeasible (typical: 0.9-0.99)
+  contraction_rate: 0.96
+  
   # Nominal velocity for single-point LMI design [m/s]
-  nominal_vx: 1.5
+  nominal_vx: 0.5
   
   # Enable qLPV polytopic gain scheduling (works with any method as enhancement)
-  use_gain_scheduling: false
+  use_gain_scheduling: true
   
   # Velocity range for gain scheduling [m/s]
-  vx_range: [0.5, 3.0]
+  # NOTE: min_vx >= 0.5 recommended to avoid numerical issues in tire model
+  vx_range: [0.2, 2.0]
   
   # Maximum steering angle for scheduling [rad]
-  delta_max: 0.4
+  delta_max: 0.5
   
   # Number of polytope vertices
   n_vx_vertices: 3
   n_delta_vertices: 3
   
-  # Use common Lyapunov matrix for robust stability guarantee
-  use_common_lyapunov: true
+
 
 # ============================================================================
 # Loss Function Configuration
@@ -116,7 +139,7 @@ observer_gain_design:
 #
 loss:
   # Loss function type
-  type: measurement_full
+  type: composite_uio
 
 # ============================================================================
 # Weight Matrices for Loss Functions
@@ -126,40 +149,63 @@ loss:
 
 # Weights for standard measurement loss (6D state)
 weights_measurement:
-  v_x: 10.0
-  v_y: 20000.0
-  psi: 10.0
-  psi_dot: 20000.0
+  v_x: 3.0
+  v_y: 3.0 ## Seem not used , dont have v_y in measurement
+  psi: 3.0
+  psi_dot: 3.0
   X: 1.0
   Y: 1.0
 
 # Weights for composite UIO loss - reference tracking term
 weights_ref:
-  v_x: 5.0
-  v_y: 5.0
-  psi: 10.0
-  psi_dot: 5.0
-  X: 10.0
-  Y: 10.0
+  v_x: 5.0  ## Seem not used 
+  v_y: 5.0  ## Seem not used 
+  psi: 0.5
+  psi_dot: 3.0  ## Seem not used 
+  X: 1.0
+  Y: 1.0
 
 # Weights for composite UIO loss - UIO agreement term
 weights_uio:
-  v_x: 5.0
-  v_y: 10.0
-  psi: 5.0
-  psi_dot: 10.0
+  v_x: 1.0
+  v_y: 1.0
+  psi: 1.0
+  psi_dot: 1.0
   X: 1.0
   Y: 1.0
 
 # ============================================================================
 # First-Layer Observer Configuration
 # ============================================================================
+# Available first-layer observer types:
+#   - 'huy_uio': Linear observer with LMI-based gain design
+#             Best for: Well-understood dynamics, robust stability guarantees
+#   - 'qlpv': qLPV Augmented-State Observer with LMI-based gain design
+#             Best for: Well-understood dynamics, robust stability guarantees
+#   - 'qlpv_kalman': qLPV Augmented-State Observer with EKF-style Kalman gains
+#             Best for: Dynamic gain adaptation, handling varying noise levels
+#   - 'differentiator_uio': Differentiator + UIO observer with LMI gains
+#             Best for: Direct residual estimation, simpler structure
+#   - 'differentiator_uio_ekf': Differentiator + UIO observer with EKF gains
+#             Best for: Combining UIO robustness with EKF optimality
+#
 first_layer:
   # Enable two-layer architecture with first-layer observer
   enabled: true
   
-  # First-layer observer type: 'qlpv' or 'differentiator_uio'
-  type: qlpv
+  # First-layer observer type (see options above)
+  type: qlpv_kalman
+  
+  # If true, bypasses the neural network and returns only the first-layer estimate.
+  # Use this to run without neural correction/training while keeping logging structure.
+  output_first_layer_only: false
+
+  # Use 8D system (accelerations as states) for first-layer observer
+  use_8d_system: false
+
+  # Velocity threshold below which 1st layer observer overrides 2nd layer [m/s]
+  # Useful for start/stop scenarios where NN might be unstable.
+  override_threshold: 0.1
 
 # ============================================================================
 # Model Persistence
@@ -178,8 +224,15 @@ model:
 #
 recording:
   # Enable data recording to CSV
-  enable_recording: false
+  enable_recording: true
   
-  # Output directory for recordings (relative to working directory or absolute)
+  # Output directory for recordings (relative to LocalNeuralObs directory)
   output_dir: "neural_obs_recordings"
+  
+  # Specific filename (optional). If set, saves to this file instead of timestamped one.
+  # If append_mode is true, appends to this file.
+  filename: "neural_obs_2layer"
+  
+  # Append to existing file instead of creating new one
+  append_mode: true
 # ============================================================================

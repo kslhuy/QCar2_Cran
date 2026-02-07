@@ -11,10 +11,16 @@ from typing import Optional, Dict, Tuple
 from hal.content.qcar_functions import QCarEKF
 
 
+def wrap_to_pi(angle: float) -> float:
+    """Wrap angle to [-pi, pi)"""
+    return (angle + np.pi) % (2 * np.pi) - np.pi
+
 class LocalStateEstimatorBase(ABC):
     """Base class for all local state estimators"""
     
+
     def __init__(self, initial_pose: Optional[np.ndarray] = None, logger=None):
+
         """
         Initialize base state estimator
         
@@ -34,7 +40,7 @@ class LocalStateEstimatorBase(ABC):
     
     @abstractmethod
     def update(self, motor_tach: float, steering: float , throttle:float, dt: float, 
-               gyro_z: float = 0.0, gps_data: Optional[Dict] = None) -> bool:
+               gyro_z: float = 0.0, gps_data: Optional[Dict] = None , acceleration: Optional[np.ndarray] = None) -> bool:
         """
         Update state estimate with sensor data
         
@@ -44,7 +50,7 @@ class LocalStateEstimatorBase(ABC):
             dt: Time step
             gyro_z: Z-axis gyroscope reading (angular velocity)
             gps_data: Optional GPS data dict with keys: x, y, theta, valid
-            
+            acceleration: Optional acceleration data dict with keys: x, y, z, valid            
         Returns:
             True if update successful
         """
@@ -121,7 +127,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             self.ekf_initialized = False
     
     def update(self, motor_tach: float, steering: float, throttle:float, dt: float, 
-               gyro_z: float = 0.0, gps_data: Optional[Dict] = None) -> bool:
+               gyro_z: float = 0.0, gps_data: Optional[Dict] = None, acceleration: Optional[np.ndarray] = None) -> bool:
         """Update EKF with sensor data"""
         try:
             if self.use_qcar_ekf and self.ekf_initialized:
@@ -208,10 +214,16 @@ class EKFStateEstimator(LocalStateEstimatorBase):
                 
                 H = np.eye(self.state_dim)
                 y = z - state_pred
+                # Wrap heading residual
+                y[2] = wrap_to_pi(y[2])
+                
                 S = H @ P_pred @ H.T + self.R
                 K = P_pred @ H.T @ np.linalg.inv(S)
                 
                 self.state = state_pred + K @ y
+                # Wrap heading state
+                self.state[2] = wrap_to_pi(self.state[2])
+                
                 self.P = (np.eye(self.state_dim) - K @ H) @ P_pred
             else:
                 # Prediction only
@@ -269,7 +281,7 @@ class LuenbergerStateEstimator(LocalStateEstimatorBase):
         self.L = np.eye(self.state_dim) * observer_gain  # Observer gain matrix
     
     def update(self, motor_tach: float, steering: float, throttle:float, dt: float, 
-               gyro_z: float = 0.0, gps_data: Optional[Dict] = None) -> bool:
+               gyro_z: float = 0.0, gps_data: Optional[Dict] = None , acceleration: Optional[np.ndarray] = None) -> bool:
         """Update Luenberger observer"""
         try:
             x, y, theta, v = self.state
@@ -292,7 +304,10 @@ class LuenbergerStateEstimator(LocalStateEstimatorBase):
                 ])
                 
                 # Observer update: x_new = x_pred + L * (measurement - x_pred)
-                self.state = state_pred + self.L @ (measurement - state_pred)
+                residual = measurement - state_pred
+                residual[2] = wrap_to_pi(residual[2])
+                self.state = state_pred + self.L @ residual
+                self.state[2] = wrap_to_pi(self.state[2])
             else:
                 self.state = state_pred
             
@@ -376,8 +391,6 @@ class LocalEstimatorFactory:
         estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]
         return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
 
-        # # Pass config dict to estimators
-        # if estimator_type == 'ekf':
-        #     return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
-        # else:
-        #     return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
+        # Return the estimator instance
+        # estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]
+        # return estimator_class(initial_pose=initial_pose, config=config, logger=logger)

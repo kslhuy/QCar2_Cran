@@ -272,6 +272,18 @@ class RemoteScopeManager:
             self.parse_errors += 1
             print(f"[RemoteScopeManager] Error processing scope data: {e}")
     
+    def update_vehicle_info(self, car_id: int, info: Dict[str, Any]):
+        """
+        Update vehicle information (e.g. node sequence) from telemetry.
+        
+        Args:
+            car_id: Vehicle ID
+            info: Dictionary containing vehicle info
+        """
+        if car_id in self.viewers:
+            self.viewers[car_id].update_info(info)
+
+    
     def get_buffer(self, car_id: int) -> Optional[ScopeDataBuffer]:
         """Get the buffer for a vehicle."""
         return self.vehicle_buffers.get(car_id)
@@ -464,6 +476,15 @@ class RemoteScopeViewer:
         
         print(f"[ScopeViewer] Stopped viewer for Car {self.car_id}")
 
+    def update_info(self, info: Dict[str, Any]):
+        """Update viewer info (thread-safe)."""
+        if self.running and self._data_queue:
+            try:
+                # Send info packet with special 'info' key
+                self._data_queue.put_nowait({'info': info})
+            except:
+                pass
+
 
 def _run_scope_plot_process(car_id, field_names, data_queue, stop_event, fps, time_window):
     """
@@ -489,6 +510,40 @@ def _run_scope_plot_process(car_id, field_names, data_queue, stop_event, fps, ti
     # Latest data storage
     latest_data = {}
     
+    # Path generation
+    roadmap = None
+    path_generated = False
+    last_node_sequence = None
+    
+    def update_path(node_sequence):
+        nonlocal roadmap, path_generated, last_node_sequence
+        
+        # Avoid re-generating same path
+        if last_node_sequence == node_sequence:
+            return
+            
+        last_node_sequence = node_sequence
+        
+        try:
+            # Import SDCSRoadMap here to avoid dependency issues in main process if not needed
+            sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
+            from hal.products.mats import SDCSRoadMap
+            
+            if roadmap is None:
+                roadmap = SDCSRoadMap(leftHandTraffic=False, useSmallMap=True)
+            
+            # Generate path
+            waypoints = roadmap.generate_path(node_sequence)
+            
+            # Plot path
+            if 'trajectory_ref' in lines:
+                lines['trajectory_ref'].set_data(waypoints[0, :], waypoints[1, :])
+                path_generated = True
+                print(f"[ScopePlot] Generated path with {waypoints.shape[1]} points")
+                
+        except Exception as e:
+            print(f"[ScopePlot] Error generating path: {e}")
+
     def update(frame):
         nonlocal latest_data
         
@@ -500,17 +555,25 @@ def _run_scope_plot_process(car_id, field_names, data_queue, stop_event, fps, ti
         # Get latest data from queue
         try:
             while not data_queue.empty():
-                latest_data = data_queue.get_nowait()
+                packet = data_queue.get_nowait()
+                
+                # Check for info packet
+                if 'info' in packet:
+                    info = packet['info']
+                    if 'node_sequence' in info and info['node_sequence']:
+                         update_path(info['node_sequence'])
+                else:
+                    latest_data = packet
         except:
             pass
         
-        if not latest_data:
+        if not latest_data and not path_generated:
             return list(lines.values())
             
         # Update standard time-series lines
         for field, line in lines.items():
             # Skip special trajectory lines which are handled below
-            if field.startswith('traj_') or field == 'trajectory' or field == 'trajectory_gps':
+            if field.startswith('traj_') or field == 'trajectory' or field == 'trajectory_gps' or field == 'trajectory_ref':
                 continue
                 
             if field in latest_data and 't' in latest_data[field]:
@@ -536,7 +599,7 @@ def _run_scope_plot_process(car_id, field_names, data_queue, stop_event, fps, ti
                 min_len = min(len(x), len(y))
                 if min_len > 0:
                     lines['trajectory_gps'].set_data(x[:min_len], y[:min_len])
-
+ 
         # Update Fleet Trajectories (V0, V1, V2...)
         else:
             # We assume fleet_x_0, fleet_y_0, etc.
@@ -610,6 +673,10 @@ def _create_local_layout(plt, car_id, field_names):
     ax_traj.set_ylim(-5, 5)
     axes['trajectory'] = ax_traj
     
+    # Reference Path (Planned)
+    line_ref, = ax_traj.plot([], [], 'k--', lw=1.5, alpha=0.6, label='Planned')
+    lines['trajectory_ref'] = line_ref
+
     # Est path
     line, = ax_traj.plot([], [], 'b-', lw=2, label='Path Est')
     lines['trajectory'] = line
@@ -619,7 +686,7 @@ def _create_local_layout(plt, car_id, field_names):
 
     # GPS path
     if 'x_gps' in field_names:
-        line_gps, = ax_traj.plot([], [], 'r--', lw=1, label='GPS')
+        line_gps, = ax_traj.plot([], [], 'r.', markersize=3, label='GPS')
         lines['trajectory_gps'] = line_gps
     ax_traj.legend(loc='upper right', fontsize=8)
 
@@ -631,7 +698,7 @@ def _create_local_layout(plt, car_id, field_names):
     
     for f, c, s in [('velocity', 'b', '-'), ('v_ref', 'k', '--')]:
         if f in field_names:
-            l, = ax_vel.plot([], [], color=c, linestyle=s, label=f)
+            l, = ax_vel.plot([], [], color=c, linestyle='None', marker='.', markersize=2, label=f)
             lines[f] = l
     ax_vel.legend(fontsize=8)
 
@@ -641,10 +708,15 @@ def _create_local_layout(plt, car_id, field_names):
     ax_th.grid(True, alpha=0.3)
     axes['heading'] = ax_th
     
-    for f, c, s in [('theta', 'g', '-'), ('theta_gps', 'r', '--')]:
-        if f in field_names:
-            l, = ax_th.plot([], [], color=c, linestyle=s, label=f)
-            lines[f] = l
+    # Estimated Heading
+    if 'theta' in field_names:
+        l, = ax_th.plot([], [], color='g', linestyle='None', marker='.', markersize=2, label='theta')
+        lines['theta'] = l
+        
+    # GPS Heading (Scatter)
+    if 'theta_gps' in field_names:
+        l, = ax_th.plot([], [], 'r.', markersize=2, label='theta_gps')
+        lines['theta_gps'] = l
     ax_th.legend(fontsize=8)
 
     # 4. Controls (Bottom Left 2 cols)
@@ -656,7 +728,7 @@ def _create_local_layout(plt, car_id, field_names):
     
     for f, c in [('throttle', 'g'), ('steering', 'r')]:
         if f in field_names:
-            l, = ax_ctrl.plot([], [], color=c, label=f)
+            l, = ax_ctrl.plot([], [], color=c, linestyle='None', marker='.', markersize=2, label=f)
             lines[f] = l
     ax_ctrl.legend(fontsize=8)
     
@@ -722,7 +794,7 @@ def _create_fleet_layout(plt, car_id, field_names):
         c = colors[i % len(colors)]
         f = f'fleet_v_{i}'
         if f in field_names:
-            l, = ax_vel.plot([], [], color=c, label=f'V{i}')
+            l, = ax_vel.plot([], [], color=c, linestyle='None', marker='.', markersize=2, label=f'V{i}')
             lines[f] = l
     
     # 3. Consensus (Mid Right)
@@ -732,7 +804,7 @@ def _create_fleet_layout(plt, car_id, field_names):
     axes['consensus'] = ax_con
     
     if 'consensus_error' in field_names:
-        l, = ax_con.plot([], [], 'k-', label='Error')
+        l, = ax_con.plot([], [], 'k.', markersize=2, label='Error')
         lines['consensus_error'] = l
     
     # 4. Trust (Bottom Left)
@@ -747,7 +819,7 @@ def _create_fleet_layout(plt, car_id, field_names):
         c = colors[i % len(colors)]
         f = f'trust_{i}'
         if f in field_names:
-            l, = ax_trust.plot([], [], color=c, linestyle='--', label=f'T{i}')
+            l, = ax_trust.plot([], [], color=c, linestyle='None', marker='.', markersize=2, label=f'T{i}')
             lines[f] = l
     ax_trust.legend(fontsize=8)
     

@@ -6,15 +6,19 @@
 
 Edit `config.txt` with your IPs , and the real car
 
-# Start GUI (in another terminal)
+#  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
-python .\enhanced_gui_controller.py
+python .\app_main.py
+# You can connect fully with the GUI 
 
+
+# -----  OLDS stuff -------
 # Start all vehicles (in another terminal)
 cd .\Development\multi_vehicle_self_driving_RealQcar      
 
-.\start_refactored.bat 
-
+# .\start_refactored.bat 
+.\start_enhanced.bat 
+fleet_config.yaml is that file need to put correct IP adresse
 
 (Wait its will run automatique)
 
@@ -37,8 +41,6 @@ python .\initCars.py
 
 #  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
-python .\enhanced_gui_controller.py
-or
 python .\app_main.py
 
 
@@ -61,12 +63,12 @@ python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
 ```powershell
 # Start GUI 
 
-cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
+cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI     
 python .\app_main.py
 
 
 # Test with fake vehicles (no hardware , no Qlabs , math equation)
-cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\    
+cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\simulation    
 python fake_vehicle_real_logic.py 0
 
 # Test with fake vehicles (with parameter Qcar ) (no hardware , no Qlabs)
@@ -107,15 +109,6 @@ REMOTE_PATH=/home/nvidia/Documents/multi_vehicle_RealCar
 ```
 
 
-
-
-## 🚀 Next Steps
-0. Fix multiproing class to see all the cameras of each vehicle conntected
-1. Refactory the code 
-4. Implement the observer developed 
-5. New GUI ?? 
-![alt text](img_readme/image-1.png)
----
 
 
 **Platform**: Windows + QCar Hardware

@@ -40,6 +40,13 @@ from .status_panels import (
     HeaderWidget,
 )
 
+from .vehicle_connection_panel import (
+    VehicleConnectionConfig,
+    ConnectionCallbacks,
+    VehicleConnectionPanel,
+    FleetConnectionPanel,
+)
+
 __all__ = [
     # Base widgets
     'BaseWidget',
@@ -72,4 +79,10 @@ __all__ = [
     'StatusPanelWidget',
     'LogPanelWidget',
     'HeaderWidget',
+    
+    # Vehicle connection
+    'VehicleConnectionConfig',
+    'ConnectionCallbacks',
+    'VehicleConnectionPanel',
+    'FleetConnectionPanel',
 ]
