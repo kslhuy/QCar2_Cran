@@ -92,7 +92,7 @@ try:
             brakeSignal=False,
             reverseSignal=False,
         )
-        print(f"✓ Car {car_id} transform set to default!")
+        print(f"[OK] Car {car_id} transform set to default!")
 
     print("All vehicles configured with default transforms.")
 

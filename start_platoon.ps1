@@ -1,4 +1,4 @@
-# 启动编队：先运行 initPlatoon.py，在确认配置完成后同时启动四辆车
+﻿# 启动编队：先运行 initPlatoon.py，在确认配置完成后同时启动四辆车
 
 # 获取当前脚本所在目录（项目根目录）
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -51,13 +51,20 @@ $successPattern = "All vehicles configured with default transforms."
 
 if ($initLines -match $successPattern) {
     Write-Host "[start_platoon] 检测到成功信息：'$successPattern'" -ForegroundColor Green
-    Write-Host "[start_platoon] 即将同时启动四辆车..." -ForegroundColor Green
+    Write-Host "[start_platoon] 即将依次启动四辆车（每辆间隔2秒）..." -ForegroundColor Green
 
     # 直接在正确路径下启动 4 辆车（car-id 0~3）
+    # 添加启动延迟以避免并发访问配置文件导致的 JSON 解析错误
     for ($carId = 0; $carId -lt 4; $carId++) {
         $cmd = "cd `"$qcarFolder`"; & `"$activateScript`"; python vehicle_main.py --car-id $carId"
         Write-Host "[start_platoon] 启动车辆 car-id=$carId" -ForegroundColor Cyan
         Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmd
+        
+        # 在启动下一辆车之前等待2秒，避免并发访问配置文件
+        if ($carId -lt 3) {
+            Write-Host "[start_platoon] 等待 2 秒后启动下一辆车..." -ForegroundColor DarkGray
+            Start-Sleep -Seconds 2
+        }
     }
 }
 else {

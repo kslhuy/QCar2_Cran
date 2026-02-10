@@ -188,7 +188,7 @@ per_vehicle_controllers:
     longitudinal_controller_type: 'fix'  # Fixed throttle for leader
     lateral_controller_type: 'fix_lateral'  # Straight line
     fix:
-      throttle: 0.075  # Constant speed 
+      throttle: 0.15  # Constant speed 
     fix_lateral:
       steering: 0.0
   

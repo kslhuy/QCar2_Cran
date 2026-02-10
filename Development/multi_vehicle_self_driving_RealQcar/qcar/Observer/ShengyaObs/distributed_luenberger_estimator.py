@@ -213,7 +213,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # K_matrices[vehicle_id][j] = K_{vehicle_id,j}
         self.K_all_vehicles = {
             1: {
-                0: np.array([[-0.1729,-0.4856,-0.0746]])
+                0: np.array([[-0.1679, -0.4059, -0.0609]])
             },
             2: {
                 0: np.array([[-0.1766,-0.4659,-0.0822]]),
@@ -635,16 +635,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             estimated_state: Distributed observer state vector [3*observer_size]
             di0_values: Array of di0 values for each follower vehicle [observer_size]
         """
-        # Validate input dimensions BEFORE processing
-        if fleet_states.shape[1] != self.fleet_size:
-            if self.logger:
-                self.logger.logger.error(
-                    f"Vehicle {self.vehicle_id}: CRITICAL - fleet_states dimension mismatch in _transfer_fleet_states_to_estimated_states! "
-                    f"Expected fleet_size={self.fleet_size}, got shape={fleet_states.shape}. "
-                    f"This will cause observer_size mismatch. Using self.fleet_states instead."
-                )
-            # Use the instance fleet_states which should have correct dimensions
-            fleet_states = self.fleet_states
+
+        fleet_states = self.fleet_states
         
         # Get leader (vehicle 0) absolute state
         state_leader = self._get_latest_received_state(0, current_time_ns)
@@ -806,7 +798,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # Distributed observer state (x_vec: pi-p0+di0, vi-v0, ai-a0)
         x_vec, di0_values_before = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
         
-
+        
         # Get leader state with fallback to current estimate
         state_leader = self._get_latest_received_state(0, current_time_ns)
         if state_leader is not None:
@@ -833,29 +825,27 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # Vehicle 3: u3 = K30 @ F3 @ x_vec + K31 @ (F3-F1) @ x_vec + K32 @ (F3-F2) @ x_vec
         collective_control = np.zeros(self.observer_size)
         
-        for vehicle_id in range(1, self.observer_size + 1):
-            # Calculate Fi for current vehicle
-            Fi = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=vehicle_id)
+        # for vehicle_id in range(1, self.observer_size + 1):
+        #     # Calculate Fi for current vehicle
+        #     Fi = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=vehicle_id)
             
-            # Check if K matrices exist for this vehicle
-            if vehicle_id in self.K_all_vehicles:
-                # First term: Ki0 @ Fi @ x_vec
-                if 0 in self.K_all_vehicles[vehicle_id]:
-                    Ki0 = self.K_all_vehicles[vehicle_id][0]
-                    collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0], 0.15)  # Limit max control to 0.15
+        #     # Check if K matrices exist for this vehicle
+        #     if vehicle_id in self.K_all_vehicles:
+        #         # First term: Ki0 @ Fi @ x_vec
+        #         if 0 in self.K_all_vehicles[vehicle_id]:
+        #             Ki0 = self.K_all_vehicles[vehicle_id][0]
+        #             collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0], 0.15)  # Limit max control to 0.15
                 
-                # Sum over preceding vehicles j=1 to i-1
-                # Add terms: Kij @ (Fi - Fj) @ x_vec
-                for j in range(1, vehicle_id):
-                    if j in self.K_all_vehicles[vehicle_id]:
-                        Kij = self.K_all_vehicles[vehicle_id][j]
-                        Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
-                        collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]
-                        collective_control = np.clip(collective_control, 0, 0.15)  # Limit control input
+        #         # Sum over preceding vehicles j=1 to i-1
+        #         # Add terms: Kij @ (Fi - Fj) @ x_vec
+        #         for j in range(1, vehicle_id):
+        #             if j in self.K_all_vehicles[vehicle_id]:
+        #                 Kij = self.K_all_vehicles[vehicle_id][j]
+        #                 Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
+        #                 collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]
+        #                 collective_control = np.clip(collective_control, 0, 0.15)  # Limit control input
         
-        # Keep collective_control as 1D array to avoid dimension issues
-        # collective_control shape: (observer_size,) = (3,)
-        # B_delta shape: (9, 3), so B_delta @ collective_control will be (9,) 1D array
+       
 
         # Use throttle as control input for all follower vehicles
         # collective_control = np.full(self.observer_size, control[1])
@@ -1049,16 +1039,15 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             consensus_term = np.zeros(dim_distributed_observer)
         
         # consensus_term = self.consensus_gain @ consensus_accum 
-        x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
+        # x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
         
         # State constraint: prevent numerical overflow
-        x_i_new = np.clip(x_i_new, -1e3, 1e3)
+        # x_i_new = np.clip(x_i_new, -1e3, 1e3)
 
         x_i_new = self._fake_estimated_state_for_debugging(
                 self.estimated_state, local_state, current_time_ns
             )
 
-        
         
         # === Store debug data for recording ===
         if self.debug_recording_enabled:
