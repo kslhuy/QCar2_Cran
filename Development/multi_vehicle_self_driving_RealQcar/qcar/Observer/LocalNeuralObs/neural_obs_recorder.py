@@ -118,9 +118,12 @@ class NeuralObsRecorder:
             # Tire force debugging columns (only for tire mode)
             cols.extend(['Fyr_true', 'Fyf_true', 'Fyr_linear', 'Fyf_linear', 'alpha_r', 'alpha_f'])
             
+            # Observer tire force estimates (both modes)
+            cols.extend(['Fyr_est', 'Fyf_est', 'Fyr_linear_only', 'Fyf_linear_only', 'alpha_r_est', 'alpha_f_est'])
+            
             # Layer 1 and Layer 2 tire force estimates (only in 2-layer mode)
             if self.mode == '2layer':
-                cols.extend(['Fyr_layer_1', 'Fyf_layer_1', 'alpha_r_layer_1', 'alpha_f_layer_1'])
+                cols.extend(['Fyr_layer_1', 'Fyf_layer_1', 'Fyr_linear_only_1', 'Fyf_linear_only_1', 'alpha_r_layer_1', 'alpha_f_layer_1'])
                 cols.extend(['Fyr_layer_2', 'Fyf_layer_2', 'alpha_r_layer_2', 'alpha_f_layer_2'])
             
         # 5. Measurements & Inputs & Stats
@@ -212,7 +215,10 @@ class NeuralObsRecorder:
                       steering: float = 0.0,
                       throttle: float = 0.0,
                       gps_valid: bool = False,
-                      true_unknown_input: Optional[np.ndarray] = None):
+                      true_unknown_input: Optional[np.ndarray] = None,
+                      tire_info_true: Optional[Dict] = None,
+                      tire_info_est: Optional[Dict] = None,
+                      state_true_6d: Optional[np.ndarray] = None):
         """
         Record a single data sample for 1-layer observer.
         
@@ -225,6 +231,9 @@ class NeuralObsRecorder:
             throttle: Throttle command
             gps_valid: Whether GPS was valid for this update
             true_unknown_input: Ground truth [w_r, w_f] (optional, for sim verification)
+            tire_info_true: Ground truth tire info from plant (Fyr_true, Fyf_true, etc.)
+            tire_info_est: Observer's tire force estimates (Fyr_est, Fyf_est, etc.)
+            state_true_6d: Ground truth state [vx, vy, psi, r, X, Y]
         """
         if not self.recording or self.writer is None or self.mode != '1layer':
             return
@@ -261,6 +270,34 @@ class NeuralObsRecorder:
             
             # GPS status
             row['gps_valid'] = 1 if gps_valid else 0
+            
+            # Tire force info (true from plant)
+            if self.disturbance_mode == 'tire':
+                if tire_info_true is not None:
+                    row['Fyr_true'] = tire_info_true.get('Fyr_true', 0.0)
+                    row['Fyf_true'] = tire_info_true.get('Fyf_true', 0.0)
+                    row['Fyr_linear'] = tire_info_true.get('Fyr_linear', 0.0)
+                    row['Fyf_linear'] = tire_info_true.get('Fyf_linear', 0.0)
+                    row['alpha_r'] = tire_info_true.get('alpha_r', 0.0)
+                    row['alpha_f'] = tire_info_true.get('alpha_f', 0.0)
+                
+                # Observer's estimated tire forces
+                if tire_info_est is not None:
+                    row['Fyr_est'] = tire_info_est.get('Fyr_est', 0.0)
+                    row['Fyf_est'] = tire_info_est.get('Fyf_est', 0.0)
+                    row['Fyr_linear_only'] = tire_info_est.get('Fyr_linear_only', 0.0)
+                    row['Fyf_linear_only'] = tire_info_est.get('Fyf_linear_only', 0.0)
+                    row['alpha_r_est'] = tire_info_est.get('alpha_r', 0.0)
+                    row['alpha_f_est'] = tire_info_est.get('alpha_f', 0.0)
+            
+            # Ground truth state
+            if state_true_6d is not None:
+                row['vx_true'] = state_true_6d[0]
+                row['vy_true'] = state_true_6d[1]
+                row['psi_true'] = state_true_6d[2]
+                row['r_true'] = state_true_6d[3]
+                row['X_true'] = state_true_6d[4]
+                row['Y_true'] = state_true_6d[5]
             
             self.writer.writerow(row)
             self.record_count += 1
@@ -400,22 +437,44 @@ class NeuralObsRecorder:
                     row['alpha_r'] = 0.0
                     row['alpha_f'] = 0.0
                 
+                # Observer's combined tire force estimates (best available estimate)
+                # In 2-layer mode, use Layer 2 estimates if available, else Layer 1
+                best_est = tire_info_layer_2 if tire_info_layer_2 is not None else tire_info_layer_1
+                if best_est is not None:
+                    row['Fyr_est'] = best_est.get('Fyr_est', 0.0)
+                    row['Fyf_est'] = best_est.get('Fyf_est', 0.0)
+                    row['Fyr_linear_only'] = best_est.get('Fyr_linear_only', 0.0)
+                    row['Fyf_linear_only'] = best_est.get('Fyf_linear_only', 0.0)
+                    row['alpha_r_est'] = best_est.get('alpha_r', 0.0)
+                    row['alpha_f_est'] = best_est.get('alpha_f', 0.0)
+                else:
+                    row['Fyr_est'] = 0.0
+                    row['Fyf_est'] = 0.0
+                    row['Fyr_linear_only'] = 0.0
+                    row['Fyf_linear_only'] = 0.0
+                    row['alpha_r_est'] = 0.0
+                    row['alpha_f_est'] = 0.0
+                
                 # Layer 1 tire force estimates
                 if tire_info_layer_1 is not None:
-                    row['Fyr_layer_1'] = tire_info_layer_1.get('Fyr_linear_est', 0.0)
-                    row['Fyf_layer_1'] = tire_info_layer_1.get('Fyf_linear_est', 0.0)
+                    row['Fyr_layer_1'] = tire_info_layer_1.get('Fyr_est', tire_info_layer_1.get('Fyr_linear_est', 0.0))
+                    row['Fyf_layer_1'] = tire_info_layer_1.get('Fyf_est', tire_info_layer_1.get('Fyf_linear_est', 0.0))
+                    row['Fyr_linear_only_1'] = tire_info_layer_1.get('Fyr_linear_only', 0.0)
+                    row['Fyf_linear_only_1'] = tire_info_layer_1.get('Fyf_linear_only', 0.0)
                     row['alpha_r_layer_1'] = tire_info_layer_1.get('alpha_r', 0.0)
                     row['alpha_f_layer_1'] = tire_info_layer_1.get('alpha_f', 0.0)
                 else:
                     row['Fyr_layer_1'] = 0.0
                     row['Fyf_layer_1'] = 0.0
+                    row['Fyr_linear_only_1'] = 0.0
+                    row['Fyf_linear_only_1'] = 0.0
                     row['alpha_r_layer_1'] = 0.0
                     row['alpha_f_layer_1'] = 0.0
                 
                 # Layer 2 tire force estimates
                 if tire_info_layer_2 is not None:
-                    row['Fyr_layer_2'] = tire_info_layer_2.get('Fyr_linear_est', 0.0)
-                    row['Fyf_layer_2'] = tire_info_layer_2.get('Fyf_linear_est', 0.0)
+                    row['Fyr_layer_2'] = tire_info_layer_2.get('Fyr_est', tire_info_layer_2.get('Fyr_linear_est', 0.0))
+                    row['Fyf_layer_2'] = tire_info_layer_2.get('Fyf_est', tire_info_layer_2.get('Fyf_linear_est', 0.0))
                     row['alpha_r_layer_2'] = tire_info_layer_2.get('alpha_r', 0.0)
                     row['alpha_f_layer_2'] = tire_info_layer_2.get('alpha_f', 0.0)
                 else:

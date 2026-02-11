@@ -741,11 +741,37 @@ class StateBase:
                 self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
                 
                 # Create YOLOReceiver to connect to the server
-                yolo_receiver = YOLOReceiver(
-                    ip='localhost',
-                    nonBlocking=True,
-                    port=yolo_port
-                )
+                # The YOLO server may still be loading the ML model, so we retry connection
+                yolo_receiver = None
+                max_retries = 5
+                for attempt in range(max_retries):
+                    try:
+                        self.logger.logger.info(f"[PERCEPTION] Connecting YOLOReceiver (attempt {attempt + 1}/{max_retries})...")
+                        yolo_receiver = YOLOReceiver(
+                            ip='localhost',
+                            nonBlocking=True,
+                            port=yolo_port
+                        )
+                        if yolo_receiver._handle.connected:
+                            self.logger.logger.info(f"[PERCEPTION] [✓] YOLOReceiver connected on port {yolo_port}")
+                            break
+                        else:
+                            self.logger.logger.warning(f"[PERCEPTION] YOLOReceiver not connected yet, retrying in 3s...")
+                            # Terminate the failed receiver before retrying
+                            try:
+                                yolo_receiver.terminate()
+                            except:
+                                pass
+                            yolo_receiver = None
+                            time.sleep(3.0)
+                    except Exception as e:
+                        self.logger.logger.warning(f"[PERCEPTION] YOLOReceiver creation failed: {e}, retrying in 3s...")
+                        time.sleep(3.0)
+                
+                if yolo_receiver is None or not yolo_receiver._handle.connected:
+                    self.logger.logger.warning(f"[PERCEPTION] YOLOReceiver not connected after {max_retries} attempts, proceeding anyway (will reconnect later)")
+                    if yolo_receiver is None:
+                        yolo_receiver = YOLOReceiver(ip='localhost', nonBlocking=True, port=yolo_port)
             else:
 
 
@@ -803,9 +829,11 @@ class StateBase:
                 
                 self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
                 # Create YOLOReceiver to connect to the server
+                yolo_port = f'1866{vehicle_id}'
                 yolo_receiver = YOLOReceiver(
                     ip='localhost',
                     nonBlocking=True,
+                    port=yolo_port
                 )
 
             

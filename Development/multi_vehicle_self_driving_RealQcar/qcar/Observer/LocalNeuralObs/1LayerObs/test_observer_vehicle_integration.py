@@ -190,6 +190,7 @@ def test_scenario_with_all_observers(scenario_name: str, vehicle: QLPVVehicleMod
         # Get ground truth
         true_state = vehicle.get_observer_state()
         true_w = vehicle.get_true_residuals()
+        tire_info_true = vehicle.get_tire_info() if hasattr(vehicle, 'get_tire_info') else None
         
         # Update each observer
         for name, obs in observers.items():
@@ -197,6 +198,9 @@ def test_scenario_with_all_observers(scenario_name: str, vehicle: QLPVVehicleMod
             control_obs = np.array([vehicle.state[2], control[1]])
             
             state_est, w_est = obs.update(measurement, control_obs)
+            
+            # Get observer's tire force estimates
+            tire_info_est = getattr(obs, 'tire_info_layer_1', None)
             
             # Record data
             # Convert measurement array to dict
@@ -219,7 +223,10 @@ def test_scenario_with_all_observers(scenario_name: str, vehicle: QLPVVehicleMod
                 steering=control[0],
                 throttle=control[1],
                 gps_valid=True,
-                true_unknown_input=true_w.copy()
+                true_unknown_input=true_w.copy(),
+                tire_info_true=tire_info_true,
+                tire_info_est=tire_info_est,
+                state_true_6d=true_state.copy()
             )
             
             # Compute errors

@@ -54,7 +54,7 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 from neural_network import (
-    NeuralObserverNet, LearningBatch, ModelQueue,
+    NeuralObserverNet, LearningBatch, SelectiveLearningBatch, ModelQueue,
     save_model, load_model, create_optimizer
 )
 from gradient_solver import GradientSolver, create_weight_matrix
@@ -261,7 +261,13 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # Learning components
         self.learning_mode = self.config['learning_mode']
         if self.learning_mode == 'learningby_dict':
-            self.learning_batch = LearningBatch(self.config['dict_size'])
+            self.learning_batch = SelectiveLearningBatch(
+                max_size=self.config['dict_size'],
+                novelty_threshold=self.config.get('novelty_threshold', 0.05),
+                min_excitation=self.config.get('min_excitation', 0.02),
+                excitation_bonus_weight=self.config.get('excitation_bonus_weight', 2.0),
+                use_diversity_replacement=self.config.get('use_diversity_replacement', True)
+            )
         elif self.learning_mode == 'continuous_learning':
             self.model_queue = ModelQueue(
                 self.input_dim,
@@ -307,8 +313,10 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         self.state_uio = np.zeros(self.INTERNAL_STATE_DIM)
 
         self.tire_info_layer_2 = {
-            'Fyr_linear_est': 0,
-            'Fyf_linear_est': 0,
+            'Fyr_est': 0,
+            'Fyf_est': 0,
+            'Fyr_linear_only': 0,
+            'Fyf_linear_only': 0,
             'alpha_r': 0,
             'alpha_f': 0,
         }
@@ -647,7 +655,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         if gps_valid:
             return self.dynamics.compute_C_matrix(rho, mode='5D_GPS_IMU')
         else:
-            return self.dynamics.compute_C_matrix(rho, mode='4D_IMU_ONLY')
+            # IMU-only: select only vx (row 0) and r (row 1) → 2×6 matrix
+            return self.dynamics.compute_C_matrix(rho, active_indices=[MEAS_IDX_VX, MEAS_IDX_R])
     
     def _get_L_avail(self, gps_valid: bool) -> np.ndarray:
         """
@@ -846,7 +855,6 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 
                 # ========== PHASE 5: STATE UPDATE (Discrete Predict + Correct) ==========
                 # self.f_nn = self.f_nn.squeeze()  # Ensure f_nn is correct shape for dynamics
-                self.tire_info_layer_2 =  self.dynamics._calculate_tire_info(self.state_nn_6d[IDX_VX] , self.state_nn_6d[IDX_VY] , self.state_nn_6d[IDX_R] , steering , self.f_nn[0] , self.f_nn[1] )
                 # Discrete-time observer: x̂[k+1] = A_d·x̂[k] + B_d·u[k] + E_d·w[k] + L·(y[k] - C·x̂[k])
                 # This structure matches the discrete-time LMI gain design.
                 #
@@ -889,7 +897,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 
                 # Sync with base class state (4D)
                 self.state = self._extract_4d_state()
-                
+                self.tire_info_layer_2 =  self.dynamics._calculate_tire_info(self.state_nn_6d[IDX_VX] , self.state_nn_6d[IDX_VY] , self.state_nn_6d[IDX_R] , steering , self.f_nn[0] , self.f_nn[1] )
+
                 # ========== PHASE 6: SENSITIVITY UPDATE (matches Phase 5) ==========
                 # Use discrete Luenberger sensitivity matching ZOH discretization and actual sensor usage
                 # Pass L_avail and C_avail to correctly capture the actual closed-loop dynamics (including IMU feedback)
@@ -917,14 +926,6 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 }
                 # Get last loss from history if available
                 last_loss = self.loss_history[-1] if self.loss_history else 0.0
-                # Debug: Extract Yaw Gain and Innovation of 2 layer
-                L_psi_val = 0.0
-                innov_psi_val = 0.0
-                if not self.output_first_layer_only:
-                    if gps_valid:
-                        # L_avail is full 6x5. Psi state is row 2. Psi meas is col 2.
-                        L_psi_val = float(L_avail[self.IDX_PSI, 2])
-                    # innov_psi_val = float(innovation[2])
                 
                 # Fetch Ground Truth if available (Sim only)
                 state_true_6d = None
@@ -934,7 +935,6 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 if self.ground_truth_provider is not None:
                     try:
                         state_true_6d = self.ground_truth_provider.get_true_state()
-                        unknown_input_true = self.ground_truth_provider.get_true_residuals()
                         
                         if hasattr(self.ground_truth_provider, 'get_true_disturbances'):
                             disturbances_true = self.ground_truth_provider.get_true_disturbances()
@@ -942,6 +942,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                         # Get tire force info for debugging residual estimation
                         if hasattr(self.ground_truth_provider, 'get_tire_info'):
                             tire_info = self.ground_truth_provider.get_tire_info()
+                            unknown_input_true = self.ground_truth_provider.get_true_residuals()
+
                     except Exception:
                         pass
 
@@ -1126,8 +1128,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             return
         
         if self.learning_mode == 'learningby_dict':
-            # Dictionary-based learning
-            self.learning_batch.add_feature(
+            # Dictionary-based learning with selective data curation
+            accepted = self.learning_batch.add_feature(
                 nn_input,
                 self.f_nn,
                 self.state_nn_6d,
@@ -1136,6 +1138,16 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 self.dx_df,
                 self.update_count
             )
+            
+            # Log selective learning stats periodically
+            if hasattr(self.learning_batch, 'get_stats') and self.update_count % 500 == 0:
+                stats = self.learning_batch.get_stats()
+                if self.logger:
+                    self.logger.logger.info(
+                        f"Dict stats: accepted={stats['total_accepted']}/{stats['total_offered']} "
+                        f"({stats['acceptance_rate']:.1%}), size={stats['current_size']}, "
+                        f"avg_excitation={stats['avg_excitation']:.3f}"
+                    )
             
             if len(self.learning_batch) >= self.batch_size:
                 self._train_on_batch(nn_input, dL_df)

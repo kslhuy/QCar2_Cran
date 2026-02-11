@@ -112,21 +112,21 @@ class FollowingPathState(StateBase):
         if self._use_mpc and MPC_AVAILABLE:
             try:
                 mpc_params = {
-                    'horizon': 12,           # 12×0.05=0.6s lookahead (shorter = less corner cutting)
+                    'horizon': 15,           # 15×0.05=0.75s lookahead (enough to see curves)
                     'dt_mpc': 0.05,
-                    'Q_pos': 500.0,          # Very high: stay ON the path (anti corner-cut)
-                    'Q_heading': 300.0,      # Very high: align with path tangent
-                    'Q_vel': 10.0,           # Moderate: reach target velocity
-                    'R_delta': 1.0,          # Very low: don't penalize steering
-                    'R_acc': 1.0,            # Very low: don't penalize acceleration
-                    'R_delta_rate': 3.0,     # Very low: allow fast steering changes
-                    'R_acc_rate': 3.0,       # Very low: allow throttle changes
-                    'Qf_pos': 500.0,         # Strong terminal position
-                    'Qf_heading': 500.0,     # Strong terminal heading
-                    'Qf_vel': 10.0,
-                    'path_lookahead_scale': 0.4,  # Compress lookahead (less curve preview)
+                    'Q_pos': 200.0,          # Position tracking (moderate to avoid over-correction)
+                    'Q_heading': 100.0,      # Heading tracking (align with path tangent)
+                    'Q_vel': 50.0,           # Higher velocity weight: maintain forward speed!
+                    'R_delta': 5.0,          # Moderate: smooth steering
+                    'R_acc': 5.0,            # Moderate: smooth throttle
+                    'R_delta_rate': 15.0,    # Penalize jerky steering
+                    'R_acc_rate': 15.0,      # Penalize jerky throttle (prevents oscillation)
+                    'Qf_pos': 200.0,         # Terminal position
+                    'Qf_heading': 200.0,     # Terminal heading
+                    'Qf_vel': 50.0,          # Terminal velocity (keep moving!)
+                    'path_lookahead_scale': 1,  # More lookahead for smoother curves
                     'desired_spacing': 0.5,
-                    'max_steering_rate': 3.0,  # Allow very fast steering
+                    'max_steering_rate': 1.0,  # Reasonable steering rate
                 }
                 # Use factory to create standalone MPC (auto-loads QCar vehicle params)
                 self.mpc_controller = MPCControllerFactory.create(
@@ -362,7 +362,8 @@ class FollowingPathState(StateBase):
             }
             # leader_state=None → MPC uses waypoints for reference trajectory
             u, delta = self.mpc_controller.compute_control(follower_state, leader_state=None, dt=dt)
-            
+            u = np.clip(u, -0.1, 0.1)
+    
             # Periodic MPC logging
             if hasattr(self.vehicle_logic, 'loop_counter') and self.vehicle_logic.loop_counter % 200 == 0:
                 wpi = self.mpc_controller.get_waypoint_index()

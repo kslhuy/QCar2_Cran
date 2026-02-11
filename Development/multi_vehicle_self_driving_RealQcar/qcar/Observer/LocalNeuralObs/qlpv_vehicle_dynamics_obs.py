@@ -931,7 +931,7 @@ class QLPVVehicleDynamicsObs:
             ay,
         ])
     
-    def _calculate_tire_info(self, vx: float, vy: float, r: float, delta: float ,w_r , w_f, Cf: float = 200, Cr: float = 200):
+    def _calculate_tire_info(self, vx: float, vy: float, r: float, delta: float ,w_r , w_f, Cf: float = None, Cr: float = None):
         """
         Calculate and store tire information (ground truth and residuals).
         
@@ -962,19 +962,25 @@ class QLPVVehicleDynamicsObs:
         alpha_r = -(vy - lr * r) / vx_safe
         
         #  Compute linear tire forces (in observer, we use linear tire forces)
-        
-        Fyf_linear  = Cf * alpha_f + w_r 
-        Fyr_linear = Cr * alpha_r + w_f
+        #  Total force = linear part + residual: Fyf = Cf*alpha_f + w_f, Fyr = Cr*alpha_r + w_r
+        # Fyf_linear  = Cf * alpha_f + w_f 
+        # Fyr_linear = Cr * alpha_r + w_r
 
-        
+        Fyf_linear  = Cf * alpha_f  
+        Fyr_linear = Cr * alpha_r
+
         # # Store residuals for observer access
         # self.w_r_true = w_r
         # self.w_f_true = w_f
         
         # Store complete tire info
+        # Fyf_est = Cf*alpha_f + w_f (observer's estimate of total front lateral force)
+        # Fyr_est = Cr*alpha_r + w_r (observer's estimate of total rear lateral force)
         return  {
-            'Fyr_linear_est': Fyr_linear,
-            'Fyf_linear_est': Fyf_linear,
+            'Fyr_est': Fyr_linear,
+            'Fyf_est': Fyf_linear,
+            'Fyr_linear_only': Cr * alpha_r,
+            'Fyf_linear_only': Cf * alpha_f,
             'alpha_r': alpha_r,
             'alpha_f': alpha_f,
         }

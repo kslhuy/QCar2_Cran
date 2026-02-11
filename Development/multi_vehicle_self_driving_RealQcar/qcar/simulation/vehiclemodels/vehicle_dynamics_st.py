@@ -41,6 +41,9 @@ def vehicle_dynamics_st(x, uInit, p):
     mu = p.tire.p_dy1
     C_Sf = -p.tire.p_ky1 / p.tire.p_dy1
     C_Sr = -p.tire.p_ky1 / p.tire.p_dy1
+    # C_Sf = p.Cf
+    # C_Sr = p.Cr
+
     lf = p.a
     lr = p.b
     h = p.h_s
@@ -53,15 +56,15 @@ def vehicle_dynamics_st(x, uInit, p):
     blend_min = 0.1
     blend_max = 1.0
     
-    if vx <= blend_min:
-        stiffness_scale = 0.0
-    elif vx >= blend_max:
-        stiffness_scale = 1.0
-    else:
-        stiffness_scale = (vx - blend_min) / (blend_max - blend_min)
+    # if vx <= blend_min:
+    #     stiffness_scale = 0.0
+    # elif vx >= blend_max:
+    #     stiffness_scale = 1.0
+    # else:
+    #     stiffness_scale = (vx - blend_min) / (blend_max - blend_min)
         
-    C_Sf = C_Sf * stiffness_scale
-    C_Sr = C_Sr * stiffness_scale
+    # C_Sf = C_Sf * stiffness_scale
+    # C_Sr = C_Sr * stiffness_scale
 
     # states
     # x1 = x-position in a global coordinate system

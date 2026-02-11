@@ -173,6 +173,259 @@ class LearningBatch:
         return len(self.feature_dict)
 
 
+class SelectiveLearningBatch:
+    """
+    Informative Experience Replay Buffer with Rich-Data Curation
+    
+    Only stores data that is sufficiently novel and informative for learning
+    tire nonlinearities. Prioritizes turning maneuvers and diverse operating
+    conditions over redundant straight-line driving data.
+    
+    Key strategies:
+        1. Novelty gate: Reject data too similar to existing dictionary entries
+        2. Excitation score: Prioritize high-information data (turning, lateral dynamics)
+        3. Diversity replacement: Replace most similar entry instead of oldest (FIFO)
+        4. Minimum excitation: Don't accept data below an excitation threshold
+    """
+    
+    # Indices into nn_input: [v_x, v_y, ψ, r, δ, a] (6D) or 8D with accel
+    _IDX_VX = 0
+    _IDX_VY = 1
+    _IDX_PSI = 2
+    _IDX_R = 3
+    _IDX_DELTA = 4
+    _IDX_THROTTLE = 5
+    
+    def __init__(self, max_size: int = 20,
+                 novelty_threshold: float = 0.05,
+                 min_excitation: float = 0.02,
+                 excitation_bonus_weight: float = 2.0,
+                 use_diversity_replacement: bool = True):
+        """
+        Initialize selective learning batch
+        
+        Args:
+            max_size: Maximum number of samples to store
+            novelty_threshold: Minimum normalized distance to existing entries
+                               for a new sample to be accepted (0.0 = accept all)
+            min_excitation: Minimum excitation score to accept a sample.
+                            Samples with score below this are rejected.
+                            Based on |δ|, |r|, |v_y| signals.
+            excitation_bonus_weight: Weight for excitation score in replacement
+                                     priority (higher = prefer replacing low-excitation data)
+            use_diversity_replacement: If True, replace most similar entry when full;
+                                       if False, replace entry with lowest excitation score.
+        """
+        self.max_size = max_size
+        self.feature_dict = []        # Same format as LearningBatch
+        self._excitation_scores = []  # Parallel list of excitation scores
+        self._nn_input_cache = []     # Cached nn_inputs for fast distance computation
+        
+        # Tunable parameters
+        self.novelty_threshold = novelty_threshold
+        self.min_excitation = min_excitation
+        self.excitation_bonus_weight = excitation_bonus_weight
+        self.use_diversity_replacement = use_diversity_replacement
+        
+        # Normalization scales for distance computation
+        # [v_x, v_y, ψ, r, δ, a] — approximate operating ranges
+        self._input_scales = np.array([2.0, 0.5, np.pi, 2.0, 0.5, 1.0])
+        
+        # Statistics
+        self.total_offered = 0
+        self.total_accepted = 0
+        self.total_rejected_novelty = 0
+        self.total_rejected_excitation = 0
+    
+    def set_input_scales(self, scales: np.ndarray):
+        """Set normalization scales for distance computation (match input_dim)."""
+        self._input_scales = np.array(scales).flatten()
+    
+    def _compute_excitation_score(self, nn_input: np.ndarray) -> float:
+        """
+        Compute excitation score measuring how informative this data point is
+        for learning tire nonlinearities.
+        
+        High excitation = turning maneuver, lateral dynamics active.
+        Low excitation = straight-line driving, coasting.
+        
+        Score components:
+            - |δ| (steering angle): main indicator of cornering
+            - |r| (yaw rate): turning dynamics
+            - |v_y| (lateral velocity): side-slip indicates tire saturation
+            - |δ̇| approximation via |δ| level (larger δ → more interesting)
+        
+        Args:
+            nn_input: Neural network input vector (input_dim × 1) or (input_dim,)
+        
+        Returns:
+            Excitation score ∈ [0, ∞), higher = more informative
+        """
+        inp = nn_input.flatten()
+        
+        # Extract relevant signals
+        vy = abs(inp[self._IDX_VY]) if len(inp) > self._IDX_VY else 0.0
+        r = abs(inp[self._IDX_R]) if len(inp) > self._IDX_R else 0.0
+        delta = abs(inp[self._IDX_DELTA]) if len(inp) > self._IDX_DELTA else 0.0
+        
+        # Weighted excitation score
+        # δ and r are strongest indicators of tire nonlinearity excitation
+        score = (3.0 * delta       # Steering is the primary excitation
+               + 2.0 * r           # Yaw rate confirms active turning
+               + 1.5 * vy)         # Lateral velocity indicates side-slip
+        
+        return score
+    
+    def _compute_novelty(self, nn_input: np.ndarray) -> Tuple[float, int]:
+        """
+        Compute minimum normalized distance to all existing dictionary entries.
+        
+        Args:
+            nn_input: New candidate input (input_dim × 1) or (input_dim,)
+        
+        Returns:
+            Tuple of (min_distance, index_of_most_similar_entry)
+        """
+        if len(self._nn_input_cache) == 0:
+            return float('inf'), -1
+        
+        inp = nn_input.flatten()
+        # Use only the first len(scales) dimensions for distance
+        n = min(len(inp), len(self._input_scales))
+        inp_norm = inp[:n] / (self._input_scales[:n] + 1e-8)
+        
+        min_dist = float('inf')
+        min_idx = 0
+        
+        for i, cached in enumerate(self._nn_input_cache):
+            cached_flat = cached.flatten()
+            cached_norm = cached_flat[:n] / (self._input_scales[:n] + 1e-8)
+            dist = np.linalg.norm(inp_norm - cached_norm)
+            if dist < min_dist:
+                min_dist = dist
+                min_idx = i
+        
+        return min_dist, min_idx
+    
+    def add_feature(self, 
+                   nn_input: np.ndarray,
+                   f_nn: np.ndarray,
+                   state_hat: np.ndarray,
+                   target: np.ndarray,
+                   f_uk: np.ndarray,
+                   dx_df: np.ndarray,
+                   time_step: int) -> bool:
+        """
+        Selectively add a new feature to the dictionary.
+        
+        Only adds if the data passes novelty and excitation gates.
+        When full, replaces the most similar (least diverse) entry or
+        the least excited entry.
+        
+        Args:
+            nn_input: Neural network input
+            f_nn: Neural network output
+            state_hat: Estimated state
+            target: Target measurement/reference
+            f_uk: True unknown force (if available)
+            dx_df: Sensitivity matrix
+            time_step: Current time step
+            
+        Returns:
+            True if the sample was accepted, False if rejected
+        """
+        self.total_offered += 1
+        
+        # --- Gate 1: Minimum excitation ---
+        excitation = self._compute_excitation_score(nn_input)
+        if excitation < self.min_excitation:
+            self.total_rejected_excitation += 1
+            return False
+        
+        # --- Gate 2: Novelty check ---
+        min_dist, most_similar_idx = self._compute_novelty(nn_input)
+        if min_dist < self.novelty_threshold:
+            # Data is too similar to an existing entry
+            # Exception: if new data has MUCH higher excitation, replace the similar one
+            if most_similar_idx >= 0 and excitation > self._excitation_scores[most_similar_idx] * 2.0:
+                # Replace the similar but less excited entry
+                self._replace_entry(most_similar_idx, nn_input, f_nn, state_hat,
+                                   target, f_uk, dx_df, time_step, excitation)
+                self.total_accepted += 1
+                return True
+            
+            self.total_rejected_novelty += 1
+            return False
+        
+        # --- Data accepted: Add or Replace ---
+        feature = (nn_input.copy(), f_nn.copy(), state_hat.copy(),
+                  target.copy(), f_uk.copy(), dx_df.copy(), time_step)
+        
+        if len(self.feature_dict) < self.max_size:
+            # Dictionary not full — just append
+            self.feature_dict.append(feature)
+            self._excitation_scores.append(excitation)
+            self._nn_input_cache.append(nn_input.copy())
+        else:
+            # Dictionary full — replace strategically
+            if self.use_diversity_replacement:
+                # Replace the entry most similar to new data (keep diversity)
+                replace_idx = most_similar_idx if most_similar_idx >= 0 else 0
+            else:
+                # Replace the entry with lowest excitation score
+                replace_idx = int(np.argmin(self._excitation_scores))
+            
+            # Only replace if new data is more informative
+            if excitation > self._excitation_scores[replace_idx] * 0.8:
+                self._replace_entry(replace_idx, nn_input, f_nn, state_hat,
+                                   target, f_uk, dx_df, time_step, excitation)
+            else:
+                self.total_rejected_novelty += 1
+                return False
+        
+        self.total_accepted += 1
+        return True
+    
+    def _replace_entry(self, idx: int,
+                      nn_input: np.ndarray, f_nn: np.ndarray,
+                      state_hat: np.ndarray, target: np.ndarray,
+                      f_uk: np.ndarray, dx_df: np.ndarray,
+                      time_step: int, excitation: float):
+        """Replace entry at given index with new data."""
+        feature = (nn_input.copy(), f_nn.copy(), state_hat.copy(),
+                  target.copy(), f_uk.copy(), dx_df.copy(), time_step)
+        self.feature_dict[idx] = feature
+        self._excitation_scores[idx] = excitation
+        self._nn_input_cache[idx] = nn_input.copy()
+    
+    def clear(self):
+        """Clear all stored features"""
+        self.feature_dict = []
+        self._excitation_scores = []
+        self._nn_input_cache = []
+    
+    def get_acceptance_rate(self) -> float:
+        """Get the fraction of offered samples that were accepted."""
+        if self.total_offered == 0:
+            return 0.0
+        return self.total_accepted / self.total_offered
+    
+    def get_stats(self) -> dict:
+        """Get dictionary curation statistics."""
+        return {
+            'total_offered': self.total_offered,
+            'total_accepted': self.total_accepted,
+            'total_rejected_novelty': self.total_rejected_novelty,
+            'total_rejected_excitation': self.total_rejected_excitation,
+            'acceptance_rate': self.get_acceptance_rate(),
+            'current_size': len(self.feature_dict),
+            'avg_excitation': float(np.mean(self._excitation_scores)) if self._excitation_scores else 0.0,
+        }
+    
+    def __len__(self):
+        return len(self.feature_dict)
+
+
 class ModelQueue:
     """
     Queue of neural network models for continuous learning

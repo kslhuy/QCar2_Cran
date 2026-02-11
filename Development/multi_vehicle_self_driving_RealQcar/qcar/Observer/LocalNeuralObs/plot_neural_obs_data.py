@@ -539,9 +539,9 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
             
             # Plot true values if available
             if 'w_r_true' in data and np.any(data['w_r_true']):
-                 ax.plot(time, data['w_r_true'], 'b.', label='$w_r$ (true)', markersize=1)
+                 ax.plot(time, data['w_r_true'], 'b-', label='$w_r$ (true)', linewidth=1, alpha=0.7)
             if 'w_f_true' in data and np.any(data['w_f_true']):
-                 ax.plot(time, data['w_f_true'], 'r.', label='$w_f$ (true)', markersize=1)
+                 ax.plot(time, data['w_f_true'], 'r-', label='$w_f$ (true)', linewidth=1, alpha=0.7)
                  
             ax.set_ylabel('Tire Residual [N]')
             ax.set_title('Unknown Input Estimates (Tire Residuals)')
@@ -550,6 +550,78 @@ def plot_1layer_data(data: Dict[str, np.ndarray],
         ax.legend(loc='upper right', fontsize=8)
         # ax.grid(True, alpha=0.3)
         axes.append(ax)
+
+    # 6b. Tire Force Decomposition (1-layer: linear-only vs total vs true)
+    if is_active(['debug']) and ('Fyr_est' in data or 'Fyr_true' in data):
+        has_true = 'Fyr_true' in data and np.any(data['Fyr_true'])
+        has_est = 'Fyr_est' in data and np.any(data['Fyr_est'])
+        has_linear_only = 'Fyr_linear_only' in data and np.any(data['Fyr_linear_only'])
+        has_linear_ref = 'Fyr_linear' in data and np.any(data['Fyr_linear'])
+        
+        if has_true or has_est:
+            if plot_type == 'all':
+                # Expand grid - but 1-layer all view is 3x3, so use remaining spots
+                pass  # Will be shown as extra figure window
+            
+            # Create a separate figure for tire force decomposition
+            fig_tire, axes_tire = plt.subplots(2, 2, figsize=(14, 8))
+            fig_tire.suptitle('Tire Force Decomposition (1-Layer Observer)', fontsize=10, fontweight='bold')
+            
+            # Rear Lateral Force
+            ax_fyr = axes_tire[0, 0]
+            if has_true:
+                ax_fyr.plot(time, data['Fyr_true'], 'r-', label='$F_{yr}$ True (plant)', linewidth=1.5, alpha=0.8)
+            if has_linear_ref:
+                ax_fyr.plot(time, data['Fyr_linear'], color='orange', linestyle=':', label='$C_r \\alpha_r$ (plant ref)', linewidth=1, alpha=0.6)
+            if has_linear_only:
+                ax_fyr.plot(time, data['Fyr_linear_only'], 'g--', label='$C_r \\hat{\\alpha}_r$ (obs linear)', linewidth=1.2, alpha=0.7)
+            if has_est:
+                ax_fyr.plot(time, data['Fyr_est'], 'c-', label='$C_r \\hat{\\alpha}_r + \\hat{w}_r$ (total)', linewidth=1.5, alpha=0.8)
+            ax_fyr.set_ylabel('$F_{yr}$ [N]')
+            ax_fyr.set_title('Rear Lateral Force')
+            ax_fyr.legend(loc='best', fontsize=6)
+            ax_fyr.grid(True, alpha=0.3)
+            
+            # Front Lateral Force
+            ax_fyf = axes_tire[0, 1]
+            if has_true:
+                ax_fyf.plot(time, data['Fyf_true'], 'r-', label='$F_{yf}$ True (plant)', linewidth=1.5, alpha=0.8)
+            if has_linear_ref:
+                ax_fyf.plot(time, data['Fyf_linear'], color='orange', linestyle=':', label='$C_f \\alpha_f$ (plant ref)', linewidth=1, alpha=0.6)
+            if 'Fyf_linear_only' in data and np.any(data['Fyf_linear_only']):
+                ax_fyf.plot(time, data['Fyf_linear_only'], 'g--', label='$C_f \\hat{\\alpha}_f$ (obs linear)', linewidth=1.2, alpha=0.7)
+            if 'Fyf_est' in data and np.any(data['Fyf_est']):
+                ax_fyf.plot(time, data['Fyf_est'], 'c-', label='$C_f \\hat{\\alpha}_f + \\hat{w}_f$ (total)', linewidth=1.5, alpha=0.8)
+            ax_fyf.set_ylabel('$F_{yf}$ [N]')
+            ax_fyf.set_title('Front Lateral Force')
+            ax_fyf.legend(loc='best', fontsize=6)
+            ax_fyf.grid(True, alpha=0.3)
+            
+            # Rear Slip Angle
+            ax_alpha_r = axes_tire[1, 0]
+            if has_true and 'alpha_r' in data:
+                ax_alpha_r.plot(time, np.rad2deg(data['alpha_r']), 'r-', label='True (arctan)', linewidth=1.5, alpha=0.8)
+            if 'alpha_r_est' in data and np.any(data['alpha_r_est']):
+                ax_alpha_r.plot(time, np.rad2deg(data['alpha_r_est']), 'c--', label='Obs (linear)', linewidth=1.5, alpha=0.7)
+            ax_alpha_r.set_ylabel(r'$\alpha_r$ [deg]')
+            ax_alpha_r.set_xlabel('Time [s]')
+            ax_alpha_r.set_title('Rear Slip Angle')
+            ax_alpha_r.legend(loc='best', fontsize=7)
+            ax_alpha_r.grid(True, alpha=0.3)
+            
+            # Front Slip Angle
+            ax_alpha_f = axes_tire[1, 1]
+            if has_true and 'alpha_f' in data:
+                ax_alpha_f.plot(time, np.rad2deg(data['alpha_f']), 'r-', label='True (arctan)', linewidth=1.5, alpha=0.8)
+            if 'alpha_f_est' in data and np.any(data['alpha_f_est']):
+                ax_alpha_f.plot(time, np.rad2deg(data['alpha_f_est']), 'c--', label='Obs (linear)', linewidth=1.5, alpha=0.7)
+            ax_alpha_f.set_ylabel(r'$\alpha_f$ [deg]')
+            ax_alpha_f.set_xlabel('Time [s]')
+            ax_alpha_f.set_title('Front Slip Angle')
+            ax_alpha_f.legend(loc='best', fontsize=7)
+            ax_alpha_f.grid(True, alpha=0.3)
+            
+            fig_tire.tight_layout(rect=[0, 0.03, 1, 0.95])
 
     # 7. Control Inputs (Simplified: no twin axis)
     if is_active(['debug']):
@@ -745,7 +817,7 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
     if plot_type == 'all':
         # X Position
         ax4 = fig.add_subplot(gs[1, 0])
-        # ax4.plot(time, data.get('X_meas', []), 'r.', label='GPS', markersize=1)
+        ax4.plot(time, data.get('X_meas', []), 'r.', label='GPS', markersize=1)
         if 'X_true' in data and np.any(data['X_true']):
             ax4.plot(time, data['X_true'], 'r.', label='True', markersize=2, alpha=0.6)
         if 'X_uio' in data:
@@ -757,7 +829,7 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
 
         # Y Position
         ax5 = fig.add_subplot(gs[1, 1])
-        # ax5.plot(time, data.get('Y_meas', []), 'r.', label='GPS', markersize=1)
+        ax5.plot(time, data.get('Y_meas', []), 'r.', label='GPS', markersize=1)
         if 'Y_true' in data and np.any(data['Y_true']):
             ax5.plot(time, data['Y_true'], 'r.', label='True', markersize=2, alpha=0.6)
         if 'Y_uio' in data:
@@ -770,9 +842,9 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         # Yaw Angle
         ax6 = fig.add_subplot(gs[1, 2])
         psi_est = data.get('psi_est', []); 
-        # psi_meas = data.get('psi_meas', [])
+        psi_meas = data.get('psi_meas', [])
         if len(psi_est) > 0:
-            # ax6.plot(time, np.rad2deg(psi_meas), 'r.', label='GPS', markersize=1)
+            ax6.plot(time, np.rad2deg(psi_meas), 'r.', label='GPS', markersize=1)
             if 'psi_true' in data and np.any(data['psi_true']):
                 ax6.plot(time, np.rad2deg(data['psi_true']), 'r.', label='True', markersize=2 , alpha = 0.6)
             if 'psi_uio' in data:
@@ -784,7 +856,7 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
 
     # 7. NN Tire Residuals / General Disturbances
     if is_active(['debug']):
-        pos = gs[3, 0:2] if plot_type == 'all' else gs[0, 0]
+        pos = gs[3, 0:2] if plot_type == 'all' else gs[2, 2]
         ax = fig.add_subplot(pos)
         
         # Determine disturbance mode
@@ -827,16 +899,31 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
             # 2D Tire Residuals (Legacy)
             if 'w_r_true' in data :
                 ax.plot(time, data['w_r_true'], 'b-', label='$w_r$ (True)', linewidth=1.5 , alpha=0.9)
-                ax.plot(time, data['w_f_true'], 'g-', label='$w_f$ (True)', linewidth=1.5 , alpha=0.9)
+                # ax.plot(time, data['w_f_true'], 'g-', label='$w_f$ (True)', linewidth=1.5 , alpha=0.9)
 
             if 'w_r_uio' in data:
                 ax.plot(time, data.get('w_r_uio', []), 'b--', label='$w_r$ (1st)', linewidth=2, alpha=0.75)
-                ax.plot(time, data.get('w_f_uio', []), 'g--', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
+                # ax.plot(time, data.get('w_f_uio', []), 'g--', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
                 
             ax.plot(time, data.get('w_r_nn', []), 'b.', label='$w_r$ (NN)', markersize=3)
-            ax.plot(time, data.get('w_f_nn', []), 'r.', label='$w_f$ (NN)', markersize=3)
-
+            # ax.plot(time, data.get('w_f_nn', []), 'r.', label='$w_f$ (NN)', markersize=3)
             ax.legend(loc='upper right', fontsize=8)
+            ax_w_f = fig.add_subplot(gs[1,2])
+            # 2D Tire Residuals (Legacy)
+            if 'w_r_true' in data :
+                # ax.plot(time, data['w_r_true'], 'b-', label='$w_r$ (True)', linewidth=1.5 , alpha=0.9)
+                ax_w_f.plot(time, data['w_f_true'], 'g-', label='$w_f$ (True)', linewidth=1.5 , alpha=0.9)
+
+            if 'w_r_uio' in data:
+                # ax.plot(time, data.get('w_r_uio', []), 'b--', label='$w_r$ (1st)', linewidth=2, alpha=0.75)
+                ax_w_f.plot(time, data.get('w_f_uio', []), 'g--', label='$w_f$ (1st)', linewidth=2, alpha=0.75)
+                
+            # ax.plot(time, data.get('w_r_nn', []), 'b.', label='$w_r$ (NN)', markersize=3)
+            ax_w_f.plot(time, data.get('w_f_nn', []), 'r.', label='$w_f$ (NN)', markersize=3)
+
+            ax_w_f.legend(loc='upper right', fontsize=8)
+
+
 
     # 8. Acceleration (New - for acceleration view or all)
     if is_active(['acceleration']):
@@ -874,11 +961,13 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
         axes.append(ax)
 
     # NEW: Tire Force Comparison Plots (Only in debug view and tire mode)
-    if is_active(['debug']) and 'Fyr_layer_1' in data:
+    if is_active(['debug']) and ('Fyr_layer_1' in data or 'Fyr_true' in data):
         # Check if we have layer data
         has_layer_1 = 'Fyr_layer_1' in data and np.any(data['Fyr_layer_1'])
         has_layer_2 = 'Fyr_layer_2' in data and np.any(data['Fyr_layer_2'])
         has_true = 'Fyr_true' in data and np.any(data['Fyr_true'])
+        has_linear_only = 'Fyr_linear_only_1' in data and np.any(data['Fyr_linear_only_1'])
+        has_linear_ref = 'Fyr_linear' in data and np.any(data['Fyr_linear'])
         
         if has_layer_1 or has_layer_2 or has_true:
             # Determine grid positions based on plot type
@@ -898,62 +987,92 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
                 pos_fyr = gs[2, 0]
                 pos_alpha_r = gs[2, 1]
             
-            # Plot 1: Rear Lateral Force (Fyr)
+            # ============================================================
+            # Plot 1: Rear Lateral Force (Fyr) — Decomposed comparison
+            #   True (plant), Linear-only (C_r*alpha_r), Total est (linear + w_r)
+            # ============================================================
             ax_fyr = fig.add_subplot(pos_fyr)
             if has_true:
-                ax_fyr.plot(time, data['Fyr_true'], 'r-', label='True', linewidth=1.5, alpha=0.8)
+                ax_fyr.plot(time, data['Fyr_true'], 'r-', label='$F_{yr}$ True (plant)', linewidth=1.5, alpha=0.8)
+            # if has_linear_ref:
+            #     ax_fyr.plot(time, data['Fyr_linear'], color='orange', linestyle=':', label='$C_r \\alpha_r$ (plant ref)', linewidth=1, alpha=0.6)
+            # if has_linear_only:
+            #     ax_fyr.plot(time, data['Fyr_linear_only_1'], 'g--', label='$C_r \\hat{\\alpha}_r$ (obs linear)', linewidth=1.2, alpha=0.7)
             if has_layer_1:
-                ax_fyr.plot(time, data['Fyr_layer_1'], 'c--', label='Layer 1', linewidth=1.5, alpha=0.7)
+                ax_fyr.plot(time, data['Fyr_layer_1'], 'c-', label='Layer 1 total', linewidth=1.5, alpha=0.8)
             if has_layer_2:
-                ax_fyr.plot(time, data['Fyr_layer_2'], 'b.', label='Layer 2', markersize=2)
+                ax_fyr.plot(time, data['Fyr_layer_2'], 'b.', label='Layer 2 total', markersize=2)
             ax_fyr.set_ylabel('$F_{yr}$ [N]')
             ax_fyr.set_title('Rear Lateral Force')
-            ax_fyr.legend(loc='best', fontsize=7)
+            ax_fyr.legend(loc='best', fontsize=6)
             ax_fyr.grid(True, alpha=0.3)
             axes.append(ax_fyr)
             
-            # Plot 2: Front Lateral Force (Fyf)
+            # ============================================================
+            # Plot 2: Front Lateral Force (Fyf) — Decomposed comparison
+            # ============================================================
             ax_fyf = fig.add_subplot(pos_fyf)
             if has_true:
-                ax_fyf.plot(time, data['Fyf_true'], 'r-', label='True', linewidth=1.5, alpha=0.8)
+                ax_fyf.plot(time, data['Fyf_true'], 'r-', label='$F_{yf}$ True (plant)', linewidth=1.5, alpha=0.8)
+            # if has_linear_ref:
+            #     ax_fyf.plot(time, data['Fyf_linear'], color='orange', linestyle=':', label='$C_f \\alpha_f$ (plant ref)', linewidth=1, alpha=0.6)
+            # if has_linear_only:
+            #     ax_fyf.plot(time, data['Fyf_linear_only_1'], 'g--', label='$C_f \\hat{\\alpha}_f$ (obs linear)', linewidth=1.2, alpha=0.7)
             if has_layer_1:
-                ax_fyf.plot(time, data['Fyf_layer_1'], 'c--', label='Layer 1', linewidth=1.5, alpha=0.7)
+                ax_fyf.plot(time, data['Fyf_layer_1'], 'c-', label='Layer 1 total', linewidth=1.5, alpha=0.8)
             if has_layer_2:
-                ax_fyf.plot(time, data['Fyf_layer_2'], 'b.', label='Layer 2', markersize=2)
+                ax_fyf.plot(time, data['Fyf_layer_2'], 'b.', label='Layer 2 total', markersize=2)
             ax_fyf.set_ylabel('$F_{yf}$ [N]')
             ax_fyf.set_title('Front Lateral Force')
-            ax_fyf.legend(loc='best', fontsize=7)
+            ax_fyf.legend(loc='best', fontsize=6)
             ax_fyf.grid(True, alpha=0.3)
             axes.append(ax_fyf)
             
+            # ============================================================
             # Plot 3: Rear Slip Angle (alpha_r)
+            # ============================================================
             ax_alpha_r = fig.add_subplot(pos_alpha_r)
             if has_true and 'alpha_r' in data:
-                ax_alpha_r.plot(time, np.rad2deg(data['alpha_r']), 'r-', label='True', linewidth=1.5, alpha=0.8)
+                ax_alpha_r.plot(time, (data['alpha_r']), 'r-', label='True ', linewidth=1.5, alpha=0.8)
             if has_layer_1 and 'alpha_r_layer_1' in data:
-                ax_alpha_r.plot(time, np.rad2deg(data['alpha_r_layer_1']), 'c--', label='Layer 1', linewidth=1.5, alpha=0.7)
+                ax_alpha_r.plot(time, (data['alpha_r_layer_1']), 'c--', label='Layer 1 (linear)', linewidth=1.5, alpha=0.7)
             if has_layer_2 and 'alpha_r_layer_2' in data:
-                ax_alpha_r.plot(time, np.rad2deg(data['alpha_r_layer_2']), 'b.', label='Layer 2', markersize=2)
+                ax_alpha_r.plot(time, (data['alpha_r_layer_2']), 'b.', label='Layer 2 (linear)', markersize=2)
             ax_alpha_r.set_ylabel(r'$\alpha_r$ [deg]')
             ax_alpha_r.set_title('Rear Slip Angle')
             ax_alpha_r.legend(loc='best', fontsize=7)
             ax_alpha_r.grid(True, alpha=0.3)
             axes.append(ax_alpha_r)
             
+            # ============================================================
             # Plot 4: Front Slip Angle (alpha_f)
+            # ============================================================
             ax_alpha_f = fig.add_subplot(pos_alpha_f)
             if has_true and 'alpha_f' in data:
-                ax_alpha_f.plot(time, np.rad2deg(data['alpha_f']), 'r-', label='True', linewidth=1.5, alpha=0.8)
+                ax_alpha_f.plot(time, (data['alpha_f']), 'r-', label='True ', linewidth=1.5, alpha=0.8)
             if has_layer_1 and 'alpha_f_layer_1' in data:
-                ax_alpha_f.plot(time, np.rad2deg(data['alpha_f_layer_1']), 'c--', label='Layer 1', linewidth=1.5, alpha=0.7)
+                ax_alpha_f.plot(time, (data['alpha_f_layer_1']), 'c--', label='Layer 1 (linear)', linewidth=1.5, alpha=0.7)
             if has_layer_2 and 'alpha_f_layer_2' in data:
-                ax_alpha_f.plot(time, np.rad2deg(data['alpha_f_layer_2']), 'b.', label='Layer 2', markersize=2)
+                ax_alpha_f.plot(time, (data['alpha_f_layer_2']), 'b.', label='Layer 2 (linear)', markersize=2)
             ax_alpha_f.set_ylabel(r'$\alpha_f$ [deg]')
             ax_alpha_f.set_title('Front Slip Angle')
             ax_alpha_f.legend(loc='best', fontsize=7)
             ax_alpha_f.grid(True, alpha=0.3)
             axes.append(ax_alpha_f)
 
+
+            # F_yr_test = fig.add_subplot(gs[2,2])
+            # if has_true and 'alpha_r' in data:
+            #     F_yr_test.plot(time, (data['alpha_r'])*200, 'r-', label='True (arctan)', linewidth=1.5, alpha=0.8)
+            # if has_layer_1 and 'alpha_r_layer_1' in data:
+            #     F_yr_test.plot(time, (data['alpha_r_layer_1'])*200, 'c--', label='Layer 1 (linear)', linewidth=1.5, alpha=0.7)
+            # if has_layer_2 and 'alpha_r_layer_2' in data:
+            #     F_yr_test.plot(time, (data['alpha_r_layer_2'])*200, 'b.', label='Layer 2', markersize=2)
+            # F_yr_test.set_ylabel(r'$\alpha_r$ [deg]')
+            # F_yr_test.set_title('Rear Slip Angle')
+            # F_yr_test.legend(loc='best', fontsize=7)
+            # F_yr_test.grid(True, alpha=0.3)
+            # axes.append(F_yr_test)
 
     # 9. Training Loss
     if is_active(['debug']):
