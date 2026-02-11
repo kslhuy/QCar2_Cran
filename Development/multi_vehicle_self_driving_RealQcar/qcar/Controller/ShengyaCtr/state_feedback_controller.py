@@ -140,7 +140,7 @@ class StateFeedbackController(LongitudinalControllerBase):
     
         # State feedback control law: u_i = sum_{j=0}^{i-1} K_{ij} * (F_i - F_j) * estimated_states
         # For j=0 (leader), F_0 is zero matrix, so K_{i0} * F_i * estimated_states
-        throttle_raw = 0.0
+        throttle_raw = 0.15 # Base throttle to maintain some speed, should be same as the one used in the fix throttle controller for the same vehicle
         
         # First term: K_{i0} * F_i * estimated_states (j=0)
         # This represents control based on this vehicle's relative state to leader
@@ -161,17 +161,17 @@ class StateFeedbackController(LongitudinalControllerBase):
         # Special handling for braking (negative throttle)
         if throttle_raw < 0:
             # More aggressive smoothing for braking to prevent jerky stops
-            smoothing_factor = 0.85
+            smoothing_factor = 0.5
             throttle_raw = (smoothing_factor * self.prev_throttle + 
                           (1 - smoothing_factor) * throttle_raw)
-            throttle_raw = max(throttle_raw, 0.0)  # No negative throttle output
+            # throttle_raw = max(throttle_raw, 0.0)  # No negative throttle output
         
         # Apply exponential smoothing to final throttle command
         throttle = (self.throttle_smoothing * self.prev_throttle + 
                    (1 - self.throttle_smoothing) * throttle_raw)
         
         # Ensure throttle is non-negative
-        throttle = min(max(throttle, 0.0), self.max_throttle)
+        throttle = min(throttle, self.max_throttle)
         
         # Store for next iteration
         self.prev_throttle = throttle

@@ -464,6 +464,7 @@ class FixConstantController(LongitudinalControllerBase):
 
 # Import StateFeedbackController at the end to avoid circular import
 from .ShengyaCtr.state_feedback_controller import StateFeedbackController
+from .ShengyaCtr.state_feedback_controller_no_observer import StateFeedbackControllerNoObserver
 
 class ControllerFactory:
     """Factory to create longitudinal controllers by name"""
@@ -474,6 +475,7 @@ class ControllerFactory:
         'hybrid': HybridController,
         'fix': FixConstantController,
         'state_feedback': StateFeedbackController,
+        'state_feedback_no_observer': StateFeedbackControllerNoObserver,
     }
     
     @staticmethod
@@ -482,10 +484,10 @@ class ControllerFactory:
         Create a longitudinal controller
         
         Args:
-            controller_type: One of 'pid', 'cacc', 'hybrid', 'fix', 'state_feedback'
+            controller_type: One of 'pid', 'cacc', 'hybrid', 'fix', 'state_feedback', 'state_feedback_no_observer'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
-            observer: Observer instance (for state_feedback controller)
+            observer: Observer instance (for state_feedback and state_feedback_no_observer controllers)
             
         Returns:
             Longitudinal controller instance
@@ -500,8 +502,8 @@ class ControllerFactory:
         
         controller_class = ControllerFactory.CONTROLLER_TYPES[controller_type]
         
-        # Special handling for state_feedback controller - pass observer
-        if controller_type == 'state_feedback':
+        # Special handling for state_feedback controllers - pass observer
+        if controller_type in ['state_feedback', 'state_feedback_no_observer']:
             # Remove 'observer' from params if it exists to avoid duplicate argument
             params_copy = params.copy()
             params_copy.pop('observer', None)

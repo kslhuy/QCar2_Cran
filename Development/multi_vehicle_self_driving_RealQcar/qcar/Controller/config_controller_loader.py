@@ -74,7 +74,8 @@ class ControllerConfig:
             self.config['lateral_controller_type'] = vehicle_config['lateral_controller_type']
         
         # Merge controller-specific parameters
-        for controller_type in ['cacc', 'pid', 'hybrid_longitudinal', 'fix', 'state_feedback',
+        for controller_type in ['cacc', 'pid', 'hybrid_longitudinal', 'fix', 'state_feedback', 
+                               'state_feedback_no_observer',
                                'pure_pursuit', 'stanley', 'lookahead', 'hybrid_lateral', 
                                'fusion_lateral', 'fix_lateral']:
             if controller_type in vehicle_config:
@@ -100,6 +101,12 @@ class ControllerConfig:
             types.append('pid')
         if 'hybrid_longitudinal' in self.config:
             types.append('hybrid')
+        if 'fix' in self.config:
+            types.append('fix')
+        if 'state_feedback' in self.config:
+            types.append('state_feedback')
+        if 'state_feedback_no_observer' in self.config:
+            types.append('state_feedback_no_observer')
         return types
 
     def get_available_lateral_types(self) -> list:
@@ -140,6 +147,8 @@ class ControllerConfig:
             return self._get_fix_params()
         elif controller_type == 'state_feedback':
             return self._get_state_feedback_params()
+        elif controller_type == 'state_feedback_no_observer':
+            return self._get_state_feedback_no_observer_params()
         else:
             raise ValueError(f"Unknown longitudinal controller type: {controller_type}")
     
@@ -233,6 +242,25 @@ class ControllerConfig:
             'max_throttle': sf_config.get('max_throttle', 0.3),
             'throttle_smoothing': sf_config.get('throttle_smoothing', 0.7),
             'observer': None,  # Will be set by controller manager
+        }
+    
+    def _get_state_feedback_no_observer_params(self) -> Dict[str, Any]:
+        """
+        Get state feedback controller (no observer) parameters
+        
+        This controller uses true vehicle states from V2V communication
+        instead of observer estimates to compute control commands.
+        """
+        sf_config = self.config.get('state_feedback_no_observer', {})
+        
+        # If no specific config for no_observer variant, fall back to state_feedback config
+        if not sf_config:
+            sf_config = self.config.get('state_feedback', {})
+        
+        return {
+            'max_throttle': sf_config.get('max_throttle', 0.3),
+            'throttle_smoothing': sf_config.get('throttle_smoothing', 0.7),
+            'observer': None,  # Will be set by controller manager (used for V2V communication access)
         }
     
     # ========================================================================

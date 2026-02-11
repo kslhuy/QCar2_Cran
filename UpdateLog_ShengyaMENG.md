@@ -1,3 +1,32 @@
+# Update Log (2026/02/11) (Shengya MENG)
+
+Commit Message: Fixed large distance between vehicle 1 and vehicle 0
+
+## Completed Tasks / 已完成任务:
+
+- [x] **Fixed large distance between vehicle 1 and vehicle 0 / 修复车辆1与车辆0之间距离过大问题**
+  - Analysis files: [analysis_steady_state_gap_error.md](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/ShengyaCtr/analysis_steady_state_gap_error.md)
+
+
+- [x] **Created test controller using true state feedback / 创建使用真实状态反馈的测试控制器**
+  - Controller implementation: [state_feedback_controller_no_observer.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/ShengyaCtr/state_feedback_controller_no_observer.py)
+  - Verified that controller performs well with true state feedback
+  
+- [x] **Analyzed tau parameter / 分析tau参数结果**
+  - Result: τ ≈ 0.16
+  - Analysis scripts: [diagnose_tau_data.py](diagnose_tau_data.py)
+
+## Pending Tasks / 待完成任务:
+
+- [ ] **Diagnose and eliminate steady-state error in observer / 分析观测器稳态误差的原因并尝试消除**
+  - **Context / 背景**: Even in ideal conditions (controller uses true state feedback, control signals in observer obtained directly via V2V), observer estimation error still exhibits steady-state bias
+  - **Possible causes / 可能原因**:
+    - Observer gain insufficient to eliminate error / 观测器增益不够高，无法完全消除误差
+    - Unmodeled dynamics or external disturbances / 系统存在未建模动态或外部扰动
+    - Discretization effects / 离散化导致的误差
+  - **Validation approach / 验证方法**: Test distributed observer in MATLAB simulation to isolate root cause
+  
+
 # Update Log (2026/02/06) (Shengya)
 
 Commit Message: Using fake observer to test the controller

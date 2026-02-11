@@ -14,7 +14,7 @@ enable_steering_control: true  # Enable/disable steering control system
 # LONGITUDINAL CONTROLLER CONFIGURATION
 # ============================================================================
 
-# Controller type options: 'cacc', 'pid', 'hybrid', 'fix', 'state_feedback'
+# Controller type options: 'cacc', 'pid', 'hybrid', 'fix', 'state_feedback', 'state_feedback_no_observer'
 longitudinal_controller_type: 'state_feedback'
 
 # CACC Controller Parameters
@@ -52,6 +52,14 @@ state_feedback:
   throttle_smoothing: 0.7     # Exponential smoothing factor (0-1, higher = smoother)
   # Note: Observer (DistributedLuenbergerEstimator) is automatically injected by ControllerManager
   # K matrices are defined in state_feedback_controller.py based on vehicle_id
+
+# State Feedback Controller without Observer (uses true V2V states directly)
+state_feedback_no_observer:
+  max_throttle: 0.3           # Maximum throttle output
+  throttle_smoothing: 0.7     # Exponential smoothing factor (0-1, higher = smoother)
+  # Note: This controller reads true vehicle states from V2V communication instead of observer estimates
+  # Observer instance is still needed to access V2V communication data (received_local_states)
+  # K matrices are defined in state_feedback_controller_no_observer.py based on vehicle_id
 
 # ============================================================================
 # LATERAL CONTROLLER CONFIGURATION
@@ -194,12 +202,12 @@ per_vehicle_controllers:
   
   # Vehicle 1 (First Follower)
   1:
-    longitudinal_controller_type: 'state_feedback'
+    longitudinal_controller_type: 'state_feedback_no_observer'  # Uses true V2V states for control
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.075  # Constant speed
-    state_feedback:
-      max_throttle: 0.25
+    state_feedback_no_observer:
+      max_throttle: 0.18
       throttle_smoothing: 0.7
     fix_lateral:
       steering: 0.0
@@ -209,12 +217,12 @@ per_vehicle_controllers:
   
   # Vehicle 2 (Second Follower)
   2:
-    longitudinal_controller_type: 'state_feedback'
+    longitudinal_controller_type: 'state_feedback_no_observer'  # Uses true V2V states directly, no estimation
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.075  # Constant speed
-    state_feedback:
-      max_throttle: 0.2
+    state_feedback_no_observer:
+      max_throttle: 0.18
       throttle_smoothing: 0.7 # Slightly smoother than vehicle 1
     fix_lateral:
       steering: 0.0
@@ -224,11 +232,11 @@ per_vehicle_controllers:
 
   # Vehicle 3 (Third Follower)
   3:
-    longitudinal_controller_type: 'state_feedback'
+    longitudinal_controller_type: 'state_feedback_no_observer'  # Uses true V2V states directly, no estimation
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.075  # Constant speed
-    state_feedback:
+    state_feedback_no_observer:
       max_throttle: 0.2
       throttle_smoothing: 0.7  # Smoothest
     fix_lateral:

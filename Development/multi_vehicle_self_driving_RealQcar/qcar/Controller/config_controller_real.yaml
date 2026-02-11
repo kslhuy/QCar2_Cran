@@ -14,7 +14,7 @@ enable_steering_control: true  # Enable/disable steering control system
 # LONGITUDINAL CONTROLLER CONFIGURATION
 # ============================================================================
 
-# Controller type options: 'cacc', 'pi', 'hybrid'
+# Controller type options: 'cacc', 'pid', 'hybrid', 'fix', 'state_feedback', 'state_feedback_no_observer'
 longitudinal_controller_type: 'cacc'
 
 # CACC Controller Parameters

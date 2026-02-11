@@ -129,20 +129,20 @@ class ControllerManager:
             if self.config:
                 params = self.config.get_longitudinal_params(ctrl_type)
             
-            # Special handling for state_feedback controller - needs observer
+            # Special handling for state_feedback controllers - needs observer
             observer = None
-            if ctrl_type == 'state_feedback':
+            if ctrl_type in ['state_feedback', 'state_feedback_no_observer']:
                 if self.vehicle_logic and hasattr(self.vehicle_logic, 'vehicle_observer'):
                     # Get the fleet estimator (DistributedLuenbergerEstimator)
                     observer = getattr(self.vehicle_logic.vehicle_observer, 'fleet_estimator', None)
                     if observer is not None and self.logger:
                         self.logger.logger.info(
-                            f"[ControllerManager] Passing observer to state_feedback controller: "
+                            f"[ControllerManager] Passing observer to {ctrl_type} controller: "
                             f"type={type(observer).__name__}, vehicle_id={getattr(observer, 'vehicle_id', 'N/A')}"
                         )
                     elif self.logger:
                         self.logger.logger.warning(
-                            "[ControllerManager] state_feedback controller requires observer, "
+                            f"[ControllerManager] {ctrl_type} controller requires observer, "
                             "but fleet_estimator not found in vehicle_observer"
                         )
             
@@ -150,7 +150,7 @@ class ControllerManager:
                 ctrl_type,
                 params,
                 logger=self.logger.logger if self.logger else None,
-                observer=observer  # Pass observer for state_feedback controller
+                observer=observer  # Pass observer for state_feedback and state_feedback_no_observer controllers
             )
             
             self._longitudinal = ControllerInfo(

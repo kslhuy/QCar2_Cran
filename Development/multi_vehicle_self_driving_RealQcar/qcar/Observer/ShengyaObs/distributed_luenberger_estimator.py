@@ -213,7 +213,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # K_matrices[vehicle_id][j] = K_{vehicle_id,j}
         self.K_all_vehicles = {
             1: {
-                0: np.array([[-0.1679, -0.4059, -0.0609]])
+                0: np.array([[-0.1729,-0.4856,-0.0746]])
             },
             2: {
                 0: np.array([[-0.1766,-0.4659,-0.0822]]),
@@ -242,10 +242,11 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         self.prev_v0 = 0.0  # Previous filtered leader velocity
         self.prev_p0 = 0.0  # Previous filtered leader position
         # Default filter coefficients for different sensor measurements
-        self.distance_filter_alpha = self.config.get('distance_filter_alpha', 0.3)  # Low-pass filter for distance (0-1)
-        self.velocity_filter_alpha = self.config.get('velocity_filter_alpha', 0.1)  # Low-pass filter for velocity (0-1)
-        self.leader_velocity_filter_alpha = self.config.get('leader_velocity_filter_alpha', 0.2)  # Low-pass filter for leader velocity (0-1)
-        self.leader_position_filter_alpha = self.config.get('leader_position_filter_alpha', 0.2)  # Low-pass filter for leader position (0-1)
+        # Reduced filtering strength to minimize phase delay and static error
+        self.distance_filter_alpha = self.config.get('distance_filter_alpha', 0.7)  # Low-pass filter for distance (0-1)
+        self.velocity_filter_alpha = self.config.get('velocity_filter_alpha', 0.6)  # Low-pass filter for velocity (0-1)
+        self.leader_velocity_filter_alpha = self.config.get('leader_velocity_filter_alpha', 0.7)  # Low-pass filter for leader velocity (0-1)
+        self.leader_position_filter_alpha = self.config.get('leader_position_filter_alpha', 0.7)  # Low-pass filter for leader position (0-1)
     def _init_recorder(self):
         """Initialize and start the debug data recorder."""
         try:
@@ -636,7 +637,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             di0_values: Array of di0 values for each follower vehicle [observer_size]
         """
 
-        fleet_states = self.fleet_states
+        # Use the passed-in fleet_states (not always self.fleet_states) to support neighbor state conversion
+        # fleet_states = self.fleet_states  # ❌ This was overriding the parameter!
         
         # Get leader (vehicle 0) absolute state
         state_leader = self._get_latest_received_state(0, current_time_ns)
@@ -834,7 +836,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         #         # First term: Ki0 @ Fi @ x_vec
         #         if 0 in self.K_all_vehicles[vehicle_id]:
         #             Ki0 = self.K_all_vehicles[vehicle_id][0]
-        #             collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0], 0.15)  # Limit max control to 0.15
+        #             collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0] + 0.15, 0.18)  # Limit max control to 0.25
                 
         #         # Sum over preceding vehicles j=1 to i-1
         #         # Add terms: Kij @ (Fi - Fj) @ x_vec
@@ -842,8 +844,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         #             if j in self.K_all_vehicles[vehicle_id]:
         #                 Kij = self.K_all_vehicles[vehicle_id][j]
         #                 Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
-        #                 collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]
-        #                 collective_control = np.clip(collective_control, 0, 0.15)  # Limit control input
+        #                 collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]  + 0.15
+        #                 collective_control = np.clip(collective_control, 0, 0.18)  # Limit control input
         
        
 
@@ -859,14 +861,15 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 break  # Safety check
             
             if vehicle_id == self.vehicle_id:
-                # Use own control signal
-                collective_control[follower_idx] = control[1]  # throttle
+                # Use own control signal (full throttle including feedforward)
+                collective_control[follower_idx] = control[1]  # Complete throttle signal
             else:
                 # Get neighbor's control signal via V2V
                 neighbor_control = self._get_latest_received_control(vehicle_id, current_time_ns)
                 
                 if neighbor_control is not None:
-                    collective_control[follower_idx] = neighbor_control[1]  # throttle
+                    # Use complete control signal (feedforward + feedback)
+                    collective_control[follower_idx] = neighbor_control[1]  # Complete throttle signal
                     
                     if self.logger and self.debug_recording_enabled:
                         self.logger.logger.debug(
@@ -904,32 +907,35 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 )
             p_prev = self.fleet_states[0, self.vehicle_id - 1]
         
-        # local_measurement[0] = p_i - p_prev  # relative position
-        # local_measurement[1] = v_i # velocity 
+        local_measurement[0] = p_i - p_prev  # relative position
+        local_measurement[1] = v_i # velocity 
 
-        distance_measurement = p_i - p_prev # relative position
-        velocity_measurement = v_i # velocity
+        # distance_measurement = p_i - p_prev # relative position
+        # velocity_measurement = v_i # velocity
 
         # Sensor filter for the local measurement.
         # Apply distance measurement filter
-        local_measurement[0] = self._sensor_filter(
-            distance_measurement, 
-            self.prev_distance_measurement, 
-            self.distance_filter_alpha,
-            dt
-        )
+        # local_measurement[0] = self._sensor_filter(
+        #     distance_measurement, 
+        #     self.prev_distance_measurement, 
+        #     self.distance_filter_alpha,
+        #     dt
+        # )
         self.prev_distance_measurement = local_measurement[0]  # Update for next iteration
         
         # Apply velocity measurement filter (currently enabled)
-        local_measurement[1] = self._sensor_filter(
-            velocity_measurement,
-            self.prev_velocity_measurement,
-            self.velocity_filter_alpha,
-            dt
-        )
+        # local_measurement[1] = self._sensor_filter(
+        #     velocity_measurement,
+        #     self.prev_velocity_measurement,
+        #     self.velocity_filter_alpha,
+        #     dt
+        # )
         self.prev_velocity_measurement = local_measurement[1]  # Update for next iteration
         
-        estimated_measurement = self.Ci @ x_vec + self.Cv * v0 + self.Cd * self.d
+        # CRITICAL: Use raw (unfiltered) v0 for measurement equation to avoid systematic bias
+        # local_measurement[1] = v_i (real velocity), so estimated_measurement[1] should use v0_raw
+        # to ensure measurement_error is computed correctly without filter-induced offset
+        estimated_measurement = self.Ci @ x_vec + self.Cv * v0_raw + self.Cd * self.d
 
         measurement_error = local_measurement - estimated_measurement
         
@@ -940,6 +946,12 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         consensus_term = np.zeros(dim_distributed_observer)
         neighbor_count = 0
         consensus_accum = np.zeros(dim_distributed_observer)
+        
+        if self.logger and self.debug_recording_enabled:
+            self.logger.logger.debug(
+                f"Vehicle {self.vehicle_id}: Starting consensus calculation. "
+                f"My neighbors: {self.my_neighbors}, x_vec norm: {np.linalg.norm(x_vec):.6f}"
+            )
         
         # Loop through each neighbor defined by adjacency matrix
         for neighbor_id in self.my_neighbors:
@@ -1024,29 +1036,48 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             
             # Accumulate weighted difference: (own_estimate - neighbor_estimate)
             consensus_diff = x_vec - neighbor_x_vec
-            consensus_accum += consensus_diff
+            consensus_accum += weight * consensus_diff
             neighbor_count += 1
+            
+            if self.logger and self.debug_recording_enabled:
+                self.logger.logger.debug(
+                    f"Vehicle {self.vehicle_id}: Neighbor {neighbor_id} - "
+                    f"weight={weight:.6f}, diff_norm={np.linalg.norm(consensus_diff):.6f}, "
+                    f"neighbor_x_norm={np.linalg.norm(neighbor_x_vec):.6f}, "
+                    f"accum_norm={np.linalg.norm(consensus_accum):.6f}"
+                )
         
         # --- Step 6: Apply consensus gain ---
         if neighbor_count > 0:
             consensus_term = self.consensus_gain @ consensus_accum 
             # Numerical protection: prevent consensus term explosion
             consensus_norm = np.linalg.norm(consensus_term)
-            max_consensus_threshold = 50.0
+            max_consensus_threshold = 40.0
             if consensus_norm > max_consensus_threshold:
                 consensus_term = consensus_term / consensus_norm * max_consensus_threshold
+            
+            if self.logger and self.debug_recording_enabled:
+                self.logger.logger.debug(
+                    f"Vehicle {self.vehicle_id}: Consensus applied. "
+                    f"accum_norm={np.linalg.norm(consensus_accum):.6f}, "
+                    f"gain shape={self.consensus_gain.shape}, "
+                    f"term_norm={consensus_norm:.6f}"
+                )
         else:
             consensus_term = np.zeros(dim_distributed_observer)
-        
-        # consensus_term = self.consensus_gain @ consensus_accum 
-        # x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
+            if self.logger and self.debug_recording_enabled:
+                self.logger.logger.debug(
+                    f"Vehicle {self.vehicle_id}: No neighbors found for consensus"
+                )
+              
+        x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
         
         # State constraint: prevent numerical overflow
-        # x_i_new = np.clip(x_i_new, -1e3, 1e3)
+        x_i_new = np.clip(x_i_new, -1e4, 1e4)
 
-        x_i_new = self._fake_estimated_state_for_debugging(
-                self.estimated_state, local_state, current_time_ns
-            )
+        # x_i_new = self._fake_estimated_state_for_debugging(
+        #         self.estimated_state, local_state, current_time_ns
+        #     )
 
         
         # === Store debug data for recording ===
