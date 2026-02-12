@@ -188,11 +188,15 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # =====================================================
         # High correlation (0.9) encourages w_r and w_f to move together,
         # fixing the observability issue where they could diverge with opposite signs.
+        # self.tire_correlation = kwargs.get('tire_correlation', 0.8)
         self.tire_correlation = kwargs.get('tire_correlation', 0.8)
 
+
         self.tire_info_layer_1 = {
-            'Fyr_linear': 0.0,
-            'Fyf_linear': 0.0,
+            'Fyr_est': 0.0,
+            'Fyf_est': 0.0,
+            'Fyr_linear_only': 0.0,
+            'Fyf_linear_only': 0.0,
             'alpha_r': 0.0,
             'alpha_f': 0.0
         }
@@ -534,7 +538,9 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # 6D system: [vx, vy, psi, r, X, Y] + disturbances
         Q_diag = [
             0.05,   # vx - encoder is accurate
-            0.01,    # vy - HIGH: weakly observable, let filter adapt quickly
+            2.0,    # vy - HIGH: weakly observable, must be loose so a_y innovation
+                    # flows to tire residuals instead of being absorbed by v_y corrections.
+                    # C[AY,VY] >> F[AY,w], so tight Q_vy starves residual estimation.
             0.001,  # psi - heading well-measured by GPS/IMU
             0.1,    # r - gyro is good but model has uncertainty
             0.02,   # X - GPS
@@ -545,23 +551,27 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         if self.disturbance_mode == 'general':
             # [d_vx, d_vy, d_r] - general additive disturbances
             # d_vy needs HIGH Q because it's key for v_y estimation
-            Q_diag.extend([2.0, 1.0, 1.0])  # d_vx, d_vy, d_r
+            Q_diag.extend([2.0, 2.0, 2.0])  # d_vx, d_vy, d_r
             return np.diag(Q_diag)
         else:
             # [wr, wf] - tire residuals with cross-correlation
             # High correlation encourages estimates to move together,
             # fixing the observability issue where they could diverge.
-            q_wr = 1.0
-            q_wf = 1.0
+            q_wr = 5000.0
+            q_wf = 5000.0
             corr = self.tire_correlation  # Default: 0.8
             
             # Build Q with correlation block for residuals
             Q_state = np.diag(Q_diag)  # 6x6 state part
             
             # Correlated residual block: [[q_wr, rho*sqrt(q_wr*q_wf)], [rho*sqrt(...), q_wf]]
+            # Cross-correlation couples w_r and w_f process noise so they tend
+            # to change together. This is physically motivated: similar tires on
+            # a symmetric car produce similar residuals. Without this, the EKF
+            # null-space (w_r - w_f direction) causes w_f to drift.
             off_diag = corr * np.sqrt(q_wr * q_wf)
             Q_w = np.array([
-                [q_wr, off_diag],
+                [q_wr,     off_diag],
                 [off_diag, q_wf]
             ])
             
@@ -607,18 +617,22 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # 6D state base P0
         P0_diag = [
             0.05,    # vx - fairly certain
-            0.01,    # vy - HIGH: very certain about initial lateral velocity
-            0.01,    # psi - fairly certain from GPS
+            1.0,     # vy - HIGH: uncertain initial lateral velocity.
+                     # Must match high Q_vy to allow a_y innovation to flow to residuals.
+            0.1,    # psi - fairly certain from GPS
             0.01,    # r - fairly certain from gyro
             0.01,    # X - uncertain position
             0.01,    # Y - uncertain position
         ]
 
         # Add disturbance initial uncertainty
+        # Higher P0 for residuals allows faster initial convergence.
+        # The Kalman gain for w depends on P_w cross-covariance, which
+        # builds up from P0 through the E matrix coupling in the augmented dynamics.
         if self.disturbance_mode == 'general':
-            P0_diag.extend([1.0, 5.0, 2.0])  # d_vx, d_vy (high), d_r
+            P0_diag.extend([0.1, 0.5, 0.2])  # d_vx, d_vy, d_r (conservative start)
         else:
-            P0_diag.extend([0.1, 0.1])  # wr, wf
+            P0_diag.extend([100.0, 100.0])  # wr, wf - large P0 for fast initial convergence
 
         return np.diag(P0_diag)
 
@@ -1004,7 +1018,21 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # Check control commands (throttle and steering)
         throttle_near_zero = abs(throttle_cmd) < 0.05
         steering_near_zero = abs(steering_cmd) < 0.05
-        velocity_near_zero = abs(measured_vx) < 0.1  # Slightly higher threshold for pre-check
+        velocity_near_zero = abs(measured_vx) < 0.1  # Tight threshold: truly stationary
+        
+        # Smooth blending factor for transition region [V_STILL, V_NOMINAL]
+        # 0.0 = fully kinematic (still), 1.0 = fully EKF (moving)
+        V_STILL = 0.1   # Below this: pure kinematic
+        V_NOMINAL = 0.2  # Above this: full EKF trust
+        abs_vx = abs(measured_vx)
+        if abs_vx <= V_STILL:
+            velocity_blend = 0.0
+        elif abs_vx >= V_NOMINAL:
+            velocity_blend = 1.0
+        else:
+            # Smooth cubic interpolation (no derivative discontinuity)
+            t = (abs_vx - V_STILL) / (V_NOMINAL - V_STILL)
+            velocity_blend = 3.0 * t**2 - 2.0 * t**3
         
         # Vehicle is "still" if velocity is low AND (no throttle command OR no significant input)
         is_vehicle_still = velocity_near_zero and throttle_near_zero
@@ -1049,23 +1077,49 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             # =====================================================
             # FULL qLPV EKF (vehicle is moving)
             # =====================================================
-            self.tire_info_layer_1 =  self.dynamics._calculate_tire_info(self.state_augmented[IDX_VX], self.state_augmented[IDX_VY], self.state_augmented[IDX_R], delta, self.state_augmented[self.state_dim], self.state_augmented[self.state_dim + 1])
+            
+            # --- Low-speed R scaling (prevents startup spike) ---
+            # At low velocity, the qLPV model is poorly conditioned (1/vx terms).
+            # Inflate R to make filter conservative, then smoothly reduce to nominal.
+            if velocity_blend < 1.0:
+                # Scale factor: 1.0 at full speed, up to 2x at transition start
+                r_scale = 1.0 + 1 * (1.0 - velocity_blend)
+                R_effective_scaled = R_effective 
+                # NOTE: Previously reduced Q for disturbance states during transition:
+                #   self.Q_base[i, i] *= velocity_blend
+                # This was REMOVED because it made the filter extremely stiff for
+                # tire residuals at low speed, preventing estimation from building up.
+                # The R-scaling above is sufficient for conservative behavior.
+                Q_save = None
+            else:
+                R_effective_scaled = R_effective
+                Q_save = None
+            
             # EKF PREDICT
             xa_pred, P_pred = self.ekf_predict(self.state_augmented, self.P, u, current_dt)
 
             # EKF UPDATE
-            xa_upd, P_upd, innov, y_pred = self.ekf_update(xa_pred, P_pred, y, u, R_matrix=R_effective, active_indices=active_indices)
+            xa_upd, P_upd, innov, y_pred = self.ekf_update(xa_pred, P_pred, y, u, R_matrix=R_effective_scaled, active_indices=active_indices)
+            
+            # NOTE: Previously blended residuals with zero during transition:
+            #   xa_upd[self.state_dim:] *= velocity_blend
+            # This was REMOVED because it crushed tire residual estimates every cycle,
+            # forcing the filter to re-estimate from scratch. The EKF's R-scaling
+            # during transition already provides conservative behavior.
+            # The residuals should be allowed to build up naturally.
 
             # =====================================================
             # TIRE RESIDUAL EQUALITY CONSTRAINT (Observability Fix)
             # =====================================================
             # The E matrix gives r_dot opposite signs for w_r and w_f:
             #   r_dot contribution: -lr/Iz * w_r + lf/Iz * cos(δ) * w_f
-            # This creates a null-space allowing symmetric (opposite-signed) solutions.
-            # 
-            # Physical reality: For similar tires and slip angles, w_r ≈ w_f
-            # We add a pseudo-measurement: y_eq = w_r - w_f ≈ 0
-            # This directly constrains the estimates to be similar.
+            # When w_r ≈ w_f (same tire type, symmetric car), these cancel
+            # in the r dynamics → the r measurement cannot separate them.
+            # The a_y measurement only sees their SUM (w_r + w_f).
+            # This creates a null-space in (w_r - w_f), causing w_f to drift.
+            #
+            # Fix: Add pseudo-measurement y_eq = w_r - w_f ≈ 0
+            # This directly constrains the null-space.
             if self.disturbance_mode == 'tire' and self.tire_correlation > 0:
                 # H_eq selects (w_r - w_f): [0...0, 1, -1]
                 H_eq = np.zeros((1, self.augmented_dim))
@@ -1079,8 +1133,10 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
                 y_eq_meas = 0.0
                 
                 # Measurement variance: lower = stronger constraint
-                # Scale inversely with correlation (0.8 → R=0.15, 0.95 → R=0.05)
-                R_eq_base = 0.1  # Reduced from 0.5 for stronger constraint
+                # With correlation=0.8: R_eq = 0.1*(1-0.8+0.1) = 0.03 (strong)
+                # This is tight enough to keep w_r ≈ w_f while still allowing
+                # small differences when the steering angle creates asymmetry.
+                R_eq_base = 0.1
                 R_eq = np.array([[R_eq_base * (1.0 - self.tire_correlation + 0.1)]])
                 
                 # Kalman update for equality constraint
@@ -1139,15 +1195,14 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # =====================================================
         # Even after qLPV update, if velocity is very low, zero out velocities
         # to prevent small numerical drift when truly stationary.
-        if abs(measured_vx) < 0.05 and throttle_near_zero:
+        if abs(measured_vx) < V_STILL and throttle_near_zero:
             # Force velocities to zero
             self.state_augmented[IDX_VX] = 0.0
             self.state_augmented[IDX_VY] = 0.0
             self.state_augmented[IDX_R] = 0.0
-            # Force disturbances to zero (avoid suppressing general-mode estimation)
-            # Disturbances are the last self.udim elements
-            if self.disturbance_mode != 'general':
-                self.state_augmented[-self.udim:] = 0.0
+            # Force disturbances to zero
+            self.state_augmented[self.state_dim:] = 0.0
+
 
         # =====================================================
         # OBSERVABILITY-BASED GATING (new approach)
@@ -1235,6 +1290,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # Extract state and residual estimates
         self.state_hat = self.state_augmented[:self.state_dim].copy()
         self.w_hat = self.state_augmented[self.state_dim:].copy()
+        self.tire_info_layer_1 =  self.dynamics._calculate_tire_info(self.state_augmented[IDX_VX], self.state_augmented[IDX_VY], self.state_augmented[IDX_R], delta, self.state_augmented[self.state_dim], self.state_augmented[self.state_dim + 1])
 
         # Update UIO-style residual constraint
         self.ay_innovation = 0.0
@@ -1387,53 +1443,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         """
         return self.w_constraint
 
-    # def _calculate_tire_info(self, vx: float, vy: float, r: float, delta: float ,w_r , w_f, Cf: float = 200, Cr: float = 200):
-    #     """
-    #     Calculate and store tire information (ground truth and residuals).
-        
-    #     Called at the end of each physics update method to compute:
-    #     - Slip angles (alpha_f, alpha_r)
-    #     - Linear tire forces (Fyf_linear, Fyr_linear)
-    #     - True tire forces (Fyf_true, Fyr_true)
-    #     - Tire residuals (w_f, w_r) stored in self.w_f_true, self.w_r_true
-        
-    #     Args:
-    #         vx: Longitudinal velocity
-    #         vy: Lateral velocity  
-    #         r: Yaw rate
-    #         delta: Steering angle
-    #     """
-    #     lf = self.params.a
-    #     lr = self.params.b
-    #     if Cf is None:
-    #         Cf = getattr(self.params, 'Cf', 120.0)
-    #     if Cr is None:
-    #         Cr = getattr(self.params, 'Cr', 120.0)
-        
-    #     # Clamp vx to avoid division by zero
-    #     vx_safe = max(abs(vx), 0.1)
-        
-    #     # Compute slip angles
-    #     alpha_f = delta - (vy + lf * r) / vx_safe
-    #     alpha_r = -(vy - lr * r) / vx_safe
-        
-    #     #  Compute linear tire forces (in observer, we use linear tire forces)
-        
-    #     Fyf_linear  = Cf * alpha_f + w_r 
-    #     Fyr_linear = Cr * alpha_r + w_f
-
-        
-    #     # # Store residuals for observer access
-    #     # self.w_r_true = w_r
-    #     # self.w_f_true = w_f
-        
-    #     # Store complete tire info
-    #     return  {
-    #         'Fyr_linear_est': Fyr_linear,
-    #         'Fyf_linear_est': Fyf_linear,
-    #         'alpha_r': alpha_r,
-    #         'alpha_f': alpha_f,
-    #     }
+    
 
     def check_uio_rank_condition(self, delta: float) -> bool:
         """

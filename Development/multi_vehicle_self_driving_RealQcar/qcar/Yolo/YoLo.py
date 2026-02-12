@@ -77,11 +77,12 @@ class YOLOReceiver():
                                     recvBufferSize=7*6*8,  # Updated buffer size
                                     nonBlocking=nonBlocking,
                                     reshapeOrder='C')
-        self.status_check('', iterations=20)
+        self.status_check('', iterations=30)
 
-    def status_check(self, message, iterations=10):
+    def status_check(self, message, iterations=30):
         # blocking method to establish connection to the server stream.
-        self._timeout = Timeout(seconds=0, nanoseconds=10000) #1000000
+        # Use 500ms timeout per iteration to give the YOLO server time to start
+        self._timeout = Timeout(seconds=0, nanoseconds=500000000)  # 500ms
         counter = 0
         while not self._handle.connected:
             self._handle.checkConnection(timeout=self._timeout)
@@ -90,8 +91,10 @@ class YOLOReceiver():
                 print(message)
                 break
             elif counter >= iterations:
-                print('YOLO Server error: status check failed.')
+                print(f'YOLO Server error: status check failed after {iterations} attempts.')
                 break
+            # Sleep 500ms between retries to allow server startup
+            time.sleep(0.5)
 
     def read(self):
         new = False

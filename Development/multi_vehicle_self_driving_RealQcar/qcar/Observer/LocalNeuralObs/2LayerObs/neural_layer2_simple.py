@@ -732,12 +732,18 @@ class NeuralLayer2Simple(LocalStateEstimatorBase):
             return
         
         # Get ground truth if available
-        gt_state = None
-        gt_tire_info = None
+        state_true_6d = None
+        unknown_input_true = None
+        disturbances_true = None
+        tire_info_true = None
         if self.ground_truth_provider is not None:
             try:
-                gt_state = self.ground_truth_provider.get_state()
-                gt_tire_info = self.ground_truth_provider.get_tire_info()
+                state_true_6d = self.ground_truth_provider.get_true_state()
+                unknown_input_true = self.ground_truth_provider.get_true_residuals()
+                if hasattr(self.ground_truth_provider, 'get_true_disturbances'):
+                    disturbances_true = self.ground_truth_provider.get_true_disturbances()
+                if hasattr(self.ground_truth_provider, 'get_tire_info'):
+                    tire_info_true = self.ground_truth_provider.get_tire_info()
             except:
                 pass
         
@@ -750,27 +756,29 @@ class NeuralLayer2Simple(LocalStateEstimatorBase):
         ay_meas = measurement[5] if len(measurement) > 5 else 0.0
         ax_meas = acceleration[0] if acceleration is not None and len(acceleration) > 0 else 0.0
         
-        # Record 2-layer data
+        measurements = {
+            'vx': vx_meas, 'r': r_meas, 'psi': psi_meas,
+            'X': X_meas, 'Y': Y_meas, 'ay': ay_meas, 'ax': ax_meas,
+        }
+        
+        # Record 2-layer data with correct argument names
         self.recorder.record_2layer(
             t=self.update_count * self.Ts,
-            x_est=self.state_nn_6d,
+            state_6d=self.state_nn_6d,
+            measurements=measurements,
+            nn_outputs=self.d_hat,
             uio_state=self.layer1.get_state(),
             uio_unknown_input=self.layer1.get_tire_residuals(),
-            nn_output=self.d_hat,
-            vx_meas=vx_meas,
-            r_meas=r_meas,
-            psi_meas=psi_meas,
-            X_meas=X_meas,
-            Y_meas=Y_meas,
-            ay_meas=ay_meas,
-            ax_meas=ax_meas,
-            delta=self._current_control[0],
-            accel_cmd=self._current_control[1],
+            steering=self._current_control[0],
+            throttle=self._current_control[1],
+            loss=self.get_training_loss(),
+            gps_valid=True,
+            state_true_6d=state_true_6d,
+            unknown_input_true=unknown_input_true,
+            disturbances_true=disturbances_true,
+            tire_info_true=tire_info_true,
             tire_info_layer_1=self.layer1.get_tire_info(),
             tire_info_layer_2=self.tire_info_layer_2,
-            training_loss=self.get_training_loss(),
-            x_true=gt_state,
-            w_true=gt_tire_info.get('w_hat') if gt_tire_info else None,
         )
 
     

@@ -6,16 +6,16 @@
 
 # vehicle body dimensions
 # vehicle length [m] - approximately 38cm
-l: 0.38
+l: 0.425
 # vehicle width [m] - approximately 20cm
-w: 0.20
+w: 0.192
 
 # steering constraints
 steering:
   # maximum steering angle [rad] - approximately ±30 degrees
-  max: 0.5236
+  max: 0.52
   # minimum steering angle [rad]
-  min: -0.5236
+  min: -0.52
   # maximum steering velocity [rad/s]
   v_max: 3.0
   # minimum steering velocity [rad/s]
@@ -45,8 +45,8 @@ longitudinal:
   # brake_decel_mag : 3.0
 
 # masses
-# vehicle mass [kg] - approximately 1.5 kg for QCar
-m: 1.5
+# vehicle mass [kg] - approximately 2.7 kg for QCar
+m: 2.7
 # sprung mass [kg] - most of vehicle mass is sprung
 m_s: 1.3
 # unsprung mass front [kg] - small wheels and suspension
@@ -60,13 +60,16 @@ a: 0.13
 # distance from center of gravity to rear axle [m]
 b: 0.13
 
+# a: 0.139 
+# b: 0.117
+
 # moments of inertia (scaled for small vehicle)
 # moment of inertia for sprung mass in roll [kg m^2]
 I_Phi_s: 0.01
 # moment of inertia for sprung mass in pitch [kg m^2]
 I_y_s: 0.02
 # moment of inertia for sprung mass in yaw [kg m^2]
-I_z: 0.025
+I_z: 0.034
 # moment of inertia cross product [kg m^2]
 I_xz_s: 0.0
 
@@ -102,9 +105,9 @@ K_sdr: 50.0
 
 # geometric parameters
 # track width front [m] - approximately 18cm
-T_f: 0.18
+T_f: 0.17
 # track width rear [m]
-T_r: 0.18
+T_r: 0.17
 # lateral spring rate at compliant pin joint [N/m]
 K_ras: 2000.0
 
@@ -137,7 +140,7 @@ I_y_w: 0.0005
 # lateral compliance rate of tire per tire [m/N]
 K_lt: 1.0e-4
 # effective wheel/tire radius [m] - small diameter wheels
-R_w: 0.035
+R_w: 0.033
 
 # split of brake and engine torque
 T_sb: 0.76

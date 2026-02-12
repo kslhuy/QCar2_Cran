@@ -95,6 +95,12 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     flat['dict_size'] = learn.get('dict_size', 20)
     flat['gradient_method'] = learn.get('gradient_method', 'autodiff')
     
+    # Selective data curation parameters (for learningby_dict mode)
+    flat['novelty_threshold'] = learn.get('novelty_threshold', 0.05)
+    flat['min_excitation'] = learn.get('min_excitation', 0.02)
+    flat['excitation_bonus_weight'] = learn.get('excitation_bonus_weight', 2.0)
+    flat['use_diversity_replacement'] = learn.get('use_diversity_replacement', True)
+    
     # Observer parameters
     obs = config.get('observer', {})
     flat['observer_gain'] = obs.get('observer_gain', 0.5)
@@ -138,6 +144,7 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     flat['first_layer_type'] = fl.get('type', 'qlpv')
     flat['output_first_layer_only'] = fl.get('output_first_layer_only', False)
     flat['use_8d_system'] = fl.get('use_8d_system', False)
+    flat['override_threshold'] = fl.get('override_threshold', 0.1)
     
     # Model persistence
     model = config.get('model', {})
@@ -157,12 +164,13 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     flat['n_vx_vertices'] = gain_design.get('n_vx_vertices', 3)
     flat['n_delta_vertices'] = gain_design.get('n_delta_vertices', 3)
     flat['use_common_lyapunov'] = gain_design.get('use_common_lyapunov', True)
+    flat['contraction_rate'] = gain_design.get('contraction_rate', 0.95)
     
     # Recording configuration
     recording = config.get('recording', {})
     flat['enable_recording'] = recording.get('enable_recording', False)
     flat['recording_output_dir'] = recording.get('output_dir', 'neural_obs_recordings')
-    flat['filename'] = recording.get('filename', None)
+    flat['recording_filename'] = recording.get('filename', None)
     flat['recording_append_mode'] = recording.get('append_mode', False)
     
     return flat

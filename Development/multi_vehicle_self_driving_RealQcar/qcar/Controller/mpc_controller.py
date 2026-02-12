@@ -139,7 +139,8 @@ class CasADiMPCController(MPCControllerBase):
             longitudinal = params.get('longitudinal', {})
             
             self.max_steering = steering.get('max', params.get('max_steering', 0.5))
-            self.max_acceleration = longitudinal.get('a_max', params.get('max_acceleration', 2.0))
+            # self.max_acceleration = longitudinal.get('a_max', params.get('max_acceleration', 2.0))
+            self.max_acceleration = 9 # Set to 9 m/s^2 for more aggressive acceleration (QCar can handle it)
             self.max_deceleration = params.get('max_deceleration', self.max_acceleration)
             self.max_velocity = longitudinal.get('v_max', params.get('max_velocity', 2.0))
             self.min_velocity = longitudinal.get('v_min', params.get('min_velocity', 0.0))
@@ -372,7 +373,10 @@ class CasADiMPCController(MPCControllerBase):
             self.ubx[idx + 1] = 1e6
             self.lbx[idx + 2] = -1e6  # psi (unbounded)
             self.ubx[idx + 2] = 1e6
-            self.lbx[idx + 3] = self.min_velocity  # v
+            # CRITICAL: Enforce v >= 0 so MPC never plans reverse motion.
+            # Without this, the optimizer finds it cheaper to go backward
+            # to correct position errors, causing forward/backward oscillation.
+            self.lbx[idx + 3] = 0.0  # v >= 0 (no reverse)
             self.ubx[idx + 3] = self.max_velocity
         
         # Control bounds
@@ -709,8 +713,9 @@ class CasADiMPCController(MPCControllerBase):
             
             # Convert acceleration to throttle (simple linear mapping)
             # Throttle range: [-1, 1] where negative is braking
+            print(f"[MPC] Computed control: delta={delta_opt:.3f} rad, acc={acc_opt:.3f} m/s^2")
             throttle = self._acc_to_throttle(acc_opt)
-            
+            # throttle = acc_opt  # Directly use acceleration as throttle for simplicity
             return throttle, delta_opt
             
         except Exception as e:

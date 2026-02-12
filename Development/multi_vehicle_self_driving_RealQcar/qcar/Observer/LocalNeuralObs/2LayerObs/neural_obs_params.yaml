@@ -53,6 +53,32 @@ learning:
   #   - 'analytical': Manual sensitivity propagation (faster, no PyTorch needed)
   gradient_method: analytical
 
+  # ---- Selective Data Curation (for learningby_dict mode) ----
+  # These parameters control WHAT data enters the learning dictionary.
+  # Goal: only train on rich, informative data (turning, lateral dynamics)
+  # and skip redundant straight-line samples.
+
+  # Minimum normalized distance to existing dict entries for acceptance.
+  # Higher = more selective, only very different data accepted.
+  # 0.0 = disabled (accept everything, like original LearningBatch).
+  # Recommended: 0.03 - 0.10
+  novelty_threshold: 0.05
+
+  # Minimum excitation score to accept a sample.
+  # Based on |δ|, |r|, |v_y| — measures how much tire nonlinearity is excited.
+  # Samples below this threshold (e.g., straight-line driving) are rejected.
+  # 0.0 = disabled. Recommended: 0.01 - 0.05
+  min_excitation: 0.02
+
+  # Weight for excitation score when deciding which entry to replace.
+  # Higher = prefer replacing low-excitation entries over high-excitation ones.
+  excitation_bonus_weight: 2.0
+
+  # Replacement strategy when dictionary is full:
+  #   true: Replace most similar entry (maximize diversity)
+  #   false: Replace entry with lowest excitation score
+  use_diversity_replacement: true
+
 # ============================================================================
 # Observer Parameters
 # ============================================================================
@@ -234,5 +260,5 @@ recording:
   filename: "neural_obs_2layer"
   
   # Append to existing file instead of creating new one
-  append_mode: true
+  append_mode: false
 # ============================================================================

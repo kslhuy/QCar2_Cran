@@ -4,7 +4,7 @@ vehicle:
   id: 0
   model_type: "qlpv_matrix"   # Options: kinematic, dynamic, qlpv_legacy, qlpv_matrix
   params_file: "qcar"         # Options: qcar, vehicle1, vehicle2...
-  tire_model: "static_linear"       # Options: static_linear, dynamic_linear, pacejka
+  tire_model: "pacejka"       # Options: static_linear, dynamic_linear, pacejka
   dt: 0.01                    # Simulation timestep (s)
 
 disturbances:
