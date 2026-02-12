@@ -241,6 +241,7 @@ class ControllerConfig:
         return {
             'max_throttle': sf_config.get('max_throttle', 0.3),
             'throttle_smoothing': sf_config.get('throttle_smoothing', 0.7),
+            'leader_fix_throttle': sf_config.get('leader_fix_throttle', 0.1),
             'observer': None,  # Will be set by controller manager
         }
     
@@ -260,6 +261,7 @@ class ControllerConfig:
         return {
             'max_throttle': sf_config.get('max_throttle', 0.3),
             'throttle_smoothing': sf_config.get('throttle_smoothing', 0.7),
+            'leader_fix_throttle': sf_config.get('leader_fix_throttle', 0.1),
             'observer': None,  # Will be set by controller manager (used for V2V communication access)
         }
     

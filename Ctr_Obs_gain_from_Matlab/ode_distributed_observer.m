@@ -21,8 +21,7 @@ global  C1 C2 C3 Cv Cd
 
 % The coupling gain gamma and the adjacency matrix a
 global gamma a
-gamma = 529.7849;
-gamma = 347.6416;
+
 a = [0 1 0;
      1 0 1;
      0 1 0];

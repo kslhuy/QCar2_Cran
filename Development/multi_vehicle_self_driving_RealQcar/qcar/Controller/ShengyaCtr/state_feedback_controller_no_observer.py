@@ -42,6 +42,7 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
     def __init__(self, 
                  max_throttle=0.3,
                  throttle_smoothing=0.7,
+                 leader_fix_throttle=0.1,
                  observer=None,
                  config=None,
                  logger=None):
@@ -63,9 +64,11 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
             params = config.get_longitudinal_params('state_feedback')
             self.max_throttle = params.get('max_throttle', max_throttle)
             self.throttle_smoothing = params.get('throttle_smoothing', throttle_smoothing)
+            self.leader_fix_throttle = params.get('leader_fix_throttle', leader_fix_throttle)
         else:
             self.max_throttle = max_throttle
             self.throttle_smoothing = throttle_smoothing
+            self.leader_fix_throttle = leader_fix_throttle
         
         # Controller state
         self.prev_throttle = 0.0
@@ -169,7 +172,7 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
     
         # State feedback control law: u_i = sum_{j=0}^{i-1} K_{ij} * (F_i - F_j) * estimated_states
         # For j=0 (leader), F_0 is zero matrix, so K_{i0} * F_i * estimated_states
-        throttle_raw = 0.15  # Base throttle to maintain speed, will be adjusted by feedback terms
+        throttle_raw = self.leader_fix_throttle  # Base throttle to maintain speed, will be adjusted by feedback terms
         
         # First term: K_{i0} * F_i * estimated_states (j=0)
         # This represents control based on this vehicle's relative state to leader

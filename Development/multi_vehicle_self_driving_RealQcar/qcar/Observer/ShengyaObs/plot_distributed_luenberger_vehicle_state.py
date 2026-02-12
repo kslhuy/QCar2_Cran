@@ -40,6 +40,7 @@ def plot_vehicle_state_single(csv_path: str) -> None:
     vehicle_id = int(match.group(1)) if match else None
 
     t = df['time']
+    t = t - t.min()  # Normalize time to start at 0
     pos = df.get('position', pd.Series([0.0] * len(df)))
     vel = df.get('velocity', pd.Series([0.0] * len(df)))
     acc = df.get('acceleration', pd.Series([0.0] * len(df)))
@@ -158,6 +159,7 @@ def plot_multi_vehicle_states(records: Dict[int, str]) -> None:
     leader_color = vehicle_colors[0]
     if 'true_position_0' in first_df.columns:
         t_leader = first_df['time']
+        t_leader = t_leader - t_leader.min()  # Normalize time to start at 0
         axs[0].plot(t_leader, first_df['true_position_0'], label='Leader (p0)', 
                    color=leader_color, linestyle='--', linewidth=2, alpha=0.8)
     if 'true_velocity_0' in first_df.columns:
@@ -172,6 +174,7 @@ def plot_multi_vehicle_states(records: Dict[int, str]) -> None:
         label_true = f"V{vid}"
         color = vehicle_colors.get(vid, '#000000')  # Default to black if vid not in dict
         t = df['time']
+        t = t - t.min()  # Normalize time to start at 0
         
         # Plot true measurements (solid lines)
         true_pos_col = f'true_position_{vid}'

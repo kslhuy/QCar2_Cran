@@ -44,7 +44,7 @@ qlabs.destroy_all_spawned_actors()
 
 # create a camera in this qlabs instance
 camera = QLabsFreeCamera(qlabs)
-camera.spawn_degrees(location=[-0.8, -28, 28], rotation=[0, 33, 64])
+camera.spawn_degrees(location=[76, -21, 8], rotation=[0, 11, 122])
 # to switch our view from our current camera to the new camera we just initialized
 camera.possess()
 

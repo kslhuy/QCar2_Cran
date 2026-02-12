@@ -182,7 +182,7 @@ def load_data(filepath: str) -> pd.DataFrame:
 
 def detect_observer_size(df: pd.DataFrame) -> int:
     """Detect observer_size from column names."""
-    return len([c for c in df.columns if c.startswith('x_vec_before_p')])
+    return len([c for c in df.columns if c.startswith('x_vec_p')])
 
 
 def detect_fleet_size(df: pd.DataFrame) -> int:
@@ -198,15 +198,15 @@ def plot_observer_states(df: pd.DataFrame, observer_size: int,
     
     for i in range(observer_size):
         vid = i + 1
-        col_pos = f'x_vec_after_p{vid}'
+        col_pos = f'x_vec_p{vid}'
         if col_pos in df.columns:
             ax_pos.plot(time, df[col_pos], label=f'Vehicle {vid}', color=colors[i], linewidth=1.5)
         
-        col_vel = f'x_vec_after_v{vid}'
+        col_vel = f'x_vec_v{vid}'
         if col_vel in df.columns:
             ax_vel.plot(time, df[col_vel], label=f'Vehicle {vid}', color=colors[i], linewidth=1.5)
         
-        col_acc = f'x_vec_after_a{vid}'
+        col_acc = f'x_vec_a{vid}'
         if col_acc in df.columns:
             ax_acc.plot(time, df[col_acc], label=f'Vehicle {vid}', color=colors[i], linewidth=1.5)
     
@@ -341,6 +341,7 @@ def create_full_plot(df: pd.DataFrame, title: str = "Observer Analysis", filepat
     max_time = df['time'].max()
     cutoff_time = max_time - 10.0
     df = df[df['time'] <= cutoff_time].copy()
+    df['time'] = df['time'] - df['time'].min()
     
     observer_size = detect_observer_size(df)
     fleet_size = detect_fleet_size(df)

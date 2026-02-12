@@ -64,6 +64,7 @@ def calculate_true_relative_states(df: pd.DataFrame, vehicle_id: int, observer_s
     """
     n_samples = len(df)
     time = df['time'].values
+    time = time - time.min()  # Normalize time to start at 0
     true_relative_states = np.zeros((n_samples, 3 * observer_size))
     di0_values_all = np.zeros((n_samples, observer_size))
     

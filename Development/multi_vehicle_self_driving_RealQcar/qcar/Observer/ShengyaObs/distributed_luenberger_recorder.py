@@ -131,7 +131,7 @@ class DistributedLuenbergerRecorder:
         columns = ['time']
         
         # Observer state vector (3 per vehicle: position, velocity, acceleration)
-        for prefix in ['x_vec_before', 'x_vec_after']:
+        for prefix in ['x_vec']:
             for i in range(self.observer_size):
                 vid = i + 1
                 columns.extend([
@@ -160,11 +160,6 @@ class DistributedLuenbergerRecorder:
         # Consensus info
         columns.extend(['neighbor_count', 'consensus_norm'])
         
-        # di0 values for each follower vehicle
-        for i in range(self.observer_size):
-            vid = i + 1
-            columns.append(f'di0_{vid}')
-
         # Collective control input for each follower vehicle
         for i in range(self.observer_size):
             vid = i + 1
@@ -233,7 +228,7 @@ class DistributedLuenbergerRecorder:
         row = {'time': t}
         
         # x_vec states
-        for prefix in ['x_vec_before', 'x_vec_after']:
+        for prefix in ['x_vec']:
             data = debug_data.get(prefix, None)
             if data is not None:
                 for i in range(self.observer_size):
@@ -269,13 +264,6 @@ class DistributedLuenbergerRecorder:
         row['neighbor_count'] = debug_data.get('neighbor_count', 0)
         row['consensus_norm'] = debug_data.get('consensus_norm', 0.0)
         
-        # di0 values
-        di0_data = debug_data.get('di0_values', None)
-        if di0_data is not None:
-            for i in range(self.observer_size):
-                vid = i + 1
-                row[f'di0_{vid}'] = di0_data[i] if i < len(di0_data) else 0.0
-
         # Collective control inputs
         cc_data = debug_data.get('collective_control', None)
         if cc_data is not None:

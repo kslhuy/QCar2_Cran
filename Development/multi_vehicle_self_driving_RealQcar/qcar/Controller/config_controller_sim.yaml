@@ -196,7 +196,7 @@ per_vehicle_controllers:
     longitudinal_controller_type: 'fix'  # Fixed throttle for leader
     lateral_controller_type: 'fix_lateral'  # Straight line
     fix:
-      throttle: 0.15  # Constant speed 
+      throttle: 0.1  # Constant speed 
     fix_lateral:
       steering: 0.0
   
@@ -209,6 +209,7 @@ per_vehicle_controllers:
     state_feedback_no_observer:
       max_throttle: 0.18
       throttle_smoothing: 0.7
+      leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     fix_lateral:
       steering: 0.0
     lookahead:
@@ -224,6 +225,7 @@ per_vehicle_controllers:
     state_feedback_no_observer:
       max_throttle: 0.18
       throttle_smoothing: 0.7 # Slightly smoother than vehicle 1
+      leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     fix_lateral:
       steering: 0.0
     lookahead:
@@ -239,6 +241,7 @@ per_vehicle_controllers:
     state_feedback_no_observer:
       max_throttle: 0.2
       throttle_smoothing: 0.7  # Smoothest
+      leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     fix_lateral:
       steering: 0.0
     lookahead:

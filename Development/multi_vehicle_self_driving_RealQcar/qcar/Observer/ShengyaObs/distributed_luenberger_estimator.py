@@ -371,6 +371,328 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         return filtered_measurement
     
+    def _get_leader_state_with_fallback(self, current_time_ns: int) -> tuple:
+        """
+        Retrieve leader state with fallback logic and apply sensor filtering.
+        
+        Args:
+            current_time_ns: Current time in nanoseconds
+        
+        Returns:
+            tuple: (v0, p0, v0_raw, state_leader)
+                - v0: Filtered leader velocity
+                - p0: Filtered leader position
+                - v0_raw: Unfiltered leader velocity (for measurement equations)
+                - state_leader: Full state array from V2V or None
+        """
+        state_leader = self._get_latest_received_state(0, current_time_ns)
+        
+        if state_leader is not None:
+            v0_raw = state_leader[3]
+            p0_raw = state_leader[0]
+        else:
+            if self.logger:
+                self.logger.logger.warning(
+                    f"Vehicle {self.vehicle_id}: No V2V state data from the leader, using fleet_states"
+                )
+            v0_raw = self.fleet_states[3, 0]
+            p0_raw = self.fleet_states[0, 0]
+        
+        # Apply sensor filtering
+        v0 = self._sensor_filter(v0_raw, self.prev_v0, self.leader_velocity_filter_alpha)
+        self.prev_v0 = v0
+        
+        p0 = self._sensor_filter(p0_raw, self.prev_p0, self.leader_position_filter_alpha)
+        self.prev_p0 = p0
+        
+        return v0, p0, v0_raw, state_leader
+    
+    def _compute_dynamics_term(self, x_vec: np.ndarray, collective_control: np.ndarray) -> np.ndarray:
+        """
+        Compute dynamics prediction term for observer update.
+        
+        Args:
+            x_vec: Current observer state vector [3*observer_size]
+            collective_control: Control input vector for all followers [observer_size]
+        
+        Returns:
+            dynamics_term: Dynamics prediction [3*observer_size]
+        """
+        return self.A_delta @ x_vec + self.B_delta @ collective_control
+    
+    def _compute_measurement_term(self, x_vec: np.ndarray, local_state: np.ndarray, 
+                                 current_time_ns: int, v0_raw: float) -> tuple:
+        """
+        Compute measurement correction term for observer update.
+        
+        Args:
+            x_vec: Current observer state vector [3*observer_size]
+            local_state: Own vehicle state [x, y, theta, v, a]
+            current_time_ns: Current time in nanoseconds
+            v0_raw: Unfiltered leader velocity
+        
+        Returns:
+            tuple: (measurement_term, local_measurement, estimated_measurement, measurement_error)
+        """
+        measurement_term = np.zeros(3 * self.observer_size)
+        local_measurement = np.zeros(self.local_measurement_dim)
+        
+        # Read self state from local_state input
+        p_i = local_state[0]
+        v_i = local_state[3]
+        
+        # Get preceding vehicle state from communication
+        state_prev = self._get_latest_received_state(self.vehicle_id - 1, current_time_ns)
+        if state_prev is not None:
+            p_prev = state_prev[0]
+        else:
+            if self.logger:
+                self.logger.logger.warning(
+                    f"Vehicle {self.vehicle_id}: No V2V state data from vehicle {self.vehicle_id - 1}, using fleet_states"
+                )
+            p_prev = self.fleet_states[0, self.vehicle_id - 1]
+        
+        local_measurement[0] = p_i - p_prev  # relative position
+        local_measurement[1] = v_i  # velocity
+        
+        self.prev_distance_measurement = local_measurement[0]
+        self.prev_velocity_measurement = local_measurement[1]
+        
+        # Compute estimated measurement
+        estimated_measurement = self.Ci @ x_vec + self.Cv * v0_raw + self.Cd * self.d
+        
+        # Compute measurement error
+        measurement_error = local_measurement - estimated_measurement
+        
+        # Apply observer gain
+        measurement_term = self.observer_gain @ measurement_error
+        
+        return measurement_term, local_measurement, estimated_measurement, measurement_error
+    
+    def _calculate_estimated_collective_control(self, x_vec: np.ndarray) -> np.ndarray:
+        """
+        Calculate collective control input for all follower vehicles using K-matrix based feedback.
+        
+        Control law:
+        - Vehicle 1: u1 = K10 @ F1 @ x_vec
+        - Vehicle 2: u2 = K20 @ F2 @ x_vec + K21 @ (F2-F1) @ x_vec
+        - Vehicle 3: u3 = K30 @ F3 @ x_vec + K31 @ (F3-F1) @ x_vec + K32 @ (F3-F2) @ x_vec
+        
+        Args:
+            x_vec: Observer state vector [3*observer_size]
+        
+        Returns:
+            collective_control: Control input for each follower vehicle [observer_size]
+        """
+        collective_control = np.zeros(self.observer_size)
+        
+        for vehicle_id in range(1, self.observer_size + 1):
+            # Calculate Fi for current vehicle
+            Fi = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=vehicle_id)
+            
+            # Check if K matrices exist for this vehicle
+            if vehicle_id in self.K_all_vehicles:
+                # First term: Ki0 @ Fi @ x_vec
+                if 0 in self.K_all_vehicles[vehicle_id]:
+                    Ki0 = self.K_all_vehicles[vehicle_id][0]
+                    collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0] + 0.15, 0.18)
+                
+                # Sum over preceding vehicles j=1 to i-1
+                # Add terms: Kij @ (Fi - Fj) @ x_vec
+                for j in range(1, vehicle_id):
+                    if j in self.K_all_vehicles[vehicle_id]:
+                        Kij = self.K_all_vehicles[vehicle_id][j]
+                        Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
+                        collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0] + 0.15
+                        collective_control = np.clip(collective_control, 0, 0.18)
+        
+        return collective_control
+    
+    def _calculate_collective_control_v2v(self, control: np.ndarray, current_time_ns: int) -> np.ndarray:
+        """
+        Calculate collective control input for all follower vehicles using V2V communication.
+        
+        Args:
+            control: Own control signal [steering, throttle]
+            current_time_ns: Current time in nanoseconds
+        
+        Returns:
+            collective_control: Control input for each follower vehicle [observer_size]
+        """
+        collective_control = np.zeros(self.observer_size)
+        
+        for vehicle_id in range(1, self.fleet_size):
+            follower_idx = vehicle_id - 1
+            
+            if follower_idx >= self.observer_size:
+                break  # Safety check
+            
+            if vehicle_id == self.vehicle_id:
+                # Use own control signal (full throttle including feedforward)
+                collective_control[follower_idx] = control[1]-0.1  # Complete throttle signal
+            else:
+                # Get neighbor's control signal via V2V
+                neighbor_control = self._get_latest_received_control(vehicle_id, current_time_ns)
+                
+                if neighbor_control is not None:
+                    # Use complete control signal (feedforward + feedback)
+                    collective_control[follower_idx] = neighbor_control[1] -0.1  # Complete throttle signal
+                    
+                    if self.logger and self.debug_recording_enabled:
+                        self.logger.logger.debug(
+                            f"Vehicle {self.vehicle_id}: Using V2V control from vehicle {vehicle_id}: "
+                            f"throttle={neighbor_control[1]:.3f}, steering={neighbor_control[0]:.3f}"
+                        )
+                else:
+                    # No V2V data: use default value (zero throttle)
+                    collective_control[follower_idx] = 0.0
+                    
+                    if self.logger:
+                        self.logger.logger.warning(
+                            f"Vehicle {self.vehicle_id}: No V2V control data from vehicle {vehicle_id}, using default"
+                        )
+        
+        return collective_control
+    
+    
+    def _compute_consensus_term(self, x_vec: np.ndarray, current_time_ns: int) -> np.ndarray:
+        """
+        Compute consensus correction term based on neighbor states.
+        
+        Args:
+            x_vec: Current observer state vector [3*observer_size]
+            current_time_ns: Current time in nanoseconds
+        
+        Returns:
+            consensus_term: Consensus correction [3*observer_size]
+        """
+        dim_distributed_observer = 3 * self.observer_size
+        consensus_term = np.zeros(dim_distributed_observer)
+        consensus_accum = np.zeros(dim_distributed_observer)
+        neighbor_count = 0
+        
+        if self.logger and self.debug_recording_enabled:
+            self.logger.logger.debug(
+                f"Vehicle {self.vehicle_id}: Starting consensus calculation. "
+                f"My neighbors: {self.my_neighbors}, x_vec norm: {np.linalg.norm(x_vec):.6f}"
+            )
+        
+        # Loop through each neighbor defined by adjacency matrix
+        for neighbor_id in self.my_neighbors:
+            # --- Step 1: Try to get FLEET state (Primary Source) ---
+            neighbor_fleet_dict = self._get_latest_fleet_data(neighbor_id, current_time_ns)
+            
+            # Validate fleet data completeness
+            is_complete_fleet = False
+            missing_vehicles = []
+            
+            if neighbor_fleet_dict is not None:
+                expected_vehicles = set(range(self.fleet_size))
+                received_vehicles = set(int(vid) for vid in neighbor_fleet_dict.keys())
+                missing_vehicles = list(expected_vehicles - received_vehicles)
+                
+                if not missing_vehicles:
+                    is_complete_fleet = True
+            
+            # --- Step 2: Fallback to LOCAL states if needed ---
+            if not is_complete_fleet:
+                if neighbor_fleet_dict is None:
+                    neighbor_fleet_dict = {}
+                
+                # Fill missing vehicles with local state broadcasts or current estimates
+                for vid in missing_vehicles:
+                    vehicle_local_state = self._get_latest_received_state(vid, current_time_ns)
+                    
+                    if vehicle_local_state is not None:
+                        neighbor_fleet_dict[vid] = {
+                            'x': float(vehicle_local_state[0]),
+                            'y': float(vehicle_local_state[1]),
+                            'theta': float(vehicle_local_state[2]),
+                            'velocity': float(vehicle_local_state[3]),
+                            'acceleration': float(vehicle_local_state[4] if len(vehicle_local_state) > 4 else 0.0)
+                        }
+                    else:
+                        neighbor_fleet_dict[vid] = {
+                            'x': float(self.fleet_states[0, vid]),
+                            'y': float(self.fleet_states[1, vid]),
+                            'theta': float(self.fleet_states[2, vid]),
+                            'velocity': float(self.fleet_states[3, vid]),
+                            'acceleration': float(self.fleet_states[4, vid])
+                        }
+                    if self.logger:
+                        self.logger.logger.warning(
+                            f"Vehicle {self.vehicle_id}: Missing state for vehicle {vid} from neighbor {neighbor_id}. "
+                            f"Falling back to local state or estimate. Missing vehicles: {missing_vehicles}"
+                        )
+            
+            # --- Step 3: Build neighbor's complete fleet_states matrix ---
+            neighbor_fleet_states = np.zeros((self.state_dim, self.fleet_size))
+            
+            for vid, vehicle_state in neighbor_fleet_dict.items():
+                try:
+                    vid_int = int(vid)
+                    if 0 <= vid_int < self.fleet_size:
+                        neighbor_fleet_states[0, vid_int] = vehicle_state.get('x', 0.0)
+                        neighbor_fleet_states[1, vid_int] = vehicle_state.get('y', 0.0)
+                        neighbor_fleet_states[2, vid_int] = vehicle_state.get('theta', 0.0)
+                        neighbor_fleet_states[3, vid_int] = vehicle_state.get('velocity', vehicle_state.get('v', 0.0))
+                        neighbor_fleet_states[4, vid_int] = vehicle_state.get('acceleration', 0.0)
+                    
+                except (ValueError, TypeError) as e:
+                    if self.logger:
+                        self.logger.logger.error(
+                            f"Vehicle {self.vehicle_id}: Invalid vehicle_id {vid} from neighbor {neighbor_id}: {e}"
+                        )
+                    continue
+            
+            # --- Step 4: Convert to distributed observer state format ---
+            neighbor_x_vec, neighbor_di0_values = self._transfer_fleet_states_to_estimated_states(
+                neighbor_fleet_states, current_time_ns
+            )
+            
+            # --- Step 5: Calculate consensus difference with adjacency weight ---
+            my_matrix_idx = self.vehicle_id - 1
+            neighbor_matrix_idx = neighbor_id - 1
+            weight = self.adjacency_matrix[my_matrix_idx, neighbor_matrix_idx]
+            
+            # Accumulate weighted difference: (own_estimate - neighbor_estimate)
+            consensus_diff = x_vec - neighbor_x_vec
+            consensus_accum += weight * consensus_diff
+            neighbor_count += 1
+            
+            if self.logger and self.debug_recording_enabled:
+                self.logger.logger.debug(
+                    f"Vehicle {self.vehicle_id}: Neighbor {neighbor_id} - "
+                    f"weight={weight:.6f}, diff_norm={np.linalg.norm(consensus_diff):.6f}, "
+                    f"neighbor_x_norm={np.linalg.norm(neighbor_x_vec):.6f}, "
+                    f"accum_norm={np.linalg.norm(consensus_accum):.6f}"
+                )
+        
+        # --- Step 6: Apply consensus gain ---
+        if neighbor_count > 0:
+            consensus_term = self.consensus_gain @ consensus_accum 
+            # Numerical protection: prevent consensus term explosion
+            consensus_norm = np.linalg.norm(consensus_term)
+            max_consensus_threshold = 50.0
+            if consensus_norm > max_consensus_threshold:
+                consensus_term = consensus_term / consensus_norm * max_consensus_threshold
+            
+            if self.logger and self.debug_recording_enabled:
+                self.logger.logger.debug(
+                    f"Vehicle {self.vehicle_id}: Consensus applied. "
+                    f"accum_norm={np.linalg.norm(consensus_accum):.6f}, "
+                    f"gain shape={self.consensus_gain.shape}, "
+                    f"term_norm={consensus_norm:.6f}"
+                )
+        else:
+            consensus_term = np.zeros(dim_distributed_observer)
+            if self.logger and self.debug_recording_enabled:
+                self.logger.logger.debug(
+                    f"Vehicle {self.vehicle_id}: No neighbors found for consensus"
+                )
+        
+        return consensus_term
+
     def compute_output_matrix_Ci(self, i: int) -> np.ndarray:
         """
         Compute output matrix Ci, where i starts from 1
@@ -501,7 +823,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             self._cleanup_old_data(current_time_ns)
             
             # === Record debug data if enabled ===
-            if self.recorder is not None and self.debug_data:
+            if self.recorder is not None:
                 # Calculate time in seconds from start
                 if self._recording_start_time is None:
                     self._recording_start_time = current_time_ns / 1e9
@@ -797,278 +1119,30 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         longitudinal_state_dim = 3
         dim_distributed_observer = longitudinal_state_dim * self.observer_size
 
-        # Distributed observer state (x_vec: pi-p0+di0, vi-v0, ai-a0)
-        x_vec, di0_values_before = self._transfer_fleet_states_to_estimated_states(self.fleet_states, current_time_ns)
-        
-        
-        # Get leader state with fallback to current estimate
-        state_leader = self._get_latest_received_state(0, current_time_ns)
-        if state_leader is not None:
-            v0_raw = state_leader[3]
-            p0_raw = state_leader[0]
-        else:
-            if self.logger:
-                self.logger.logger.warning(
-                    f"Vehicle {self.vehicle_id}: When try to get the leader state, no V2V state data from vehicle 0, using fleet_states"
-                )
-            v0_raw = self.fleet_states[3, 0]
-            p0_raw = self.fleet_states[0, 0]
-        
-        # Apply sensor filter to leader state
-        v0 = self._sensor_filter(v0_raw, self.prev_v0, self.leader_velocity_filter_alpha, dt)
-        self.prev_v0 = v0  # Update for next iteration
-        
-        p0 = self._sensor_filter(p0_raw, self.prev_p0, self.leader_position_filter_alpha, dt)
-        self.prev_p0 = p0  # Update for next iteration
+        # Read current observer state directly without conversion
+        x_vec = self.estimated_state.copy()
 
-        # Calculate collective control input for all follower vehicles
-        # Vehicle 1: u1 = K10 @ F1 @ x_vec
-        # Vehicle 2: u2 = K20 @ F2 @ x_vec + K21 @ (F2-F1) @ x_vec
-        # Vehicle 3: u3 = K30 @ F3 @ x_vec + K31 @ (F3-F1) @ x_vec + K32 @ (F3-F2) @ x_vec
-        collective_control = np.zeros(self.observer_size)
         
-        # for vehicle_id in range(1, self.observer_size + 1):
-        #     # Calculate Fi for current vehicle
-        #     Fi = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=vehicle_id)
-            
-        #     # Check if K matrices exist for this vehicle
-        #     if vehicle_id in self.K_all_vehicles:
-        #         # First term: Ki0 @ Fi @ x_vec
-        #         if 0 in self.K_all_vehicles[vehicle_id]:
-        #             Ki0 = self.K_all_vehicles[vehicle_id][0]
-        #             collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0] + 0.15, 0.18)  # Limit max control to 0.25
-                
-        #         # Sum over preceding vehicles j=1 to i-1
-        #         # Add terms: Kij @ (Fi - Fj) @ x_vec
-        #         for j in range(1, vehicle_id):
-        #             if j in self.K_all_vehicles[vehicle_id]:
-        #                 Kij = self.K_all_vehicles[vehicle_id][j]
-        #                 Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
-        #                 collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]  + 0.15
-        #                 collective_control = np.clip(collective_control, 0, 0.18)  # Limit control input
+        # Get leader state with fallback and filtering
+        v0, p0, v0_raw, state_leader = self._get_leader_state_with_fallback(current_time_ns)
+
+        # Calculate collective control input using K-matrix feedback
+        # Uncomment to use K-matrix based control, otherwise use V2V communication
+        # collective_control = self._calculate_estimated_collective_control(x_vec)
         
-       
-
-        # Use throttle as control input for all follower vehicles
-        # collective_control = np.full(self.observer_size, control[1])
-        # collective_control = np.full(self.observer_size, 0.15)
-
         # Get actual control signals from V2V communication for all follower vehicles
-        for vehicle_id in range(1, self.fleet_size):
-            follower_idx = vehicle_id - 1
-            
-            if follower_idx >= self.observer_size:
-                break  # Safety check
-            
-            if vehicle_id == self.vehicle_id:
-                # Use own control signal (full throttle including feedforward)
-                collective_control[follower_idx] = control[1]  # Complete throttle signal
-            else:
-                # Get neighbor's control signal via V2V
-                neighbor_control = self._get_latest_received_control(vehicle_id, current_time_ns)
-                
-                if neighbor_control is not None:
-                    # Use complete control signal (feedforward + feedback)
-                    collective_control[follower_idx] = neighbor_control[1]  # Complete throttle signal
-                    
-                    if self.logger and self.debug_recording_enabled:
-                        self.logger.logger.debug(
-                            f"Vehicle {self.vehicle_id}: Using V2V control from vehicle {vehicle_id}: "
-                            f"throttle={neighbor_control[1]:.3f}, steering={neighbor_control[0]:.3f}"
-                        )
-                else:
-                    # No V2V data: use default value (zero throttle)
-                    collective_control[follower_idx] = 0.0
-                    
-                    if self.logger:
-                        self.logger.logger.warning(
-                            f"Vehicle {self.vehicle_id}: No V2V control data from vehicle {vehicle_id}, using default"
-                        )
+        collective_control = self._calculate_collective_control_v2v(control, current_time_ns)
 
-        # 1. Dynamics prediction (collective longitudinal model)
-        dynamics_term = self.A_delta @ x_vec + self.B_delta @ collective_control
+        # 1. Compute dynamics prediction term
+        dynamics_term = self._compute_dynamics_term(x_vec, collective_control)
         
-        # 2. Measurement correction (if we have data from target)
-        measurement_term = np.zeros(dim_distributed_observer)  
-        local_measurement = np.zeros(self.local_measurement_dim)  
+        # 2. Compute measurement correction term
+        measurement_term, local_measurement, estimated_measurement, measurement_error = \
+            self._compute_measurement_term(x_vec, local_state, current_time_ns, v0_raw)
         
-        # Read self state from local_state input
-        p_i = local_state[0]
-        v_i = local_state[3]
-        
-        # Get preceding vehicle state from communication
-        state_prev = self._get_latest_received_state(self.vehicle_id - 1, current_time_ns)
-        if state_prev is not None:
-            p_prev = state_prev[0]
-        else:
-            if self.logger:
-                self.logger.logger.warning(
-                    f"Vehicle {self.vehicle_id}: When try to get the local measurement, no V2V state data from vehicle {self.vehicle_id - 1}, using fleet_states"
-                )
-            p_prev = self.fleet_states[0, self.vehicle_id - 1]
-        
-        local_measurement[0] = p_i - p_prev  # relative position
-        local_measurement[1] = v_i # velocity 
-
-        # distance_measurement = p_i - p_prev # relative position
-        # velocity_measurement = v_i # velocity
-
-        # Sensor filter for the local measurement.
-        # Apply distance measurement filter
-        # local_measurement[0] = self._sensor_filter(
-        #     distance_measurement, 
-        #     self.prev_distance_measurement, 
-        #     self.distance_filter_alpha,
-        #     dt
-        # )
-        self.prev_distance_measurement = local_measurement[0]  # Update for next iteration
-        
-        # Apply velocity measurement filter (currently enabled)
-        # local_measurement[1] = self._sensor_filter(
-        #     velocity_measurement,
-        #     self.prev_velocity_measurement,
-        #     self.velocity_filter_alpha,
-        #     dt
-        # )
-        self.prev_velocity_measurement = local_measurement[1]  # Update for next iteration
-        
-        # CRITICAL: Use raw (unfiltered) v0 for measurement equation to avoid systematic bias
-        # local_measurement[1] = v_i (real velocity), so estimated_measurement[1] should use v0_raw
-        # to ensure measurement_error is computed correctly without filter-induced offset
-        estimated_measurement = self.Ci @ x_vec + self.Cv * v0_raw + self.Cd * self.d
-
-        measurement_error = local_measurement - estimated_measurement
-        
- 
-        measurement_term = self.observer_gain @ measurement_error
-        
-        # 3. Consensus term - based on adjacency matrix
-        consensus_term = np.zeros(dim_distributed_observer)
-        neighbor_count = 0
-        consensus_accum = np.zeros(dim_distributed_observer)
-        
-        if self.logger and self.debug_recording_enabled:
-            self.logger.logger.debug(
-                f"Vehicle {self.vehicle_id}: Starting consensus calculation. "
-                f"My neighbors: {self.my_neighbors}, x_vec norm: {np.linalg.norm(x_vec):.6f}"
-            )
-        
-        # Loop through each neighbor defined by adjacency matrix
-        for neighbor_id in self.my_neighbors:
-            # --- Step 1: Try to get FLEET state (Primary Source) ---
-            neighbor_fleet_dict = self._get_latest_fleet_data(neighbor_id, current_time_ns)
-            
-            # Validate fleet data completeness
-            is_complete_fleet = False
-            missing_vehicles = []
-            
-            if neighbor_fleet_dict is not None:
-                expected_vehicles = set(range(self.fleet_size))
-                received_vehicles = set(int(vid) for vid in neighbor_fleet_dict.keys())
-                missing_vehicles = list(expected_vehicles - received_vehicles)
-                
-                if not missing_vehicles:
-                    is_complete_fleet = True
-            
-            # --- Step 2: Fallback to LOCAL states if needed ---
-            # Only need it when stop the cars
-            if not is_complete_fleet:
-                # Only need it when stop the cars
-                if neighbor_fleet_dict is None:
-                    neighbor_fleet_dict = {}
-                
-                # Fill missing vehicles with local state broadcasts or current estimates
-                for vid in missing_vehicles:
-                    vehicle_local_state = self._get_latest_received_state(vid, current_time_ns)
-                    
-                    if vehicle_local_state is not None:
-                        neighbor_fleet_dict[vid] = {
-                            'x': float(vehicle_local_state[0]),
-                            'y': float(vehicle_local_state[1]),
-                            'theta': float(vehicle_local_state[2]),
-                            'velocity': float(vehicle_local_state[3]),
-                            'acceleration': float(vehicle_local_state[4] if len(vehicle_local_state) > 4 else 0.0)
-                        }
-                    else:
-                        neighbor_fleet_dict[vid] = {
-                            'x': float(self.fleet_states[0, vid]),
-                            'y': float(self.fleet_states[1, vid]),
-                            'theta': float(self.fleet_states[2, vid]),
-                            'velocity': float(self.fleet_states[3, vid]),
-                            'acceleration': float(self.fleet_states[4, vid])
-                        }
-                    if self.logger:
-                        self.logger.logger.warning(
-                            f"Vehicle {self.vehicle_id}: Missing state for vehicle {vid} from neighbor {neighbor_id}. "
-                            f"Falling back to local state or estimate. "
-                            f"Missing vehicles: {missing_vehicles}"
-                        )
-            
-            # --- Step 3: Build neighbor's complete fleet_states matrix ---
-            neighbor_fleet_states = np.zeros((self.state_dim, self.fleet_size))
-            
-            for vid, vehicle_state in neighbor_fleet_dict.items():
-                try:
-                    vid_int = int(vid)
-                    if 0 <= vid_int < self.fleet_size:
-                        neighbor_fleet_states[0, vid_int] = vehicle_state.get('x', 0.0)
-                        neighbor_fleet_states[1, vid_int] = vehicle_state.get('y', 0.0)
-                        neighbor_fleet_states[2, vid_int] = vehicle_state.get('theta', 0.0)
-                        neighbor_fleet_states[3, vid_int] = vehicle_state.get('velocity', vehicle_state.get('v', 0.0))
-                        neighbor_fleet_states[4, vid_int] = vehicle_state.get('acceleration', 0.0)
-                    
-                except (ValueError, TypeError) as e:
-                    if self.logger:
-                        self.logger.logger.error(
-                            f"Vehicle {self.vehicle_id}: Invalid vehicle_id {vid} from neighbor {neighbor_id}: {e}"
-                        )
-                    continue
-            
-            # --- Step 4: Convert to distributed observer state format ---
-            neighbor_x_vec, neighbor_di0_values = self._transfer_fleet_states_to_estimated_states(
-                neighbor_fleet_states, current_time_ns
-            )
-            
-            # --- Step 5: Calculate consensus difference with adjacency weight ---
-            my_matrix_idx = self.vehicle_id - 1
-            neighbor_matrix_idx = neighbor_id - 1
-            weight = self.adjacency_matrix[my_matrix_idx, neighbor_matrix_idx]
-            
-            # Accumulate weighted difference: (own_estimate - neighbor_estimate)
-            consensus_diff = x_vec - neighbor_x_vec
-            consensus_accum += weight * consensus_diff
-            neighbor_count += 1
-            
-            if self.logger and self.debug_recording_enabled:
-                self.logger.logger.debug(
-                    f"Vehicle {self.vehicle_id}: Neighbor {neighbor_id} - "
-                    f"weight={weight:.6f}, diff_norm={np.linalg.norm(consensus_diff):.6f}, "
-                    f"neighbor_x_norm={np.linalg.norm(neighbor_x_vec):.6f}, "
-                    f"accum_norm={np.linalg.norm(consensus_accum):.6f}"
-                )
-        
-        # --- Step 6: Apply consensus gain ---
-        if neighbor_count > 0:
-            consensus_term = self.consensus_gain @ consensus_accum 
-            # Numerical protection: prevent consensus term explosion
-            consensus_norm = np.linalg.norm(consensus_term)
-            max_consensus_threshold = 40.0
-            if consensus_norm > max_consensus_threshold:
-                consensus_term = consensus_term / consensus_norm * max_consensus_threshold
-            
-            if self.logger and self.debug_recording_enabled:
-                self.logger.logger.debug(
-                    f"Vehicle {self.vehicle_id}: Consensus applied. "
-                    f"accum_norm={np.linalg.norm(consensus_accum):.6f}, "
-                    f"gain shape={self.consensus_gain.shape}, "
-                    f"term_norm={consensus_norm:.6f}"
-                )
-        else:
-            consensus_term = np.zeros(dim_distributed_observer)
-            if self.logger and self.debug_recording_enabled:
-                self.logger.logger.debug(
-                    f"Vehicle {self.vehicle_id}: No neighbors found for consensus"
-                )
+        # 3. Compute consensus correction term
+        consensus_term = self._compute_consensus_term(x_vec, current_time_ns)
+        neighbor_count = len(self.my_neighbors)  # For debug data recording
               
         x_i_new = x_vec + dt * (dynamics_term + measurement_term - consensus_term)
         
@@ -1080,63 +1154,64 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         #     )
 
         
-        # === Store debug data for recording ===
-        if self.debug_recording_enabled:
-            # Get leader (vehicle 0) state for recording
-            leader_x = p0  # Already retrieved earlier in the function
-            leader_v = v0  # Already retrieved earlier in the function
-            leader_a = state_leader[4] if state_leader is not None and len(state_leader) > 4 else self.fleet_states[4, 0]
+        # === Store debug data for recording (ALWAYS, not just when debug_recording_enabled) ===
+        # Get leader (vehicle 0) state for recording
+        leader_x = p0  # Already retrieved earlier in the function
+        leader_v = v0  # Already retrieved earlier in the function
+        leader_a = state_leader[4] if state_leader is not None and len(state_leader) > 4 else self.fleet_states[4, 0]
+        
+        self.debug_data = {
+            'x_vec': x_vec.copy(),  # Observer state (before update)
+            'dynamics_term': dynamics_term.copy(),  # Dynamics prediction term
+            'measurement_term': measurement_term.copy(),  # Measurement correction term
+            'consensus_term': consensus_term.copy(),  # Consensus correction term
+            'local_measurement': local_measurement.copy(),  # Local measurement vector
+            'estimated_measurement': estimated_measurement.copy(),  # Estimated measurement vector
+            'measurement_error': measurement_error.copy(),  # Measurement error vector
+            'neighbor_count': neighbor_count,  # Number of neighbors used
+            'consensus_norm': np.linalg.norm(consensus_term) if neighbor_count > 0 else 0.0,  # Norm of consensus term
+            'fleet_states': self.fleet_states.copy(),  # Current fleet states
+            'collective_control': collective_control.copy(),  # Control input for each follower
+            # True throttle input for this vehicle
+            'control_input': control[1],  # Throttle input
+            'local_measurement_p': local_measurement[0],  # Local relative position measurement
+            'local_measurement_v': local_measurement[1],  # Local velocity measurement
+            'dt': dt,  # Time step
+            # Position, velocity, acceleration for local vehicle
+            'position': local_state[0],
+            'velocity': local_state[3],
+            'acceleration': local_state[4] if len(local_state) > 4 else 0.0,
+        }
+        
+        # Record true states of all vehicles via V2V communication
+        # This ensures all data is synchronized to current vehicle's timestamp
+        
+        # Record leader (vehicle 0) state
+        self.debug_data['true_position_0'] = leader_x  # Leader position (x)
+        self.debug_data['true_velocity_0'] = leader_v  # Leader velocity
+        self.debug_data['true_acceleration_0'] = leader_a  # Leader acceleration
+        
+        # Record follower vehicles' true states
+        for vehicle_id in range(1, self.fleet_size):
+            if vehicle_id == self.vehicle_id:
+                # Own state already recorded above as position, velocity, acceleration
+                self.debug_data[f'true_position_{vehicle_id}'] = local_state[0]
+                self.debug_data[f'true_velocity_{vehicle_id}'] = local_state[3]
+                self.debug_data[f'true_acceleration_{vehicle_id}'] = local_state[4] if len(local_state) > 4 else 0.0
+                continue
             
-            self.debug_data = {
-                'x_vec_before': x_vec.copy(),  # Observer state before update
-                'x_vec_after': x_i_new.copy(),  # Observer state after update
-                'dynamics_term': dynamics_term.copy(),  # Dynamics prediction term
-                'measurement_term': measurement_term.copy(),  # Measurement correction term
-                'consensus_term': consensus_term.copy(),  # Consensus correction term
-                'local_measurement': local_measurement.copy(),  # Local measurement vector
-                'estimated_measurement': estimated_measurement.copy(),  # Estimated measurement vector
-                'measurement_error': measurement_error.copy(),  # Measurement error vector
-                'neighbor_count': neighbor_count,  # Number of neighbors used
-                'consensus_norm': np.linalg.norm(consensus_term) if neighbor_count > 0 else 0.0,  # Norm of consensus term
-                'fleet_states': self.fleet_states.copy(),  # Current fleet states
-                'di0_values': di0_values_before.copy(),  # di0 values for each follower
-                'collective_control': collective_control.copy(),  # Control input for each follower
-                # True throttle input for this vehicle
-                'control_input': control[1],  # Throttle input
-                'local_measurement_p': local_measurement[0],  # Local relative position measurement
-                'local_measurement_v': local_measurement[1],  # Local velocity measurement
-                'dt': dt,  # Time step
-            }
+            # Get latest received state from V2V communication
+            other_state = self._get_latest_received_state(vehicle_id, current_time_ns)
             
-            # Record true states of all vehicles via V2V communication
-            # This ensures all data is synchronized to current vehicle's timestamp
-            
-            # Record leader (vehicle 0) state
-            self.debug_data['true_position_0'] = leader_x  # Leader position (x)
-            self.debug_data['true_velocity_0'] = leader_v  # Leader velocity
-            self.debug_data['true_acceleration_0'] = leader_a  # Leader acceleration
-            
-            # Record follower vehicles' true states
-            for vehicle_id in range(1, self.fleet_size):
-                if vehicle_id == self.vehicle_id:
-                    # Own state already recorded above as position, velocity, acceleration
-                    self.debug_data[f'true_position_{vehicle_id}'] = local_state[0]
-                    self.debug_data[f'true_velocity_{vehicle_id}'] = local_state[3]
-                    self.debug_data[f'true_acceleration_{vehicle_id}'] = local_state[4] if len(local_state) > 4 else 0.0
-                    continue
-                
-                # Get latest received state from V2V communication
-                other_state = self._get_latest_received_state(vehicle_id, current_time_ns)
-                
-                if other_state is not None:
-                    self.debug_data[f'true_position_{vehicle_id}'] = other_state[0]
-                    self.debug_data[f'true_velocity_{vehicle_id}'] = other_state[3]
-                    self.debug_data[f'true_acceleration_{vehicle_id}'] = other_state[4] if len(other_state) > 4 else 0.0
-                else:
-                    # No V2V data available, use NaN to indicate missing data
-                    self.debug_data[f'true_position_{vehicle_id}'] = np.nan
-                    self.debug_data[f'true_velocity_{vehicle_id}'] = np.nan
-                    self.debug_data[f'true_acceleration_{vehicle_id}'] = np.nan
+            if other_state is not None:
+                self.debug_data[f'true_position_{vehicle_id}'] = other_state[0]
+                self.debug_data[f'true_velocity_{vehicle_id}'] = other_state[3]
+                self.debug_data[f'true_acceleration_{vehicle_id}'] = other_state[4] if len(other_state) > 4 else 0.0
+            else:
+                # No V2V data available, use NaN to indicate missing data
+                self.debug_data[f'true_position_{vehicle_id}'] = np.nan
+                self.debug_data[f'true_velocity_{vehicle_id}'] = np.nan
+                self.debug_data[f'true_acceleration_{vehicle_id}'] = np.nan
         
         return x_i_new
 

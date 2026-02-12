@@ -1,3 +1,43 @@
+# Update Log (2026/02/12) (Shengya MENG)
+
+Commit Message: Optimized the code structure of the distributed observer, observer converges to zero
+
+## Completed Tasks / 已完成任务:
+
+- [x] **Optimized code structure of distributed observer / 优化分布式观测器的代码结构** 
+  - Modified [distributed_luenberger_estimator.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/distributed_luenberger_estimator.py): refactored main observer update logic into multiple functions for better readability and maintainability / 将主要分布式观测器更新逻辑拆分成多个函数，提升代码可读性和维护性
+  - `_get_leader_state_with_fallback`
+  - `_compute_dynamics_term`
+  - `_compute_measurement_term`
+  - `_calculate_estimated_collective_control`
+  - `_calculate_collective_control_v2v`
+  - `_compute_consensus_term`
+  - Removed state transformation at each observer update entry, now using `estimated_state.copy()` directly to reduce conversion errors / 移除每次进入分布式观测器更新逻辑的转换，改为直接通过estimated_state.copy()减少转换带来的误差
+
+- [x] **Removed feedforward term from collective control input / 在分布式观测器中从集体控制输入中减去前馈项**
+  - Modified collective control calculation in [distributed_luenberger_estimator.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/distributed_luenberger_estimator.py): subtract feedforward term to ensure observer convergence / 在计算集体控制输入时减去前馈项以确保观测器估计能够正确收敛到真实状态
+
+- [x] **Added custom camera follow feature / 添加自定义相机功能**
+  - Camera maintains constant relative distance with leader vehicle / 该相机能够和头车保持恒定的相对距离
+  - Performance unsatisfactory due to stuttering, feature debugging postponed / 效果不理想，相机运动十分卡顿，暂时放弃该功能调试
+
+- [x] **Normalized plot time axis to start from zero / 将绘图时间轴强制从0开始**
+  - Modified [plot_distributed_luenberger.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/plot_distributed_luenberger.py): normalized time axis for easier comparison between different recording files / 修改时间处理逻辑，便于不同记录文件之间的对比分析
+  - ![Observer Estimation Error](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/observer_estimation_error_20260212_150000.png)
+  
+
+## Pending Tasks / 待完成任务:
+
+- [ ] **Test observer performance with estimated collective control input / 测试使用估计集体控制输入的观测器性能**
+  - Currently using V2V collective control input (read control signal by V2V communication) for stability / 目前使用V2V集体控制输入（通过V2V通信读取控制信号）来确保系统稳定
+  - Need to test with observer's self-calculated collective control input to validate design correctness / 后续需要测试使用观测器自己计算的集体控制输入的性能，验证观测器设计的正确性
+
+- [ ] **Test state feedback controller with distributed observer estimates / 测试基于分布式观测器的状态反馈控制器性能**
+  - Controller file: [state_feedback_controller.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/ShengyaCtr/state_feedback_controller.py)
+  - Currently using true state feedback for guaranteed performance / 目前状态反馈控制器使用真实状态反馈来确保性能
+  - Need to switch to observer estimated states as feedback input to test closed-loop system performance / 后续需要切换到使用分布式观测器的估计状态作为反馈输入，测试整个系统的闭环性能
+
+
 # Update Log (2026/02/11) (Shengya MENG)
 
 Commit Message: Fixed large distance between vehicle 1 and vehicle 0
