@@ -188,7 +188,9 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # =====================================================
         # High correlation (0.9) encourages w_r and w_f to move together,
         # fixing the observability issue where they could diverge with opposite signs.
+        # self.tire_correlation = kwargs.get('tire_correlation', 0.8)
         self.tire_correlation = kwargs.get('tire_correlation', 0.8)
+
 
         self.tire_info_layer_1 = {
             'Fyr_est': 0.0,
@@ -536,7 +538,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # 6D system: [vx, vy, psi, r, X, Y] + disturbances
         Q_diag = [
             0.05,   # vx - encoder is accurate
-            1.0,    # vy - HIGH: weakly observable, must be loose so a_y innovation
+            2.0,    # vy - HIGH: weakly observable, must be loose so a_y innovation
                     # flows to tire residuals instead of being absorbed by v_y corrections.
                     # C[AY,VY] >> F[AY,w], so tight Q_vy starves residual estimation.
             0.001,  # psi - heading well-measured by GPS/IMU
@@ -549,24 +551,28 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         if self.disturbance_mode == 'general':
             # [d_vx, d_vy, d_r] - general additive disturbances
             # d_vy needs HIGH Q because it's key for v_y estimation
-            Q_diag.extend([2.0, 1.0, 1.0])  # d_vx, d_vy, d_r
+            Q_diag.extend([2.0, 2.0, 2.0])  # d_vx, d_vy, d_r
             return np.diag(Q_diag)
         else:
             # [wr, wf] - tire residuals with cross-correlation
             # High correlation encourages estimates to move together,
             # fixing the observability issue where they could diverge.
-            q_wr = 1000.0
-            q_wf = 1000.0
+            q_wr = 5000.0
+            q_wf = 5000.0
             corr = self.tire_correlation  # Default: 0.8
             
             # Build Q with correlation block for residuals
             Q_state = np.diag(Q_diag)  # 6x6 state part
             
             # Correlated residual block: [[q_wr, rho*sqrt(q_wr*q_wf)], [rho*sqrt(...), q_wf]]
+            # Cross-correlation couples w_r and w_f process noise so they tend
+            # to change together. This is physically motivated: similar tires on
+            # a symmetric car produce similar residuals. Without this, the EKF
+            # null-space (w_r - w_f direction) causes w_f to drift.
             off_diag = corr * np.sqrt(q_wr * q_wf)
             Q_w = np.array([
-                [q_wr, 0],
-                [0, q_wf]
+                [q_wr,     off_diag],
+                [off_diag, q_wf]
             ])
             
             # Assemble full Q matrix
@@ -613,7 +619,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             0.05,    # vx - fairly certain
             1.0,     # vy - HIGH: uncertain initial lateral velocity.
                      # Must match high Q_vy to allow a_y innovation to flow to residuals.
-            0.01,    # psi - fairly certain from GPS
+            0.1,    # psi - fairly certain from GPS
             0.01,    # r - fairly certain from gyro
             0.01,    # X - uncertain position
             0.01,    # Y - uncertain position
@@ -1078,7 +1084,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             if velocity_blend < 1.0:
                 # Scale factor: 1.0 at full speed, up to 2x at transition start
                 r_scale = 1.0 + 1 * (1.0 - velocity_blend)
-                R_effective_scaled = R_effective * r_scale
+                R_effective_scaled = R_effective 
                 # NOTE: Previously reduced Q for disturbance states during transition:
                 #   self.Q_base[i, i] *= velocity_blend
                 # This was REMOVED because it made the filter extremely stiff for
@@ -1102,45 +1108,49 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             # during transition already provides conservative behavior.
             # The residuals should be allowed to build up naturally.
 
-            # # =====================================================
-            # # TIRE RESIDUAL EQUALITY CONSTRAINT (Observability Fix)
-            # # =====================================================
-            # # The E matrix gives r_dot opposite signs for w_r and w_f:
-            # #   r_dot contribution: -lr/Iz * w_r + lf/Iz * cos(δ) * w_f
-            # # This creates a null-space allowing symmetric (opposite-signed) solutions.
-            # # 
-            # # Physical reality: For similar tires and slip angles, w_r ≈ w_f
-            # # We add a pseudo-measurement: y_eq = w_r - w_f ≈ 0
-            # # This directly constrains the estimates to be similar.
-            # if self.disturbance_mode == 'tire' and self.tire_correlation > 0:
-            #     # H_eq selects (w_r - w_f): [0...0, 1, -1]
-            #     H_eq = np.zeros((1, self.augmented_dim))
-            #     H_eq[0, self.state_dim] = 1.0      # w_r coefficient
-            #     H_eq[0, self.state_dim + 1] = -1.0  # -w_f coefficient
+            # =====================================================
+            # TIRE RESIDUAL EQUALITY CONSTRAINT (Observability Fix)
+            # =====================================================
+            # The E matrix gives r_dot opposite signs for w_r and w_f:
+            #   r_dot contribution: -lr/Iz * w_r + lf/Iz * cos(δ) * w_f
+            # When w_r ≈ w_f (same tire type, symmetric car), these cancel
+            # in the r dynamics → the r measurement cannot separate them.
+            # The a_y measurement only sees their SUM (w_r + w_f).
+            # This creates a null-space in (w_r - w_f), causing w_f to drift.
+            #
+            # Fix: Add pseudo-measurement y_eq = w_r - w_f ≈ 0
+            # This directly constrains the null-space.
+            if self.disturbance_mode == 'tire' and self.tire_correlation > 0:
+                # H_eq selects (w_r - w_f): [0...0, 1, -1]
+                H_eq = np.zeros((1, self.augmented_dim))
+                H_eq[0, self.state_dim] = 1.0      # w_r coefficient
+                H_eq[0, self.state_dim + 1] = -1.0  # -w_f coefficient
                 
-            #     # Predicted difference
-            #     y_eq_pred = H_eq @ xa_upd
+                # Predicted difference
+                y_eq_pred = H_eq @ xa_upd
                 
-            #     # Measurement: we expect w_r - w_f ≈ 0
-            #     y_eq_meas = 0.0
+                # Measurement: we expect w_r - w_f ≈ 0
+                y_eq_meas = 0.0
                 
-            #     # Measurement variance: lower = stronger constraint
-            #     # Scale inversely with correlation (0.8 → R=0.15, 0.95 → R=0.05)
-            #     R_eq_base = 0.1  # Reduced from 0.5 for stronger constraint
-            #     R_eq = np.array([[R_eq_base * (1.0 - self.tire_correlation + 0.1)]])
+                # Measurement variance: lower = stronger constraint
+                # With correlation=0.8: R_eq = 0.1*(1-0.8+0.1) = 0.03 (strong)
+                # This is tight enough to keep w_r ≈ w_f while still allowing
+                # small differences when the steering angle creates asymmetry.
+                R_eq_base = 0.1
+                R_eq = np.array([[R_eq_base * (1.0 - self.tire_correlation + 0.1)]])
                 
-            #     # Kalman update for equality constraint
-            #     S_eq = H_eq @ P_upd @ H_eq.T + R_eq
-            #     K_eq = P_upd @ H_eq.T @ self._safe_inverse(S_eq)
+                # Kalman update for equality constraint
+                S_eq = H_eq @ P_upd @ H_eq.T + R_eq
+                K_eq = P_upd @ H_eq.T @ self._safe_inverse(S_eq)
                 
-            #     # Update state with constraint
-            #     xa_upd = xa_upd + (K_eq @ (y_eq_meas - y_eq_pred)).flatten()
+                # Update state with constraint
+                xa_upd = xa_upd + (K_eq @ (y_eq_meas - y_eq_pred)).flatten()
                 
-            #     # Update covariance (Joseph form)
-            #     I_eq = np.eye(self.augmented_dim)
-            #     IKH_eq = I_eq - K_eq @ H_eq
-            #     P_upd = IKH_eq @ P_upd @ IKH_eq.T + K_eq @ R_eq @ K_eq.T
-            #     P_upd = 0.5 * (P_upd + P_upd.T)
+                # Update covariance (Joseph form)
+                I_eq = np.eye(self.augmented_dim)
+                IKH_eq = I_eq - K_eq @ H_eq
+                P_upd = IKH_eq @ P_upd @ IKH_eq.T + K_eq @ R_eq @ K_eq.T
+                P_upd = 0.5 * (P_upd + P_upd.T)
 
             # Optional r_dot pseudo-measurement update (improves d_r observability)
             if self.use_rdot_differentiator and self.rdot_diff is not None and self.disturbance_mode == 'general':

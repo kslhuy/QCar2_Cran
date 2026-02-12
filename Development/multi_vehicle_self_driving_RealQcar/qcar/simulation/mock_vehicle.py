@@ -393,9 +393,8 @@ class MockQCar:
         # Use the SAME Cf/Cr as the observer for the A/B matrices.
         # This ensures the linear dynamics match between truth and observer.
         # The tire nonlinearity enters through E_c @ d_vec (residuals).
-        Cf = 120
-        Cr = 120
-
+        Cf = self.params.Cf 
+        Cr = self.params.Cr 
         # # Adaptive sub-stepping for Euler stability
         # current_vx_safe = max(current_vx, 0.1)
         # max_eigenvalue_est = (Cf + Cr) / (min(self.params.m, self.params.I_z) * current_vx_safe)

@@ -277,8 +277,10 @@ def get_tire_residuals(type_true_tire : str,alpha_f: float, alpha_r: float,
     # Linear forces (baseline from observer's linear model)
     # Must use the SAME Cf/Cr as the observer to get correct residuals
     # Observer uses Cf=120, Cr=120 from parameters_qcar.yaml
-    obs_Cf = 120.0  # Should match observer's Cf from YAML
-    obs_Cr = 120.0  # Should match observer's Cr from YAML
+    # obs_Cf = 120.0  # Should match observer's Cf from YAML
+    # obs_Cr = 120.0  # Should match observer's Cr from YAML
+    obs_Cf = Cf
+    obs_Cr = Cr
     Fyf_linear, Fyr_linear = compute_tire_forces_linear(alpha_f, alpha_r, obs_Cf, obs_Cr)
     
     # True forces
