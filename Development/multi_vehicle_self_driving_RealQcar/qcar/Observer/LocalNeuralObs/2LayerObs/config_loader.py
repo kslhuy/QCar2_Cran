@@ -80,8 +80,10 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     # Neural network parameters
     nn = config.get('neural_network', {})
     flat['input_dim'] = nn.get('input_dim', 6)
-    flat['hidden_dim'] = nn.get('hidden_dim', 24)
+    flat['hidden_dim'] = nn.get('hidden_dim', 32)
     flat['output_dim'] = nn.get('output_dim', 2)
+    flat['network_type'] = nn.get('network_type', 'gru')
+    flat['output_scale'] = nn.get('output_scale', 50.0)
     flat['use_acceleration'] = nn.get('use_acceleration', False)
     flat['disturbance_mode'] = nn.get('disturbance_mode', 'tire')
     
@@ -94,6 +96,7 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     flat['learning_mode'] = learn.get('learning_mode', 'learningby_dict')
     flat['dict_size'] = learn.get('dict_size', 20)
     flat['gradient_method'] = learn.get('gradient_method', 'autodiff')
+    flat['grad_clip_norm'] = learn.get('grad_clip_norm', 10.0)
     
     # Selective data curation parameters (for learningby_dict mode)
     flat['novelty_threshold'] = learn.get('novelty_threshold', 0.05)
@@ -110,6 +113,35 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     # Loss configuration
     loss = config.get('loss', {})
     flat['loss_type'] = loss.get('type', 'measurement_full')
+    
+    # Physics-informed tire loss parameters
+    physics_tire = config.get('weights_physics_tire', {})
+    flat['weight_physics_target'] = physics_tire.get('w_physics_target', 30.0)
+    flat['weight_ay_constraint'] = physics_tire.get('w_ay', 0.0)
+    flat['weight_smooth'] = physics_tire.get('w_smooth', 2.0)
+    flat['lambda_bound'] = physics_tire.get('lambda_bound', 0.1)
+    flat['f_max'] = physics_tire.get('f_max', 50.0)
+    flat['lambda_warmstart'] = physics_tire.get('lambda_warmstart', 5.0)
+    flat['warmstart_decay'] = physics_tire.get('warmstart_decay', 500)
+    flat['rdot_ema_alpha'] = physics_tire.get('rdot_ema_alpha', 0.3)
+    
+    # Prediction error loss weights
+    pred_err = config.get('weights_prediction_error', {})
+    flat['pred_w_vx'] = pred_err.get('w_vx', 5.0)
+    flat['pred_w_r'] = pred_err.get('w_r', 15.0)
+    flat['pred_w_psi'] = pred_err.get('w_psi', 1.0)
+    flat['pred_w_X'] = pred_err.get('w_X', 0.5)
+    flat['pred_w_Y'] = pred_err.get('w_Y', 0.5)
+    flat['pred_w_ay'] = pred_err.get('w_ay', 30.0)
+    flat['pred_w_ax'] = pred_err.get('w_ax', 5.0)
+    flat['pred_lambda_l2'] = pred_err.get('lambda_l2', 0.01)
+    flat['pred_w_smooth'] = pred_err.get('w_smooth', 0.1)
+    flat['pred_lambda_bound'] = pred_err.get('lambda_bound', 0.1)
+    flat['pred_f_max'] = pred_err.get('f_max', 25.0)
+    flat['pred_lambda_warmstart'] = pred_err.get('lambda_warmstart', 0.5)
+    flat['pred_warmstart_decay'] = pred_err.get('warmstart_decay', 100)
+    flat['pred_w_uio'] = pred_err.get('w_uio', 0.02)
+    flat['pred_w_corr'] = pred_err.get('w_corr', 1.0)
     
     # Measurement weights
     w_meas = config.get('weights_measurement', {})

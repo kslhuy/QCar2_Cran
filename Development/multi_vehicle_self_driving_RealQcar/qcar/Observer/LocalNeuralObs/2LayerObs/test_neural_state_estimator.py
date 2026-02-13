@@ -620,7 +620,7 @@ def test_default_gain_initialization():
     
     estimator = NeuralLuenbergerEstimator(config=config)
     
-    gain_method = estimator.get_gain_method()
+    gain_method = estimator._gain_method
     L = estimator.get_observer_gain()
     
     print(f"Gain method: {gain_method}")
@@ -628,8 +628,8 @@ def test_default_gain_initialization():
     print(f"L : {L}")
     
     assert gain_method == 'default', f"Expected 'default', got '{gain_method}'"
-    # L is 6×5: 6 states corrected by 5 measurements [vx, r, ψ, X, Y]
-    assert L.shape == (6, 5), f"L should be 6x5, got {L.shape}"
+    # L is 6×7: 6 states corrected by 7 measurements [vx, r, ψ, X, Y, a_y, a_x]
+    assert L.shape == (6, 7), f"L should be 6x7, got {L.shape}"
     
     print("✅ Default gain initialization test PASSED")
     return True
@@ -665,7 +665,7 @@ def test_hinf_gain_initialization():
     
     estimator = NeuralLuenbergerEstimator(config=config)
     
-    gain_method = estimator.get_gain_method()
+    gain_method = estimator._gain_method
     L = estimator.get_observer_gain()
     gain_info = estimator.get_gain_info()
     
@@ -677,8 +677,8 @@ def test_hinf_gain_initialization():
     assert gain_method in ['hinf', 'hinf_relaxed', 'lmi', 'pole_placement', 'default', 
                            'qlpv_scheduled', 'qlpv_scheduled_discrete'], \
         f"Unexpected method: {gain_method}"
-    # L is 6×5: 6 states corrected by 5 measurements [vx, r, ψ, X, Y]
-    assert L.shape == (6, 5), f"L should be 6x5, got {L.shape}"
+    # L is 6×7: 6 states corrected by 7 measurements [vx, r, ψ, X, Y, a_y, a_x]
+    assert L.shape == (6, 7), f"L should be 6x7, got {L.shape}"
     
     # Verify matrix is not all zeros
     assert np.linalg.norm(L) > 0.1, "L matrix should not be near zero"
@@ -719,7 +719,7 @@ def test_qlpv_gain_scheduling():
     
     estimator = NeuralLuenbergerEstimator(config=config)
     
-    gain_method = estimator.get_gain_method()
+    gain_method = estimator._gain_method
     print(f"Gain method: {gain_method}")
     
     # Test gain scheduling at different operating points
@@ -773,17 +773,17 @@ def test_gain_stability():
     
     # Get matrices at nominal operating point
     nominal_state = np.array([1.5, 0.0, 0.0, 0.0, 0.0, 0.0])
-    rho = estimator._compute_scheduling_params(nominal_state, 0.0)
-    A = estimator._compute_A_matrix(rho)
-    C = estimator._compute_C_matrix()  # 5×6 selection matrix
-    L = estimator.get_observer_gain()  # 6×5 gain matrix
+    rho = estimator.dynamics.compute_scheduling_params(nominal_state, 0.0)
+    A = estimator.dynamics.compute_A_matrix(rho)
+    C = estimator.dynamics.compute_C_matrix(rho, mode='7D_FULL')  # 7×6 selection matrix
+    L = estimator.get_observer_gain()  # 6×7 gain matrix
     
-    # Compute closed-loop matrix: A - L·C (6×6 - 6×5 @ 5×6 = 6×6)
+    # Compute closed-loop matrix: A - L·C (6×6 - 6×7 @ 7×6 = 6×6)
     A_cl = A - L @ C
     eigenvalues = np.linalg.eigvals(A_cl)
     max_real = np.max(np.real(eigenvalues))
     
-    print(f"Gain method: {estimator.get_gain_method()}")
+    print(f"Gain method: {estimator._gain_method}")
     print(f"Max eigenvalue real part: {max_real:.4f}")
     print(f"Observer stable: {max_real < 0}")
     
@@ -855,7 +855,7 @@ def test_lmi_gain_with_simulation():
             config=config_hinf
         )
         
-        gain_method = estimator.get_gain_method()
+        gain_method = estimator._gain_method
         print(f"Testing {gain_method} gains...")
         
         success, steps, msg = run_simulation(estimator, gain_method)

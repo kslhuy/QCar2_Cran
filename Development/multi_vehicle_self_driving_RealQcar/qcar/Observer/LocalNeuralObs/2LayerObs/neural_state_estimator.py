@@ -54,7 +54,8 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 from neural_network import (
-    NeuralObserverNet, LearningBatch, SelectiveLearningBatch, ModelQueue,
+    NeuralObserverNet, GRUTireResidualNet, create_network,
+    LearningBatch, SelectiveLearningBatch, ModelQueue,
     save_model, load_model, create_optimizer
 )
 from gradient_solver import GradientSolver, create_weight_matrix
@@ -94,7 +95,8 @@ from qlpv_vehicle_dynamics_obs import (
     QLPVVehicleDynamicsObs,
     get_default_vehicle_params,
     IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
-    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
+    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_IDX_AX, MEAS_DIM,
+    C_MATRIX_MODES,
 )
 
 
@@ -125,10 +127,10 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     INTERNAL_STATE_DIM = STATE_DIM  # 6
     
     # Measurement dimensions for observer design
-    # Full measurements: [vx, r, ψ, X, Y] (5D) - directly measurable states
-    # IMU-only: [vx, r] (2D) - always available
-    MEAS_DIM_FULL = 5  # vx, r, ψ, X, Y
-    MEAS_DIM_IMU = 2   # vx, r
+    # Full measurements: [vx, r, ψ, X, Y, a_y, a_x] (7D) - GPS + IMU + accel
+    # IMU-only: [vx, r, a_y, a_x] (4D) - always available
+    MEAS_DIM_FULL = 7  # vx, r, ψ, X, Y, a_y, a_x
+    MEAS_DIM_IMU = 4   # vx, r, a_y, a_x
     
     def __init__(self, initial_pose: Optional[np.ndarray] = None,
                  config: Dict = None, logger=None):
@@ -167,11 +169,24 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             # Update config to reflect reality
             self.config['output_dim'] = expected_udim
         
-        # Initialize neural network
-        self.model = NeuralObserverNet(
+        # Network architecture selection: 'mlp' (original) or 'gru' (recommended)
+        self.network_type = self.config.get('network_type', 'mlp')
+        self.output_scale = self.config.get('output_scale', self.config.get('f_max', 50.0))
+        
+        # Gradient clipping max norm (0 = disabled)
+        self.grad_clip_norm = self.config.get('grad_clip_norm', 1.0)
+        
+        # Sign flip option: if NN learns opposite sign of expected tire residual
+        # Set nn_output_sign_flip: true in YAML to negate NN output
+        self._nn_sign_flip = self.config.get('nn_output_sign_flip', False)
+        
+        # Initialize neural network using factory
+        self.model = create_network(
+            self.network_type,
             self.input_dim,
             self.hidden_dim,
-            self.output_dim
+            self.output_dim,
+            self.output_scale
         )
         
         # Load pretrained model if specified
@@ -181,7 +196,9 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     self.config['model_path'],
                     self.input_dim,
                     self.hidden_dim,
-                    self.output_dim
+                    self.output_dim,
+                    network_type=self.network_type,
+                    output_scale=self.output_scale
                 )
                 if self.logger:
                     self.logger.logger.info(f"Loaded pretrained neural observer model from {self.config['model_path']}")
@@ -229,6 +246,17 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             self.state_nn_6d[self.IDX_Y] = initial_pose[1]
             self.state_nn_6d[self.IDX_PSI] = initial_pose[2] if len(initial_pose) > 2 else 0.0
         
+        # Measurement configuration
+        self.c_matrix_mode = self.config.get('observer_gain_design', {}).get('c_matrix_mode', '7D_FULL')
+        if self.c_matrix_mode not in C_MATRIX_MODES:
+             # Fallback to 7D if unknown mode in config
+             print(f"Warning: Unknown c_matrix_mode '{self.c_matrix_mode}', using '7D_FULL'")
+             self.c_matrix_mode = '7D_FULL'
+        
+        self.active_meas_indices = C_MATRIX_MODES[self.c_matrix_mode]
+        self.meas_dim = len(self.active_meas_indices)
+
+        
         # Neural network output (tire residuals)
         self.f_nn = np.zeros((self.output_dim, 1))  # [w_r, w_f]
         
@@ -273,7 +301,9 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 self.input_dim,
                 self.output_dim,
                 queue_size=3,
-                hidden_dim=self.hidden_dim
+                hidden_dim=self.hidden_dim,
+                network_type=self.network_type,
+                output_scale=self.output_scale
             )
             # Push initial model so queue is not empty
             self.model_queue.push_model(self.model)
@@ -312,6 +342,36 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # First-layer state for composite loss
         self.state_uio = np.zeros(self.INTERNAL_STATE_DIM)
 
+        # Previous NN output for temporal smoothness (physics_tire loss)
+        self.f_nn_prev = np.zeros(self.output_dim)
+        # Last measured accelerations for physics constraint
+        self._last_ay_meas = 0.0
+        self._last_ax_meas = 0.0
+        
+        # r_dot finite-difference state (for physics_tire V2)
+        self._r_meas_prev = 0.0
+        self._r_dot_meas = 0.0
+        self._rdot_ema_alpha = self.config.get('rdot_ema_alpha', 0.3)
+        
+        # 2nd-order Butterworth filter state for r_dot (much better than EMA)
+        # Cutoff at ~3 Hz for 100 Hz sample rate
+        self._rdot_butter_x = [0.0, 0.0]  # Input history
+        self._rdot_butter_y = [0.0, 0.0]  # Output history
+        # Butterworth coefficients for fc=3Hz, fs=100Hz (2nd order)
+        # Computed from: scipy.signal.butter(2, 3, fs=100)
+        self._rdot_butter_b = [0.00782525, 0.01565050, 0.00782525]
+        self._rdot_butter_a = [1.0, -1.73472577, 0.76602678]
+        
+        # Previous measurement for prediction_error loss (stored from last step)
+        self._prev_y_avail = None
+        self._prev_C_avail = None
+        self._prev_D_avail = None
+        self._prev_F_avail = None
+        self._prev_u = None
+        
+        # Diagnostic logging
+        self._diag_w_star_history = []  # Track physics target for debugging
+
         self.tire_info_layer_2 = {
             'Fyr_est': 0,
             'Fyf_est': 0,
@@ -346,7 +406,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         # Ground truth provider for simulation (injected by fake_vehicle)
         self.ground_truth_provider = None
-        self.logger.logger.info(f"Observer Neural 2-Layer initialized")
+        if self.logger:
+            self.logger.logger.info(f"Observer Neural 2-Layer initialized")
 
 
     def set_ground_truth_provider(self, provider):
@@ -399,7 +460,30 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 'psi_dot': cfg['weight_uio_r'],
                 'X': cfg['weight_uio_X'],
                 'Y': cfg['weight_uio_Y']
-            })
+            }),
+            # Physics-informed tire loss scalar weights
+            'w_physics_target': cfg.get('weight_physics_target', 30.0),
+            'w_ay': cfg.get('weight_ay_constraint', 0.0),  # Legacy, disabled by default
+            'w_smooth': cfg.get('weight_smooth', 2.0),
+            'lambda_bound': cfg.get('lambda_bound', 0.1),
+            'f_max': cfg.get('f_max', 50.0),
+            'lambda_warmstart': cfg.get('lambda_warmstart', 5.0),
+            'warmstart_decay': cfg.get('warmstart_decay', 500),
+            # Prediction error loss specific weights
+            'pred_w_vx': cfg.get('pred_w_vx', 3.0),
+            'pred_w_r': cfg.get('pred_w_r', 5.0),
+            'pred_w_psi': cfg.get('pred_w_psi', 1.0),
+            'pred_w_X': cfg.get('pred_w_X', 0.5),
+            'pred_w_Y': cfg.get('pred_w_Y', 0.5),
+            'pred_w_ay': cfg.get('pred_w_ay', 5.0),
+            'pred_w_ax': cfg.get('pred_w_ax', 3.0),
+            'pred_lambda_l2': cfg.get('pred_lambda_l2', 0.5),
+            'pred_w_smooth': cfg.get('pred_w_smooth', 1.0),
+            'pred_lambda_bound': cfg.get('pred_lambda_bound', 0.5),
+            'pred_f_max': cfg.get('pred_f_max', 25.0),
+            'pred_lambda_warmstart': cfg.get('pred_lambda_warmstart', 2.0),
+            'pred_warmstart_decay': cfg.get('pred_warmstart_decay', 300),
+            'pred_w_uio': cfg.get('pred_w_uio', 0.1),
         }
         
         return measurement_weights, composite_weights
@@ -436,7 +520,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             # Note: C matrix is static and doesn't change with discretization
             A_c = self.dynamics.compute_A_matrix(rho)
             B_c = self.dynamics.compute_B_matrix(rho)
-            C = self.dynamics.compute_C_matrix(rho , mode='5D_GPS_IMU')
+            C = self.dynamics.compute_C_matrix(rho, mode='7D_FULL')
             E_c = self.dynamics.compute_E_matrix(rho)
             
             # Discretize
@@ -452,6 +536,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             
 
         # Default: simple diagonal gains
+        print("Using default gains")
         self._set_default_gains()
     
     def _try_qlpv_scheduled_gains(self, decay_rate: float) -> bool:
@@ -475,6 +560,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             hinf_gamma = self.config.get('hinf_gamma', 2.0)
             lmi_method = self.config.get('gain_design_method', 'hinf')
             disturbance_mode = self.config.get('disturbance_mode', 'tire')
+            c_matrix_mode = self.c_matrix_mode
+            default_gain_matrix = self.config.get('observer_gain_design', {}).get('default_gain_matrix', None)
             
             self._gain_scheduler = NeuralQLPVGainScheduler(
                 vehicle_params=self.vehicle_params,
@@ -491,7 +578,9 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 contraction_rate=contraction_rate,
                 verbose=False,
                 disturbance_mode=disturbance_mode,
-                dynamics_model=self.dynamics  # Pass shared dynamics model
+                dynamics_model=self.dynamics,  # Pass shared dynamics model
+                c_matrix_mode=c_matrix_mode,
+                default_gain_matrix=default_gain_matrix
             )
             
             if self._gain_scheduler.compute_gains_lmi():
@@ -513,39 +602,56 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
 
     def _set_default_gains(self):
         """
-        Set simple default observer gains.
+        Set default observer gains.
         
-        L is 6×5 mapping measurements [vx, r, ψ, X, Y] to state corrections.
-        Designed for the fixed selection matrix C (5×6).
+        Uses manual 'default_gain_matrix' from config if available.
+        Otherwise generates a robust diagonal-ish gain matrix adapted to
+        the current c_matrix_mode.
         """
-        gain = self.config.get('observer_gain', 0.5)
-        # Tuned gains for 6D state corrected by 5D measurement [vx, r, ψ, X, Y]
-        # L shape: (state_dim, meas_dim) = (6, 5)
-        # Columns correspond to: vx_meas, r_meas, ψ_meas, X_meas, Y_meas
-        # Rows correspond to: vx, vy, ψ, r, X, Y states
-        L = np.zeros((self.INTERNAL_STATE_DIM, self.MEAS_DIM_FULL))
+        # 1. Try manual config override
+        manual_gain = self.config.get('observer_gain_design', {}).get('default_gain_matrix', None)
+        if manual_gain is not None:
+             manual_gain = np.asarray(manual_gain)
+             if manual_gain.shape == (self.INTERNAL_STATE_DIM, self.meas_dim):
+                 self.L = manual_gain
+                 self._gain_method = 'manual_default'
+                 return
+                 
+        # 2. Programmatic generation based on c_matrix_mode
+        gain_scale = self.config.get('observer_gain', 0.5)
         
-        # vx state correction from vx measurement
-        L[self.IDX_VX, 0] = gain * 2.0
+        # Mapping: (meas_idx, state_idx) -> base_gain
+        # Defines conceptual couplings regardless of mode
+        _GAIN_MAP = {
+            (MEAS_IDX_VX, self.IDX_VX): 2.0,   # vx -> vx
+            (MEAS_IDX_VX, self.IDX_AX): 0.5,   # vx -> ax (if state 8D, here we just use what fits)
+            
+            (MEAS_IDX_R, self.IDX_R): 2.0,     # r -> r
+            (MEAS_IDX_R, self.IDX_VY): 0.5,    # r -> vy
+            
+            (MEAS_IDX_PSI, self.IDX_PSI): 1.0, # psi -> psi
+            
+            (MEAS_IDX_X, self.IDX_X): 0.5,     # X -> X
+            (MEAS_IDX_Y, self.IDX_Y): 0.5,     # Y -> Y
+            
+            (MEAS_IDX_AY, self.IDX_VY): 1.5,   # ay -> vy (critical)
+            (MEAS_IDX_AY, self.IDX_R): 0.3,    # ay -> r
+            
+            (MEAS_IDX_AX, self.IDX_VX): 0.5,   # ax -> vx
+        }
         
-        # vy state correction (not directly measured, small cross-coupling)
-        L[self.IDX_VY, 0] = gain * 0.1  # Small vx coupling
-        L[self.IDX_VY, 1] = gain * 0.5  # r coupling (helps vy estimation)
+        L = np.zeros((self.INTERNAL_STATE_DIM, self.meas_dim))
         
-        # ψ state correction from ψ measurement
-        L[self.IDX_PSI, 2] = gain * 1.0
+        # Map full 7D index to current column index
+        idx_to_col = {meas_idx: col for col, meas_idx in enumerate(self.active_meas_indices)}
         
-        # r state correction from r measurement
-        L[self.IDX_R, 1] = gain * 2.0
-        
-        # X state correction from X measurement
-        L[self.IDX_X, 3] = gain * 0.5
-        
-        # Y state correction from Y measurement
-        L[self.IDX_Y, 4] = gain * 0.5
-        
+        for (meas_idx, state_idx), val in _GAIN_MAP.items():
+            if meas_idx in idx_to_col and state_idx < self.INTERNAL_STATE_DIM:
+                 col = idx_to_col[meas_idx]
+                 L[state_idx, col] = val * gain_scale
+                 
         self.L = L
-        self._gain_method = 'default'
+        self._gain_method = 'default_generated'
     
     def get_scheduled_gain(self, vx: float, delta: float) -> np.ndarray:
         """
@@ -636,8 +742,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         """
         Compute C matrix for available sensors.
         
-        When GPS is valid: use full C (5×6) for [vx, r, ψ, X, Y]
-        When GPS invalid: use IMU-only C (2×6) for [vx, r]
+        When GPS is valid: use full C (7×6) for [vx, r, ψ, X, Y, a_y, a_x]
+        When GPS invalid: use IMU-only C (4×6) for [vx, r, a_y, a_x]
         
         Args:
             gps_valid: Whether GPS measurements are valid
@@ -645,25 +751,30 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         Returns:
             C matrix with appropriate rows for available sensors
         """
-        # Create a dummy rho since C might depend on it (though for these modes it actually doesn't much, 
-        # except a_y if we were using it, but here we are using selection matrices)
-        # We need rho to satisfy the interface.
-        vx = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
+        # rho needed for a_y/a_x rows which depend on scheduling parameters
         delta = getattr(self, '_last_steering', 0.0)
         rho = self.dynamics.compute_scheduling_params(self.state_nn_6d, delta)
         
         if gps_valid:
-            return self.dynamics.compute_C_matrix(rho, mode='5D_GPS_IMU')
+            # Use configured mode (e.g., 7D_FULL, 6D_WITH_AY, etc.)
+            return self.dynamics.compute_C_matrix(rho, mode=self.c_matrix_mode)
         else:
-            # IMU-only: select only vx (row 0) and r (row 1) → 2×6 matrix
-            return self.dynamics.compute_C_matrix(rho, active_indices=[MEAS_IDX_VX, MEAS_IDX_R])
+            # IMU-only fallback: intersection of current mode and 4D_IMU_ONLY
+            # Ideally should compute dynamic intersection, but for safety/simplicity
+            # we check if current mode supports the IMU subset.
+            # For now, keep hardcoded fallback to 4D_IMU_ONLY as it's separate from gain scheduling logic
+            # used in _get_L_avail fallback.
+            # BUT: if we change C, we must ensure L matches C.
+            # In _get_L_avail we slice L. Here we return C.
+            # Let's return 4D_IMU_ONLY C matrix for now, assuming typical usage.
+            return self.dynamics.compute_C_matrix(rho, mode='4D_IMU_ONLY')
     
     def _get_L_avail(self, gps_valid: bool) -> np.ndarray:
         """
         Get observer gain matrix for available sensors.
         
-        When GPS valid: use full L (6×5)
-        When GPS invalid: use IMU-only L (6×2) - only first 2 columns
+        When GPS valid: use full L (6×M)
+        When GPS invalid: use L for available non-GPS sensors (subset of columns)
         
         Args:
             gps_valid: Whether GPS measurements are valid
@@ -673,13 +784,35 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         """
         vx_current = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
         delta = getattr(self, '_last_steering', 0.0)
+        # Get full scheduled gain (6 x meas_dim)
         L_full = self.get_scheduled_gain(vx_current, delta)
         
         if gps_valid:
-            return L_full  # 6×5 (full measurement correction)
+            return L_full
         else:
-            # IMU-only: use only first 2 columns corresponding to vx, r
-            return L_full[:, :self.MEAS_DIM_IMU]  # 6×2
+            # Fallback to IMU-only
+            # We want columns of L_full corresponding to [vx, r, ay, ax]
+            # BUT: L_full is ordered by c_matrix_mode.
+            # We need to intersect current mode with 4D_IMU_ONLY.
+            
+            # Indices of available measurements in global 7D convention
+            available_indices_7d = C_MATRIX_MODES['4D_IMU_ONLY'] # [0, 1, 5, 6]
+            
+            # Map 7D index -> current L column index
+            # This relies on L_full columns matching self.active_meas_indices
+            idx_map = {idx7d: col for col, idx7d in enumerate(self.active_meas_indices)}
+            
+            # Collect valid columns (if the current mode actually has them)
+            valid_cols = []
+            for idx7d in available_indices_7d:
+                if idx7d in idx_map:
+                    valid_cols.append(idx_map[idx7d])
+            
+            if not valid_cols:
+                # Emergency fallback if intersection is empty (shouldn't happen with standard modes)
+                return L_full 
+                
+            return L_full[:, valid_cols]
     
     
     def _prepare_nn_input(self, steering: float, throttle: float, 
@@ -751,6 +884,35 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             r_meas = gyro_z
             ax_meas, ay_meas = self._compute_acceleration(acceleration, vx_meas, r_meas)
             
+            # Store accelerations for physics-informed tire loss and autodiff
+            self._last_ay_meas = ay_meas
+            self._last_ax_meas = ax_meas
+            
+            # Compute r_dot via finite difference with 2nd-order Butterworth filter
+            # Much less noisy than simple EMA, critical for physics_tire loss
+            dt = self.config.get('sample_time', 0.02)
+            if dt > 0:
+                r_dot_raw = (r_meas - self._r_meas_prev) / dt
+                
+                # 2nd-order Butterworth IIR filter (fc~3Hz at 100Hz sample rate)
+                b = self._rdot_butter_b
+                a = self._rdot_butter_a
+                # y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+                y_new = (b[0] * r_dot_raw 
+                        + b[1] * self._rdot_butter_x[0] 
+                        + b[2] * self._rdot_butter_x[1]
+                        - a[1] * self._rdot_butter_y[0]
+                        - a[2] * self._rdot_butter_y[1])
+                
+                # Update filter state
+                self._rdot_butter_x[1] = self._rdot_butter_x[0]
+                self._rdot_butter_x[0] = r_dot_raw
+                self._rdot_butter_y[1] = self._rdot_butter_y[0]
+                self._rdot_butter_y[0] = y_new
+                
+                self._r_dot_meas = y_new
+            self._r_meas_prev = r_meas
+            
             # GPS validity check (position/orientation only when valid)
             gps_valid = gps_data is not None and gps_data.get('valid', False)
             
@@ -801,6 +963,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 
                 # Use first-layer w estimate for observer dynamics
                 w_hat = w_uio
+                # Store for warmstart in prediction_error loss (autodiff path)
+                self._last_w_hat_L1 = w_uio.flatten().copy()
             
             if self.output_first_layer_only and self.use_first_layer and self.first_layer_observer is not None:
                 # Bypass mode: directly use first-layer state
@@ -835,8 +999,12 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 # Define L_avail for logging consistency (set to zero as we are overriding)
                 if gps_valid:
                     L_avail = np.zeros((self.INTERNAL_STATE_DIM, self.MEAS_DIM_FULL))
+                    D_avail = np.zeros((self.MEAS_DIM_FULL, 2))
+                    F_avail = np.zeros((self.MEAS_DIM_FULL, self.output_dim))
                 else:
                     L_avail = np.zeros((self.INTERNAL_STATE_DIM, self.MEAS_DIM_IMU))
+                    D_avail = np.zeros((self.MEAS_DIM_IMU, 2))
+                    F_avail = np.zeros((self.MEAS_DIM_IMU, self.output_dim))
 
             else:
 
@@ -853,8 +1021,14 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
 
                 A_d, B_d, E_d = discretize_system_zoh(A_c,B_c,E_c, dt)
                 
+                # ========== PHASE 4.5: STORE PRE-UPDATE STATE FOR PREDICTION ERROR LOSS ==========
+                # The prediction error loss needs the PRIOR state x̂[k] and sensitivity ∂x̂[k]/∂f
+                # BEFORE the correction step. After Phase 5, self.state_nn_6d becomes x̂[k+1]
+                # which already incorporates y[k], making the prediction error trivially small.
+                self._state_prior = self.state_nn_6d.copy()
+                self._dx_df_prior = self.dx_df.copy()
+                
                 # ========== PHASE 5: STATE UPDATE (Discrete Predict + Correct) ==========
-                # self.f_nn = self.f_nn.squeeze()  # Ensure f_nn is correct shape for dynamics
                 # Discrete-time observer: x̂[k+1] = A_d·x̂[k] + B_d·u[k] + E_d·w[k] + L·(y[k] - C·x̂[k])
                 # This structure matches the discrete-time LMI gain design.
                 #
@@ -862,31 +1036,46 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 #   - IMU (vx, r): always available at high rate
                 #   - GPS (ψ, X, Y): only when valid
                 
-                # Get sensor-dependent C and L matrices
+                # Get sensor-dependent C, D, F and L matrices
                 C_avail = self._compute_C_matrix_avail(gps_valid)
                 L_avail = self._get_L_avail(gps_valid)
                 
+                # D and F matrices for feedthrough (a_y/a_x have D·u and F·w terms)
+                if gps_valid:
+                    D_avail = self.dynamics.compute_D_matrix(rho, active_indices=C_MATRIX_MODES[self.c_matrix_mode])
+                    F_avail = self.dynamics.compute_F_matrix(rho, active_indices=C_MATRIX_MODES[self.c_matrix_mode])
+                else:
+                    D_avail = self.dynamics.compute_D_matrix(rho, active_indices=C_MATRIX_MODES['4D_IMU_ONLY'])
+                    F_avail = self.dynamics.compute_F_matrix(rho, active_indices=C_MATRIX_MODES['4D_IMU_ONLY'])
+                
                 # Build measurement vector based on sensor availability
                 if gps_valid:
-                    # Full measurement: [vx, r, ψ, X, Y]
-                    y_avail = np.array([vx_meas, r_meas, psi_meas, X_meas, Y_meas])
+                    # Full measurement: [vx, r, ψ, X, Y, a_y, a_x]
+                    # This needs to match the order of self.active_meas_indices
+                    y_full_7d = np.array([vx_meas, r_meas, psi_meas, X_meas, Y_meas, ay_meas, ax_meas])
+                    y_avail = y_full_7d[self.active_meas_indices]
                 else:
-                    # IMU-only: [vx, r]
-                    y_avail = np.array([vx_meas, r_meas])
+                    # IMU-only: [vx, r, a_y, a_x]
+                    y_avail = np.array([vx_meas, r_meas, ay_meas, ax_meas])
                 
                 # Discrete-time prediction: x̂_pred = A_d·x̂ + B_d·u + E_d·w
                 state_pred = A_d @ self.state_nn_6d + B_d @ control_u + E_d @ self.f_nn.squeeze()
                 
-                # Innovation: y - C·x̂[k] (computed at current state, not predicted)
-                # This is the "current measurement" form for discrete observer
-                innovation = y_avail - C_avail @ self.state_nn_6d
+                # Innovation: y - (C·x̂ + D·u + F·w)
+                # D·u and F·w are feedthrough terms for a_y/a_x measurements
+                # (zero for vx, r, ψ, X, Y rows)
+                y_predicted = C_avail @ self.state_nn_6d + D_avail @ control_u + F_avail @ self.f_nn.squeeze()
+                innovation = y_avail - y_predicted
                 
                 # Wrap heading innovation to [-pi, pi]
-                if gps_valid:
-                    # Yaw measurement is at index 2 in 5D GPS measurement vector
-                    innovation[2] = (innovation[2] + np.pi) % (2 * np.pi) - np.pi
+                if gps_valid and self.IDX_PSI in self.active_meas_indices:
+                    # Find the column index of PSI in C_avail
+                    psi_col_idx = np.where(np.array(C_MATRIX_MODES[self.c_matrix_mode]) == self.IDX_PSI)[0]
+                    if len(psi_col_idx) > 0:
+                        innovation[psi_col_idx[0]] = (innovation[psi_col_idx[0]] + np.pi) % (2 * np.pi) - np.pi
                 
-                # Correction: x̂[k+1] = x̂_pred + L·innovation
+                # Correction: x̂[k+1] = x̂_pred + L_avail @ innovation
+                # print("L_avail", L_avail)
                 self.state_nn_6d = state_pred + L_avail @ innovation
                 
                 # print("Normal", self.state_nn_6d)
@@ -911,6 +1100,13 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 # Only train when we have ground truth (GPS valid)
                 if gps_valid:
                     self._train_network(nn_input, w_hat, gps_data, motor_tach,gyro_z)
+                
+                # Store current measurement data for prediction_error loss (used next step)
+                self._prev_y_avail = y_avail.copy()
+                self._prev_C_avail = C_avail.copy()
+                self._prev_D_avail = D_avail.copy()
+                self._prev_F_avail = F_avail.copy()
+                self._prev_u = control_u.copy()
             
             # ========== PHASE 7.5: DATA RECORDING ==========
             if self.recorder is not None and self.recorder.is_recording():
@@ -1023,9 +1219,18 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         if self.learning_mode == 'continuous_learning' and self.model_queue is not None:
             if len(self.model_queue.models) > 0:
-                return self.model_queue.predict(nn_input_tensor).detach().numpy()
+                output = self.model_queue.predict(nn_input_tensor).detach().numpy()
+            else:
+                output = self.model(nn_input_tensor).detach().numpy()
+        else:
+            output = self.model(nn_input_tensor).detach().numpy()
         
-        return self.model(nn_input_tensor).detach().numpy()
+        # Apply sign flip if configured (fixes sign convention mismatch)
+        # Set nn_output_sign_flip: true in config if NN learns opposite sign
+        if getattr(self, '_nn_sign_flip', False):
+            output = -output
+        
+        return output
     
     def _train_network(self, nn_input: np.ndarray, w_hat: np.ndarray,
                        gps_data: Dict, motor_tach: float,gyro_z: float):
@@ -1082,7 +1287,41 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 
                 self.optimizer.zero_grad()
                 avg_loss.backward()
+                
+                # Diagnostic: log gradient norm and direction (every 50 batches)
+                if hasattr(self, '_autodiff_batch_count'):
+                    self._autodiff_batch_count += 1
+                else:
+                    self._autodiff_batch_count = 0
+                if self._autodiff_batch_count % 50 == 0:
+                    total_norm = 0.0
+                    # Compute gradient w.r.t. output layer to see direction
+                    output_grad_sum = 0.0
+                    for name, p in self.model.named_parameters():
+                        if p.grad is not None:
+                            total_norm += p.grad.data.norm(2).item() ** 2
+                            if 'fc_out' in name or 'fc3' in name:
+                                output_grad_sum += p.grad.data.sum().item()
+                    total_norm = total_norm ** 0.5
+                    f_nn_now = self.f_nn.flatten() if hasattr(self, 'f_nn') else [0, 0]
+                    # Also log Layer1 estimate if available
+                    w_L1 = getattr(self, '_last_w_hat_L1', None)
+                    w_L1_str = f"[{w_L1[0]:.3f},{w_L1[1]:.3f}]" if w_L1 is not None else "N/A"
+                    print(f"[NN Train step={self.update_count}] "
+                          f"loss={avg_loss.item():.4f} grad_norm={total_norm:.4f} "
+                          f"out_grad_dir={output_grad_sum:.4f} "
+                          f"f_nn=[{f_nn_now[0]:.3f},{f_nn_now[1]:.3f}] "
+                          f"w_L1={w_L1_str}")
+                
+                # Gradient clipping to prevent exploding gradients
+                if self.grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+                
                 self.optimizer.step()
+                
+                # Detach GRU hidden state after training step (prevent graph accumulation)
+                if hasattr(self.model, 'detach_hidden'):
+                    self.model.detach_hidden()
                 
                 # Continuous Learning: Update model queue
                 if self.learning_mode == 'continuous_learning' and self.model_queue is not None:
@@ -1098,7 +1337,137 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # Choose loss function based on config
         loss_type = self.config.get('loss_type', 'measurement_full')
         
-        if loss_type == 'composite_uio' and self.trajectory_ref is not None:
+        if loss_type == 'physics_tire':
+            # Physics-informed tire residual loss (RECOMMENDED for tire learning)
+            # Uses direct IMU ay constraint + smoothness + soft bounds
+            # Get Layer 1 residual estimate for warm start
+            w_hat_L1 = w_hat if self.use_first_layer and self.first_layer_observer is not None else None
+            
+            dL_df, loss = self.gradient_solver.chain_rule_physics_informed_tire(
+                measurement_full,
+                self.state_nn_6d,
+                self.state_uio,
+                self.dx_df,
+                self.f_nn,
+                self.f_nn_prev,
+                self.vehicle_params,
+                steering,
+                self._last_ay_meas,
+                self.weight_matrices,
+                ref_indices=self.ref_indices,
+                reference=self.trajectory_ref,
+                r_dot_meas=self._r_dot_meas,
+                w_hat_L1=w_hat_L1,
+                step_count=self.update_count,
+            )
+            # Update previous f_nn for smoothness term
+            self.f_nn_prev = self.f_nn.squeeze().copy()
+            
+            # Diagnostic logging for physics target debugging
+            if self.update_count % 200 == 0:
+                try:
+                    vx_d = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
+                    vy_d = self.state_nn_6d[self.IDX_VY]
+                    r_d = self.state_nn_6d[self.IDX_R]
+                    alpha_f_d = steering - (vy_d + self.lf * r_d) / vx_d
+                    alpha_r_d = -(vy_d - self.lr * r_d) / vx_d
+                    w_star = self.gradient_solver._solve_physics_target(
+                        self.vehicle_params, steering, self._last_ay_meas,
+                        self._r_dot_meas, alpha_f_d, alpha_r_d
+                    )
+                    print(f"[Diag step={self.update_count}] "
+                          f"w*=[{w_star[0,0]:.2f},{w_star[1,0]:.2f}] "
+                          f"f_nn=[{self.f_nn.flatten()[0]:.2f},{self.f_nn.flatten()[1]:.2f}] "
+                          f"r_dot={self._r_dot_meas:.3f} ay={self._last_ay_meas:.3f} "
+                          f"loss={loss:.4f}")
+                except Exception:
+                    pass
+        
+        elif loss_type == 'prediction_error':
+            # Self-supervised prediction error loss (innovation-based)
+            # Uses PRE-UPDATE state x̂[k] to compute the prior prediction error:
+            #   innovation = y[k] - (C·x̂[k] + D·u + F·w)
+            # The gradient dL/df flows through:
+            #   1. Accumulated sensitivity C·(∂x̂[k]/∂f) from past steps
+            #   2. Direct feedthrough F (for ay, ax measurements)
+            if hasattr(self, '_state_prior') and self._state_prior is not None:
+                # Use PRE-UPDATE state and sensitivity (stored before Phase 5)
+                rho_pred = self.dynamics.compute_scheduling_params(self._state_prior, steering)
+                A_c = self.dynamics.compute_A_matrix(rho_pred)
+                B_c = self.dynamics.compute_B_matrix(rho_pred)
+                E_c = self.dynamics.compute_E_matrix(rho_pred)
+                from Design_LMI_neural import discretize_system_zoh
+                A_d_pred, B_d_pred, E_d_pred = discretize_system_zoh(A_c, B_c, E_c, dt)
+                
+                # Get current measurement y[k] as target
+                gps_valid_now = True  # We only train when GPS is valid
+                C_now = self._compute_C_matrix_avail(gps_valid_now)
+                D_now = self.dynamics.compute_D_matrix(rho_pred, active_indices=self.active_meas_indices)
+                F_now = self.dynamics.compute_F_matrix(rho_pred, active_indices=self.active_meas_indices)
+                y_full_7d = np.array([
+                    motor_tach, gyro_z,
+                    gps_data.get('theta', self._state_prior[self.IDX_PSI]),
+                    gps_data.get('x', self._state_prior[self.IDX_X]),
+                    gps_data.get('y', self._state_prior[self.IDX_Y]),
+                    self._last_ay_meas,
+                    getattr(self, '_last_ax_meas', 0.0)
+                ])
+                y_now = y_full_7d[self.active_meas_indices]
+                
+                # Scale-aware measurement weights from config
+                wm = self.weight_matrices
+                meas_weight_map = {
+                    MEAS_IDX_VX: wm.get('pred_w_vx', 3.0),
+                    MEAS_IDX_R: wm.get('pred_w_r', 5.0),
+                    MEAS_IDX_PSI: wm.get('pred_w_psi', 1.0),
+                    MEAS_IDX_X: wm.get('pred_w_X', 0.5),
+                    MEAS_IDX_Y: wm.get('pred_w_Y', 0.5),
+                    MEAS_IDX_AY: wm.get('pred_w_ay', 5.0),
+                    MEAS_IDX_AX: wm.get('pred_w_ax', 3.0),
+                }
+                w_diag = np.array([meas_weight_map.get(idx, 1.0) for idx in self.active_meas_indices])
+                W_pred = np.diag(w_diag)
+                
+                # Get Layer 1 tire estimate for warmstart
+                w_hat_L1_pred = w_hat if self.use_first_layer and self.first_layer_observer is not None else None
+                
+                # Build weight matrices for prediction loss (all from config)
+                pred_weight_matrices = {
+                    'W_pred': W_pred,
+                    'w_smooth': wm.get('pred_w_smooth', wm.get('w_smooth', 0.5)),
+                    'lambda_bound': wm.get('pred_lambda_bound', wm.get('lambda_bound', 0.1)),
+                    'f_max': wm.get('pred_f_max', wm.get('f_max', 50.0)),
+                    'T_uio': wm.get('T_uio', np.eye(self.INTERNAL_STATE_DIM)),
+                    'w_uio_scale': wm.get('pred_w_uio', 0.1),
+                    'lambda_l2': wm.get('pred_lambda_l2', 0.0),
+                    'lambda_warmstart': wm.get('pred_lambda_warmstart', 0.0),
+                    'warmstart_decay': wm.get('pred_warmstart_decay', 300),
+                    'step_count': self.update_count,
+                    'w_hat_L1': w_hat_L1_pred,
+                    'w_corr': wm.get('pred_w_corr', wm.get('w_corr', 1.0)),
+                }
+                
+                state_uio_arg = self.state_uio if self.use_first_layer else None
+                
+                dL_df, loss = self.gradient_solver.chain_rule_prediction_error(
+                    y_now,
+                    self._state_prior,      # PRE-UPDATE state x̂[k]
+                    self._dx_df_prior,      # PRE-UPDATE sensitivity ∂x̂[k]/∂f
+                    self.f_nn,
+                    self.f_nn_prev,
+                    A_d_pred, B_d_pred, E_d_pred,
+                    C_now, D_now, F_now,
+                    u,
+                    pred_weight_matrices,
+                    state_hat_uio=state_uio_arg,
+                )
+                self.f_nn_prev = self.f_nn.squeeze().copy()
+            else:
+                # First step: no prior state yet, skip
+                dL_df = np.zeros((1, self.output_dim))
+                loss = 0.0
+        
+        elif loss_type == 'composite_uio' and self.trajectory_ref is not None:
             # Use composite UIO loss with trajectory reference (reduced dimension)
             dL_df, loss = self.gradient_solver.chain_rule_composite_uio(
                 self.trajectory_ref,     # Reduced reference (e.g., [X, Y, ψ])
@@ -1129,6 +1498,46 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         if self.learning_mode == 'learningby_dict':
             # Dictionary-based learning with selective data curation
+            # Build extra context for loss functions that need it
+            extra_ctx = None
+            if loss_type == 'physics_tire':
+                w_hat_L1 = w_hat if self.use_first_layer and self.first_layer_observer is not None else None
+                extra_ctx = {
+                    'ay_meas': float(self._last_ay_meas),
+                    'r_dot_meas': float(self._r_dot_meas),
+                    'steering': float(getattr(self, '_last_steering', 0.0)),
+                    'state_uio': self.state_uio.copy(),
+                    'f_nn_prev': self.f_nn_prev.copy(),
+                    'w_hat_L1': w_hat_L1.copy() if w_hat_L1 is not None else None,
+                }
+            elif loss_type == 'prediction_error':
+                # Store PRE-UPDATE state and CURRENT measurement for batch replay
+                # The prediction error uses innovation = y[k] - (C·x̂_prior + D·u + F·w)
+                rho_ctx = self.dynamics.compute_scheduling_params(self._state_prior, steering)
+                # Rebuild y_now for storage (same as in training block above)
+                y_full_7d_ctx = np.array([
+                    motor_tach, gyro_z,
+                    gps_data.get('theta', self._state_prior[self.IDX_PSI]),
+                    gps_data.get('x', self._state_prior[self.IDX_X]),
+                    gps_data.get('y', self._state_prior[self.IDX_Y]),
+                    self._last_ay_meas,
+                    getattr(self, '_last_ax_meas', 0.0)
+                ])
+                y_now_ctx = y_full_7d_ctx[self.active_meas_indices]
+                w_hat_L1_ctx = w_hat.flatten().copy() if self.use_first_layer and self.first_layer_observer is not None else None
+                extra_ctx = {
+                    'state_prior': self._state_prior.copy(),
+                    'dx_df_prior': self._dx_df_prior.copy(),
+                    'y_now': y_now_ctx.copy(),
+                    'C_now': self._compute_C_matrix_avail(True),
+                    'D_now': self.dynamics.compute_D_matrix(rho_ctx, active_indices=self.active_meas_indices),
+                    'F_now': self.dynamics.compute_F_matrix(rho_ctx, active_indices=self.active_meas_indices),
+                    'u': u.copy(),
+                    'state_uio': self.state_uio.copy() if self.use_first_layer else None,
+                    'f_nn_prev': self.f_nn_prev.copy(),
+                    'w_hat_L1': w_hat_L1_ctx,
+                }
+            
             accepted = self.learning_batch.add_feature(
                 nn_input,
                 self.f_nn,
@@ -1136,7 +1545,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 measurement_full,
                 f_uk,
                 self.dx_df,
-                self.update_count
+                self.update_count,
+                extra_context=extra_ctx
             )
             
             # Log selective learning stats periodically
@@ -1156,18 +1566,124 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             self._accumulate_batch_loss(nn_input, dL_df)
     
     def _train_on_batch(self, nn_input: np.ndarray, dL_df: np.ndarray):
-        """Train on accumulated batch"""
+        """Train on accumulated batch using correct loss function for each entry.
+        
+        IMPORTANT: Uses the configured loss_type to recompute gradients for
+        each dictionary entry, not just chain_rule_full_measurement.
+        """
+        loss_type = self.config.get('loss_type', 'measurement_full')
         total_gradient = np.zeros_like(dL_df)
         
-        for feature, f_nn_old, state_hat, target, f_uk_old, dx_df_old, _ in self.learning_batch.feature_dict:
+        for entry in self.learning_batch.feature_dict:
+            # Unpack entry: 8 elements (7 original + extra_context dict)
+            feature = entry[0]
+            f_nn_old = entry[1]
+            state_hat = entry[2]
+            target = entry[3]
+            f_uk_old = entry[4]
+            dx_df_old = entry[5]
+            # entry[6] = time_step
+            extra_ctx = entry[7] if len(entry) > 7 else {}
+            
             feature_tensor = torch.from_numpy(feature).float()
             f_nn_new = self.model(feature_tensor).detach().numpy()
             
-            dL_df_new, loss_new = self.gradient_solver.chain_rule_full_measurement(
-                target, state_hat, dx_df_old, f_uk_old, f_nn_new,
-                self.weight_matrix,  # Already 6x6
-                self.config['lambda_regularization']
-            )
+            if loss_type == 'physics_tire' and extra_ctx:
+                # Use physics-informed tire loss with stored context
+                dL_df_new, loss_new = self.gradient_solver.chain_rule_physics_informed_tire(
+                    target,             # measurement_full at that time
+                    state_hat,          # state_nn_6d at that time
+                    extra_ctx['state_uio'],   # UIO state at that time
+                    dx_df_old,          # sensitivity at that time
+                    f_nn_new,           # fresh NN output (recomputed)
+                    extra_ctx['f_nn_prev'],   # previous f_nn at that time
+                    self.vehicle_params,
+                    extra_ctx['steering'],
+                    extra_ctx['ay_meas'],
+                    self.weight_matrices,
+                    ref_indices=self.ref_indices,
+                    reference=self.trajectory_ref,
+                    r_dot_meas=extra_ctx.get('r_dot_meas', 0.0),
+                    w_hat_L1=extra_ctx.get('w_hat_L1'),
+                    step_count=self.update_count,
+                )
+            elif loss_type == 'prediction_error' and extra_ctx:
+                # Prediction error loss using stored PRE-UPDATE state and measurement
+                state_prior = extra_ctx.get('state_prior', state_hat)
+                dx_df_prior = extra_ctx.get('dx_df_prior', dx_df_old)
+                y_now = extra_ctx.get('y_now')
+                C_now = extra_ctx.get('C_now')
+                D_now = extra_ctx.get('D_now')
+                F_now = extra_ctx.get('F_now')
+                u_ctx = extra_ctx.get('u', np.zeros(2))
+                state_uio_ctx = extra_ctx.get('state_uio')
+                f_nn_prev_ctx = extra_ctx.get('f_nn_prev', np.zeros(self.output_dim))
+                
+                if y_now is not None and C_now is not None:
+                    # Scale-aware measurement weights from config
+                    wm = self.weight_matrices
+                    meas_weight_map = {
+                        MEAS_IDX_VX: wm.get('pred_w_vx', 3.0),
+                        MEAS_IDX_R: wm.get('pred_w_r', 5.0),
+                        MEAS_IDX_PSI: wm.get('pred_w_psi', 1.0),
+                        MEAS_IDX_X: wm.get('pred_w_X', 0.5),
+                        MEAS_IDX_Y: wm.get('pred_w_Y', 0.5),
+                        MEAS_IDX_AY: wm.get('pred_w_ay', 5.0),
+                        MEAS_IDX_AX: wm.get('pred_w_ax', 3.0),
+                    }
+                    w_diag = np.array([meas_weight_map.get(idx, 1.0) for idx in self.active_meas_indices])
+                    W_pred = np.diag(w_diag)
+                    
+                    # Get w_hat_L1 from stored extra context
+                    w_hat_L1_batch = extra_ctx.get('w_hat_L1')
+                    
+                    pred_weight_matrices = {
+                        'W_pred': W_pred,
+                        'w_smooth': wm.get('pred_w_smooth', wm.get('w_smooth', 0.5)),
+                        'lambda_bound': wm.get('pred_lambda_bound', wm.get('lambda_bound', 0.1)),
+                        'f_max': wm.get('pred_f_max', wm.get('f_max', 50.0)),
+                        'T_uio': wm.get('T_uio', np.eye(self.INTERNAL_STATE_DIM)),
+                        'w_uio_scale': wm.get('pred_w_uio', 0.1),
+                        'lambda_l2': wm.get('pred_lambda_l2', 0.0),
+                        'lambda_warmstart': wm.get('pred_lambda_warmstart', 0.0),
+                        'warmstart_decay': wm.get('pred_warmstart_decay', 300),
+                        'step_count': self.update_count,
+                        'w_hat_L1': w_hat_L1_batch,
+                        'w_corr': wm.get('pred_w_corr', wm.get('w_corr', 1.0)),
+                    }
+                    # A_d, B_d, E_d are not used inside chain_rule_prediction_error
+                    dummy_A = np.zeros((self.INTERNAL_STATE_DIM, self.INTERNAL_STATE_DIM))
+                    dL_df_new, loss_new = self.gradient_solver.chain_rule_prediction_error(
+                        y_now, state_prior, dx_df_prior, f_nn_new, f_nn_prev_ctx,
+                        dummy_A, dummy_A, dummy_A,  # A_d, B_d, E_d unused
+                        C_now, D_now, F_now, u_ctx,
+                        pred_weight_matrices,
+                        state_hat_uio=state_uio_ctx,
+                    )
+                else:
+                    dL_df_new = np.zeros_like(total_gradient)
+                    loss_new = 0.0
+            elif loss_type == 'composite_uio' and self.trajectory_ref is not None:
+                # Composite UIO loss
+                dL_df_new, loss_new = self.gradient_solver.chain_rule_composite_uio(
+                    self.trajectory_ref,
+                    target,
+                    state_hat,
+                    extra_ctx.get('state_uio', self.state_uio),
+                    dx_df_old,
+                    f_uk_old,
+                    f_nn_new,
+                    self.weight_matrices,
+                    self.config['lambda_regularization'],
+                    ref_indices=self.ref_indices
+                )
+            else:
+                # Standard measurement loss (default fallback)
+                dL_df_new, loss_new = self.gradient_solver.chain_rule_full_measurement(
+                    target, state_hat, dx_df_old, f_uk_old, f_nn_new,
+                    self.weight_matrix,
+                    self.config['lambda_regularization']
+                )
             
             if dL_df_new is not None:
                 total_gradient += dL_df_new
@@ -1179,7 +1695,16 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         self.optimizer.zero_grad()
         loss_pytorch.backward()
+        
+        # Gradient clipping
+        if self.grad_clip_norm > 0:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+        
         self.optimizer.step()
+        
+        # Detach GRU hidden state
+        if hasattr(self.model, 'detach_hidden'):
+            self.model.detach_hidden()
         
         self.loss_history.append(loss_pytorch.item())
     
@@ -1196,7 +1721,16 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             
             self.optimizer.zero_grad()
             avg_loss.backward()
+            
+            # Gradient clipping
+            if self.grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip_norm)
+            
             self.optimizer.step()
+            
+            # Detach GRU hidden state
+            if hasattr(self.model, 'detach_hidden'):
+                self.model.detach_hidden()
             
             # Continuous Learning: Update model queue
             if self.learning_mode == 'continuous_learning' and self.model_queue is not None:
@@ -1210,28 +1744,33 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     def _observer_step_torch(self, 
                              state: torch.Tensor,
                              f_nn: torch.Tensor,
-                             A: torch.Tensor,
-                             B: torch.Tensor,
-                             E: torch.Tensor,
+                             A_d: torch.Tensor,
+                             B_d: torch.Tensor,
+                             E_d: torch.Tensor,
                              L: torch.Tensor,
                              C: torch.Tensor,
+                             D: torch.Tensor,
+                             F: torch.Tensor,
                              u: torch.Tensor,
                              y: torch.Tensor,
                              dt: float) -> torch.Tensor:
         """
         Differentiable observer step for autodiff gradient computation.
         
-        Implements: x̂[k+1] = x̂[k] + dt·(A·x̂ + B·u + E·f_nn + L·(y - C·x̂))
+        Uses DISCRETE (ZOH) matrices to match the actual observer update:
+            x̂[k+1] = A_d·x̂[k] + B_d·u[k] + E_d·f_nn[k] + L·(y[k] - C·x̂[k] - D·u - F·f_nn)
         
         All tensors should have requires_grad=True where gradients are needed.
         
         Args:
             state: Current state estimate tensor (6,)
             f_nn: Neural network output tensor (2,) - requires_grad=True
-            A, B, E, L, C: System matrices as tensors
+            A_d, B_d, E_d: DISCRETE system matrices (from ZOH discretization)
+            L: Observer gain matrix
+            C, D, F: Output matrices
             u: Control input tensor
             y: Measurement tensor
-            dt: Sample time
+            dt: Sample time (unused, kept for interface compatibility)
             
         Returns:
             Updated state estimate tensor (differentiable)
@@ -1242,14 +1781,13 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         u = u.flatten()
         y = y.flatten()
         
-        # Continuous-time dynamics: x_dot = A·x + B·u + E·f_nn
-        x_dot = A @ state + B @ u + E @ f_nn
+        # Discrete-time prediction: x̂_pred = A_d·x̂ + B_d·u + E_d·f_nn
+        x_pred = A_d @ state + B_d @ u + E_d @ f_nn
         
-        # Prediction: x_pred = x + dt·x_dot
-        x_pred = state + dt * x_dot
-        
-        # Innovation and correction: x_new = x_pred + L·(y - C·x_pred)
-        innovation = y - C @ x_pred
+        # Innovation with feedthrough: y - (C·x̂ + D·u + F·f_nn)
+        # NOTE: Innovation uses the PRIOR state x̂[k], not x_pred
+        y_predicted = C @ state + D @ u + F @ f_nn
+        innovation = y - y_predicted
         x_new = x_pred + L @ innovation
         
         return x_new
@@ -1281,43 +1819,262 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             # The neural network model should handle double precision
             nn_input_t = torch.from_numpy(nn_input.astype(np.float64))
             state_t = torch.from_numpy(self.state_nn_6d.astype(np.float64))
-            A_t = torch.from_numpy(A.astype(np.float64))
-            B_t = torch.from_numpy(B.astype(np.float64))
-            E_t = torch.from_numpy(E.astype(np.float64))
+            # Use DISCRETE matrices (ZOH) to match the actual observer update
+            from Design_LMI_neural import discretize_system_zoh as _zoh
+            A_d_np, B_d_np, E_d_np = _zoh(A, B, E, dt)
+            A_t = torch.from_numpy(A_d_np.astype(np.float64))
+            B_t = torch.from_numpy(B_d_np.astype(np.float64))
+            E_t = torch.from_numpy(E_d_np.astype(np.float64))
             L_t = torch.from_numpy(L.astype(np.float64))
-            # Use proper selection matrix C (5×6), not identity
-            C_np = self._compute_C_matrix()
+            # Use C matrix matching current mode
+            C_np = self._compute_C_matrix_avail(True)  # autodiff runs only when GPS valid
             C_t = torch.from_numpy(C_np.astype(np.float64))
+            # D and F matrices for feedthrough (a_y/a_x have D·u and F·w terms)
+            delta = getattr(self, '_last_steering', 0.0)
+            rho = self.dynamics.compute_scheduling_params(self.state_nn_6d, delta)
+            # Use active indices to ensure dimensions match C
+            D_np = self.dynamics.compute_D_matrix(rho, active_indices=self.active_meas_indices)
+            F_np = self.dynamics.compute_F_matrix(rho, active_indices=self.active_meas_indices)
+            D_t = torch.from_numpy(D_np.astype(np.float64))
+            F_t = torch.from_numpy(F_np.astype(np.float64))
             u_t = torch.from_numpy(u.astype(np.float64))
-            # Measurement should match C dimensions (5D)
-            y_t = torch.from_numpy(measurement.flatten()[:self.MEAS_DIM_FULL].astype(np.float64))
-            measurement_ful_t = torch.from_numpy(measurement.flatten().astype(np.float64))
+            
+            # Measurement should match C dimensions
+            # The passed 'measurement' is in analytical convention [vx, vy, psi, r, X, Y] (6D).
+            # We must remap it to the 7D measurement convention used by C_MATRIX_MODES:
+            #   [vx(0), r(1), psi(2), X(3), Y(4), ay(5), ax(6)]
+            meas_analytical = measurement.flatten()  # [vx, vy, psi, r, X, Y]
+            meas_7d = np.array([
+                meas_analytical[0],                            # MEAS_IDX_VX=0: vx
+                meas_analytical[3],                            # MEAS_IDX_R=1:  r (gyro_z)
+                meas_analytical[2],                            # MEAS_IDX_PSI=2: psi
+                meas_analytical[4],                            # MEAS_IDX_X=3:  X
+                meas_analytical[5],                            # MEAS_IDX_Y=4:  Y
+                self._last_ay_meas,                            # MEAS_IDX_AY=5: ay
+                getattr(self, '_last_ax_meas', 0.0),           # MEAS_IDX_AX=6: ax
+            ])
+            y_selected = meas_7d[self.active_meas_indices]
+            y_t = torch.from_numpy(y_selected.astype(np.float64))
+            
+            # Keep 6D state-convention measurement [vx, vy, psi, r, X, Y] for
+            # compute_loss_measurement_autodiff (compares against 6D state x̂)
+            measurement_ful_t = torch.from_numpy(meas_analytical.astype(np.float64))
             # Forward pass through neural network (convert to double for consistency)
             f_nn_t = self.model(nn_input_t.float()).double()  # Model expects float, then convert
             
             # Differentiable observer step
             x_new = self._observer_step_torch(
-                state_t, f_nn_t, A_t, B_t, E_t, L_t, C_t, u_t, y_t, dt
+                state_t, f_nn_t, A_t, B_t, E_t, L_t, C_t, D_t, F_t, u_t, y_t, dt
             )
             
             # Compute loss based on type
             loss_type = self.config.get('loss_type', 'measurement_full')
             W_t = torch.from_numpy(self.weight_matrix.astype(np.float64))
             
-            if loss_type == 'composite_uio' and self.trajectory_ref is not None:
+            if loss_type == 'physics_tire':
+                # Physics-informed tire residual loss V2 (autodiff)
+                x_uio_t = torch.from_numpy(self.state_uio.astype(np.float64))
+                f_nn_prev_t = torch.from_numpy(self.f_nn_prev.astype(np.float64))
+                
+                T_uio_np = self.weight_matrices.get('T_uio', np.eye(self.INTERNAL_STATE_DIM))
+                weight_matrices_t = {
+                    'T_uio': torch.from_numpy(T_uio_np.astype(np.float64)),
+                    'w_physics_target': self.weight_matrices.get('w_physics_target', 30.0),
+                    'w_ay': self.weight_matrices.get('w_ay', 0.0),
+                    'w_smooth': self.weight_matrices.get('w_smooth', 2.0),
+                    'lambda_bound': self.weight_matrices.get('lambda_bound', 0.1),
+                    'f_max': self.weight_matrices.get('f_max', 50.0),
+                    'lambda_warmstart': self.weight_matrices.get('lambda_warmstart', 5.0),
+                    'warmstart_decay': self.weight_matrices.get('warmstart_decay', 500),
+                }
+                
+                ref_t = None
+                if self.trajectory_ref is not None:
+                    ref_t = torch.from_numpy(self.trajectory_ref.astype(np.float64))
+                    T_ref_np = self.weight_matrices.get('T_ref', np.eye(len(self.trajectory_ref)))
+                    weight_matrices_t['T_ref'] = torch.from_numpy(T_ref_np.astype(np.float64))
+                
+                # Prepare warm start data
+                w_hat_L1_t = None
+                if self.use_first_layer and self.first_layer_observer is not None:
+                    w_hat_L1_np = self.f_nn.flatten()  # Current w_hat from Layer 1
+                    if hasattr(self, '_last_w_hat_L1'):
+                        w_hat_L1_np = self._last_w_hat_L1
+                    w_hat_L1_t = torch.from_numpy(w_hat_L1_np.astype(np.float64))
+                
+                loss = self.gradient_solver.compute_loss_physics_informed_tire_autodiff(
+                    x_new, x_uio_t, f_nn_t, f_nn_prev_t,
+                    self.vehicle_params,
+                    self._last_steering,
+                    self._last_ay_meas,
+                    weight_matrices_t,
+                    reference=ref_t,
+                    ref_indices=self.ref_indices,
+                    r_dot_meas=self._r_dot_meas,
+                    w_hat_L1=w_hat_L1_t,
+                    step_count=self.update_count,
+                )
+                # Update previous f_nn for smoothness
+                self.f_nn_prev = f_nn_t.detach().numpy().flatten().copy()
+            elif loss_type == 'prediction_error':
+                # Open-loop prediction error loss (autodiff)
+                #
+                # KEY INSIGHT: Use the OPEN-LOOP prediction (no L correction) so the
+                # prediction error truly reflects dynamics mismatch from wrong f_nn.
+                #
+                # Using x_new (post-correction) fails because L drives x_new toward y,
+                # making pred_error ≈ 0 regardless of f_nn. The gradient exists but
+                # the error signal it multiplies is near-zero.
+                #
+                # Using detached state_prior fails because gradient only flows through F
+                # (ay/ax channels), missing the dominant vx/r channels.
+                #
+                # SOLUTION: Compute open-loop prediction differentiably:
+                #   x_pred = A_d·x̂[k] + B_d·u + E_d·f_nn  (no L correction)
+                #   ŷ = C·x_pred + D·u + F·f_nn
+                #   error = ŷ - y[k]
+                #
+                # Gradient: dŷ/df_nn = C·E_d + F
+                # This gives gradient from ALL channels through E_d (especially r and vx)
+                # PLUS ay/ax through F. No L absorption problem.
+                #
+                f_nn_prev_t = torch.from_numpy(self.f_nn_prev.astype(np.float64))
+                
+                # Use PRE-UPDATE state x̂[k] (detached — that's fine, we get gradient
+                # through E_d·f_nn in x_pred and F·f_nn in ŷ)
+                # Fallback to current state if _state_prior not set (first step)
+                prior_state = getattr(self, '_state_prior', self.state_nn_6d)
+                state_prior_t = torch.from_numpy(prior_state.astype(np.float64))
+                
+                # Ensure all tensors are 1D
+                f_nn_flat = f_nn_t.flatten()
+                f_nn_prev_flat = f_nn_prev_t.flatten()
+                state_prior_flat = state_prior_t.flatten()
+                u_flat = u_t.flatten()
+                y_flat = y_t.flatten()
+                
+                # Open-loop 1-step prediction (DIFFERENTIABLE through E_d·f_nn)
+                # x_pred[k+1|k] = A_d·x̂[k] + B_d·u[k] + E_d·f_nn[k]
+                x_pred = A_t @ state_prior_flat + B_t @ u_flat + E_t @ f_nn_flat
+                
+                # Predicted measurement from open-loop state
+                # ŷ[k+1|k] = C·x_pred + D·u + F·f_nn
+                y_hat_pred = C_t @ x_pred + D_t @ u_flat + F_t @ f_nn_flat
+                pred_error = y_hat_pred - y_flat
+                
+                # DIAGNOSTIC: Log y, y_hat, error for ay channel (every 200 steps)
+                if hasattr(self, '_diag_counter'):
+                    self._diag_counter += 1
+                else:
+                    self._diag_counter = 0
+                if self._diag_counter % 200 == 0:
+                    # Find ay index in active measurements
+                    ay_local_idx = None
+                    for i, idx in enumerate(self.active_meas_indices):
+                        if idx == MEAS_IDX_AY:
+                            ay_local_idx = i
+                            break
+                    if ay_local_idx is not None:
+                        ay_meas = y_flat[ay_local_idx].item()
+                        ay_pred = y_hat_pred[ay_local_idx].item()
+                        ay_err = pred_error[ay_local_idx].item()
+                        # Also compute the f_nn contribution to ay via E and F
+                        E_ay = E_t[ay_local_idx, :].detach().numpy() if ay_local_idx < E_t.shape[0] else [0, 0]
+                        F_ay = F_t[ay_local_idx, :].detach().numpy() if ay_local_idx < F_t.shape[0] else [0, 0]
+                        f_contrib = (F_t[ay_local_idx, :] @ f_nn_flat).item() if ay_local_idx < F_t.shape[0] else 0
+                        print(f"[DIAG step={self.update_count}] ay: meas={ay_meas:.4f} pred={ay_pred:.4f} "
+                              f"err={ay_err:.4f} f_nn=[{f_nn_flat[0].item():.3f},{f_nn_flat[1].item():.3f}] "
+                              f"F·f_nn={f_contrib:.4f}")
+                
+                # Scale-aware measurement weights from config
+                wm = self.weight_matrices
+                meas_weight_map = {
+                    MEAS_IDX_VX: wm.get('pred_w_vx', 5.0),
+                    MEAS_IDX_R: wm.get('pred_w_r', 15.0),
+                    MEAS_IDX_PSI: wm.get('pred_w_psi', 1.0),
+                    MEAS_IDX_X: wm.get('pred_w_X', 0.5),
+                    MEAS_IDX_Y: wm.get('pred_w_Y', 0.5),
+                    MEAS_IDX_AY: wm.get('pred_w_ay', 30.0),
+                    MEAS_IDX_AX: wm.get('pred_w_ax', 5.0),
+                }
+                w_diag = np.array([meas_weight_map.get(idx, 1.0) for idx in self.active_meas_indices])
+                W_pred = torch.tensor(np.diag(w_diag), dtype=f_nn_t.dtype)
+                
+                # Term 1: Open-loop prediction error
+                # Gradient: 2·W·(C·E_d + F)^T · error — uses ALL measurement channels
+                loss_pred = pred_error @ W_pred @ pred_error
+                
+                # Term 2: Temporal smoothness (light — don't fight learning)
+                w_smooth = wm.get('pred_w_smooth', wm.get('w_smooth', 0.1))
+                f_diff = f_nn_flat - f_nn_prev_flat
+                loss_smooth = w_smooth * torch.sum(f_diff ** 2)
+                
+                # Term 3: Soft bound (only active when |f_nn| > f_max)
+                f_max = wm.get('pred_f_max', wm.get('f_max', 25.0))
+                lambda_bound = wm.get('pred_lambda_bound', wm.get('lambda_bound', 0.1))
+                loss_bound = torch.tensor(0.0, dtype=f_nn_flat.dtype)
+                for i in range(f_nn_flat.shape[0]):
+                    excess = torch.clamp(torch.abs(f_nn_flat[i]) - f_max, min=0.0)
+                    loss_bound = loss_bound + lambda_bound * excess ** 2
+                
+                # Term 4: L2 magnitude penalty (very light)
+                lambda_l2 = wm.get('pred_lambda_l2', 0.0)
+                loss_l2 = lambda_l2 * torch.sum(f_nn_flat ** 2) if lambda_l2 > 0 else torch.tensor(0.0, dtype=f_nn_flat.dtype)
+                
+                # Term 5: Warm start from Layer 1 estimate (decaying)
+                loss_warmstart = torch.tensor(0.0, dtype=f_nn_flat.dtype)
+                lambda_warmstart = wm.get('pred_lambda_warmstart', 0.0)
+                warmstart_decay = wm.get('pred_warmstart_decay', 100)
+                if self.use_first_layer and lambda_warmstart > 0 and warmstart_decay > 0:
+                    import math
+                    decay_factor = math.exp(-self.update_count / warmstart_decay)
+                    w_hat_L1_arr = getattr(self, '_last_w_hat_L1', None)
+                    if w_hat_L1_arr is not None:
+                        w_hat_L1_t = torch.tensor(w_hat_L1_arr.flatten(), dtype=f_nn_flat.dtype)
+                        effective_lambda = lambda_warmstart * decay_factor
+                        warmstart_err = f_nn_flat - w_hat_L1_t
+                        loss_warmstart = effective_lambda * torch.sum(warmstart_err ** 2)
+                
+                # Term 6: Optional UIO consistency (very low weight)
+                loss_uio = torch.tensor(0.0, dtype=f_nn_flat.dtype)
+                if self.use_first_layer:
+                    x_uio_t = torch.from_numpy(self.state_uio.astype(np.float64)).flatten()
+                    w_uio_scale = wm.get('pred_w_uio', 0.02)
+                    state_error = state_prior_flat - x_uio_t
+                    T_uio_np = wm.get('T_uio', np.eye(self.INTERNAL_STATE_DIM))
+                    T_uio = torch.tensor(T_uio_np, dtype=f_nn_flat.dtype)
+                    loss_uio = w_uio_scale * (state_error @ T_uio @ state_error)
+                
+                # Term 7: Tire residual correlation — penalize sign disagreement
+                # Both tires saturate together (same sign) during cornering.
+                # L_corr = w_corr * (w_r - w_f)²
+                # This couples the two outputs and prevents opposite-sign divergence.
+                w_corr = wm.get('pred_w_corr', wm.get('w_corr', 1.0))
+                loss_corr = torch.tensor(0.0, dtype=f_nn_flat.dtype)
+                if w_corr > 0 and f_nn_flat.shape[0] >= 2:
+                    loss_corr = w_corr * (f_nn_flat[0] - f_nn_flat[1]) ** 2
+                
+                loss = loss_pred + loss_smooth + loss_bound + loss_l2 + loss_warmstart + loss_uio + loss_corr
+                self.f_nn_prev = f_nn_t.detach().numpy().flatten().copy()
+            elif loss_type == 'composite_uio' and self.trajectory_ref is not None:
                 # Composite UIO loss
                 x_uio_t = torch.from_numpy(self.state_uio.astype(np.float64))
                 ref_t = torch.from_numpy(self.trajectory_ref.astype(np.float64))
                 f_uk_t = torch.from_numpy(self.f_nn.flatten().astype(np.float64))
                 
                 # Convert weight matrices
+                # T_y must match measurement dimension (y_t), which depends on c_matrix_mode
+                actual_meas_dim = len(self.active_meas_indices)
+                T_y_np = self.weight_matrices.get('T_y', np.eye(actual_meas_dim))
+                # Resize T_y if it doesn't match actual measurement dimension
+                if T_y_np.shape[0] != actual_meas_dim:
+                    T_y_np = np.eye(actual_meas_dim)
+                
                 weight_matrices_t = {
                     'T_ref': torch.from_numpy(
                         self.weight_matrices.get('T_ref', np.eye(len(self.trajectory_ref))).astype(np.float64)
                     ),
-                    'T_y': torch.from_numpy(
-                        self.weight_matrices.get('T_y', np.eye(self.MEAS_DIM_FULL)).astype(np.float64)
-                    ),
+                    'T_y': torch.from_numpy(T_y_np.astype(np.float64)),
                     'T_uio': torch.from_numpy(
                         self.weight_matrices.get('T_uio', np.eye(self.INTERNAL_STATE_DIM)).astype(np.float64)
                     ),
@@ -1373,59 +2130,6 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     def get_tire_residuals(self) -> np.ndarray:
         """Get current tire residual estimates from NN [w_r, w_f]"""
         return self.f_nn.squeeze().copy()
-    
-    def get_estimated_tire_forces(self, steering: float = 0.0) -> dict:
-        """
-        Get estimated tire forces: F_estimated = F_linear + w_estimated
-        
-        This allows comparison with true tire forces to verify observer accuracy.
-        
-        Args:
-            steering: Current steering angle [rad] (needed for slip angle computation)
-            
-        Returns:
-            Dict with:
-            - Fyr_est: Estimated rear lateral tire force [N]
-            - Fyf_est: Estimated front lateral tire force [N]
-            - Fyr_linear: Linear reference force (Cr * alpha_r) [N]
-            - Fyf_linear: Linear reference force (Cf * alpha_f) [N]
-            - w_r: Estimated rear tire residual [N]
-            - w_f: Estimated front tire residual [N]
-            - alpha_r: Estimated rear slip angle [rad]
-            - alpha_f: Estimated front slip angle [rad]
-        """
-        # Get current state estimates
-        vx = max(abs(self.state_nn_6d[self.IDX_VX]), self.min_vx)
-        vy = self.state_nn_6d[self.IDX_VY]
-        r = self.state_nn_6d[self.IDX_R]
-        
-        # Compute slip angles (same formula as observer dynamics)
-        alpha_f = steering - (vy + self.lf * r) / vx
-        alpha_r = -(vy - self.lr * r) / vx
-        
-        # Linear tire forces (reference model)
-        Fyf_linear = self.Cf * alpha_f
-        Fyr_linear = self.Cr * alpha_r
-        
-        # Estimated residuals from NN
-        w = self.f_nn.squeeze()
-        w_r = w[0] if len(w) > 0 else 0.0
-        w_f = w[1] if len(w) > 1 else 0.0
-        
-        # Estimated total forces
-        Fyr_est = Fyr_linear + w_r
-        Fyf_est = Fyf_linear + w_f
-        
-        return {
-            'Fyr_est': Fyr_est,
-            'Fyf_est': Fyf_est,
-            'Fyr_linear': Fyr_linear,
-            'Fyf_linear': Fyf_linear,
-            'w_r': w_r,
-            'w_f': w_f,
-            'alpha_r': alpha_r,
-            'alpha_f': alpha_f,
-        }
     
     def set_trajectory_reference(self, ref_pose: np.ndarray, 
                                   ref_velocity: Optional[float] = None,
@@ -1527,7 +2231,27 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         
         # Reset neural network state
         self.f_nn = np.zeros((self.output_dim, 1))
+        self.f_nn_prev = np.zeros(self.output_dim)
+        self._last_ay_meas = 0.0
+        self._last_ax_meas = 0.0
         self.dx_df = np.zeros((self.INTERNAL_STATE_DIM, self.output_dim))
+        
+        # Reset GRU hidden state if applicable
+        if hasattr(self.model, 'reset_hidden'):
+            self.model.reset_hidden()
+        
+        # Reset prediction_error previous data
+        self._prev_y_avail = None
+        self._prev_C_avail = None
+        self._prev_D_avail = None
+        self._prev_F_avail = None
+        self._prev_u = None
+        
+        # Reset Butterworth filter state
+        self._rdot_butter_x = [0.0, 0.0]
+        self._rdot_butter_y = [0.0, 0.0]
+        self._r_meas_prev = 0.0
+        self._r_dot_meas = 0.0
         
         # Reset batch training
         self.batch_loss = 0.0
@@ -1536,8 +2260,21 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # Clear learning batch
         if self.learning_batch is not None:
             self.learning_batch.clear()
+        # Measurement configuration
+        self.c_matrix_mode = self.config.get('observer_gain_design', {}).get('c_matrix_mode', '7D_FULL')
+        if self.c_matrix_mode not in C_MATRIX_MODES:
+             # Fallback to 7D if unknown mode in config
+             print(f"Warning: Unknown c_matrix_mode '{self.c_matrix_mode}', using '7D_FULL'")
+             self.c_matrix_mode = '7D_FULL'
         
-        # Reset first-layer observer
+        self.active_meas_indices = C_MATRIX_MODES[self.c_matrix_mode]
+        self.meas_dim = len(self.active_meas_indices)
+
+        # Internal state (6D)
+        self.state_nn_6d = np.zeros(6)
+        
+        # Initialize observer gains
+        self._initialize_observer_gains()
         if self.first_layer_observer is not None:
             self.first_layer_observer.reset(self.state_nn_6d)
     

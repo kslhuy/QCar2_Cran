@@ -52,6 +52,9 @@ from qlpv_vehicle_dynamics_obs import (
     QLPVVehicleDynamicsObs,
     get_default_vehicle_params,
     STATE_DIM, MEAS_DIM,
+    C_MATRIX_MODES,
+    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_IDX_AX,
+    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y,
 )
 
 
@@ -954,7 +957,9 @@ class NeuralQLPVGainScheduler:
                 contraction_rate: float = 0.95,
                 verbose: bool = False,
                 disturbance_mode: str = 'tire',
-                dynamics_model = None):
+                dynamics_model = None,
+                c_matrix_mode: str = '7D_FULL',
+                default_gain_matrix: Optional[np.ndarray] = None):
         """
         Initialize polytopic qLPV gain scheduler for neural observer
         
@@ -974,6 +979,10 @@ class NeuralQLPVGainScheduler:
             verbose: Print solver output
             disturbance_mode: 'tire' (default) or 'general'
             dynamics_model: Existing QLPVVehicleDynamicsObs instance (optional)
+            c_matrix_mode: Measurement configuration mode from C_MATRIX_MODES
+                           Options: '7D_FULL', '6D_WITH_AY', '5D_GPS_IMU', '4D_IMU_ONLY'
+            default_gain_matrix: Optional manually-specified default gain (STATE_DIM × meas_dim).
+                                 If None, a reasonable default is generated from c_matrix_mode.
         """
         self.params = vehicle_params
         self.vx_range = vx_range
@@ -987,6 +996,14 @@ class NeuralQLPVGainScheduler:
         self.contraction_rate = contraction_rate
         self.verbose = verbose
         self.disturbance_mode = disturbance_mode
+        
+        # Measurement configuration
+        self.c_matrix_mode = c_matrix_mode
+        if c_matrix_mode not in C_MATRIX_MODES:
+            raise ValueError(f"Unknown c_matrix_mode: '{c_matrix_mode}'. "
+                             f"Available: {list(C_MATRIX_MODES.keys())}")
+        self.active_meas_indices = C_MATRIX_MODES[c_matrix_mode]
+        self.meas_dim = len(self.active_meas_indices)
         
         # Centralized vehicle dynamics (single source of truth)
         if dynamics_model is not None:
@@ -1019,38 +1036,59 @@ class NeuralQLPVGainScheduler:
         self._L_filtered: Optional[np.ndarray] = None
         
         # Default gain for fallback
-        self._default_gain = self._compute_default_gain()
+        if default_gain_matrix is not None:
+            default_gain_matrix = np.asarray(default_gain_matrix)
+            if default_gain_matrix.shape != (STATE_DIM, self.meas_dim):
+                raise ValueError(
+                    f"default_gain_matrix shape {default_gain_matrix.shape} doesn't match "
+                    f"expected ({STATE_DIM}, {self.meas_dim}) for mode '{c_matrix_mode}'"
+                )
+            self._default_gain = default_gain_matrix.copy()
+        else:
+            self._default_gain = self._compute_default_gain()
     
     def _compute_default_gain(self) -> np.ndarray:
-        """Compute a robust default gain for neural observer"""
-        # Design diagonal gain based on measurement structure
-        # Measurement: y = [v_x, r, ψ, X, Y]  (5D, no a_y - matches observer)
-        # State:       x = [v_x, v_y, ψ, r, X, Y]
-        OBSERVER_MEAS_DIM = 5  # Observer uses 5D measurement, not 6D dynamics
-        L = np.zeros((STATE_DIM, OBSERVER_MEAS_DIM))
+        """
+        Compute a robust default gain for neural observer.
         
-        # v_x measurement → v_x state (direct, high gain)
-        L[0, 0] = 5.0
+        Adapts to the configured c_matrix_mode — builds a gain matrix
+        of shape (STATE_DIM, meas_dim) using a mapping from measurement
+        index to state corrections.
+        """
+        # Mapping: (measurement_index, state_index) → gain value
+        # These define the physical couplings regardless of which mode is active
+        _GAIN_MAP = {
+            # vx measurement → vx state (direct, high gain)
+            (MEAS_IDX_VX, IDX_VX): 5.0,
+            # r measurement → vy state (coupled through dynamics)
+            (MEAS_IDX_R, IDX_VY): 2.0,
+            # r measurement → r state (direct, high gain)
+            (MEAS_IDX_R, IDX_R): 5.0,
+            # ψ measurement → ψ state (direct)
+            (MEAS_IDX_PSI, IDX_PSI): 4.0,
+            # X measurement → X state (direct)
+            (MEAS_IDX_X, IDX_X): 3.0,
+            # Y measurement → Y state (direct)
+            (MEAS_IDX_Y, IDX_Y): 3.0,
+            # a_y measurement → vy state (critical for tire estimation)
+            (MEAS_IDX_AY, IDX_VY): 4.0,
+            # a_y coupling to r
+            (MEAS_IDX_AY, IDX_R): 1.0,
+            # a_x coupling to vx
+            (MEAS_IDX_AX, IDX_VX): 2.0,
+        }
         
-        # r measurement → v_y state (coupled through dynamics)
-        L[1, 1] = 2.0
+        L = np.zeros((STATE_DIM, self.meas_dim))
         
-        # ψ measurement → ψ state (direct)
-        L[2, 2] = 4.0
+        # Map from full 7D measurement index → column in current mode's L
+        idx_to_col = {meas_idx: col for col, meas_idx in enumerate(self.active_meas_indices)}
         
-        # r measurement → r state (direct, high gain)
-        L[3, 1] = 5.0
-        
-        # X measurement → X state (direct)
-        L[4, 3] = 3.0
-        
-        # Y measurement → Y state (direct)
-        L[5, 4] = 3.0
-        
-        # Note: a_y is not included in observer measurement (5D), so no L[i, 5]
+        for (meas_idx, state_idx), gain_val in _GAIN_MAP.items():
+            if meas_idx in idx_to_col:
+                L[state_idx, idx_to_col[meas_idx]] = gain_val
         
         # If discrete, scale gains by dt to map continuous poles to discrete
-        # L_d approx L_c * dt
+        # L_d ≈ L_c * dt
         if self.discrete:
             L = L * self.sample_time
             
@@ -1076,30 +1114,37 @@ class NeuralQLPVGainScheduler:
 
 
     def _compute_matrices_at_vertex(self, vertex: NeuralPolytopicVertex
-                                    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Compute continuous-time A, C, E matrices at a polytope vertex"""
+                                    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Compute continuous-time A, C, E, F matrices at a polytope vertex.
+        
+        Uses self.c_matrix_mode for measurement configuration.
+        
+        Returns:
+            Tuple of (A, C, E, F) where shapes depend on c_matrix_mode.
+        """
         x_dummy = np.array([vertex.vx, 0.0, vertex.psi, 0.0, 0.0, 0.0])
         rho = self.dynamics.compute_scheduling_params(x_dummy, vertex.delta)
         
         A = self.dynamics.compute_A_matrix(rho)
-        C = self.dynamics.compute_C_matrix(rho, mode='5D_GPS_IMU')  # 5D selection matrix (matches observer)
-
+        C = self.dynamics.compute_C_matrix(rho, mode=self.c_matrix_mode)
         E = self.dynamics.compute_E_matrix(rho)
+        F = self.dynamics.compute_F_matrix(rho, active_indices=self.active_meas_indices)
         
-        return A, C, E
+        return A, C, E, F
     
     def _compute_discrete_matrices_at_vertex(self, vertex: NeuralPolytopicVertex
-                                             ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                                             ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
-        Compute discrete-time A_d, B_d, E_d, C matrices at a polytope vertex.
+        Compute discrete-time A_d, B_d, E_d, C, F matrices at a polytope vertex.
         
         Uses ZOH discretization with the configured sample_time.
         
         Returns:
-            Tuple of (A_d, C, E_d, B_d) where A_d, B_d, E_d are discrete matrices
-            and C is the continuous output matrix (unchanged by discretization).
+            Tuple of (A_d, C, E_d, B_d, F) where A_d, B_d, E_d are discrete matrices,
+            C is the output matrix, and F is the residual-to-output matrix.
         """
-        A_c, C, E_c = self._compute_matrices_at_vertex(vertex)
+        A_c, C, E_c, F = self._compute_matrices_at_vertex(vertex)
         B_c = self.dynamics.compute_B_matrix(
             self.dynamics.compute_scheduling_params(
                 np.array([vertex.vx, 0.0, vertex.psi, 0.0, 0.0, 0.0]),
@@ -1109,7 +1154,7 @@ class NeuralQLPVGainScheduler:
         
         A_d, B_d, E_d = discretize_system_zoh(A_c, B_c, E_c, self.sample_time)
         
-        return A_d, C, E_d, B_d
+        return A_d, C, E_d, B_d, F
     
     def compute_gains_lmi(self) -> bool:
         """
@@ -1162,19 +1207,23 @@ class NeuralQLPVGainScheduler:
         """
         Compute gains with common Lyapunov and H∞ performance via BRL.
         
+        Includes F matrix for correct disturbance coupling through measurements.
+        
+        Error dynamics: ė = (A - LC)e + (E - LF)w
+        Effective disturbance: P(E - LF) = PE - YF  (linear in P, Y)
+        
         Solves polytopic H∞ LMI:
             min trace(P) + γ_reg * Σ ||Y_i||_F
             s.t. P > 0
                  P < P_max * I
                  For all vertices i:
-                     [A_i^T P + P A_i - C_i^T Y_i^T - Y_i C_i + αP    P E_i  ]
-                     [           E_i^T P                             -γ²I    ] < 0
+                     [A_i^T P + P A_i - C_i^T Y_i^T - Y_i C_i + αP    P E_i - Y_i F_i  ]
+                     [           (P E_i - Y_i F_i)^T                     -γ²I             ] < 0
         
         Then L_i = P^{-1} Y_i for each vertex i.
         """
         n = STATE_DIM  # 6
-        m = 5          # Observer uses 5D measurement (no a_y)
-        # p = 2          # Disturbance dimension (tire residuals)
+        m = self.meas_dim  # from c_matrix_mode
         p = 3 if self.disturbance_mode == 'general' else 2
         
         # Common Lyapunov matrix
@@ -1194,13 +1243,16 @@ class NeuralQLPVGainScheduler:
         ]
         
         for i, vertex in enumerate(self.vertices):
-            A, C, E = self._compute_matrices_at_vertex(vertex)
+            A, C, E, F = self._compute_matrices_at_vertex(vertex)
             Y = Y_list[i]
             
-            # Build H∞ LMI for this vertex
+            # Effective disturbance term: P(E - LF) = PE - YF
+            PE_eff = P @ E - Y @ F
+            
+            # Build H∞ BRL LMI for this vertex
             top_left = A.T @ P + P @ A - C.T @ Y.T - Y @ C + self.decay_rate * P
-            lmi_top = cp.hstack([top_left, P @ E])
-            lmi_bot = cp.hstack([E.T @ P, -self.hinf_gamma**2 * np.eye(p)])
+            lmi_top = cp.hstack([top_left, PE_eff])
+            lmi_bot = cp.hstack([PE_eff.T, -self.hinf_gamma**2 * np.eye(p)])
             lmi_full = cp.vstack([lmi_top, lmi_bot])
             
             constraints.append(lmi_full << -eps * np.eye(n + p))
@@ -1241,11 +1293,9 @@ class NeuralQLPVGainScheduler:
             
             try:
                 L = np.linalg.solve(self.P_common, Y_val)
-                # L = np.clip(L, -50.0, 50.0)
                 self.vertex_gains[vertex.to_tuple()] = L
             except np.linalg.LinAlgError:
                 L = np.linalg.pinv(self.P_common) @ Y_val
-                # L = np.clip(L, -50.0, 50.0)
                 self.vertex_gains[vertex.to_tuple()] = L
         
         self._gains_computed = True
@@ -1256,7 +1306,7 @@ class NeuralQLPVGainScheduler:
         success = True
         
         for vertex in self.vertices:
-            A, C, E = self._compute_matrices_at_vertex(vertex)
+            A, C, E, _F = self._compute_matrices_at_vertex(vertex)
             
             try:
                 if self.lmi_method == 'hinf':
@@ -1293,28 +1343,28 @@ class NeuralQLPVGainScheduler:
         """
         Compute gains with common Lyapunov using discrete-time Schur-form H∞ LMI.
         
+        Includes F matrix for correct disturbance coupling through measurements.
+        
+        Discrete error dynamics:
+            e[k+1] = (A_d - L·C)·e[k] + (E_d - L·F)·w[k]
+        
+        Effective disturbance: P(E_d - LF) = P·E_d - Y·F  (linear in P, Y)
+        
         Solves polytopic discrete H∞ LMI:
             min trace(P) + γ_reg * Σ ||Y_i||_F
-            s.t. P > 0
-                 P < P_max * I
+            s.t. P > 0, P < P_max * I
                  For all vertices i:
-                     [λ²·P        (P·A_d,i - Y_i·C_i)^T    0        ]
-                     [P·A_d,i - Y_i·C_i    P              P·E_d,i  ] > 0
-                     [0           E_d,i^T·P               γ²·I     ]
+                     [λ²·P            (P·A_d,i - Y_i·C_i)    (P·E_d,i - Y_i·F_i) ]
+                     [(...)^T           P                      0                    ] > 0
+                     [(...)^T           0                      γ²·I                 ]
         
         Then L_i = P^{-1} Y_i for each vertex i.
-        
-        This guarantees:
-            - Contraction rate ||e[k]|| ≤ λ^k ||e[0]||
-            - H∞ bound ||e||_2 ≤ γ ||d||_2
-            - Stability across the entire polytope via common P
         
         NOTE: For systems with integrator states (X, Y, ψ), contraction_rate must be 1.0
         since eigenvalues are exactly on the unit circle. We use pure Lyapunov stability.
         """
         n = STATE_DIM  # 6
-        m = 5          # Observer uses 5D measurement (no a_y)
-        # p = 2          # Disturbance dimension (tire residuals)
+        m = self.meas_dim  # from c_matrix_mode
         p = 3 if self.disturbance_mode == 'general' else 2
         
         # CRITICAL: For vehicle dynamics with integrators (X, Y, ψ states),
@@ -1343,9 +1393,8 @@ class NeuralQLPVGainScheduler:
         ]
         
         for i, vertex in enumerate(self.vertices):
-            A_d, C, E_d, _ = self._compute_discrete_matrices_at_vertex(vertex)
+            A_d, C, E_d, _, F = self._compute_discrete_matrices_at_vertex(vertex)
             Y = Y_list[i]
-            
             
             # Build discrete H∞ Schur-form LMI for this vertex
             # Standard BRL form for observer (matching compute_discrete_hinf_lmi_observer_gain):
@@ -1354,18 +1403,20 @@ class NeuralQLPVGainScheduler:
             # [E_d^T·P           0          γ²·I      ]
             #
             # Where Y = P @ L, so L = P^{-1} @ Y
+            # Effective disturbance: P(E_d - LF) = P·E_d - Y·F
             PA_YC = P @ A_d - Y @ C
+            PE_eff = P @ E_d - Y @ F  # Corrected: includes F matrix
             
             block_11 = lam**2 * P
-            block_12 = PA_YC              # Changed: was PA_YC.T
-            block_13 = P @ E_d            # Changed: was zeros
+            block_12 = PA_YC
+            block_13 = PE_eff
             
-            block_21 = PA_YC.T            # Changed: was PA_YC
+            block_21 = PA_YC.T
             block_22 = P
-            block_23 = np.zeros((n, p))   # Changed: was P @ E_d
+            block_23 = np.zeros((n, p))
             
-            block_31 = E_d.T @ P
-            block_32 = np.zeros((p, n))   # Changed: was E_d.T @ P
+            block_31 = PE_eff.T
+            block_32 = np.zeros((p, n))
             block_33 = gamma**2 * np.eye(p)
             
             row1 = cp.hstack([block_11, block_12, block_13])
@@ -1386,18 +1437,11 @@ class NeuralQLPVGainScheduler:
         solved = False
         solvers_to_try = []
         
-        # MOSEK is the best for SDP problems (commercial, free academic license)
         if cp.MOSEK in cp.installed_solvers():
             solvers_to_try.append((cp.MOSEK, {'verbose': self.verbose}))
-        
-        # CLARABEL is a newer open-source solver, often better than SCS
         if cp.CLARABEL in cp.installed_solvers():
             solvers_to_try.append((cp.CLARABEL, {'verbose': self.verbose}))
-        
-        # SCS is the default fallback
         solvers_to_try.append((cp.SCS, {'verbose': self.verbose, 'max_iters': 30000, 'eps': 1e-7}))
-        
-        # CVXOPT as last resort
         if cp.CVXOPT in cp.installed_solvers():
             solvers_to_try.append((cp.CVXOPT, {'verbose': self.verbose}))
         
@@ -1445,7 +1489,7 @@ class NeuralQLPVGainScheduler:
         success = True
         
         for vertex in self.vertices:
-            A_d, C, E_d, _ = self._compute_discrete_matrices_at_vertex(vertex)
+            A_d, C, E_d, _, _F = self._compute_discrete_matrices_at_vertex(vertex)
             
             try:
                 if self.lmi_method == 'hinf':
@@ -1499,7 +1543,7 @@ class NeuralQLPVGainScheduler:
                 # Discrete-time: check eigenvalues inside unit circle
                 # NOTE: Use max_spectral_radius=1.001 (not 0.999) because system
                 # has integrator states (X, Y, ψ) with eigenvalues exactly at 1.0
-                A_d, C, _, _ = self._compute_discrete_matrices_at_vertex(vertex)
+                A_d, C, _, _, _F = self._compute_discrete_matrices_at_vertex(vertex)
                 if not validate_discrete_observer_gain(A_d, C, L, max_spectral_radius=1.001):
                     if self.verbose:
                         A_cl = A_d - L @ C
@@ -1509,7 +1553,7 @@ class NeuralQLPVGainScheduler:
                     return False
             else:
                 # Continuous-time: check eigenvalues in left half-plane
-                A, C, _ = self._compute_matrices_at_vertex(vertex)
+                A, C, _E, _F = self._compute_matrices_at_vertex(vertex)
                 if not validate_observer_gain(A, C, L, max_real_part=0.0):
                     if self.verbose:
                         print(f"Warning: Gain at vertex {vertex} is unstable")
@@ -1576,7 +1620,7 @@ class NeuralQLPVGainScheduler:
             delta: Current steering angle
             
         Returns:
-            L: Interpolated observer gain matrix (6 × 6)
+            L: Interpolated observer gain matrix (6 × 7)
         """
         if not self._gains_computed:
             return self._default_gain.copy()
@@ -1590,9 +1634,8 @@ class NeuralQLPVGainScheduler:
             self._last_weights = weights
             self._last_rho = current_rho
         
-        # Interpolate gains (5D observer measurement)
-        OBSERVER_MEAS_DIM = 5
-        L = np.zeros((STATE_DIM, OBSERVER_MEAS_DIM))
+        # Interpolate gains — dimension determined by c_matrix_mode
+        L = np.zeros((STATE_DIM, self.meas_dim))
         for i, vertex in enumerate(self.vertices):
             gain = self.vertex_gains.get(vertex.to_tuple(), self._default_gain)
             L += weights[i] * gain

@@ -856,7 +856,7 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
 
     # 7. NN Tire Residuals / General Disturbances
     if is_active(['debug']):
-        pos = gs[3, 0:2] if plot_type == 'all' else gs[2, 2]
+        pos = gs[4, 2] if plot_type == 'all' else gs[2, 2]
         ax = fig.add_subplot(pos)
         
         # Determine disturbance mode
@@ -908,7 +908,10 @@ def plot_2layer_data(data: Dict[str, np.ndarray],
             ax.plot(time, data.get('w_r_nn', []), 'b.', label='$w_r$ (NN)', markersize=3)
             # ax.plot(time, data.get('w_f_nn', []), 'r.', label='$w_f$ (NN)', markersize=3)
             ax.legend(loc='upper right', fontsize=8)
-            ax_w_f = fig.add_subplot(gs[1,2])
+            
+            pos_wf = gs[5, 2] if plot_type == 'all' else gs[1,2]
+        
+            ax_w_f = fig.add_subplot(pos_wf)
             # 2D Tire Residuals (Legacy)
             if 'w_r_true' in data :
                 # ax.plot(time, data['w_r_true'], 'b-', label='$w_r$ (True)', linewidth=1.5 , alpha=0.9)

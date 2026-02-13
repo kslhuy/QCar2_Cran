@@ -377,7 +377,7 @@ def test_qlpv_scheduler_class(verbose: bool = False):
             key = vertex.to_tuple()
             L = scheduler.vertex_gains.get(key)
             if L is not None:
-                A_d, C, _, _ = scheduler._compute_discrete_matrices_at_vertex(vertex)
+                A_d, C, _, _, _ = scheduler._compute_discrete_matrices_at_vertex(vertex)
                 A_cl = A_d - L @ C
                 eigs = np.linalg.eigvals(A_cl)
                 rho = np.max(np.abs(eigs))
