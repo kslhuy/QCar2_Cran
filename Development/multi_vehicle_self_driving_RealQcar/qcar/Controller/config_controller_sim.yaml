@@ -226,12 +226,12 @@ per_vehicle_controllers:
     fix:
       throttle: 0.00  # Constant speed
     state_feedback_no_observer:
-      max_throttle: 0.18
-      throttle_smoothing: 0.7
+      max_throttle: 0.12
+      throttle_smoothing: 0.0
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     state_feedback:
       max_throttle: 0.12
-      throttle_smoothing: 0.6
+      throttle_smoothing: 0.0
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     fix_lateral:
       steering: 0.0
@@ -241,17 +241,17 @@ per_vehicle_controllers:
   
   # Vehicle 2 (Second Follower)
   2:
-    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states directly, no estimation
+    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.0  # Constant speed
     state_feedback_no_observer:
-      max_throttle: 0.18
-      throttle_smoothing: 0.7 # Slightly smoother than vehicle 1
+      max_throttle: 0.12
+      throttle_smoothing: 0.0 # Slightly smoother than vehicle 1
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     state_feedback:
       max_throttle: 0.12
-      throttle_smoothing: 0.6 # Slightly smoother than vehicle 1
+      throttle_smoothing: 0.0 # Slightly smoother than vehicle 1
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     fix_lateral:
       steering: 0.0
@@ -261,17 +261,17 @@ per_vehicle_controllers:
 
   # Vehicle 3 (Third Follower)
   3:
-    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states directly, no estimation
+    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.0  # Constant speed
     state_feedback_no_observer:
-      max_throttle: 0.2
-      throttle_smoothing: 0.7  # Smoothest
+      max_throttle: 0.12
+      throttle_smoothing: 0.0  # Smoothest
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     state_feedback:
       max_throttle: 0.12
-      throttle_smoothing: 0.6  # Smoothest
+      throttle_smoothing: 0.0  # Smoothest
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     fix_lateral:
       steering: 0.0

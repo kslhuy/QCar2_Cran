@@ -80,6 +80,7 @@ class V2VManager:
         # Received data storage with timestamps
         self.received_local_states = defaultdict(lambda: deque(maxlen=50))  # vehicle_id -> deque of (timestamp, data)
         self.received_fleet_states = defaultdict(lambda: deque(maxlen=20))  # vehicle_id -> deque of (timestamp, data)
+        self.received_observer_states = defaultdict(lambda: deque(maxlen=20))  # vehicle_id -> deque of (timestamp, observer_state)
         self.received_intents = defaultdict(lambda: deque(maxlen=10))
         self.received_warnings = defaultdict(lambda: deque(maxlen=10))
         
@@ -99,6 +100,7 @@ class V2VManager:
         self.stats = {
             'local_broadcasts': 0,
             'fleet_broadcasts': 0,
+            'observer_broadcasts': 0,
             'messages_received': 0,
             'messages_processed': 0
         }
@@ -117,6 +119,9 @@ class V2VManager:
         )
         self.v2v_communication.register_message_handler(
             "fleet_state", self._handle_fleet_state_message
+        )
+        self.v2v_communication.register_message_handler(
+            "observer_state", self._handle_observer_state_message
         )
         self.v2v_communication.register_message_handler(
             MessageType.INTENT.value, self._handle_intent_message
@@ -140,6 +145,10 @@ class V2VManager:
             
             # Attempt to broadcast fleet state (V2VCommunication will rate-limit)
             if self._broadcast_fleet_state():
+                broadcast_sent = True
+            
+            # Attempt to broadcast observer state for direct consensus (V2VCommunication will rate-limit)
+            if self._broadcast_observer_state():
                 broadcast_sent = True
             
             # Attempt to broadcast heartbeat (V2VCommunication will rate-limit)
@@ -232,6 +241,45 @@ class V2VManager:
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Fleet state broadcast error: {e}")
+            return False
+    
+    def _broadcast_observer_state(self) -> bool:
+        """Broadcast observer state (x_vec) for direct consensus without di0 conversion errors.
+        
+        This method broadcasts the raw distributed observer state vector which enables
+        neighbors to perform consensus calculation without fleet_states conversion errors.
+        """
+        try:
+            if not self.vehicle_observer:
+                if self.logger:
+                    self.logger.debug(f"Vehicle {self.vehicle_id}: No vehicle observer for observer state broadcast")
+                return False
+            
+            # Get observer state from vehicle observer
+            observer_state = self.vehicle_observer.get_observer_state_for_broadcast()
+            
+            if observer_state is None:
+                return False
+            
+            success = self.v2v_communication.send_message(
+                message_type="observer_state",
+                data=observer_state
+            )
+            
+            if success:
+                with self._lock:
+                    self.stats['observer_broadcasts'] += 1
+                if self.logger:
+                    self.logger.debug(f"Vehicle {self.vehicle_id}: Observer state broadcast #{self.stats['observer_broadcasts']} sent")
+            else:
+                if self.logger:
+                    self.logger.debug(f"Vehicle {self.vehicle_id}: Observer state broadcast failed (rate limited or error)")
+            
+            return success
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Observer state broadcast error: {e}")
             return False
     
     def _broadcast_heartbeat(self) -> bool:
@@ -476,6 +524,74 @@ class V2VManager:
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Fleet state message handling error: {e}")
+    
+    def _handle_observer_state_message(self, message: V2VMessage):
+        """Handle observer state messages for direct consensus calculation.
+        
+        This message carries the raw distributed observer state vector (x_vec)
+        which enables direct consensus without di0 conversion errors.
+        
+        Expected data structure:
+        {
+            'vehicle_id': int,
+            'observer_state': list[float],  # [3*observer_size] values
+            'observer_size': int,
+        }
+        """
+        try:
+            sender_id = message.sender_id
+            data = message.data
+            send_time_ns = message.send_time_ns
+            
+            # Validate required fields
+            required_fields = ['vehicle_id', 'observer_state', 'observer_size']
+            missing_fields = [field for field in required_fields if field not in data]
+            
+            if missing_fields:
+                if self.logger:
+                    self.logger.warning(f"V2VManager: Observer state message from vehicle {sender_id} missing fields: {missing_fields}")
+                return
+            
+            observer_state = data.get('observer_state', [])
+            observer_size = data.get('observer_size', 0)
+            
+            # Validate observer state is a list with correct size
+            expected_size = 3 * observer_size
+            if not isinstance(observer_state, list) or len(observer_state) != expected_size:
+                if self.logger:
+                    self.logger.warning(
+                        f"V2VManager: Invalid observer_state from vehicle {sender_id}. "
+                        f"Expected list of {expected_size} elements, got {type(observer_state).__name__} with {len(observer_state) if isinstance(observer_state, list) else 'N/A'} elements"
+                    )
+                return
+            
+            with self._lock:
+                # Add to received observer states
+                self.received_observer_states[sender_id].append((send_time_ns, data))
+            
+            # Pass to vehicle observer for processing
+            if self.vehicle_observer is not None:
+                try:
+                    success = self.vehicle_observer.add_received_observer_state(
+                        sender_id=sender_id,
+                        observer_state=observer_state,
+                        timestamp_ns=send_time_ns
+                    )
+                    
+                    if success and self.logger:
+                        state_norm = sum(x**2 for x in observer_state) ** 0.5
+                        self.logger.debug(
+                            f"V2VManager: Processed observer state from vehicle {sender_id} "
+                            f"(size={observer_size}, norm={state_norm:.4f}) to fleet estimator"
+                        )
+                
+                except Exception as e:
+                    if self.logger:
+                        self.logger.warning(f"V2VManager: Failed to process observer state to estimator: {e}")
+            
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Observer state message handling error: {e}")
     
     def _validate_local_state_data(self, data: dict, sender_id: int) -> bool:
         """Validate local state data integrity and ranges"""

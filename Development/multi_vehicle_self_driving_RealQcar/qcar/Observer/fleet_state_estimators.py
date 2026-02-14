@@ -85,7 +85,10 @@ class FleetStateEstimatorBase(ABC):
         self.received_local_states = defaultdict(list)  # vehicle_id -> [(timestamp_ns, state)]
 
         self.received_fleet_states = defaultdict(list) # vehicle_sender_id -> [(timestamp_ns, fleet_state)]
-
+        
+        # Observer state storage for direct consensus (avoids di0 conversion errors)
+        # sender_id -> [(timestamp_ns, observer_state_vector)]
+        self.received_observer_states = defaultdict(list)
 
         self.max_state_age_ns = int(1.0 * 1e9)  # 1 second in nanoseconds
     
@@ -181,6 +184,66 @@ class FleetStateEstimatorBase(ABC):
             if self.logger:
                 self.logger.log_error("Add received fleet state error", e)
             return False
+
+    def add_received_observer_state(self, sender_id: int, observer_state: np.ndarray, timestamp_ns: int) -> bool:
+        """Add a received OBSERVER state (x_vec) from another vehicle for direct consensus.
+        
+        This allows direct consensus calculation without converting fleet_states,
+        which avoids errors introduced by different di0 calculations across vehicles.
+        
+        Args:
+            sender_id: Vehicle ID of the sender
+            observer_state: Observer state vector [3*observer_size] containing:
+                           [p1-p0+d10, v1-v0, a1-a0, p2-p0+d20, v2-v0, a2-a0, ...]
+            timestamp_ns: Timestamp in nanoseconds
+        
+        Returns:
+            True if successfully stored, False otherwise
+        """
+        try:
+            if sender_id == self.vehicle_id:
+                return False
+            
+            # Ensure it's a numpy array
+            if not isinstance(observer_state, np.ndarray):
+                observer_state = np.array(observer_state)
+            
+            # Store with timestamp
+            self.received_observer_states[sender_id].append((timestamp_ns, observer_state.copy()))
+            
+            # Keep only recent history (default 5 entries)
+            if len(self.received_observer_states[sender_id]) > 5:
+                self.received_observer_states[sender_id] = self.received_observer_states[sender_id][-5:]
+            
+            return True
+        
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error("Add received observer state error", e)
+            return False
+
+    def _get_latest_observer_state(self, neighbor_id: int, current_time_ns: int) -> Optional[np.ndarray]:
+        """Return the newest observer state vector from a neighbor that is still valid.
+        
+        Args:
+            neighbor_id: Vehicle ID of the neighbor
+            current_time_ns: Current timestamp in nanoseconds
+        
+        Returns:
+            Observer state vector [3*observer_size] or None if no valid data
+        """
+        if neighbor_id not in self.received_observer_states:
+            return None
+        
+        history = self.received_observer_states[neighbor_id]
+        if not history:
+            return None
+        
+        # Iterate backwards to find newest valid data
+        for ts_ns, observer_state in reversed(history):
+            if (current_time_ns - ts_ns) <= self.max_state_age_ns:
+                return observer_state.copy()
+        return None
 
     def _get_latest_fleet_data(self, neighbor_id: int, current_time_ns: int) -> Optional[Dict]:
         """Return the newest fleet dictionary from a neighbor that is still valid.

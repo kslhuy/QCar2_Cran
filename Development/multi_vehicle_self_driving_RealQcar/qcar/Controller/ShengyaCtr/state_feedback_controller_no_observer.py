@@ -77,16 +77,16 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
         # K_matrices[vehicle_id][j] = K_{vehicle_id,j}
         self.K_all_vehicles = {
             1: {
-                0: np.array([[-0.1729,-0.4856,-0.0746]])
+                0: np.array([[-0.3105,-0.5413,0.0062]])
             },
             2: {
-                0: np.array([[-0.1766,-0.4659,-0.0822]]),
-                1: np.array([[-0.0028,-0.0056,0.0038]])
+                0: np.array([[-0.3203,-0.4258,-0.0517]]),
+                1: np.array([[-0.0481,-0.0799,0.0417]])
             },
             3: {
-                0: np.array([[-0.1895,-0.5314,-0.0981]]),
-                1: np.array([[-0.0026,-0.0053,0.0039]]),
-                2: np.array([[-0.0010,-0.0010,0.0049]])
+                0: np.array([[-0.3555,-0.4238,-0.0850]]),
+                1: np.array([[-0.0351,-0.0553,0.0272]]),
+                2: np.array([[-0.0336,-0.0528,0.0339]])
             }
         }
 
@@ -170,9 +170,14 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
         # Calculate index matrix Fi for this vehicle
         Fi = self.calculate_Fi(num_vehicles=num_vehicles, vehicle_index=vehicle_id)
     
+        # Get leader velocity for feedforward calculation
+        current_time_ns = int(time.time() * 1e9)
+        state_leader = self._get_true_vehicle_state(0, current_time_ns)
+        leader_velocity = state_leader[3] if state_leader is not None else follower_state.get('velocity', 0.0)
+    
         # State feedback control law: u_i = sum_{j=0}^{i-1} K_{ij} * (F_i - F_j) * estimated_states
         # For j=0 (leader), F_0 is zero matrix, so K_{i0} * F_i * estimated_states
-        throttle_raw = self.leader_fix_throttle  # Base throttle to maintain speed, will be adjusted by feedback terms
+        throttle_raw = self.feedforward_throttle(leader_velocity) - 0.029    # Base throttle using LEADER velocity
         
         # First term: K_{i0} * F_i * estimated_states (j=0)
         # This represents control based on this vehicle's relative state to leader
@@ -189,21 +194,9 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
                 Fj = self.calculate_Fi(num_vehicles=num_vehicles, vehicle_index=j)
                 control_input = K_ij @ ((Fi - Fj) @ estimated_states)
                 throttle_raw += control_input[0]
-
-        # Special handling for braking (negative throttle)
-        if throttle_raw < 0:
-            # More aggressive smoothing for braking to prevent jerky stops
-            smoothing_factor = 0.85
-            throttle_raw = (smoothing_factor * self.prev_throttle + 
-                          (1 - smoothing_factor) * throttle_raw)
-            throttle_raw = max(throttle_raw, 0.0)  # No negative throttle output
-        
-        # Apply exponential smoothing to final throttle command
-        throttle = (self.throttle_smoothing * self.prev_throttle + 
-                   (1 - self.throttle_smoothing) * throttle_raw)
         
         # Ensure throttle is non-negative
-        throttle = min(max(throttle, 0.0), self.max_throttle)
+        throttle = min(throttle_raw, self.max_throttle)
         
         # Store for next iteration
         self.prev_throttle = throttle
@@ -365,3 +358,15 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
         return Fi
 
 
+    def feedforward_throttle(self, leader_velocity: float):
+        """Compute feedforward throttle based on leader velocity (target velocity).
+        
+        Args:
+            leader_velocity: Leader's velocity, used as the target velocity for all followers
+        
+        Returns:
+            throttle_ff: Feedforward throttle to maintain leader velocity
+        """
+        v_desired = leader_velocity
+        throttle_ff = 0.329609 * v_desired**2 - 0.000272 * v_desired + 0.038744
+        return throttle_ff

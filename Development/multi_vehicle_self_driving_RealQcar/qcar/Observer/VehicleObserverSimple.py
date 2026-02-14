@@ -780,6 +780,59 @@ class VehicleObserver:
             self.vehicle_logger.log_error("Add received fleet state error", e)
             return False
 
+    def add_received_observer_state(self, sender_id: int, observer_state, timestamp_ns: int) -> bool:
+        """
+        Add received observer state (x_vec) from another vehicle for direct consensus.
+        
+        This method enables consensus calculation without di0 conversion errors by
+        receiving the raw distributed observer state vector directly.
+        
+        Args:
+            sender_id: Vehicle ID of the sender
+            observer_state: Observer state vector [3*observer_size] as list or numpy array
+            timestamp_ns: Timestamp in nanoseconds
+            
+        Returns:
+            bool: True if state was added successfully
+        """
+        try:
+            if sender_id == self.vehicle_id:
+                return False  # Don't store own state
+            
+            if self.fleet_estimator is None:
+                return False
+            
+            # Check if fleet estimator supports observer state (DistributedLuenbergerEstimator)
+            if not hasattr(self.fleet_estimator, 'add_received_observer_state'):
+                if self.vehicle_logger:
+                    self.vehicle_logger.logger.debug(
+                        f"VehicleObserver: Fleet estimator does not support add_received_observer_state"
+                    )
+                return False
+            
+            # Convert to numpy array if needed
+            if isinstance(observer_state, list):
+                observer_state = np.array(observer_state)
+            
+            # Delegate to fleet estimator
+            success = self.fleet_estimator.add_received_observer_state(
+                sender_id=sender_id,
+                observer_state=observer_state,
+                timestamp_ns=timestamp_ns
+            )
+            
+            if success and self.vehicle_logger:
+                self.vehicle_logger.logger.debug(
+                    f"VehicleObserver: Added observer state from vehicle {sender_id} "
+                    f"(norm={np.linalg.norm(observer_state):.4f}) to fleet estimator"
+                )
+            
+            return success
+            
+        except Exception as e:
+            self.vehicle_logger.log_error("Add received observer state error", e)
+            return False
+
     def get_local_state(self) -> np.ndarray:
         """Get current local state estimate."""
         with self.lock:
@@ -896,6 +949,39 @@ class VehicleObserver:
                 'fleet_states': fleet_data,
                 'source': 'fleet_consensus'
             }
+
+    def get_observer_state_for_broadcast(self) -> Optional[dict]:
+        """
+        Get observer state (x_vec) for V2V broadcasting.
+        
+        This enables direct consensus calculation without di0 conversion errors.
+        The observer state vector contains relative states:
+        [p1-p0+d10, v1-v0, a1-a0, p2-p0+d20, v2-v0, a2-a0, ...]
+        
+        Returns:
+            dict with observer state data or None if not available
+        """
+        with self.lock:
+            if self.fleet_estimator is None:
+                return None
+            
+            # Check if fleet estimator has get_observer_state method (DistributedLuenbergerEstimator)
+            if not hasattr(self.fleet_estimator, 'get_observer_state'):
+                return None
+            
+            try:
+                observer_state = self.fleet_estimator.get_observer_state()
+                observer_size = getattr(self.fleet_estimator, 'observer_size', self.fleet_size - 1)
+                
+                return {
+                    'vehicle_id': self.vehicle_id,
+                    'observer_state': observer_state.tolist(),  # Convert numpy array to list for JSON
+                    'observer_size': observer_size,
+                }
+            except Exception as e:
+                if self.vehicle_logger:
+                    self.vehicle_logger.log_error("Get observer state for broadcast error", e)
+                return None
 
     def reinitialize_fleet_estimation(self, new_fleet_size: int, peer_vehicle_ids: List[int]):
         """

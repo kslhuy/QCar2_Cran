@@ -1,5 +1,27 @@
 # Update Log 2026/02/14 (Shengya MENG)
 
+Commit Message: Broadcast observer state via V2V, fix feedforward-induced steady-state error
+
+## Completed Tasks / 已完成任务:
+
+- [x] **Added observer state in V2V communication / V2V通信中添加观测器状态广播**
+  - Each vehicle broadcasts estimated state to followers via V2V / 每个车辆通过V2V向跟随车广播估计状态
+  - Modified [distributed_luenberger_estimator.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/distributed_luenberger_estimator.py) and [v2v_manager.py](Development/multi_vehicle_self_driving_RealQcar/qcar/V2V/v2v_manager.py)
+
+- [x] **Fixed steady-state error caused by excessive feedforward / 修复前馈过大导致的静态误差**
+  - Root cause: feedforward throttle too high / 原因：前馈油门值过大
+  - Adjusted in [state_feedback_controller.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/ShengyaCtr/state_feedback_controller.py)
+
+## Current Performance / 当前性能:
+
+Controller results / 控制器结果:
+![控制器结果](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/dist_luenberger_v1_20260214_230409_vehicles_1_3_state.png)
+
+Observer results / 观测器结果:
+![观测器结果](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/figure_luenberger_v1_20260214_230409.png)
+
+# Update Log 2026/02/14 (Shengya MENG)
+
 Commit Message: Remove feedforward from V2V collective control, add throttle-velocity mapping, update gains
 
 ## Completed Tasks / 已完成任务:
