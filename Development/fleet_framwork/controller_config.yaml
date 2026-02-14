@@ -114,6 +114,98 @@ hybrid:
   hysteresis_offset: 0.5
 
 # =============================================================================
+# LONGITUDINAL CONTROLLER TYPES AND PARAMETERS
+# =============================================================================
+# Specify the default longitudinal controller type for followers
+longitudinal_controller_type: 'cacc'  # Options: 'cacc', 'pid', 'hybrid', 'fix', 'throttle_sequence', 'state_feedback', 'state_feedback_no_observer'
+
+# CACC (Cooperative Adaptive Cruise Control) Parameters
+cacc:
+  s0: 1.5                         # Minimum safe spacing (meters)
+  h: 0.5                          # Time headway (seconds)
+  K_spacing: 0.2                  # Spacing error gain
+  K_velocity: 0.05                # Velocity error gain
+  acc_to_throttle_gain: 0.5       # Acceleration to throttle conversion
+  max_throttle: 0.3               # Maximum throttle command
+  alpha_filter: 0.3               # Low-pass filter coefficient
+  ki_velocity: 0.1                # Integral gain for velocity
+
+# PID Velocity Controller Parameters
+pid:
+  kp: 0.1                         # Proportional gain
+  ki: 1.0                         # Integral gain
+  kd: 0.01                        # Derivative gain
+  max_throttle: 0.3               # Maximum throttle command
+  ei_max: 1.0                     # Maximum integral error
+  v_ref: 0.75                     # Reference velocity (m/s)
+
+# Hybrid Longitudinal Controller Parameters
+hybrid_longitudinal:
+  use_cacc_params: true           # Use CACC params as sub-controller
+  use_pid_params: true            # Use PID params as sub-controller
+
+# Fix (Constant Throttle) Controller Parameters
+fix:
+  throttle: 0.1                   # Constant throttle value
+
+# Throttle Sequence Controller Parameters
+# Applies a sequence of predefined throttle values, each lasting for the specified duration
+throttle_sequence:
+  values: [0.2, 0.4, 0.3]         # List of throttle values to cycle through
+  duration: 5.0                   # Duration (seconds) for each throttle value
+
+# State Feedback Controller Parameters
+state_feedback:
+  max_throttle: 0.3               # Maximum throttle command
+  throttle_smoothing: 0.7         # Throttle smoothing factor
+  leader_fix_throttle: 0.1        # Fixed throttle for leader vehicle
+
+# State Feedback (No Observer) Controller Parameters
+state_feedback_no_observer:
+  max_throttle: 0.3               # Maximum throttle command
+  throttle_smoothing: 0.7         # Throttle smoothing factor
+  leader_fix_throttle: 0.1        # Fixed throttle for leader vehicle
+
+# =============================================================================
+# LATERAL CONTROLLER TYPES AND PARAMETERS
+# =============================================================================
+# Specify the default lateral controller type for followers
+lateral_controller_type: 'pure_pursuit'  # Options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid_lateral', 'fix_lateral'
+
+# Pure Pursuit Controller Parameters
+pure_pursuit:
+  lookahead_distance: 1.0         # Lookahead distance (meters)
+  k_steering: 1.0                 # Steering control gain
+  max_steering: 0.55              # Maximum steering angle (radians)
+  adaptive_lookahead: true        # Enable adaptive lookahead
+
+# Stanley Controller Parameters
+stanley:
+  k_e: 0.5                        # Cross-track error gain
+  k_soft: 1.0                     # Softening factor
+  max_steering: 0.55              # Maximum steering angle (radians)
+
+# Lookahead Controller Parameters
+lookahead:
+  ri: 1.0                         # Reference trajectory parameter
+  hi: 0.3                         # Heading parameter
+  l_r: 0.141                      # Rear axle distance (meters)
+  l_f: 0.115                      # Front axle distance (meters)
+  k1: 1.0                         # Gain 1
+  k2: 1.0                         # Gain 2
+  max_steering: 0.55              # Maximum steering angle (radians)
+
+# Hybrid Lateral Controller Parameters
+hybrid_lateral:
+  primary_controller: 'pure_pursuit'  # Primary controller type
+  secondary_controller: 'stanley'     # Secondary controller type
+  switch_distance: 1.5            # Distance threshold for switching (meters)
+
+# Fix (Constant Steering) Controller Parameters
+fix_lateral:
+  steering: 0.0                   # Constant steering angle (radians)
+
+# =============================================================================
 # GENERAL CONTROL PARAMETERS
 # =============================================================================
 control:

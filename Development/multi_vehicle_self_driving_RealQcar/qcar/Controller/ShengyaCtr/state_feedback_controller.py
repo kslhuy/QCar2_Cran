@@ -32,6 +32,7 @@ class StateFeedbackController(LongitudinalControllerBase):
     def __init__(self, 
                  max_throttle=0.3,
                  throttle_smoothing=0.7,
+                 leader_fix_throttle=0.15,
                  observer=None,
                  config=None,
                  logger=None):
@@ -41,6 +42,7 @@ class StateFeedbackController(LongitudinalControllerBase):
         Args:
             max_throttle: Maximum throttle output
             throttle_smoothing: Exponential smoothing factor for throttle (0-1, higher = smoother)
+            leader_fix_throttle: Base throttle to maintain speed (should match leader's constant throttle)
             observer: DistributedLuenbergerEstimator instance for state estimation
             config: Optional config object (takes precedence)
             logger: Logger instance
@@ -53,9 +55,11 @@ class StateFeedbackController(LongitudinalControllerBase):
             params = config.get_longitudinal_params('state_feedback')
             self.max_throttle = params.get('max_throttle', max_throttle)
             self.throttle_smoothing = params.get('throttle_smoothing', throttle_smoothing)
+            self.leader_fix_throttle = params.get('leader_fix_throttle', leader_fix_throttle)
         else:
             self.max_throttle = max_throttle
             self.throttle_smoothing = throttle_smoothing
+            self.leader_fix_throttle = leader_fix_throttle
         
         # Controller state
         self.prev_throttle = 0.0
@@ -64,18 +68,19 @@ class StateFeedbackController(LongitudinalControllerBase):
         # K_matrices[vehicle_id][j] = K_{vehicle_id,j}
         self.K_all_vehicles = {
             1: {
-                0: np.array([[-0.1729,-0.4856,-0.0746]])
+                0: np.array([[-0.3105,-0.5413,0.0062]])
             },
             2: {
-                0: np.array([[-0.1766,-0.4659,-0.0822]]),
-                1: np.array([[-0.0028,-0.0056,0.0038]])
+                0: np.array([[-0.3203,-0.4258,-0.0517]]),
+                1: np.array([[-0.0481,-0.0799,0.0417]])
             },
             3: {
-                0: np.array([[-0.1895,-0.5314,-0.0981]]),
-                1: np.array([[-0.0026,-0.0053,0.0039]]),
-                2: np.array([[-0.0010,-0.0010,0.0049]])
+                0: np.array([[-0.3555,-0.4238,-0.0850]]),
+                1: np.array([[-0.0351,-0.0553,0.0272]]),
+                2: np.array([[-0.0336,-0.0528,0.0339]])
             }
         }
+
 
         
         # Extract K matrices for current vehicle
@@ -140,7 +145,7 @@ class StateFeedbackController(LongitudinalControllerBase):
     
         # State feedback control law: u_i = sum_{j=0}^{i-1} K_{ij} * (F_i - F_j) * estimated_states
         # For j=0 (leader), F_0 is zero matrix, so K_{i0} * F_i * estimated_states
-        throttle_raw = 0.15 # Base throttle to maintain some speed, should be same as the one used in the fix throttle controller for the same vehicle
+        throttle_raw = self.feedforward_throttle(follower_state)  
         
         # First term: K_{i0} * F_i * estimated_states (j=0)
         # This represents control based on this vehicle's relative state to leader
@@ -164,7 +169,7 @@ class StateFeedbackController(LongitudinalControllerBase):
             smoothing_factor = 0.5
             throttle_raw = (smoothing_factor * self.prev_throttle + 
                           (1 - smoothing_factor) * throttle_raw)
-            # throttle_raw = max(throttle_raw, 0.0)  # No negative throttle output
+            throttle_raw = max(throttle_raw, 0.0)  # No negative throttle output
         
         # Apply exponential smoothing to final throttle command
         throttle = (self.throttle_smoothing * self.prev_throttle + 
@@ -205,4 +210,10 @@ class StateFeedbackController(LongitudinalControllerBase):
         
         return Fi
 
+    def feedforward_throttle(self, follower_state: Dict[str, float]):
+        """Given target velocity, compute required throttle"""
+
+        v_desired = follower_state.get("velocity", 0.0)
+        throttle_ff = 0.329609 * v_desired**2 - 0.000272 * v_desired + 0.038744
+        return throttle_ff
 

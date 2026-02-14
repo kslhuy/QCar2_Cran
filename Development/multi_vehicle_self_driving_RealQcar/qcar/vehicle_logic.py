@@ -469,9 +469,6 @@ class VehicleLogic:
             self._last_steering = delta
             self._last_u = u
             
-            # u = 0.075 # Test value 
-            # delta = 0.0 # Test value
-            # 
             # print(f"Throttle: {u}, Steering: {delta}") 
             # Send commands to vehicle hardware
             if self.qcar is not None:

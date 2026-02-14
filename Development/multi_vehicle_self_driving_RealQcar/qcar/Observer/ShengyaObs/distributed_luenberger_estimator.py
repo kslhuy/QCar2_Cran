@@ -74,8 +74,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 
         # System matrices of the longitudinal model
         tau = self.tau_i  # Time constant
-        self.h = 0.3     # time headway
-        self.d = 0.4    # Desired distance
+        self.h = 1     # time headway
+        self.d = 0.8    # Desired distance
         self.observer_size = self.fleet_size - 1  # Exclude leader from observer size
 
         A_tau = np.array([
@@ -213,18 +213,19 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # K_matrices[vehicle_id][j] = K_{vehicle_id,j}
         self.K_all_vehicles = {
             1: {
-                0: np.array([[-0.1729,-0.4856,-0.0746]])
+                0: np.array([[-0.3105,-0.5413,0.0062]])
             },
             2: {
-                0: np.array([[-0.1766,-0.4659,-0.0822]]),
-                1: np.array([[-0.0028,-0.0056,0.0038]])
+                0: np.array([[-0.3203,-0.4258,-0.0517]]),
+                1: np.array([[-0.0481,-0.0799,0.0417]])
             },
             3: {
-                0: np.array([[-0.1895,-0.5314,-0.0981]]),
-                1: np.array([[-0.0026,-0.0053,0.0039]]),
-                2: np.array([[-0.0010,-0.0010,0.0049]])
+                0: np.array([[-0.3555,-0.4238,-0.0850]]),
+                1: np.array([[-0.0351,-0.0553,0.0272]]),
+                2: np.array([[-0.0336,-0.0528,0.0339]])
             }
         }
+
 
         # Extract K matrices for current vehicle
         self.K_matrices = []
@@ -242,11 +243,11 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         self.prev_v0 = 0.0  # Previous filtered leader velocity
         self.prev_p0 = 0.0  # Previous filtered leader position
         # Default filter coefficients for different sensor measurements
-        # Reduced filtering strength to minimize phase delay and static error
-        self.distance_filter_alpha = self.config.get('distance_filter_alpha', 0.7)  # Low-pass filter for distance (0-1)
-        self.velocity_filter_alpha = self.config.get('velocity_filter_alpha', 0.6)  # Low-pass filter for velocity (0-1)
-        self.leader_velocity_filter_alpha = self.config.get('leader_velocity_filter_alpha', 0.7)  # Low-pass filter for leader velocity (0-1)
-        self.leader_position_filter_alpha = self.config.get('leader_position_filter_alpha', 0.7)  # Low-pass filter for leader position (0-1)
+        # Set to 1.0 to disable filtering (alpha=1.0 means: output = current measurement, no filtering)
+        self.distance_filter_alpha = self.config.get('distance_filter_alpha', 0.6)  # Low-pass filter for distance (0-1), 1.0 = disabled
+        self.velocity_filter_alpha = self.config.get('velocity_filter_alpha', 0.7)  # Low-pass filter for velocity (0-1), 1.0 = disabled
+        self.leader_velocity_filter_alpha = self.config.get('leader_velocity_filter_alpha', 1.0)  # Low-pass filter for leader velocity (0-1), 1.0 = disabled
+        self.leader_position_filter_alpha = self.config.get('leader_position_filter_alpha', 1.0)  # Low-pass filter for leader position (0-1), 1.0 = disabled
     def _init_recorder(self):
         """Initialize and start the debug data recorder."""
         try:
@@ -452,9 +453,18 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 )
             p_prev = self.fleet_states[0, self.vehicle_id - 1]
         
-        local_measurement[0] = p_i - p_prev  # relative position
-        local_measurement[1] = v_i  # velocity
+        local_measurement[0] = p_i - p_prev  # relative position (raw)
+        local_measurement[1] = v_i  # velocity (raw)
         
+        # Apply low-pass filter to local measurements to suppress noise
+        local_measurement[0] = self._sensor_filter(
+            local_measurement[0], self.prev_distance_measurement, self.distance_filter_alpha
+        )
+        local_measurement[1] = self._sensor_filter(
+            local_measurement[1], self.prev_velocity_measurement, self.velocity_filter_alpha
+        )
+        
+        # Store filtered values for next iteration
         self.prev_distance_measurement = local_measurement[0]
         self.prev_velocity_measurement = local_measurement[1]
         
@@ -495,7 +505,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 # First term: Ki0 @ Fi @ x_vec
                 if 0 in self.K_all_vehicles[vehicle_id]:
                     Ki0 = self.K_all_vehicles[vehicle_id][0]
-                    collective_control[vehicle_id - 1] = min((Ki0 @ (Fi @ x_vec))[0] + 0.15, 0.18)
+                    collective_control[vehicle_id - 1] = (Ki0 @ (Fi @ x_vec))[0]
                 
                 # Sum over preceding vehicles j=1 to i-1
                 # Add terms: Kij @ (Fi - Fj) @ x_vec
@@ -503,18 +513,57 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                     if j in self.K_all_vehicles[vehicle_id]:
                         Kij = self.K_all_vehicles[vehicle_id][j]
                         Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
-                        collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0] + 0.15
-                        collective_control = np.clip(collective_control, 0, 0.18)
+                        collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]
+                        # collective_control = np.clip(collective_control, 0, 0.18)
         
         return collective_control
     
-    def _calculate_collective_control_v2v(self, control: np.ndarray, current_time_ns: int) -> np.ndarray:
+    def feedforward_throttle(self, vehicle_id: int, current_time_ns: int, local_state: np.ndarray = None) -> float:
+        """
+        Calculate feedforward throttle component based on vehicle parameters and current velocity.
+        
+        Args:
+            vehicle_id: ID of the vehicle to get feedforward throttle for
+            current_time_ns: Current time in nanoseconds
+            local_state: Optional local state array [x, y, theta, v, a] for own vehicle
+        
+        Returns:
+            feedforward: Feedforward throttle value to compensate for drag and rolling resistance
+        """
+        # For own vehicle, use local_state if provided, fallback to fleet_states
+        if vehicle_id == self.vehicle_id:
+            if local_state is not None:
+                v_i = local_state[3]  # velocity is at index 3: [x, y, theta, v, a]
+            else:
+                v_i = self.fleet_states[3, vehicle_id]
+                if self.logger:
+                    self.logger.logger.warning(
+                        f"Vehicle {self.vehicle_id}: No local state provided for feedforward throttle, using fleet_states"
+                    )
+        else:
+            # For other vehicles, try V2V first, fallback to fleet_states
+            vehicle_state = self._get_latest_received_state(vehicle_id, current_time_ns)
+            if vehicle_state is not None:
+                v_i = vehicle_state[3]  # velocity is at index 3: [x, y, theta, v, a]
+            else:
+                v_i = self.fleet_states[3, vehicle_id]  # fallback to fleet_states
+                if self.logger:
+                    self.logger.logger.warning(
+                        f"Vehicle {self.vehicle_id}: No V2V state for vehicle {vehicle_id} to calculate feedforward throttle, using fleet_states"
+                    )
+        
+        throttle_ff = 0.329609 * v_i**2 - 0.000272 * v_i + 0.038744
+        
+        return throttle_ff
+
+    def _calculate_collective_control_v2v(self, control: np.ndarray, current_time_ns: int, local_state: np.ndarray = None) -> np.ndarray:
         """
         Calculate collective control input for all follower vehicles using V2V communication.
         
         Args:
             control: Own control signal [steering, throttle]
             current_time_ns: Current time in nanoseconds
+            local_state: Optional local state array [x, y, theta, v, a] for own vehicle
         
         Returns:
             collective_control: Control input for each follower vehicle [observer_size]
@@ -529,14 +578,14 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             
             if vehicle_id == self.vehicle_id:
                 # Use own control signal (full throttle including feedforward)
-                collective_control[follower_idx] = control[1]-0.1  # Complete throttle signal
+                collective_control[follower_idx] = control[1] - self.feedforward_throttle(vehicle_id, current_time_ns, local_state)  # Complete throttle signal
             else:
                 # Get neighbor's control signal via V2V
                 neighbor_control = self._get_latest_received_control(vehicle_id, current_time_ns)
                 
                 if neighbor_control is not None:
                     # Use complete control signal (feedforward + feedback)
-                    collective_control[follower_idx] = neighbor_control[1] -0.1  # Complete throttle signal
+                    collective_control[follower_idx] = neighbor_control[1] - self.feedforward_throttle(vehicle_id, current_time_ns)  # Complete throttle signal
                     
                     if self.logger and self.debug_recording_enabled:
                         self.logger.logger.debug(
@@ -1128,17 +1177,17 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 
         # Calculate collective control input using K-matrix feedback
         # Uncomment to use K-matrix based control, otherwise use V2V communication
-        # collective_control = self._calculate_estimated_collective_control(x_vec)
+        collective_control = self._calculate_estimated_collective_control(x_vec)
         
         # Get actual control signals from V2V communication for all follower vehicles
-        collective_control = self._calculate_collective_control_v2v(control, current_time_ns)
+        # collective_control = self._calculate_collective_control_v2v(control, current_time_ns, local_state)
 
         # 1. Compute dynamics prediction term
         dynamics_term = self._compute_dynamics_term(x_vec, collective_control)
         
         # 2. Compute measurement correction term
         measurement_term, local_measurement, estimated_measurement, measurement_error = \
-            self._compute_measurement_term(x_vec, local_state, current_time_ns, v0_raw)
+            self._compute_measurement_term(x_vec, local_state, current_time_ns, v0)
         
         # 3. Compute consensus correction term
         consensus_term = self._compute_consensus_term(x_vec, current_time_ns)

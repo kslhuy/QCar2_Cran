@@ -1,3 +1,30 @@
+# Update Log 2026/02/14 (Shengya MENG)
+
+Commit Message: Remove feedforward from V2V collective control, add throttle-velocity mapping, update gains
+
+## Completed Tasks / 已完成任务:
+
+- [x] **Removed feedforward throttle from V2V control input / 移除V2V通信中的前馈控制信号**
+
+- [x] **Added throttle-velocity mapping estimation / 添加油门-速度映射估计**
+  - New controller: [throttle_sequence_controller.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/ShengyaCtr/throttle_sequence_controller.py)
+  - Analysis script: [get_throttle_2_velocity.py](Development/multi_vehicle_self_driving_RealQcar/qcar/DataAnalysis/get_throttle_2_velocity.py)
+
+- [x] **Updated observer/controller gains / 更新观测器和控制器增益**
+  - Controller and observer solved separately / 控制器和观测器分开求解
+  - No convergence rate constraint / 无收敛速度约束
+
+- [x] **Verified system performance / 验证系统性能**
+  - ![Observer 1](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/figure_luenberger_v1_20260214_143511.png)
+  - ![Observer 2](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/figure_luenberger_v2_20260214_143511.png)
+  - ![Observer 3](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/figure_luenberger_v3_20260214_143511.png)
+  - ![Fleet State](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/figure/dist_luenberger_v1_20260214_143511_vehicles_1_3_state.png)
+  - Fleet is stable but vehicle 2 follows too closely due to observer steady-state error / 车队稳定但车辆2跟车距离偏小，原因是观测器存在静差。 暂不清楚原因。但测试发现于于滤波器，估计的控制输入无关。
+
+## Pending Tasks / 待完成任务:
+
+- [ ] **Diagnose observer steady-state error / 诊断观测器静差原因**
+
 # Update Log (2026/02/12) (Shengya MENG)
 
 Commit Message: Optimized the code structure of the distributed observer, observer converges to zero
@@ -10,7 +37,7 @@ Commit Message: Optimized the code structure of the distributed observer, observ
   - `_compute_dynamics_term`
   - `_compute_measurement_term`
   - `_calculate_estimated_collective_control`
-  - `_calculate_collective_control_v2v`
+  - `_calculate_collective_cov`
   - `_compute_consensus_term`
   - Removed state transformation at each observer update entry, now using `estimated_state.copy()` directly to reduce conversion errors / 移除每次进入分布式观测器更新逻辑的转换，改为直接通过estimated_state.copy()减少转换带来的误差
 

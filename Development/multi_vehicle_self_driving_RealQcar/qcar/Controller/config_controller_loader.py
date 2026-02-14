@@ -74,15 +74,26 @@ class ControllerConfig:
             self.config['lateral_controller_type'] = vehicle_config['lateral_controller_type']
         
         # Merge controller-specific parameters
-        for controller_type in ['cacc', 'pid', 'hybrid_longitudinal', 'fix', 'state_feedback', 
-                               'state_feedback_no_observer',
+        for controller_type in ['cacc', 'pid', 'hybrid_longitudinal', 'fix', 'throttle_sequence',
+                               'state_feedback', 'state_feedback_no_observer',
                                'pure_pursuit', 'stanley', 'lookahead', 'hybrid_lateral', 
                                'fusion_lateral', 'fix_lateral']:
             if controller_type in vehicle_config:
                 if controller_type not in self.config:
-                    self.config[controller_type] = {}
-                # Deep merge: vehicle-specific params override global defaults
-                self.config[controller_type].update(vehicle_config[controller_type])
+                    # For throttle_sequence (list type), use direct assignment
+                    # For others (dict type), initialize as empty dict
+                    if isinstance(vehicle_config[controller_type], list):
+                        self.config[controller_type] = vehicle_config[controller_type]
+                    else:
+                        self.config[controller_type] = {}
+                
+                # Merge or assign
+                if isinstance(self.config[controller_type], dict) and isinstance(vehicle_config[controller_type], dict):
+                    # Dict-to-dict: use update for merging
+                    self.config[controller_type].update(vehicle_config[controller_type])
+                else:
+                    # Other types (like lists): direct assignment
+                    self.config[controller_type] = vehicle_config[controller_type]
     
     def get_longitudinal_controller_type(self) -> str:
         """Get the selected longitudinal controller type"""
@@ -107,6 +118,8 @@ class ControllerConfig:
             types.append('state_feedback')
         if 'state_feedback_no_observer' in self.config:
             types.append('state_feedback_no_observer')
+        if 'throttle_sequence' in self.config:
+            types.append('throttle_sequence')
         return types
 
     def get_available_lateral_types(self) -> list:
@@ -149,6 +162,8 @@ class ControllerConfig:
             return self._get_state_feedback_params()
         elif controller_type == 'state_feedback_no_observer':
             return self._get_state_feedback_no_observer_params()
+        elif controller_type == 'throttle_sequence':
+            return self._get_throttle_sequence_params()
         else:
             raise ValueError(f"Unknown longitudinal controller type: {controller_type}")
     
@@ -232,6 +247,40 @@ class ControllerConfig:
         
         return {
             'throttle': fix_config.get('throttle', 0.1),
+        }
+    
+    def _get_throttle_sequence_params(self) -> Dict[str, Any]:
+        """Get throttle sequence controller parameters
+        
+        Handles two config formats:
+        1. List format (new): Each item has throttle and duration
+           - {throttle: 0.05, duration: 5}, {throttle: 0.06, duration: 5}
+        2. Dict format (legacy): Single values and duration dict
+           - {'values': [0.05, 0.06], 'duration': 5}
+        """
+        ts_config = self.config.get('throttle_sequence', {})
+        
+        # Handle list format from config file
+        if isinstance(ts_config, list) and len(ts_config) > 0:
+            # Extract throttle values and durations from list
+            if isinstance(ts_config[0], dict) and 'throttle' in ts_config[0]:
+                throttle_values = [item.get('throttle', 0.1) for item in ts_config]
+                # Use duration from first item (can vary per item in future)
+                duration = ts_config[0].get('duration', 5.0)
+            else:
+                # Fallback if list format is unexpected
+                throttle_values = [0.5]
+                duration = 5.0
+        else:
+            # Handle dict format
+            throttle_values = ts_config.get('values', [0.5])
+            duration = ts_config.get('duration', 5.0)
+        
+        return {
+            'throttle_sequence': {
+                'values': throttle_values,
+                'duration': duration,
+            }
         }
     
     def _get_state_feedback_params(self) -> Dict[str, Any]:

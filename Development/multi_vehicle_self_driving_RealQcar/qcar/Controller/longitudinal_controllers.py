@@ -462,9 +462,10 @@ class FixConstantController(LongitudinalControllerBase):
         """Reset controller state (no-op for constant controller)"""
         pass
 
-# Import StateFeedbackController at the end to avoid circular import
+# Import StateFeedbackController and ThrottleSequenceController at the end to avoid circular import
 from .ShengyaCtr.state_feedback_controller import StateFeedbackController
 from .ShengyaCtr.state_feedback_controller_no_observer import StateFeedbackControllerNoObserver
+from .ShengyaCtr.throttle_sequence_controller import ThrottleSequenceController
 
 class ControllerFactory:
     """Factory to create longitudinal controllers by name"""
@@ -476,6 +477,7 @@ class ControllerFactory:
         'fix': FixConstantController,
         'state_feedback': StateFeedbackController,
         'state_feedback_no_observer': StateFeedbackControllerNoObserver,
+        'throttle_sequence': ThrottleSequenceController,
     }
     
     @staticmethod
@@ -484,7 +486,7 @@ class ControllerFactory:
         Create a longitudinal controller
         
         Args:
-            controller_type: One of 'pid', 'cacc', 'hybrid', 'fix', 'state_feedback', 'state_feedback_no_observer'
+            controller_type: One of 'pid', 'cacc', 'hybrid', 'fix', 'state_feedback', 'state_feedback_no_observer', 'throttle_sequence'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
             observer: Observer instance (for state_feedback and state_feedback_no_observer controllers)

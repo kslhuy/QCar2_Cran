@@ -31,8 +31,8 @@ import numpy as np
 
 
 # Constants
-D = 0.4  # Desired distance
-H = 0.3  # Time headway
+D = 0.8  # Desired distance
+H = 1  # Time headway
 
 
 def find_latest_file(output_dir: str, vehicle_id: int) -> Optional[str]:
