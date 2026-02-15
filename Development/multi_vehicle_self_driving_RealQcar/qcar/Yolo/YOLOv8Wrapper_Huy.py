@@ -5,6 +5,80 @@ from pit.YOLO.nets import YOLOv8, MASK_COLORS_RGB
 from pit.YOLO.utils import TrafficLight, Obstacle
 
 
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+@dataclass
+class DetectionBuffers:
+    """Pre-allocated detection buffers for efficient packet building."""
+    
+    BUFFER_SIZE = 7
+    CLASS_NAMES = ['stop_sign', 'traffic', 'car', 'yield', 'person', 'lane']
+    
+    stop_sign: np.ndarray = field(default_factory=lambda: np.zeros(7, dtype=np.float64))
+    traffic: np.ndarray = field(default_factory=lambda: np.zeros(7, dtype=np.float64))
+    car: np.ndarray = field(default_factory=lambda: np.zeros(7, dtype=np.float64))
+    yield_sign: np.ndarray = field(default_factory=lambda: np.zeros(7, dtype=np.float64))
+    person: np.ndarray = field(default_factory=lambda: np.zeros(7, dtype=np.float64))
+    lane: np.ndarray = field(default_factory=lambda: np.zeros(7, dtype=np.float64))
+    
+    def reset(self):
+        """Reset all buffers to zero."""
+        self.stop_sign.fill(0)
+        self.traffic.fill(0)
+        self.car.fill(0)
+        self.yield_sign.fill(0)
+        self.person.fill(0)
+        self.lane.fill(0)
+    
+    def fill_from_results(self, results: list):
+        """Fill buffers from YOLO detection results."""
+        counts = {'car': 0, 'stop_sign': 0, 'traffic': 0, 'yield': 0, 'person': 0}
+        
+        for det in results:
+            name = det.name
+            if 'car' in name and counts['car'] < 6:
+                counts['car'] += 1
+                self.car[counts['car']] = det.distance
+            elif 'stop sign' in name and counts['stop_sign'] < 6:
+                counts['stop_sign'] += 1
+                self.stop_sign[counts['stop_sign']] = det.distance
+            elif 'red' in name and counts['traffic'] < 6:
+                counts['traffic'] += 1
+                self.traffic[counts['traffic']] = det.distance
+            elif 'yield' in name and counts['yield'] < 6:
+                counts['yield'] += 1
+                self.yield_sign[counts['yield']] = det.distance
+            elif 'person' in name and counts['person'] < 6:
+                counts['person'] += 1
+                self.person[counts['person']] = det.distance
+        
+        # Set counts in first element
+        self.car[0] = counts['car']
+        self.traffic[0] = counts['traffic']
+        self.stop_sign[0] = counts['stop_sign']
+        self.yield_sign[0] = counts['yield']
+        self.person[0] = counts['person']
+    
+    def fill_lane(self, lane_result):
+        """Fill lane buffer from lane detection result."""
+        if lane_result is not None and lane_result.is_valid:
+            self.lane[0] = lane_result.confidence
+            self.lane[1] = lane_result.steering_correction
+            self.lane[2] = lane_result.curvature if lane_result.curvature else 0.0
+            self.lane[3] = lane_result.lateral_offset if lane_result.lateral_offset else 0.0
+            self.lane[4] = 1.0 if lane_result.left_lane_detected else 0.0
+            self.lane[5] = 1.0 if lane_result.right_lane_detected else 0.0
+            self.lane[6] = 0.0  # Reserved
+    
+    def to_packet(self) -> np.ndarray:
+        """Create send packet from all buffers."""
+        return np.vstack((
+            self.stop_sign, self.traffic, self.car,
+            self.yield_sign, self.person, self.lane
+        ))
+
+
 class YOLOv8Wrapper_Huy(YOLOv8):
     """
     Enhanced YOLOv8 wrapper with unified rendering for both object detection and lane detection.

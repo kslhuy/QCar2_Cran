@@ -2,8 +2,19 @@ import numpy as np
 import time
 from dataclasses import dataclass, field
 from typing import Optional
-from quanser.common import Timeout
-from pal.utilities.stream import BasicStream
+import cv2  # Added for video streaming
+import subprocess
+import os
+import sys
+
+try:
+    import zmq
+    ZMQ_AVAILABLE = True
+except ImportError:
+    ZMQ_AVAILABLE = False
+    print("[YOLO] WARNING: pyzmq not installed. Run: pip install pyzmq")
+
+
 
 
 @dataclass
@@ -57,142 +68,181 @@ class YOLOData:
         }
 
 class YOLOReceiver():
-    def __init__(self,ip='localhost',nonBlocking=True,port="18666"):
-        self.stopSign = np.zeros((7),dtype=np.float64)
-        self.trafficlight = np.zeros((7),dtype=np.float64)
-        self.cars = np.zeros((7),dtype=np.float64)
-        self.yieldSign = np.zeros((7),dtype=np.float64)
-        self.person = np.zeros((7),dtype=np.float64)
-        self.lane = np.zeros((7),dtype=np.float64)  # Lane detection data: [confidence, steering, slope, intercept, 0, 0, 0]
+    """
+    ZeroMQ-based YOLO data receiver (SUB socket with CONFLATE).
+    
+    Advantages over BasicStream:
+    - No timeout exceptions — zmq.NOBLOCK returns immediately if no data
+    - CONFLATE mode keeps only the latest message — no stale data buildup  
+    - Automatic reconnection on disconnect (ZMQ handles it internally)
+    - Message-framed — each send() = one atomic message, no partial reads
+    - No polling loops needed — single recv() call
+    
+    Compatible API with the old Quanser BasicStream-based receiver.
+    """
+    def __init__(self, ip='localhost', nonBlocking=True, port="18666"):
+        self.stopSign = np.zeros((7), dtype=np.float64)
+        self.trafficlight = np.zeros((7), dtype=np.float64)
+        self.cars = np.zeros((7), dtype=np.float64)
+        self.yieldSign = np.zeros((7), dtype=np.float64)
+        self.person = np.zeros((7), dtype=np.float64)
+        self.lane = np.zeros((7), dtype=np.float64)
         
-        # Shutdown flag to prevent reads during termination (avoids timeout spam)
         self._shutting_down = False
-
-        self.uri='tcpip://'+ip+':'+port
-        self._timeout = Timeout(seconds=0, nanoseconds=100000)
-        self._handle = BasicStream(uri=self.uri,
-                                    agent='C',
-                                    receiveBuffer=np.zeros((6,7),  # Expanded to 6 rows for lane data
-                                                           dtype=np.float64),
-                                    recvBufferSize=7*6*8,  # Updated buffer size
-                                    nonBlocking=nonBlocking,
-                                    reshapeOrder='C')
-        self.status_check('', iterations=30)
-
-    def status_check(self, message, iterations=30):
-        # blocking method to establish connection to the server stream.
-        # Use 500ms timeout per iteration to give the YOLO server time to start
-        self._timeout = Timeout(seconds=0, nanoseconds=500000000)  # 500ms
-        counter = 0
-        while not self._handle.connected:
-            self._handle.checkConnection(timeout=self._timeout)
-            counter += 1
-            if self._handle.connected:
-                print(message)
-                break
-            elif counter >= iterations:
-                print(f'YOLO Server error: status check failed after {iterations} attempts.')
-                break
-            # Sleep 500ms between retries to allow server startup
-            time.sleep(0.5)
-
-    def read(self):
-        new = False
+        self.connected = False
+        self._port = port
+        self._ip = ip
         
-        # Skip reads if shutting down (prevents timeout spam during disable)
+        # Expected packet shape
+        self._packet_shape = (6, 7)
+        self._packet_bytes = 6 * 7 * 8  # float64 = 8 bytes
+        
+        # ZMQ context and socket
+        self._ctx = zmq.Context.instance()
+        self._socket = self._ctx.socket(zmq.SUB)
+        self._socket.setsockopt(zmq.SUBSCRIBE, b'')          # Subscribe to all messages
+        self._socket.setsockopt(zmq.CONFLATE, 1)              # Keep only latest message
+        self._socket.setsockopt(zmq.RCVHWM, 1)                # High-water mark = 1
+        self._socket.setsockopt(zmq.RCVTIMEO, 0)              # Non-blocking (0 = immediate)
+        self._socket.setsockopt(zmq.LINGER, 0)                 # Don't hang on close
+        self._socket.setsockopt(zmq.RECONNECT_IVL, 200)        # Reconnect every 200ms
+        self._socket.setsockopt(zmq.RECONNECT_IVL_MAX, 2000)   # Max reconnect interval 2s
+        
+        
+        self._uri = f'tcp://{ip}:{port}'
+        self._socket.connect(self._uri)
+        self.connected = True  # ZMQ connect is async — always succeeds
+        print(f'[YOLO-ZMQ] Receiver connected to {self._uri} (SUB + CONFLATE)')
+        
+        # Don't block waiting for data in init - allow async startup
+        # self.status_check('', iterations=30)
+    
+    def status_check(self, message, iterations=30):
+        """Wait for the publisher to become available."""
+        for i in range(iterations):
+            try:
+                data = self._socket.recv(zmq.NOBLOCK)
+                if len(data) == self._packet_bytes:
+                    self._unpack(data)
+                    if message:
+                        print(message)
+                    print(f'[YOLO-ZMQ] Publisher confirmed on {self._uri}')
+                    return
+            except zmq.Again:
+                pass
+            time.sleep(0.5)
+        print(f'[YOLO-ZMQ] Warning: No publisher response after {iterations} attempts on {self._uri}')
+    
+    def _unpack(self, raw_bytes: bytes):
+        """Unpack raw bytes into detection arrays."""
+        packet = np.frombuffer(raw_bytes, dtype=np.float64).reshape(self._packet_shape)
+        self.stopSign[:] = packet[0, :]
+        self.trafficlight[:] = packet[1, :]
+        self.cars[:] = packet[2, :]
+        self.yieldSign[:] = packet[3, :]
+        self.person[:] = packet[4, :]
+        self.lane[:] = packet[5, :]
+    
+    def read(self):
+        """Read latest detection data. Returns True if new data received."""
         if self._shutting_down:
             return False
         
-        # Increased timeout from 10ns to 100us for more reliable reception
-        self._timeout = Timeout(seconds=0, nanoseconds=50)
-        if self._handle.connected:
-            new, bytesReceived = self._handle.receive(timeout=self._timeout, iterations=5)
-            # print('read:',new, bytesReceived)
-            # if new is True, full packet was received
-            if new:
-                self.stopSign[:] = self._handle.receiveBuffer[0,:]
-                self.trafficlight[:] = self._handle.receiveBuffer[1,:]
-                self.cars[:] = self._handle.receiveBuffer[2,:]
-                self.yieldSign[:]= self._handle.receiveBuffer[3,:]
-                self.person[:]= self._handle.receiveBuffer[4,:]
-                self.lane[:] = self._handle.receiveBuffer[5,:]  # Extract lane data
-        else:
-            # Only try to reconnect if not shutting down
+        try:
+            raw = self._socket.recv(zmq.NOBLOCK)
+            if len(raw) == self._packet_bytes:
+                self._unpack(raw)
+                return True
+            else:
+                return False
+        except zmq.Again:
+            # No new message available — this is normal, not an error
+            return False
+        except zmq.ZMQError as e:
             if not self._shutting_down:
-                self.status_check('Reconnected to yolo Server',iterations=1)
-        return new
-
+                print(f'[YOLO-ZMQ] Receive error: {e}')
+            return False
+    
     def terminate(self):
-        """Terminate the YOLO receiver. Sets shutdown flag first to prevent timeout errors."""
+        """Terminate the YOLO receiver."""
         self._shutting_down = True
-        self._handle.terminate()
+        try:
+            self._socket.close(linger=0)
+        except Exception:
+            pass
     
     def graceful_shutdown(self):
         """Signal shutdown to stop reads before actual termination."""
         self._shutting_down = True
     
     def __enter__(self):
-        """ Used for with statement. """
         return self
     
     def __exit__(self, type, value, traceback):
-        """ Used for with statement. Terminates the YOLO receiver. """
         self.terminate()
 
 class YOLOPublisher():
-    def __init__(self,ip='localhost',nonBlocking=False,port="18666"):
-
-        self.uri='tcpip://'+ip+':'+port
-        self._timeout = Timeout(seconds=0, nanoseconds=100000)
-        self._handle = BasicStream(uri=self.uri,
-                                    agent='S',
-                                    sendBufferSize=7*6*8,  # Updated for 6 rows (added lane data)
-                                    nonBlocking=nonBlocking,
-                                    reshapeOrder='C')
-        self.status_check('', iterations=20)
-
+    """
+    ZeroMQ-based YOLO data publisher (PUB socket).
+    
+    Advantages over BasicStream:
+    - Non-blocking send — never blocks, even without subscribers
+    - Multiple subscribers supported (PUB/SUB pattern)
+    - No connection management needed — ZMQ handles it
+    - No timeout exceptions
+    - Message-framed — atomic send, no partial writes
+    
+    Compatible API with the old Quanser BasicStream-based publisher.
+    """
+    def __init__(self, ip='localhost', nonBlocking=False, port="18666"):
+        self._ctx = zmq.Context.instance()
+        self._socket = self._ctx.socket(zmq.PUB)
+        self._socket.setsockopt(zmq.SNDHWM, 1)     # Keep only latest outgoing message
+        self._socket.setsockopt(zmq.LINGER, 0)       # Don't hang on close
+        
+        self._uri = f'tcp://*:{port}'
+        self._socket.bind(self._uri)
+        self.connected = True
+        print(f'[YOLO-ZMQ] Publisher bound on {self._uri} (PUB)')
+        
+        # Give subscribers time to connect (ZMQ slow-joiner problem)
+        time.sleep(0.3)
+    
     def status_check(self, message, iterations=10):
-        # blocking method to establish connection to the server stream.
-        self._timeout = Timeout(seconds=0, nanoseconds=100000) #1000000
-        counter = 0
-        while not self._handle.connected:
-            self._handle.checkConnection(timeout=self._timeout)
-            counter += 1
-            if self._handle.connected:
-                print(message)
-                break
-            elif counter >= iterations:
-                print('YOLO client error: status check failed.')
-                break
-
-    def send(self,yolodata):
-
-        # data received flag
-        new = False
-        # 1 us timeout parameter
-        self._timeout = Timeout(seconds=0, nanoseconds=100000)
-        # set remaining packet to send
-        self._sendPacket = yolodata
-        # if connected to driver, send/receive
-        if self._handle.connected:
-            new = True
-            self._handle.send(self._sendPacket)
-
-        else:
-            self.status_check('Reconnected to yolo client.')
-
-        # if new is False, data is stale, else all is good
-        return new
-
+        """No-op for ZMQ — PUB socket doesn't need connection checks."""
+        pass
+    
+    def send(self, yolodata):
+        """Send YOLO detection data as raw bytes.
+        
+        Args:
+            yolodata: numpy array (6,7) float64 — detection packet
+        
+        Returns:
+            bool: True if sent successfully
+        """
+        try:
+            raw = np.ascontiguousarray(yolodata, dtype=np.float64).tobytes()
+            self._socket.send(raw, zmq.NOBLOCK)
+            return True
+        except zmq.Again:
+            # No subscriber connected — data is dropped (expected for PUB)
+            return False
+        except zmq.ZMQError as e:
+            print(f'[YOLO-ZMQ] Send error: {e}')
+            return False
+    
     def terminate(self):
-        self._handle.terminate()
-
+        """Close the publisher socket."""
+        try:
+            self._socket.close(linger=0)
+        except Exception:
+            pass
+    
     def __enter__(self):
-        """ Used for with statement. """
         return self
     
     def __exit__(self, type, value, traceback):
-        """ Used for with statement. Terminates the YOLO publisher. """
         self.terminate()
 
 class YOLOManager:
@@ -597,323 +647,200 @@ class YOLODriveLogic():
             self.personTrigger=0
 
 
-class YOLODriveLogicNew():
+class YOLOVideoPublisher:
     """
-    Improved YOLODriveLogic with time-based logic and better observability.
-    
-    Key improvements:
-    - Time-based pulse logic (seconds) instead of frame-based
-    - All thresholds configurable (no hard-coded values)
-    - Logging support for detection reasons
-    - Returns (gain, reason) tuple for better telemetry
-    - Velocity-aware braking (optional)
-    
-    Arguments:
-        stopSignThreshold (float): Distance threshold for stop sign detection (m).
-        trafficThreshold (float): Distance threshold for traffic light detection (m).
-        carThreshold (float): Minimum distance threshold for car detection (m).
-        carDetectThreshold (float): Distance at which car detection starts (m).
-        yieldThreshold (float): Distance threshold for yield sign detection (m).
-        personThreshold (float): Minimum distance threshold for person detection (m).
-        personDetectThreshold (float): Distance at which person detection starts (m).
-        pulseDuration (float): Duration of pulse after detecting an object (seconds).
-        trafficPulseDuration (float): Duration of pulse for traffic light (seconds).
-        velocityAwareThresholds (bool): Scale thresholds by velocity if True.
-        logger: Optional logger for detection events.
+    ZeroMQ-based Video Publisher (PUB socket).
+    Sends JPEG-encoded frames over the network.
     """
-    def __init__(self,
-                 stopSignThreshold=0.6,
-                 trafficThreshold=1.7,
-                 carThreshold=0.3,
-                 carDetectThreshold=1.2,
-                 yieldThreshold=1.0,
-                 personThreshold=0.6,
-                 personDetectThreshold=1.5,
-                 pulseDuration=1.5,
-                 trafficPulseDuration=0.25,
-                 velocityAwareThresholds=False,
-                 logger=None
-                 ):
-        # Timers (all in seconds now)
-        self.timer_stop = 0.0
-        self.timer_yield = 0.0
-        self.timer_traffic = 0.0
+    def __init__(self, ip='*', port="18766"):
+        self._ctx = zmq.Context.instance()
+        self._socket = self._ctx.socket(zmq.PUB)
+        self._socket.setsockopt(zmq.SNDHWM, 2)       # Keep only latest 2 frames
+        self._socket.setsockopt(zmq.LINGER, 0)       # Don't hang on close
         
-        # State flags
-        self.pulse_active_stop = False
-        self.pulse_active_yield = False
-        self.pulse_active_traffic = False
+        # Use a separate port range for video (e.g. 1876x instead of 1866x)
+        self._uri = f'tcp://{ip}:{port}'
+        self._socket.bind(self._uri)
+        print(f'[YOLO-Video] Publisher bound on {self._uri}')
         
-        # Trigger states
-        self.stopSignTrigger = 0
-        self.carTrigger = 0
-        self.trafficTrigger = 0
-        self.yieldTrigger = 0
-        self.personTrigger = 0
-        
-        # Velocity gains per detection type
-        self.vGain_person = 1.0
-        self.vGain_yield = 1.0 
-        self.vGain_stop = 1.0 
-        self.vGain_car = 1.0 
-        self.vGain = 1.0
-        
-        # Configurable thresholds
-        self.stopSignThreshold = stopSignThreshold
-        self.trafficThreshold = trafficThreshold
-        self.carThreshold = carThreshold
-        self.carDetectThreshold = carDetectThreshold
-        self.yieldThreshold = yieldThreshold
-        self.personThreshold = personThreshold
-        self.personDetectThreshold = personDetectThreshold
-        
-        # Time-based pulse durations
-        self.pulseDuration = pulseDuration
-        self.trafficPulseDuration = trafficPulseDuration
-        
-        # Distances to detected objects
-        self.carDist = 100.0
-        self.stopSignDist = 100.0
-        self.trafficLightDist = 100.0
-        self.yieldDist = 100.0
-        self.personDist = 100.0
-        
-        # Velocity-aware mode
-        self.velocityAwareThresholds = velocityAwareThresholds
-        
-        # Observability
-        self.logger = logger
-        self.last_detection_reason = "none"
-        self.detection_active = False
-        
-    def check_yolo(self, stopSign, trafficLight, QCar, yieldSign, person, dt, current_velocity=0.75):
+    def send(self, frame):
         """
-        Process YOLO predictions and return velocity gain.
+        Compress and send video frame.
+        Args:
+            frame: encoding-ready image (numpy array, usually BGR)
+        """
+        try:
+            # Compress to JPEG with 80% quality to save bandwidth
+            _, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            self._socket.send(buffer.tobytes(), zmq.NOBLOCK)
+        except zmq.Again:
+            pass # Drop frame if network is congested
+        except Exception as e:
+            print(f"[YOLO-Video] Send error: {e}")
+
+    def terminate(self):
+        try:
+            self._socket.close(linger=0)
+        except:
+            pass
+
+
+class YOLOVideoReceiver:
+    """
+    ZeroMQ-based Video Receiver (SUB socket).
+    Receives and decodes JPEG frames.
+    """
+    def __init__(self, ip='localhost', port="18766"):
+        self._ctx = zmq.Context.instance()
+        self._socket = self._ctx.socket(zmq.SUB)
+        self._socket.setsockopt(zmq.SUBSCRIBE, b'')
+        self._socket.setsockopt(zmq.CONFLATE, 1)     # Always get latest frame
+        self._socket.setsockopt(zmq.RCVTIMEO, 0)     # Non-blocking
+        self._socket.setsockopt(zmq.LINGER, 0)
+        
+        self._uri = f'tcp://{ip}:{port}'
+        self._socket.connect(self._uri)
+        print(f'[YOLO-Video] Receiver connected to {self._uri}')
+        
+    def read(self):
+        """
+        Read latest frame.
+        Returns:
+            frame: cv2 image (BGR) or None if no new frame
+        """
+        try:
+            data = self._socket.recv(zmq.NOBLOCK)
+            # Decode JPEG buffer
+            frame = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+            return frame
+        except zmq.Again:
+            return None
+        except Exception as e:
+            print(f"[YOLO-Video] Read error: {e}")
+            return None
+
+    def terminate(self):
+        try:
+            self._socket.close(linger=0)
+        except:
+            pass
+
+
+class YOLOLauncher:
+    """
+    Helper class to launch YOLO server subprocess and connect receiver.
+    Refactored from state_base.py.
+    """
+    
+    @staticmethod
+    def launch_server(is_physical: bool, vehicle_id: int, probing: bool, logger=None) -> Optional[subprocess.Popen]:
+        """
+        Launch the YOLO server subprocess based on vehicle type.
         
         Args:
-            stopSign, trafficLight, QCar, yieldSign, person: YOLO detection arrays
-            dt (float): Time delta since last call (seconds)
-            current_velocity (float): Current vehicle velocity for adaptive thresholds
+            is_physical: True if running on physical QCar
+            vehicle_id: ID of the vehicle
+            probing: Whether probing is enabled
+            logger: Optional logger for status messages (can be None)
             
         Returns:
-            tuple: (velocity_gain, detection_reason)
+            subprocess.Popen object if successful, None otherwise
         """
-        # Reset detection reason
-        reasons = []
-        
-        # Process each detection type
-        self.stopSignPulse(stopSign, dt)
-        self.trafficPulse(trafficLight, dt)
-        
-        if self.stopSignTrigger == 1 or self.trafficTrigger == 1:
-            self.vGain_stop = 0.0
-            if self.stopSignTrigger == 1:
-                reasons.append(f"stop_sign@{self.stopSignDist:.2f}m")
-            if self.trafficTrigger == 1:
-                reasons.append(f"red_light@{self.trafficLightDist:.2f}m")
-        
-        self.carPulse(QCar, current_velocity)
-        self.personPulse(person, current_velocity)
-        
-        if self.carTrigger == 1:
-            reasons.append(f"car@{self.carDist:.2f}m(gain={self.vGain_car:.2f})")
-        if self.personTrigger == 1:
-            reasons.append(f"person@{self.personDist:.2f}m(gain={self.vGain_person:.2f})")
-        
-        self.yieldPulse(yieldSign, dt)
-        if self.yieldTrigger == 1:
-            self.vGain_yield = 0.5
-            reasons.append(f"yield@{self.yieldDist:.2f}m")
-        
-        # Combine all gains (most restrictive wins)
-        self.vGain = min([self.vGain_yield, self.vGain_stop, self.vGain_car, self.vGain_person])
-        
-        # Store detection reason
-        self.last_detection_reason = "; ".join(reasons) if reasons else "clear"
-        self.detection_active = len(reasons) > 0
-        
-        # Log if detection is active and logger available
-        if self.logger and self.detection_active:
-            self.logger.logger.debug(f"[YOLO] Detection: {self.last_detection_reason} → gain={self.vGain:.2f}")
-        
-        # Reset individual gains for next iteration
-        self.vGain_yield = 1.0
-        self.vGain_stop = 1.0
-        self.vGain_car = 1.0
-        self.vGain_person = 1.0
-        
-        return self.vGain, self.last_detection_reason
-    
-    def stopSignPulse(self, stopSign, dt):
-        """
-        Time-based stop sign detection with pulse logic.
-        Stops for pulseDuration seconds, then pauses detection for pulseDuration/2.
-        """
-        stopSignCount = stopSign[0]
-        stopSign_clean = stopSign.copy()
-        stopSign_clean[np.isnan(stopSign_clean)] = 10.0
-        
-        if stopSignCount > 0:
-            self.stopSignDist = stopSign_clean[1:][stopSign_clean[1:] != 0].min()
-        else:
-            self.stopSignDist = 100.0
-        
-        if not self.pulse_active_stop:
-            # Check for new detection
-            if stopSignCount > 0 and self.stopSignDist < self.stopSignThreshold:
-                self.pulse_active_stop = True
-                self.timer_stop = 0.0
-                self.stopSignTrigger = 1
-                if self.logger:
-                    self.logger.logger.info(f"[YOLO] Stop sign detected at {self.stopSignDist:.2f}m - stopping")
-            else:
-                self.stopSignTrigger = 0
-        else:
-            # Pulse is active - update timer
-            self.timer_stop += dt
+        try:
+            # Get script paths - assume we are in qcar/Yolo/ directory
+            current_dir = os.path.dirname(os.path.abspath(__file__))
             
-            if self.timer_stop < self.pulseDuration:
-                # Still stopping
-                self.stopSignTrigger = 1
-            elif self.timer_stop < self.pulseDuration + (self.pulseDuration / 2):
-                # Cooldown period - detection paused
-                self.stopSignTrigger = 0
-            else:
-                # Reset
-                self.timer_stop = 0.0
-                self.pulse_active_stop = False
-                self.stopSignTrigger = 0
-    
-    def trafficPulse(self, trafficLight, dt):
-        """Time-based traffic light detection with short pulse."""
-        trafficLightCount = trafficLight[0]
-        trafficLight_clean = trafficLight.copy()
-        trafficLight_clean[np.isnan(trafficLight_clean)] = 10.0
-        
-        if trafficLightCount > 0:
-            self.trafficLightDist = trafficLight_clean[1:][trafficLight_clean[1:] != 0].min()
-        else:
-            self.trafficLightDist = 100.0
-            self.trafficTrigger = 0
-            return
-        
-        if not self.pulse_active_traffic:
-            # Check for detection in valid range
-            if (trafficLightCount > 0 and 
-                self.trafficLightDist <= self.trafficThreshold and
-                self.trafficLightDist > self.trafficThreshold - 0.6):
+            if not is_physical:
+                # Virtual Vehicle
+                yolo_script = os.path.join(current_dir, 'yolo_server_virtual.py')
+                yolo_port = f'1866{vehicle_id}'
                 
-                self.trafficTrigger = 1
-                self.pulse_active_traffic = True
-                self.timer_traffic = 0.0
-                if self.logger:
-                    self.logger.logger.info(f"[YOLO] Red light detected at {self.trafficLightDist:.2f}m - stopping")
+                if not os.path.exists(yolo_script):
+                    # Fallback check if running from different context
+                    if logger: logger.log_error(f"[PERCEPTION] YOLO script not found: {yolo_script}")
+                    return None
+                
+                if logger:
+                    logger.logger.info(f"[PERCEPTION] [->] Starting yolo_server_virtual.py...")
+                    logger.logger.info(f"[PERCEPTION] Launching on port {yolo_port} (Probing: {probing})")
+                
+                # Build command
+                probing_str = "True" if probing else "False"
+                cmd = ['python', yolo_script, '-idx', str(vehicle_id), '-p', probing_str]
+                if probing:
+                    cmd.append('-s')  # Show image in cv2 window as backup for virtual
+                
+                if logger: logger.logger.info(f"[PERCEPTION] Command: {' '.join(cmd)}")
+                
+                # Launch process
+                yolo_process = None
+                if sys.platform == 'win32':
+                    yolo_process = subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
+                else:
+                    yolo_process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                
+                # Wait for startup
+                # Wait briefly to catch immediate crashes (e.g. import errors)
+                time.sleep(0.5)
+                if yolo_process.poll() is not None:
+                    if logger: 
+                        logger.log_error(f"[PERCEPTION] YOLO server process terminated immediately. Code: {yolo_process.returncode}")
+                    return None
+                
+                if logger: logger.logger.info(f"[PERCEPTION] [OK] YOLO server process started (PID: {yolo_process.pid})")
+                return yolo_process
+                
+                if logger: logger.logger.info(f"[PERCEPTION] [OK] YOLO server started")
+                return yolo_process
+                
             else:
-                self.trafficTrigger = 0
-        else:
-            # Pulse active
-            self.timer_traffic += dt
+                # Physical Vehicle
+                yolo_script = os.path.join(current_dir, 'yolo_server.py')
+                probing_flag = "True" if probing else "False"
+                
+                if logger:
+                    logger.logger.info(f"[PERCEPTION] [->] Starting yolo_server.py...")
+                    logger.logger.info(f"[PERCEPTION] Probing: {probing}, Car ID: {vehicle_id}")
+                
+                # Build command
+                yolo_cmd = ['python', yolo_script, '-p', probing_flag, '-idx', str(vehicle_id)]
+                
+                # Log redirection
+                # Assuming standard structure: .../qcar/Yolo/ -> .../qcar/logs/
+                log_dir = os.path.join(os.path.dirname(current_dir), 'logs') 
+                os.makedirs(log_dir, exist_ok=True)
+                log_file = os.path.join(log_dir, f'yolo_{vehicle_id}.log')
+                
+                if logger: logger.logger.info(f"[PERCEPTION] Redirecting output to {log_file}")
+                
+                # We need to open the file handler and keep it open for the subprocess
+                # But subprocess takes file descriptor. We can let the caller handle it? 
+                # No, we must open it here. Popen will keep it open.
+                f_log = open(log_file, 'w')
+                yolo_process = subprocess.Popen(yolo_cmd, stdout=f_log, stderr=subprocess.STDOUT)
+                
+                if logger: logger.logger.info(f"[PERCEPTION] [OK] Physical YOLO server started (PID: {yolo_process.pid})")
+                return yolo_process
+
+        except Exception as e:
+            if logger: logger.log_error("[PERCEPTION] Error launching YOLO server", e)
+            return None
             
-            if self.timer_traffic < self.trafficPulseDuration:
-                self.trafficTrigger = 1
-            else:
-                self.timer_traffic = 0.0
-                self.pulse_active_traffic = False
-                self.trafficTrigger = 0
-    
-    def yieldPulse(self, yieldSign, dt):
-        """Time-based yield sign detection with pulse logic."""
-        yieldSignCount = yieldSign[0]
-        yieldSign_clean = yieldSign.copy()
-        yieldSign_clean[np.isnan(yieldSign_clean)] = 10.0
-        
-        if yieldSignCount > 0:
-            self.yieldDist = yieldSign_clean[1:][yieldSign_clean[1:] != 0].min()
-        else:
-            self.yieldDist = 100.0
-            self.yieldTrigger = 0
-            return
-        
-        if not self.pulse_active_yield:
-            if yieldSignCount > 0 and self.yieldDist < self.yieldThreshold:
-                self.pulse_active_yield = True
-                self.timer_yield = 0.0
-                self.yieldTrigger = 1
-                if self.logger:
-                    self.logger.logger.info(f"[YOLO] Yield sign detected at {self.yieldDist:.2f}m - slowing")
-            else:
-                self.pulse_active_yield = False
-                self.yieldTrigger = 0
-        else:
-            self.timer_yield += dt
+    @staticmethod
+    def connect_receiver(port: str, max_retries: int = 5, retry_delay: float = 3.0, logger=None) -> Optional[YOLOReceiver]:
+        """
+        Connect a YOLOReceiver to the given port.
+        Since ZMQ is async and we removed blocking checks, this returns immediately.
+        """
+        try:
+            if logger: logger.logger.info(f"[PERCEPTION] Connecting YOLOReceiver on port {port}...")
             
-            if self.timer_yield < self.pulseDuration:
-                self.yieldTrigger = 1
-            else:
-                self.timer_yield = 0.0
-                self.pulse_active_yield = False
-                self.yieldTrigger = 0
-    
-    def carPulse(self, car, current_velocity):
-        """
-        Car detection with smooth linear deceleration.
-        Optionally velocity-aware (scales thresholds with speed).
-        """
-        carCount = car[0]
-        car_clean = car.copy()
-        car_clean[np.isnan(car_clean)] = 10.0
-        
-        if carCount > 0:
-            self.carDist = car_clean[1:][car_clean[1:] != 0].min()
-        else:
-            self.carDist = 100.0
-            self.carTrigger = 0
-            return
-        
-        # Velocity-aware threshold adjustment
-        if self.velocityAwareThresholds:
-            velocity_factor = max(current_velocity / 0.75, 1.0)  # Scale up at higher speeds
-            detect_threshold = self.carDetectThreshold * velocity_factor
-        else:
-            detect_threshold = self.carDetectThreshold
-        
-        if carCount > 0 and self.carDist < detect_threshold:
-            self.carTrigger = 1
-            # Linear interpolation from detect_threshold (gain=1) to carThreshold (gain=0)
-            m = 1.0 / (detect_threshold - self.carThreshold)
-            b = -m * self.carThreshold
-            self.vGain_car = np.clip(m * self.carDist + b, 0.0, 1.0)
-        else:
-            self.carTrigger = 0
-    
-    def personPulse(self, person, current_velocity):
-        """
-        Person detection with smooth linear deceleration.
-        Optionally velocity-aware (scales thresholds with speed).
-        """
-        personCount = person[0]
-        person_clean = person.copy()
-        person_clean[np.isnan(person_clean)] = 10.0
-        
-        if personCount > 0:
-            self.personDist = person_clean[1:][person_clean[1:] != 0].min()
-        else:
-            self.personDist = 100.0
-            self.personTrigger = 0
-            return
-        
-        # Velocity-aware threshold adjustment
-        if self.velocityAwareThresholds:
-            velocity_factor = max(current_velocity / 0.75, 1.0)
-            detect_threshold = self.personDetectThreshold * velocity_factor
-        else:
-            detect_threshold = self.personDetectThreshold
-        
-        if personCount > 0 and self.personDist < detect_threshold:
-            self.personTrigger = 1
-            # Linear interpolation
-            m = 1.0 / (detect_threshold - self.personThreshold)
-            b = -m * self.personThreshold
-            self.vGain_person = np.clip(m * self.personDist + b, 0.0, 1.0)
-        else:
-            self.personTrigger = 0
+            # Use non-blocking mode by default
+            receiver = YOLOReceiver(ip='localhost', nonBlocking=True, port=str(port))
+            
+            if logger: logger.logger.info(f"[PERCEPTION] [OK] YOLOReceiver connected on port {port}")
+            return receiver
+            
+        except Exception as e:
+            if logger: logger.log_error(f"[PERCEPTION] Receiver creation failed", e)
+            return None

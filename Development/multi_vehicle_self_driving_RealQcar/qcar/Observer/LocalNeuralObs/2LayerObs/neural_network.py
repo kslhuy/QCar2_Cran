@@ -117,6 +117,175 @@ class NeuralObserverNet(nn.Module):
         return loss
 
 
+class GRUTireResidualNet(nn.Module):
+    """
+    GRU-based tire residual estimator with temporal memory.
+    
+    Key advantages over feedforward MLP:
+        - GRU captures tire dynamics memory (relaxation length, load transfer)
+        - LayerNorm normalizes inputs without clamping expressiveness
+        - Tanh + scaling gives bounded output with smooth gradients
+        - Residual connection from input features to output for faster learning
+    
+    Architecture:
+        Input normalization (LayerNorm) -> GRU (temporal) -> FC head -> Tanh * scale
+    """
+    
+    def __init__(self, input_dim: int = 8, hidden_dim: int = 32, output_dim: int = 2,
+                 output_scale: float = 50.0):
+        """
+        Initialize GRU tire residual network.
+        
+        Args:
+            input_dim: Input dimension (6 or 8 with accelerations)
+            hidden_dim: GRU hidden state dimension (default: 32)
+            output_dim: Output dimension (default: 2 for [w_r, w_f])
+            output_scale: Maximum output magnitude (default: 50.0 = f_max)
+        """
+        super(GRUTireResidualNet, self).__init__()
+        
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.output_scale = output_scale
+        
+        # Input normalization (critical for online learning stability)
+        self.input_norm = nn.LayerNorm(input_dim)
+        
+        # GRU for temporal dynamics (tire relaxation, load transfer)
+        self.gru = nn.GRU(input_dim, hidden_dim, num_layers=1, batch_first=True)
+        
+        # Output head with residual path
+        self.fc_out = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, output_dim),
+            nn.Tanh()  # Bound output to [-1, 1], then scale by output_scale
+        )
+        
+        # Residual shortcut: direct linear map from input features
+        # Helps the GRU learn corrections rather than the full mapping
+        self.residual_fc = nn.Linear(input_dim, output_dim, bias=False)
+        nn.init.zeros_(self.residual_fc.weight)  # Start with zero residual
+        
+        # Hidden state (persistent across calls for temporal memory)
+        self.hidden = None
+    
+    def forward(self, x):
+        """
+        Forward pass with temporal memory.
+        
+        Args:
+            x: Input tensor of shape (input_dim, 1) or (input_dim,) or (batch, input_dim)
+        
+        Returns:
+            Output tensor of shape matching input convention
+        """
+        # Handle shape conventions from NeuralLuenbergerEstimator
+        single_sample_col = False
+        if x.dim() == 2 and x.shape[1] == 1:
+            x = x.squeeze(1)  # (input_dim, 1) -> (input_dim,)
+            single_sample_col = True
+        
+        single_sample = (x.dim() == 1)
+        if single_sample:
+            x = x.unsqueeze(0)  # (input_dim,) -> (1, input_dim)
+        
+        # Normalize inputs
+        x_normed = self.input_norm(x)
+        
+        # Residual path (before GRU)
+        residual = self.residual_fc(x_normed)  # (batch, output_dim)
+        
+        # GRU expects (batch, seq_len, input_dim)
+        x_seq = x_normed.unsqueeze(1)  # (batch, 1, input_dim)
+        
+        # Ensure hidden state dtype matches input
+        if self.hidden is not None and self.hidden.dtype != x_seq.dtype:
+            self.hidden = self.hidden.to(dtype=x_seq.dtype)
+        
+        gru_out, self.hidden = self.gru(x_seq, self.hidden)
+        # gru_out: (batch, 1, hidden_dim)
+        
+        gru_out = gru_out.squeeze(1)  # (batch, hidden_dim)
+        
+        # Output head: Tanh bounds to [-1, 1], scale to [-output_scale, output_scale]
+        raw_out = self.fc_out(gru_out) * self.output_scale + residual
+        
+        # ENFORCE SAME-SIGN COUPLING: Both tire residuals should have same sign
+        # during cornering (both tires saturate together). Use weighted average
+        # to couple w_r and w_f while allowing small front/rear ratio difference.
+        if raw_out.dim() == 1 and raw_out.shape[0] == 2:
+            # Single sample: (2,)
+            mean_val = (raw_out[0] + raw_out[1]) / 2
+            out = torch.stack([
+                0.8 * mean_val + 0.2 * raw_out[0],
+                0.8 * mean_val + 0.2 * raw_out[1]
+            ])
+        elif raw_out.dim() == 2 and raw_out.shape[-1] == 2:
+            # Batch: (batch, 2)
+            mean_val = raw_out.mean(dim=-1, keepdim=True)
+            out = 0.8 * mean_val + 0.2 * raw_out
+        else:
+            out = raw_out
+        
+        # Restore shape
+        if single_sample:
+            out = out.squeeze(0)  # (1, output_dim) -> (output_dim,)
+        if single_sample_col:
+            out = out.unsqueeze(1)  # (output_dim,) -> (output_dim, 1)
+        
+        return out
+    
+    def reset_hidden(self):
+        """Reset GRU hidden state (call at episode start or after discontinuity)."""
+        self.hidden = None
+    
+    def detach_hidden(self):
+        """Detach hidden state from computation graph (call between training steps)."""
+        if self.hidden is not None:
+            self.hidden = self.hidden.detach()
+    
+    def myloss(self, output, gradient):
+        """
+        Custom loss function for gradient-based learning (same interface as NeuralObserverNet).
+        
+        Args:
+            output: Network output (f_nn)
+            gradient: Gradient dL/df from chain rule
+        
+        Returns:
+            Loss value (scalar)
+        """
+        if isinstance(gradient, np.ndarray):
+            gradient = torch.from_numpy(gradient).float()
+        if gradient.dim() == 2:
+            gradient = gradient.squeeze(0)
+        return torch.sum(output.squeeze() * gradient)
+
+
+def create_network(network_type: str = 'mlp', input_dim: int = 6,
+                   hidden_dim: int = 24, output_dim: int = 2,
+                   output_scale: float = 50.0) -> nn.Module:
+    """
+    Factory function to create the appropriate network architecture.
+    
+    Args:
+        network_type: 'mlp' for NeuralObserverNet, 'gru' for GRUTireResidualNet
+        input_dim: Input dimension
+        hidden_dim: Hidden layer dimension
+        output_dim: Output dimension
+        output_scale: Max output magnitude (only used for GRU)
+    
+    Returns:
+        Neural network module
+    """
+    if network_type == 'gru':
+        return GRUTireResidualNet(input_dim, hidden_dim, output_dim, output_scale)
+    else:
+        return NeuralObserverNet(input_dim, hidden_dim, output_dim)
+
+
 class LearningBatch:
     """
     Experience replay buffer for dictionary-based learning
@@ -141,7 +310,8 @@ class LearningBatch:
                    target: np.ndarray,
                    f_uk: np.ndarray,
                    dx_df: np.ndarray,
-                   time_step: int):
+                   time_step: int,
+                   extra_context: dict = None):
         """
         Add a new feature to the dictionary
         
@@ -153,10 +323,13 @@ class LearningBatch:
             f_uk: True unknown force (if available)
             dx_df: Sensitivity matrix
             time_step: Current time step
+            extra_context: Optional dict with loss-specific context
+                           (e.g., ay_meas, steering, state_uio for physics_tire)
         """
-        # Create feature tuple
+        # Create feature tuple (8 elements: 7 original + extra_context)
+        ctx = extra_context if extra_context is not None else {}
         feature = (nn_input.copy(), f_nn.copy(), state_hat.copy(), 
-                  target.copy(), f_uk.copy(), dx_df.copy(), time_step)
+                  target.copy(), f_uk.copy(), dx_df.copy(), time_step, ctx)
         
         # Add to dictionary
         self.feature_dict.append(feature)
@@ -314,7 +487,8 @@ class SelectiveLearningBatch:
                    target: np.ndarray,
                    f_uk: np.ndarray,
                    dx_df: np.ndarray,
-                   time_step: int) -> bool:
+                   time_step: int,
+                   extra_context: dict = None) -> bool:
         """
         Selectively add a new feature to the dictionary.
         
@@ -330,11 +504,14 @@ class SelectiveLearningBatch:
             f_uk: True unknown force (if available)
             dx_df: Sensitivity matrix
             time_step: Current time step
+            extra_context: Optional dict with loss-specific context
+                           (e.g., ay_meas, steering, state_uio for physics_tire)
             
         Returns:
             True if the sample was accepted, False if rejected
         """
         self.total_offered += 1
+        ctx = extra_context if extra_context is not None else {}
         
         # --- Gate 1: Minimum excitation ---
         excitation = self._compute_excitation_score(nn_input)
@@ -350,7 +527,8 @@ class SelectiveLearningBatch:
             if most_similar_idx >= 0 and excitation > self._excitation_scores[most_similar_idx] * 2.0:
                 # Replace the similar but less excited entry
                 self._replace_entry(most_similar_idx, nn_input, f_nn, state_hat,
-                                   target, f_uk, dx_df, time_step, excitation)
+                                   target, f_uk, dx_df, time_step, excitation,
+                                   extra_context=ctx)
                 self.total_accepted += 1
                 return True
             
@@ -359,7 +537,7 @@ class SelectiveLearningBatch:
         
         # --- Data accepted: Add or Replace ---
         feature = (nn_input.copy(), f_nn.copy(), state_hat.copy(),
-                  target.copy(), f_uk.copy(), dx_df.copy(), time_step)
+                  target.copy(), f_uk.copy(), dx_df.copy(), time_step, ctx)
         
         if len(self.feature_dict) < self.max_size:
             # Dictionary not full — just append
@@ -378,7 +556,8 @@ class SelectiveLearningBatch:
             # Only replace if new data is more informative
             if excitation > self._excitation_scores[replace_idx] * 0.8:
                 self._replace_entry(replace_idx, nn_input, f_nn, state_hat,
-                                   target, f_uk, dx_df, time_step, excitation)
+                                   target, f_uk, dx_df, time_step, excitation,
+                                   extra_context=ctx)
             else:
                 self.total_rejected_novelty += 1
                 return False
@@ -390,10 +569,12 @@ class SelectiveLearningBatch:
                       nn_input: np.ndarray, f_nn: np.ndarray,
                       state_hat: np.ndarray, target: np.ndarray,
                       f_uk: np.ndarray, dx_df: np.ndarray,
-                      time_step: int, excitation: float):
+                      time_step: int, excitation: float,
+                      extra_context: dict = None):
         """Replace entry at given index with new data."""
+        ctx = extra_context if extra_context is not None else {}
         feature = (nn_input.copy(), f_nn.copy(), state_hat.copy(),
-                  target.copy(), f_uk.copy(), dx_df.copy(), time_step)
+                  target.copy(), f_uk.copy(), dx_df.copy(), time_step, ctx)
         self.feature_dict[idx] = feature
         self._excitation_scores[idx] = excitation
         self._nn_input_cache[idx] = nn_input.copy()
@@ -434,7 +615,8 @@ class ModelQueue:
     """
     
     def __init__(self, input_dim: int = 6, output_dim: int = 2, 
-                 queue_size: int = 3, hidden_dim: int = 24):
+                 queue_size: int = 3, hidden_dim: int = 24,
+                 network_type: str = 'mlp', output_scale: float = 50.0):
         """
         Initialize model queue
         
@@ -443,11 +625,15 @@ class ModelQueue:
             output_dim: Output dimension
             queue_size: Maximum number of models in queue
             hidden_dim: Hidden layer dimension
+            network_type: 'mlp' or 'gru'
+            output_scale: Max output magnitude (only for GRU)
         """
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.queue_size = queue_size
         self.hidden_dim = hidden_dim
+        self.network_type = network_type
+        self.output_scale = output_scale
         self.models = []
         self.weights = []
     
@@ -464,11 +650,11 @@ class ModelQueue:
         """
         if duplicate and len(self.models) > 0:
             # Duplicate the latest model
-            new_model = NeuralObserverNet(input_dim, hidden_dim, output_dim)
+            new_model = create_network(self.network_type, input_dim, hidden_dim, output_dim, self.output_scale)
             new_model.load_state_dict(self.models[-1].state_dict())
         else:
             # Create a new model
-            new_model = NeuralObserverNet(input_dim, hidden_dim, output_dim)
+            new_model = create_network(self.network_type, input_dim, hidden_dim, output_dim, self.output_scale)
         
         self.models.append(new_model)
         
@@ -479,7 +665,7 @@ class ModelQueue:
         # Update weights (exponential decay)
         self._update_weights()
     
-    def push_model(self, source_model: NeuralObserverNet):
+    def push_model(self, source_model: nn.Module):
         """
         Push a snapshot of the source model into the queue.
         
@@ -487,7 +673,7 @@ class ModelQueue:
            source_model: The model to snapshot
         """
         # Create a new instance with same architecture
-        new_model = NeuralObserverNet(self.input_dim, self.hidden_dim, self.output_dim)
+        new_model = create_network(self.network_type, self.input_dim, self.hidden_dim, self.output_dim, self.output_scale)
         
         # Copy weights from source model
         new_model.load_state_dict(source_model.state_dict())
@@ -550,38 +736,68 @@ class ModelQueue:
         return self.models[-1]
 
 
-def save_model(model: NeuralObserverNet, filepath: str):
+def save_model(model: nn.Module, filepath: str):
     """
-    Save model state dict to file
+    Save model state dict to file.
+    Also saves the network type so it can be loaded correctly.
     
     Args:
-        model: Neural network model
+        model: Neural network model (NeuralObserverNet or GRUTireResidualNet)
         filepath: Path to save file
     """
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    torch.save(model.state_dict(), filepath)
+    network_type = 'gru' if isinstance(model, GRUTireResidualNet) else 'mlp'
+    save_data = {
+        'state_dict': model.state_dict(),
+        'network_type': network_type,
+        'input_dim': model.input_dim,
+        'hidden_dim': model.hidden_dim,
+        'output_dim': model.output_dim,
+    }
+    if hasattr(model, 'output_scale'):
+        save_data['output_scale'] = model.output_scale
+    torch.save(save_data, filepath)
 
 
 def load_model(filepath: str, input_dim: int = 6, 
-               hidden_dim: int = 24, output_dim: int = 2) -> NeuralObserverNet:
+               hidden_dim: int = 24, output_dim: int = 2,
+               network_type: str = 'mlp',
+               output_scale: float = 50.0) -> nn.Module:
     """
-    Load model from file
+    Load model from file.
+    Supports both old format (raw state_dict) and new format (with metadata).
     
     Args:
         filepath: Path to model file
-        input_dim: Input dimension
-        hidden_dim: Hidden layer dimension
-        output_dim: Output dimension
+        input_dim: Input dimension (fallback)
+        hidden_dim: Hidden layer dimension (fallback)
+        output_dim: Output dimension (fallback)
+        network_type: Network type (fallback if not in saved file)
+        output_scale: Max output scale for GRU (fallback)
     
     Returns:
         Loaded neural network model
     """
-    model = NeuralObserverNet(input_dim, hidden_dim, output_dim)
-    model.load_state_dict(torch.load(filepath))
+    checkpoint = torch.load(filepath, weights_only=False)
+    
+    # Handle new format (dict with metadata)
+    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        network_type = checkpoint.get('network_type', network_type)
+        input_dim = checkpoint.get('input_dim', input_dim)
+        hidden_dim = checkpoint.get('hidden_dim', hidden_dim)
+        output_dim = checkpoint.get('output_dim', output_dim)
+        output_scale = checkpoint.get('output_scale', output_scale)
+        state_dict = checkpoint['state_dict']
+    else:
+        # Old format: raw state_dict
+        state_dict = checkpoint
+    
+    model = create_network(network_type, input_dim, hidden_dim, output_dim, output_scale)
+    model.load_state_dict(state_dict)
     return model
 
 
-def create_optimizer(model: NeuralObserverNet, learning_rate: float = 0.005,
+def create_optimizer(model: nn.Module, learning_rate: float = 0.005,
                     weight_decay: float = 0.0) -> torch.optim.Optimizer:
     """
     Create Adam optimizer for the model

@@ -854,7 +854,7 @@ class VehicleLogger:
 class PerformanceMonitor:
     """Monitor and log performance metrics"""
     
-    def __init__(self, logger: VehicleLogger, window_size: int = 1000):
+    def __init__(self, logger: VehicleLogger, window_size: int = 1000, blocking_threshold: float = 0.010):
         self.logger = logger
         self.window_size = window_size
         
@@ -867,7 +867,7 @@ class PerformanceMonitor:
         self.report_interval = 10.0  # Report every 10 seconds
         
         # Blocking detection
-        self.blocking_threshold = 0.010  # 10ms threshold for potential blocking
+        self.blocking_threshold = blocking_threshold  # Threshold for potential blocking
         self.severe_blocking_threshold = 0.25  # 250ms threshold for severe blocking
         self.blocking_incidents = 0
         self.severe_blocking_incidents = 0

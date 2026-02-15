@@ -46,6 +46,19 @@ from .lane_detection_interface import (
 )
 
 
+def _draw_text_outline(
+    image: np.ndarray,
+    text: str,
+    org: Tuple[int, int],
+    color: Tuple[int, int, int] = (255, 255, 255),
+    scale: float = 0.5,
+    thickness: int = 1,
+):
+    """Draw readable text regardless of background using black outline."""
+    cv2.putText(image, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), thickness + 3, cv2.LINE_AA)
+    cv2.putText(image, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
+
+
 class LanePosition(Enum):
     """Enum representing the vehicle's lane position relative to yellow divider."""
     UNKNOWN = "unknown"
@@ -135,6 +148,15 @@ class HSVLaneDetector(LaneDetectorBase):
             # Convert to HSV and threshold for yellow lane
             hsv = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
             mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
+
+            # Collect mask statistics for debugging/tuning
+            mid_x = mask.shape[1] // 2
+            left_pixels = int(np.sum(mask[:, :mid_x] > 0))
+            right_pixels = int(np.sum(mask[:, mid_x:] > 0))
+            left_ratio = left_pixels / max(mask[:, :mid_x].size, 1)
+            right_ratio = right_pixels / max(mask[:, mid_x:].size, 1)
+            mask_pixels = int(np.sum(mask > 0))
+            mask_ratio = mask_pixels / max(mask.size, 1)
             
             # Determine lane position by checking left/right halves
             lane_position = self._detect_lane_position(mask)
@@ -149,7 +171,12 @@ class HSVLaneDetector(LaneDetectorBase):
                     raw_data={
                         'lane_position': lane_position.value,
                         'slope': np.nan,
-                        'intercept': np.nan
+                        'intercept': np.nan,
+                        'crop_start_px': crop_start,
+                        'left_ratio': left_ratio,
+                        'right_ratio': right_ratio,
+                        'mask_ratio': mask_ratio,
+                        'mask_pixels': mask_pixels,
                     }
                 )
                 return self._last_result
@@ -160,13 +187,30 @@ class HSVLaneDetector(LaneDetectorBase):
             steering = np.clip(steering, -0.5, 0.5)
             
             # Confidence based on detected lane pixels
-            confidence = np.sum(mask > 0) / mask.size
+            confidence = mask_ratio
             confidence = min(confidence * 10, 1.0)  # Scale up
             
             # Determine which lanes are detected based on position
             left_lane_detected = (lane_position == LanePosition.RIGHT_LANE)  # Yellow on left
             right_lane_detected = (lane_position == LanePosition.LEFT_LANE)  # Yellow on right
             
+            # Create debug image
+            self._debug_image = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            
+            # Draw the detected line on debug image
+            if not np.isnan(slope) and not np.isnan(intercept):
+                rows, cols = self._debug_image.shape[:2]
+                y1 = 0
+                x1 = int((y1 - intercept) / slope) if abs(slope) > 1e-4 else 0
+                y2 = rows
+                x2 = int((y2 - intercept) / slope) if abs(slope) > 1e-4 else 0
+                cv2.line(self._debug_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            
+            # Draw readable metrics on debug image
+            _draw_text_outline(self._debug_image, f"Pos: {lane_position.value}", (10, 30), (0, 255, 0), 0.6, 2)
+            _draw_text_outline(self._debug_image, f"Slope: {slope:.4f}  Int: {intercept:.1f}", (10, 55), (220, 220, 220), 0.5, 1)
+            _draw_text_outline(self._debug_image, f"Mask: {mask_ratio:.3f}  L/R: {left_ratio:.3f}/{right_ratio:.3f}", (10, 78), (220, 220, 220), 0.48, 1)
+
             self._last_result = LaneDetectionResult(
                 is_valid=True,
                 confidence=confidence,
@@ -177,7 +221,12 @@ class HSVLaneDetector(LaneDetectorBase):
                 raw_data={
                     'slope': slope,
                     'intercept': intercept,
-                    'lane_position': lane_position.value
+                    'lane_position': lane_position.value,
+                    'crop_start_px': crop_start,
+                    'left_ratio': left_ratio,
+                    'right_ratio': right_ratio,
+                    'mask_ratio': mask_ratio,
+                    'mask_pixels': mask_pixels,
                 },
                 timestamp=time.time()
             )
@@ -186,8 +235,13 @@ class HSVLaneDetector(LaneDetectorBase):
             if self.logger:
                 self.logger.logger.debug(f"HSV lane detection error: {e}")
             self._last_result = LaneDetectionResult(timestamp=time.time())
+            self._debug_image = None
         
         return self._last_result
+
+    def get_debug_image(self) -> Optional[np.ndarray]:
+        """Get the debug visualization (mask + line)"""
+        return getattr(self, '_debug_image', None)
     
     def _detect_lane_position(self, mask: np.ndarray) -> LanePosition:
         """
@@ -321,7 +375,8 @@ class BEVLaneDetector(LaneDetectorBase):
         
         # Debug visualization
         self._debug_image = None
-        self._enable_debug = self.config.get('enable_debug', False)
+        self._enable_debug = self.config.get('enable_debug', True)
+        self._last_debug_data = {}
         
     @property
     def method(self) -> LaneDetectionMethod:
@@ -468,7 +523,11 @@ class BEVLaneDetector(LaneDetectorBase):
                                          (self.img_width, self.img_height))
             
             # Find lanes with sliding window
-            left_fit, right_fit, left_conf, right_conf = self._find_lanes(warped)
+            left_fit, right_fit, left_conf, right_conf, out_img, debug_data = self._find_lanes(warped)
+            self._last_debug_data = debug_data
+            if self._enable_debug:
+                self._debug_image = out_img
+
             
             # Smooth fits
             left_fit = self._smooth_fit(left_fit, self.left_fit_history)
@@ -501,7 +560,12 @@ class BEVLaneDetector(LaneDetectorBase):
                 right_lane_detected=right_fit is not None,
                 raw_data={
                     'left_fit': left_fit.tolist() if left_fit is not None else None,
-                    'right_fit': right_fit.tolist() if right_fit is not None else None
+                    'right_fit': right_fit.tolist() if right_fit is not None else None,
+                    'left_confidence': left_conf,
+                    'right_confidence': right_conf,
+                    'offset': offset,
+                    'curvature': curvature,
+                    **debug_data,
                 },
                 timestamp=time.time()
             )
@@ -530,88 +594,145 @@ class BEVLaneDetector(LaneDetectorBase):
         return cv2.bitwise_or(white_mask, yellow_mask)
     
     def _find_lanes(self, binary_warped: np.ndarray) -> Tuple:
-        """Find lane lines using sliding window"""
+        """Find lane lines using sliding window and return visualization + debug metrics."""
+        # Create an output image to draw on and visualize the result
+        out_img = None
+        if self._enable_debug:
+            out_img = np.zeros((binary_warped.shape[0], binary_warped.shape[1], 3), dtype=np.uint8)
+            out_img[binary_warped > 0] = (70, 70, 70)  # lane-mask pixels as neutral gray
+
         # Histogram of bottom half
         histogram = np.sum(binary_warped[binary_warped.shape[0]//2:, :], axis=0)
         midpoint = len(histogram) // 2
-        
-        leftx_base = np.argmax(histogram[:midpoint])
-        rightx_base = np.argmax(histogram[midpoint:]) + midpoint
-        
+
+        left_hist_peak = float(np.max(histogram[:midpoint])) if midpoint > 0 else 0.0
+        right_hist_peak = float(np.max(histogram[midpoint:])) if midpoint < len(histogram) else 0.0
+
+        leftx_base = int(np.argmax(histogram[:midpoint])) if midpoint > 0 else 0
+        rightx_base = int(np.argmax(histogram[midpoint:]) + midpoint) if midpoint < len(histogram) else 0
+
         # Sliding window
         window_height = binary_warped.shape[0] // self.nwindows
         nonzero = binary_warped.nonzero()
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
-        
+
         leftx_current = leftx_base
         rightx_current = rightx_base
-        
+
         left_lane_inds = []
         right_lane_inds = []
-        
+
         for window in range(self.nwindows):
             win_y_low = binary_warped.shape[0] - (window + 1) * window_height
             win_y_high = binary_warped.shape[0] - window * window_height
-            
+
             win_xleft_low = leftx_current - self.margin
             win_xleft_high = leftx_current + self.margin
             win_xright_low = rightx_current - self.margin
             win_xright_high = rightx_current + self.margin
-            
+
             good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
-                             (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
+                              (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
             good_right_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) &
-                              (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
-            
+                               (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
+
             left_lane_inds.append(good_left_inds)
             right_lane_inds.append(good_right_inds)
-            
+
             if len(good_left_inds) > self.minpix:
                 leftx_current = int(np.mean(nonzerox[good_left_inds]))
             if len(good_right_inds) > self.minpix:
                 rightx_current = int(np.mean(nonzerox[good_right_inds]))
-        
+
+            # Visualization
+            if out_img is not None:
+                cv2.rectangle(out_img, (win_xleft_low, win_y_low), (win_xleft_high, win_y_high), (0, 165, 255), 2)   # left windows: orange
+                cv2.rectangle(out_img, (win_xright_low, win_y_low), (win_xright_high, win_y_high), (255, 255, 0), 2)  # right windows: yellow-cyan
+
         # Concatenate indices
         left_lane_inds = np.concatenate(left_lane_inds) if left_lane_inds else np.array([])
         right_lane_inds = np.concatenate(right_lane_inds) if right_lane_inds else np.array([])
-        
+
         # Fit polynomials
         left_fit = None
         right_fit = None
         left_conf = 0.0
         right_conf = 0.0
-        
+        lane_width = np.nan
+        lane_width_rejected = False
+
         if len(left_lane_inds) > 50:
             leftx = nonzerox[left_lane_inds]
             lefty = nonzeroy[left_lane_inds]
             left_fit = np.polyfit(lefty, leftx, 2)
             left_conf = min(len(left_lane_inds) / 1000.0, 1.0)
-        
+
         if len(right_lane_inds) > 50:
             rightx = nonzerox[right_lane_inds]
             righty = nonzeroy[right_lane_inds]
             right_fit = np.polyfit(righty, rightx, 2)
             right_conf = min(len(right_lane_inds) / 1000.0, 1.0)
-        
-        # Lane width sanity check (from QCar2_lane_following_new.py)
+
+        # Lane width sanity check
         if left_fit is not None and right_fit is not None:
             y_eval = binary_warped.shape[0]
             left_x = left_fit[0]*y_eval**2 + left_fit[1]*y_eval + left_fit[2]
             right_x = right_fit[0]*y_eval**2 + right_fit[1]*y_eval + right_fit[2]
             lane_width = abs(right_x - left_x)
-            
+
             # Reject if lane width is unrealistic
             if lane_width < self.min_lane_width_px or lane_width > self.max_lane_width_px:
-                # Reject the weaker detection
+                lane_width_rejected = True
                 if len(left_lane_inds) < len(right_lane_inds):
                     left_fit = None
                     left_conf = 0.0
                 else:
                     right_fit = None
                     right_conf = 0.0
-        
-        return left_fit, right_fit, left_conf, right_conf
+
+        # Visualize polynomial fits
+        if out_img is not None:
+            out_img[nonzeroy[left_lane_inds], nonzerox[left_lane_inds]] = [0, 220, 255]   # left lane points: amber
+            out_img[nonzeroy[right_lane_inds], nonzerox[right_lane_inds]] = [0, 255, 120]  # right lane points: spring green
+
+            ploty = np.linspace(0, binary_warped.shape[0]-1, binary_warped.shape[0])
+
+            if left_fit is not None:
+                try:
+                    left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
+                    pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))]).astype(np.int32)
+                    cv2.polylines(out_img, pts_left, False, (245, 245, 245), 3)
+                except Exception:
+                    pass
+
+            if right_fit is not None:
+                try:
+                    right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
+                    pts_right = np.array([np.transpose(np.vstack([right_fitx, ploty]))]).astype(np.int32)
+                    cv2.polylines(out_img, pts_right, False, (245, 245, 245), 3)
+                except Exception:
+                    pass
+
+            _draw_text_outline(out_img, "LEFT lane=amber  RIGHT lane=green  FIT=white", (10, 22), (230, 230, 230), 0.5, 1)
+            _draw_text_outline(out_img, f"L/R conf: {left_conf:.2f}/{right_conf:.2f}", (10, 44), (255, 255, 255), 0.5, 1)
+            _draw_text_outline(out_img, f"L/R pts: {len(left_lane_inds)}/{len(right_lane_inds)}", (10, 66), (220, 220, 220), 0.48, 1)
+            _draw_text_outline(out_img, f"Lane width px: {lane_width:.1f}" if not np.isnan(lane_width) else "Lane width px: n/a", (10, 88), (220, 220, 220), 0.48, 1)
+            if lane_width_rejected:
+                _draw_text_outline(out_img, "Rejected lane width out of range", (10, 110), (80, 80, 255), 0.5, 2)
+
+        debug_data = {
+            'left_points': int(len(left_lane_inds)),
+            'right_points': int(len(right_lane_inds)),
+            'left_hist_peak': left_hist_peak,
+            'right_hist_peak': right_hist_peak,
+            'left_base_x': leftx_base,
+            'right_base_x': rightx_base,
+            'lane_width_px': None if np.isnan(lane_width) else float(lane_width),
+            'lane_width_rejected': lane_width_rejected,
+        }
+
+        return left_fit, right_fit, left_conf, right_conf, out_img, debug_data
     
     def _smooth_fit(self, new_fit, history: deque):
         """Smooth polynomial fit using history"""

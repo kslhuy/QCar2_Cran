@@ -628,10 +628,7 @@ class StateBase:
             bool: True if activation successful
         """
         try:
-            import subprocess
-            import os
-            import time
-            from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
+            from Yolo.YoLo import YOLOLauncher, YOLODriveLogic
             
             # Check if this is a fake vehicle - if so, just log and return success
             if hasattr(self.vehicle_logic, '_parent_fake_vehicle'):
@@ -641,201 +638,44 @@ class StateBase:
             # Check if perception should be enabled based on config
             vehicle_id = self.vehicle_logic.vehicle_id
             
-            # Load fleet_config to check probing setting
-            config_enabled = self._check_perception_config()
-            if not config_enabled:
-                self.logger.logger.warning(f"[PERCEPTION] Vehicle {vehicle_id} not configured for perception in fleet_config.yaml")
-                return False
-            
-            self.logger.logger.info(f"[PERCEPTION] Starting YOLO system for vehicle {vehicle_id}...")
-            
             # Get probing flag from config
             probing_enabled = self.config.vehicle.probing
-            probing_flag = "True" if probing_enabled else "False"
+            self.logger.logger.info(f"[PERCEPTION] Starting YOLO system for vehicle {vehicle_id} with probing {probing_enabled}...")
             
-            # For simulated vehicles, launch YOLO server subprocess
-            if not IS_PHYSICAL_QCAR:
-                yolo_port = f'1866{vehicle_id}'
-                
-                yolo_script = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), 
-                    '..', 'Yolo', 'yolo_server_virtual.py'
-                )
-                
-                # Verify script exists
-                if not os.path.exists(yolo_script):
-                    self.logger.log_error(f"[PERCEPTION] YOLO script not found: {yolo_script}")
-                    return False
-                
-                self.logger.logger.info(f"[PERCEPTION] [→] Starting yolo_server_virtual.py...")
-                self.logger.logger.info(f"[PERCEPTION] Script path: {yolo_script}")
-                self.logger.logger.info(f"[PERCEPTION] Launching YOLO server on port {yolo_port}...")
-                self.logger.logger.info(f"[PERCEPTION] Probing enabled: {probing_enabled}")
-                
-                # Build command with probing flag
-                # Note: yolo_server_virtual.py uses -p/--probing with value "True" or "False"
-                # and -s/--show-image to display the image directly in a window
-                # For simulated vehicles, we dont use probing use directly cv2 window (reduce latency)
-                cmd = ['python', yolo_script, '-idx', str(vehicle_id), '-p', "False"]
-                
-                # If probing is enabled but no Observer is running, also show image directly
-                # This provides a fallback visualization
-                if probing_enabled:
-                    cmd.append('-s')  # Show image in cv2 window as backup
-                
-                self.logger.logger.info(f"[PERCEPTION] Command: {' '.join(cmd)}")
-                
-                # Launch YOLO server as subprocess
-                # On Windows, use CREATE_NEW_CONSOLE so cv2 windows can display properly
-                import sys
-                if sys.platform == 'win32':
-                    # Create new console window for the YOLO server
-                    yolo_process = subprocess.Popen(
-                        cmd,
-                        creationflags=subprocess.CREATE_NEW_CONSOLE
-                    )
-                else:
-                    yolo_process = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE
-                    )
-                
-                # Store process handle
+            # Launch Server using YOLOLauncher
+            yolo_process = YOLOLauncher.launch_server(
+                is_physical=IS_PHYSICAL_QCAR,
+                vehicle_id=vehicle_id,
+                probing=probing_enabled,
+                logger=self.logger
+            )
+            
+            if yolo_process:
                 self.vehicle_logic.yolo_process = yolo_process
-                
-                # Wait for server startup - just check that process is running
-                # Note: We don't use a test socket connection here because it can interfere
-                # with BasicStream's connection handling (connects then immediately disconnects)
-                self.logger.logger.info("[PERCEPTION] Waiting for YOLO server to initialize...")
-                max_wait = 10.0  # Maximum wait time for process to stabilize
-                check_interval = 0.5
-                waited = 0.0
-                
-                while waited < max_wait:
-                    time.sleep(check_interval)
-                    waited += check_interval
-                    
-                    # Check if process crashed
-                    if yolo_process.poll() is not None:
-                        # Process terminated unexpectedly
-                        self.logger.log_error("[PERCEPTION] YOLO server process terminated unexpectedly")
-                        self.logger.logger.error(f"[PERCEPTION] Exit code: {yolo_process.returncode}")
-                        # On Windows with CREATE_NEW_CONSOLE, we don't have stdout/stderr pipes
-                        if sys.platform != 'win32':
-                            try:
-                                stdout, stderr = yolo_process.communicate(timeout=1)
-                                if stderr:
-                                    self.logger.logger.error(f"[PERCEPTION] STDERR: {stderr.decode('utf-8', errors='ignore')}")
-                                if stdout:
-                                    self.logger.logger.error(f"[PERCEPTION] STDOUT: {stdout.decode('utf-8', errors='ignore')}")
-                            except:
-                                pass
-                        return False
-                    
-                    # Log progress every second
-                    if waited % 1.0 == 0:
-                        self.logger.logger.info(f"[PERCEPTION] Server starting... ({waited:.0f}s)")
-                
-                self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server process running (waited {waited:.1f}s)")
-                self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
-                
-                # Create YOLOReceiver to connect to the server
-                # The YOLO server may still be loading the ML model, so we retry connection
-                yolo_receiver = None
-                max_retries = 5
-                for attempt in range(max_retries):
-                    try:
-                        self.logger.logger.info(f"[PERCEPTION] Connecting YOLOReceiver (attempt {attempt + 1}/{max_retries})...")
-                        yolo_receiver = YOLOReceiver(
-                            ip='localhost',
-                            nonBlocking=True,
-                            port=yolo_port
-                        )
-                        if yolo_receiver._handle.connected:
-                            self.logger.logger.info(f"[PERCEPTION] [✓] YOLOReceiver connected on port {yolo_port}")
-                            break
-                        else:
-                            self.logger.logger.warning(f"[PERCEPTION] YOLOReceiver not connected yet, retrying in 3s...")
-                            # Terminate the failed receiver before retrying
-                            try:
-                                yolo_receiver.terminate()
-                            except:
-                                pass
-                            yolo_receiver = None
-                            time.sleep(3.0)
-                    except Exception as e:
-                        self.logger.logger.warning(f"[PERCEPTION] YOLOReceiver creation failed: {e}, retrying in 3s...")
-                        time.sleep(3.0)
-                
-                if yolo_receiver is None or not yolo_receiver._handle.connected:
-                    self.logger.logger.warning(f"[PERCEPTION] YOLOReceiver not connected after {max_retries} attempts, proceeding anyway (will reconnect later)")
-                    if yolo_receiver is None:
-                        yolo_receiver = YOLOReceiver(ip='localhost', nonBlocking=True, port=yolo_port)
             else:
-
-
-
-                
-                # For physical vehicles, launch yolo_server.py with probing flag
-                yolo_script = os.path.join(
-                    os.path.dirname(os.path.abspath(__file__)), 
-                    '..', 'Yolo', 'yolo_server.py'
-                )
-                
-                self.logger.logger.info(f"[PERCEPTION] [→] Starting yolo_server.py...")
-                self.logger.logger.info(f"[PERCEPTION] Probing: {probing_enabled}, Car ID: {vehicle_id}")
-                
-                # Build command with probing flag
-                # Updated to match new YOLOServerPhysical arguments (-p, -idx)
-                yolo_cmd = [
-                    'python', yolo_script,
-                    '-p', probing_flag,
-                    '-idx', str(vehicle_id)
-                ]
-                
-                # Set up logging - redirect to file for physical vehicles
-                # This allows checking logs later via: tail -f logs/yolo_0.log
-                log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'logs')
-                os.makedirs(log_dir, exist_ok=True)
-                log_file = os.path.join(log_dir, f'yolo_{vehicle_id}.log')
-                
-                self.logger.logger.info(f"[PERCEPTION] YOLO log file: {log_file}")
-                self.logger.logger.info(f"[PERCEPTION] Command: {' '.join(yolo_cmd)}")
-                
-                # Open log file and keep handle for subprocess lifetime
-                # Store the file handle so it doesn't get garbage collected
-                yolo_log_handle = open(log_file, 'w')
-                self.vehicle_logic.yolo_log_handle = yolo_log_handle
-                
-                # Launch YOLO server as subprocess with log file
-                yolo_process = subprocess.Popen(
-                    yolo_cmd,
-                    stdout=yolo_log_handle,
-                    stderr=subprocess.STDOUT
-                )
-                
-                # Store process handle
-                self.vehicle_logic.yolo_process = yolo_process
-                
-                # Wait for server startup
-                self.logger.logger.info("[PERCEPTION] Waiting for YOLO server to initialize...")
-                time.sleep(2.5)
-                
-                # Check if process is still running
-                if yolo_process.poll() is not None:
-                    self.logger.log_error("[PERCEPTION] YOLO server failed to start")
-                    return False
-                
-                self.logger.logger.info(f"[PERCEPTION] [✓] YOLO server started (Probing: {probing_enabled})")
-                # Create YOLOReceiver to connect to the server
+                self.logger.log_error("[PERCEPTION] Failed to launch YOLO server")
+                return False
+            
+            # Connect Receiver
+            # Physical QCar server uses hardcoded port 18666, Virtual uses 1866{id}
+            if IS_PHYSICAL_QCAR:
+                yolo_port = '18666'
+            else:
                 yolo_port = f'1866{vehicle_id}'
-                yolo_receiver = YOLOReceiver(
-                    ip='localhost',
-                    nonBlocking=True,
-                    port=yolo_port
-                )
-
+                
+            yolo_receiver = YOLOLauncher.connect_receiver(
+                port=yolo_port,
+                logger=self.logger
+            )
+            
+            if not yolo_receiver:
+                self.logger.log_error(f"[PERCEPTION] Failed to connect YOLO receiver on port {yolo_port}")
+                # Cleanup process
+                try:
+                    yolo_process.terminate()
+                except:
+                    pass
+                return False
             
             # Create YOLO drive logic
             pulse_length = (
@@ -852,19 +692,15 @@ class StateBase:
             )
             
             # Initialize YOLOManager
-            self.vehicle_logic.yolo_manager.initialize(yolo_receiver, yolo_drive_logic)
+            if hasattr(self.vehicle_logic, 'yolo_manager'):
+                self.vehicle_logic.yolo_manager.initialize(yolo_receiver, yolo_drive_logic)
+                self.logger.logger.info(f"[PERCEPTION] [OK] YOLO Manager initialized with receiver on {yolo_port}")
             
             self.logger.logger.info("[PERCEPTION] YOLO system activated successfully")
             return True
             
         except Exception as e:
-            self.logger.log_error("[PERCEPTION] Failed to activate perception system", e)
-            # Clean up process if it was started
-            if hasattr(self.vehicle_logic, 'yolo_process'):
-                try:
-                    self.vehicle_logic.yolo_process.terminate()
-                except:
-                    pass
+            self.logger.log_error("[PERCEPTION] Error activating perception", e)
             return False
     
     def _disable_perception_system(self) -> bool:
@@ -953,68 +789,6 @@ class StateBase:
             self.logger.logger.info(f"[PERCEPTION] Vehicle {self.vehicle_logic.vehicle_id} configured with probing=False")
         
         return probing_enabled
-    
-    def _activate_estimation_scopes(self, preset_names: list = None) -> bool:
-        """
-        Activate estimation scopes visualization.
-        
-        Args:
-            preset_names: List of preset names to enable. Options:
-                - 'local_state', 'local_error', 'local_control'
-                - 'fleet_position', 'fleet_state', 'fleet_consensus'
-                
-        Returns:
-            bool: True if activation successful
-        """
-        try:
-            if preset_names is None:
-                preset_names = ['local_state', 'local_control']
-            
-            # Check if vehicle_observer exists
-            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
-                self.logger.log_error("[SCOPES] Vehicle observer not available")
-                return False
-            
-            # Enable scopes on observer
-            success = self.vehicle_logic.vehicle_observer.enable_scopes(
-                preset_names=preset_names,
-                fps=30,
-                time_window=60.0
-            )
-            
-            if success:
-                self.logger.logger.info(f"[SCOPES] Estimation scopes activated: {preset_names}")
-            else:
-                self.logger.log_error("[SCOPES] Failed to enable scopes")
-            
-            return success
-            
-        except Exception as e:
-            self.logger.log_error("[SCOPES] Error activating estimation scopes", e)
-            return False
-    
-    def _disable_estimation_scopes(self) -> bool:
-        """
-        Disable estimation scopes visualization.
-        
-        Returns:
-            bool: True if deactivation successful
-        """
-        try:
-            # Check if vehicle_observer exists
-            if not hasattr(self.vehicle_logic, 'vehicle_observer') or self.vehicle_logic.vehicle_observer is None:
-                self.logger.log_error("[SCOPES] Vehicle observer not available")
-                return False
-            
-            # Stop scopes on observer
-            self.vehicle_logic.vehicle_observer.stop_scopes()
-            self.logger.logger.info("[SCOPES] Estimation scopes disabled")
-            
-            return True
-            
-        except Exception as e:
-            self.logger.log_error("[SCOPES] Error disabling estimation scopes", e)
-            return False
     
     def _enable_scope_streaming(self, preset_names: list = None, stream_rate: float = 50.0) -> bool:
         """

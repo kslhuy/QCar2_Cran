@@ -28,6 +28,9 @@ cd .\Development\multi_vehicle_self_driving_RealQcar
 .\stop_enhanced.bat   ## Stop all the python process (logic is shutdown) = stop_refactored
 .\stop_all_cars.bat   ## Stop all physical part ( lidars  )
 
+# For probing
+python multi_probing.py --car 0
+
 ```
 
 ### For Simulation Qlabs
@@ -53,6 +56,10 @@ python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 0
 
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar      
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
+
+# Should enable probing in the Development\multi_vehicle_self_driving_RealQcar\qcar\fleet_config.yaml
+# For probing
+python multi_probing.py --car 0
 
 
 (Logs file is in same folder (\Development\multi_vehicle_self_driving_RealQcar\qcar))

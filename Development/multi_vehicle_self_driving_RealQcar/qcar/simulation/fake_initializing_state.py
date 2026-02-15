@@ -225,23 +225,7 @@ class FakeInitializingState(StateBase):
             self.logger.log_error("State estimator initialization failed", e)
             traceback.print_exc()
             return False
-    
-    def _initialize_mock_perception(self) -> bool:
-        """Initialize mock perception systems (YOLO) - matches real _initialize_perception"""
-        try:
-            # For fake vehicles, YOLO is completely optional
-            # Just disable YOLO and continue - no camera needed for simulation
-            self.vehicle_logic.yolo_manager.yolo_enabled = False
-            self.vehicle_logic.yolo_manager.yolo = None
-            self.vehicle_logic.yolo_manager.yolo_drive = None
-            
-            self.logger.logger.info("Mock perception: YOLO disabled (not needed for fake vehicle)")
-            return True
-            
-        except Exception as e:
-            # YOLO is optional - log warning but continue
-            self.logger.logger.warning(f"Mock perception initialization warning: {e}")
-            return True
+  
     
     def _initialize_telemetry(self) -> bool:
         """Initialize telemetry logging if enabled (matches real InitializingState)"""

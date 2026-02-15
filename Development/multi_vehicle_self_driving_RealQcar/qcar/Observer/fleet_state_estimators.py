@@ -202,6 +202,7 @@ class FleetStateEstimatorBase(ABC):
         """
         if vehicle_id not in self.received_local_states:
             if self.logger:
+                #TODO: Better fall out the distributed estimator when its happen too much. 
                 self.logger.logger.warning(f"vehicle_id {vehicle_id} not in self.received_local_states")
             return None
 

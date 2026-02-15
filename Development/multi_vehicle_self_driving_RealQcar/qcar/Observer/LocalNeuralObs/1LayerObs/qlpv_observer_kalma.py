@@ -538,7 +538,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # 6D system: [vx, vy, psi, r, X, Y] + disturbances
         Q_diag = [
             0.05,   # vx - encoder is accurate
-            2.0,    # vy - HIGH: weakly observable, must be loose so a_y innovation
+            2,    # vy - HIGH: weakly observable, must be loose so a_y innovation
                     # flows to tire residuals instead of being absorbed by v_y corrections.
                     # C[AY,VY] >> F[AY,w], so tight Q_vy starves residual estimation.
             0.001,  # psi - heading well-measured by GPS/IMU
@@ -1120,7 +1120,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
             #
             # Fix: Add pseudo-measurement y_eq = w_r - w_f ≈ 0
             # This directly constrains the null-space.
-            if self.disturbance_mode == 'tire' and self.tire_correlation > 0:
+            if self.disturbance_mode == 'tire' and self.tire_correlation > 0.5:
                 # H_eq selects (w_r - w_f): [0...0, 1, -1]
                 H_eq = np.zeros((1, self.augmented_dim))
                 H_eq[0, self.state_dim] = 1.0      # w_r coefficient

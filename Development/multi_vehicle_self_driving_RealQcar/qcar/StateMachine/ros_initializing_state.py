@@ -118,7 +118,7 @@ class ROSInitializingState(StateBase):
         """Initialize only non-hardware components for ROS"""
         initialization_steps = [
             ("Path planning", self._initialize_path_planning, 0.1),
-            ("Perception (optional)", self._initialize_perception, 0.1),
+            # ("Perception (optional)", self._initialize_perception, 0.1),
             ("Observer readiness", self._check_observer_ready, 0.1)
         ]
         
@@ -173,26 +173,7 @@ class ROSInitializingState(StateBase):
             self.logger.log_error("Path planning initialization failed", e)
             return False
     
-    def _initialize_perception(self) -> bool:
-        """Initialize perception systems (YOLO) - optional"""
-        try:
-            # YOLO is optional for ROS
-            yolo_receiver = None  # Can be None
-            
-            pulse_length = (
-                self.config.timing.controller_update_rate *
-                self.config.yolo.pulse_length_multiplier
-            )
-            yolo_drive = YOLODriveLogic(pulseLength=pulse_length)
-            
-            self.vehicle_logic.yolo_manager.initialize(yolo_receiver, yolo_drive)
-            self.logger.logger.info("Perception initialized (YOLO optional)")
-            return True
-            
-        except Exception as e:
-            # YOLO is optional - log warning but continue
-            self.logger.log_warning(f"YOLO initialization skipped: {e}")
-            return True  # Not critical
+   
     
     def _check_observer_ready(self) -> bool:
         """Check if VehicleObserver is ready (should be initialized by ROS adapters)"""

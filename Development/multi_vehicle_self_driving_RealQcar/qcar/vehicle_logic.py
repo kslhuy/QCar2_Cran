@@ -57,7 +57,10 @@ class VehicleLogic:
         self.vehicle_logger.logger.info("="*60)
         
         # Performance monitoring
-        self.perf_monitor = PerformanceMonitor(self.vehicle_logger)
+        # Performance monitoring
+        # Use configured threshold if available, otherwise default to 0.010 (10ms)
+        blocking_threshold = getattr(config.safety, 'max_loop_time_warning', 0.010)
+        self.perf_monitor = PerformanceMonitor(self.vehicle_logger, blocking_threshold=blocking_threshold)
         
 
         

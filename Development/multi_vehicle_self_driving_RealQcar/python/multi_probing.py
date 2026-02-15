@@ -1,134 +1,153 @@
 #!/usr/bin/env python3
 """
-multi-probing for Multiple QCar YOLO Streams
+multi_probing for Multiple QCar YOLO Streams using ZMQ
 
-Creates separate observer windows for each QCar that is probing.
-Each observer listens on a different port to avoid conflicts.
+Receives ZMQ video streams from yolo_server_virtual.py and displays them using OpenCV.
+Completely independent of Quanser 'pal' utilities.
 """
 
-from pal.utilities.probe import Observer
+import cv2
 import time
-import threading
 import argparse
+import threading
+import sys
+import os
 
-def create_observer(car_id, width=320, height=200):
-    """Create an observer for a specific car
-    
-    Each observer has a unique display counter (numDisplays) set to car_id.
-    This allows multiple vehicles to send their YOLO streams to different windows.
-    """
-    observer = Observer()
-    # + 50 conflict with other ports already used
-    observer.numDisplays = car_id + 50 # Unique counter for each car's YOLO stream
-    observer.add_display(
-        imageSize=[height, width, 3],
-        name=f'YOLO Car {car_id}',  # Must match name in yolo_server_virtual.py
-        scalingFactor=1
-    )
-    print(f"  [✓] Observer for QCar {car_id} created (Display ID: {car_id})")
-    return observer
+# Ensure we can import from local directory
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
-def launch_observer(observer, car_id):
-    """Launch observer in a separate thread
-    
-    Each observer runs in its own thread to handle YOLO streams independently.
+try:
+    from qcar.Yolo.YoLo import YOLOVideoReceiver
+except ImportError:
+    # Fallback if running from a different directory structure
+    sys.path.append(os.path.join(parent_dir, 'qcar', 'Yolo'))
+    from YoLo import YOLOVideoReceiver
+
+
+class VideoStreamViewer:
     """
-    print(f"  [→] Launching observer window for QCar {car_id}...")
-    try:
-        observer.launch()
-        print(f"  [✓] Observer for QCar {car_id} started successfully")
-    except Exception as e:
-        print(f"  [✗] Error in QCar {car_id} observer: {e}")
-        import traceback
-        traceback.print_exc()
+    Handles receiving and displaying video for a single car.
+    """
+    def __init__(self, car_id, ip='localhost', window_name=None, scale=1.0):
+        self.car_id = car_id
+        self.window_name = window_name if window_name else f"QCar {car_id} - YOLO Stream"
+        self.scale = scale
+        
+        # ZMQ Video Receiver (port 1876x)
+        self.ip = ip
+        self.port = str(18760 + car_id)
+        self.receiver = None
+        self.frame = None
+        self.running = False
+        self.connected = False
+        self.last_frame_time = 0
+        self.fps = 0.0
+        
+        # Threading
+        self.lock = threading.Lock()
+        self.thread = None
+
+    def start(self):
+        """Start the receiver thread."""
+        self.running = True
+        self.thread = threading.Thread(target=self._update_loop, daemon=True)
+        self.thread.start()
+        print(f"[Viewer {self.car_id}] API started on port {self.port}")
+
+    def stop(self):
+        """Stop the receiver thread."""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=1.0)
+        if self.receiver:
+            self.receiver.terminate()
+
+    def _update_loop(self):
+        """Background loop to fetch frames from ZMQ."""
+        # Initialize receiver in the thread (ZMQ context is thread-safe mostly, but safer this way)
+        self.receiver = YOLOVideoReceiver(ip=self.ip, port=self.port)
+        
+        while self.running:
+            frame = self.receiver.read()
+            if frame is not None:
+                with self.lock:
+                    self.frame = frame
+                    self.connected = True
+                    
+                    # Calculate FPS
+                    now = time.time()
+                    if self.last_frame_time > 0:
+                        dt = now - self.last_frame_time
+                        if dt > 0:
+                            current_fps = 1.0 / dt
+                            self.fps = 0.9 * self.fps + 0.1 * current_fps
+                    self.last_frame_time = now
+            else:
+                # No frame received
+                time.sleep(0.005) # Yield slightly
+
+    def get_frame(self):
+        """Get the latest frame (thread-safe)."""
+        with self.lock:
+            if self.frame is None:
+                return None
+            return self.frame.copy()
 
 def main():
-    parser = argparse.ArgumentParser(description="Multi-QCar Observer")
-    parser.add_argument('--cars', type=int, nargs='+', default=[0 , 1],
-                        help='List of car IDs to observe (e.g., --cars 0 1 2)')
-    parser.add_argument('--width', type=int, default=320, help='Image width')
-    parser.add_argument('--height', type=int, default=200, help='Image height')
+    parser = argparse.ArgumentParser(description="Single-QCar ZMQ Video Viewer")
+    parser.add_argument('--car', type=int, default=0,
+                        help='Car ID to observe (default: 0)')
+    parser.add_argument('--ip', type=str, default='localhost',
+                        help='IP address of the car (default: localhost)')
+    parser.add_argument('--scale', type=float, default=1.0, help='Image scaling factor')
     
     args = parser.parse_args()
     
-    print("="*70)
-    print(" Multi-Vehicle YOLO Observer System")
-    print("="*70)
-    print(f"Number of vehicles: {len(args.cars)}")
-    print(f"Car IDs: {args.cars}")
-    print(f"Image size: {args.width}x{args.height}")
-    print("="*70)
-    print()
+    print("="*60)
+    print(f" ZMQ Video Probe for QCar {args.car}")
+    print("="*60)
     
-    observers = []
-    threads = []
+    # Start single viewer
+    viewer = VideoStreamViewer(args.car, ip=args.ip, scale=args.scale)
+    viewer.start()
     
-    # Create observers for each car
-    for car_id in args.cars:
-        observer = create_observer(car_id, args.width, args.height)
-        observers.append(observer)
-        
-        # Launch each observer in a separate thread
-        thread = threading.Thread(
-            target=launch_observer, 
-            args=(observer, car_id),
-            daemon=True,
-            name=f"Observer-Car{car_id}"
-        )
-        thread.start()
-        threads.append(thread)
-        
-        time.sleep(0.5)  # Stagger the launches to avoid conflicts
-    
-    # Wait for observers to establish connections
-    print("\nWaiting for YOLO servers to connect...")
-    
-    # Track which observers are already connected
-    connected_status = {idx: False for idx in range(len(observers))}
-    first_frame_received = {idx: False for idx in range(len(observers))}
-    
-    while True:
-        time.sleep(1.0)
-        
-        # Check each observer
-        for idx, observer in enumerate(observers):
-            car_id = args.cars[idx]
-            
-            if not connected_status[idx]:
-                # Check for initial connection
-                if len(observer.agentList) > 0:
-                    agent = observer.agentList[0]
-                    if hasattr(agent, 'connected') and agent.connected:
-                        print(f"  [✓] QCar {car_id}: Connected to YOLO stream")
-                        connected_status[idx] = True
-            elif not first_frame_received[idx]:
-                # Check if receiving data (counter > 0 means data received)
-                if len(observer.agentList) > 0:
-                    agent = observer.agentList[0]
-                    if hasattr(agent, 'counter') and agent.counter > 0:
-                        print(f"  [✓] QCar {car_id}: Receiving video frames - window should be visible")
-                        first_frame_received[idx] = True
-        
-        # Check if all connected
-        if all(connected_status.values()):
-            break
-    
-    print()
-    print("="*70)
-    print(f" All {len(observers)} observer(s) connected and receiving data!")
-    print("="*70)
-    print("\nPress Ctrl+C to stop all observers...")
-    print()
+    print("\nPress 'q' or 'Esc' to exit.\n")
     
     try:
-        # Keep main thread alive
         while True:
-            time.sleep(5)
+            # Main GUI loop - OpenCV imshow must run in main thread
+            frame = viewer.get_frame()
+            
+            if frame is not None:
+                # Optional scaling
+                if viewer.scale != 1.0:
+                    frame = cv2.resize(frame, None, fx=viewer.scale, fy=viewer.scale)
+                
+                # Overlay info
+                status_color = (0, 255, 0) # Green
+                cv2.putText(frame, f"Car {args.car} | FPS: {viewer.fps:.1f}", (10, 20), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
+                
+                cv2.imshow(viewer.window_name, frame)
+            else:
+                # Optional: Show "Waiting..." screen or just wait
+                pass
+        
+            # Check for quit key
+            key = cv2.waitKey(10) & 0xFF
+            if key == ord('q') or key == 27:
+                break
+                
     except KeyboardInterrupt:
-        print("\nShutting down observers...")
-        for observer in observers:
-            observer.terminate()
-        print("All observers terminated.")
+        print("\nInterrupted by user.")
+    finally:
+        print("Stopping viewer...")
+        viewer.stop()
+        cv2.destroyAllWindows()
+        print("Done.")
 
 if __name__ == "__main__":
     main()
