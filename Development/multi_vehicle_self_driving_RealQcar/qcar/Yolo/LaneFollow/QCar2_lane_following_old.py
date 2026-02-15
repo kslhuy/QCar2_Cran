@@ -38,9 +38,9 @@ dt = 0.033
 
 if not IS_PHYSICAL_QCAR:
     robotsDir = readRobots()
-
+	# QC2_0
     # THIS VERSION OF VEHICLE CONTROL NEEDS THE CARS TO BE INITIALIZED USING THE MULTIAGENT CLASS
-    Car1 = robotsDir["QC2_1"]
+    Car1 = robotsDir["QC2_0"] 
     calibrate=False
 else:
     calibrate =  'y' in input('do you want to recalibrate?(y/n)')
@@ -52,6 +52,7 @@ else:
 
 
 myCam = QCarCameras( frameWidth=imageWidth, frameHeight=imageHeight , frameRate=sampleRate, enableFront=True, videoPort=Car1["videoPort"])
+# myCam = QCarRealSense(mode='RGB', frameWidthRGB=imageWidth, frameHeightRGB=imageHeight, video3dPort=18805)
 
 # -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- -- --
 ## QCar and Keyboard Control Initialization
@@ -256,7 +257,7 @@ try:
 			LEDs = np.array([0, 0, 0, 0, 0, 0, 1, 1])  # Rear LEDs = manual
 		
 		# Write commands to QCar
-		myCar.read_write_std(final_throttle, final_steering, None)
+		# myCar.read_write_std(final_throttle, final_steering, None)
 		end = time.time()
 		dt = end - start
 

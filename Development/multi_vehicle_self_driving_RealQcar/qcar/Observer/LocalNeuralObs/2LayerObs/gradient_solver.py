@@ -531,6 +531,10 @@ class GradientSolver:
         
         # Total gradient
         dL_df = dL_df_state + dL_df_reg
+
+    
+        # loss_total = loss_reg
+        # dL_df_reg = 2 * lambda_reg * f_error
         
         return dL_df, loss_total
 
@@ -828,6 +832,104 @@ class GradientSolver:
             dL_df_total += dL_df_ref
         
         return dL_df_total, loss_total
+
+    # =========================================================================
+    # Simple Residual Learning (Direct Supervised Learning)
+    # =========================================================================
+    
+    def chain_rule_simple_residual(self,
+                                   f_nn: np.ndarray,
+                                   f_target: np.ndarray,
+                                   f_nn_prev: Optional[np.ndarray] = None,
+                                   weight: float = 1.0,
+                                   w_smooth: float = 0.0) -> Tuple[np.ndarray, float]:
+        """
+        Simple loss for directly learning tire residuals with optional smoothness.
+        
+        This is a pure supervised learning approach:
+            Loss: L = weight * ||f_nn - f_target||² + w_smooth * ||f_nn - f_nn_prev||²
+        
+        No observer dynamics, no sensitivity propagation - just match the target.
+        Use this to test if the NN can learn tire residuals at all.
+        
+        Args:
+            f_nn: Neural network output [w_r, w_f] (2,) or (2,1)
+            f_target: Target tire residual from Layer 1 or ground truth (2,) or (2,1)
+            f_nn_prev: Previous NN output for smoothness (optional)
+            weight: Loss weight for target matching (default 1.0)
+            w_smooth: Smoothness weight (default 0.0 = disabled)
+        
+        Returns:
+            Tuple of (gradient dL/df, loss value)
+        """
+        f_nn_col = self._ensure_col_vector(f_nn)
+        f_target_col = self._ensure_col_vector(f_target)
+        
+        # Error (target matching)
+        f_error = f_nn_col - f_target_col
+        
+        # Loss 1: Target matching - weight * ||f_nn - f_target||²
+        loss_target = weight * np.sum(f_error ** 2)
+        
+        # Gradient 1: dL/df = 2 * weight * (f_nn - f_target)
+        dL_df = 2 * weight * f_error.T  # (1, output_dim)
+        
+        loss_total = loss_target
+        
+        # Loss 2: Smoothness - w_smooth * ||f_nn - f_nn_prev||²
+        if f_nn_prev is not None and w_smooth > 0:
+            f_nn_prev_col = self._ensure_col_vector(f_nn_prev)
+            f_diff = f_nn_col - f_nn_prev_col
+            
+            loss_smooth = w_smooth * np.sum(f_diff ** 2)
+            dL_df_smooth = 2 * w_smooth * f_diff.T
+            
+            loss_total += loss_smooth
+            dL_df += dL_df_smooth
+        
+        return dL_df, loss_total
+    
+    def compute_loss_simple_residual_autodiff(self,
+                                              f_nn: 'torch.Tensor',
+                                              f_target: 'torch.Tensor',
+                                              f_nn_prev: Optional['torch.Tensor'] = None,
+                                              weight: float = 1.0,
+                                              w_smooth: float = 0.0) -> 'torch.Tensor':
+        """
+        PyTorch autodiff version of simple residual loss with smoothness.
+        
+        Loss: L = weight * ||f_nn - f_target||² + w_smooth * ||f_nn - f_nn_prev||²
+        
+        Args:
+            f_nn: Neural network output tensor (2,) or (2,1)
+            f_target: Target tire residual tensor (2,) or (2,1)
+            f_nn_prev: Previous NN output tensor for smoothness (optional)
+            weight: Loss weight for target matching (default 1.0)
+            w_smooth: Smoothness weight (default 0.0 = disabled)
+        
+        Returns:
+            Loss tensor (scalar)
+        """
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch not available for autodiff")
+        
+        f_nn_flat = f_nn.view(-1)
+        f_target_flat = f_target.view(-1)
+        
+        # Error (target matching)
+        f_error = f_nn_flat - f_target_flat
+        
+        # Loss 1: Target matching
+        loss = weight * torch.sum(f_error ** 2)
+        
+        # Loss 2: Smoothness
+        if f_nn_prev is not None and w_smooth > 0:
+            f_nn_prev_flat = f_nn_prev.view(-1)
+            f_diff = f_nn_flat - f_nn_prev_flat
+            loss_smooth = w_smooth * torch.sum(f_diff ** 2)
+            loss = loss + loss_smooth
+        
+        return loss
 
     # =========================================================================
     # Autodiff Loss Functions (PyTorch)

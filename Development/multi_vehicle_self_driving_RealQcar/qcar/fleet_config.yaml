@@ -134,7 +134,7 @@ yolo:
 # Safety Configuration
 safety:
   gps_timeout_max: 100
-  max_loop_time_warning: 0.02
+  max_loop_time_warning: 0.025
   emergency_stop_distance: 0.2
   watchdog_timeout: 1.0
 

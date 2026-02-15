@@ -1467,6 +1467,71 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 dL_df = np.zeros((1, self.output_dim))
                 loss = 0.0
         
+        elif loss_type == 'simple_residual':
+            # ==================================================================
+            # SIMPLE RESIDUAL LEARNING (Supervised)
+            # ==================================================================
+            # Pure supervised learning: minimize ||f_nn - f_target||² + w_smooth*||f_nn - f_nn_prev||²
+            # Use this to test if NN can learn tire residuals at all.
+            # 
+            # Target source (configured via 'simple_residual_target'):
+            #   - 'layer1': Use Layer 1 observer's tire residual estimate (w_hat)
+            #   - 'ground_truth': Use true tire residual from simulator (if available)
+            #
+            target_source = self.config.get('simple_residual_target', 'layer1')
+            simple_weight = self.config.get('simple_residual_weight', 1.0)
+            simple_smooth = self.config.get('simple_residual_smooth', 0.5)
+            
+            if target_source == 'ground_truth' and self.ground_truth_provider is not None:
+                # Get true tire residual from simulator using get_true_residuals()
+                try:
+                    f_target = self.ground_truth_provider.get_true_residuals()
+                    if f_target is None:
+                        print("[Simple Residual] Warning: get_true_residuals() returned None, falling back to w_hat")
+                        f_target = w_hat
+                    else:
+                        f_target = np.array(f_target).flatten()
+                except Exception as e:
+                    print(f"[Simple Residual] Warning: Failed to get ground truth: {e}, falling back to w_hat")
+                    f_target = w_hat
+            elif target_source == 'mix' and self.ground_truth_provider is not None:
+                # Mix: 50% Layer 1 + 50% ground truth
+                try:
+                    f_true = self.ground_truth_provider.get_true_residuals()
+                    if f_true is not None:
+                        f_true = np.array(f_true).flatten()
+                        f_target = 0.2 * w_hat.flatten() + 0.8 * f_true
+                    else:
+                        print("[Simple Residual] Warning: get_true_residuals() returned None for mix, using w_hat")
+                        f_target = w_hat
+                except Exception as e:
+                    print(f"[Simple Residual] Warning: Failed to get ground truth for mix: {e}, using w_hat")
+                    f_target = w_hat
+            else:
+                # Use Layer 1 estimate as target (default)
+                f_target = w_hat
+            f_target = np.array(f_target).reshape(-1, 1)
+            
+            dL_df, loss = self.gradient_solver.chain_rule_simple_residual(
+                self.f_nn,
+                f_target,
+                f_nn_prev=self.f_nn_prev,
+                weight=simple_weight,
+                w_smooth=simple_smooth
+            )
+            
+            # Update previous f_nn for next step smoothness
+            self.f_nn_prev = self.f_nn.squeeze().copy()
+            
+            # Diagnostic logging
+            if self.update_count % 100 == 0:
+                f_nn_flat = self.f_nn.flatten()
+                f_target_flat = f_target.flatten()
+                print(f"[Simple Residual step={self.update_count}] "
+                      f"f_nn=[{f_nn_flat[0]:.3f},{f_nn_flat[1]:.3f}] "
+                      f"f_target=[{f_target_flat[0]:.3f},{f_target_flat[1]:.3f}] "
+                      f"loss={loss:.4f} (w_smooth={simple_smooth})")
+        
         elif loss_type == 'composite_uio' and self.trajectory_ref is not None:
             # Use composite UIO loss with trajectory reference (reduced dimension)
             dL_df, loss = self.gradient_solver.chain_rule_composite_uio(
@@ -2085,6 +2150,79 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                     f_nn_t, f_uk_t, self.config['lambda_regularization'],
                     self.ref_indices
                 )
+            elif loss_type == 'simple_residual':
+                # ==================================================================
+                # SIMPLE RESIDUAL LEARNING (Autodiff)
+                # ==================================================================
+                # Pure supervised learning: minimize ||f_nn - f_target||² + w_smooth*||f_nn - f_nn_prev||²
+                target_source = self.config.get('simple_residual_target', 'layer1')
+                simple_weight = self.config.get('simple_residual_weight', 1.0)
+                simple_smooth = self.config.get('simple_residual_smooth', 0.5)
+                
+                # Get target residual based on source
+                if target_source == 'ground_truth' and self.ground_truth_provider is not None:
+                    # Get true tire residual from simulator using get_true_residuals()
+                    try:
+                        f_target_np = self.ground_truth_provider.get_true_residuals()
+                        if f_target_np is None:
+                            print("[Simple Residual Autodiff] Warning: get_true_residuals() returned None")
+                            f_target_np = self.f_nn.flatten()
+                        else:
+                            f_target_np = np.array(f_target_np).flatten()
+                    except Exception as e:
+                        print(f"[Simple Residual Autodiff] Warning: Failed to get ground truth: {e}")
+                        f_target_np = self.f_nn.flatten()
+                elif target_source == 'mix' and self.ground_truth_provider is not None:
+                    # Mix: 50% Layer 1 + 50% ground truth
+                    try:
+                        f_true = self.ground_truth_provider.get_true_residuals()
+                        # Get Layer 1 estimate
+                        if hasattr(self, '_last_w_hat_L1') and self._last_w_hat_L1 is not None:
+                            f_L1 = self._last_w_hat_L1.flatten()
+                        else:
+                            f_L1 = self.f_nn.flatten()
+                        
+                        if f_true is not None:
+                            f_true = np.array(f_true).flatten()
+                            f_target_np = 0.2 * f_L1 + 0.8 * f_true
+                        else:
+                            print("[Simple Residual Autodiff] Warning: get_true_residuals() returned None for mix")
+                            f_target_np = f_L1
+                    except Exception as e:
+                        print(f"[Simple Residual Autodiff] Warning: Failed to get ground truth for mix: {e}")
+                        if hasattr(self, '_last_w_hat_L1') and self._last_w_hat_L1 is not None:
+                            f_target_np = self._last_w_hat_L1.flatten()
+                        else:
+                            f_target_np = self.f_nn.flatten()
+                else:
+                    # Use Layer 1 estimate as target (default)
+                    if hasattr(self, '_last_w_hat_L1') and self._last_w_hat_L1 is not None:
+                        f_target_np = self._last_w_hat_L1.flatten()
+                    else:
+                        f_target_np = self.f_nn.flatten()
+                
+                f_target_t = torch.from_numpy(f_target_np.astype(np.float64))
+                f_nn_prev_t = torch.from_numpy(self.f_nn_prev.astype(np.float64))
+                
+                loss = self.gradient_solver.compute_loss_simple_residual_autodiff(
+                    f_nn_t, f_target_t,
+                    f_nn_prev=f_nn_prev_t,
+                    weight=simple_weight,
+                    w_smooth=simple_smooth
+                )
+                
+                # Update previous f_nn for next step smoothness
+                self.f_nn_prev = f_nn_t.detach().numpy().flatten().copy()
+                
+                # Diagnostic logging
+                if self.update_count % 100 == 0:
+                    f_nn_vals = f_nn_t.detach().numpy().flatten()
+                    f_target_vals = f_target_np.flatten()
+                    loss_val = loss.item()
+                    print(f"[Simple Residual Autodiff step={self.update_count}] "
+                          f"f_nn=[{f_nn_vals[0]:.3f},{f_nn_vals[1]:.3f}] "
+                          f"f_target=[{f_target_vals[0]:.3f},{f_target_vals[1]:.3f}] "
+                          f"loss={loss_val:.4f} (w_smooth={simple_smooth})")
             else:
                 # Standard measurement full loss (fake 6x1 measurement)
                 f_uk_t = torch.from_numpy(self.f_nn.flatten().astype(np.float64))
@@ -2294,17 +2432,101 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
     
     def stop_recording(self) -> int:
         """
-        Stop data recording and close the file.
+        Stop data recording, auto-save the trained model, and print a quality summary.
         
         Returns:
             Number of records written
         """
+        count = 0
         if self.recorder is not None:
             count = self.recorder.stop()
             if self.logger and count > 0:
                 self.logger.logger.info(f"Stopped neural observer recording: {count} records")
-            return count
-        return 0
+        
+        # ── Auto-save trained model ──
+        self._auto_save_model()
+        
+        # ── Print quality summary ──
+        self._print_quality_summary(count)
+        
+        return count
+    
+    def _auto_save_model(self):
+        """
+        Save the trained model to disk.
+        
+        Called automatically when recording stops.
+        Next run: set  load_pretrained: true  in neural_obs_params.yaml to reuse.
+        """
+        try:
+            filepath = self.config.get('model_path', 'trained_data/neural_observer_model.pt')
+            save_model(self.model, filepath)
+            print(f"\n{'='*60}")
+            print(f"  ✅ Neural observer model SAVED → {filepath}")
+            print(f"     To reuse: set 'load_pretrained: true' in neural_obs_params.yaml")
+            print(f"{'='*60}")
+            if self.logger:
+                self.logger.logger.info(f"Auto-saved neural observer model to {filepath}")
+        except Exception as e:
+            print(f"  ❌ Failed to save model: {e}")
+            if self.logger:
+                self.logger.logger.error(f"Failed to auto-save model: {e}")
+    
+    def _print_quality_summary(self, record_count: int = 0):
+        """
+        Print a summary of training quality: loss, tire residual stats,
+        so you can judge if the model is good for inference-only reuse.
+        """
+        print(f"\n{'─'*60}")
+        print(f"  Neural Observer Layer-2 — Quality Summary")
+        print(f"{'─'*60}")
+        print(f"  Updates:           {self.update_count}")
+        print(f"  Records saved:     {record_count}")
+        print(f"  Learning mode:     {self.learning_mode}")
+        print(f"  Loss type:         {self.config.get('loss_type', 'N/A')}")
+        print(f"  Network type:      {self.network_type}")
+        print(f"  Load pretrained:   {self.config.get('load_pretrained', False)}")
+        
+        # ── Loss history analysis ──
+        loss = self.loss_history
+        if len(loss) > 0:
+            loss_arr = np.array(loss)
+            print(f"\n  Loss history ({len(loss)} batch updates):")
+            print(f"    First 10 mean:   {np.mean(loss_arr[:min(10, len(loss))]):.4e}")
+            print(f"    Last  10 mean:   {np.mean(loss_arr[-min(10, len(loss)):]):.4e}")
+            print(f"    Overall min:     {np.min(loss_arr):.4e}")
+            print(f"    Overall max:     {np.max(loss_arr):.4e}")
+            
+            # Stability check on last 20%
+            tail_n = max(5, len(loss) // 5)
+            tail = loss_arr[-tail_n:]
+            tail_mean = np.mean(tail)
+            tail_std  = np.std(tail)
+            ratio = tail_std / (abs(tail_mean) + 1e-10)
+            
+            if ratio < 0.3:
+                verdict = "✅ STABLE (low variance)"
+            elif ratio < 0.7:
+                verdict = "⚠️  MODERATE (some fluctuation)"
+            else:
+                verdict = "❌ UNSTABLE (high variance — consider more training)"
+            print(f"    Tail mean:       {tail_mean:.4e}")
+            print(f"    Tail std:        {tail_std:.4e}")
+            print(f"    Stability:       {verdict}")
+        else:
+            print(f"\n  No training loss recorded (inference-only run or batch not full).")
+        
+        # ── Current tire residual output ──
+        f_nn = self.f_nn.squeeze()
+        print(f"\n  Current NN tire residuals:  w_r={f_nn[0]:.4f}  w_f={f_nn[1]:.4f}")
+        
+        # ── Recording file path ──
+        rec_path = self.get_recording_filepath()
+        if rec_path:
+            print(f"\n  📊 CSV data file:  {rec_path}")
+            print(f"     → Use plot_neural_obs_data.py to visualise tire residual quality")
+        
+        print(f"{'─'*60}\n")
     
     def is_recording(self) -> bool:
         """Check if currently recording data."""

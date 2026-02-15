@@ -81,7 +81,7 @@ def resolve_config_path(config_path: str) -> str:
     return os.path.normpath(os.path.join(script_dir, config_path))
 
 
-def load_fleet_config(path: str = '../multi_vehicle_self_driving_RealQcar/fleet_config.yaml') -> dict:
+def load_fleet_config(path: str = '../multi_vehicle_self_driving_RealQcar/qcar/fleet_config.yaml') -> dict:
     cfg_path = resolve_config_path(path)
     print(f"Loading fleet config from: {cfg_path}")
     if not os.path.exists(cfg_path):

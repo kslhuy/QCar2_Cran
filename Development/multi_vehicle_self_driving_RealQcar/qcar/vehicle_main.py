@@ -177,7 +177,7 @@ def load_configuration(args) -> VehicleMainConfig:
         # if fleet_config_path is None:
         fleet_config_path = os.path.join(script_dir, 'fleet_config.yaml')
         
-        local_config_path = os.path.join(script_dir, 'config_vehicle_main.yaml')
+        # local_config_path = os.path.join(script_dir, 'config_vehicle_main.yaml')
         
         # print(f"[DEBUG] script_dir: {script_dir}")
         # print(f"[DEBUG] fleet_config_path: {fleet_config_path}")
@@ -187,8 +187,9 @@ def load_configuration(args) -> VehicleMainConfig:
             config_path = fleet_config_path
             print(f"[DEBUG] Using fleet_config.yaml")
         else:
-            config_path = local_config_path
-            print(f"[DEBUG] Using config_vehicle_main.yaml")
+            error("Error: fleet_config.yaml not found")
+            return None
+            
     
     # Load from file if it exists
     if os.path.exists(config_path):

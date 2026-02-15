@@ -86,6 +86,7 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     flat['output_scale'] = nn.get('output_scale', 50.0)
     flat['use_acceleration'] = nn.get('use_acceleration', False)
     flat['disturbance_mode'] = nn.get('disturbance_mode', 'tire')
+    flat['nn_output_sign_flip'] = nn.get('nn_output_sign_flip', False)
     
     # Learning parameters
     learn = config.get('learning', {})
@@ -113,6 +114,12 @@ def flatten_config(config: Dict[str, Any]) -> Dict[str, Any]:
     # Loss configuration
     loss = config.get('loss', {})
     flat['loss_type'] = loss.get('type', 'measurement_full')
+    
+    # Simple residual learning parameters (for loss type: 'simple_residual')
+    simple_res = config.get('simple_residual', {})
+    flat['simple_residual_target'] = simple_res.get('target', 'layer1')
+    flat['simple_residual_weight'] = simple_res.get('weight', 1.0)
+    flat['simple_residual_smooth'] = simple_res.get('smooth', 0.5)
     
     # Physics-informed tire loss parameters
     physics_tire = config.get('weights_physics_tire', {})

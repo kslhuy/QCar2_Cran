@@ -538,7 +538,7 @@ class qLPVKalmanObserver(FirstLayerObserverBase):
         # 6D system: [vx, vy, psi, r, X, Y] + disturbances
         Q_diag = [
             0.05,   # vx - encoder is accurate
-            1,    # vy - HIGH: weakly observable, must be loose so a_y innovation
+            2,    # vy - HIGH: weakly observable, must be loose so a_y innovation
                     # flows to tire residuals instead of being absorbed by v_y corrections.
                     # C[AY,VY] >> F[AY,w], so tight Q_vy starves residual estimation.
             0.001,  # psi - heading well-measured by GPS/IMU

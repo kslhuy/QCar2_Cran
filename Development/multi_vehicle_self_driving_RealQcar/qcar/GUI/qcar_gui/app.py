@@ -808,12 +808,30 @@ class QCarFleetController:
     # ========== Car Panel Management ==========
     
     def _on_car_disconnected(self, car_id: int) -> None:
-        """Handle car disconnection - clear manual mode state."""
+        """Handle car disconnection - clear all state associated with this car."""
+        # 1. Clear manual mode state
         if car_id in self._manual_mode_active:
             del self._manual_mode_active[car_id]
-            self.log(f"Car {car_id} disconnected - cleared manual mode state", 'WARNING')
+        
+        # 2. Clear V2V status
+        if car_id in self._v2v_status:
+            del self._v2v_status[car_id]
+            
+        # 3. Stop probing if active
+        if hasattr(self, '_probing_processes') and car_id in self._probing_processes:
+            self._stop_probing_car(car_id)
+            
+        # 4. Remove from platoon configuration
+        if self._platoon_config.formation and car_id in self._platoon_config.formation:
+            del self._platoon_config.formation[car_id]
+            # If this car was crucial (leader), invalidate setup
+            if car_id == self._platoon_config.leader_id:
+                self._platoon_config.leader_id = None
+                self._platoon_config.setup_complete = False
+                self.log(f"Platoon leader (Car {car_id}) disconnected - Platoon setup invalidated", 'WARNING')
+        
+        self.log(f"Car {car_id} disconnected - Cleared all associated state", 'WARNING')
     
-
     
     def _create_car_panel_callbacks(self, car_id: int) -> CarPanelCallbacks:
         """Create callbacks for a car panel."""
@@ -851,7 +869,7 @@ class QCarFleetController:
             if car_id not in current_connected:
                 self._car_panels[car_id].destroy()
                 del self._car_panels[car_id]
-                self.log(f"Car {car_id} disconnected", 'WARNING')
+                self.log(f"Car {car_id} disconnected - Panel removed", 'WARNING')
         
         # Add panels for newly connected cars
         for car_id in current_connected:
@@ -868,13 +886,34 @@ class QCarFleetController:
                 panel.pack(fill='x', pady=(0, 15))
                 self._car_panels[car_id] = panel
                 
-                self.log(f"Car {car_id} connected", 'SUCCESS')
+                self.log(f"Car {car_id} connected - New panel created", 'SUCCESS')
         
         # Show waiting message if no cars connected
-        if not current_connected and not self._no_cars_label:
-            self._show_waiting_message()
+        if not current_connected:
+            if not self._no_cars_label:
+                self._show_waiting_message()
+            
+            # Global cleanup when NO cars are connected
+            if self._connected_cars: # If we HAD cars before
+                 self._cleanup_global_state()
         
         self._connected_cars = current_connected
+
+    def _cleanup_global_state(self) -> None:
+        """Clean up all global state when no cars are connected."""
+        self.log("No cars connected - Cleaning up all global state", 'WARNING')
+        
+        # Clear platoon config
+        self._platoon_config = PlatoonConfig()
+        
+        # Clear V2V status
+        self._v2v_status.clear()
+        
+        # Reset any fleet control buttons if needed
+        if self._fleet_controls:
+            # Assuming fleet controls might need resetting, but they mostly trigger actions
+            pass
+
     
     def _update_car_states(self) -> None:
         """Update car panel states from telemetry."""
@@ -1135,8 +1174,19 @@ class QCarFleetController:
                 self.log(f"Car {car_id}: Probing script not found at {probing_script}", 'ERROR')
                 return
             
+            # Get car IP
+            ip = 'localhost'
+            status = self._remote.get_car_status(car_id)
+            if status and status.get('address'):
+                ip = status['address'][0]
+            elif car_id in self._deployment_panels:
+                # Fallback to configured IP
+                config = self._deployment_panels[car_id]._get_current_config()
+                if config.ip:
+                    ip = config.ip
+            
             # Start the probing process
-            cmd = ['python', probing_script, '--cars', str(car_id)]
+            cmd = ['python', probing_script, '--car', str(car_id), '--ip', ip]
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,

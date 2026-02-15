@@ -1258,6 +1258,10 @@ class VehicleObserver:
             if self.fleet_recorder:
                 self.fleet_recorder.stop()
                 self.vehicle_logger.logger.info("Fleet data recorder stopped")
+            
+            # Stop neural observer recording & auto-save model
+            if self.local_estimator is not None and hasattr(self.local_estimator, 'stop_recording'):
+                self.local_estimator.stop_recording()
                 
         except Exception as e:
             if self.vehicle_logger:

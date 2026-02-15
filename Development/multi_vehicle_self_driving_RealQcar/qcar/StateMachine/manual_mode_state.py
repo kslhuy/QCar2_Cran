@@ -47,6 +47,7 @@ class ManualModeState(StateBase):
             'current_steering': 0.0,
             'last_sent_throttle': None,  # Track last sent values to hardware
             'last_sent_steering': None,
+            # 'last_hardware_update_time': 0.0,  # Track time of last hardware write
             'command_count': 0,
             'timeout_warnings': 0,
             'hardware_update_count': 0
@@ -84,9 +85,9 @@ class ManualModeState(StateBase):
             steering = 0.0
         
         # Only send to hardware if commands changed (avoid blocking on every loop)
-        if self._commands_changed(throttle, steering):
-            self._send_to_hardware(throttle, steering)
-        
+        # if self._commands_changed(throttle, steering):
+        self._send_to_hardware(throttle, steering)
+
         # Periodic status logging
         self._periodic_status_logging()
         
@@ -170,8 +171,8 @@ class ManualModeState(StateBase):
             return True
         
         # Check for significant change (0.01 threshold to avoid noise)
-        throttle_changed = abs(throttle - last_throttle) > 0.1
-        steering_changed = abs(steering - last_steering) > 0.05
+        throttle_changed = abs(throttle - last_throttle) > 0.01
+        steering_changed = abs(steering - last_steering) > 0.01
         
         return throttle_changed or steering_changed
     

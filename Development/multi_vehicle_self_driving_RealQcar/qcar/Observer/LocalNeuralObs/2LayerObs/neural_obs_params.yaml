@@ -15,7 +15,7 @@ neural_network:
   input_dim: 6 # When using acceleration, automatic set to 8
   
   # Hidden layer dimension
-  hidden_dim: 32
+  hidden_dim: 24
   
   # Output dimension (tire residuals [w_r, w_f])
   output_dim: 2
@@ -43,7 +43,7 @@ neural_network:
   # RECOMMENDED: true when using 'physics_tire' loss — gives the NN access to
   # load-transfer and transient dynamics information that improves tire residual
   # prediction during braking, fast steering, and surface changes.
-  use_acceleration: true
+  use_acceleration: false
 
   # Disturbance estimation mode: 'tire' (default 2D: [w_r, w_f]) or 'general' (3D: [d_vx, d_vy, d_r])
   disturbance_mode: 'tire'
@@ -53,12 +53,12 @@ neural_network:
 # ============================================================================
 learning:
   # Learning rate for optimizer
-  learning_rate: 0.001
+  learning_rate: 0.002
   
   # Batch size for gradient accumulation
   # Smaller = more frequent updates. With open-loop prediction loss,
   # each sample gives a strong gradient signal.
-  batch_size: 5
+  batch_size: 2
   
   # Weight decay (L2 regularization adam optimizer)
   weight_decay: 0.0
@@ -67,14 +67,14 @@ learning:
   # NOTE: For 'physics_tire' loss, this is NOT used (replaced by w_ay, w_smooth, lambda_bound).
   #       For 'composite_uio' and 'measurement_full', high values pull NN toward Layer 1 estimate.
   #       If Layer 1 is inaccurate, set this LOW or use 'prediction_error' loss instead.
-  lambda_regularization: 15.0
+  lambda_regularization: 100.0
   
   # Learning mode: 'learningby_dict' (batch) or 'continuous_learning' (online)
   learning_mode: learningby_dict
   
   # Dictionary size for learningby_dict mode
   # Larger = more training data per batch cycle. 100+ recommended for prediction_error.
-  dict_size: 100
+  dict_size: 50
   
   # Gradient computation method:
   #   - 'autodiff': PyTorch automatic differentiation (recommended, requires PyTorch)
@@ -279,10 +279,39 @@ weights_prediction_error:
 #     No need for noisy physics target w*. Trains NN to minimize how well
 #     the observer predicts the next measurement. Works with noisy sensors.
 #     Does NOT require r_dot computation.
+#   - 'simple_residual': SIMPLEST - Pure supervised learning (DEBUGGING/TESTING)
+#     Loss: ||f_nn - f_target||²
+#     Just tries to match the target tire residual directly.
+#     No observer dynamics, no sensitivity propagation.
+#     Use this to test if the NN can learn tire residuals at all.
+#     Target source configured by 'simple_residual_target' below.
 #
 loss:
   # Loss function type
-  type: prediction_error
+  type: simple_residual
+
+# ============================================================================
+# Simple Residual Learning Configuration (for loss type: 'simple_residual')
+# ============================================================================
+# Simplest possible loss with smoothness:
+#   L = weight * ||f_nn - f_target||² + smooth * ||f_nn - f_nn_prev||²
+# Use this to verify the NN architecture can learn tire residuals before
+# adding complex observer dynamics.
+#
+simple_residual:
+  # Target source:
+  #   - 'layer1': Use Layer 1 observer's tire residual estimate (w_hat)
+  #   - 'ground_truth': Use true tire residual from simulator (if available)
+  #   - 'mix': Average of Layer 1 estimate and ground truth (for noisy sim data) 
+  target: mix
+  
+  # Loss weight for target matching (higher = faster learning but may overshoot)
+  weight: 6.0
+  
+  # Smoothness weight: penalizes rapid changes in f_nn
+  # Higher = smoother output but slower response to changing dynamics
+  # Recommended: 0.3 - 1.0
+  smooth: 1
 
 # ============================================================================
 # Physics-Informed Tire Loss Weights (for loss type: 'physics_tire')
