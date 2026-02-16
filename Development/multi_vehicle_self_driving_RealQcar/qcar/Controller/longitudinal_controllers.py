@@ -108,8 +108,8 @@ class PIDVelocityController(LongitudinalControllerBase):
         # PID control
         u = self.kp * e + self.ki * self.ei + self.kd * de
         
-        # Clamp output
-        u = np.clip(u, -self.max_throttle, self.max_throttle)
+        # Clamp output (No need actually , since in vehicle logic already clamp)
+        # u = np.clip(u, -self.max_throttle, self.max_throttle)
 
         # print(f"[PIDVelocityController] v: {v:.2f}, v_ref: {v_ref:.2f}, e: {e:.2f}, ei: {self.ei:.2f}, de: {de:.2f}, throttle: {u:.2f}")
         

@@ -27,6 +27,13 @@ class VehicleState(Enum):
     STOPPED = auto()              # Vehicle stopped (manual stop, safety stop, etc.)
 
 
+class Gear(Enum):
+    """Vehicle transmission gears"""
+    DRIVE_1 = auto()  # Low speed / Safe mode
+    DRIVE_2 = auto()  # Medium speed
+    DRIVE_3 = auto()  # High speed / Full power
+
+
 class StateTransitionReason(Enum):
     """Reasons for state transitions"""
     

@@ -9,7 +9,7 @@ import time
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from .state_base import StateBase
-from .vehicle_state import VehicleState, StateTransitionReason
+from .vehicle_state import VehicleState, StateTransitionReason, Gear
 from pal.products.qcar import  IS_PHYSICAL_QCAR
 
 # Import CommandType once at module level
@@ -119,10 +119,27 @@ class ManualModeState(StateBase):
             if not IS_PHYSICAL_QCAR:
                 throttle *= 0.7  # Scale down for simulation (to sensible speeds)
                 
-            # Validate and clamp control inputs
-            throttle = max(-1.0, min(1.0, throttle))
-            steering = max(-1.0, min(1.0, steering))
+
             
+            # Apply Gear-based throttle limiting
+            if hasattr(self.vehicle_logic, 'gear'):
+                current_gear = self.vehicle_logic.gear
+                limit = 0.2  # Default full power
+                
+                if current_gear == Gear.DRIVE_1:
+                    limit = 0.2  # Limit to 50% power in Gear 1
+                elif current_gear == Gear.DRIVE_2:
+                    limit = 0.4  # Limit to 75% power in Gear 2
+                elif current_gear == Gear.DRIVE_3:
+                    limit = 0.6  # Full power in Gear 3
+                
+                # # Apply limit to throttle magnitude
+                # throttle = min(throttle, limit)
+
+            # Validate and clamp control inputs
+            throttle = max(-limit, min(limit, throttle))
+            steering = max(-1.0, min(1.0, steering))
+
             # Update state data
             self.state_data['current_throttle'] = throttle
             self.state_data['current_steering'] = steering
@@ -146,7 +163,7 @@ class ManualModeState(StateBase):
         elif command_type == CommandType.DISABLE_MANUAL_MODE:
             self.logger.logger.info("[MANUAL] Manual mode disabled - transitioning to STOPPED")
             return (VehicleState.STOPPED, StateTransitionReason.STOP_COMMAND)
-        
+            
         # Handle stop command (transition to STOPPED state)
         elif command_type in [CommandType.STOP, CommandType.EMERGENCY_STOP]:
             self.logger.logger.info(f"[MANUAL] Stop command received: {command_type}")

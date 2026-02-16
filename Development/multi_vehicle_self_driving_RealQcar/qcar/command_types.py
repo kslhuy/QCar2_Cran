@@ -20,6 +20,8 @@ class CommandType(Enum):
     SET_PATH = "set_path"
     SET_PARAMS = "set_params"
     SET_INITIAL_POSITION = "set_initial_position"
+    SET_GEAR = "set_gear"
+
     
     # Platoon commands
     ENABLE_PLATOON_LEADER = "enable_platoon_leader"

@@ -42,6 +42,7 @@ class CarState:
     fleet_observer_type: str = 'unknown'
     longitudinal_ctrl_type: str = 'unknown'
     lateral_ctrl_type: str = 'unknown'
+    gear: str = 'DRIVE_1'
 
 
 @dataclass
@@ -65,6 +66,7 @@ class CarPanelCallbacks:
     on_set_local_observer: Callable[[int, str], None] = None
     on_set_fleet_observer: Callable[[int, str], None] = None
     on_set_controller: Callable[[int, str, str], None] = None  # car_id, category, type
+    on_set_gear: Callable[[int, str], None] = None
 
 
 class TelemetryDisplay(BaseWidget):
@@ -204,6 +206,8 @@ class ManualControlPanel(BaseWidget):
         self._control_type_var: Optional[tk.StringVar] = None
         self._manual_btn: Optional[tk.Button] = None
         self._manual_active = False
+        self._gear_label: Optional[tk.Label] = None
+        self._current_gear = 'DRIVE_1'
         super().__init__(parent, theme)
     
     def _build(self) -> None:
@@ -256,6 +260,72 @@ class ManualControlPanel(BaseWidget):
             pady=3
         )
         self._manual_btn.pack(fill='x', pady=(3, 0))
+        
+        # Gear control
+        gear_frame = tk.Frame(content, bg=c.bg_medium)
+        gear_frame.pack(fill='x', pady=(5, 0))
+        
+        ThemedLabel(gear_frame, text="Gear:", style='muted', theme=self.theme).pack(side='left', padx=(0, 5))
+        
+        self._gear_label = ThemedLabel(
+            gear_frame,
+            text=self._format_gear(self._current_gear),
+            theme=self.theme,
+            font=self.theme.fonts.small_bold()
+        )
+        self._gear_label.pack(side='left', padx=(0, 10))
+        
+        # Gear Up/Down buttons
+        ThemedButton(
+            gear_frame,
+            text="▲",
+            button_type='command',
+            command=self._on_gear_up,
+            padx=5,
+            pady=0,
+            width=2
+        ).pack(side='left', padx=(0, 2))
+        
+        ThemedButton(
+            gear_frame,
+            text="▼",
+            button_type='command',
+            command=self._on_gear_down,
+            padx=5,
+            pady=0,
+            width=2
+        ).pack(side='left')
+    
+    def _format_gear(self, gear_str: str) -> str:
+        """Format gear string for display (e.g., 'DRIVE_1' -> 'D1')."""
+        if gear_str == 'DRIVE_1': return 'D1'
+        if gear_str == 'DRIVE_2': return 'D2'
+        if gear_str == 'DRIVE_3': return 'D3'
+        return gear_str
+    
+    def _on_gear_up(self) -> None:
+        """Handle gear up."""
+        next_gear = None
+        if self._current_gear == 'DRIVE_1': next_gear = 'DRIVE_2'
+        elif self._current_gear == 'DRIVE_2': next_gear = 'DRIVE_3'
+        
+        if next_gear and self.callbacks.on_set_gear:
+            self.callbacks.on_set_gear(self.car_id, next_gear)
+    
+    def _on_gear_down(self) -> None:
+        """Handle gear down."""
+        next_gear = None
+        if self._current_gear == 'DRIVE_3': next_gear = 'DRIVE_2'
+        elif self._current_gear == 'DRIVE_2': next_gear = 'DRIVE_1'
+        
+        if next_gear and self.callbacks.on_set_gear:
+            self.callbacks.on_set_gear(self.car_id, next_gear)
+    
+    def set_gear(self, gear: str) -> None:
+        """Update gear display."""
+        self._current_gear = gear
+        if self._gear_label:
+            self._gear_label.config(text=self._format_gear(gear))
     
     def _on_control_type_change(self, control_type: str) -> None:
         """Handle control type change."""
@@ -1144,6 +1214,7 @@ class CarPanelWidget(BaseWidget):
         # Update manual mode
         if self._manual_control:
             self._manual_control.set_manual_active(state.manual_mode)
+            self._manual_control.set_gear(state.gear)
         
         # Update perception status
         if self._perception_control:
