@@ -40,8 +40,9 @@ class ThrottleVelocityAnalyzer:
         # Vehicle 0 throttle sequence: [0.05, 0.06, 0.07, 0.8, 0.9, 0.1, 0.11, 0.12, 0.13, 0.15, 0.16, 0.17, 0.18]
         # Each throttle value lasts 5 seconds
         # Note: 0.8 and 0.9 are typos - should be 0.08 and 0.09
-        self.throttle_sequence = [0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.11, 0.12, 0.13, 0.15, 0.16, 0.17, 0.18]
-        self.segment_duration = 5.0  # seconds
+        # self.throttle_sequence = [0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.11, 0.12, 0.13, 0.15, 0.16, 0.17, 0.18]
+        self.throttle_sequence = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.11, 0.12, 0.13, 0.15, 0.16, 0.17, 0.18, 0.19, 0.2, 0.21, 0.22, 0.23, 0.24, 0.25]
+        self.segment_duration = 15.0  # seconds
         
         # Auto-correction for common typos in throttle sequence
         self.auto_correct_throttle = True
@@ -87,93 +88,96 @@ class ThrottleVelocityAnalyzer:
         return self
     
     def segment_data(self):
-        """
-        Segment data according to throttle sequence timing
-        Each segment should last ~5 seconds
-        """
-        print(f"\n[2] Segmenting data by throttle sequence")
-        print(f"    Throttle sequence: {self.throttle_sequence}")
-        print(f"    Segment duration: {self.segment_duration}s")
-        
+        """Detect throttle segments either via markers or velocity jumps."""
+        print("\n[2] Segmenting data by detected velocity transitions")
         time_col = self.data['time'].values
         velocity_col = self.data['true_velocity_0'].values
-        
-        # Start time (first timestamp)
-        start_time = time_col[0]
-        current_time = start_time
-        segment_idx = 0
-        
+
+        marker_column = None
+        for candidate in ['segment_marker', 'marker', 'transition_flag']:
+            if candidate in self.data.columns:
+                marker_column = candidate
+                break
+
+        segments_bounds = []
+        if marker_column:
+            markers = self.data[marker_column].to_numpy()
+            value_to_start = {}
+            for idx, val in enumerate(markers):
+                if val not in value_to_start:
+                    value_to_start[val] = idx
+            for val in sorted(value_to_start.keys()):
+                if val + 1 in value_to_start:
+                    segments_bounds.append((value_to_start[val], value_to_start[val + 1], val))
+            detection_note = f"manual marker ranges from '{marker_column}'"
+        else:
+            dt = np.diff(time_col, prepend=time_col[0])
+            # use acceleration change rate (jerk) to detect throttle transitions
+            accel = np.gradient(velocity_col, time_col)
+            da = np.diff(accel, prepend=accel[0])
+            jerk = np.zeros_like(da)
+            valid_dt = dt > 0
+            jerk[valid_dt] = np.abs(da[valid_dt] / dt[valid_dt])
+
+            threshold = max(np.mean(jerk) + 2 * np.std(jerk), 10)
+            abrupt_idxs = np.where(jerk > threshold)[0]
+
+            boundaries = [0]
+            for idx in abrupt_idxs:
+                if idx - boundaries[-1] < 5:
+                    continue
+                boundaries.append(idx)
+            boundaries.append(len(time_col))
+            detection_note = f"automatic (threshold {threshold:.3f})"
+            for seg_idx in range(len(boundaries) - 1):
+                segments_bounds.append((boundaries[seg_idx], boundaries[seg_idx + 1], seg_idx))
+
         self.segments_data = []
-        
-        print(f"\n    Segment Analysis:")
-        print(f"    {'Seg':<4} {'Throttle':<10} {'Time Range':<25} {'N Samples':<10} {'Steady-State V (m/s)':<20}")
-        print(f"    {'-'*70}")
-        
-        for i, (time_val, vel_val) in enumerate(zip(time_col, velocity_col)):
-            # Check if we should move to next segment
-            elapsed_in_segment = time_val - current_time
-            
-            # Move to next segment if time exceeds duration
-            if elapsed_in_segment >= self.segment_duration and segment_idx < len(self.throttle_sequence):
-                segment_idx += 1
-                current_time = time_val
-                elapsed_in_segment = 0
-            
-            # Add data point to current segment
-            if segment_idx < len(self.throttle_sequence):
-                throttle_val = self.throttle_sequence[segment_idx]
-                
-                if len(self.segments_data) == 0 or self.segments_data[-1]['segment_idx'] != segment_idx:
-                    # New segment
-                    self.segments_data.append({
-                        'segment_idx': segment_idx,
-                        'throttle': throttle_val,
-                        'start_time': current_time,
-                        'velocities': [vel_val],
-                        'times': [time_val]
-                    })
-                else:
-                    # Add to current segment
-                    self.segments_data[-1]['velocities'].append(vel_val)
-                    self.segments_data[-1]['times'].append(time_val)
-        
-        # Calculate steady-state velocity for each segment (last 50% of segment)
-        print(f"\n    Processing segments:")
-        for seg_data in self.segments_data:
-            velocities = np.array(seg_data['velocities'])
-            times = np.array(seg_data['times'])
-            
-            # Use last 50% of segment for steady-state (to avoid transient effects)
-            n_points = len(velocities)
-            n_steady = max(1, int(n_points * 0.5))  # Last 50%
-            
-            steady_state_velocities = velocities[-n_steady:]
-            steady_state_v_mean = np.mean(steady_state_velocities)
-            steady_state_v_std = np.std(steady_state_velocities)
-            
-            duration = times[-1] - times[0] if len(times) > 1 else 0
-            
-            seg_data['steady_state_velocity'] = steady_state_v_mean
-            seg_data['steady_state_velocity_std'] = steady_state_v_std
-            seg_data['duration'] = duration
-            seg_data['n_samples'] = n_points
-            
-            throttle = seg_data['throttle']
-            seg_idx = seg_data['segment_idx']
-            
-            print(f"    {seg_idx:<4} {throttle:<10.4f} [{times[0]:<10.2f}, {times[-1]:<10.2f}] {n_points:<10} {steady_state_v_mean:<20.6f} ± {steady_state_v_std:.6f}")
-            
-            # Add to calibration points (throttle, velocity pairs)
+        print(f"\n    Detected {len(segments_bounds)} segments ({detection_note})")
+        print("    {'Seg':<4} {'Throttle':<10} {'Time Range':<25} {'Samples':<10} {'Steady V (m/s)':<10}")
+        print("    {'-'*65}")
+
+        for start_idx, end_idx, seg_idx in segments_bounds:
+            if end_idx - start_idx < 5:
+                continue
+
+            velocities = velocity_col[start_idx:end_idx]
+            times = time_col[start_idx:end_idx]
+
+            seg_idx_int = int(seg_idx)
+            throttle_val = self.throttle_sequence[seg_idx_int] if 0 <= seg_idx_int < len(self.throttle_sequence) else self.throttle_sequence[-1]
+
+            mid_count = end_idx - start_idx
+            mid_start = start_idx + int(0.25 * mid_count)
+            mid_end = start_idx + int(0.75 * mid_count)
+            steady_segment = velocity_col[mid_start:mid_end] if mid_end > mid_start else velocities
+
+            steady_state_v_mean = np.mean(steady_segment)
+            steady_state_v_std = np.std(steady_segment)
+
+            seg_record = {
+                'segment_idx': seg_idx_int,
+                'throttle': throttle_val,
+                'times': times.tolist(),
+                'velocities': velocities.tolist(),
+                'steady_state_velocity': steady_state_v_mean,
+                'steady_state_velocity_std': steady_state_v_std,
+                'duration': times[-1] - times[0],
+                'n_samples': len(velocities)
+            }
+
+            print(f"    {seg_idx:<4} {throttle_val:<10.4f} [{times[0]:<8.2f}, {times[-1]:<8.2f}] {len(velocities):<10} {steady_state_v_mean:<10.4f}")
+            self.segments_data.append(seg_record)
             self.calibration_points.append({
-                'throttle': throttle,
+                'throttle': throttle_val,
                 'velocity': steady_state_v_mean,
                 'velocity_std': steady_state_v_std,
-                'segment_idx': seg_idx
+                'segment_idx': seg_idx_int
             })
-        
+
         print(f"\n    [OK] Created {len(self.segments_data)} segments")
         return self
-    
+
     def fit_model(self):
         """Fit throttle = F(velocity) relationship for feedforward control"""
         print(f"\n[3] Fitting throttle = F(velocity) model (for feedforward control)")
@@ -456,3 +460,4 @@ if __name__ == '__main__':
     # Run analysis
     analyzer = ThrottleVelocityAnalyzer(csv_file)
     analyzer.analyze()
+

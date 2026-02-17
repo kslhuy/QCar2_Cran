@@ -1,11 +1,45 @@
-# Update Log 2026/02/14 (Shengya MENG)
+ # Update Log 2026/02/17 (Shengya MENG)
 
+
+Commit Message: Improve feedforward mapping, add classic distributed controller, enhance leader PID, prepare for Hinf/road tests
+完善前馈映射，补充分布式控制器，改进领导车PID，准备Hinf与路面测试
+
+## Completed Tasks / 已完成任务:
+
+- [x] 领导者的耿跟踪速度可以在 config 文件中提前预设  
+  Leader's reference speed can be preset in config file  
+  相关配置: [controller_config.yaml](Development/fleet_framwork/controller_config.yaml)
+
+- [x] 更加准确的前馈，速度到专油门的映射  
+  Improved feedforward: more accurate speed-to-throttle mapping  
+  相关脚本: [get_throttle_2_velocity.py](Development/multi_vehicle_self_driving_RealQcar/qcar/DataAnalysis/get_throttle_2_velocity.py)
+
+- [x] 补充了经典的分布式控制器类  
+  Added classic distributed controller class  
+  相关实现: [classical_distributed_control.py](J:\Qcar_Development\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\ShengyaCtr\classical_distributed_control.py)
+
+- [x] 在领导者的纵向PID控制中考虑了速度扰动（不再使用）  
+  Considered speed disturbance in leader's longitudinal PID (now deprecated)  
+  相关实现: [longitudinal_controllers.py](J:\Qcar_Development\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Controller\longitudinal_controllers.py)
+
+## Pending Tasks / 待完成任务:
+
+- [ ] 设置坡度与波浪路面，测试 Hinf 性能  
+  Set slope/wavy road, test Hinf performance
+
+- [ ] 设置减速带，测试控制器性能  
+  Add speed bumps, test controller performance
+
+# Update Log 2026/02/14 Shengya MENG)
 Commit Message: Broadcast observer state via V2V, fix feedforward-induced steady-state error
 
 ## Completed Tasks / 已完成任务:
 
 - [x] **Added observer state in V2V communication / V2V通信中添加观测器状态广播**
   - Each vehicle broadcasts estimated state to followers via V2V / 每个车辆通过V2V向跟随车广播估计状态
+
+
+
   - Modified [distributed_luenberger_estimator.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/ShengyaObs/distributed_luenberger_estimator.py) and [v2v_manager.py](Development/multi_vehicle_self_driving_RealQcar/qcar/V2V/v2v_manager.py)
 
 - [x] **Fixed steady-state error caused by excessive feedforward / 修复前馈过大导致的静态误差**

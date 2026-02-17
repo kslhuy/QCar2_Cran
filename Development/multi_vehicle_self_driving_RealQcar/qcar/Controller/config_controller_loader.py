@@ -74,8 +74,8 @@ class ControllerConfig:
             self.config['lateral_controller_type'] = vehicle_config['lateral_controller_type']
         
         # Merge controller-specific parameters
-        for controller_type in ['cacc', 'pid', 'hybrid_longitudinal', 'fix', 'throttle_sequence',
-                               'state_feedback', 'state_feedback_no_observer',
+        for controller_type in ['cacc', 'pid', 'hybrid_longitudinal', 'fix', 'throttle_sequence', 'velocity_sequence',
+                               'state_feedback', 'state_feedback_no_observer', 'classical_distributed',
                                'pure_pursuit', 'stanley', 'lookahead', 'hybrid_lateral', 
                                'fusion_lateral', 'fix_lateral']:
             if controller_type in vehicle_config:
@@ -120,6 +120,8 @@ class ControllerConfig:
             types.append('state_feedback_no_observer')
         if 'throttle_sequence' in self.config:
             types.append('throttle_sequence')
+        if 'classical_distributed' in self.config:
+            types.append('classical_distributed')
         return types
 
     def get_available_lateral_types(self) -> list:
@@ -149,7 +151,7 @@ class ControllerConfig:
         """
         if controller_type is None:
             controller_type = self.get_longitudinal_controller_type()
-        
+
         if controller_type == 'cacc':
             return self._get_cacc_params()
         elif controller_type == 'pid':
@@ -164,8 +166,21 @@ class ControllerConfig:
             return self._get_state_feedback_no_observer_params()
         elif controller_type == 'throttle_sequence':
             return self._get_throttle_sequence_params()
+        elif controller_type == 'classical_distributed':
+            return self._get_classical_distributed_params()
         else:
             raise ValueError(f"Unknown longitudinal controller type: {controller_type}")
+
+    def _get_classical_distributed_params(self) -> Dict[str, Any]:
+        """Get classical distributed controller parameters"""
+        cd_config = self.config.get('classical_distributed', {})
+        # K_all_vehicles should be a dict of dicts, or fallback to None
+        return {
+            'max_throttle': cd_config.get('max_throttle', 0.3),
+            'throttle_smoothing': cd_config.get('throttle_smoothing', 0.7),
+            'leader_fix_throttle': cd_config.get('leader_fix_throttle', 0.1),
+            'K_all_vehicles': cd_config.get('K_all_vehicles', None),
+        }
     
     def get_lateral_params(self, controller_type: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -402,6 +417,30 @@ class ControllerConfig:
     def get_enable_steering_control(self) -> bool:
         """Get enable_steering_control flag"""
         return self.config.get('enable_steering_control', True)
+
+    def get_velocity_sequence(self) -> list:
+        """Get velocity sequence config for FOLLOWING_PATH speed scheduling.
+
+        Supported formats:
+        1. List format (recommended):
+           - {velocity: 0.45, duration: 40}
+           - {velocity: 1.0, duration: 999}
+        2. Dict legacy format:
+           {'values': [0.45, 1.0], 'duration': 40}
+        """
+        vs_config = self.config.get('velocity_sequence', [])
+        if isinstance(vs_config, list):
+            return vs_config
+
+        if isinstance(vs_config, dict):
+            values = vs_config.get('values', [])
+            duration = float(vs_config.get('duration', 0.0))
+            result = []
+            for v in values:
+                result.append({'velocity': float(v), 'duration': duration})
+            return result
+
+        return []
     
     @property
     def enable_steering_control(self) -> bool:
@@ -452,3 +491,4 @@ def get_controller_config(config_path: Optional[str] = None, vehicle_id: Optiona
     
     return _default_config
     
+

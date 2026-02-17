@@ -37,6 +37,12 @@ pid:
   ei_max: 1.0                # Integral anti-windup limit
   v_ref: 0.6                # Default reference velocity (m/s)
 
+# Optional velocity schedule for FOLLOWING_PATH (Scheme 2)
+# If enabled, path-following v_ref is switched by elapsed time in FOLLOWING_PATH state.
+# velocity_sequence:
+#   - {velocity: 0.45, duration: 40}   # First 40s
+#   - {velocity: 1.00, duration: 9999} # Then hold
+
 # Hybrid Longitudinal Controller Parameters (uses both CACC and PID)
 hybrid_longitudinal:
   # Uses CACC when leader available, PID when not
@@ -196,27 +202,85 @@ vehicle:
 per_vehicle_controllers:
   # Vehicle 0 (Leader in most formations)
   0:
-    longitudinal_controller_type: 'fix'  # Fixed throttle for leader
+    longitudinal_controller_type: 'pid'  # Fixed throttle for leader
     lateral_controller_type: 'fix_lateral'  # Straight line
+    # Optional per-vehicle override for velocity schedule (FOLLOWING_PATH)
+    velocity_sequence:
+      - {velocity: 0.45, duration: 60}
+      - {velocity: 0.36, duration: 2.5}
+      - {velocity: 0.24, duration: 1.5}
+      - {velocity: 0.12, duration: 1.5}
+      - {velocity: 0.00, duration: 20}
+      - {velocity: 0.10, duration: 1.5}
+      - {velocity: 0.18, duration: 1.5}
+      - {velocity: 0.28, duration: 1.5}
+      - {velocity: 0.40, duration: 1.5}
+      - {velocity: 0.55, duration: 1.5}
+      - {velocity: 0.68, duration: 1.5}
+      - {velocity: 0.74, duration: 1.5}
+      - {velocity: 0.87, duration: 1.5}
+      - {velocity: 1, duration: 30}
+      - {velocity: 0.85, duration: 1.5}
+      - {velocity: 0.76, duration: 1.5}
+      - {velocity: 0.65, duration: 1.5}
+      - {velocity: 0.50, duration: 1.5}
+      - {velocity: 0.36, duration: 1.5}
+      - {velocity: 0.24, duration: 1.5}
+      - {velocity: 0.12, duration: 1.5}
+      - {velocity: 0.00, duration: 20}
+      - {velocity: 0.08, duration: 1.5}
+      - {velocity: 0.18, duration: 1.5}
+      - {velocity: 0.32, duration: 1.5}
+      - {velocity: 0.48, duration: 1.5}
+      - {velocity: 0.65, duration: 1.5}
+      - {velocity: 0.80, duration: 1.5}
+      # - {velocity: 1.0, duration: 45}
+      # - {velocity: 0.0, duration: 20}
+      # - {velocity: 0.1, duration: 40}
+      # - {velocity: 1.5, duration: 20}
+
     fix:
       throttle: 0.075  # Constant speed 
     fix_lateral:
       steering: 0.0
     throttle_sequence:
-      - {throttle: 0.05, duration: 10}  # 0.06 throttle for 10 seconds
-      - {throttle: 0.06, duration: 10}     # Stop for 5 seconds
-      - {throttle: 0.07, duration: 10}   # 0.06 throttle for another 10 seconds
-      - {throttle: 0.08, duration: 10}     # Stop for 5 seconds
-      - {throttle: 0.09, duration: 10}   # Repeat as needed
-      - {throttle: 0.1, duration: 10}     # Stop for 5 seconds at the end of the sequence
-      - {throttle: 0.11, duration: 10}     # Ensure it stops at the end of the sequence
-      - {throttle: 0.12, duration: 10}     # Ensure it stops at the end of the sequence
-      - {throttle: 0.13, duration: 10}     # Ensure it stops at the end of the sequence
-      - {throttle: 0.14, duration: 10}     # Ensure it stops at the end of the sequence
-      - {throttle: 0.15, duration: 10}     # Ensure  it stops at the end of the sequence 
-      - {throttle: 0.16, duration: 10}     # Ensure it stops at the end of the sequence
-      - {throttle: 0.17, duration: 10}     # Ensure it stops at the end of the sequence
-      - {throttle: 0.18, duration: 10}     # Ensure it stops at the end of the sequence
+      # Throttle sweep: 0.01 to 0.25, step 0.01, duration 15 each
+      - {throttle: 0.01, duration: 15}
+      - {throttle: 0.02, duration: 15}
+      - {throttle: 0.03, duration: 15}
+      - {throttle: 0.04, duration: 15}
+      - {throttle: 0.05, duration: 15}
+      - {throttle: 0.06, duration: 15}
+      - {throttle: 0.07, duration: 15}
+      - {throttle: 0.08, duration: 15}
+      - {throttle: 0.09, duration: 15}
+      - {throttle: 0.10, duration: 15}
+      - {throttle: 0.11, duration: 15}
+      - {throttle: 0.12, duration: 15}
+      - {throttle: 0.13, duration: 15}
+      - {throttle: 0.14, duration: 15}
+      - {throttle: 0.15, duration: 15}
+      - {throttle: 0.16, duration: 15}
+      - {throttle: 0.17, duration: 15}
+      - {throttle: 0.18, duration: 15}
+      - {throttle: 0.19, duration: 15}
+      - {throttle: 0.20, duration: 15}
+      - {throttle: 0.21, duration: 15}
+      - {throttle: 0.22, duration: 15}
+      - {throttle: 0.23, duration: 15}
+      - {throttle: 0.24, duration: 15}
+      - {throttle: 0.25, duration: 15}
+    pid:
+      kp: 0.3                    # Proportional gain
+      ki: 0.2                    # Integral gain
+      kd: 0.005                  # Derivative gain
+      max_throttle: 0.2          # Maximum throttle output
+      ei_max: 1.0                # Integral anti-windup limit
+      v_ref: 0.6                 # Default reference velocity (m/s)
+      # Sinusoidal disturbance parameters (simulating wind effects on leader velocity)
+      disturbance_amplitude: 0.0   # Amplitude of sinusoidal disturbance (m/s)
+      disturbance_frequency: 0.2    # Frequency of disturbance (Hz)
+      disturbance_phase: 0.0        # Initial phase (radians)
 
   
   # Vehicle 1 (First Follower)
@@ -225,12 +289,12 @@ per_vehicle_controllers:
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.00  # Constant speed
-    state_feedback_no_observer:
-      max_throttle: 0.12
+    classical_distributed:
+      max_throttle: 0.2
       throttle_smoothing: 0.0
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     state_feedback:
-      max_throttle: 0.12
+      max_throttle: 0.3
       throttle_smoothing: 0.0
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     fix_lateral:
@@ -245,12 +309,12 @@ per_vehicle_controllers:
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.0  # Constant speed
-    state_feedback_no_observer:
-      max_throttle: 0.12
+    classical_distributed:
+      max_throttle: 0.2
       throttle_smoothing: 0.0 # Slightly smoother than vehicle 1
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     state_feedback:
-      max_throttle: 0.12
+      max_throttle: 0.3
       throttle_smoothing: 0.0 # Slightly smoother than vehicle 1
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     fix_lateral:
@@ -265,12 +329,12 @@ per_vehicle_controllers:
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.0  # Constant speed
-    state_feedback_no_observer:
-      max_throttle: 0.12
+    classical_distributed:
+      max_throttle: 0.2
       throttle_smoothing: 0.0  # Smoothest
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     state_feedback:
-      max_throttle: 0.12
+      max_throttle: 0.3
       throttle_smoothing: 0.0  # Smoothest
       leader_fix_throttle: 0.1 # Feedforward term based on leader's fixed throttle
     fix_lateral:

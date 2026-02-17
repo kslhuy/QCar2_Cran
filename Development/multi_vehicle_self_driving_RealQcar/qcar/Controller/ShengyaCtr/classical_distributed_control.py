@@ -4,11 +4,12 @@ Longitudinal Controllers for Vehicle Following
 Based on the distirbuted luenberger observer and CACC control law.
 
 control commands:
-u_{i} = sum (K_{ij} (Fi \hat{x}_{i} - Fj \hat{x}_{i})) from j =0 to i-1
+u_1 = K_{10} F_1 estimated_state
+u_2 = K_{20} F_2 estimated_state + K_{21} (F_2 - F_1) estimated_state + K32 (F_2 - F_3)  estimated_state
+u_3 = K_{30} F_3 estimated_state + K_{32} (F_3 - F_2) estimated_state
 parameters:
     - u_{i} is the control throttle of vehicle i
     - K_{ij} is the control gain, configured by the extral congig file.
-    - Fi is the index matrix. 
     - \hat{x}_{i} is the estimated state from the distributed luenberger observer i.
     - i is the index of the vehicle in the platoon, starting from 1. 0 is the leader vehicle.
 
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from Observer.ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
 
 
-class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
+class ClassicalDistributedController(LongitudinalControllerBase):
     """
     State Feedback Controller without Observer - uses true V2V communication states
     
@@ -43,70 +44,64 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
                  max_throttle=0.3,
                  throttle_smoothing=0.7,
                  leader_fix_throttle=0.1,
+                 K_all_vehicles=None,
                  observer=None,
                  config=None,
                  logger=None):
         """
-        Initialize State Feedback controller that uses true V2V states (no observer estimation).
-        
-        Args:
-            max_throttle: Maximum throttle output
-            throttle_smoothing: Exponential smoothing factor for throttle (0-1, higher = smoother)
-            observer: Observer instance (needed for V2V communication access via received_local_states)
-            config: Optional config object (takes precedence)
-            logger: Logger instance
+        Adapted for config-based parameter and K matrix loading.
         """
         self.logger = logger
         self.observer = observer
-        
+
         # Use config if provided
         if config and hasattr(config, 'get_longitudinal_params'):
-            params = config.get_longitudinal_params('state_feedback')
+            params = config.get_longitudinal_params('classical_distributed') if 'classical_distributed' in config.get_available_longitudinal_types() else config.get_longitudinal_params('state_feedback')
             self.max_throttle = params.get('max_throttle', max_throttle)
             self.throttle_smoothing = params.get('throttle_smoothing', throttle_smoothing)
             self.leader_fix_throttle = params.get('leader_fix_throttle', leader_fix_throttle)
+            # Load K matrices from config if available
+            self.K_all_vehicles = params.get('K_all_vehicles', K_all_vehicles)
         else:
             self.max_throttle = max_throttle
             self.throttle_smoothing = throttle_smoothing
             self.leader_fix_throttle = leader_fix_throttle
-        
+            self.K_all_vehicles = K_all_vehicles
+
         # Controller state
         self.prev_throttle = 0.0
 
-        # Store K matrices directly for each vehicle
-        # K_matrices[vehicle_id][j] = K_{vehicle_id,j}
-        self.K_all_vehicles = {
-    1: {
-        0: np.array([[-0.1532,-0.3774,-0.0578]])
-    },
-    2: {
-        0: np.array([[-0.1587,-0.3212,-0.0760]]),
-        1: np.array([[-0.0072,-0.0144,0.0093]])
-    },
-    3: {
-        0: np.array([[-0.1752,-0.3661,-0.1097]]),
-        1: np.array([[-0.0069,-0.0137,0.0116]]),
-        2: np.array([[-0.0051,-0.0050,0.0137]])
-    }
-}
+        # Default hardcoded K matrices if not provided by config
+        if self.K_all_vehicles is None:
+            self.K_all_vehicles = {
+                1: {
+                    0: np.array([[-0.3105,-0.5413,0.0062]])
+                },
+                2: {
+                    0: np.array([[-0.3203,-0.4258,-0.0517]]),
+                    1: np.array([[-0.0481,-0.0799,0.0417]])
+                },
+                3: {
+                    0: np.array([[-0.3555,-0.4238,-0.0850]]),
+                    1: np.array([[-0.0351,-0.0553,0.0272]]),
+                    2: np.array([[-0.0336,-0.0528,0.0339]])
+                }
+            }
 
-        
         # Extract K matrices for current vehicle
         self.K_matrices = []
         if self.observer is not None:
             vehicle_id = self.observer.vehicle_id
             if vehicle_id in self.K_all_vehicles:
-                # Get K_i0, K_i1, ..., K_i(i-1) for vehicle i
-                for j in range(vehicle_id):
+                for j in range(vehicle_id+1):
                     if j in self.K_all_vehicles[vehicle_id]:
                         self.K_matrices.append(self.K_all_vehicles[vehicle_id][j])
                     else:
                         self.K_matrices.append(None)
                         if self.logger:
                             self.logger.warning(f"K{vehicle_id}{j} not found, using None")
-                
                 if self.logger:
-                    self.logger.info(f"Vehicle {vehicle_id}: Loaded {len(self.K_matrices)} K matrices")
+                    self.logger.info(f"Vehicle {vehicle_id}: Loaded {len(self.K_matrices)} K matrices (config-based)")
             else:
                 if self.logger:
                     self.logger.warning(f"No K matrices defined for vehicle {vehicle_id}")
@@ -118,27 +113,17 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
                         leader_state: Optional[Dict[str, float]], 
                         dt: float) -> float:
         """
-        Compute throttle using state feedback controller based on true V2V communication states.
-        
-        This method bypasses observer estimates and directly uses true vehicle states from
-        V2V communication for control computation.
-        
-        Args:
-            follower_state: Dict with keys 'x', 'y', 'theta', 'velocity' (following base controller interface)
-            leader_state: Dict with keys 'x', 'y', 'theta', 'velocity' (not used - gets data from V2V)
-            dt: Time step (seconds)
-            
-        Returns:
-            throttle: Computed throttle command (0 to max_throttle)
+        Compute throttle using distributed control law:
+        u_1 = K_{10} F_1 estimated_state
+        u_2 = K_{20} F_2 estimated_state + K_{21} (F_2 - F_1) estimated_state + K_{32} (F_2 - F_3) estimated_state
+        u_3 = K_{30} F_3 estimated_state + K_{32} (F_3 - F_2) estimated_state
         """
-        # Check if observer is available
         if self.observer is None:
             if self.logger:
-                self.logger.warning("StateFeedbackControllerNoObserver: No observer instance provided, returning zero throttle")
+                self.logger.warning("No observer instance provided, returning zero throttle")
             return 0.0
-        
+
         # Convert follower_state dict to numpy array for get_true_estimated_states
-        # follower_state: {x, y, theta, velocity, ...}
         local_state = None
         if follower_state:
             try:
@@ -152,55 +137,94 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
             except Exception as e:
                 if self.logger:
                     self.logger.warning(f"Failed to convert follower_state to array: {e}")
-        
-        # Get true vehicle states from V2V communication (bypassing observer estimates)
-        # The observer instance is used only to access V2V communication data
+
         estimated_states = self.get_true_estimated_states(local_state=local_state)
-        
-        # Check if we have valid estimated states
         if estimated_states is None or len(estimated_states) == 0:
             if self.logger:
-                self.logger.warning("StateFeedbackControllerNoObserver: No estimated states available from V2V communication")
+                self.logger.warning("No estimated states available from V2V communication")
             return 0.0
-        
-        # Get vehicle information
+
         vehicle_id = self.observer.vehicle_id
-        num_vehicles = self.observer.observer_size  # Number of follower vehicles (not including leader)
-        
-        # Calculate index matrix Fi for this vehicle
+        num_vehicles = self.observer.observer_size
         Fi = self.calculate_Fi(num_vehicles=num_vehicles, vehicle_index=vehicle_id)
-    
+
         # Get leader velocity for feedforward calculation
         current_time_ns = int(time.time() * 1e9)
         state_leader = self._get_true_vehicle_state(0, current_time_ns)
         leader_velocity = state_leader[3] if state_leader is not None else follower_state.get('velocity', 0.0)
-    
-        # State feedback control law: u_i = sum_{j=0}^{i-1} K_{ij} * (F_i - F_j) * estimated_states
-        # For j=0 (leader), F_0 is zero matrix, so K_{i0} * F_i * estimated_states
-        throttle_raw = self.feedforward_throttle(leader_velocity)    # Base throttle using LEADER velocity
-        
-        # First term: K_{i0} * F_i * estimated_states (j=0)
-        # This represents control based on this vehicle's relative state to leader
-        if len(self.K_matrices) > 0 and self.K_matrices[0] is not None:
-            K_i0 = self.K_matrices[0]
-            control_input = K_i0 @ (Fi @ estimated_states)
-            throttle_raw += control_input[0]
-        
-        # Sum over preceding vehicles j=1 to i-1
-        # This represents control based on relative states between this vehicle and preceding vehicles
-        for j in range(1, vehicle_id):
-            if j < len(self.K_matrices) and self.K_matrices[j] is not None:
-                K_ij = self.K_matrices[j]
-                Fj = self.calculate_Fi(num_vehicles=num_vehicles, vehicle_index=j)
-                control_input = K_ij @ ((Fi - Fj) @ estimated_states)
-                throttle_raw += control_input[0]
-        
-        # Ensure throttle is non-negative
+
+        throttle_raw = self.feedforward_throttle(leader_velocity)
+
+        # Distributed control law (strictly following the provided equations):
+        # u_1 = K_{10} F_1 x_hat
+        # u_2 = K_{20} F_2 x_hat + K_{21} (F_2 - F_1) x_hat + K_{32} (F_2 - F_3) x_hat
+        # u_3 = K_{30} F_3 x_hat + K_{32} (F_3 - F_2) x_hat
+        #
+        # K_matrices index convention for vehicle i:
+        # - index 0 => K_{i0}
+        # - index 1 => K_{i1}
+        # - index 2 => K_{i2}
+        if vehicle_id == 1:
+            if len(self.K_matrices) > 0 and self.K_matrices[0] is not None:
+                K10 = self.K_matrices[0]
+                throttle_raw += (K10 @ (Fi @ estimated_states))[0]
+            elif self.logger:
+                self.logger.warning("K10 is missing for vehicle 1")
+
+        elif vehicle_id == 2:
+            F1 = self.calculate_Fi(num_vehicles=num_vehicles, vehicle_index=1)
+            F3 = self.calculate_Fi(num_vehicles=num_vehicles, vehicle_index=3) if num_vehicles >= 3 else None
+
+            if len(self.K_matrices) > 0 and self.K_matrices[0] is not None:
+                K20 = self.K_matrices[0]
+                throttle_raw += (K20 @ (Fi @ estimated_states))[0]
+            elif self.logger:
+                self.logger.warning("K20 is missing for vehicle 2")
+
+            if len(self.K_matrices) > 1 and self.K_matrices[1] is not None:
+                K21 = self.K_matrices[1]
+                throttle_raw += (K21 @ ((Fi - F1) @ estimated_states))[0]
+            elif self.logger:
+                self.logger.warning("K21 is missing for vehicle 2")
+
+            # For vehicle 2 third term, use K32 as requested:
+            # u2 third term = K32 * (F2 - F3) * x_hat
+            K32_for_u2 = None
+            if isinstance(self.K_all_vehicles, dict):
+                K32_for_u2 = self.K_all_vehicles.get(3, {}).get(2)
+            if K32_for_u2 is None and len(self.K_matrices) > 2:
+                # Backward-compatible fallback if K32 is not explicitly provided
+                K32_for_u2 = self.K_matrices[2]
+
+            if F3 is not None and K32_for_u2 is not None:
+                throttle_raw += (K32_for_u2 @ ((Fi - F3) @ estimated_states))[0]
+            elif F3 is None and self.logger:
+                self.logger.warning("F3 is unavailable (num_vehicles < 3), skipping K32(F2-F3) term")
+            elif self.logger:
+                self.logger.warning("K32 is missing for vehicle 2 third term")
+
+        elif vehicle_id == 3:
+            F2 = self.calculate_Fi(num_vehicles=num_vehicles, vehicle_index=2)
+
+            if len(self.K_matrices) > 0 and self.K_matrices[0] is not None:
+                K30 = self.K_matrices[0]
+                throttle_raw += (K30 @ (Fi @ estimated_states))[0]
+            elif self.logger:
+                self.logger.warning("K30 is missing for vehicle 3")
+
+            if len(self.K_matrices) > 2 and self.K_matrices[2] is not None:
+                K32 = self.K_matrices[2]
+                throttle_raw += (K32 @ ((Fi - F2) @ estimated_states))[0]
+            elif self.logger:
+                self.logger.warning("K32 is missing for vehicle 3")
+        else:
+            if self.logger:
+                self.logger.warning(
+                    f"Vehicle {vehicle_id}: no strict formula defined (supported: 1,2,3), using feedforward only"
+                )
+
         throttle = min(throttle_raw, self.max_throttle)
-        
-        # Store for next iteration
         self.prev_throttle = throttle
-        
         return throttle
     
     def reset(self):
@@ -286,26 +310,46 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
             vi = state_i[3]  # Velocity
             ai = state_i[4]  # Acceleration
             
-            # Calculate desired spacing d_i0 = follower_id * d + h * sum(v_k for k=1..follower_id)
+            # Calculate desired spacing d_i0
             di0 = follower_id * d
-            
-            # Sum true velocities from vehicle 1 to current follower
-            velocity_sum = 0.0
-            for k in range(1, follower_id + 1):
-                # Use local_state for self, V2V for others
-                if k == vehicle_id and local_state is not None:
-                    state_k = local_state
+
+            # Special rule requested for d30 when current vehicle is 3:
+            # d30 = 3*d + h*(v2 + v2 + v3)
+            if vehicle_id == 3 and follower_id == 3:
+                state_2 = self._get_true_vehicle_state(2, current_time_ns)
+                if local_state is not None:
+                    state_3 = local_state
                 else:
-                    state_k = self._get_true_vehicle_state(k, current_time_ns)
-                
-                if state_k is not None:
-                    velocity_sum += state_k[3]
-                else:
+                    state_3 = self._get_true_vehicle_state(3, current_time_ns)
+
+                if state_2 is None or state_3 is None:
                     if self.logger:
-                        self.logger.warning(f"get_true_estimated_states: Cannot get velocity for vehicle {k}")
+                        self.logger.warning("get_true_estimated_states: Cannot get v2/v3 for custom d30")
                     return None
-            
-            di0 += h * velocity_sum
+
+                v2 = state_2[3]
+                v3 = state_3[3]
+                di0 = 3 * d + h * (v3 + v3 + v3)
+                if self.logger:
+                    self.logger.info(f"Custom d30 for vehicle 3: d30 = {di0:.3f} (3*d + h*(v2+v2+v3))")
+            else:
+                # Default rule: d_i0 = i*d + h*sum(v_k, k=1..i)
+                velocity_sum = 0.0
+                for k in range(1, follower_id + 1):
+                    # Use local_state for self, V2V for others
+                    if k == vehicle_id and local_state is not None:
+                        state_k = local_state
+                    else:
+                        state_k = self._get_true_vehicle_state(k, current_time_ns)
+
+                    if state_k is not None:
+                        velocity_sum += state_k[3]
+                    else:
+                        if self.logger:
+                            self.logger.warning(f"get_true_estimated_states: Cannot get velocity for vehicle {k}")
+                        return None
+
+                di0 += h * velocity_sum
             
             # Calculate relative states (ground truth)
             estimated_state_mat[0, col_idx] = pi - p0 + di0  # Relative position with spacing
@@ -369,6 +413,5 @@ class StateFeedbackControllerNoObserver(LongitudinalControllerBase):
         """
         v_desired = leader_velocity
         # throttle_ff = 0.329609 * v_desired**2 - 0.000272 * v_desired + 0.038744
-        # throttle_ff = 0.001889 * v_desired**2 + 0.155285 * v_desired + 0.005629
-        throttle_ff = 0.156385 * v_desired + 0.005230
+        throttle_ff = 0.001889 * v_desired**2 + 0.155285 * v_desired + 0.005629
         return throttle_ff

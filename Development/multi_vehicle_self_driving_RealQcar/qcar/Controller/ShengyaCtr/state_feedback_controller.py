@@ -145,7 +145,7 @@ class StateFeedbackController(LongitudinalControllerBase):
     
         # State feedback control law: u_i = sum_{j=0}^{i-1} K_{ij} * (F_i - F_j) * estimated_states
         # For j=0 (leader), F_0 is zero matrix, so K_{i0} * F_i * estimated_states
-        throttle_raw = self.feedforward_throttle(follower_state) - 0.029
+        throttle_raw = self.feedforward_throttle(follower_state)
         
         # First term: K_{i0} * F_i * estimated_states (j=0)
         # This represents control based on this vehicle's relative state to leader
@@ -206,6 +206,8 @@ class StateFeedbackController(LongitudinalControllerBase):
         """Given target velocity, compute required throttle"""
 
         v_desired = follower_state.get("velocity", 0.0)
-        throttle_ff = 0.329609 * v_desired**2 - 0.000272 * v_desired + 0.038744
+        # throttle_ff = 0.329609 * v_desired**2 - 0.000272 * v_desired + 0.038744
+        # throttle_ff = 0.001889 * v_desired**2 + 0.155285 * v_desired + 0.005629
+        throttle_ff = 0.156385 * v_desired + 0.005230
         return throttle_ff
 

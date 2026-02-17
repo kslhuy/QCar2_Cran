@@ -459,7 +459,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         self.prev_velocity_measurement = local_measurement[1]
         
         # Compute estimated measurement
-        estimated_measurement = self.Ci @ x_vec + self.Cv * v0 + self.Cd * self.d
+        estimated_measurement = self.Ci @ x_vec + self.Cv * v_0 + self.Cd * self.d
         
         # Compute measurement error
         measurement_error = local_measurement - estimated_measurement
@@ -469,7 +469,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         return measurement_term, local_measurement, estimated_measurement, measurement_error
     
-    def _calculate_estimated_collective_control(self, x_vec: np.ndarray) -> np.ndarray:
+    def _calculate_estimated_collective_control(self, x_vec: np.ndarray, current_time_ns: int,
+                                                local_state: np.ndarray = None) -> np.ndarray:
         """
         Calculate collective control input for all follower vehicles using K-matrix based feedback.
         
@@ -482,9 +483,12 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             x_vec: Observer state vector [3*observer_size]
         
         Returns:
-            collective_control: Control input for each follower vehicle [observer_size]
+            collective_control: Feedback control input for each follower vehicle [observer_size].
+                Saturation is applied considering feedforward (u_ff) so that:
+                if u_est + u_ff > max_total(0.2), then u_i = max_total - u_ff
         """
         collective_control = np.zeros(self.observer_size)
+        max_total_throttle = self.config.get('max_total_throttle_for_observer', 0.2)
         
         for vehicle_id in range(1, self.observer_size + 1):
             # Calculate Fi for current vehicle
@@ -504,6 +508,27 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                         Kij = self.K_all_vehicles[vehicle_id][j]
                         Fj = self.calculate_Fi(num_vehicles=self.observer_size, vehicle_index=j)
                         collective_control[vehicle_id - 1] += (Kij @ ((Fi - Fj) @ x_vec))[0]
+
+            # Apply feedforward-aware saturation:
+            # if (u_est + u_ff) > max_total_throttle, set u_est = max_total_throttle - u_ff
+            # v_desired = None
+            # if vehicle_id == self.vehicle_id and local_state is not None and len(local_state) > 3:
+            #     v_desired = local_state[3]
+            # else:
+            #     state_i = self._get_latest_received_state(vehicle_id, current_time_ns)
+            #     if state_i is not None and len(state_i) > 3:
+            #         v_desired = state_i[3]
+            #     else:
+            #         # Fallback when V2V data for this index is missing
+            #         if vehicle_id < self.fleet_states.shape[1]:
+            #             v_desired = self.fleet_states[3, vehicle_id]
+            #         else:
+            #             v_desired = 0.0
+
+            # u_ff = 0.001889 * v_desired**2 + 0.155285 * v_desired + 0.005629
+            # u_est = collective_control[vehicle_id - 1]
+            # if u_est + u_ff > max_total_throttle:
+            #     collective_control[vehicle_id - 1] = max_total_throttle - u_ff
         
         return collective_control
     
@@ -540,8 +565,10 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                     self.logger.logger.warning(
                         f"Vehicle {self.vehicle_id}: No V2V state for vehicle {vehicle_id} to calculate feedforward throttle, using fleet_states"
                     )
+                    
         
-        throttle_ff = 0.329609 * v_i**2 - 0.000272 * v_i + 0.038744
+        # throttle_ff = 0.001889 * v_i**2 + 0.155285 * v_i + 0.005629
+        throttle_ff = 0.156385 * v_i + 0.005230
         
         return throttle_ff
 
@@ -1283,7 +1310,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
 
         # Calculate collective control input using K-matrix feedback
         # Uncomment to use K-matrix based control, otherwise use V2V communication
-        collective_control = self._calculate_estimated_collective_control(x_vec)
+        collective_control = self._calculate_estimated_collective_control(x_vec, current_time_ns, local_state)
         
         # Get actual control signals from V2V communication for all follower vehicles
         # collective_control = self._calculate_collective_control_v2v(control, current_time_ns, local_state)

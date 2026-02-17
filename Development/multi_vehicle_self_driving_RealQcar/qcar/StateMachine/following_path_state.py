@@ -63,6 +63,11 @@ class FollowingPathState(StateBase):
         # Lane detection runs in yolo_server, results received via yolo_data dict
         self.lane_fusion = None
         self._lane_fusion_enabled = False
+        
+        # Optional velocity schedule for path following (scheme 2)
+        self._velocity_sequence = []
+        self._velocity_sequence_enabled = False
+        self._velocity_sequence_elapsed = 0.0
     
     def _init_controllers(self, force: bool = False):
         """
@@ -92,11 +97,73 @@ class FollowingPathState(StateBase):
                 self.logger.logger.info("[PATH] Steering controller obtained from ControllerManager")
         else:
             self.logger.logger.warning("[PATH] ControllerManager not available")
+
+        # Initialize velocity sequence scheduling from controller config
+        self._init_velocity_sequence()
         
         # Initialize Lane Fusion system for lane-assisted path following
         self._init_lane_fusion()
         
         self._controllers_initialized = True
+
+    def _init_velocity_sequence(self):
+        """Load optional velocity sequence from controller config."""
+        self._velocity_sequence = []
+        self._velocity_sequence_enabled = False
+        self._velocity_sequence_elapsed = 0.0
+
+        try:
+            cm = getattr(self.vehicle_logic, 'controller_manager', None)
+            cfg = getattr(cm, 'config', None) if cm is not None else None
+            if cfg is None:
+                return
+
+            if hasattr(cfg, 'get_velocity_sequence'):
+                sequence = cfg.get_velocity_sequence()
+            else:
+                sequence = cfg.config.get('velocity_sequence', []) if hasattr(cfg, 'config') else []
+
+            if not isinstance(sequence, list) or len(sequence) == 0:
+                return
+
+            normalized = []
+            for item in sequence:
+                if not isinstance(item, dict):
+                    continue
+                if 'velocity' not in item or 'duration' not in item:
+                    continue
+                normalized.append({
+                    'velocity': float(item['velocity']),
+                    'duration': float(item['duration']),
+                })
+
+            if len(normalized) > 0:
+                self._velocity_sequence = normalized
+                self._velocity_sequence_enabled = True
+                self.logger.logger.info(
+                    f"[PATH] Velocity sequence enabled with {len(normalized)} segments"
+                )
+        except Exception as e:
+            self.logger.log_error("[PATH] Failed to initialize velocity sequence", e)
+
+    def _get_scheduled_v_ref(self, dt: float) -> Optional[float]:
+        """Get scheduled velocity from sequence based on elapsed time in this state."""
+        if not self._velocity_sequence_enabled or not self._velocity_sequence:
+            return None
+
+        self._velocity_sequence_elapsed += max(0.0, dt)
+        elapsed = self._velocity_sequence_elapsed
+
+        cumulative = 0.0
+        for seg in self._velocity_sequence:
+            duration = max(0.0, float(seg.get('duration', 0.0)))
+            velocity = float(seg.get('velocity', 0.0))
+            if elapsed < cumulative + duration:
+                return velocity
+            cumulative += duration
+
+        # After sequence ends, hold the last velocity
+        return float(self._velocity_sequence[-1].get('velocity', 0.0))
     
     def _init_lane_fusion(self, config: dict = None):
         """
@@ -244,6 +311,7 @@ class FollowingPathState(StateBase):
         }
         
         # Reset speed controller integral to prevent windup
+        self._velocity_sequence_elapsed = 0.0
         if self.speed_controller:
             if hasattr(self.speed_controller, 'ei'):
                 self.speed_controller.ei = 0
@@ -450,10 +518,13 @@ class FollowingPathState(StateBase):
         """Compute speed control command"""
         if not self.speed_controller:
             return 0.0
-        
+
+        scheduled_v_ref = self._get_scheduled_v_ref(dt)
+        base_v_ref = scheduled_v_ref if scheduled_v_ref is not None else self.vehicle_logic.v_ref
+
         # Apply YOLO adjustments to reference velocity
         yolo_gain = getattr(self.vehicle_logic, 'yolo_gain', 1.0)
-        v_ref_adjusted = self.vehicle_logic.v_ref * yolo_gain
+        v_ref_adjusted = base_v_ref * yolo_gain
         # print (f"Adjusted v_ref: {v_ref_adjusted:.2f} m/s (YOLO gain: {yolo_gain:.2f})")
         return self.speed_controller.update(velocity, v_ref_adjusted, dt)
     

@@ -14,8 +14,11 @@ import time
 import numpy as np
 from qvl.multi_agent import MultiAgent, readRobots
 from qvl.qlabs import QuanserInteractiveLabs
+from qvl.environment_outdoors import QLabsEnvironmentOutdoors
+from qvl.system import QLabsSystem
 from qvl.real_time import QLabsRealTime
 from qvl.free_camera import QLabsFreeCamera
+from qvl.walls import QLabsWalls
 
 # 
 num_cars = 4
@@ -41,6 +44,12 @@ print("Connected")
 QLabsRealTime().terminate_all_real_time_models()
 time.sleep(1)
 qlabs.destroy_all_spawned_actors()
+
+hSystem = QLabsSystem(qlabs)
+### Outdoor Environment
+# hEnvironmentOutdoors2 = QLabsEnvironmentOutdoors(qlabs)
+# hEnvironmentOutdoors2.set_weather_preset(hEnvironmentOutdoors2.BLIZZARD)
+# hSystem.set_title_string('Blizzard')
 
 # create a camera in this qlabs instance
 camera = QLabsFreeCamera(qlabs)

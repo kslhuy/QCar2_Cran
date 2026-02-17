@@ -131,7 +131,7 @@ class ControllerManager:
             
             # Special handling for state_feedback controllers - needs observer
             observer = None
-            if ctrl_type in ['state_feedback', 'state_feedback_no_observer']:
+            if ctrl_type in ['state_feedback', 'state_feedback_no_observer', 'classical_distributed']:
                 if self.vehicle_logic and hasattr(self.vehicle_logic, 'vehicle_observer'):
                     # Get the fleet estimator (DistributedLuenbergerEstimator)
                     observer = getattr(self.vehicle_logic.vehicle_observer, 'fleet_estimator', None)
@@ -150,7 +150,7 @@ class ControllerManager:
                 ctrl_type,
                 params,
                 logger=self.logger.logger if self.logger else None,
-                observer=observer  # Pass observer for state_feedback and state_feedback_no_observer controllers
+                observer=observer  # Pass observer for state_feedback, state_feedback_no_observer, and classical_distributed controllers
             )
             
             self._longitudinal = ControllerInfo(
@@ -464,3 +464,5 @@ class ControllerManager:
             f"  lateral: {self.get_lateral_type()}\n"
             f")"
         )
+
+

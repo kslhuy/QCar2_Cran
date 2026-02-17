@@ -66,17 +66,28 @@ class PIDVelocityController(LongitudinalControllerBase):
             self.kd = params.get('kd', kd)
             self.max_throttle = params.get('max_throttle', max_throttle)
             self.ei_max = params.get('ei_max', ei_max)
+            # Velocity disturbance parameters (for simulating wind effects)
+            self.disturbance_amplitude = params.get('disturbance_amplitude', 0.0)
+            self.disturbance_frequency = params.get('disturbance_frequency', 0.1)
+            self.disturbance_phase = params.get('disturbance_phase', 0.0)
         else:
             self.kp = kp
             self.ki = ki
             self.kd = kd
             self.max_throttle = max_throttle
             self.ei_max = ei_max
+            # Velocity disturbance parameters (for simulating wind effects)
+            self.disturbance_amplitude = kwargs.get('disturbance_amplitude', 0.0)
+            self.disturbance_frequency = kwargs.get('disturbance_frequency', 0.1)
+            self.disturbance_phase = kwargs.get('disturbance_phase', 0.0)
         
         # print(f"[PIDVelocityController] Initialized with kp={self.kp}, ki={self.ki}, kd={self.kd}, max_throttle={self.max_throttle}")
         self.ei = 0.0  # Integral error
         self.prev_e = None  # Previous error for derivative
         self.last_error = 0.0
+        
+        # Time tracker for disturbance signal
+        self.elapsed_time = 0.0
     
     def update(self, v: float, v_ref: float, dt: float) -> float:
         """
@@ -90,8 +101,20 @@ class PIDVelocityController(LongitudinalControllerBase):
         Returns:
             Throttle command
         """
+        # Update elapsed time
+        self.elapsed_time += dt
+        
+        # Apply sinusoidal disturbance to reference velocity (simulating wind effects)
+        if self.disturbance_amplitude > 0:
+            disturbance = self.disturbance_amplitude * np.sin(
+                2 * np.pi * self.disturbance_frequency * self.elapsed_time + self.disturbance_phase
+            )
+            v_ref_disturbed = v_ref + disturbance
+        else:
+            v_ref_disturbed = v_ref
+        
         # Calculate error
-        e = v_ref - v
+        e = v_ref_disturbed - v
         
         # Integral with anti-windup
         self.ei += dt * e
@@ -141,6 +164,7 @@ class PIDVelocityController(LongitudinalControllerBase):
         self.ei = 0.0
         self.prev_e = None
         self.last_error = 0.0
+        self.elapsed_time = 0.0
         
         # if self.logger:
         #     self.logger.log_control_event("speed_controller_reset", {})
@@ -466,6 +490,7 @@ class FixConstantController(LongitudinalControllerBase):
 from .ShengyaCtr.state_feedback_controller import StateFeedbackController
 from .ShengyaCtr.state_feedback_controller_no_observer import StateFeedbackControllerNoObserver
 from .ShengyaCtr.throttle_sequence_controller import ThrottleSequenceController
+from .ShengyaCtr.classical_distributed_control import ClassicalDistributedController
 
 class ControllerFactory:
     """Factory to create longitudinal controllers by name"""
@@ -478,6 +503,7 @@ class ControllerFactory:
         'state_feedback': StateFeedbackController,
         'state_feedback_no_observer': StateFeedbackControllerNoObserver,
         'throttle_sequence': ThrottleSequenceController,
+        'classical_distributed': ClassicalDistributedController,
     }
     
     @staticmethod
@@ -486,10 +512,10 @@ class ControllerFactory:
         Create a longitudinal controller
         
         Args:
-            controller_type: One of 'pid', 'cacc', 'hybrid', 'fix', 'state_feedback', 'state_feedback_no_observer', 'throttle_sequence'
+            controller_type: One of 'pid', 'cacc', 'hybrid', 'fix', 'state_feedback', 'state_feedback_no_observer', 'throttle_sequence', 'classical_distributed'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
-            observer: Observer instance (for state_feedback and state_feedback_no_observer controllers)
+            observer: Observer instance (for state_feedback, state_feedback_no_observer, and classical_distributed controllers)
             
         Returns:
             Longitudinal controller instance
@@ -505,10 +531,12 @@ class ControllerFactory:
         controller_class = ControllerFactory.CONTROLLER_TYPES[controller_type]
         
         # Special handling for state_feedback controllers - pass observer
-        if controller_type in ['state_feedback', 'state_feedback_no_observer']:
+        if controller_type in ['state_feedback', 'state_feedback_no_observer', 'classical_distributed']:
             # Remove 'observer' from params if it exists to avoid duplicate argument
             params_copy = params.copy()
             params_copy.pop('observer', None)
             return controller_class(logger=logger, observer=observer, **params_copy)
         else:
             return controller_class(logger=logger, **params)
+
+
