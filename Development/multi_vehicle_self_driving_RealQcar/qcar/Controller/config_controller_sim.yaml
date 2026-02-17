@@ -33,7 +33,7 @@ pid:
   kp: 0.3                    # Proportional gain
   ki: 0.2                    # Integral gain
   kd: 0.005                  # Derivative gain
-  max_throttle: 0.1          # Maximum throttle output
+  max_throttle: 0.5          # Maximum throttle output
   ei_max: 1.0                # Integral anti-windup limit
   v_ref: 0.7                # Default reference velocity (m/s)
 

@@ -854,6 +854,7 @@ class QCarFleetController:
             on_set_local_observer=self._set_local_observer,
             on_set_fleet_observer=self._set_fleet_observer,
             on_set_controller=self._set_controller,
+            on_set_gear=self._set_gear_car,
         )
     
     def _update_car_panels(self) -> None:
@@ -943,6 +944,7 @@ class QCarFleetController:
                     fleet_observer_type=telemetry.get('fleet_observer_type', 'unknown'),
                     longitudinal_ctrl_type=telemetry.get('longitudinal_ctrl_type', 'unknown'),
                     lateral_ctrl_type=telemetry.get('lateral_ctrl_type', 'unknown'),
+                    gear=telemetry.get('operational_status', {}).get('gear', 'DRIVE_1')
                 )
                 
                 # Check stream status to keep button in sync
@@ -1031,6 +1033,15 @@ class QCarFleetController:
                 self.log(f"❌ Failed to set velocity for Car {car_id}", 'ERROR')
         else:
             self.log(f"❌ Invalid velocity {velocity:.2f} (must be {cfg.min_velocity}-{cfg.max_velocity} m/s)", 'ERROR')
+    
+    def _set_gear_car(self, car_id: int, gear: str) -> None:
+        """Set gear for a car."""
+        if self._remote.set_gear(car_id, gear):
+            self._commands_sent_gui += 1
+            self.log(f"⚙️ Set Car {car_id} gear to {gear}", 'SUCCESS')
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"❌ Failed to set gear for Car {car_id}", 'ERROR')
     
     def _set_path(self, car_id: int, nodes: list) -> None:
         """Set path for a car."""

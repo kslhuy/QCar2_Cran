@@ -647,8 +647,8 @@ class BEVLaneDetector(LaneDetectorBase):
 
             # Visualization
             if out_img is not None:
-                cv2.rectangle(out_img, (win_xleft_low, win_y_low), (win_xleft_high, win_y_high), (0, 165, 255), 2)   # left windows: orange
-                cv2.rectangle(out_img, (win_xright_low, win_y_low), (win_xright_high, win_y_high), (255, 255, 0), 2)  # right windows: yellow-cyan
+                cv2.rectangle(out_img, (win_xleft_low, win_y_low), (win_xleft_high, win_y_high), (120, 120, 120), 2)
+                cv2.rectangle(out_img, (win_xright_low, win_y_low), (win_xright_high, win_y_high), (160, 160, 160), 2)
 
         # Concatenate indices
         left_lane_inds = np.concatenate(left_lane_inds) if left_lane_inds else np.array([])
@@ -693,8 +693,8 @@ class BEVLaneDetector(LaneDetectorBase):
 
         # Visualize polynomial fits
         if out_img is not None:
-            out_img[nonzeroy[left_lane_inds], nonzerox[left_lane_inds]] = [0, 220, 255]   # left lane points: amber
-            out_img[nonzeroy[right_lane_inds], nonzerox[right_lane_inds]] = [0, 255, 120]  # right lane points: spring green
+            out_img[nonzeroy[left_lane_inds], nonzerox[left_lane_inds]] = [210, 210, 210]
+            out_img[nonzeroy[right_lane_inds], nonzerox[right_lane_inds]] = [240, 240, 240]
 
             ploty = np.linspace(0, binary_warped.shape[0]-1, binary_warped.shape[0])
 
@@ -714,12 +714,12 @@ class BEVLaneDetector(LaneDetectorBase):
                 except Exception:
                     pass
 
-            _draw_text_outline(out_img, "LEFT lane=amber  RIGHT lane=green  FIT=white", (10, 22), (230, 230, 230), 0.5, 1)
+            _draw_text_outline(out_img, "Left/Right lane points + fit (grayscale)", (10, 22), (230, 230, 230), 0.5, 1)
             _draw_text_outline(out_img, f"L/R conf: {left_conf:.2f}/{right_conf:.2f}", (10, 44), (255, 255, 255), 0.5, 1)
             _draw_text_outline(out_img, f"L/R pts: {len(left_lane_inds)}/{len(right_lane_inds)}", (10, 66), (220, 220, 220), 0.48, 1)
             _draw_text_outline(out_img, f"Lane width px: {lane_width:.1f}" if not np.isnan(lane_width) else "Lane width px: n/a", (10, 88), (220, 220, 220), 0.48, 1)
             if lane_width_rejected:
-                _draw_text_outline(out_img, "Rejected lane width out of range", (10, 110), (80, 80, 255), 0.5, 2)
+                _draw_text_outline(out_img, "Rejected lane width out of range", (10, 110), (245, 245, 245), 0.5, 2)
 
         debug_data = {
             'left_points': int(len(left_lane_inds)),

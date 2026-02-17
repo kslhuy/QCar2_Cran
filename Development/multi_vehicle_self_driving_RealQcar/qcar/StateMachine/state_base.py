@@ -309,27 +309,6 @@ class StateBase:
                 self.logger.log_error("[CMD] Error disabling perception", e)
             return None
         
-        # elif command_type == CommandType.ACTIVATE_SCOPES:
-        #     self.logger.logger.info(f"[CMD] Activating estimation scopes")
-        #     try:
-        #         preset_names = data.get('preset_names', ['local_state', 'local_control'])
-        #         success = self._activate_estimation_scopes(preset_names)
-        #         if success:
-        #             self.logger.logger.info(f"[CMD] Estimation scopes activated: {preset_names}")
-        #         else:
-        #             self.logger.log_error("[CMD] Failed to activate estimation scopes")
-        #     except Exception as e:
-        #         self.logger.log_error("[CMD] Error activating scopes", e)
-        #     return None
-        
-        # elif command_type == CommandType.DISABLE_SCOPES:
-        #     self.logger.logger.info(f"[CMD] Disabling estimation scopes")
-        #     try:
-        #         self._disable_estimation_scopes()
-        #         self.logger.logger.info(f"[CMD] Estimation scopes disabled")
-        #     except Exception as e:
-        #         self.logger.log_error("[CMD] Error disabling scopes", e)
-        #     return None
         
         elif command_type == CommandType.ENABLE_SCOPE_STREAMING:
             self.logger.logger.info(f"[CMD] Enabling scope data streaming for remote plot")
@@ -401,6 +380,28 @@ class StateBase:
                     self.logger.log_error("[CMD] Error switching controller", e)
             else:
                 self.logger.log_warning("[CMD] SET_CONTROLLER missing category or controller_type")
+            return None
+
+        # Handle Gear Change
+        elif command_type == CommandType.SET_GEAR:
+            gear_name = data.get('gear')
+            if gear_name:
+                try:
+                    # Handle string input or direct enum
+                    if isinstance(gear_name, str):
+                        new_gear = Gear[gear_name]
+                    else:
+                        new_gear = Gear(gear_name)
+                    
+                    if hasattr(self.vehicle_logic, 'set_gear'):
+                        self.vehicle_logic.set_gear(new_gear)
+                        self.logger.logger.info(f"[MANUAL] Gear set to {new_gear.name}")
+                    else:
+                        self.logger.log_error("[MANUAL] vehicle_logic has no set_gear method")
+                except KeyError:
+                    self.logger.log_error(f"[MANUAL] Invalid gear name: {gear_name}")
+                except ValueError:
+                     self.logger.log_error(f"[MANUAL] Invalid gear value: {gear_name}")
             return None
         
         return None

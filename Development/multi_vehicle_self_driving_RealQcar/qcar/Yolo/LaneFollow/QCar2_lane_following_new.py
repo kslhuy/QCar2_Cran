@@ -1,13 +1,6 @@
 ## QCar2_lane_following_new.py
 # Updated Lane Following Script with Selectable Algorithms
 # Modes: BEV (Sliding Window), HSV (Color Threshold), LaneNet (Deep Learning)
-# Keyboard controls: 
-#   W/S = Throttle
-#   A/D = Steer (Manual)
-#   X   = Toggle Auto Mode
-#   M   = Switch Algorithm Mode
-#   P   = Save Params (BEV only)
-#   Q   = Quit
 
 import time
 import numpy as np
@@ -40,6 +33,12 @@ except ImportError:
         print("Error: Could not import lane detectors. Check your python path.")
         sys.exit(1)
 
+# Optional unified renderer (YOLO + lane overlay). Falls back to cv2 display if unavailable.
+try:
+    from YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy
+except ImportError:
+    YOLOv8Wrapper_Huy = None
+
 # =====================================================================================
 # GLOBAL CONFIG & STATE
 # =====================================================================================
@@ -60,6 +59,7 @@ next(steeringFilter)
 # Detectors
 detectors = []
 active_detector = None
+yolo_display = None
 
 # =====================================================================================
 # HELPER FUNCTIONS
@@ -326,6 +326,44 @@ def draw_result_overlay(img, mode_name, is_auto, result):
     cv2.circle(img, (cx, h - 30), 4, (255, 255, 255), -1, cv2.LINE_AA)
 
 
+def init_yolo_display_wrapper():
+    """Initialize YOLOv8Wrapper_Huy for unified display rendering if available."""
+    if YOLOv8Wrapper_Huy is None:
+        print("[Display] YOLOv8Wrapper_Huy not found. Using direct OpenCV display.")
+        return None
+    try:
+        wrapper = YOLOv8Wrapper_Huy(imageWidth=imageWidth, imageHeight=imageHeight)
+        print("[Display] Using YOLOv8Wrapper_Huy for result image rendering.")
+        return wrapper
+    except Exception as e:
+        print(f"[Display] Failed to initialize YOLOv8Wrapper_Huy ({e}). Using direct OpenCV display.")
+        return None
+
+
+def build_result_visual(frame, mode_name, is_auto, result, detector, wrapper):
+    """Build result view using YOLO wrapper when available, with safe fallback."""
+    if wrapper is not None:
+        try:
+            wrapper.pre_process(frame)
+            # Lane-following-only script: no object detection inference here.
+            wrapper.processedResults = []
+            wrapper.predictions = []
+            wrapper.objectsDetected = []
+            wrapper.set_lane_detector(detector)
+            wrapper.set_lane_result(result)
+            display_img = wrapper.post_process_render(showFPS=False, show_lane_overlay=True)
+        except Exception as e:
+            if not getattr(build_result_visual, "_warned_wrapper_fallback", False):
+                print(f"[Display] Wrapper render failed ({e}). Falling back to OpenCV display.")
+                build_result_visual._warned_wrapper_fallback = True
+            display_img = frame.copy()
+    else:
+        display_img = frame.copy()
+
+    draw_result_overlay(display_img, mode_name, is_auto, result)
+    return display_img
+
+
 def build_guidance_window(mode_name, detector, result, suggested_steering, applied_steering, fps):
     """Dedicated window that shows the key driving action."""
     guide = np.zeros((260, 900, 3), dtype=np.uint8)
@@ -357,18 +395,26 @@ def build_guidance_window(mode_name, detector, result, suggested_steering, appli
 def build_debug_visual(debug_img, frame, detector, result, fps):
     if debug_img is None:
         debug_img = np.zeros_like(frame)
-        draw_text_outline(debug_img, "Detector did not provide a debug image.", (20, 40), (180, 220, 255), 0.6, 2)
-    elif len(debug_img.shape) == 2:
-        debug_img = cv2.cvtColor(debug_img, cv2.COLOR_GRAY2BGR)
+        draw_text_outline(debug_img, "Detector did not provide a debug image.", (20, 40), (230, 230, 230), 0.6, 2)
 
     if debug_img.dtype != np.uint8:
         debug_img = cv2.normalize(debug_img, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+    if isinstance(detector, BEVLaneDetector):
+        if len(debug_img.shape) == 3:
+            debug_gray = cv2.cvtColor(debug_img, cv2.COLOR_BGR2GRAY)
+        else:
+            debug_gray = debug_img
+        debug_gray = cv2.equalizeHist(debug_gray)
+        debug_img = cv2.cvtColor(debug_gray, cv2.COLOR_GRAY2BGR)
+    elif len(debug_img.shape) == 2:
+        debug_img = cv2.cvtColor(debug_img, cv2.COLOR_GRAY2BGR)
 
     vis = debug_img.copy()
     h, w = vis.shape[:2]
 
     draw_alpha_panel(vis, (8, 8), (w - 8, 108))
-    draw_text_outline(vis, f"{detector.__class__.__name__} Debug", (18, 34), (0, 220, 255), 0.65, 2)
+    draw_text_outline(vis, f"{detector.__class__.__name__} Debug", (18, 34), (255, 255, 255), 0.65, 2)
     draw_text_outline(vis, f"FPS: {fps:5.1f}  Valid: {result.is_valid}  Conf: {fmt_value(result.confidence, 2)}", (18, 58), (230, 230, 230), 0.52, 1)
     draw_text_outline(vis, f"Steering: {result.steering_correction:+.3f}  Offset: {fmt_value(result.lateral_offset)}  Curv: {fmt_value(result.curvature)}", (18, 82), (230, 230, 230), 0.5, 1)
 
@@ -403,6 +449,9 @@ for d in detectors:
         d.load_settings()
 
 active_detector = detectors[current_mode]
+yolo_display = init_yolo_display_wrapper()
+if yolo_display is not None:
+    yolo_display.set_lane_detector(active_detector)
 
 # Initial setup of trackbars (using default or loaded params from BEV detector)
 initial_params = {
@@ -513,9 +562,15 @@ try:
         loop_ms = (time.time() - start_time) * 1000.0
         fps = 1000.0 / max(loop_ms, 1e-3)
 
-        # Show result image
-        display_img = frame.copy()
-        draw_result_overlay(display_img, mode_names[current_mode], is_auto, result)
+        # Show result image (via YOLOv8Wrapper_Huy if available)
+        display_img = build_result_visual(
+            frame,
+            mode_names[current_mode],
+            is_auto,
+            result,
+            active_detector,
+            yolo_display,
+        )
         cv2.imshow("Result", display_img)
 
         # Dedicated HUD + guidance windows

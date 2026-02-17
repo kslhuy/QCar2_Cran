@@ -63,6 +63,10 @@ pure_pursuit:
   k_steering: 0.4            # Proportional steering gain
   max_steering: 0.5         # Maximum steering angle (radians)
   adaptive_lookahead: true   # Enable adaptive lookahead based on distance
+  # Turning section parameters (for corner-cutting prevention)
+  curvature_threshold: 0.3   # Lane curvature threshold for turn detection
+  turn_lookahead_offset: 0.1 # Lateral offset in turns (meters)
+  turn_lookahead_gain: 1.5   # Lookahead distance multiplier in turns
 
 # Stanley Controller Parameters
 stanley:

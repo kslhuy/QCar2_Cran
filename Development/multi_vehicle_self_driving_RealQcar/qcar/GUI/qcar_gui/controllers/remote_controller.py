@@ -769,6 +769,13 @@ class QCarRemoteController:
         command.update(params)
         return self.send_command(car_id, command)
     
+    def set_gear(self, car_id: int, gear: str) -> bool:
+        """Set vehicle gear (DRIVE_1, DRIVE_2, DRIVE_3)."""
+        return self.send_command(car_id, {
+            'type': CommandType.SET_GEAR.value,
+            'gear': gear
+        })
+    
     # ========== Platoon Commands ==========
     
     def enable_platoon_leader(self, car_id: int) -> bool:

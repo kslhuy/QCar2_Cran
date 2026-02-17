@@ -362,7 +362,7 @@ class FollowingPathState(StateBase):
             }
             # leader_state=None → MPC uses waypoints for reference trajectory
             u, delta = self.mpc_controller.compute_control(follower_state, leader_state=None, dt=dt)
-            u = np.clip(u, -0.1, 0.1)
+            # u = np.clip(u, -0.1, 0.1)
     
             # Periodic MPC logging
             if hasattr(self.vehicle_logic, 'loop_counter') and self.vehicle_logic.loop_counter % 200 == 0:
