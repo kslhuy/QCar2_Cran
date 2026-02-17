@@ -41,6 +41,8 @@ class SCNNWrapper:
         morph_close_iterations=1,
         morph_dilate_iterations=1,
         temporal_binary_threshold=110,
+        input_size_override=None,
+        disable_lane_head=False,
     ):
         if config_path is None:
             config_path = os.path.join(
@@ -52,19 +54,43 @@ class SCNNWrapper:
         self.test_cfg = self.cfg.get("test", {})
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.use_half = bool(use_half and self.device.type == "cuda")
+        self.disable_lane_head = bool(disable_lane_head)
+        self.model_name = str(
+            self.test_cfg.get(
+                "exp_name",
+                self.cfg.get("train", {}).get(
+                    "exp_name", self.cfg.get("model", {}).get("name", "lane_model")
+                ),
+            )
+        )
 
         if use_cuda_benchmark and self.device.type == "cuda":
             torch.backends.cudnn.benchmark = True
 
-        # We always load a lane checkpoint below, so disable ImageNet auto-loading.
+        # We always load a lane checkpoint below, so disable extra preloading from config.
         model_cfg = self.cfg.get("model", {})
-        backbone_cfg = model_cfg.get("backbone_cfg", {}) if isinstance(model_cfg, dict) else {}
-        if isinstance(backbone_cfg, dict) and backbone_cfg.get("pretrained", False):
-            self.cfg["model"]["backbone_cfg"]["pretrained"] = False
-            print("[SCNN] Disabled backbone ImageNet preloading (using lane checkpoint only).")
+        if isinstance(model_cfg, dict):
+            if self.disable_lane_head and model_cfg.get("lane_classifier_cfg") is not None:
+                model_cfg["lane_classifier_cfg"] = None
+                print("[LaneModel] Disabled lane existence head for speed.")
 
-        self.input_size_hw = tuple(self.test_cfg.get("input_size", (360, 640)))  # (H, W)
+            backbone_cfg = model_cfg.get("backbone_cfg", {})
+            if isinstance(backbone_cfg, dict) and backbone_cfg.get("pretrained", False):
+                model_cfg["backbone_cfg"]["pretrained"] = False
+                print("[LaneModel] Disabled backbone ImageNet preloading.")
+
+            if model_cfg.get("pretrained_weights"):
+                model_cfg["pretrained_weights"] = None
+                print("[LaneModel] Disabled encoder preloading from pretrained_weights.")
+
+        if input_size_override is not None:
+            self.input_size_hw = tuple(int(v) for v in input_size_override)
+            if len(self.input_size_hw) != 2:
+                raise ValueError("input_size_override must be a 2-tuple (H, W).")
+        else:
+            self.input_size_hw = tuple(self.test_cfg.get("input_size", (360, 640)))  # (H, W)
         self.input_size_wh = (self.input_size_hw[1], self.input_size_hw[0])  # (W, H)
+        print(f"[LaneModel] Inference input size: {self.input_size_hw[0]}x{self.input_size_hw[1]}")
         self.lane_prob_threshold = float(
             self.test_cfg.get("thresh", 0.3)
             if lane_prob_threshold is None
@@ -102,13 +128,13 @@ class SCNNWrapper:
             dtype=np.uint8,
         )
 
-        print(f"Loading SCNN model from config: {config_path}")
+        print(f"Loading lane model from config: {config_path}")
         self.model = MODELS.from_dict(self.cfg["model"])
         self.model.to(self.device)
         self._load_weights(weight_path, strict_weights=strict_weights)
         if self.use_half:
             self.model.half()
-            print("[SCNN] Using FP16 inference on CUDA.")
+            print("[LaneModel] Using FP16 inference on CUDA.")
         self.model.eval()
 
     @staticmethod
@@ -118,6 +144,30 @@ class SCNNWrapper:
         sample_key = next(iter(state_dict.keys()))
         if sample_key.startswith("module."):
             return {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+        return state_dict
+
+    @staticmethod
+    def _apply_legacy_key_compat(state_dict):
+        # Some older checkpoints store lane existence head as "aux_head.*"
+        # while current configs expect "lane_classifier.*".
+        has_aux_head = any(k.startswith("aux_head.") for k in state_dict.keys())
+        has_lane_classifier = any(
+            k.startswith("lane_classifier.") for k in state_dict.keys()
+        )
+
+        if has_aux_head and not has_lane_classifier:
+            remapped = {}
+            renamed = 0
+            for key, value in state_dict.items():
+                if key.startswith("aux_head."):
+                    key = "lane_classifier." + key[len("aux_head.") :]
+                    renamed += 1
+                remapped[key] = value
+            print(
+                f"[LaneModel] Applied legacy key remap: aux_head.* -> lane_classifier.* ({renamed} tensors)"
+            )
+            return remapped
+
         return state_dict
 
     @staticmethod
@@ -170,12 +220,26 @@ class SCNNWrapper:
         state_dict = self._extract_state_dict(checkpoint)
 
         state_dict = self._strip_module_prefix(state_dict)
+        state_dict = self._apply_legacy_key_compat(state_dict)
         load_info = self.model.load_state_dict(state_dict, strict=False)
-        missing = list(load_info.missing_keys)
-        unexpected = list(load_info.unexpected_keys)
+        raw_missing = list(load_info.missing_keys)
+        raw_unexpected = list(load_info.unexpected_keys)
+        missing = list(raw_missing)
+        unexpected = list(raw_unexpected)
+
+        if self.disable_lane_head:
+            missing = [k for k in missing if not k.startswith("lane_classifier.")]
+            unexpected = [k for k in unexpected if not k.startswith("lane_classifier.")]
+            ignored_missing = len(raw_missing) - len(missing)
+            ignored_unexpected = len(raw_unexpected) - len(unexpected)
+            if ignored_missing or ignored_unexpected:
+                print(
+                    "[LaneModel] Ignored lane-head key mismatch "
+                    f"(missing={ignored_missing}, unexpected={ignored_unexpected})."
+                )
 
         if missing or unexpected:
-            print("[SCNN] Weight mismatch detected during load_state_dict:")
+            print("[LaneModel] Weight mismatch detected during load_state_dict:")
             print(f"  Missing keys: {len(missing)}")
             print(f"  Unexpected keys: {len(unexpected)}")
             if missing:
@@ -184,11 +248,11 @@ class SCNNWrapper:
                 print(f"  Example unexpected keys: {unexpected[:10]}")
             if strict_weights:
                 raise RuntimeError(
-                    "SCNN checkpoint/config mismatch detected. "
+                    "Lane checkpoint/config mismatch detected. "
                     "Use a matching config + checkpoint pair."
                 )
         else:
-            print("[SCNN] Weights loaded with full key match.")
+            print("[LaneModel] Weights loaded with full key match.")
 
     def pre_process(self, image):
         self.original_image = image.copy()
@@ -336,6 +400,49 @@ class SCNNWrapper:
     def get_metrics(self):
         return dict(self.metrics)
 
+    def get_model_name(self):
+        return self.model_name
+
+    def set_runtime_params(
+        self,
+        lane_prob_threshold=None,
+        lane_exist_threshold=None,
+        temporal_alpha=None,
+        temporal_binary_threshold=None,
+        morph_open_iterations=None,
+        morph_close_iterations=None,
+        morph_dilate_iterations=None,
+        max_lane=None,
+    ):
+        if lane_prob_threshold is not None:
+            self.lane_prob_threshold = float(np.clip(lane_prob_threshold, 0.0, 1.0))
+        if lane_exist_threshold is not None:
+            self.lane_exist_threshold = float(np.clip(lane_exist_threshold, 0.0, 1.0))
+        if temporal_alpha is not None:
+            self.temporal_alpha = float(np.clip(temporal_alpha, 0.0, 0.99))
+        if temporal_binary_threshold is not None:
+            self.temporal_binary_threshold = int(np.clip(temporal_binary_threshold, 1, 254))
+        if morph_open_iterations is not None:
+            self.morph_open_iterations = int(max(0, morph_open_iterations))
+        if morph_close_iterations is not None:
+            self.morph_close_iterations = int(max(0, morph_close_iterations))
+        if morph_dilate_iterations is not None:
+            self.morph_dilate_iterations = int(max(0, morph_dilate_iterations))
+        if max_lane is not None:
+            self.max_lane = int(max(0, max_lane))
+
+    def get_runtime_params(self):
+        return {
+            "lane_prob_threshold": self.lane_prob_threshold,
+            "lane_exist_threshold": self.lane_exist_threshold,
+            "temporal_alpha": self.temporal_alpha,
+            "temporal_binary_threshold": self.temporal_binary_threshold,
+            "morph_open_iterations": self.morph_open_iterations,
+            "morph_close_iterations": self.morph_close_iterations,
+            "morph_dilate_iterations": self.morph_dilate_iterations,
+            "max_lane": self.max_lane,
+        }
+
     def reset_temporal_filter(self):
         self.prev_binary_smoothed = None
 
@@ -346,7 +453,7 @@ class SCNNWrapper:
         if showFPS:
             cv2.putText(
                 annotated,
-                f"SCNN FPS: {self.fps:.1f}",
+                f"Lane FPS: {self.fps:.1f}",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
