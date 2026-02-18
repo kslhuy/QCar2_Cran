@@ -9,7 +9,7 @@ This is much simpler than the previous approach - events trigger immediate
 transitions without needing pending_transition mechanisms.
 """
 from typing import Dict, Any, Tuple, Optional
-from .vehicle_state import VehicleState, StateTransitionReason
+from .vehicle_state import VehicleState, StateTransitionReason , Gear
 import time
 import sys
 import os
@@ -391,7 +391,13 @@ class StateBase:
                     if isinstance(gear_name, str):
                         new_gear = Gear[gear_name]
                     else:
-                        new_gear = Gear(gear_name)
+                        # Backward compatibility for numeric gear commands (1/2/3).
+                        if gear_name in (1, 2, 3):
+                            new_gear = [Gear.DRIVE_1, Gear.DRIVE_2, Gear.DRIVE_3][
+                                int(gear_name) - 1
+                            ]
+                        else:
+                            new_gear = Gear(gear_name)
                     
                     if hasattr(self.vehicle_logic, 'set_gear'):
                         self.vehicle_logic.set_gear(new_gear)

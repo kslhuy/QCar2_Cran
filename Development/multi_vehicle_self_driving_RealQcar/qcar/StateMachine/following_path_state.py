@@ -9,6 +9,12 @@ import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from .state_base import StateBase
 from .vehicle_state import VehicleState, StateTransitionReason
+from .following_path import (
+    build_pp_waypoint_array,
+    extract_lane_data,
+    project_to_route_frenet,
+    update_pp_runtime_speed_profile,
+)
 
 # Import CommandType once at module level
 import sys
@@ -20,7 +26,7 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 try:
-    from command_handler import CommandType
+    from command_types import CommandType
     COMMAND_TYPE_AVAILABLE = True
 except ImportError as e:
     print(f"ERROR: Cannot import CommandType: {e}")
@@ -57,6 +63,23 @@ except ImportError as e:
     CasADiMPCController = None
     MPCControllerFactory = None
 
+# Import map-based PP controller and rich path planner (optional)
+try:
+    from Controller.PP_controller import PP_Controller
+    PP_MAP_AVAILABLE = True
+except ImportError as e:
+    print(f"WARNING: PP controller not available: {e}")
+    PP_MAP_AVAILABLE = False
+    PP_Controller = None
+
+try:
+    from PathPlanner.path_rich import RichSDCSPlanner
+    PATH_RICH_AVAILABLE = True
+except ImportError as e:
+    print(f"WARNING: path_rich planner not available: {e}")
+    PATH_RICH_AVAILABLE = False
+    RichSDCSPlanner = None
+
 
 class FollowingPathState(StateBase):
     """Handler for FOLLOWING_PATH state with simplified event handling"""
@@ -78,6 +101,18 @@ class FollowingPathState(StateBase):
         # MPC controller for combined throttle + steering (test mode)
         self.mpc_controller = None
         self._use_mpc = False  # Set to False to revert to original PID+Stanley control
+
+        # Optional map-based PP controller mode
+        self._use_pp_map = False
+        self.pp_controller = None
+        self.pp_map_params = {}
+        self.rich_planner = None
+        self.pp_waypoint_array = None  # Nx7 with PP expected columns
+        self.pp_s_axis = None          # Route distance axis [m]
+        self.pp_track_length = 0.0
+        self.pp_speed_profile_base = None   # Base speed profile from path_rich
+        self.pp_profile_design_speed = 0.0  # desired_speed used to build base profile
+        self.pp_last_v_ref = None           # For lightweight change logging
     
     def _init_controllers(self, force: bool = False):
         """
@@ -91,6 +126,8 @@ class FollowingPathState(StateBase):
         # Get controllers from ControllerManager (creates them if needed)
         if hasattr(self.vehicle_logic, 'controller_manager'):
             cm = self.vehicle_logic.controller_manager
+            lateral_type = cm.get_lateral_type()
+            self._use_pp_map = (lateral_type == 'pp_map')
             
             # Speed controller (PID for path following)
             # TODO : Instead of get_speed_controller(), use get_longitudinal_controller()
@@ -100,11 +137,22 @@ class FollowingPathState(StateBase):
                 self.vehicle_logic.speed_controller = self.speed_controller  # Backward compatibility
                 self.logger.logger.info("[PATH] Speed controller obtained from ControllerManager")
             
-            # Steering controller (uses waypoints from vehicle_logic)
-            self.steering_controller = cm.get_steering_controller()
-            if self.steering_controller:
-                self.vehicle_logic.steering_controller = self.steering_controller  # Backward compatibility
-                self.logger.logger.info("[PATH] Steering controller obtained from ControllerManager")
+            if self._use_pp_map:
+                self._init_pp_mode()
+                # Keep a conventional steering controller cached for fallback/recovery.
+                self.steering_controller = cm.get_steering_controller()
+                self.vehicle_logic.steering_controller = self.steering_controller
+                if self.pp_controller is not None:
+                    self.logger.logger.info("[PATH] PP map controller initialized")
+                else:
+                    self.logger.logger.warning("[PATH] PP map requested but unavailable - using steering controller fallback")
+                    self._use_pp_map = False
+            else:
+                # Steering controller (uses waypoints from vehicle_logic)
+                self.steering_controller = cm.get_steering_controller()
+                if self.steering_controller:
+                    self.vehicle_logic.steering_controller = self.steering_controller  # Backward compatibility
+                    self.logger.logger.info("[PATH] Steering controller obtained from ControllerManager")
         else:
             self.logger.logger.warning("[PATH] ControllerManager not available")
         
@@ -157,6 +205,208 @@ class FollowingPathState(StateBase):
         self._init_lane_fusion()
         
         self._controllers_initialized = True
+
+    def _init_pp_mode(self):
+        """Initialize map-based PP controller and rich waypoint representation."""
+        self.pp_controller = None
+        self.pp_waypoint_array = None
+        self.pp_s_axis = None
+        self.pp_track_length = 0.0
+        self.pp_speed_profile_base = None
+        self.pp_profile_design_speed = 0.0
+        self.pp_last_v_ref = None
+
+        if not PP_MAP_AVAILABLE:
+            self.logger.logger.warning("[PATH] PP controller module is not available")
+            return
+        if not PATH_RICH_AVAILABLE:
+            self.logger.logger.warning("[PATH] path_rich module is not available")
+            return
+        if not hasattr(self.vehicle_logic, 'controller_manager'):
+            return
+
+        cm = self.vehicle_logic.controller_manager
+        params = {}
+        if cm.config:
+            params = cm.config.get_lateral_params('pp_map')
+        self.pp_map_params = params
+
+        wheelbase = 0.256
+        if cm.config:
+            wheelbase = cm.config.get_vehicle_params().get('wheelbase', wheelbase)
+
+        loop_rate = float(getattr(self.vehicle_logic, 'controller_rate', 100.0))
+        state_machine_rate = loop_rate
+
+        self.pp_controller = PP_Controller(
+            t_clip_min=params.get('t_clip_min', 0.4),
+            t_clip_max=params.get('t_clip_max', 1.8),
+            m_l1=params.get('m_l1', 0.35),
+            q_l1=params.get('q_l1', 0.15),
+            speed_lookahead=params.get('speed_lookahead', 0.15),
+            lat_err_coeff=params.get('lat_err_coeff', 0.8),
+            acc_scaler_for_steer=params.get('acc_scaler_for_steer', 1.0),
+            dec_scaler_for_steer=params.get('dec_scaler_for_steer', 1.0),
+            start_scale_speed=params.get('start_scale_speed', 0.2),
+            end_scale_speed=params.get('end_scale_speed', 1.0),
+            downscale_factor=params.get('downscale_factor', 0.35),
+            speed_lookahead_for_steer=params.get('speed_lookahead_for_steer', 0.1),
+            prioritize_dyn=params.get('prioritize_dyn', False),
+            trailing_gap=params.get('trailing_gap', 0.8),
+            trailing_p_gain=params.get('trailing_p_gain', 0.6),
+            trailing_i_gain=params.get('trailing_i_gain', 0.0),
+            trailing_d_gain=params.get('trailing_d_gain', 0.1),
+            blind_trailing_speed=params.get('blind_trailing_speed', 0.2),
+            loop_rate=loop_rate,
+            wheelbase=wheelbase,
+            state_machine_rate=state_machine_rate,
+            logger_info=self.logger.logger.info,
+            logger_warn=self.logger.logger.warning,
+        )
+
+        sample_ds = float(params.get('sample_ds', 0.02))
+        path_cfg = getattr(self.config, 'path', None)
+        self.rich_planner = RichSDCSPlanner(
+            leftHandTraffic=getattr(path_cfg, 'left_hand_traffic', False),
+            useSmallMap=True,
+            sample_ds=sample_ds,
+            is_cyclic=True,
+        )
+
+        if hasattr(self.vehicle_logic, 'waypoint_sequence') and self.vehicle_logic.waypoint_sequence is not None:
+            self._build_pp_waypoint_array(self.vehicle_logic.waypoint_sequence)
+
+    def _build_pp_waypoint_array(self, waypoint_sequence: np.ndarray) -> bool:
+        """
+        Build PP waypoint map from [2, N] path using rich trajectory conversion.
+
+        PP_Controller expects columns where:
+          0:x, 1:y, 2:ref_speed, 5:curvature, 6:heading.
+        """
+        result = build_pp_waypoint_array(
+            rich_planner=self.rich_planner,
+            waypoint_sequence=waypoint_sequence,
+            params=self.pp_map_params,
+            logger=self.logger.logger if self.logger else None,
+        )
+        if result is None:
+            return False
+
+        (
+            self.pp_waypoint_array,
+            self.pp_speed_profile_base,
+            self.pp_s_axis,
+            self.pp_track_length,
+            design_speed,
+        ) = result
+        self.pp_profile_design_speed = max(float(design_speed), 1e-3)
+        self.pp_last_v_ref = None
+        self._update_pp_runtime_speed_profile()
+        return True
+
+    def _update_pp_runtime_speed_profile(self) -> None:
+        """
+        Scale PP waypoint speed profile online using current vehicle v_ref.
+
+        This keeps curvature-based speed shaping from path_rich, while allowing
+        runtime speed commands (SET_VELOCITY) to speed up/slow down PP behavior.
+        """
+        v_ref_runtime = float(max(getattr(self.vehicle_logic, 'v_ref', 0.0), 0.0))
+        speed_scale = update_pp_runtime_speed_profile(
+            pp_waypoint_array=self.pp_waypoint_array,
+            pp_speed_profile_base=self.pp_speed_profile_base,
+            profile_design_speed=self.pp_profile_design_speed,
+            v_ref_runtime=v_ref_runtime,
+        )
+        if speed_scale is None:
+            return
+
+        if self.pp_last_v_ref is None or abs(v_ref_runtime - self.pp_last_v_ref) > 0.03:
+            self.pp_last_v_ref = v_ref_runtime
+            if hasattr(self.vehicle_logic, 'loop_counter') and self.vehicle_logic.loop_counter % 50 == 0:
+                self.logger.logger.info(
+                    f"[PP-PATH] Applied runtime v_ref scaling: v_ref={v_ref_runtime:.2f}, "
+                    f"scale={speed_scale:.2f}"
+                )
+
+    def _project_to_route_frenet(self, x: float, y: float) -> Tuple[float, float]:
+        """Project cartesian pose onto current PP route and return (s, d)."""
+        return project_to_route_frenet(
+            pp_waypoint_array=self.pp_waypoint_array,
+            pp_s_axis=self.pp_s_axis,
+            pp_track_length=self.pp_track_length,
+            x=x,
+            y=y,
+        )
+
+    def _compute_pp_control(self, dt: float, sensor_data: Dict[str, Any]) -> Tuple[float, float]:
+        """Compute control using PP_Controller + PID throttle tracking."""
+        if not self.vehicle_logic.controller_manager.config.enable_steering_control:
+            return self._compute_speed_control(sensor_data['velocity'], dt), 0.0
+
+        if self.pp_controller is None:
+            return self._compute_speed_control(sensor_data['velocity'], dt), 0.0
+
+        if self.pp_waypoint_array is None and hasattr(self.vehicle_logic, 'waypoint_sequence'):
+            self._build_pp_waypoint_array(self.vehicle_logic.waypoint_sequence)
+        if self.pp_waypoint_array is None:
+            return self._compute_speed_control(sensor_data['velocity'], dt), 0.0
+        self._update_pp_runtime_speed_profile()
+
+        x = float(sensor_data['x'])
+        y = float(sensor_data['y'])
+        theta = float(sensor_data['theta'])
+        velocity = float(sensor_data['velocity'])
+        acceleration = float(sensor_data.get('acceleration', 0.0))
+
+        s, d = self._project_to_route_frenet(x, y)
+        position_in_map = np.array([[x, y, theta]], dtype=float)
+        position_in_map_frenet = np.array([s, d, velocity], dtype=float)
+        acc_now = np.array([acceleration], dtype=float)
+
+        speed_target = None
+        steering = 0.0
+        try:
+            speed_target, _, _, steering, _, _, _ = self.pp_controller.main_loop(
+                state="FOLLOWING_PATH",
+                position_in_map=position_in_map,
+                waypoint_array_in_map=self.pp_waypoint_array,
+                speed_now=velocity,
+                opponent=None,
+                position_in_map_frenet=position_in_map_frenet,
+                acc_now=acc_now,
+                track_length=self.pp_track_length,
+            )
+        except Exception as e:
+            self.logger.log_error("PP control step failed", e)
+            return self._compute_speed_control(velocity, dt), 0.0
+
+        if speed_target is None or not np.isfinite(speed_target):
+            speed_target = self.vehicle_logic.v_ref
+        speed_target = max(float(speed_target), 0.0)
+
+        # dt_safe = max(float(dt), 1e-3)
+        # if self.speed_controller:
+        #     # Closed-loop tracking of PP target speed (supports braking when v > v_target).
+        #     u = self.speed_controller.update(velocity, speed_target, dt_safe)
+        # else:
+        #     # Safe fallback if speed controller is missing.
+        #     u = np.clip(speed_target - velocity, -1.0, 1.0)
+        
+        # TODO: Problem when change the gear limit , its nor working well 
+        u = speed_target 
+        if steering is None or not np.isfinite(steering):
+            steering = 0.0
+        delta = float(np.clip(steering, -0.5, 0.5))
+
+        if hasattr(self.vehicle_logic, 'loop_counter') and self.vehicle_logic.loop_counter % 200 == 0:
+            idx = self.pp_controller.idx_nearest_waypoint if self.pp_controller else -1
+            self.logger.logger.info(
+                f"[PP-PATH] v={velocity:.2f}, v_cmd={speed_target:.2f}, throttle={u:.3f}, "
+                f"steer={delta:.3f}, s={s:.2f}, d={d:.2f}, wp={idx}"
+            )
+
+        return u, delta
     
     def _init_lane_fusion(self, config: dict = None):
         """
@@ -274,6 +524,12 @@ class FollowingPathState(StateBase):
         try:
             # Update vehicle logic waypoint sequence
             self.vehicle_logic.waypoint_sequence = new_waypoint_sequence
+
+            if self._use_pp_map:
+                if self._build_pp_waypoint_array(new_waypoint_sequence):
+                    self.logger.logger.info("[PATH] PP map waypoints rebuilt from new path")
+                else:
+                    self.logger.logger.warning("[PATH] Failed to rebuild PP map waypoints from new path")
             
             # Reset steering controller with new waypoints
             if self.steering_controller:
@@ -328,6 +584,10 @@ class FollowingPathState(StateBase):
         if self.steering_controller:
             self.state_data['last_waypoint_index'] = self.steering_controller.get_waypoint_index()
             self.logger.logger.info(f"Continuing from waypoint index: {self.state_data['last_waypoint_index']}")
+        elif self._use_pp_map and self.pp_controller is not None:
+            idx = self.pp_controller.idx_nearest_waypoint
+            self.state_data['last_waypoint_index'] = int(idx) if idx is not None else 0
+            self.logger.logger.info(f"Continuing from PP waypoint index: {self.state_data['last_waypoint_index']}")
         else:
             self.logger.logger.warning("[PATH] No steering controller available")
         
@@ -360,7 +620,7 @@ class FollowingPathState(StateBase):
                 'velocity': velocity,
                 'target_velocity': self.vehicle_logic.v_ref,
             }
-            # leader_state=None → MPC uses waypoints for reference trajectory
+            # leader_state=None -> MPC uses waypoints for reference trajectory
             u, delta = self.mpc_controller.compute_control(follower_state, leader_state=None, dt=dt)
             # u = np.clip(u, -0.1, 0.1)
     
@@ -373,6 +633,9 @@ class FollowingPathState(StateBase):
                     f"({np.rad2deg(delta):.1f}°), v={velocity:.2f}, "
                     f"v_ref={self.vehicle_logic.v_ref:.2f}, wp={wpi}/{n_wp}"
                 )
+        elif self._use_pp_map and self.pp_controller is not None:
+            # --- Map-based PP controller + PID throttle tracking ---
+            u, delta = self._compute_pp_control(dt, sensor_data)
         else:
             # --- Original PID + Stanley control ---
             # # Speed control
@@ -391,6 +654,11 @@ class FollowingPathState(StateBase):
                 yolo_data = None
             delta = self._compute_steering_control(x, y, theta, velocity, yolo_data)
         
+        gear = getattr(self.vehicle_logic, 'gear', None)
+        max_throttle = float(getattr(gear, 'value', 0.1))
+        if abs(u) > max_throttle:
+            u = np.clip(u, -max_throttle, max_throttle)
+
         # Monitor progress
         self._monitor_progress()
         
@@ -401,94 +669,93 @@ class FollowingPathState(StateBase):
     
     def handle_event(self, command_type, data: Dict[str, Any] = None) -> Optional[Tuple[VehicleState, StateTransitionReason]]:
         """
-        Handle events while path following
-        
+        Handle events while path following.
+
         Args:
-            command_type: CommandType enum (e.g., CommandType.STOP, CommandType.ENABLE_PLATOON_LEADER)
+            command_type: CommandType enum (e.g., CommandType.STOP, CommandType.START_PLATOON)
             data: Optional event data
-            
+
         Returns:
-            Optional state transition
+            Optional state transition.
         """
         data = data or {}
-        
-        # Check if CommandType import was successful
+
         if not COMMAND_TYPE_AVAILABLE:
-            # Fallback to base class if CommandType not available
-            self.logger.logger.warning(f"CommandType not available in FollowingPathState - using base handler for {command_type}")
+            self.logger.logger.warning(
+                f"CommandType not available in FollowingPathState - using base handler for {command_type}"
+            )
             return super().handle_event(command_type, data)
-        
-        # Handle START_PLATOON command - check formation to decide state transition
+
         if command_type == CommandType.START_PLATOON:
-            # Debug: Log received data
-            self.logger.logger.info(f"[PLATOON] START_PLATOON received with data: {data}")
-            
-            if not self.validate_event_data(data, ['leader_id']):
-                self.logger.logger.error("[PLATOON] Missing 'leader_id' in command data!")
-                return None
-            
-            # ✅ CRITICAL: Check if platoon setup was completed first
-            if not (hasattr(self.vehicle_logic, 'platoon_controller') and 
-                    self.vehicle_logic.platoon_controller and
-                    self.vehicle_logic.platoon_controller.setup_complete):
-                self.logger.logger.warning(
-                    "[PLATOON] START_PLATOON rejected - SETUP_PLATOON_FORMATION has not been received yet! "
-                    "Please send SETUP_PLATOON_FORMATION command first before starting platoon."
-                )
-                return None
-            
-            leader_id = data.get('leader_id')
-            
-            # ✅ Check formation to determine if this vehicle should follow a leader
-            is_leader = self.vehicle_logic.platoon_controller.is_leader
-            my_position = getattr(self.vehicle_logic.platoon_controller, 'my_position', None)
-            
-            self.logger.logger.info(f"[PLATOON] START_PLATOON received (leader_id={leader_id})")
-            self.logger.logger.info(f"[PLATOON] My formation: is_leader={is_leader}, position={my_position}")
-            
-            if is_leader:
-                # Leaders stay in FOLLOWING_PATH state (they follow their path, not another vehicle)
-                self.logger.logger.info(f"[PLATOON] I am LEADER - staying in FOLLOWING_PATH state")
-                # Just enable platoon mode for leader
-                self.vehicle_logic.platoon_controller.enabled = True
-                return None  # No state transition - continue path following as leader
-            
-            else:
-                # Followers transition to FOLLOWING_LEADER state
-                self.logger.logger.info(f"[PLATOON] I am FOLLOWER-{my_position} - transitioning to FOLLOWING_LEADER state (following vehicle {leader_id})")
-                
-                # Enable platoon controller for follower mode
-                self.vehicle_logic.platoon_controller.enable_as_follower()
-                self.vehicle_logic.platoon_controller.leader_car_id = leader_id
-                self.vehicle_logic.platoon_controller.enabled = True
-                
-                # Transition to following leader state
-                return (VehicleState.FOLLOWING_LEADER, StateTransitionReason.START_COMMAND)
-        
-        # Handle path updates specific to this state
-        elif command_type == CommandType.SET_PATH:
-            node_sequence = data.get('node_sequence')
-            if node_sequence and isinstance(node_sequence, list):
-                # Generate new waypoint sequence from node sequence
-                if (hasattr(self.vehicle_logic, 'roadmap') and 
-                    self.vehicle_logic.roadmap):
-                    try:
-                        new_waypoints = self.vehicle_logic.roadmap.generate_path(node_sequence)
-                        self.update_path(new_waypoints)
-                        self.logger.logger.info(f"[OK] Path updated in {self.__class__.__name__}")
-                        return None  # No state transition
-                    except Exception as e:
-                        self.logger.log_error("Failed to generate path from nodes", e)
-                else:
-                    self.logger.logger.warning("[!] No roadmap available for path generation")
-            else:
-                self.logger.logger.warning(f"[!] Invalid path update data: {data}")
+            return self._handle_start_platoon_event(data)
+
+        if command_type == CommandType.SET_PATH:
+            self._handle_set_path_event(data)
             return None
-        
-        # Handle velocity updates immediately (no state change) - handled by base class
-        
-        # Let base class handle common events (stop, emergency_stop, set_velocity, etc.)
+
+        # Common events (stop, emergency_stop, set_velocity, ...) are handled by base class.
         return super().handle_event(command_type, data)
+
+    def _handle_start_platoon_event(
+        self,
+        data: Dict[str, Any],
+    ) -> Optional[Tuple[VehicleState, StateTransitionReason]]:
+        """Handle START_PLATOON while in FOLLOWING_PATH."""
+        self.logger.logger.info(f"[PLATOON] START_PLATOON received with data: {data}")
+
+        if not self.validate_event_data(data, ['leader_id']):
+            self.logger.logger.error("[PLATOON] Missing 'leader_id' in command data!")
+            return None
+
+        if not (
+            hasattr(self.vehicle_logic, 'platoon_controller')
+            and self.vehicle_logic.platoon_controller
+            and self.vehicle_logic.platoon_controller.setup_complete
+        ):
+            self.logger.logger.warning(
+                "[PLATOON] START_PLATOON rejected - SETUP_PLATOON_FORMATION has not been received yet! "
+                "Please send SETUP_PLATOON_FORMATION command first before starting platoon."
+            )
+            return None
+
+        leader_id = data.get('leader_id')
+        is_leader = self.vehicle_logic.platoon_controller.is_leader
+        my_position = getattr(self.vehicle_logic.platoon_controller, 'my_position', None)
+
+        self.logger.logger.info(f"[PLATOON] START_PLATOON received (leader_id={leader_id})")
+        self.logger.logger.info(f"[PLATOON] My formation: is_leader={is_leader}, position={my_position}")
+
+        if is_leader:
+            self.logger.logger.info("[PLATOON] I am LEADER - staying in FOLLOWING_PATH state")
+            self.vehicle_logic.platoon_controller.enabled = True
+            return None
+
+        self.logger.logger.info(
+            f"[PLATOON] I am FOLLOWER-{my_position} - transitioning to FOLLOWING_LEADER state "
+            f"(following vehicle {leader_id})"
+        )
+        self.vehicle_logic.platoon_controller.enable_as_follower()
+        self.vehicle_logic.platoon_controller.leader_car_id = leader_id
+        self.vehicle_logic.platoon_controller.enabled = True
+        return (VehicleState.FOLLOWING_LEADER, StateTransitionReason.START_COMMAND)
+
+    def _handle_set_path_event(self, data: Dict[str, Any]) -> None:
+        """Handle SET_PATH while in FOLLOWING_PATH."""
+        node_sequence = data.get('node_sequence')
+        if not (node_sequence and isinstance(node_sequence, list)):
+            self.logger.logger.warning(f"[!] Invalid path update data: {data}")
+            return
+
+        if not (hasattr(self.vehicle_logic, 'roadmap') and self.vehicle_logic.roadmap):
+            self.logger.logger.warning("[!] No roadmap available for path generation")
+            return
+
+        try:
+            new_waypoints = self.vehicle_logic.roadmap.generate_path(node_sequence)
+            self.update_path(new_waypoints)
+            self.logger.logger.info(f"[OK] Path updated in {self.__class__.__name__}")
+        except Exception as e:
+            self.logger.log_error("Failed to generate path from nodes", e)
     
     def _should_follow_leader(self, sensor_data: Dict[str, Any]) -> bool:
         """Check if we should transition to following a leader"""
@@ -546,39 +813,9 @@ class FollowingPathState(StateBase):
         """
         Extract and validate lane detection data from YOLO packet.
         
-        This helper provides a clean interface to the lane data transmitted
-        from yolo_server_virtual.py, handling missing/invalid data gracefully.
-        
-        Args:
-            yolo_data: Dict from YOLO receiver with lane_* keys
-            
-        Returns:
-            Structured dict with validated lane data:
-            - valid: bool - Whether lane data is usable
-            - confidence: float - Detection confidence [0-1]
-            - steering: float - Suggested steering correction
-            - curvature: float - Lane curvature proxy
-            - offset: float - Lateral offset from center
-            - left_detected: bool - Left lane marker visible
-            - right_detected: bool - Right lane marker visible
+        Kept as a thin wrapper for backward compatibility.
         """
-        if not yolo_data:
-            return {'valid': False, 'confidence': 0.0, 'steering': 0.0,
-                    'curvature': 0.0, 'offset': 0.0, 
-                    'left_detected': False, 'right_detected': False}
-        
-        confidence = yolo_data.get('lane_confidence', 0.0)
-        is_valid = confidence > 0.1  # Minimum threshold for usable lane data
-        
-        return {
-            'valid': is_valid,
-            'confidence': confidence,
-            'steering': yolo_data.get('lane_steering', 0.0),
-            'curvature': yolo_data.get('lane_slope', 0.0),  # slope used as curvature proxy
-            'offset': yolo_data.get('lane_intercept', 0.0),
-            'left_detected': yolo_data.get('lane_left_detected', False),
-            'right_detected': yolo_data.get('lane_right_detected', False),
-        }
+        return extract_lane_data(yolo_data, min_confidence=0.1)
     
     def _compute_steering_control(self, x: float, y: float, theta: float, velocity: float, 
                                      yolo_data: dict = None) -> float:
@@ -652,19 +889,24 @@ class FollowingPathState(StateBase):
     
     def _monitor_progress(self):
         """Monitor waypoint progress and lap completion"""
-        if not self.steering_controller:
+        if self._use_pp_map and self.pp_controller is not None:
+            idx = self.pp_controller.idx_nearest_waypoint
+            current_waypoint_index = int(idx) if idx is not None else 0
+            total_waypoints = self.pp_waypoint_array.shape[0] if self.pp_waypoint_array is not None else 0
+        elif self.steering_controller:
+            current_waypoint_index = self.steering_controller.get_waypoint_index()
+            total_waypoints = self.vehicle_logic.waypoint_sequence.shape[1] if hasattr(self.vehicle_logic, 'waypoint_sequence') else 0
+        else:
             return
         
-        current_waypoint_index = self.steering_controller.get_waypoint_index()
-        
-        if current_waypoint_index != self.state_data['last_waypoint_index']:
+        prev_waypoint_index = self.state_data['last_waypoint_index']
+        if current_waypoint_index != prev_waypoint_index:
             self.state_data['last_waypoint_index'] = current_waypoint_index
             
             # Check if we've completed a lap
-            if hasattr(self.vehicle_logic, 'waypoint_sequence'):
-                total_waypoints = self.vehicle_logic.waypoint_sequence.shape[1]
+            if total_waypoints > 0:
                 if (current_waypoint_index == 0 and 
-                    self.state_data['last_waypoint_index'] > total_waypoints * 0.8):
+                    prev_waypoint_index > total_waypoints * 0.8):
                     
                     self.state_data['lap_count'] += 1
                     lap_time = time.time() - self.state_data['session_start_time']
@@ -673,18 +915,28 @@ class FollowingPathState(StateBase):
     
     def _periodic_logging(self, x: float, y: float, theta: float, velocity: float):
         """Log performance metrics periodically"""
-        if (self.steering_controller and
-            hasattr(self.vehicle_logic, 'loop_counter')):
+        if not hasattr(self.vehicle_logic, 'loop_counter'):
+            return
+
+        if self.vehicle_logic.loop_counter % 200 != 0:
+            return
+
+        if self._use_pp_map and self.pp_controller is not None:
+            idx = self.pp_controller.idx_nearest_waypoint if self.pp_controller.idx_nearest_waypoint is not None else -1
+            self.logger.logger.debug(
+                f"Path following (PP) - WP: {idx}, V: {velocity:.2f}m/s"
+            )
+            return
+
+        if self.steering_controller:
+            errors = self.steering_controller.get_errors()
+            cross_track_error = errors[0]
+            heading_error = errors[1]
             
-            if self.vehicle_logic.loop_counter % 200 == 0:  # Every second at 200Hz
-                errors = self.steering_controller.get_errors()
-                cross_track_error = errors[0]
-                heading_error = errors[1]
-                
-                self.logger.logger.debug(
-                    f"Path following - CTE: {cross_track_error:.3f}m, "
-                    f"HE: {heading_error:.3f}rad, V: {velocity:.2f}m/s"
-                )
+            self.logger.logger.debug(
+                f"Path following - CTE: {cross_track_error:.3f}m, "
+                f"HE: {heading_error:.3f}rad, V: {velocity:.2f}m/s"
+            )
     
     def exit(self):
         """Clean up when leaving path following state"""
@@ -701,5 +953,9 @@ class FollowingPathState(StateBase):
         if self.steering_controller:
             final_waypoint_index = self.steering_controller.get_waypoint_index()
             self.logger.logger.info(f"Final waypoint index: {final_waypoint_index}")
+        elif self._use_pp_map and self.pp_controller is not None:
+            idx = self.pp_controller.idx_nearest_waypoint
+            final_waypoint_index = int(idx) if idx is not None else -1
+            self.logger.logger.info(f"Final PP waypoint index: {final_waypoint_index}")
         
         super().exit()

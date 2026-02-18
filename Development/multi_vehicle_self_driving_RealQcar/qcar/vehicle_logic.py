@@ -30,14 +30,6 @@ from Controller.controller_manager import ControllerManager
 # in state machine states, not here
 
 
-# Gear-based throttle limits
-GEAR_LIMITS = {
-    Gear.DRIVE_1: 0.1,  # Low speed / Safe mode
-    Gear.DRIVE_2: 0.3,  # Medium speed
-    Gear.DRIVE_3: 0.5,  # High speed / Full power
-}
-
-
 class VehicleLogic:
     """Main vehicle controller class"""
 
@@ -318,29 +310,7 @@ class VehicleLogic:
                 dt, last_steering, last_u
             )
 
-            # # Update visualization scope (if enabled)
-            # if self.scope_manager and self.scope_manager.enabled:
-            #     # Gather visualization data
-            #     vis_data = state_info.copy()
 
-            #     # Add GPS reference if available
-            #     sensor_data = self.vehicle_observer.get_sensor_data()
-            #     if sensor_data.get('gps_valid', False):
-            #         vis_data['x_gps'] = sensor_data['gps_position'][0]
-            #         vis_data['y_gps'] = sensor_data['gps_position'][1]
-            #         vis_data['theta_gps'] = sensor_data['gps_position'][2]
-
-            #     # Add control signals
-            #     vis_data['v_ref'] = self.v_ref * self.yolo_manager.get_yolo_gain()
-            #     vis_data['steering'] = last_steering
-            #     vis_data['throttle'] = last_u
-
-            #     # Add fleet data for plotting
-            #     if self.vehicle_observer.v2v_active:
-            #         vis_data['fleet_states'] = self.vehicle_observer.get_fleet_states()
-
-            #     # Push to scope manager (non-blocking)
-            #     self.scope_manager.sample(self.elapsed_time(), vis_data)
 
             # Stream scope data to Ground Station (if streaming enabled)
             if (
@@ -439,20 +409,28 @@ class VehicleLogic:
                 # self.vehicle_logger.log_error("State machine returned invalid control commands")
                 return True  # Skip sending commands
 
-            # Store steering and throttle for next EKF update and telemetry
-            self._last_steering = delta
-            self._last_u = u
 
             # u = 0.075 # Test value
             # delta = 0.0 # Test value
 
             # print(f"Throttle: {u}, Steering: {delta}")
             # Send commands to vehicle hardware
+
+            self._last_steering = delta
+
+            if self.vehicle_type == "Limo":
+                delta *= 2.0  # Map -0.5 -> -1.0, 0.5 -> 1.0
+            delta = max(-1.0, min(1.0, delta))
+
             if self.qcar is not None:
-                max_throttle = GEAR_LIMITS.get(self.gear, 0.1)
+                max_throttle = float(getattr(self.gear, "value", 0.1))
                 if abs(u) > max_throttle:
                     u = np.clip(u, -max_throttle, max_throttle)
                 self.qcar.write(throttle=u, steering=delta)
+
+
+            # Store steering and throttle for next EKF update and telemetry
+            self._last_u = u
 
             return True
 

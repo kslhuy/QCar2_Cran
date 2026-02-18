@@ -6,13 +6,13 @@ Delegates all platoon logic to PlatoonController.
 
 LATERAL CONTROL MODES:
   - 'pure_pursuit', 'stanley', 'lookahead', 'hybrid': Follow leader's position directly
-  - 'path': Follow predefined waypoints (like FOLLOWING_PATH state) while maintaining
+  - 'path', 'pp_map': Follow predefined waypoints (like FOLLOWING_PATH state) while maintaining
             longitudinal spacing with leader
             
 USAGE:
   Set lateral_controller_type in config:
     - For leader tracking: lateral_controller_type = 'pure_pursuit' (or other)
-    - For path following: lateral_controller_type = 'path'
+    - For path following: lateral_controller_type = 'path' or 'pp_map'
 """
 import time
 import numpy as np
@@ -85,7 +85,7 @@ class FollowingLeaderState(StateBase):
             self.logger.logger.info(f"[FOLLOW] Longitudinal controller: {cm.get_longitudinal_type()}")
         
         # Get lateral controller based on type
-        if lateral_type == 'path':
+        if lateral_type in ('path', 'pp_map'):
             # Path-following mode: use steering controller
             self.steering_controller = cm.get_steering_controller()
             if self.steering_controller:
@@ -341,7 +341,7 @@ class FollowingLeaderState(StateBase):
         
         
         # Compute steering based on lateral control mode
-        if self.lateral_controller_type == 'path':
+        if self.lateral_controller_type in ('path', 'pp_map'):
             # Path-following mode: use steering controller with waypoints
             delta = self._compute_path_steering(x, y, theta, velocity)
         elif self.lateral_controller_type == 'fusion':

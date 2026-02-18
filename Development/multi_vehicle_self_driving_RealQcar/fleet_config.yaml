@@ -8,9 +8,15 @@ ground_station:
 
 # Remote QCar Configuration
 remote:
-  username: nvidia
-  password: nvidia
-  remote_path: /home/nvidia/Documents/multi_vehicle_RealCar
+  Qcar:
+    username: nvidia
+    password: nvidia
+    remote_path: /home/nvidia/Documents/multi_vehicle_RealCar
+    # Remote QCar Configuration
+  Limo:
+    username: agilex
+    password: agx
+    remote_path: /home/agilex/agilex_ws/src/limo_nav_huy_test/limo_nav_huy_test/multi_vehicle_RealCar/qcar
 
 # Probing Configuration
 image_size:

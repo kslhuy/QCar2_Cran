@@ -148,7 +148,7 @@ class ControllerManager:
         Get or create lateral controller.
         
         Args:
-            force_type: Override config type (e.g., 'pure_pursuit', 'stanley', 'lookahead')
+            force_type: Override config type (e.g., 'pure_pursuit', 'stanley', 'lookahead', 'pp_map')
             waypoints: Waypoints for path-based controllers (optional)
             
         Returns:
@@ -159,6 +159,15 @@ class ControllerManager:
         # Handle 'path' mode separately - returns steering controller
         if ctrl_type == 'path':
             return self.get_steering_controller(waypoints)
+        if ctrl_type == 'pp_map':
+            controller = self.get_steering_controller(waypoints)
+            if controller is not None:
+                self._lateral = ControllerInfo(
+                    controller=controller,
+                    type_name='pp_map',
+                    category='lateral'
+                )
+            return controller
         
         # Return cached if same type
         if self._lateral and self._lateral.type_name == ctrl_type:
@@ -316,7 +325,7 @@ class ControllerManager:
         Switch lateral controller at runtime.
         
         Args:
-            new_type: New controller type ('pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'path')
+            new_type: New controller type ('pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'path', 'pp_map')
             
         Returns:
             bool: True if switch successful
@@ -330,10 +339,10 @@ class ControllerManager:
             controller = self.get_lateral_controller(new_type)
             
             # Update config for persistence
-            if self.config and controller:
+            if self.config and (controller is not None or new_type == 'pp_map'):
                 self.config.config['lateral_controller_type'] = new_type
             
-            return controller is not None
+            return controller is not None or new_type == 'pp_map'
             
         except Exception as e:
             if self.logger:

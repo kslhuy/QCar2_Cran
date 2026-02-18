@@ -205,6 +205,7 @@ class CommandHandler:
             CommandType.SET_LOCAL_OBSERVER,
             CommandType.SET_FLEET_OBSERVER,
             CommandType.SET_CONTROLLER,
+            CommandType.SET_GEAR,
         ]
         
         if command_type in NON_TRANSITION_COMMANDS:

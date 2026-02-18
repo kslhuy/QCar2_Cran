@@ -76,8 +76,65 @@ def get_target_ips(cfg: dict, exclude_car_id: int):
             continue
         ip = v.get('ip')
         if ip:
-            ips.append({'car_id': cid, 'ip': str(ip)})
+            ips.append({
+                'car_id': cid,
+                'ip': str(ip),
+                'vehicle_type': v.get('vehicle_type', 'Qcar')
+            })
     return ips
+
+
+def normalize_vehicle_type(vehicle_type: str) -> str:
+    if str(vehicle_type).strip().lower() == 'limo':
+        return 'Limo'
+    return 'Qcar'
+
+
+def resolve_remote_profile(cfg: dict, vehicle_type: str) -> dict:
+    """
+    Resolve remote profile for a vehicle type.
+
+    Supports both:
+      - Legacy flat remote config
+      - Per-type remote config: remote.Qcar / remote.Limo
+    """
+    remote_cfg = cfg.get('remote', {}) or {}
+    legacy_keys = ('username', 'password', 'remote_path')
+
+    if all(k in remote_cfg for k in legacy_keys):
+        profile = remote_cfg
+    else:
+        wanted = normalize_vehicle_type(vehicle_type)
+        profile = remote_cfg.get(wanted)
+
+        if not isinstance(profile, dict):
+            for key, value in remote_cfg.items():
+                if isinstance(value, dict) and str(key).strip().lower() == wanted.lower():
+                    profile = value
+                    break
+
+        if not isinstance(profile, dict):
+            profile = remote_cfg.get('Qcar')
+
+        if not isinstance(profile, dict):
+            for value in remote_cfg.values():
+                if isinstance(value, dict):
+                    profile = value
+                    break
+
+    if not isinstance(profile, dict):
+        raise ValueError(
+            "Invalid 'remote' config. Expected flat keys or per-type profiles under remote.Qcar/remote.Limo."
+        )
+
+    resolved = {
+        'username': profile.get('username') or DEFAULT_USERNAME,
+        'password': profile.get('password') or DEFAULT_PASSWORD,
+        'remote_path': profile.get('remote_path')
+    }
+    if not resolved['remote_path']:
+        raise ValueError(f"Missing remote_path for vehicle_type={vehicle_type}")
+    return resolved
 
 
 def create_ssh_and_scp(ip, username, password):
@@ -112,7 +169,7 @@ def run_calibration(ssh, remote_path, dry_run=False):
         print(f"[DRY RUN] Would run on remote: {cmd}")
         return True
 
-    print(f"[→] Running calibration on {remote_path}...")
+    print(f"[->] Running calibration on {remote_path}...")
     stdin, stdout, stderr = ssh.exec_command(cmd)
     time.sleep(1)
     return True
@@ -130,7 +187,7 @@ def download_results(scp, remote_path, local_dir, dry_run=False):
             scp.get(remote_file, local_dir)
             files.append(os.path.join(local_dir, name))
         except Exception as e:
-            print(f"[⚠] Failed to download {remote_file}: {e}")
+            print(f"[WARN] Failed to download {remote_file}: {e}")
     return files
 
 
@@ -166,16 +223,23 @@ def main():
 
     cal_ip = str(calibrator.get('ip'))
     cal_id = calibrator.get('car_id')
-    remote_cfg = cfg.get('remote', {})
-    username = remote_cfg.get('username') or DEFAULT_USERNAME
-    password = remote_cfg.get('password') or DEFAULT_PASSWORD
-    remote_path = remote_cfg.get('remote_path')
+    cal_vehicle_type = calibrator.get('vehicle_type', 'Qcar')
+    try:
+        cal_remote = resolve_remote_profile(cfg, cal_vehicle_type)
+    except Exception as e:
+        print(f"[ERROR] Cannot resolve remote profile for calibrator type '{cal_vehicle_type}': {e}")
+        input('\nPress Enter to exit...')
+        sys.exit(1)
+
+    username = cal_remote['username']
+    password = cal_remote['password']
+    remote_path = cal_remote['remote_path']
     scripts_path = os.path.normpath(os.path.join(os.path.dirname(__file__), '../qcar'))
 
-    print(f"Using Car {cal_id} ({cal_ip}) as calibrator")
+    print(f"Using Car {cal_id} ({cal_ip}) as calibrator [{cal_vehicle_type}]")
 
     if args.dry_run:
-        print("Running in DRY RUN mode — no network operations will be performed")
+        print("Running in DRY RUN mode - no network operations will be performed")
 
     # Connect to calibrator
     if args.dry_run:
@@ -207,34 +271,48 @@ def main():
     print(f"Distributing results to {len(targets)} vehicles")
     for t in targets:
         ip = t['ip']
-        print(f"\n[{t.get('car_id')}] -> {ip}")
+        target_type = t.get('vehicle_type', 'Qcar')
+
+        try:
+            target_remote = resolve_remote_profile(cfg, target_type)
+        except Exception as e:
+            print(f"\n[{t.get('car_id')}] -> {ip} [{target_type}]")
+            print(f"[WARNING] Cannot resolve remote profile: {e}")
+            continue
+
+        target_username = target_remote['username']
+        target_password = target_remote['password']
+        target_path = target_remote['remote_path']
+
+        print(f"\n[{t.get('car_id')}] -> {ip} [{target_type}]")
         if args.dry_run:
-            print(f"[DRY RUN] Would connect to {ip} and distribute files: {scp_files}")
+            print(
+                f"[DRY RUN] Would connect to {ip} as {target_username} and distribute files to {target_path}: {scp_files}"
+            )
             continue
 
         try:
-            ssh, scp = create_ssh_and_scp(ip, username, password)
+            ssh, scp = create_ssh_and_scp(ip, target_username, target_password)
         except Exception as e:
             print(f"[WARNING] Cannot connect to {ip}: {e}")
             continue
 
         # Optional: remove old .mat files
         try:
-            ssh.exec_command(f"rm -f {remote_path}/*.mat")
+            ssh.exec_command(f"rm -f {target_path}/*.mat")
         except Exception:
             pass
 
         if scp_files:
-            distribute_files(scp, remote_path, scp_files, dry_run=args.dry_run)
-            print(f"  [✓] Distributed {len(scp_files)} files to {ip}")
+            distribute_files(scp, target_path, scp_files, dry_run=args.dry_run)
+            print(f"  [OK] Distributed {len(scp_files)} files to {ip}")
 
         if args.distribute_scripts:
-            upload_to_calibrator(ssh, scp, scripts_path, remote_path, dry_run=args.dry_run)
-            print(f"  [✓] Distributed scripts/configs to {ip}")
+            upload_to_calibrator(ssh, scp, scripts_path, target_path, dry_run=args.dry_run)
+            print(f"  [OK] Distributed scripts/configs to {ip}")
 
         ssh.close()
         scp.close()
-
     print("\nCalibration workflow complete")
     input('\nPress Enter to exit...')
 

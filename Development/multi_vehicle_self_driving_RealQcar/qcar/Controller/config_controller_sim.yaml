@@ -57,8 +57,8 @@ fix:
 # LATERAL CONTROLLER CONFIGURATION
 # ============================================================================
 
-# Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path'
-lateral_controller_type: 'pure_pursuit'
+# Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path', 'pp_map'
+lateral_controller_type: 'pp_map'
 
 # Pure Pursuit Controller Parameters
 pure_pursuit:
@@ -70,6 +70,34 @@ pure_pursuit:
   curvature_threshold: 0.3   # Lane curvature threshold for turn detection
   turn_lookahead_offset: 0.1 # Lateral offset in turns (meters)
   turn_lookahead_gain: 1.5   # Lookahead distance multiplier in turns
+
+# Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
+pp_map:
+  sample_ds: 0.02
+  desired_speed: 0.6
+  min_speed: 0.15
+  kappa_speed_gain: 3.0
+  max_speed: 0.75
+  hard_turn_kappa: 0.55
+  hard_turn_speed: 0.25
+  t_clip_min: 0.3
+  t_clip_max: 1.2
+  m_l1: 0.50
+  q_l1: 0.20
+  speed_lookahead: 0.2
+  lat_err_coeff: 0.55
+  acc_scaler_for_steer: 1.0
+  dec_scaler_for_steer: 0.9
+  start_scale_speed: 0.25
+  end_scale_speed: 0.85
+  downscale_factor: 0.45
+  speed_lookahead_for_steer: 0.18
+  prioritize_dyn: false
+  trailing_gap: 0.8
+  trailing_p_gain: 0.6
+  trailing_i_gain: 0.0
+  trailing_d_gain: 0.1
+  blind_trailing_speed: 0.2
 
 # Stanley Controller Parameters
 stanley:

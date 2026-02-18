@@ -334,7 +334,11 @@ class QCarFleetController:
         """Handle vehicle connection request."""
         self._update_vehicle_connector_config()
         
-        success, message = self._vehicle_connector.connect(config.car_id, config.ip)
+        success, message = self._vehicle_connector.connect(
+            config.car_id,
+            config.ip,
+            config.vehicle_type
+        )
         
         # Update panel status (thread-safe)
         if config.car_id in self._deployment_panels:
@@ -355,7 +359,11 @@ class QCarFleetController:
             panel = self._deployment_panels[config.car_id]
             panel.set_progress("Uploading files...")
         
-        success, message = self._vehicle_connector.upload_files(config.car_id, config.ip)
+        success, message = self._vehicle_connector.upload_files(
+            config.car_id,
+            config.ip,
+            config.vehicle_type
+        )
         
         # Update panel status
         if config.car_id in self._deployment_panels:
@@ -687,15 +695,27 @@ class QCarFleetController:
     
     def _on_test_connection(self, ip: str, car_id: int) -> None:
         """Handle test connection request."""
-        success, message = self._vehicle_connector.test_connection(ip)
-        
         panel = self._deployment_panels.get(car_id)
+        vehicle_type = None
+        if panel:
+            vehicle_type = panel._get_current_config().vehicle_type
+
+        success, message = self._vehicle_connector.test_connection(
+            ip,
+            car_id=car_id,
+            vehicle_type=vehicle_type
+        )
+
         if panel:
             panel.set_connected(success, message)
     
     def _on_vehicle_connect(self, config: VehicleConnectionConfig) -> None:
         """Handle vehicle connect request."""
-        success, message = self._vehicle_connector.connect(config.car_id, config.ip)
+        success, message = self._vehicle_connector.connect(
+            config.car_id,
+            config.ip,
+            config.vehicle_type
+        )
         
         panel = self._deployment_panels.get(config.car_id)
         if panel:
@@ -716,7 +736,11 @@ class QCarFleetController:
         if panel:
             self._vehicle_connector.progress_callback = panel.set_progress
         
-        success, message = self._vehicle_connector.upload_files(config.car_id, config.ip)
+        success, message = self._vehicle_connector.upload_files(
+            config.car_id,
+            config.ip,
+            config.vehicle_type
+        )
         
         if panel:
             panel.set_upload_complete(success, message)
@@ -1776,8 +1800,9 @@ class QCarFleetController:
     
     def log(self, message: str, level: str = 'INFO') -> None:
         """Log a message."""
-        if self._log_panel:
-            self._log_panel.log(message, level)
+        log_panel = getattr(self, "_log_panel", None)
+        if log_panel:
+            log_panel.log(message, level)
     
     # ========== Cleanup ==========
     

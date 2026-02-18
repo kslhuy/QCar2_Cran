@@ -67,6 +67,8 @@ class ControllerConfig:
     def get_available_lateral_types(self) -> list:
         """Get list of available lateral controller types based on config"""
         types = ['path'] # 'path' is always available as a mode
+        if 'pp_map' in self.config:
+            types.append('pp_map')
         if 'pure_pursuit' in self.config:
             types.append('pure_pursuit')
         if 'stanley' in self.config:
@@ -115,6 +117,8 @@ class ControllerConfig:
         
         if controller_type == 'pure_pursuit':
             return self._get_pure_pursuit_params()
+        elif controller_type == 'pp_map':
+            return self._get_pp_map_params()
         elif controller_type == 'stanley':
             return self._get_stanley_params()
         elif controller_type == 'lookahead':
@@ -211,6 +215,38 @@ class ControllerConfig:
             'k_e': stanley_config.get('k_e', 0.5),
             'k_soft': stanley_config.get('k_soft', 1.0),
             'max_steering': stanley_config.get('max_steering', 0.5),
+        }
+
+    def _get_pp_map_params(self) -> Dict[str, Any]:
+        """Get map-based PP_Controller parameters."""
+        pp_map_config = self.config.get('pp_map', {})
+
+        return {
+            'sample_ds': pp_map_config.get('sample_ds', 0.02),
+            'desired_speed': pp_map_config.get('desired_speed', 0.7),
+            'min_speed': pp_map_config.get('min_speed', 0.15),
+            'kappa_speed_gain': pp_map_config.get('kappa_speed_gain', 2.0),
+            'max_speed': pp_map_config.get('max_speed', 0.8),
+            'hard_turn_kappa': pp_map_config.get('hard_turn_kappa', 0.85),
+            'hard_turn_speed': pp_map_config.get('hard_turn_speed', 0.32),
+            't_clip_min': pp_map_config.get('t_clip_min', 0.4),
+            't_clip_max': pp_map_config.get('t_clip_max', 1.8),
+            'm_l1': pp_map_config.get('m_l1', 0.35),
+            'q_l1': pp_map_config.get('q_l1', 0.15),
+            'speed_lookahead': pp_map_config.get('speed_lookahead', 0.15),
+            'lat_err_coeff': pp_map_config.get('lat_err_coeff', 0.8),
+            'acc_scaler_for_steer': pp_map_config.get('acc_scaler_for_steer', 1.0),
+            'dec_scaler_for_steer': pp_map_config.get('dec_scaler_for_steer', 1.0),
+            'start_scale_speed': pp_map_config.get('start_scale_speed', 0.2),
+            'end_scale_speed': pp_map_config.get('end_scale_speed', 1.0),
+            'downscale_factor': pp_map_config.get('downscale_factor', 0.35),
+            'speed_lookahead_for_steer': pp_map_config.get('speed_lookahead_for_steer', 0.1),
+            'prioritize_dyn': pp_map_config.get('prioritize_dyn', False),
+            'trailing_gap': pp_map_config.get('trailing_gap', 0.8),
+            'trailing_p_gain': pp_map_config.get('trailing_p_gain', 0.6),
+            'trailing_i_gain': pp_map_config.get('trailing_i_gain', 0.0),
+            'trailing_d_gain': pp_map_config.get('trailing_d_gain', 0.1),
+            'blind_trailing_speed': pp_map_config.get('blind_trailing_speed', 0.2),
         }
     
     def _get_lookahead_params(self) -> Dict[str, Any]:

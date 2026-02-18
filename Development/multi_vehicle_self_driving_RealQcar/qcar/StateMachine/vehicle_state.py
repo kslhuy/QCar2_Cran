@@ -29,9 +29,9 @@ class VehicleState(Enum):
 
 class Gear(Enum):
     """Vehicle transmission gears"""
-    DRIVE_1 = auto()  # Low speed / Safe mode
-    DRIVE_2 = auto()  # Medium speed
-    DRIVE_3 = auto()  # High speed / Full power
+    DRIVE_1 = 0.1  # Low speed / Safe mode
+    DRIVE_2 = 0.2  # Medium speed
+    DRIVE_3 = 0.3  # High speed / Full power
 
 
 class StateTransitionReason(Enum):

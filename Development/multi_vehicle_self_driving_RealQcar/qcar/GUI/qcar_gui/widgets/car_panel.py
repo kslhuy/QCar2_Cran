@@ -607,7 +607,7 @@ class RuntimeSwitchingControl(BaseWidget):
     FLEET_OBSERVERS = ['consensus', 'distributed_luenberger', 
                        'trust_consensus', 'trust_kalman']
     LONGITUDINAL_CONTROLLERS = ['cacc', 'pid', 'hybrid']
-    LATERAL_CONTROLLERS = ['pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path']
+    LATERAL_CONTROLLERS = ['pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path', 'pp_map']
     
     def __init__(self, parent: tk.Widget, car_id: int,
                  callbacks: CarPanelCallbacks,
