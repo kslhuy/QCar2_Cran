@@ -459,7 +459,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         self.prev_velocity_measurement = local_measurement[1]
         
         # Compute estimated measurement
-        estimated_measurement = self.Ci @ x_vec + self.Cv * v_0 + self.Cd * self.d
+        estimated_measurement = self.Ci @ x_vec + self.Cv * v0 + self.Cd * self.d
         
         # Compute measurement error
         measurement_error = local_measurement - estimated_measurement

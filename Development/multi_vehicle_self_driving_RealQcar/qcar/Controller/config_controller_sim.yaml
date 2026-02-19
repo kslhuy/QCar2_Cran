@@ -206,34 +206,34 @@ per_vehicle_controllers:
     lateral_controller_type: 'fix_lateral'  # Straight line
     # Optional per-vehicle override for velocity schedule (FOLLOWING_PATH)
     velocity_sequence:
-      - {velocity: 0.45, duration: 60}
-      - {velocity: 0.36, duration: 2.5}
-      - {velocity: 0.24, duration: 1.5}
-      - {velocity: 0.12, duration: 1.5}
-      - {velocity: 0.00, duration: 20}
-      - {velocity: 0.10, duration: 1.5}
-      - {velocity: 0.18, duration: 1.5}
-      - {velocity: 0.28, duration: 1.5}
-      - {velocity: 0.40, duration: 1.5}
-      - {velocity: 0.55, duration: 1.5}
-      - {velocity: 0.68, duration: 1.5}
-      - {velocity: 0.74, duration: 1.5}
-      - {velocity: 0.87, duration: 1.5}
-      - {velocity: 1, duration: 30}
-      - {velocity: 0.85, duration: 1.5}
-      - {velocity: 0.76, duration: 1.5}
-      - {velocity: 0.65, duration: 1.5}
-      - {velocity: 0.50, duration: 1.5}
-      - {velocity: 0.36, duration: 1.5}
-      - {velocity: 0.24, duration: 1.5}
-      - {velocity: 0.12, duration: 1.5}
-      - {velocity: 0.00, duration: 20}
-      - {velocity: 0.08, duration: 1.5}
-      - {velocity: 0.18, duration: 1.5}
-      - {velocity: 0.32, duration: 1.5}
-      - {velocity: 0.48, duration: 1.5}
-      - {velocity: 0.65, duration: 1.5}
-      - {velocity: 0.80, duration: 1.5}
+      - {velocity: 0.45, duration: 9990}
+      # - {velocity: 0.8, duration: 9999}
+      # - {velocity: 0.24, duration: 1.5}
+      # - {velocity: 0.12, duration: 1.5}
+      # - {velocity: 0.00, duration: 20}
+      # - {velocity: 0.10, duration: 1.5}
+      # - {velocity: 0.18, duration: 1.5}
+      # - {velocity: 0.28, duration: 1.5}
+      # - {velocity: 0.40, duration: 1.5}
+      # - {velocity: 0.55, duration: 1.5}
+      # - {velocity: 0.68, duration: 1.5}
+      # - {velocity: 0.74, duration: 1.5}
+      # - {velocity: 0.87, duration: 1.5}
+      # - {velocity: 1, duration: 30}
+      # - {velocity: 0.85, duration: 1.5}
+      # - {velocity: 0.76, duration: 1.5}
+      # - {velocity: 0.65, duration: 1.5}
+      # - {velocity: 0.50, duration: 1.5}
+      # - {velocity: 0.36, duration: 1.5}
+      # - {velocity: 0.24, duration: 1.5}
+      # - {velocity: 0.12, duration: 1.5}
+      # - {velocity: 0.00, duration: 20}
+      # - {velocity: 0.08, duration: 1.5}
+      # - {velocity: 0.18, duration: 1.5}
+      # - {velocity: 0.32, duration: 1.5}
+      # - {velocity: 0.48, duration: 1.5}
+      # - {velocity: 0.65, duration: 1.5}
+      # - {velocity: 0.80, duration: 1.5}
       # - {velocity: 1.0, duration: 45}
       # - {velocity: 0.0, duration: 20}
       # - {velocity: 0.1, duration: 40}
