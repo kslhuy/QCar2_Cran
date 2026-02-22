@@ -35,12 +35,12 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
 from datetime import datetime
 
-try:
-    from pal.utilities.scope import MultiScope
-    MULTISCOPE_AVAILABLE = True
-except ImportError:
-    MULTISCOPE_AVAILABLE = False
-    print("[estimation_scopes] Warning: MultiScope not available. Visualization disabled.")
+# try:
+#     from pal.utilities.scope import MultiScope
+#     MULTISCOPE_AVAILABLE = True
+# except ImportError:
+#     MULTISCOPE_AVAILABLE = False
+#     print("[estimation_scopes] Warning: MultiScope not available. Visualization disabled.")
 
 
 # ==============================================================================

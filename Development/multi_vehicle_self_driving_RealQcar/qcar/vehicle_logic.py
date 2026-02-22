@@ -4,6 +4,7 @@ Main Vehicle Controller - Integrates all components
 
 import numpy as np
 import time
+import os
 
 # import random
 # from typing import Optional
@@ -25,6 +26,13 @@ from Observer.VehicleObserverSimple import VehicleObserver
 
 # from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset
 from Controller.controller_manager import ControllerManager
+
+try:
+    from Calibration.On_Track_SysID.src.online_sysid_zmq_client import (
+        OnlineSysIDZMQClient,
+    )
+except Exception:
+    OnlineSysIDZMQClient = None
 
 # Note: Controllers (PIDVelocityController, StanleyController) are now imported
 # in state machine states, not here
@@ -176,6 +184,10 @@ class VehicleLogic:
         # This allows ground station commands to be properly routed to the current state
         self.state_machine.initialize_event_system()
 
+        # Online SysID (ZMQ mode) is disabled by default.
+        # It is created/activated only when commanded at runtime.
+        self.online_sysid_zmq = None  # Separated ZMQ mode
+
     def elapsed_time(self) -> float:
         """Get elapsed time since start"""
         return time.time() - self.start_time
@@ -184,6 +196,80 @@ class VehicleLogic:
     def logger(self):
         """Backward compatibility property for accessing the vehicle logger"""
         return self.vehicle_logger
+
+    def _guess_sysid_racecar_version(self) -> str:
+        """
+        Pick a model folder for On_Track_SysID.
+        Priority: NUC{vehicle_id} if present, otherwise SIM.
+        """
+        base_dir = os.path.join(
+            os.path.dirname(__file__), "Calibration", "On_Track_SysID", "models"
+        )
+        candidate = f"NUC{self.vehicle_id}"
+        if os.path.isdir(os.path.join(base_dir, candidate)):
+            return candidate
+        if os.path.isdir(os.path.join(base_dir, "SIM")):
+            return "SIM"
+        return candidate
+
+    def enable_online_sysid_zmq(self, config: dict = None) -> bool:
+        """
+        Enable separated Online SysID transport over ZMQ.
+        Creates sockets only when requested by command.
+        """
+        cfg = config or {}
+        if self.online_sysid_zmq is None:
+            if OnlineSysIDZMQClient is None:
+                self.vehicle_logger.log_warning(
+                    "Online SysID ZMQ client unavailable (import failed)"
+                )
+                return False
+
+            sample_port = int(cfg.get("sample_port", 18880))
+            control_port = int(cfg.get("control_port", 18881))
+            status_host = str(cfg.get("status_host", "127.0.0.1"))
+            status_port = int(cfg.get("status_port", 18882))
+            bind_ip = str(cfg.get("bind_ip", "*"))
+
+            self.online_sysid_zmq = OnlineSysIDZMQClient(
+                logger=self.vehicle_logger,
+                vehicle_id=self.vehicle_id,
+                sample_port=sample_port,
+                control_port=control_port,
+                status_host=status_host,
+                status_port=status_port,
+                bind_ip=bind_ip,
+            )
+
+        started = self.online_sysid_zmq.start()
+        if not started:
+            return False
+
+        # Optionally forward runtime training config to worker.
+        worker_cfg = cfg.get("worker_config", {})
+        if isinstance(worker_cfg, dict) and worker_cfg:
+            self.online_sysid_zmq.update_config(worker_cfg)
+        return True
+
+    def disable_online_sysid_zmq(self) -> None:
+        """Disable and close Online SysID ZMQ transport."""
+        if self.online_sysid_zmq is not None:
+            try:
+                self.online_sysid_zmq.stop()
+            except Exception as e:
+                self.vehicle_logger.log_error("Failed to stop Online SysID ZMQ client", e)
+            self.online_sysid_zmq = None
+
+    def _get_online_sysid_status(self) -> dict:
+        """Collect status from the Online SysID ZMQ backend."""
+        status = {"enabled": False}
+
+        if self.online_sysid_zmq is not None:
+            status["enabled"] = True
+            status["mode"] = "zmq"
+            status["zmq"] = self.online_sysid_zmq.get_status()
+
+        return status
 
     def run(self):
         """Main control loop"""
@@ -310,7 +396,12 @@ class VehicleLogic:
                 dt, last_steering, last_u
             )
 
-
+            # Feed Online SysID with latest [v_x, v_y, omega, delta] sample.
+            sample = self.vehicle_observer.get_online_sysid_sample()
+            if sample is not None:
+                if hasattr(self, "online_sysid_zmq") and self.online_sysid_zmq:
+                    if self.online_sysid_zmq.is_collecting():
+                        self.online_sysid_zmq.submit_sample(sample)
 
             # Stream scope data to Ground Station (if streaming enabled)
             if (
@@ -409,7 +500,6 @@ class VehicleLogic:
                 # self.vehicle_logger.log_error("State machine returned invalid control commands")
                 return True  # Skip sending commands
 
-
             # u = 0.075 # Test value
             # delta = 0.0 # Test value
 
@@ -419,15 +509,22 @@ class VehicleLogic:
             self._last_steering = delta
 
             if self.vehicle_type == "Limo":
-                delta *= 2.0  # Map -0.5 -> -1.0, 0.5 -> 1.0
-            delta = max(-1.0, min(1.0, delta))
+                # Driver expects Ackermann steering angle [rad] on angular.z.
+                # Keep compatibility with potential normalized outputs.
+                delta_input = float(delta)
+                if abs(delta_input) <= 0.55:
+                    delta = delta_input
+                else:
+                    delta = max(-1.0, min(1.0, delta_input)) * 0.48869
+                delta = float(np.clip(delta, -0.48869, 0.48869))
+            else:
+                delta = max(-1.0, min(1.0, delta))
 
             if self.qcar is not None:
                 max_throttle = float(getattr(self.gear, "value", 0.1))
                 if abs(u) > max_throttle:
                     u = np.clip(u, -max_throttle, max_throttle)
                 self.qcar.write(throttle=u, steering=delta)
-
 
             # Store steering and throttle for next EKF update and telemetry
             self._last_u = u
@@ -694,16 +791,29 @@ class VehicleLogic:
                 )
                 if hasattr(self, "vehicle_observer")
                 else "unknown",
-                # Use controller_manager for actual active controller types (not config file defaults)
-                "longitudinal_ctrl_type": self.controller_manager.get_longitudinal_type()
+                # Use controller_manager for actual active controller types per state
+                "path_long_ctrl": self.controller_manager.get_longitudinal_type("path")
                 if hasattr(self, "controller_manager")
                 else "unknown",
-                "lateral_ctrl_type": self.controller_manager.get_lateral_type()
+                "path_lat_ctrl": self.controller_manager.get_lateral_type("path")
                 if hasattr(self, "controller_manager")
                 else "unknown",
+                "leader_long_ctrl": self.controller_manager.get_longitudinal_type(
+                    "leader"
+                )
+                if hasattr(self, "controller_manager")
+                else "unknown",
+                "leader_lat_ctrl": self.controller_manager.get_lateral_type("leader")
+                if hasattr(self, "controller_manager")
+                else "unknown",
+                # Perception status
+                "perception_active": self.yolo_manager.yolo_enabled
+                if hasattr(self, "yolo_manager")
+                else False,
                 # Path information
                 "node_sequence": getattr(self, "node_sequence", None),
                 "operational_status": self.get_operational_status(),
+                "online_sysid_status": self._get_online_sysid_status(),
                 # Payload for the handler
                 "data": v2v_details,
             }
@@ -935,6 +1045,15 @@ class VehicleLogic:
                 self.vehicle_observer.stop()
             except Exception as e:
                 self.vehicle_logger.logger.error(f"Observer shutdown error: {e}")
+
+        # Stop Online SysID ZMQ transport
+        if hasattr(self, "online_sysid_zmq") and self.online_sysid_zmq:
+            try:
+                self.online_sysid_zmq.stop()
+            except Exception as e:
+                self.vehicle_logger.logger.error(
+                    f"Online SysID ZMQ shutdown error: {e}"
+                )
 
         # Log final statistics
         self.vehicle_logger.logger.info("=" * 60)

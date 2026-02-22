@@ -560,7 +560,6 @@ class PlatoonController:
         elapsed = time.time() - self.formation_start_time
         return elapsed > self.config.forming_timeout
     
-    # ===== HYBRID CONTROL (combines perception + communication) =====
     
     # ===== VELOCITY SETTINGS FOR DIFFERENT PHASES =====
     

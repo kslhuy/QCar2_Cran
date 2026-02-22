@@ -202,6 +202,9 @@ class VehicleConnectionPanel(BaseWidget):
         ).pack(side="left", padx=(0, 10))
 
         self._vehicle_type_var = tk.StringVar(value=self.default_config.vehicle_type)
+        self._vehicle_type_var.trace_add(
+            "write", lambda *_: self._on_vehicle_type_changed()
+        )
 
         for text, value in [("🚙 QCar", "Qcar"), ("🚗 Limo", "Limo")]:
             tk.Radiobutton(
@@ -323,9 +326,9 @@ class VehicleConnectionPanel(BaseWidget):
         self._calibrate_btn.pack(side="left", expand=True, fill="x", padx=(0, 5))
         self._calibrate_btn.config(state="disabled")
 
-        # Distribute checkbox
+        # Distribute checkbox (hidden for Limo)
         self._distribute_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(
+        self._distribute_chk = tk.Checkbutton(
             row4,
             text="📡 Distribute to all",
             variable=self._distribute_var,
@@ -333,7 +336,11 @@ class VehicleConnectionPanel(BaseWidget):
             fg=c.fg_primary,
             selectcolor=c.bg_light,
             font=self.theme.fonts.small(),
-        ).pack(side="left", padx=(5, 0))
+        )
+        self._distribute_chk.pack(side="left", padx=(5, 0))
+
+        # Apply initial state based on default vehicle type
+        self._on_vehicle_type_changed()
 
     def _build_status_section(self) -> None:
         """Build the status section."""
@@ -362,6 +369,22 @@ class VehicleConnectionPanel(BaseWidget):
             anchor="w",
         )
         self._progress_label.pack(fill="x")
+
+    def _on_vehicle_type_changed(self) -> None:
+        """Adapt UI when vehicle type radio button is changed."""
+        if not self._vehicle_type_var:
+            return
+        is_limo = self._vehicle_type_var.get() == "Limo"
+
+        if self._calibrate_btn:
+            new_label = "🧭 Align Waypoints" if is_limo else "📐 Calibrate LiDAR"
+            self._calibrate_btn.config(text=new_label)
+
+        if hasattr(self, "_distribute_chk") and self._distribute_chk:
+            if is_limo:
+                self._distribute_chk.pack_forget()
+            else:
+                self._distribute_chk.pack(side="left", padx=(5, 0))
 
     def _test_connection(self) -> None:
         """Test SSH connection to the vehicle."""

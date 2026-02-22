@@ -182,6 +182,9 @@ class VehicleObserver:
         # self.last_velocity = 0.0
         self.acceleration_magnitude = 0.0
         self.control_input = {'steering': 0.0, 'throttle': 0.0}
+        # Lateral velocity fallback estimate for SysID when 6D observer state is unavailable.
+        self._vy_estimate = 0.0
+        self._vy_est_last_time = 0.0
         
         # ===== GPS Reference =====
         self.gps = None  # Will be set during initialize_local_estimator
@@ -976,6 +979,82 @@ class VehicleObserver:
                 # 'gyro_z': self.sensor_data['gyro_z'],
                 'gps_valid': self.gps_valid
             }
+
+    def _extract_accel_y_locked(self) -> float:
+        """Extract lateral acceleration from sensor cache."""
+        accel = self.sensor_data.get('accelerometer', np.zeros(3))
+        try:
+            if isinstance(accel, np.ndarray):
+                return float(accel[1]) if accel.size > 1 else 0.0
+            if isinstance(accel, (list, tuple)):
+                return float(accel[1]) if len(accel) > 1 else 0.0
+            return 0.0
+        except Exception:
+            return 0.0
+
+    def _estimate_lateral_velocity_locked(self, vx: float, omega: float) -> float:
+        """
+        Estimate v_y using IMU relation vdot_y ~= a_y - v_x * omega.
+        """
+        ts = float(self.sensor_data.get('timestamp', 0.0))
+        if ts <= 0.0:
+            ts = time.time()
+
+        if self._vy_est_last_time <= 0.0:
+            self._vy_est_last_time = ts
+            return float(self._vy_estimate)
+
+        dt = ts - self._vy_est_last_time
+        self._vy_est_last_time = ts
+
+        if dt <= 0.0 or dt > 0.2:
+            return float(self._vy_estimate)
+
+        ay = self._extract_accel_y_locked()
+        vy_dot = ay - (vx * omega)
+        self._vy_estimate += vy_dot * dt
+        self._vy_estimate = float(np.clip(self._vy_estimate, -3.0, 3.0))
+        return float(self._vy_estimate)
+
+    def get_online_sysid_sample(self) -> Optional[np.ndarray]:
+        """
+        Build one SysID sample [v_x, v_y, omega, delta].
+
+        - Uses neural estimator 6D state if available.
+        - Falls back to local 4D state + IMU-based v_y estimate otherwise.
+        """
+        with self.lock:
+            vx = (
+                float(self.local_state[3])
+                if len(self.local_state) > 3
+                else float(self.sensor_data.get('motor_tach', 0.0))
+            )
+            omega = float(self.sensor_data.get('gyro_z', 0.0))
+            delta = float(self.control_input.get('steering', 0.0))
+            vy = None
+
+            estimator = self.local_estimator
+            if estimator is not None and hasattr(estimator, 'get_state_6d'):
+                try:
+                    state_6d = estimator.get_state_6d()
+                    if state_6d is not None and len(state_6d) >= 4:
+                        if np.isfinite(state_6d[0]):
+                            vx = float(state_6d[0])
+                        if np.isfinite(state_6d[1]):
+                            vy = float(state_6d[1])
+                        if np.isfinite(state_6d[3]):
+                            omega = float(state_6d[3])
+                except Exception:
+                    # Keep robust fallback path.
+                    pass
+
+            if vy is None or not np.isfinite(vy):
+                vy = self._estimate_lateral_velocity_locked(vx, omega)
+
+            sample = np.array([vx, vy, omega, delta], dtype=np.float32)
+            if not np.all(np.isfinite(sample)):
+                return None
+            return sample
     
     def get_local_state_for_broadcast(self) -> dict:
         """
@@ -1118,6 +1197,8 @@ class VehicleObserver:
             # self.last_velocity = 0.0
             self.acceleration_magnitude = 0.0
             self.control_input = {'steering': 0.0, 'throttle': 0.0}
+            self._vy_estimate = 0.0
+            self._vy_est_last_time = 0.0
             
             # Update fleet states from fleet estimator
             if self.fleet_estimator is not None:

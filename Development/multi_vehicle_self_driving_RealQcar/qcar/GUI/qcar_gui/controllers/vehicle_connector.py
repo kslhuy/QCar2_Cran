@@ -12,6 +12,7 @@ import threading
 import subprocess
 from typing import Callable, Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
+import socket
 
 try:
     import paramiko
@@ -87,7 +88,7 @@ class VehicleConnector:
         # Determine scripts path
         if scripts_path:
             self.scripts_path = scripts_path
-            
+
         else:
             # Default: relative to this file's location
             current_dir = os.path.dirname(os.path.realpath(__file__))
@@ -101,8 +102,9 @@ class VehicleConnector:
 
         self.progress_callback = progress_callback
         self.log_callback = log_callback
-        self._log(f"VehicleConnector initialized with scripts_path: {self.scripts_path}")
-
+        self._log(
+            f"VehicleConnector initialized with scripts_path: {self.scripts_path}"
+        )
 
         # Connection tracking
         self._connections: Dict[int, Tuple[Any, Any]] = {}
@@ -147,9 +149,7 @@ class VehicleConnector:
         if fleet_config_path:
             candidates.append(fleet_config_path)
             candidates.append(os.path.join(os.getcwd(), fleet_config_path))
-            candidates.append(
-                os.path.join(self.scripts_path, fleet_config_path)
-            )
+            candidates.append(os.path.join(self.scripts_path, fleet_config_path))
             candidates.append(
                 os.path.join(os.path.dirname(self.scripts_path), fleet_config_path)
             )
@@ -274,6 +274,27 @@ class VehicleConnector:
             return self._remote_profiles[wanted_type]
 
         return self.remote_config
+
+    def _get_best_host_ip(self, target_ip: str) -> str:
+        """
+        Determine the best local IP address to reach the target IP.
+        This provides the correct Ground Station IP for the vehicle to connect back to.
+        """
+        try:
+            # Create a dummy socket to determine the route
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(0.1)
+            # We don't actually connect, just determine the route
+            # Use port 80 or any port, it doesn't matter for routing
+            s.connect((target_ip, 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            # self._log(f"Auto-detected GS IP: {local_ip} (target: {target_ip})", "INFO")
+            return local_ip
+        except Exception as e:
+            # Fallback to configured local IP if routing fails
+            # self._log(f"Failed to auto-detect IP, using config: {self.gs_config.local_ip} ({e})", "WARNING")
+            return self.gs_config.local_ip
 
     def test_connection(
         self, ip: str, car_id: Optional[int] = None, vehicle_type: Optional[str] = None
@@ -516,6 +537,8 @@ class VehicleConnector:
                 "V2V",
                 "Controller",
                 "simulation",
+                "Calibration",
+                "PathPlanner",
             ]
             for folder_name in folders:
                 folder_path = os.path.join(self.scripts_path, folder_name)
@@ -563,16 +586,16 @@ class VehicleConnector:
         enable_logs: bool = True,
     ) -> Tuple[bool, str]:
         """
-        Start the vehicle control program on a QCar.
+        Start the vehicle control program on a QCar or Limo.
 
         Args:
             car_id: Vehicle identifier
             ip: IP address of the vehicle
             vehicle_type: "Qcar" or "Limo"
-            path_number: Path selection number
-            calibrate: Whether to start in calibration mode
-            left_hand_traffic: Use left-hand traffic rules
-            initial_v_ref: Initial velocity reference
+            path_number: Path selection number (QCar only)
+            calibrate: Whether to start in calibration mode (QCar only)
+            left_hand_traffic: Use left-hand traffic rules (QCar only)
+            initial_v_ref: Initial velocity reference (QCar only)
             enable_logs: Create log files on vehicle
 
         Returns:
@@ -587,6 +610,40 @@ class VehicleConnector:
             if not success:
                 return False, msg
 
+        # Dispatch based on vehicle type
+        if self._normalize_vehicle_type(vehicle_type) == "Limo":
+            return self._start_limo_vehicle(
+                car_id=car_id,
+                ip=ip,
+                enable_logs=enable_logs,
+                path_number=path_number,
+                calibrate=calibrate,
+                initial_v_ref=initial_v_ref,
+            )
+        else:  # Default to Qcar
+            return self._start_qcar_vehicle(
+                car_id,
+                ip,
+                path_number,
+                calibrate,
+                left_hand_traffic,
+                initial_v_ref,
+                enable_logs,
+            )
+
+    def _start_qcar_vehicle(
+        self,
+        car_id: int,
+        ip: str,
+        path_number: int,
+        calibrate: bool,
+        left_hand_traffic: bool,
+        initial_v_ref: float,
+        enable_logs: bool,
+    ) -> Tuple[bool, str]:
+        """
+        Internal method to start the vehicle control program on a QCar.
+        """
         with self._lock:
             if car_id not in self._connections:
                 return False, "Not connected"
@@ -595,11 +652,12 @@ class VehicleConnector:
 
         try:
             remote_cfg = self._get_remote_config(
-                car_id=car_id, vehicle_type=vehicle_type, ip=ip
+                car_id=car_id, vehicle_type="Qcar", ip=ip
             )
             remote_path = remote_cfg.remote_path
             port = self.gs_config.base_port
-            host = self.gs_config.local_ip
+            # Auto-detect best host IP (GS IP) based on the interface used to reach the car
+            host = self._get_best_host_ip(ip) if ip else self.gs_config.local_ip
 
             # Kill any existing processes
             self._progress("Stopping existing processes...")
@@ -613,16 +671,9 @@ class VehicleConnector:
                 f"--port {port}",
                 f"--car-id {car_id}",
                 f"--path-number {path_number}",
-                f"--vehicle-type {vehicle_type}",
+                "--vehicle-type Qcar",
                 f"--v-ref {initial_v_ref}",
             ]
-
-            # Disable calibration for Limo
-            if vehicle_type == "Limo" and calibrate:
-                self._log(
-                    f"Car {car_id}: Skipping calibration for Limo vehicle", "INFO"
-                )
-                calibrate = False
 
             if calibrate:
                 cmd_args.append("--calibrate")
@@ -642,7 +693,7 @@ class VehicleConnector:
                 f"{log_redirect}"
             )
 
-            self._progress("Starting vehicle control program...")
+            self._progress("Starting QCar control program...")
             ssh.exec_command(cmd)
 
             time.sleep(2)  # Wait for startup
@@ -653,14 +704,14 @@ class VehicleConnector:
 
             if pids:
                 self._log(
-                    f"Car {car_id}: Vehicle program started (PID: {pids.split()[0]})",
+                    f"Car {car_id}: QCar program started (PID: {pids.split()[0]})",
                     "SUCCESS",
                 )
                 self._log(
                     f"Car {car_id}: Path={path_number}, Calibrate={calibrate}, V_ref={initial_v_ref}",
                     "INFO",
                 )
-                return True, f"Vehicle started (PID: {pids.split()[0]})"
+                return True, f"QCar started (PID: {pids.split()[0]})"
             else:
                 # Check for errors in log
                 if enable_logs:
@@ -671,10 +722,135 @@ class VehicleConnector:
                     if log_tail:
                         self._log(f"Car {car_id} log: {log_tail}", "WARNING")
 
-                return False, "Process did not start (check logs)"
+                return False, "QCar process did not start (check logs)"
 
         except Exception as e:
-            msg = f"Failed to start: {str(e)}"
+            msg = f"Failed to start QCar: {str(e)}"
+            self._log(f"Car {car_id}: {msg}", "ERROR")
+            return False, msg
+
+    def _start_limo_vehicle(
+        self,
+        car_id: int,
+        ip: str,
+        enable_logs: bool,
+        path_number: int = 0,
+        calibrate: bool = False,
+        initial_v_ref: float = 0.6,
+    ) -> Tuple[bool, str]:
+        """
+        Start the Limo robot using the three-step ROS2 launch sequence.
+
+        Architecture (SDCSRoadMap system):
+            SDCQcar ──static TF──▶  map  ──▶  odom  ──▶  base_link
+
+        Normal run:
+            Step 1 — ros2 launch limo_bringup limo_start.launch.py
+            Step 2 — ros2 launch limo_nav_huy_test navigationV2V_qcar_frames.launch.py
+                         start_vehicle_main:=false
+            Step 3 — ros2 run limo_nav_huy_test vehicle_main_ros_qcar
+
+        Calibrate run (calibrate=True):
+            Step 1 — same bringup
+            Step 2 — same nav stack
+            Step 3 — ros2 run limo_nav_huy_test waypoint_alignment_helper
+
+        Logs go to /tmp/limo_<car_id>_*.log when enable_logs=True.
+        """
+        with self._lock:
+            if car_id not in self._connections:
+                return False, "Not connected"
+            ssh, _ = self._connections[car_id]
+
+        try:
+            # ROS2 workspace on Limo (all launch commands use ros2 run/launch directly)
+            ws = "/home/agilex/agilex_ws"
+            source = f"source {ws}/install/setup.bash"
+
+            # ── Step 0: Kill any existing processes ───────────────────────────
+            self._progress("Limo: Stopping existing processes...")
+            ssh.exec_command("pkill -f limo_start 2>/dev/null; true")
+            ssh.exec_command("pkill -f navigationV2V_qcar_frames 2>/dev/null; true")
+            ssh.exec_command("pkill -f vehicle_main_ros_qcar 2>/dev/null; true")
+            ssh.exec_command("pkill -f waypoint_alignment 2>/dev/null; true")
+            time.sleep(1)
+
+            def _redir(tag: str) -> str:
+                if enable_logs:
+                    return f">> /tmp/limo_{car_id}_{tag}.log 2>&1"
+                return "> /dev/null 2>&1"
+
+            # ── Step 1: Hardware bringup ──────────────────────────────────────
+            self._progress("Limo: Step 1/3 — Hardware bringup...")
+            bringup_cmd = (
+                f"bash -c '{source} && "
+                f"ros2 launch limo_bringup limo_start.launch.py "
+                f"{_redir('bringup')}' &"
+            )
+            ssh.exec_command(bringup_cmd)
+            time.sleep(3)
+
+            # ── Step 2: Navigation V2V stack (nav2 + AMCL + TF) ──────────────
+            self._progress("Limo: Step 2/3 — Navigation V2V stack...")
+            nav_cmd = (
+                f"bash -c '{source} && "
+                f"ros2 launch limo_nav_huy_test navigationV2V_qcar_frames.launch.py "
+                f"start_vehicle_main:=false "
+                f"{_redir('nav')}' &"
+            )
+            ssh.exec_command(nav_cmd)
+            time.sleep(4)
+
+            # ── Step 3a: Calibration / alignment helper ───────────────────────
+            if calibrate:
+                self._progress("Limo: Step 3/3 — Waypoint alignment helper...")
+                align_cmd = (
+                    f"bash -c '{source} && "
+                    f"ros2 run limo_nav_huy_test waypoint_alignment_helper "
+                    f"{_redir('align')}' &"
+                )
+                ssh.exec_command(align_cmd)
+                time.sleep(2)
+                self._log(
+                    f"Car {car_id} (Limo): Alignment helper launched — "
+                    "use RViz/initialpose_sdc topic to align, then restart without calibration.",
+                    "INFO",
+                )
+                return True, "Limo: bringup + nav + alignment helper running"
+
+            # ── Step 3b: ROS2 vehicle_main node ──────────────────────────────
+            self._progress("Limo: Step 3/3 — Starting vehicle_main_ros_qcar...")
+            vm_cmd = (
+                f"bash -c '{source} && "
+                f"ros2 run limo_nav_huy_test vehicle_main_ros_qcar "
+                f"{_redir('vehicle')}' &"
+            )
+            ssh.exec_command(vm_cmd)
+            time.sleep(3)
+
+            # ── Verify processes are alive ────────────────────────────────────
+            stdin, stdout, _ = ssh.exec_command(
+                "pgrep -fa 'limo_start\|navigationV2V\|vehicle_main_ros_qcar'"
+            )
+            pids = stdout.read().decode().strip()
+
+            if pids:
+                self._log(
+                    f"Car {car_id} (Limo): ROS2 nodes running — "
+                    f"{pids.replace(chr(10), ' | ')[:120]}",
+                    "SUCCESS",
+                )
+                return True, "Limo started: bringup + nav + vehicle_main_ros_qcar"
+            else:
+                self._log(
+                    f"Car {car_id} (Limo): No processes detected after launch "
+                    "(check /tmp/limo_*.log on robot)",
+                    "WARNING",
+                )
+                return False, "Limo: processes did not start (see /tmp/limo_*.log)"
+
+        except Exception as e:
+            msg = f"Limo start failed: {str(e)}"
             self._log(f"Car {car_id}: {msg}", "ERROR")
             return False, msg
 
@@ -767,8 +943,9 @@ class VehicleConnector:
 
         try:
             # Check what's running
+            # Include ROS2 processes for Limo
             stdin, stdout, stderr = ssh.exec_command(
-                "pgrep -f 'vehicle_main|yolo_server'"
+                "pgrep -f 'vehicle_main|yolo_server|ros2|rclpy'"
             )
             running_pids = stdout.read().decode().strip()
 
@@ -783,11 +960,13 @@ class VehicleConnector:
             # Send SIGTERM first (graceful)
             ssh.exec_command("pkill -15 -f 'vehicle_main'")
             ssh.exec_command("pkill -15 -f 'yolo_server'")
+            ssh.exec_command("pkill -15 -f 'ros2'")  # For Limo
+            ssh.exec_command("pkill -15 -f 'rclpy'")  # For Limo
             time.sleep(2)
 
             # Check if still running
             stdin, stdout, stderr = ssh.exec_command(
-                "pgrep -f 'vehicle_main|yolo_server'"
+                "pgrep -f 'vehicle_main|yolo_server|ros2|rclpy'"
             )
             remaining = stdout.read().decode().strip()
 
@@ -970,11 +1149,11 @@ except Exception as e:
         try:
             remote_cfg = self._get_remote_config(car_id=car_id, ip=ip)
 
-            # Step 1: Upload scripts
-            self._progress("Step 1/4: Uploading scripts...")
-            upload_success, upload_msg = self.upload_files(car_id, ip)
-            if not upload_success:
-                return False, f"Upload failed: {upload_msg}"
+            # # Step 1: Upload scripts
+            # self._progress("Step 1/4: Uploading scripts...")
+            # upload_success, upload_msg = self.upload_files(car_id, ip)
+            # if not upload_success:
+            #     return False, f"Upload failed: {upload_msg}"
 
             # Step 2: Run calibration command
             self._progress(

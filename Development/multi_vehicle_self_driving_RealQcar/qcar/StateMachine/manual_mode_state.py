@@ -150,9 +150,30 @@ class ManualModeState(StateBase):
 
             # Validate and clamp control inputs
             throttle = max(-limit, min(limit, throttle))
+
             if self.vehicle_logic.vehicle_type == "Limo":
-                steering *= 2.0  # Map -0.5 -> -1.0, 0.5 -> 1.0
-            steering = max(-1.0, min(1.0, steering))
+                # Driver uses angular.z as Ackermann steering angle [rad] in
+                # steering_angle mode.
+                # Accept both command conventions:
+                # - angle-like input in [-0.5, 0.5] rad
+                # - normalized input in [-1, 1], scaled to max steering
+                raw_steering = float(steering)
+                if abs(raw_steering) <= 0.55:
+                    desired_inner = raw_steering
+                else:
+                    desired_inner = max(-1.0, min(1.0, raw_steering)) * 0.48869
+
+                steering = max(-0.48869, min(0.48869, desired_inner))
+                # When reversing, invert steering so "left" always steers left
+                # from the driver's perspective
+                if throttle < 0:
+                    steering *= -1.0
+            else:
+                steering = max(-1.0, min(1.0, steering))
+
+            print(
+                f"ManualModeState: Received MANUAL_CONTROL command - throttle={throttle:.2f}, steering={steering:.2f}"
+            )
 
             # Update state data
             self.state_data["current_throttle"] = throttle
@@ -242,6 +263,10 @@ class ManualModeState(StateBase):
                 throttle=throttle, steering=steering, LEDs=LEDs
             )
 
+            # Keep telemetry fields in sync with manual commands.
+            self.vehicle_logic._last_u = float(throttle)
+            self.vehicle_logic._last_steering = float(steering)
+
             # Update tracking
             self.state_data["last_sent_throttle"] = throttle
             self.state_data["last_sent_steering"] = steering
@@ -288,5 +313,7 @@ class ManualModeState(StateBase):
         if hasattr(self.vehicle_logic, "qcar") and self.vehicle_logic.qcar is not None:
             try:
                 self.vehicle_logic.qcar.write(throttle=0, steering=0)
+                self.vehicle_logic._last_u = 0.0
+                self.vehicle_logic._last_steering = 0.0
             except:
                 pass
