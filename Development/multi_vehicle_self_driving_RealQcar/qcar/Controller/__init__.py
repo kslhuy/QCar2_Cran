@@ -16,7 +16,6 @@ from .lateral_controllers import (
     PurePursuitController,
     StanleyController,
     LookaheadController,
-    HybridLateralController,
     FusionLateralController,
     LateralControllerFactory,
     wrap_to_pi,
@@ -35,38 +34,41 @@ try:
         MPCLateralWrapper,
         MPCCombinedController,
     )
+
     MPC_AVAILABLE = True
 except ImportError:
     MPC_AVAILABLE = False
 
 __all__ = [
     # Longitudinal
-    'LongitudinalControllerBase',
-    'PIDVelocityController',
-    'CACCLongitudinalController',
-    'SA_ACCController',
-    'FixConstantController',
-    'ControllerFactory',
+    "LongitudinalControllerBase",
+    "PIDVelocityController",
+    "CACCLongitudinalController",
+    "SA_ACCController",
+    "FixConstantController",
+    "ControllerFactory",
     # Lateral
-    'LateralControllerBase',
-    'PurePursuitController',
-    'StanleyController',
-    'LookaheadController',
-    'HybridLateralController',
-    'FusionLateralController',
-    'LateralControllerFactory',
-    'wrap_to_pi',
+    "LateralControllerBase",
+    "PurePursuitController",
+    "StanleyController",
+    "LookaheadController",
+    "HybridLateralController",
+    "FusionLateralController",
+    "LateralControllerFactory",
+    "wrap_to_pi",
     # MPC (if available)
-    'MPC_AVAILABLE',
+    "MPC_AVAILABLE",
 ]
 
 if MPC_AVAILABLE:
-    __all__.extend([
-        'MPCControllerBase',
-        'CasADiMPCController',
-        'DynamicBicycleMPCController',
-        'MPCControllerFactory',
-        'MPCLongitudinalWrapper',
-        'MPCLateralWrapper',
-        'MPCCombinedController',
-    ])
+    __all__.extend(
+        [
+            "MPCControllerBase",
+            "CasADiMPCController",
+            "DynamicBicycleMPCController",
+            "MPCControllerFactory",
+            "MPCLongitudinalWrapper",
+            "MPCLateralWrapper",
+            "MPCCombinedController",
+        ]
+    )

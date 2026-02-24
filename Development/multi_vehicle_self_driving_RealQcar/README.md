@@ -66,6 +66,15 @@ python multi_probing.py --car 0
 ```
 
 
+### For Calibration
+
+# In separate terminal
+```powershell
+cd C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Calibration\On_Track_SysID\src
+
+python online_sysid_zmq_worker.py --sample-port 18880 --control-port 18881 --status-port 18882 --plot-model
+```
+
 ### Development Quick Test Mode (Fake Vehicle use math equation like We do with Matlab)
 ```powershell
 # Start GUI 
@@ -116,9 +125,60 @@ REMOTE_PATH=/home/nvidia/Documents/multi_vehicle_RealCar
 ```
 
 
+# Quick Start — Limo System
+
+## Architecture
+
+```
+SDCQcar  ──static TF──▶  map  ──▶  odom  ──▶  base_link
+ (QCar world)            (ROS world)
+```
+
+- **SDCQcar**: SDCSRoadMap coordinates (waypoints, QCar logic)
+- **map**: AMCL / Nav2 / RViz (normal ROS)
+- One static TF connects them — defined in the launch file
 
 
-**Platform**: Windows + QCar Hardware
+## Step 2 — Rebuild after calibration
+# Rebuild only limo_nav_huy_test
+```bash
+cd ~/agilex_ws
+colcon build --packages-select limo_nav_huy_test --symlink-install
+source install/setup.bash
+```
+
+# Rebuild all packages necessaires
+colcon build --packages-select limo_base limo_bringup limo_nav_huy_test --symlink-install
+
+---
+## Step 3 — Run the full system (new)
+
+### Terminal 0 — Start the robot
+```bash
+ros2 launch limo_bringup limo_start.launch.py
+```
+# Terminal 1 (without vehicle_main)
+```bash
+ros2 launch limo_nav_huy_test navigationV2V_qcar_frames.launch.py start_vehicle_main:=false
+```
+
+# Terminal 2 (vehicle_main separate)
+```bash
+ros2 run limo_nav_huy_test vehicle_main_ros_qcar
+```
+
+### Terminal 3 — (Optional) RViz
+```bash
+ros2 run rviz2 rviz2 -d ~/agilex_ws/install/limo_nav_huy_test/share/limo_nav_huy_test/rviz/nav2_copy.rviz
+```
+
+# Terminal 4  -  (Optional) 
+Send an SDC pose to trigger AMCL init (acts like RViz 2D Pose Estimate):
+
+```bash
+ros2 topic pub --once /initialpose_sdc geometry_msgs/msg/PoseStamped \
+"{header: {frame_id: SDCQcar}, pose: {position: {x: -1.28205, y: -0.45991, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: -0.358, w: 0.934}}}"
+```
 
 
 

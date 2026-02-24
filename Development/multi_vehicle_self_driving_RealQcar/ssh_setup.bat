@@ -23,6 +23,7 @@ for /f "usebackq tokens=1,* delims==" %%A in (!configFile!) do (
 @REM Remove [ and ]
 set "QCAR_IPS=%QCAR_IPS:[=%"
 set "QCAR_IPS=%QCAR_IPS:]=%"
+set "QCAR_IPS=%QCAR_IPS: =%"
 
 
 @REM Turn command echo back on
@@ -31,7 +32,18 @@ set "QCAR_IPS=%QCAR_IPS:]=%"
 
 @REM Define the URL of the remote QUARC run-time manager
 @REM Main QCar model
+if not exist "%USERPROFILE%\.ssh" mkdir "%USERPROFILE%\.ssh"
+
+set "WIN_SSH_KEYSCAN=%SystemRoot%\System32\OpenSSH\ssh-keyscan.exe"
 for %%I in (%QCAR_IPS%) do (
-    ssh-keyscan %%I >> "%USERPROFILE%\.ssh\known_hosts"
+    if exist "%WIN_SSH_KEYSCAN%" (
+        "%WIN_SSH_KEYSCAN%" %%I 1>> "%USERPROFILE%\.ssh\known_hosts" 2>nul
+    ) else (
+        ssh-keyscan %%I 1>> "%USERPROFILE%\.ssh\known_hosts" 2>nul
+    )
+    if errorlevel 1 (
+        @REM Paramiko in this project uses AutoAddPolicy, so this warning is non-fatal.
+        echo [WARN] Could not pre-scan SSH host key for %%I. Continuing...
+    )
 )
  

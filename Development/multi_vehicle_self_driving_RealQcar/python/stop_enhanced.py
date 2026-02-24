@@ -52,8 +52,62 @@ def extract_ips_from_fleet(config: dict) -> list:
             continue
         ip = v.get('ip')
         if ip:
-            ips.append({'car_id': v.get('car_id'), 'ip': str(ip)})
+            ips.append({
+                'car_id': v.get('car_id'),
+                'ip': str(ip),
+                'vehicle_type': v.get('vehicle_type', 'Qcar')
+            })
     return ips
+
+
+def normalize_vehicle_type(vehicle_type: str) -> str:
+    if str(vehicle_type).strip().lower() == 'limo':
+        return 'Limo'
+    return 'Qcar'
+
+
+def resolve_remote_profile(cfg: dict, vehicle_type: str) -> dict:
+    """
+    Resolve remote profile for a vehicle type.
+
+    Supports both:
+      - Legacy flat remote config
+      - Per-type remote config: remote.Qcar / remote.Limo
+    """
+    remote_cfg = cfg.get('remote', {}) or {}
+    legacy_keys = ('username', 'password', 'remote_path')
+
+    if all(k in remote_cfg for k in legacy_keys):
+        profile = remote_cfg
+    else:
+        wanted = normalize_vehicle_type(vehicle_type)
+        profile = remote_cfg.get(wanted)
+
+        if not isinstance(profile, dict):
+            for key, value in remote_cfg.items():
+                if isinstance(value, dict) and str(key).strip().lower() == wanted.lower():
+                    profile = value
+                    break
+
+        if not isinstance(profile, dict):
+            profile = remote_cfg.get('Qcar')
+
+        if not isinstance(profile, dict):
+            for value in remote_cfg.values():
+                if isinstance(value, dict):
+                    profile = value
+                    break
+
+    if not isinstance(profile, dict):
+        raise ValueError(
+            "Invalid 'remote' config. Expected flat keys or per-type profiles under remote.Qcar/remote.Limo."
+        )
+
+    return {
+        'username': profile.get('username') or DEFAULT_USERNAME,
+        'password': profile.get('password') or DEFAULT_PASSWORD,
+        'remote_path': profile.get('remote_path')
+    }
 
 
 def stop_processes_on_car(ip: str, username: str, password: str, dry_run: bool = False) -> bool:
@@ -68,7 +122,7 @@ def stop_processes_on_car(ip: str, username: str, password: str, dry_run: bool =
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(ip, username=username, password=password, timeout=15)
 
-        print(f"  [→] Sending SIGTERM to vehicle_main and yolo_server on {ip}...")
+        print(f"  [->] Sending SIGTERM to vehicle_main and yolo_server on {ip}...")
         ssh.exec_command("pkill -15 -f 'vehicle_main'")
         ssh.exec_command("pkill -15 -f 'yolo_server'")
         time.sleep(2)
@@ -77,7 +131,7 @@ def stop_processes_on_car(ip: str, username: str, password: str, dry_run: bool =
         stdin, stdout, stderr = ssh.exec_command("pgrep -f 'vehicle_main|yolo_server'")
         remaining = stdout.read().decode().strip()
         if remaining:
-            print(f"  [→] Forcing kill for remaining PIDs: {remaining.replace(chr(10), ', ')}")
+            print(f"  [->] Forcing kill for remaining PIDs: {remaining.replace(chr(10), ', ')}")
             ssh.exec_command("pkill -9 -f 'vehicle_main'")
             ssh.exec_command("pkill -9 -f 'yolo_server'")
             time.sleep(1)
@@ -85,16 +139,16 @@ def stop_processes_on_car(ip: str, username: str, password: str, dry_run: bool =
             stdin, stdout, stderr = ssh.exec_command("pgrep -f 'vehicle_main|yolo_server'")
             still = stdout.read().decode().strip()
             if still:
-                print(f"  [⚠] Some processes still running: {still}")
+                print(f"  [WARN] Some processes still running: {still}")
             else:
-                print(f"  [✓] Processes stopped on {ip}")
+                print(f"  [OK] Processes stopped on {ip}")
         else:
-            print(f"  [✓] No relevant processes running on {ip}")
+            print(f"  [OK] No relevant processes running on {ip}")
 
         ssh.close()
         return True
     except Exception as e:
-        print(f"  [✗] Failed to stop processes on {ip}: {e}")
+        print(f"  [ERR] Failed to stop processes on {ip}: {e}")
         return False
 
 
@@ -106,25 +160,25 @@ def stop_quarc_on_car(ip: str, dry_run: bool = False) -> bool:
         print(f"[DRY RUN] Would run: {' '.join(cmd)}")
         return True
 
-    print(f"  [→] Running: {' '.join(cmd)}")
+    print(f"  [->] Running: {' '.join(cmd)}")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
         if result.returncode == 0:
-            print(f"  [✓] QUARC models stopped on {ip}")
+            print(f"  [OK] QUARC models stopped on {ip}")
             return True
         else:
-            print(f"  [⚠] quarc_run returned {result.returncode} for {ip}")
+            print(f"  [WARN] quarc_run returned {result.returncode} for {ip}")
             if result.stderr:
                 print(f"      stderr: {result.stderr.strip()}")
             return True
     except FileNotFoundError:
-        print("  [✗] quarc_run not found. Please ensure QUARC is installed and in PATH.")
+        print("  [ERR] quarc_run not found. Please ensure QUARC is installed and in PATH.")
         return False
     except subprocess.TimeoutExpired:
-        print("  [⚠] quarc_run timed out")
+        print("  [WARN] quarc_run timed out")
         return False
     except Exception as e:
-        print(f"  [✗] Error running quarc_run: {e}")
+        print(f"  [ERR] Error running quarc_run: {e}")
         return False
 
 
@@ -138,7 +192,7 @@ def create_ssh(ip: str, username: str, password: str):
         ssh.connect(ip, username=username, password=password, timeout=15)
         return ssh
     except Exception as e:
-        print(f"  [✗] SSH connection failed: {e}")
+        print(f"  [ERR] SSH connection failed: {e}")
         raise
 
 
@@ -152,6 +206,10 @@ def stop_quarc_models(ip: str, car_id: int, dry_run: bool = False) -> bool:
 
 def stop_processes(ip: str, car_id: int, username: str, password: str, dry_run: bool = False) -> bool:
     """Stop all vehicle control and YOLO processes on QCar (mirrors stop_refactored)."""
+    if dry_run:
+        print(f"\n[QCar {car_id}] [DRY RUN] Would stop processes on {ip} using {username}")
+        return True
+
     try:
         print(f"\n[QCar {car_id}] Stopping processes on {ip}...")
 
@@ -160,7 +218,7 @@ def stop_processes(ip: str, car_id: int, username: str, password: str, dry_run: 
             ssh = create_ssh(ip, username, password)
 
             # Check what processes are running
-            print(f"  [→] Stopping Python processes...")
+            print(f"  [->] Stopping Python processes...")
             stdin, stdout, stderr = ssh.exec_command("pgrep -f 'vehicle_main|yolo_server'")
             running_pids = stdout.read().decode().strip()
             if running_pids:
@@ -169,7 +227,7 @@ def stop_processes(ip: str, car_id: int, username: str, password: str, dry_run: 
                 print(f"  [i] No relevant processes found")
 
             # Kill vehicle control and YOLO processes with SIGTERM first
-            print(f"  [→] Sending SIGTERM to vehicle_main and yolo_server processes...")
+            print(f"  [->] Sending SIGTERM to vehicle_main and yolo_server processes...")
             ssh.exec_command("pkill -15 -f 'vehicle_main'")
             ssh.exec_command("pkill -15 -f 'yolo_server'")
             time.sleep(2)
@@ -179,7 +237,7 @@ def stop_processes(ip: str, car_id: int, username: str, password: str, dry_run: 
             remaining = stdout.read().decode().strip()
 
             if remaining:
-                print(f"  [→] Force killing remaining processes with SIGKILL...")
+                print(f"  [->] Force killing remaining processes with SIGKILL...")
                 ssh.exec_command("pkill -9 -f 'vehicle_main'")
                 ssh.exec_command("pkill -9 -f 'yolo_server'")
                 time.sleep(1)
@@ -188,18 +246,18 @@ def stop_processes(ip: str, car_id: int, username: str, password: str, dry_run: 
                 stdin, stdout, stderr = ssh.exec_command("pgrep -f 'vehicle_main|yolo_server'")
                 still_remaining = stdout.read().decode().strip()
                 if still_remaining:
-                    print(f"  [⚠] Warning: Some processes still running: PIDs {still_remaining.replace(chr(10), ', ')}")
+                    print(f"  [WARN] Warning: Some processes still running: PIDs {still_remaining.replace(chr(10), ', ')}")
                 else:
-                    print(f"  [✓] All processes stopped (forced)")
+                    print(f"  [OK] All processes stopped (forced)")
             else:
-                print(f"  [✓] All processes stopped gracefully")
+                print(f"  [OK] All processes stopped gracefully")
 
             ssh.close()
-            print(f"  [✓] Python processes stopped")
+            print(f"  [OK] Python processes stopped")
             python_stopped = True
 
         except Exception as e:
-            print(f"  [⚠] Error stopping Python processes via SSH: {e}")
+            print(f"  [WARN] Error stopping Python processes via SSH: {e}")
             print(f"      (SSH may not be available or configured)")
             python_stopped = False
 
@@ -207,7 +265,7 @@ def stop_processes(ip: str, car_id: int, username: str, password: str, dry_run: 
         return True
 
     except Exception as e:
-        print(f"  [✗] Error stopping QCar {car_id} ({ip}): {e}")
+        print(f"  [ERR] Error stopping QCar {car_id} ({ip}): {e}")
         return False
 
 
@@ -235,17 +293,25 @@ def main():
         input('\nPress Enter to exit...')
         sys.exit(1)
 
-    remote = cfg.get('remote', {})
-    username = args.username or remote.get('username') or DEFAULT_USERNAME
-    password = args.password or remote.get('password') or DEFAULT_PASSWORD
-
     print("\nDetected vehicles:")
     for v in ips:
-        print(f"  • Car {v.get('car_id')}: {v.get('ip')}")
+        print(f"  - Car {v.get('car_id')}: {v.get('ip')} [{v.get('vehicle_type', 'Qcar')}]")
 
     stopped = 0
     for idx, car in enumerate(ips):
         ip = car['ip']
+        vehicle_type = car.get('vehicle_type', 'Qcar')
+
+        try:
+            remote = resolve_remote_profile(cfg, vehicle_type)
+        except Exception as e:
+            print(f"\n{'='*60}\nStopping Car {car.get('car_id')} at {ip}")
+            print(f"  [x] Cannot resolve remote profile for {vehicle_type}: {e}")
+            continue
+
+        username = args.username or remote['username']
+        password = args.password or remote['password']
+
         print(f"\n{'='*60}\nStopping Car {car.get('car_id')} at {ip}")
         ok = stop_processes(ip, idx, username, password, dry_run=args.dry_run)
         if ok:

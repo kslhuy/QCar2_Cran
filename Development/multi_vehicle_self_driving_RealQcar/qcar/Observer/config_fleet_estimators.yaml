@@ -3,7 +3,7 @@
 # Place this file under qcar/Observer/ and load it when starting observers.
 
 # Options: 'consensus', 'distributed_luenberger', 'trust_consensus', 'trust_kalman'
-fleet_estimator_type: consensus
+fleet_estimator_type: trust_consensus
 
 
 

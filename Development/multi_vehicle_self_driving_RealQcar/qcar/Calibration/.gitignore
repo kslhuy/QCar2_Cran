@@ -1,0 +1,4 @@
+# Auto-generated calibration results – do NOT commit to git
+results/
+__pycache__/
+*.pyc

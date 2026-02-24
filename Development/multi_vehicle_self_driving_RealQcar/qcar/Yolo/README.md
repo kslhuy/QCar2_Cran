@@ -40,7 +40,10 @@ python yolo_server.py -i 192.168.1.100 -p True -w 320 -ht 200 -idx 0
 
 # In PC Ground station 
 
-
+```
+for limo 
+```bash
+ros2 run limo_nav_huy_test yolo_ros2_server -p True --ros-args -p probing:=True
 ```
 
 ### Depth Alignment

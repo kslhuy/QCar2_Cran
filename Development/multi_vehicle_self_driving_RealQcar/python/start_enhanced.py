@@ -13,6 +13,9 @@ import glob
 import subprocess
 import traceback
 
+DEFAULT_USERNAME = "nvidia"
+DEFAULT_PASSWORD = "nvidia"
+
 
 class FleetStarter:
     """Manages startup of multiple QCar vehicles with individual configurations"""
@@ -79,11 +82,71 @@ class FleetStarter:
 
         # Last resort: return the script-relative normalized path
         return os.path.normpath(os.path.join(script_dir, config_path))
+
+    @staticmethod
+    def _normalize_vehicle_type(vehicle_type: str) -> str:
+        """Normalize vehicle type labels to supported keys."""
+        if str(vehicle_type).strip().lower() == "limo":
+            return "Limo"
+        return "Qcar"
+
+    def _resolve_remote_config(self, vehicle_type: str) -> dict:
+        """
+        Resolve remote SSH config for a vehicle type.
+
+        Supports both schemas:
+          1) Legacy:
+             remote:
+               username: ...
+               password: ...
+               remote_path: ...
+          2) Type-specific:
+             remote:
+               Qcar: { ... }
+               Limo: { ... }
+        """
+        remote_cfg = self.config.get("remote", {}) or {}
+        legacy_keys = ("username", "password", "remote_path")
+
+        if all(k in remote_cfg for k in legacy_keys):
+            profile = remote_cfg
+        else:
+            wanted = self._normalize_vehicle_type(vehicle_type)
+            profile = remote_cfg.get(wanted)
+
+            if not isinstance(profile, dict):
+                for key, value in remote_cfg.items():
+                    if isinstance(value, dict) and str(key).strip().lower() == wanted.lower():
+                        profile = value
+                        break
+
+            if not isinstance(profile, dict):
+                profile = remote_cfg.get("Qcar")
+
+            if not isinstance(profile, dict):
+                for value in remote_cfg.values():
+                    if isinstance(value, dict):
+                        profile = value
+                        break
+
+        if not isinstance(profile, dict):
+            raise ValueError(
+                "Invalid 'remote' config. Expected flat keys or per-type profiles under remote.Qcar/remote.Limo."
+            )
+
+        resolved = {
+            "username": profile.get("username") or DEFAULT_USERNAME,
+            "password": profile.get("password") or DEFAULT_PASSWORD,
+            "remote_path": profile.get("remote_path"),
+        }
+        if not resolved["remote_path"]:
+            raise ValueError("Missing remote_path in remote configuration.")
+        return resolved
     
     def display_configuration(self):
         """Display fleet configuration summary"""
         gs = self.config['ground_station']
-        remote = self.config['remote']
+        remote_cfg = self.config.get('remote', {})
         image_size = self.config.get('image_size', {})
         upload = self.config.get('upload', {})
         
@@ -95,8 +158,16 @@ class FleetStarter:
         print(f"  Base Port: {gs['base_port']}")
         
         print(f"\nRemote Configuration:")
-        print(f"  Username: {remote['username']}")
-        print(f"  Remote Path: {remote['remote_path']}")
+        if all(k in remote_cfg for k in ("username", "password", "remote_path")):
+            print(f"  Username: {remote_cfg.get('username', DEFAULT_USERNAME)}")
+            print(f"  Remote Path: {remote_cfg.get('remote_path')}")
+        else:
+            for key, value in remote_cfg.items():
+                if not isinstance(value, dict):
+                    continue
+                print(f"  {key}:")
+                print(f"    Username: {value.get('username', DEFAULT_USERNAME)}")
+                print(f"    Remote Path: {value.get('remote_path', 'N/A')}")
         
         print(f"\nObserver Settings:")
         print(f"  Resolution: {image_size.get('width', 320)}x{image_size.get('height', 200)}")
@@ -111,7 +182,7 @@ class FleetStarter:
         for vehicle in self.config['vehicles']:
             path_info = self._get_path_info(vehicle['path_number'])
             vehicle_type = vehicle.get('vehicle_type', 'Qcar')
-            print(f"  • Car {vehicle['car_id']}: {vehicle['ip']} [{vehicle_type}]")
+            print(f"  - Car {vehicle['car_id']}: {vehicle['ip']} [{vehicle_type}]")
             print(f"    Description: {vehicle.get('description', 'N/A')}")
             print(f"    Vehicle Type: {vehicle_type}")
             print(f"    Path: {vehicle['path_number']} - {path_info['name']}")
@@ -136,37 +207,34 @@ class FleetStarter:
                 'description': 'Custom path'
             }
     
-    def create_ssh_and_scp(self, ip: str):
+    def create_ssh_and_scp(self, ip: str, remote: dict):
         """Create SSH and SCP connections to QCar"""
-        remote = self.config['remote']
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(ip, username=remote['username'], password=remote['password'], timeout=10)
         scp = SCPClient(ssh.get_transport())
         return ssh, scp
     
-    def upload_files(self, ip: str, scp):
+    def upload_files(self, ip: str, scp, remote_path: str):
         """Upload Python, YAML, text files, and required folders to QCar"""
-        remote_path = self.config['remote']['remote_path']
-        
         # Upload Python files
         py_files = glob.glob(os.path.join(self.scripts_path, "*.py"))
         for file in py_files:
             scp.put(file, remote_path)
-        print(f"    [✓] Uploaded {len(py_files)} Python files")
+        print(f"    [OK] Uploaded {len(py_files)} Python files")
         
         # Upload YAML configuration files
         yaml_files = (glob.glob(os.path.join(self.scripts_path, "*.yaml")) + 
                       glob.glob(os.path.join(self.scripts_path, "*.yml")))
         for file in yaml_files:
             scp.put(file, remote_path)
-        print(f"    [✓] Uploaded {len(yaml_files)} YAML files")
+        print(f"    [OK] Uploaded {len(yaml_files)} YAML files")
         
         # Upload text files
         txt_files = glob.glob(os.path.join(self.scripts_path, "*.txt"))
         for file in txt_files:
             scp.put(file, remote_path)
-        print(f"    [✓] Uploaded {len(txt_files)} text files")
+        print(f"    [OK] Uploaded {len(txt_files)} text files")
         
         # Upload required folders
         folders = ["StateMachine", "Yolo", "Observer", "V2V", "Controller"]
@@ -178,11 +246,11 @@ class FleetStarter:
                     folder_files = []
                     for root, dirs, files in os.walk(folder_path):
                         folder_files.extend([os.path.join(root, f) for f in files])
-                    print(f"    [✓] Uploaded {folder_name} folder ({len(folder_files)} files)")
+                    print(f"    [OK] Uploaded {folder_name} folder ({len(folder_files)} files)")
                 except Exception as e:
-                    print(f"    [⚠] Error uploading {folder_name}: {e}")
+                    print(f"    [WARN] Error uploading {folder_name}: {e}")
             else:
-                print(f"    [⚠] {folder_name} folder not found")
+                print(f"    [WARN] {folder_name} folder not found")
     
     def start_multi_probing(self):
         """Start multi-probing process locally for probing vehicles"""
@@ -193,7 +261,7 @@ class FleetStarter:
         if not probing_vehicles:
             return
         
-        print(f"\n[→] Starting multi-probing.py locally for {len(probing_vehicles)} vehicle(s)...")
+        print(f"\n[->] Starting multi-probing.py locally for {len(probing_vehicles)} vehicle(s)...")
         
         probing_script = os.path.join(self.current_dir, "multi_probing.py")
         if os.path.exists(probing_script):
@@ -210,20 +278,20 @@ class FleetStarter:
             ]
             
             self.probing_process = subprocess.Popen(cmd)
-            print(f"[✓] Multi-probing started for Car IDs: {', '.join(probing_car_ids)}")
+            print(f"[OK] Multi-probing started for Car IDs: {', '.join(probing_car_ids)}")
         else:
-            print(f"[⚠] multi_probing.py not found at {probing_script}")
+            print(f"[WARN] multi_probing.py not found at {probing_script}")
     
     def start_vehicle(self, vehicle: dict):
         """Start a single vehicle with its individual configuration"""
         gs = self.config['ground_station']
-        remote = self.config['remote']
         upload = self.config.get('upload', {})
         
         car_id = vehicle['car_id']
         ip = vehicle['ip']
         port = gs['base_port'] + car_id
         vehicle_type = vehicle.get('vehicle_type', 'Qcar')
+        remote = self._resolve_remote_config(vehicle_type)
         
         print(f"\n{'='*70}")
         print(f" Starting {vehicle_type} {car_id}: {ip} (Port: {port})")
@@ -231,26 +299,26 @@ class FleetStarter:
         
         try:
             # Connect to QCar
-            print(f"  [→] Connecting to {ip}...")
-            ssh, scp = self.create_ssh_and_scp(ip)
-            print(f"  [✓] Connected")
+            print(f"  [->] Connecting to {ip}...")
+            ssh, scp = self.create_ssh_and_scp(ip, remote)
+            print(f"  [OK] Connected")
             
             # Upload files
             skip_upload = upload.get('skip_upload', False) or self.args.skip_upload
             if not skip_upload:
-                print(f"  [→] Uploading files...")
-                self.upload_files(ip, scp)
+                print(f"  [->] Uploading files...")
+                self.upload_files(ip, scp, remote['remote_path'])
             else:
-                print(f"  [⊘] Skipped file upload")
+                print(f"  [SKIP] Skipped file upload")
             
             # Kill existing processes
-            print(f"  [→] Stopping any existing processes...")
+            print(f"  [->] Stopping any existing processes...")
             # ssh.exec_command(f"pkill -f vehicle_control")
             ssh.exec_command(f"pkill -f yolo_server")
             time.sleep(1)
             
             # Build vehicle_main.py command with individual settings
-            print(f"  [→] Starting vehicle_main.py with custom settings...")
+            print(f"  [->] Starting vehicle_main.py with custom settings...")
             enable_logs = upload.get('enable_remote_logs', True) and not self.args.no_logs
             
             # Build command arguments
@@ -281,7 +349,7 @@ class FleetStarter:
                 f"{f'> vehicle_{car_id}.log 2>&1 &' if enable_logs else '> /dev/null 2>&1 &'}"
             )
             ssh.exec_command(cmd_vehicle)
-            print(f"  [✓] Vehicle control started")
+            print(f"  [OK] Vehicle control started")
             print(f"      Path: {vehicle['path_number']} ({self._get_path_info(vehicle['path_number'])['name']})")
             print(f"      Calibration: {vehicle.get('calibrate', False)}")
             print(f"      Initial Speed: {vehicle.get('initial_v_ref', 0.75)} m/s")
@@ -289,7 +357,7 @@ class FleetStarter:
             time.sleep(2)
             
             # # Start YOLO server
-            # print(f"  [→] Starting yolo_server.py...")
+            # print(f"  [->] Starting yolo_server.py...")
             # probing_flag = "True" if vehicle.get('probing', False) else "False"
             
             # cmd_yolo = (
@@ -300,17 +368,17 @@ class FleetStarter:
             #     f"{f'> yolo_{car_id}.log 2>&1 &' if enable_logs else '> /dev/null 2>&1 &'}"
             # )
             # ssh.exec_command(cmd_yolo)
-            # print(f"  [✓] YOLO server started (Probing: {vehicle.get('probing', False)})")
+            # print(f"  [OK] YOLO server started (Probing: {vehicle.get('probing', False)})")
             
             # Close connections
             ssh.close()
             scp.close()
             
-            print(f"  [✓] QCar {car_id} ({ip}) startup complete")
+            print(f"  [OK] QCar {car_id} ({ip}) startup complete")
             return True
             
         except Exception as e:
-            print(f"  [✗] Error starting QCar {car_id} ({ip}): {e}")
+            print(f"  [ERR] Error starting QCar {car_id} ({ip}): {e}")
             return False
     
     def start_fleet(self):
@@ -350,7 +418,6 @@ class FleetStarter:
     def display_summary(self, success_count: int):
         """Display startup summary"""
         gs = self.config['ground_station']
-        remote = self.config['remote']
         total = len(self.config['vehicles'])
         
         print(f"\n{'='*70}")
@@ -362,14 +429,17 @@ class FleetStarter:
         for vehicle in self.config['vehicles']:
             car_id = vehicle['car_id']
             vehicle_type = vehicle.get('vehicle_type', 'Qcar')
-            print(f"  • Car {car_id}: {vehicle['ip']} [{vehicle_type}] (Port: {gs['base_port'] + car_id})")
+            print(f"  - Car {car_id}: {vehicle['ip']} [{vehicle_type}] (Port: {gs['base_port'] + car_id})")
             print(f"    Path: {vehicle['path_number']} - {self._get_path_info(vehicle['path_number'])['name']}")
         
         print(f"\nHost PC: {gs['local_ip']}")
-        print(f"\nTo view logs on QCar:")
-        print(f"  ssh {remote['username']}@<qcar_ip>")
-        print(f"  cd {remote['remote_path']}")
-        print(f"  tail -f vehicle_0.log")
+        print(f"\nTo view logs on each vehicle:")
+        for vehicle in self.config['vehicles']:
+            vehicle_type = vehicle.get('vehicle_type', 'Qcar')
+            remote = self._resolve_remote_config(vehicle_type)
+            print(f"  ssh {remote['username']}@{vehicle['ip']}")
+            print(f"  cd {remote['remote_path']}")
+            print(f"  tail -f vehicle_{vehicle['car_id']}.log")
         print(f"\nTo stop all vehicles:")
         print(f"  python stop_refactored.py --config {self.args.config}")
         print("="*70)
@@ -407,7 +477,7 @@ def main():
     except KeyboardInterrupt:
         print("\n\n[!] Startup interrupted by user")
     except Exception as e:
-        print(f"\n[✗] Fatal error: {e}")
+        print(f"\n[ERR] Fatal error: {e}")
         traceback.print_exc()
     finally:
         if 'starter' in locals():

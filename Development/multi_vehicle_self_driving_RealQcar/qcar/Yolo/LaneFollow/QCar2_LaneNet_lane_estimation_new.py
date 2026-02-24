@@ -116,6 +116,402 @@ def read_live_controls(window, defaults):
     }
 
 
+def _extract_row_clusters(row_mask, min_cluster_width=2, max_gap=3):
+    lane_x = np.flatnonzero(row_mask > 0)
+    if lane_x.size == 0:
+        return []
+
+    split_idx = np.where(np.diff(lane_x) > max_gap)[0]
+    start_idx = np.concatenate(([0], split_idx + 1))
+    end_idx = np.concatenate((split_idx, [lane_x.size - 1]))
+
+    clusters = []
+    for s_idx, e_idx in zip(start_idx, end_idx):
+        x0 = int(lane_x[s_idx])
+        x1 = int(lane_x[e_idx])
+        width = x1 - x0 + 1
+        if width < min_cluster_width:
+            continue
+        clusters.append((x0, x1, 0.5 * (x0 + x1), width))
+
+    return clusters
+
+
+def _fit_curve_x_of_y(points, image_height, max_degree=2):
+    if len(points) < 2:
+        return None
+    ys = np.array([p[1] for p in points], dtype=np.float32)
+    xs = np.array([p[0] for p in points], dtype=np.float32)
+    y_norm = ys / max(1.0, float(image_height - 1))
+    degree = int(min(max_degree, len(points) - 1))
+    coeff = np.polyfit(y_norm, xs, deg=degree)
+    return coeff.astype(np.float32)
+
+
+def _eval_curve_x_of_y(coeff, ys, image_height):
+    if coeff is None:
+        return None
+    ys_arr = np.asarray(ys, dtype=np.float32)
+    y_norm = ys_arr / max(1.0, float(image_height - 1))
+    return np.polyval(coeff, y_norm).astype(np.float32)
+
+
+def _blend_curve_coeff(prev_coeff, new_coeff, alpha):
+    if prev_coeff is None:
+        return None if new_coeff is None else new_coeff.copy()
+    if new_coeff is None:
+        return prev_coeff.copy()
+
+    prev = np.asarray(prev_coeff, dtype=np.float32)
+    new = np.asarray(new_coeff, dtype=np.float32)
+    max_len = max(prev.size, new.size)
+
+    if prev.size < max_len:
+        prev = np.pad(prev, (max_len - prev.size, 0), mode="constant")
+    if new.size < max_len:
+        new = np.pad(new, (max_len - new.size, 0), mode="constant")
+
+    return (alpha * prev + (1.0 - alpha) * new).astype(np.float32)
+
+
+def _curve_points_from_coeff(coeff, rows, image_height, image_width):
+    if coeff is None:
+        return []
+    xs = _eval_curve_x_of_y(coeff, rows, image_height)
+    if xs is None:
+        return []
+    pts = []
+    for x, y in zip(xs, rows):
+        xi = int(np.clip(np.round(float(x)), 0, image_width - 1))
+        yi = int(y)
+        pts.append((xi, yi))
+    return pts
+
+
+def estimate_center_lane(binary_mask, previous_state=None, sample_count=36):
+    previous_state = previous_state or {}
+
+    if binary_mask is None or binary_mask.size == 0:
+        return {
+            "left_points": [],
+            "right_points": [],
+            "center_points": [],
+            "confidence": 0.0,
+            "lane_width_px": previous_state.get("lane_width_px"),
+            "sample_rows": 0,
+            "paired_rows": 0,
+            "center_rows": 0,
+            "inferred_rows": 0,
+            "bottom_center_x": None,
+            "bottom_offset_px": None,
+            "tracker_state": dict(previous_state),
+        }
+
+    if binary_mask.ndim == 3:
+        mask = cv2.cvtColor(binary_mask, cv2.COLOR_BGR2GRAY)
+    else:
+        mask = binary_mask
+
+    h, w = mask.shape[:2]
+    if h < 8 or w < 8:
+        return {
+            "left_points": [],
+            "right_points": [],
+            "center_points": [],
+            "confidence": 0.0,
+            "lane_width_px": previous_state.get("lane_width_px"),
+            "sample_rows": 0,
+            "paired_rows": 0,
+            "center_rows": 0,
+            "inferred_rows": 0,
+            "bottom_center_x": None,
+            "bottom_offset_px": None,
+            "tracker_state": dict(previous_state),
+        }
+
+    prev_lane_width_px = previous_state.get("lane_width_px")
+    prev_center_bottom_x = previous_state.get("center_bottom_x")
+    prev_center_curve = previous_state.get("center_curve")
+    prev_left_curve = previous_state.get("left_curve")
+    prev_right_curve = previous_state.get("right_curve")
+    prev_lost_frames = int(previous_state.get("lost_frames", 0))
+
+    y_top = max(0, int(0.35 * h))
+    rows = np.linspace(h - 1, y_top, num=max(10, int(sample_count))).astype(np.int32)
+    rows = np.unique(rows)[::-1]
+    image_center_x = 0.5 * (w - 1)
+    center_anchor_x = (
+        float(prev_center_bottom_x)
+        if prev_center_bottom_x is not None
+        else image_center_x
+    )
+
+    default_width_px = float(np.clip(0.30 * w, 0.14 * w, 0.52 * w))
+    expected_lane_width = (
+        default_width_px
+        if prev_lane_width_px is None
+        else float(np.clip(prev_lane_width_px, 0.12 * w, 0.65 * w))
+    )
+
+    min_lane_width_px = max(14.0, 0.06 * w)
+    max_lane_width_px = min(0.82 * w, max(min_lane_width_px + 12.0, 2.2 * expected_lane_width))
+    if prev_lane_width_px is not None:
+        min_lane_width_px = max(min_lane_width_px, 0.55 * expected_lane_width)
+        max_lane_width_px = min(max_lane_width_px, 1.55 * expected_lane_width)
+
+    left_points_raw = []
+    right_points_raw = []
+    center_points_raw = []
+    width_samples = []
+    paired_rows = 0
+    inferred_rows = 0
+
+    for y in rows:
+        row_clusters = _extract_row_clusters(mask[int(y), :], min_cluster_width=2, max_gap=3)
+        if not row_clusters:
+            continue
+
+        centers = np.array(sorted([float(c[2]) for c in row_clusters]), dtype=np.float32)
+        if centers.size == 0:
+            continue
+
+        if prev_center_curve is not None:
+            pred_center_x = float(_eval_curve_x_of_y(prev_center_curve, [y], h)[0])
+        else:
+            pred_center_x = center_anchor_x
+        pred_center_x = float(np.clip(pred_center_x, 0.0, w - 1.0))
+
+        expected_left_x = pred_center_x - 0.5 * expected_lane_width
+        expected_right_x = pred_center_x + 0.5 * expected_lane_width
+
+        best_pair = None
+        best_cost = 1e9
+
+        for i in range(len(centers) - 1):
+            for j in range(i + 1, len(centers)):
+                left_x = float(centers[i])
+                right_x = float(centers[j])
+                lane_width = right_x - left_x
+                if lane_width < min_lane_width_px or lane_width > max_lane_width_px:
+                    continue
+
+                pair_center_x = 0.5 * (left_x + right_x)
+                center_cost = abs(pair_center_x - pred_center_x) / max(20.0, 0.22 * w)
+                width_cost = abs(lane_width - expected_lane_width) / max(
+                    12.0, expected_lane_width
+                )
+                cost = 0.68 * center_cost + 0.32 * width_cost
+                if cost < best_cost:
+                    best_cost = cost
+                    best_pair = (left_x, right_x, lane_width)
+
+        pair_measured = False
+        left_x = None
+        right_x = None
+
+        if best_pair is not None:
+            left_x, right_x, lane_width = best_pair
+            pair_measured = True
+        else:
+            left_candidates = centers[centers <= pred_center_x]
+            right_candidates = centers[centers >= pred_center_x]
+
+            if left_candidates.size > 0:
+                left_x = float(
+                    left_candidates[np.argmin(np.abs(left_candidates - expected_left_x))]
+                )
+            if right_candidates.size > 0:
+                right_x = float(
+                    right_candidates[np.argmin(np.abs(right_candidates - expected_right_x))]
+                )
+
+            if left_x is not None and right_x is not None:
+                lane_width = right_x - left_x
+                if lane_width < min_lane_width_px or lane_width > max_lane_width_px:
+                    if abs(left_x - expected_left_x) <= abs(right_x - expected_right_x):
+                        right_x = left_x + expected_lane_width
+                    else:
+                        left_x = right_x - expected_lane_width
+                else:
+                    pair_measured = True
+            elif left_x is not None:
+                right_x = left_x + expected_lane_width
+            elif right_x is not None:
+                left_x = right_x - expected_lane_width
+            else:
+                closest_x = float(centers[np.argmin(np.abs(centers - pred_center_x))])
+                if closest_x <= pred_center_x:
+                    left_x = closest_x
+                    right_x = left_x + expected_lane_width
+                else:
+                    right_x = closest_x
+                    left_x = right_x - expected_lane_width
+
+        if left_x is None or right_x is None:
+            continue
+
+        left_x = float(np.clip(left_x, 0.0, w - 1.0))
+        right_x = float(np.clip(right_x, 0.0, w - 1.0))
+        if right_x - left_x < 2.0:
+            continue
+
+        center_x = 0.5 * (left_x + right_x)
+
+        left_points_raw.append((int(round(left_x)), int(y)))
+        right_points_raw.append((int(round(right_x)), int(y)))
+        center_points_raw.append((int(round(center_x)), int(y)))
+
+        if pair_measured:
+            paired_rows += 1
+            width_samples.append(float(right_x - left_x))
+        else:
+            inferred_rows += 1
+
+    sample_rows = int(rows.size)
+    center_rows = len(center_points_raw)
+    pair_support = float(paired_rows) / max(1, sample_rows)
+    center_support = float(center_rows) / max(1, sample_rows)
+
+    width_consistency = 0.0
+    lane_width_px = None
+    if width_samples:
+        lane_width_px = float(np.median(width_samples))
+        if len(width_samples) == 1:
+            width_consistency = 0.7
+        else:
+            width_std = float(np.std(width_samples))
+            width_consistency = 1.0 - float(
+                np.clip(width_std / max(1.0, lane_width_px), 0.0, 1.0)
+            )
+    elif prev_lane_width_px is not None:
+        lane_width_px = float(prev_lane_width_px)
+        width_consistency = 0.3
+
+    left_curve_new = _fit_curve_x_of_y(left_points_raw, h, max_degree=2)
+    right_curve_new = _fit_curve_x_of_y(right_points_raw, h, max_degree=2)
+    center_curve_new = _fit_curve_x_of_y(center_points_raw, h, max_degree=2)
+
+    if center_curve_new is not None and prev_center_curve is not None:
+        new_bottom = float(_eval_curve_x_of_y(center_curve_new, [h - 1], h)[0])
+        prev_bottom = float(_eval_curve_x_of_y(prev_center_curve, [h - 1], h)[0])
+        center_shift = abs(new_bottom - prev_bottom)
+        # Strong smoothing for jitter, but relax smoothing when lane change is large.
+        center_curve_alpha = 0.82 if center_shift < 36.0 else 0.60
+        center_curve = _blend_curve_coeff(
+            prev_center_curve, center_curve_new, center_curve_alpha
+        )
+    elif center_curve_new is not None:
+        center_curve = center_curve_new
+    elif prev_center_curve is not None and prev_lost_frames < 5:
+        center_curve = prev_center_curve.copy()
+    else:
+        center_curve = None
+
+    side_curve_alpha = 0.78
+    left_curve = _blend_curve_coeff(prev_left_curve, left_curve_new, side_curve_alpha)
+    right_curve = _blend_curve_coeff(prev_right_curve, right_curve_new, side_curve_alpha)
+
+    center_points = _curve_points_from_coeff(center_curve, rows, h, w)
+    left_points = _curve_points_from_coeff(left_curve, rows, h, w)
+    right_points = _curve_points_from_coeff(right_curve, rows, h, w)
+
+    using_prev_only = False
+    if not center_points and prev_center_curve is not None and prev_lost_frames < 5:
+        center_points = _curve_points_from_coeff(prev_center_curve, rows, h, w)
+        left_points = _curve_points_from_coeff(prev_left_curve, rows, h, w)
+        right_points = _curve_points_from_coeff(prev_right_curve, rows, h, w)
+        center_curve = prev_center_curve.copy()
+        left_curve = None if prev_left_curve is None else prev_left_curve.copy()
+        right_curve = None if prev_right_curve is None else prev_right_curve.copy()
+        using_prev_only = True
+
+    occupancy_ratio = float(np.count_nonzero(mask)) / float(mask.size)
+    occupancy_score = float(np.clip(occupancy_ratio / 0.04, 0.0, 1.0))
+
+    bottom_center_x = None
+    if center_curve is not None:
+        bottom_center_x = float(_eval_curve_x_of_y(center_curve, [h - 1], h)[0])
+    elif center_points:
+        bottom_point = max(center_points, key=lambda p: p[1])
+        bottom_center_x = float(bottom_point[0])
+
+    if bottom_center_x is not None:
+        bottom_center_x = float(np.clip(bottom_center_x, 0.0, w - 1.0))
+
+    tracking_alignment = 0.5
+    if bottom_center_x is not None and prev_center_bottom_x is not None:
+        tracking_alignment = 1.0 - float(
+            np.clip(abs(bottom_center_x - float(prev_center_bottom_x)) / 90.0, 0.0, 1.0)
+        )
+
+    inferred_ratio = float(inferred_rows) / max(1.0, float(center_rows))
+    confidence = (
+        0.45 * pair_support
+        + 0.25 * center_support
+        + 0.15 * width_consistency
+        + 0.10 * tracking_alignment
+        + 0.05 * occupancy_score
+    )
+    confidence *= 1.0 - 0.35 * float(np.clip(inferred_ratio, 0.0, 1.0))
+    if using_prev_only:
+        confidence *= 0.55
+    if paired_rows < 3 and not using_prev_only:
+        confidence *= 0.8
+    confidence = float(np.clip(confidence, 0.0, 1.0))
+
+    lane_width_px = (
+        float(np.clip(lane_width_px, min_lane_width_px, max_lane_width_px))
+        if lane_width_px is not None
+        else None
+    )
+
+    lost_frames = 0 if center_points else (prev_lost_frames + 1)
+    tracker_state = {
+        "lane_width_px": lane_width_px,
+        "center_bottom_x": (
+            bottom_center_x if bottom_center_x is not None else prev_center_bottom_x
+        ),
+        "center_curve": None if center_curve is None else center_curve.copy(),
+        "left_curve": None if left_curve is None else left_curve.copy(),
+        "right_curve": None if right_curve is None else right_curve.copy(),
+        "lost_frames": int(lost_frames),
+    }
+
+    return {
+        "left_points": left_points,
+        "right_points": right_points,
+        "center_points": center_points,
+        "confidence": confidence,
+        "lane_width_px": lane_width_px,
+        "sample_rows": sample_rows,
+        "paired_rows": int(paired_rows),
+        "center_rows": int(center_rows),
+        "inferred_rows": int(inferred_rows),
+        "bottom_center_x": bottom_center_x,
+        "bottom_offset_px": None
+        if bottom_center_x is None
+        else float(bottom_center_x - image_center_x),
+        "tracker_state": tracker_state,
+    }
+
+
+def draw_lane_center_overlay(rgb_image, lane_center_result):
+    def draw_polyline(points, color, thickness):
+        if len(points) >= 2:
+            pts = np.array(points, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(rgb_image, [pts], False, color, thickness, cv2.LINE_AA)
+        elif len(points) == 1:
+            cv2.circle(rgb_image, points[0], max(1, thickness), color, -1, cv2.LINE_AA)
+
+    draw_polyline(lane_center_result["left_points"], (255, 170, 0), 2)
+    draw_polyline(lane_center_result["right_points"], (255, 170, 0), 2)
+    draw_polyline(lane_center_result["center_points"], (0, 255, 0), 3)
+
+    if lane_center_result["center_points"]:
+        bottom_point = max(lane_center_result["center_points"], key=lambda p: p[1])
+        cv2.circle(rgb_image, bottom_point, 5, (0, 255, 0), -1, cv2.LINE_AA)
+
+
 sampleRate = 30.0
 sampleTime = 1 / sampleRate
 simulationTime = 1000.0
@@ -258,6 +654,8 @@ last_binary_pred = None
 last_annotated_crop = None
 last_metrics = {}
 infer_counter = 0
+lane_tracker_state = {}
+smoothed_center_confidence = None
 
 # Live controls (trackbars)
 runtime_defaults = myLaneNet.get_runtime_params()
@@ -341,6 +739,21 @@ try:
             annotated_crop = last_annotated_crop
             metrics = dict(last_metrics)
 
+        lane_center_result = estimate_center_lane(
+            binaryPred, previous_state=lane_tracker_state
+        )
+        lane_tracker_state = lane_center_result.get("tracker_state", lane_tracker_state)
+
+        if smoothed_center_confidence is None:
+            smoothed_center_confidence = lane_center_result["confidence"]
+        else:
+            smoothed_center_confidence = (
+                0.7 * smoothed_center_confidence + 0.3 * lane_center_result["confidence"]
+            )
+
+        annotated_crop = annotated_crop.copy()
+        draw_lane_center_overlay(annotated_crop, lane_center_result)
+
         # Render lane-model output in the crop, then place it back into full frame.
         annotated_full = raw_rgb.copy()
         annotated_full[crop_start:crop_end, :, :] = annotated_crop
@@ -369,6 +782,18 @@ try:
                 and crop_start < max_crop_start
             ):
                 crop_start += 2
+
+        center_conf_color = (255, 80, 80)
+        if smoothed_center_confidence >= 0.65:
+            center_conf_color = (80, 255, 80)
+        elif smoothed_center_confidence >= 0.35:
+            center_conf_color = (255, 220, 80)
+
+        center_offset_px = lane_center_result.get("bottom_offset_px")
+        if center_offset_px is None:
+            center_offset_text = "n/a"
+        else:
+            center_offset_text = f"{center_offset_px:+.1f}px"
 
         cv2.putText(
             annotated_full,
@@ -413,6 +838,21 @@ try:
         cv2.putText(
             annotated_full,
             (
+                f"Center conf: {smoothed_center_confidence:.2f} "
+                f"| rows: {lane_center_result['paired_rows']}/"
+                f"{lane_center_result['sample_rows']} "
+                f"| inf: {lane_center_result['inferred_rows']} "
+                f"| offset: {center_offset_text}"
+            ),
+            (10, imageHeight - 115),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.58,
+            center_conf_color,
+            2,
+        )
+        cv2.putText(
+            annotated_full,
+            (
                 f"P:{controls['lane_prob_threshold']:.2f} "
                 f"E:{controls['lane_exist_threshold']:.2f} "
                 f"A:{controls['temporal_alpha']:.2f} "
@@ -427,8 +867,10 @@ try:
 
         # Convert RGB to BGR for OpenCV display
         displayImg = cv2.cvtColor(annotated_full, cv2.COLOR_RGB2BGR)
+        binary_display = cv2.cvtColor(binaryPred, cv2.COLOR_GRAY2BGR)
+        draw_lane_center_overlay(binary_display, lane_center_result)
         cv2.imshow("Extracted Lane Markings", displayImg)
-        cv2.imshow("Lane Binary Mask", binaryPred)
+        cv2.imshow("Lane Binary Mask", binary_display)
 
         # End timing this iteration
         end = time.time()
@@ -464,6 +906,8 @@ try:
             last_binary_pred = None
             last_annotated_crop = None
             last_metrics = {}
+            lane_tracker_state = {}
+            smoothed_center_confidence = None
         elif key == ord("p"):
             params = myLaneNet.get_runtime_params()
             print(
