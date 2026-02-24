@@ -25,14 +25,14 @@ from sensor_msgs.msg import JointState, Imu
 from geometry_msgs.msg import Twist, PoseStamped , PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry, Path
 from limo_msgs.msg import LimoStatus
-from std_msgs.msg import String
+from std_msgs.msg import String, Float32MultiArray
 from tf2_ros import Buffer, TransformListener
 from scipy.spatial.transform import Rotation as R
 
 # ===== ADD PATH TO QCAR FOLDER =====
 current_dir = os.path.dirname(os.path.abspath(__file__))
-qcar_path = os.path.join(current_dir, "multi_vehicle_RealCar")
-qcar_module_path = os.path.join(qcar_path, "qcar")
+qcar_path = os.path.dirname(current_dir)
+qcar_module_path = current_dir
 
 if os.path.exists(qcar_path):
     if qcar_path not in sys.path:
@@ -166,6 +166,11 @@ class VehicleControlFullSystemQCar(Node):
         )
         self.limo_status_sub = self.create_subscription(
             LimoStatus, '/limo_status', self._limo_status_callback, 10
+        )
+        
+        # Subscribe to new ROS 2 YOLO Detections instead of ZMQ
+        self.yolo_sub = self.create_subscription(
+            Float32MultiArray, '/limo/yolo_detections', self._yolo_callback, 10
         )
         # Subscribe to QCar-style path topic
         self.path_sub = self.create_subscription(
@@ -305,6 +310,35 @@ class VehicleControlFullSystemQCar(Node):
         if not self.joint_received:
             self.joint_received = True
             self.get_logger().info("✓ Limo status topic connected")
+            
+    def _yolo_callback(self, msg: Float32MultiArray):
+        """Handle native ROS 2 YOLO detection array updates"""
+        try:
+            # Reconstruct the 6x7 numpy array from the 42-element Float32MultiArray
+            packet = np.array(msg.data, dtype=np.float64).reshape((6, 7))
+            
+            # Inject it straight into the YOLOManager's cached data, bypassing ZMQ!
+            if hasattr(self, 'vehicle_logic') and self.vehicle_logic.yolo is not None:
+                # Get the cached data struct
+                data = self.vehicle_logic.yolo._cached_data
+                
+                # Unpack Arrays
+                data.stop_sign[:] = packet[0, :]
+                data.traffic_light[:] = packet[1, :]
+                data.cars[:] = packet[2, :]
+                data.yield_sign[:] = packet[3, :]
+                data.person[:] = packet[4, :]
+                data.timestamp = time.time()
+                data.is_valid = True
+                
+                # Check for velocity gain from YOLODriveLogic automatically
+                if self.vehicle_logic.yolo.yolo_drive is not None:
+                    data.yolo_gain = self.vehicle_logic.yolo.yolo_drive.check_yolo(
+                        data.stop_sign, data.traffic_light, data.cars, 
+                        data.yield_sign, data.person
+                    )
+        except Exception as e:
+            self.get_logger().error(f"Failed to parse YOLO detection: {e}")
             
     def _imu_callback(self, msg: Imu):
         """Update gyroscope data"""

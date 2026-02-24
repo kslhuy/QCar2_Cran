@@ -57,6 +57,8 @@ class YOLOData:
             "cars": self.cars,
             "yield_sign": self.yield_sign,
             "person": self.person,
+            "yolo_gain": self.yolo_gain,
+            "is_valid": self.is_valid,
             "car_dist": self.car_dist,
             "person_dist": self.person_dist,
             "lane_confidence": self.lane_confidence,
@@ -838,10 +840,6 @@ class YOLOLauncher:
                     logger.logger.info(
                         f"[PERCEPTION] [OK] YOLO server process started (PID: {yolo_process.pid})"
                     )
-                return yolo_process
-
-                if logger:
-                    logger.logger.info(f"[PERCEPTION] [OK] YOLO server started")
                 return yolo_process
 
             else:

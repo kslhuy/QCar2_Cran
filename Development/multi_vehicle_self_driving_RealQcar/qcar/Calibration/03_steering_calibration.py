@@ -70,13 +70,13 @@ parser.add_argument(
 parser.add_argument(
     "--steer_levels",
     type=str,
-    default="-0.4,-0.3,-0.2,-0.1,0.1,0.2,0.3,0.4",
+    default="-0.1,0.1,-0.2,0.2,-0.3,0.3,-0.4,0.4",
     help="Comma-separated steering command values to test",
 )
 parser.add_argument(
     "--throttle_levels",
     type=str,
-    default="0.1,0.15,0.2",
+    default="0.2",
     help="Comma-separated throttle command values to test",
 )
 parser.add_argument(
@@ -86,7 +86,7 @@ parser.add_argument(
     help="Constant velocity in simulation mode [m/s]",
 )
 parser.add_argument(
-    "--run_time", type=float, default=5.0, help="Duration [s] of each steering level"
+    "--run_time", type=float, default=10.0, help="Duration [s] of each steering level"
 )
 parser.add_argument(
     "--settle_time",
@@ -117,6 +117,8 @@ parser.add_argument(
     help="Enable interactive mode to approve/retry/modify each test point",
 )
 args = parser.parse_args()
+
+SCRIPT_RESULTS_DIR = os.path.join(_CAL_DIR, "results", "03_steering_calibration")
 
 # Controller tuning notes:
 # - Use steering_cmd -> curvature fit to validate PP-map turn behavior.
@@ -262,6 +264,7 @@ def collect_steering_data(hw_interface, motor_sim, steer_sim, sim_mode: bool):
             "radius_m",
             "curvature_1_m",
         ],
+        results_dir=SCRIPT_RESULTS_DIR,
     ) as log:
         # Outer loop: Throttles
         t_idx = 0
@@ -547,6 +550,7 @@ def main():
             poly_deg=args.poly_deg,
             title=f"QCar Steering → Curvature (Throttle={th:.2f})",
             filename=f"steering_curvature_map_T{th:.2f}{tag}.png",
+            results_dir=SCRIPT_RESULTS_DIR,
         )
         poly_coeffs_dict[f"throttle_{th:.2f}"] = [float(c) for c in poly]
 
@@ -563,6 +567,7 @@ def main():
         poly_deg=args.poly_deg,
         title=f"QCar Steering → Curvature (Combined)",
         filename=f"steering_curvature_map_combined{tag}.png",
+        results_dir=SCRIPT_RESULTS_DIR,
     )
 
     ackermann_global = fit_ackermann(steer_cmds, curvatures)
@@ -586,7 +591,7 @@ def main():
             "velocity_ms": vel_means.tolist(),
         },
     }
-    save_yaml(result, f"steering_calibration{tag}.yaml")
+    save_yaml(result, f"steering_calibration{tag}.yaml", results_dir=SCRIPT_RESULTS_DIR)
 
     print("\n[✓] Steering calibration complete.")
 

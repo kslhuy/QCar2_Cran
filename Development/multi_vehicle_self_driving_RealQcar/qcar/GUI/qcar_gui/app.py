@@ -971,6 +971,9 @@ class QCarFleetController:
             on_set_controller_params=self._set_controller_params,
             on_set_online_sysid=self._set_online_sysid,
             on_set_gear=self._set_gear_car,
+            on_enable_taxi_mode=self._enable_taxi_mode,
+            on_disable_taxi_mode=self._disable_taxi_mode,
+            on_set_taxi_trip=self._set_taxi_trip,
         )
 
     def _update_car_panels(self) -> None:
@@ -1193,6 +1196,38 @@ class QCarFleetController:
         else:
             self._commands_failed_gui += 1
             self.log(f"❌ Failed to set initial position for Car {car_id}", "ERROR")
+
+    # ========== Taxi Operations ==========
+
+    def _enable_taxi_mode(self, car_id: int) -> None:
+        """Enable taxi mode for a car."""
+        if self._remote.enable_taxi_mode(car_id):
+            self._commands_sent_gui += 1
+            self.log(f"🚕 Car {car_id}: Taxi mode ENABLED", "SUCCESS")
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"❌ Car {car_id}: Failed to enable taxi mode", "ERROR")
+
+    def _disable_taxi_mode(self, car_id: int) -> None:
+        """Disable taxi mode for a car."""
+        if self._remote.disable_taxi_mode(car_id):
+            self._commands_sent_gui += 1
+            self.log(f"🚕 Car {car_id}: Taxi mode DISABLED", "INFO")
+        else:
+            self._commands_failed_gui += 1
+            self.log(f"❌ Car {car_id}: Failed to disable taxi mode", "ERROR")
+
+    def _set_taxi_trip(self, car_id: int, nodes: list) -> None:
+        """Set taxi trip for a car."""
+        if len(nodes) > 0:
+            if self._remote.set_taxi_trip(car_id, nodes):
+                self._commands_sent_gui += 1
+                self.log(f"🚕 Set Car {car_id} taxi trip to nodes: {nodes}", "SUCCESS")
+            else:
+                self._commands_failed_gui += 1
+                self.log(f"❌ Failed to set taxi trip for Car {car_id}", "ERROR")
+        else:
+            self.log("❌ Taxi trip must have at least 1 node", "ERROR")
 
     # ========== Manual Control ==========
 

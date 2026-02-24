@@ -14,6 +14,7 @@ Calibration/
 ├── 02_motor_model_identification.py
 ├── 03_steering_calibration.py
 ├── 04_pid_autotuner.py
+├── 05_throttle_acceleration_calibration.py
 └── results/                           ← output CSVs, YAMLs, PNG plots
 ```
 
@@ -47,6 +48,9 @@ python 03_steering_calibration.py --sim
 
 # 4. Compute PID gains from the identified model
 python 04_pid_autotuner.py
+
+# 5. Build throttle-step -> acceleration lookup (default up to 0.3)
+python 05_throttle_acceleration_calibration.py --sim
 ```
 
 ---
@@ -130,6 +134,34 @@ python 04_pid_autotuner.py --apply --method IMC
 ```
 
 **Outputs:** `results/pid_gains_recommendation.yaml`
+
+---
+
+### `05_throttle_acceleration_calibration.py` – Throttle Step → Acceleration Dynamics
+
+Runs step transitions (default adjacent up/down steps for `0.0,0.1,0.2,0.3`) and
+fits a first-order lag per transition:
+
+```
+tau * dv/dt + v = K_local * u
+```
+
+For each step (`u_from -> u_to`), it stores:
+- `tau_s`: lag/time constant
+- `K_local_mps_per_throttle`: local velocity gain
+- `a0_model_mps2`: model initial acceleration
+- `lead_time_s`: preview timing recommendation
+
+Acceleration source options:
+- `--accel_source tach` (default): uses `dv/dt` from `motorTach`
+- `--accel_source imu`: uses `self.accelerometer[axis]` (`--imu_axis`, `--imu_sign`, `--imu_remove_bias`)
+
+Example IMU-based run:
+```bash
+python 05_throttle_acceleration_calibration.py --qlabs --actor QC2_0 --accel_source imu --imu_axis 0 --imu_remove_bias
+```
+
+**Outputs:** `results/throttle_accel_step_raw_<tag>.csv`, `throttle_accel_lookup_<tag>.csv`, `throttle_accel_model_<tag>.yaml`
 
 ---
 

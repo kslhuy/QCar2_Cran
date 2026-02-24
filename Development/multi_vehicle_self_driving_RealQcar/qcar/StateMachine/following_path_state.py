@@ -522,18 +522,6 @@ class FollowingPathState(StateBase):
             steering = 0.0
         delta = float(np.clip(steering, -0.5, 0.5))
 
-        if (
-            hasattr(self.vehicle_logic, "loop_counter")
-            and self.vehicle_logic.loop_counter % 200 == 0
-        ):
-            idx = self.pp_controller.idx_nearest_waypoint if self.pp_controller else -1
-            # NOTE: this throttle is pre-actuator clamp. Final clamp is applied in
-            # vehicle_logic using current Gear (DRIVE_1/2/3 max throttle).
-            self.logger.logger.info(
-                f"[PP-PATH] v={velocity:.2f}, v_cmd={speed_target:.2f}, throttle={u:.3f}, "
-                f"steer={delta:.3f}, s={s:.2f}, d={d:.2f}, wp={idx}"
-            )
-
         return u, delta
 
     def _init_lane_fusion(self, config: dict = None):
@@ -776,38 +764,25 @@ class FollowingPathState(StateBase):
             )
             # u = np.clip(u, -0.1, 0.1)
 
-            # Periodic MPC logging
-            if (
-                hasattr(self.vehicle_logic, "loop_counter")
-                and self.vehicle_logic.loop_counter % 200 == 0
-            ):
-                wpi = self.mpc_controller.get_waypoint_index()
-                n_wp = self.mpc_controller.n_waypoints
-                self.logger.logger.info(
-                    f"[MPC-PATH] throttle={u:.3f}, steer={delta:.3f}rad "
-                    f"({np.rad2deg(delta):.1f}°), v={velocity:.2f}, "
-                    f"v_ref={self.vehicle_logic.v_ref:.2f}, wp={wpi}/{n_wp}"
-                )
         elif self._use_pp_map and self.pp_controller is not None:
             # --- Map-based PP controller + PID throttle tracking ---
             u, delta = self._compute_pp_control(dt, sensor_data)
         else:
             # --- Original PID + Stanley control ---
-            # # Speed control
-            # u = self._compute_speed_control(velocity, dt)
-            #
-            # # Steering control with lane fusion
-            # yolo_data = sensor_data.get('yolo_data', None)
-            # if yolo_data and not yolo_data.get('is_valid', True):
-            #     yolo_data = None
-            # delta = self._compute_steering_control(x, y, theta, velocity, yolo_data)
-
-            # Fallback: original controllers (uncomment above to re-enable)
             u = self._compute_speed_control(velocity, dt)
             yolo_data = sensor_data.get("yolo_data", None)
             if yolo_data and not yolo_data.get("is_valid", True):
                 yolo_data = None
             delta = self._compute_steering_control(x, y, theta, velocity, yolo_data)
+
+        # Apply YOLO gain to throttle for MPC / PP-map branches
+        # (PID+Stanley branch already applies it inside _compute_speed_control)
+        if self._use_mpc or self._use_pp_map:
+            yolo_gain = 1.0
+            if hasattr(self.vehicle_logic, 'yolo_manager') and self.vehicle_logic.yolo_manager is not None:
+                yolo_gain = self.vehicle_logic.yolo_manager.get_yolo_gain()
+            if yolo_gain < 1.0:
+                u = u * yolo_gain
 
         gear = getattr(self.vehicle_logic, "gear", None)
         max_throttle = float(getattr(gear, "value", 0.1))
@@ -818,7 +793,7 @@ class FollowingPathState(StateBase):
         self._monitor_progress()
 
         # Periodic logging
-        self._periodic_logging(x, y, theta, velocity)
+        self._periodic_logging(x, y, theta, velocity, u, delta)
 
         return u, delta, None
 
@@ -974,9 +949,11 @@ class FollowingPathState(StateBase):
             return 0.0
 
         # Apply YOLO adjustments to reference velocity
-        yolo_gain = getattr(self.vehicle_logic, "yolo_gain", 1.0)
+        # Read yolo_gain from YOLOManager (not a vehicle_logic attribute)
+        yolo_gain = 1.0
+        if hasattr(self.vehicle_logic, 'yolo_manager') and self.vehicle_logic.yolo_manager is not None:
+            yolo_gain = self.vehicle_logic.yolo_manager.get_yolo_gain()
         v_ref_adjusted = self.vehicle_logic.v_ref * yolo_gain
-        # print (f"Adjusted v_ref: {v_ref_adjusted:.2f} m/s (YOLO gain: {yolo_gain:.2f})")
         return self.speed_controller.update(velocity, v_ref_adjusted, dt)
 
     def _extract_lane_data(self, yolo_data: dict) -> dict:
@@ -1081,6 +1058,7 @@ class FollowingPathState(StateBase):
             total_waypoints = (
                 self.vehicle_logic.waypoint_sequence.shape[1]
                 if hasattr(self.vehicle_logic, "waypoint_sequence")
+                and self.vehicle_logic.waypoint_sequence is not None
                 else 0
             )
         else:
@@ -1105,34 +1083,48 @@ class FollowingPathState(StateBase):
                         time.time()
                     )  # Reset for next lap
 
-    def _periodic_logging(self, x: float, y: float, theta: float, velocity: float):
+    def _periodic_logging(
+        self, x: float, y: float, theta: float, velocity: float, u: float, delta: float
+    ):
         """Log performance metrics periodically"""
         if not hasattr(self.vehicle_logic, "loop_counter"):
             return
 
-        if self.vehicle_logic.loop_counter % 200 != 0:
+        if self.vehicle_logic.loop_counter % 10 != 0:
             return
 
-        if self._use_pp_map and self.pp_controller is not None:
-            idx = (
-                self.pp_controller.idx_nearest_waypoint
-                if self.pp_controller.idx_nearest_waypoint is not None
-                else -1
-            )
-            self.logger.logger.debug(
-                f"Path following (PP) - WP: {idx}, V: {velocity:.2f}m/s"
-            )
-            return
+        mode_str = "PATH"
+        extra_info = ""
 
-        if self.steering_controller:
-            errors = self.steering_controller.get_errors()
-            cross_track_error = errors[0]
-            heading_error = errors[1]
+        if self._use_mpc and self.mpc_controller is not None:
+            mode_str = "MPC-PATH"
+            wpi = getattr(self.mpc_controller, "get_waypoint_index", lambda: -1)()
+            n_wp = getattr(self.mpc_controller, "n_waypoints", "?")
+            extra_info = f"v_ref={self.vehicle_logic.v_ref:.2f}, wp={wpi}/{n_wp}"
 
-            self.logger.logger.debug(
-                f"Path following - CTE: {cross_track_error:.3f}m, "
-                f"HE: {heading_error:.3f}rad, V: {velocity:.2f}m/s"
+        elif self._use_pp_map and self.pp_controller is not None:
+            mode_str = "PP-PATH"
+            idx = getattr(self.pp_controller, "idx_nearest_waypoint", -1)
+            s, d = (
+                self._project_to_route_frenet(x, y)
+                if self.pp_waypoint_array is not None
+                else (0.0, 0.0)
             )
+            extra_info = f"s={s:.2f}, d={d:.2f}, wp={idx}"
+
+        elif self.steering_controller:
+            mode_str = "STANLEY-PATH"
+            errors = getattr(
+                self.steering_controller, "get_errors", lambda: (0.0, 0.0)
+            )()
+            cte, he = errors[0], errors[1]
+            extra_info = (
+                f"CTE={cte:.3f}m, HE={he:.3f}rad, v_ref={self.vehicle_logic.v_ref:.2f}"
+            )
+
+        self.logger.logger.info(
+            f"[{mode_str}] v={velocity:.2f}m/s, throttle={u:.3f}, steer={delta:.3f}rad, {extra_info}"
+        )
 
     def exit(self):
         """Clean up when leaving path following state"""

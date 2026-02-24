@@ -237,7 +237,7 @@ class QCarRemoteController:
         if ROADMAP_AVAILABLE:
             try:
                 # Initialize small map by default
-                self.roadmap = SDCSRoadMap(leftHandTraffic=False, useSmallMap=True)
+                self.roadmap = SDCSRoadMap(leftHandTraffic=False, useSmallMap=False)
                 print("[Ground Station] SDCSRoadMap initialized for path generation")
             except Exception as e:
                 print(f"[Ground Station] Error initializing roadmap: {e}")
@@ -1020,6 +1020,23 @@ class QCarRemoteController:
         return all(
             self.enable_platoon_follower(fid, leader_id, following_distance)
             for fid in follower_ids
+        )
+
+    # ========== Taxi Operations ==========
+
+    def enable_taxi_mode(self, car_id: int) -> bool:
+        """Enable taxi mode."""
+        return self.send_command(car_id, {"type": CommandType.ENABLE_TAXI_MODE.value})
+
+    def disable_taxi_mode(self, car_id: int) -> bool:
+        """Disable taxi mode."""
+        return self.send_command(car_id, {"type": CommandType.DISABLE_TAXI_MODE.value})
+
+    def set_taxi_trip(self, car_id: int, node_sequence: List[int]) -> bool:
+        """Set taxi trip destination nodes."""
+        return self.send_command(
+            car_id,
+            {"type": CommandType.SET_TAXI_TRIP.value, "node_sequence": node_sequence},
         )
 
     # ========== Manual Control Commands ==========

@@ -4,7 +4,7 @@ dev/install/*
 Development/log/*
 __pycache__/
 **/node_modules/*
-
+.agent/skills
 
 # Log files
 *.log

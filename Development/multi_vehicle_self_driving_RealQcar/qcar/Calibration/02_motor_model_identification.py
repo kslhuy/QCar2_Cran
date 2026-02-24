@@ -82,7 +82,7 @@ parser.add_argument(
     "--throttle", type=float, default=0.10, help="Step throttle command to apply [0–1]"
 )
 parser.add_argument(
-    "--duration", type=float, default=20.0, help="Total recording duration [s]"
+    "--duration", type=float, default=15.0, help="Total recording duration [s]"
 )
 parser.add_argument(
     "--warmup",
@@ -101,6 +101,8 @@ parser.add_argument(
     help="Enable interactive mode to specify start/end throttle steps manually",
 )
 args = parser.parse_args()
+
+SCRIPT_RESULTS_DIR = os.path.join(_CAL_DIR, "results", "02_motor_model_identification")
 
 # Controller tuning notes:
 # - K (m/s per throttle) and tau (s) characterize the speed-loop plant.
@@ -151,7 +153,7 @@ class QCarHardwareInterface:
                     f"hilPort=None for '{self._actor_name}'. "
                     f"QLabs real-time model not started yet."
                 )
-            self._qcar = QCar(readMode=1, hilPort=hil_port)
+            self._qcar = QCar(readMode=1, hilPort=hil_port, frequency=200)
             print(
                 f"[QLABS] Connected to virtual QCar '{self._actor_name}' "
                 f"(hilPort={hil_port})"
@@ -253,7 +255,11 @@ def record_step_response(
     # In interactive mode, maybe we want to log chunks?
     # Let's keep it simple: log the current specific step test.
 
-    with CSVLogger(csv_fn, ["time_s", "throttle_cmd", "velocity_ms"]) as log:
+    with CSVLogger(
+        csv_fn,
+        ["time_s", "throttle_cmd", "velocity_ms"],
+        results_dir=SCRIPT_RESULTS_DIR,
+    ) as log:
         for i in range(total_steps):
             t_now = i * dt
 
@@ -267,6 +273,7 @@ def record_step_response(
             if sim_mode:
                 v = interface.step(current_u, dt)
             else:
+                # print(f"  t={t_now:.1f}s  u={current_u:.3f}")
                 interface.send(current_u)
                 v = interface.read_velocity()
                 time.sleep(dt)
@@ -396,6 +403,7 @@ def analyse(
         # We might need to ignore the auto-annotation or accept it's approximate.
         title=f"Step Response ({throttle_start:.2f}->{throttle_end:.2f})",
         filename=f"step_response{tag}.png",
+        results_dir=SCRIPT_RESULTS_DIR,
     )
 
     # Returns tau, K
@@ -593,8 +601,8 @@ def main():
         "usage": "Use average_model values for configuration.",
     }
 
-    save_yaml(result, f"motor_model_id{tag}.yaml")
-    save_yaml(result, "motor_model_id.yaml")
+    save_yaml(result, f"motor_model_id{tag}.yaml", results_dir=SCRIPT_RESULTS_DIR)
+    save_yaml(result, "motor_model_id.yaml", results_dir=SCRIPT_RESULTS_DIR)
     print("\n[✓] Motor model identification complete.")
 
 

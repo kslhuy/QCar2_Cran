@@ -23,6 +23,7 @@ from Controller.platoon_controller import PlatoonController, PlatoonConfig
 from command_handler import CommandHandler
 from V2V.v2v_manager import V2VManager, V2VBroadcastConfig
 from Observer.VehicleObserverSimple import VehicleObserver
+from Taxi.taxi_manager import TaxiManager
 
 # from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset
 from Controller.controller_manager import ControllerManager
@@ -127,6 +128,9 @@ class VehicleLogic:
         pid_params = self.controller_manager.config._get_pid_params()
         self.v_ref = pid_params.get("v_ref", 0.75)
         self.controller_manager.set_vehicle_logic(self)  # For waypoint access
+
+        # Taxi Manager
+        self.taxi_manager = TaxiManager()
 
         # Calibration state flag (set by CALIBRATE command)
         self.calibration_requested = False
@@ -257,7 +261,9 @@ class VehicleLogic:
             try:
                 self.online_sysid_zmq.stop()
             except Exception as e:
-                self.vehicle_logger.log_error("Failed to stop Online SysID ZMQ client", e)
+                self.vehicle_logger.log_error(
+                    "Failed to stop Online SysID ZMQ client", e
+                )
             self.online_sysid_zmq = None
 
     def _get_online_sysid_status(self) -> dict:

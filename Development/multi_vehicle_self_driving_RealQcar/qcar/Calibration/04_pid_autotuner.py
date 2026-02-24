@@ -55,7 +55,9 @@ parser = argparse.ArgumentParser(
 parser.add_argument(
     "--model",
     type=str,
-    default=os.path.join(RESULTS_DIR, "motor_model_id.yaml"),
+    default=os.path.join(
+        RESULTS_DIR, "02_motor_model_identification", "motor_model_id.yaml"
+    ),
     help="Path to motor_model_id.yaml from script 02",
 )
 parser.add_argument(
@@ -90,6 +92,8 @@ parser.add_argument(
     help="Which method to apply when --apply is set",
 )
 args = parser.parse_args()
+
+SCRIPT_RESULTS_DIR = os.path.join(RESULTS_DIR, "04_pid_autotuner")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -329,7 +333,7 @@ def main():
             "controller_config.yaml under 'longitudinal.pid'"
         ),
     }
-    save_yaml(result, "pid_gains_recommendation.yaml")
+    save_yaml(result, "pid_gains_recommendation.yaml", results_dir=SCRIPT_RESULTS_DIR)
 
     # --- Apply if requested ---
     if args.apply:

@@ -56,6 +56,7 @@ class CSVLogger:
     def __init__(
         self, filename: str, columns: List[str], results_dir: str = RESULTS_DIR
     ):
+        os.makedirs(results_dir, exist_ok=True)
         self.path = os.path.join(results_dir, filename)
         self.columns = columns
         self._file = None
@@ -152,6 +153,7 @@ def plot_step_response(
     K: Optional[float] = None,
     title: str = "Step Response",
     filename: str = "step_response.png",
+    results_dir: str = RESULTS_DIR,
 ) -> str:
     """
     Save a step-response plot to the results directory.
@@ -200,7 +202,8 @@ def plot_step_response(
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
-    path = os.path.join(RESULTS_DIR, filename)
+    os.makedirs(results_dir, exist_ok=True)
+    path = os.path.join(results_dir, filename)
     fig.savefig(path, dpi=130)
     plt.close(fig)
     print(f"[plot] Saved → {path}")
@@ -215,6 +218,7 @@ def plot_calibration_map(
     poly_deg: int = 2,
     title: str = "Calibration Map",
     filename: str = "calibration_map.png",
+    results_dir: str = RESULTS_DIR,
 ) -> Tuple[str, np.ndarray]:
     """
     Scatter + polynomial fit plot.
@@ -242,7 +246,8 @@ def plot_calibration_map(
         ax.legend()
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
-        path = os.path.join(RESULTS_DIR, filename)
+        os.makedirs(results_dir, exist_ok=True)
+        path = os.path.join(results_dir, filename)
         fig.savefig(path, dpi=130)
         plt.close(fig)
         print(f"[plot] Saved → {path}")
@@ -257,6 +262,7 @@ def plot_calibration_map(
 
 def save_yaml(data: dict, filename: str, results_dir: str = RESULTS_DIR) -> str:
     """Save a dict as YAML to the results directory."""
+    os.makedirs(results_dir, exist_ok=True)
     path = os.path.join(results_dir, filename)
     with open(path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)

@@ -84,6 +84,10 @@ class CarPanelCallbacks:
     )
     on_set_online_sysid: Callable[[int, str, dict], None] = None
     on_set_gear: Callable[[int, str], None] = None
+    # Taxi mode callbacks
+    on_enable_taxi_mode: Callable[[int], None] = None
+    on_disable_taxi_mode: Callable[[int], None] = None
+    on_set_taxi_trip: Callable[[int, list], None] = None
 
 
 class TelemetryDisplay(BaseWidget):
@@ -1057,6 +1061,118 @@ class PathControl(BaseWidget):
                 self.callbacks.on_set_path(self.car_id, nodes)
 
 
+class TaxiControl(BaseWidget):
+    """Widget for Taxi mode control."""
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        car_id: int,
+        callbacks: CarPanelCallbacks,
+        theme: Theme = None,
+    ):
+        self.car_id = car_id
+        self.callbacks = callbacks
+        self._nodes_entry: Optional[ThemedEntry] = None
+        self._taxi_mode_active = False
+        self._status_label: Optional[tk.Label] = None
+        super().__init__(parent, theme)
+
+    def _build(self) -> None:
+        """Build the taxi control."""
+        c = self.theme.colors
+
+        self.frame = ThemedLabelFrame(
+            self.parent, text="🚕 Taxi Mode", theme=self.theme
+        )
+
+        content = tk.Frame(self.frame, bg=c.bg_medium)
+        content.pack(fill="x", padx=8, pady=6)
+
+        # Mode row
+        mode_row = tk.Frame(content, bg=c.bg_medium)
+        mode_row.pack(fill="x", pady=(0, 3))
+
+        self._toggle_btn = ThemedButton(
+            mode_row,
+            text="Enable Taxi Mode",
+            button_type="start",
+            command=self._toggle_taxi_mode,
+            padx=10,
+            pady=3,
+        )
+        self._toggle_btn.pack(side="left", fill="x", expand=True)
+
+        # Trip row — label explains expected input
+        trip_row = tk.Frame(content, bg=c.bg_medium)
+        trip_row.pack(fill="x", pady=(3, 0))
+
+        ThemedLabel(
+            trip_row, text="Stops:", style="muted", theme=self.theme
+        ).pack(side="left", padx=(0, 5))
+
+        self._nodes_entry = ThemedEntry(trip_row, width=15, theme=self.theme)
+        self._nodes_entry.insert(0, "20,9")
+        self._nodes_entry.pack(side="left", padx=(0, 5))
+
+        ThemedButton(
+            trip_row,
+            text="Set Trip",
+            button_type="command",
+            command=self._set_trip,
+            padx=8,
+            pady=3,
+        ).pack(side="left")
+
+        # Help text
+        ThemedLabel(
+            content,
+            text="e.g. 20,9 → Hub(10)→20(pickup)→9(dropoff)→Hub(10)",
+            style="muted",
+            theme=self.theme,
+        ).pack(fill="x", pady=(2, 0))
+
+        # Trip status row
+        self._status_label = ThemedLabel(
+            content,
+            text="Status: idle",
+            style="muted",
+            theme=self.theme,
+        )
+        self._status_label.pack(fill="x", pady=(3, 0))
+
+    def _toggle_taxi_mode(self) -> None:
+        """Handle toggle taxi mode button click."""
+        if not self._taxi_mode_active and self.callbacks.on_enable_taxi_mode:
+            self.callbacks.on_enable_taxi_mode(self.car_id)
+        elif self._taxi_mode_active and self.callbacks.on_disable_taxi_mode:
+            self.callbacks.on_disable_taxi_mode(self.car_id)
+
+    def _set_trip(self) -> None:
+        """Handle set trip."""
+        if self.callbacks.on_set_taxi_trip and self._nodes_entry:
+            nodes = self._nodes_entry.get_list(separator=",", item_type=int)
+            if len(nodes) > 0:
+                self.callbacks.on_set_taxi_trip(self.car_id, nodes)
+
+    def set_taxi_mode_active(self, active: bool) -> None:
+        """Update taxi mode active state."""
+        self._taxi_mode_active = active
+        if active:
+            self._toggle_btn.config(
+                text="Disable Taxi Mode", bg=self.theme.colors.accent_red
+            )
+        else:
+            self._toggle_btn.config(
+                text="Enable Taxi Mode", bg=self.theme.colors.accent_green
+            )
+
+    def update_trip_status(self, status_text: str) -> None:
+        """Update the trip status label (called from panel update)."""
+        if self._status_label:
+            self._status_label.config(text=f"Status: {status_text}")
+
+
 class PlatoonControl(BaseWidget):
     """Widget for platoon configuration."""
 
@@ -1316,7 +1432,16 @@ class OnlineSysidControl(BaseWidget):
 
         is_running = zmq_status.get("running", False)
         is_collecting = zmq_status.get("collecting", False)
-        samples = zmq_status.get("samples_sent", 0)
+
+        # 1. Grab the remote worker's status block if available
+        remote_status = zmq_status.get("last_remote_status", {})
+        if isinstance(remote_status, dict) and "status" in remote_status:
+            worker_info = remote_status["status"]  # The dict from publish_status
+        else:
+            worker_info = {}
+
+        # 2. Extract buffered samples. Fall back to local samples_sent only if the worker is disconnected.
+        samples = worker_info.get("buffered_samples", zmq_status.get("samples_sent", 0))
 
         if not is_running:
             self._status_label.config(
@@ -1361,6 +1486,7 @@ class CarPanelWidget(BaseWidget):
         self._runtime_switching: Optional[RuntimeSwitchingControl] = None
         self._velocity_control: Optional[VelocityControl] = None
         self._path_control: Optional[PathControl] = None
+        self._taxi_control: Optional[TaxiControl] = None
         self._platoon_control: Optional[PlatoonControl] = None
         self._sysid_control: Optional[OnlineSysidControl] = None
 
@@ -1444,15 +1570,14 @@ class CarPanelWidget(BaseWidget):
 
     def _build_content(self) -> None:
         """Build the content area."""
-        c = self.theme.colors
         content = self._expandable.content
 
         # Main layout - left and right sections
-        main_layout = tk.Frame(content, bg=c.bg_medium)
+        main_layout = tk.Frame(content, bg=self.theme.colors.bg_medium)
         main_layout.pack(fill="both", expand=True, pady=(0, 6))
 
-        # Left section: Telemetry + Control buttons + Manual control
-        left_section = tk.Frame(main_layout, bg=c.bg_medium)
+        ### Left section: Telemetry + Control buttons + Manual control
+        left_section = tk.Frame(main_layout, bg=self.theme.colors.bg_medium)
         left_section.pack(side="left", fill="both", expand=True, padx=(0, 5))
 
         self._telemetry = TelemetryDisplay(left_section, theme=self.theme)
@@ -1479,8 +1604,14 @@ class CarPanelWidget(BaseWidget):
         )
         self._scopes_control.pack(fill="x", pady=(5, 0))
 
-        # Right section: Velocity + Path + Platoon controls
-        right_section = tk.Frame(main_layout, bg=c.bg_medium)
+         # Online SysID control
+        self._sysid_control = OnlineSysidControl(
+            left_section, self.car_id, self.callbacks, theme=self.theme
+        )
+        self._sysid_control.pack(fill="x", pady=(5, 0))
+
+        ### Right section: Velocity + Path + Platoon controls
+        right_section = tk.Frame(main_layout, bg=self.theme.colors.bg_medium)
         right_section.pack(side="right", fill="both", expand=True, padx=(5, 0))
 
         self._velocity_control = VelocityControl(
@@ -1492,6 +1623,11 @@ class CarPanelWidget(BaseWidget):
             right_section, self.car_id, self.callbacks, theme=self.theme
         )
         self._path_control.pack(fill="x", pady=(0, 4))
+
+        self._taxi_control = TaxiControl(
+            right_section, self.car_id, self.callbacks, theme=self.theme
+        )
+        self._taxi_control.pack(fill="x", pady=(0, 4))
 
         self._platoon_control = PlatoonControl(
             right_section, self.car_id, self.callbacks, theme=self.theme
@@ -1514,11 +1650,7 @@ class CarPanelWidget(BaseWidget):
         )
         self._tuning_control.pack(fill="x", pady=(0, 4))
 
-        # Online SysID control
-        self._sysid_control = OnlineSysidControl(
-            right_section, self.car_id, self.callbacks, theme=self.theme
-        )
-        self._sysid_control.pack(fill="x")
+       
 
     def update_state(self, state: CarState) -> None:
         """Update the panel with current car state."""
@@ -1578,6 +1710,10 @@ class CarPanelWidget(BaseWidget):
         # Update Online SysID status
         if self._sysid_control:
             self._sysid_control.update_status(state.online_sysid_status)
+
+        # Update Taxi Mode status
+        if self._taxi_control:
+            self._taxi_control.set_taxi_mode_active(state.state == "Taxi Mode")
 
         # # Sync runtime switching dropdowns with current values from vehicle
         # if self._runtime_switching:

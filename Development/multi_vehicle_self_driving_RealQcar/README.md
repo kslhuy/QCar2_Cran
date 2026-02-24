@@ -66,6 +66,15 @@ python multi_probing.py --car 0
 ```
 
 
+### For Calibration
+
+# In separate terminal
+```powershell
+cd C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Calibration\On_Track_SysID\src
+
+python online_sysid_zmq_worker.py --sample-port 18880 --control-port 18881 --status-port 18882 --plot-model
+```
+
 ### Development Quick Test Mode (Fake Vehicle use math equation like We do with Matlab)
 ```powershell
 # Start GUI 

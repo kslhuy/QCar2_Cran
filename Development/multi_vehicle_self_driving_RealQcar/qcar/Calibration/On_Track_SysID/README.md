@@ -1,3 +1,15 @@
+'''
+cd Development/multi_vehicle_self_driving_RealQcar/qcar/Calibration/On_Track_SysID/src
+
+python online_sysid_zmq_worker.py --sample-port 18880 --control-port 18881 --status-port 18882 --plot-model
+
+python evaluate_trajectory.py --racecar-version SIM --save-lut-name online_sysid
+
+'''
+
+
+
+
 <a href="http://arxiv.org/abs/2411.17508">
     <img src="https://img.shields.io/badge/arXiv.org-2411.17508-b31b1b" alt="arXiv e-print Badge">
 </a>

@@ -69,7 +69,7 @@ parser.add_argument(
 parser.add_argument(
     "--throttle_levels",
     type=str,
-    default="0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45",
+    default="0.1,0.15,0.2,0.25,0.3,0.35",
     help="Comma-separated throttle command levels to test",
 )
 parser.add_argument(
@@ -97,6 +97,10 @@ parser.add_argument(
     "--tag", type=str, default="", help="Optional tag appended to output filenames"
 )
 args = parser.parse_args()
+
+SCRIPT_RESULTS_DIR = os.path.join(
+    _CAL_DIR, "results", "01_throttle_velocity_calibration"
+)
 
 # Controller tuning notes:
 # - Use this map to estimate PID feedforward slope (throttle per m/s).
@@ -220,9 +224,15 @@ def run_calibration(interface, sim_mode: bool):
     # Open both summary logger and raw data logger
     with (
         CSVLogger(
-            csv_filename, ["throttle_cmd", "v_ss_mean", "v_ss_std", "v_min", "v_max"]
+            csv_filename,
+            ["throttle_cmd", "v_ss_mean", "v_ss_std", "v_min", "v_max"],
+            results_dir=SCRIPT_RESULTS_DIR,
         ) as summary_log,
-        CSVLogger(raw_filename, ["time_s", "throttle_cmd", "velocity_ms"]) as raw_log,
+        CSVLogger(
+            raw_filename,
+            ["time_s", "throttle_cmd", "velocity_ms"],
+            results_dir=SCRIPT_RESULTS_DIR,
+        ) as raw_log,
     ):
         start_time = time.time()
 
@@ -351,6 +361,7 @@ def main():
         poly_deg=args.poly_deg,
         title=f"QCar: Throttle → Velocity {'(SIM)' if args.sim else ''}",
         filename=f"throttle_velocity_map{tag}.png",
+        results_dir=SCRIPT_RESULTS_DIR,
     )
 
     summarise_results(throttle_cmds, v_means, poly_coeffs)
@@ -367,7 +378,9 @@ def main():
             "v_ss_mean": v_means.tolist(),
         },
     }
-    save_yaml(result_data, f"throttle_velocity_poly{tag}.yaml")
+    save_yaml(
+        result_data, f"throttle_velocity_poly{tag}.yaml", results_dir=SCRIPT_RESULTS_DIR
+    )
 
     print("\n[✓] Calibration complete.")
 

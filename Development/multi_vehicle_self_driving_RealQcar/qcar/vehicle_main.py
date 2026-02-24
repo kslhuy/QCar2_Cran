@@ -99,7 +99,7 @@ def parse_arguments():
         "--path_number",
         "--path-number",
         type=int,
-        default=0,
+        default=None,
         choices=[0, 1, 2],
         help="Node configuration (0, 1, or 2 for different traffic patterns)",
     )
@@ -112,11 +112,11 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--port", type=int, default=5000, help="Base port number (default: 5000)"
+        "--port", type=int, default=None, help="Base port number (default: 5000)"
     )
 
     parser.add_argument(
-        "--car-id", type=int, default=0, help="Car ID (0, 1, 2, ...) (default: 0)"
+        "--car-id", type=int, default=None, help="Car ID (0, 1, 2, ...) (default: 0)"
     )
 
     parser.add_argument(
@@ -150,7 +150,7 @@ def parse_arguments():
     parser.add_argument(
         "--vehicle-type",
         type=str,
-        default="Qcar",
+        default=None,
         choices=["Qcar", "Limo"],
         help="Vehicle type: Qcar or Limo (default: Qcar)",
     )
@@ -181,7 +181,7 @@ def load_configuration(args) -> VehicleMainConfig:
 
         if os.path.exists(fleet_config_path):
             config_path = fleet_config_path
-            print(f"[DEBUG] Using fleet_config.yaml")
+            print("[DEBUG] Using fleet_config.yaml")
         else:
             print("Error: fleet_config.yaml not found")
             return None
@@ -197,7 +197,7 @@ def load_configuration(args) -> VehicleMainConfig:
             raw_config = yaml.safe_load(f)
         if "vehicles" in raw_config:
             # Fleet config format - need car_id to extract per-vehicle settings
-            car_id = args.car_id if hasattr(args, "car_id") else 0
+            car_id = args.car_id if getattr(args, "car_id", None) is not None else 0
             # print(f"Detected fleet config format, loading settings for car_id={car_id}")
             config = VehicleMainConfig.from_fleet_yaml(config_path, car_id)
         else:
@@ -209,7 +209,7 @@ def load_configuration(args) -> VehicleMainConfig:
             print(f"Error: Config file not found: {config_path}")
             sys.exit(1)
         else:
-            print(f"Warning: No config file found")
+            print("Warning: No config file found")
             print("Using default configuration values")
             config = VehicleMainConfig()
 

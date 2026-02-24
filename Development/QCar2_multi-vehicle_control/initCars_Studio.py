@@ -8,6 +8,9 @@ The run.bat file will run all the necessary parts. If you want to run it separat
 run initCars.py first to spawn the cars in the space.
 Then using two different terminals run vehicle_control.py and vehicle_control2.py to control the vehicles.
 Both will ask what type of car you are using, for both, write 2 and click enter. (it is a QCar 2).
+
+python initCars_Studio.py -n 3
+
 """
 
 import sys
@@ -16,6 +19,7 @@ import os
 import yaml
 import numpy as np
 import threading
+import argparse
 from qvl.multi_agent import MultiAgent, readRobots
 from qvl.qlabs import QuanserInteractiveLabs
 from qvl.real_time import QLabsRealTime
@@ -117,37 +121,37 @@ class QCarInitializer:
         )
         print("  ✓ Spawned floor")
 
-        # Spawn walls
-        hWall = QLabsWalls(self.qlabs)
-        hWall.set_enable_dynamics(False)
+        # # Spawn walls
+        # hWall = QLabsWalls(self.qlabs)
+        # hWall.set_enable_dynamics(False)
 
-        for y in range(5):
-            hWall.spawn_degrees(
-                location=[-2.4 + x_offset, (-y * 1.0) + 2.55 + y_offset, 0.001],
-                rotation=[0, 0, 0],
-            )
-        for x in range(5):
-            hWall.spawn_degrees(
-                location=[-1.9 + x + x_offset, 3.05 + y_offset, 0.001],
-                rotation=[0, 0, 90],
-            )
-        for y in range(6):
-            hWall.spawn_degrees(
-                location=[2.4 + x_offset, (-y * 1.0) + 2.55 + y_offset, 0.001],
-                rotation=[0, 0, 0],
-            )
-        for x in range(4):
-            hWall.spawn_degrees(
-                location=[-0.9 + x + x_offset, -3.05 + y_offset, 0.001],
-                rotation=[0, 0, 90],
-            )
-        hWall.spawn_degrees(
-            location=[-2.03 + x_offset, -2.275 + y_offset, 0.001], rotation=[0, 0, 48]
-        )
-        hWall.spawn_degrees(
-            location=[-1.575 + x_offset, -2.7 + y_offset, 0.001], rotation=[0, 0, 48]
-        )
-        print("  ✓ Spawned walls")
+        # for y in range(5):
+        #     hWall.spawn_degrees(
+        #         location=[-2.4 + x_offset, (-y * 1.0) + 2.55 + y_offset, 0.001],
+        #         rotation=[0, 0, 0],
+        #     )
+        # for x in range(5):
+        #     hWall.spawn_degrees(
+        #         location=[-1.9 + x + x_offset, 3.05 + y_offset, 0.001],
+        #         rotation=[0, 0, 90],
+        #     )
+        # for y in range(6):
+        #     hWall.spawn_degrees(
+        #         location=[2.4 + x_offset, (-y * 1.0) + 2.55 + y_offset, 0.001],
+        #         rotation=[0, 0, 0],
+        #     )
+        # for x in range(4):
+        #     hWall.spawn_degrees(
+        #         location=[-0.9 + x + x_offset, -3.05 + y_offset, 0.001],
+        #         rotation=[0, 0, 90],
+        #     )
+        # hWall.spawn_degrees(
+        #     location=[-2.03 + x_offset, -2.275 + y_offset, 0.001], rotation=[0, 0, 48]
+        # )
+        # hWall.spawn_degrees(
+        #     location=[-1.575 + x_offset, -2.7 + y_offset, 0.001], rotation=[0, 0, 48]
+        # )
+        # print("  ✓ Spawned walls")
 
         # Spawn stop signs (4 total)
         myStopSign = QLabsStopSign(self.qlabs)
@@ -657,7 +661,7 @@ def load_fleet_config(
         return yaml.safe_load(f)
 
 
-def build_qcars_from_config(cfg: dict) -> list:
+def build_qcars_from_config(cfg: dict, num_cars_override: int = None) -> list:
     qcars = []
     nodes = cfg.get("nodes", {})
     paths = cfg.get("paths", {})
@@ -677,10 +681,13 @@ def build_qcars_from_config(cfg: dict) -> list:
         10: [-1.28205, -0.45991, -0.7330382858376184],
     }
 
-    for v in cfg.get("vehicles", []):
-        if not v.get("enabled", True):
-            continue
+    vehicles_to_use = cfg.get("vehicles", [])
+    if num_cars_override is not None:
+        vehicles_to_use = vehicles_to_use[:num_cars_override]
+    else:
+        vehicles_to_use = [v for v in vehicles_to_use if v.get("enabled", True)]
 
+    for v in vehicles_to_use:
         # Determine RobotType from vehicle_type
         vtype = v.get("vehicle_type", "Qcar")
         robot_type = "QCar2" if str(vtype).lower().startswith("qcar") else "QC2"
@@ -739,10 +746,17 @@ def build_qcars_from_config(cfg: dict) -> list:
     return qcars
 
 
+# Parse command-line arguments to optionally override the number of cars
+parser = argparse.ArgumentParser(description="Initialize QCar Environment")
+parser.add_argument(
+    "--num-cars", "-n", type=int, default=None, help="Override number of cars to spawn"
+)
+args, unknown = parser.parse_known_args()
+
 # Try to load fleet config and build QCars list; if fails, fall back to the original hardcoded spawns
 try:
     cfg = load_fleet_config()
-    QCars = build_qcars_from_config(cfg)
+    QCars = build_qcars_from_config(cfg, num_cars_override=args.num_cars)
     if not QCars:
         print(
             "No enabled vehicles found in fleet_config.yaml; falling back to defaults"
@@ -751,26 +765,7 @@ try:
     print(f"Built {len(QCars)} spawn definitions from fleet_config.yaml")
 except Exception as e:
     print(f"[Warning] Could not build spawns from fleet_config.yaml: {e}")
-    # legacy defaults
-    QCars.append(
-        {
-            "RobotType": "QCar2",
-            "Location": [-11.324, -7.393, 0.005],
-            "Rotation": [0, 0, -0.7330382858376184],
-            "Radians": True,
-            "Scale": 1,
-        }
-    )
-    QCars.append(
-        {
-            "RobotType": "QC2",
-            "Location": [1.52, 8.904, 0.005],
-            "Rotation": [0, 0, -0.12],
-            "Radians": True,
-            "Scale": 1,
-        }
-    )
-
+    sys.exit(1)
 
 # Initialize the environment using the new class structure
 # This will automatically spawn the Studio environment
@@ -877,51 +872,35 @@ print("  X,Y or X,Y,THETA = set position\n")
 
 while True:
     try:
-        loc0, rot0 = get_transform_input(0)
-        if loc0 is None:  # quit
-            print("\nProgram terminated by user.")
-            break
+        should_quit = False
 
-        if loc0 != "SKIP":
-            if len(mySpawns.robotActors) > 0:
-                mySpawns.robotActors[0].set_transform_and_request_state(
-                    location=loc0,  # already [x,y,z]
-                    rotation=rot0,  # already [0,0,theta]
-                    enableDynamics=True,
-                    headlights=False,
-                    leftTurnSignal=False,
-                    rightTurnSignal=False,
-                    brakeSignal=False,
-                    reverseSignal=False,
-                )
-                print("✓ Car 0 transform set!")
+        for i in range(len(QCars)):
+            loc, rot = get_transform_input(i)
+            if loc is None:  # quit
+                print("\nProgram terminated by user.")
+                should_quit = True
+                break
+
+            if loc != "SKIP":
+                if len(mySpawns.robotActors) > i:
+                    mySpawns.robotActors[i].set_transform_and_request_state(
+                        location=loc,
+                        rotation=rot,
+                        enableDynamics=True,
+                        headlights=False,
+                        leftTurnSignal=False,
+                        rightTurnSignal=False,
+                        brakeSignal=False,
+                        reverseSignal=False,
+                    )
+                    print(f"✓ Car {i} transform set!")
+                else:
+                    print(f"⊘ No spawned Car {i} to set transform for")
             else:
-                print("⊘ No spawned Car 0 to set transform for")
-        else:
-            print("⊘ Car 0 skipped")
+                print(f"⊘ Car {i} skipped")
 
-        loc1, rot1 = get_transform_input(1)
-        if loc1 is None:
-            print("\nProgram terminated by user.")
+        if should_quit:
             break
-
-        if loc1 != "SKIP":
-            if len(mySpawns.robotActors) > 1:
-                mySpawns.robotActors[1].set_transform_and_request_state(
-                    location=loc1,
-                    rotation=rot1,
-                    enableDynamics=True,
-                    headlights=False,
-                    leftTurnSignal=False,
-                    rightTurnSignal=False,
-                    brakeSignal=False,
-                    reverseSignal=False,
-                )
-                print("✓ Car 1 transform set!")
-            else:
-                print("⊘ No spawned Car 1 to set transform for")
-        else:
-            print("⊘ Car 1 skipped")
 
         print("\nReady for new input. Type 'X' to quit.\n")
 
