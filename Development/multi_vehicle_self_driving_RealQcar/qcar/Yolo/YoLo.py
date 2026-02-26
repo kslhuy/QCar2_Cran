@@ -37,11 +37,16 @@ class YOLOData:
     car_dist: Optional[float] = None
     person_dist: Optional[float] = None
 
+    # Horizontal offsets [-1.0 to 1.0] representing object position relative to camera center
+    car_offset: Optional[float] = None
+    person_offset: Optional[float] = None
+
     # Center-box obstacle data (new)
     obstacle: np.ndarray = field(default_factory=lambda: np.zeros(7))
     obstacle_in_path: bool = False  # True if any obstacle in center box
     obstacle_type: float = 0.0  # 0=none, 1=person, 2=cone/other
     obstacle_dist: Optional[float] = None  # Distance to closest center-box obstacle
+    obstacle_offset: Optional[float] = None  # Offset of closest center-box obstacle
 
     # Lane detection data
     lane_confidence: float = 0.0
@@ -67,9 +72,12 @@ class YOLOData:
             "is_valid": self.is_valid,
             "car_dist": self.car_dist,
             "person_dist": self.person_dist,
+            "car_offset": self.car_offset,
+            "person_offset": self.person_offset,
             "obstacle_in_path": self.obstacle_in_path,
             "obstacle_type": self.obstacle_type,
             "obstacle_dist": self.obstacle_dist,
+            "obstacle_offset": self.obstacle_offset,
             "lane_confidence": self.lane_confidence,
             "lane_steering": self.lane_steering,
             "lane_slope": self.lane_curvature,  # Alias for backward compat
@@ -343,6 +351,7 @@ class YOLOManager:
                 data.obstacle_in_path = True
                 data.obstacle_type = float(obs[2])
                 data.obstacle_dist = float(obs[1]) if obs[1] > 0 else None
+                data.obstacle_offset = float(obs[3])
 
             # Extract lane data from receiver
             lane = self.yolo.lane
@@ -365,9 +374,11 @@ class YOLOManager:
                         self.yolo.person,
                         self.yolo.obstacle,
                     )
-                    # Get computed distances from drive logic
+                    # Get computed distances and offsets from drive logic
                     data.car_dist = getattr(self.yolo_drive, "carDist", None)
                     data.person_dist = getattr(self.yolo_drive, "personDist", None)
+                    data.car_offset = getattr(self.yolo_drive, "carOffset", None)
+                    data.person_offset = getattr(self.yolo_drive, "personOffset", None)
                 except Exception as e:
                     if self.loop_counter % 100 == 0 and self.logger:
                         self.logger.log_error("YOLO drive error", e)
@@ -519,6 +530,12 @@ class YOLODriveLogic:
         self.yieldDist = 100
         self.personDist = 100
         self.obstacleDist = 100
+        
+        # Offsets
+        self.carOffset = 0.0
+        self.personOffset = 0.0
+        self.obstacleOffset = 0.0
+
         self.obstacle_in_path = False
         self.obstacle_type = 0.0  # 0=none, 1=person, 2=cone, 3=car-as-obstacle
         self.vGain_obstacle = 1
@@ -585,9 +602,8 @@ class YOLODriveLogic:
         for half the pulse time."""
 
         stopSignCount = stopSign[0]
-        stopSign[np.isnan(stopSign)] = 10
         if stopSignCount > 0:
-            self.stopSignDist = stopSign[1:][stopSign[1:] != 0].min()
+            self.stopSignDist = stopSign[1]
         else:
             self.stopSignDist = 100
 
@@ -625,14 +641,13 @@ class YOLODriveLogic:
         crossing the roadmap."""
 
         trafficLightCount = trafficLight[0]
-        trafficLight[np.isnan(trafficLight)] = 10
 
         # Traffic light distance window for stopping
         traffic_min_dist = 0.6  # Don't stop if already too close (past it)
         traffic_max_dist = self.trafficThreshold  # Default 1.0m
 
         if trafficLightCount > 0:
-            self.trafficLightDist = trafficLight[1:][trafficLight[1:] != 0].min()
+            self.trafficLightDist = trafficLight[1]
         else:
             self.trafficLightDist = 100
             self.trafficTrigger = 0
@@ -669,9 +684,8 @@ class YOLODriveLogic:
         Lane-side filtering already done server-side."""
 
         yieldSignCount = yieldSign[0]
-        yieldSign[np.isnan(yieldSign)] = 10
         if yieldSignCount > 0:
-            self.yieldDist = yieldSign[1:][yieldSign[1:] != 0].min()
+            self.yieldDist = yieldSign[1]
         else:
             self.yieldDist = 100
             self.yieldTrigger = 0
@@ -710,11 +724,12 @@ class YOLODriveLogic:
 
         carCount = car[0]
         detect_threshold = 1.2
-        car[np.isnan(car)] = 10
         if carCount > 0:
-            self.carDist = car[1:][car[1:] != 0].min()
+            self.carDist = car[1]
+            self.carOffset = car[2]
         else:
             self.carDist = 100
+            self.carOffset = 0.0
             self.carTrigger = 0
         if carCount > 0 and self.carDist < detect_threshold:
             self.carTrigger = 1
@@ -740,11 +755,12 @@ class YOLODriveLogic:
 
         personCount = person[0]
         detect_threshold = 1.5
-        person[np.isnan(person)] = 10
         if personCount > 0:
-            self.personDist = person[1:][person[1:] != 0].min()
+            self.personDist = person[1]
+            self.personOffset = person[2]
         else:
             self.personDist = 100
+            self.personOffset = 0.0
             self.personTrigger = 0
         if personCount > 0 and self.personDist < detect_threshold:
             self.personTrigger = 1
@@ -769,11 +785,13 @@ class YOLODriveLogic:
             self.obstacle_in_path = False
             self.obstacle_type = 0.0
             self.obstacleDist = 100
+            self.obstacleOffset = 0.0
             return
 
         self.obstacle_in_path = True
         self.obstacleDist = float(obstacle[1]) if obstacle[1] > 0 else 100
         self.obstacle_type = float(obstacle[2])
+        self.obstacleOffset = float(obstacle[3])
 
         # Person blocking the path → stop completely
         if self.obstacle_type == 1.0:  # OBSTACLE_PERSON

@@ -562,7 +562,7 @@ class FollowingPathState(StateBase):
 
         obstacles: List[Any] = []
 
-        def _add_obstacle(distance_value: Any, radius: float) -> None:
+        def _add_obstacle(distance_value: Any, offset_value: Any, radius: float) -> None:
             if distance_value is None:
                 return
             try:
@@ -574,8 +574,23 @@ class FollowingPathState(StateBase):
             if dist < self.pp_obstacle_min_dist or dist > self.pp_obstacle_max_dist:
                 return
 
-            obs_x = x + dist * np.cos(theta)
-            obs_y = y + dist * np.sin(theta)
+            # Default to center if no offset provided
+            offset = 0.0
+            if offset_value is not None:
+                try:
+                    offset = float(offset_value)
+                except Exception:
+                    pass
+
+            # Calculate lateral distance based on normalized offset (-1.0 to 1.0)
+            # Assuming a sensible camera FOV, 1.0 offset (edge of screen) roughly equals 0.6 * distance
+            lateral_dist = dist * offset * 0.6
+
+            # Transform from relative polar (with lateral offset) to global coordinates
+            # Positive offset (right) corresponds to negative lateral displacement in standard right-handed coordinates
+            obs_x = x + dist * np.cos(theta) - lateral_dist * np.sin(theta)
+            obs_y = y + dist * np.sin(theta) + lateral_dist * np.cos(theta)
+
             obstacles.append(
                 LocalObstacle(
                     x=float(obs_x),
@@ -589,12 +604,14 @@ class FollowingPathState(StateBase):
         if self._has_yolo_detection(yolo_data.get("cars", None)):
             _add_obstacle(
                 distance_value=yolo_data.get("car_dist", None),
+                offset_value=yolo_data.get("car_offset", None),
                 radius=self.pp_obstacle_car_radius,
             )
 
         if self._has_yolo_detection(yolo_data.get("person", None)):
             _add_obstacle(
                 distance_value=yolo_data.get("person_dist", None),
+                offset_value=yolo_data.get("person_offset", None),
                 radius=self.pp_obstacle_person_radius,
             )
 
@@ -603,12 +620,15 @@ class FollowingPathState(StateBase):
         if obs_type == 2.0:  # OBSTACLE_CONE
             _add_obstacle(
                 distance_value=yolo_data.get("obstacle_dist", None),
+                offset_value=yolo_data.get("obstacle_offset", None),
                 radius=self.pp_obstacle_car_radius,  # treat cone size similar to car
             )
         elif obs_type == 3.0:  # CAR_AS_OBSTACLE (overtake mode)
             _add_obstacle(
                 distance_value=yolo_data.get("obstacle_dist", None)
                 or yolo_data.get("car_dist", None),
+                offset_value=yolo_data.get("obstacle_offset", None)
+                or yolo_data.get("car_offset", None),
                 radius=self.pp_obstacle_car_radius,
             )
 

@@ -307,7 +307,7 @@ class YOLOServerVirtual:
             bboxes = getattr(self.yolo, "bounding", None)
             
         self.buffers.fill_from_results(results, bounding_boxes=bboxes)
-        self.buffers.fill_lane(lane_result)
+        # self.buffers.fill_lane(lane_result)
 
         # Draw obstacle box if config says so
         if getattr(self.config, "show_obstacle_box", True):

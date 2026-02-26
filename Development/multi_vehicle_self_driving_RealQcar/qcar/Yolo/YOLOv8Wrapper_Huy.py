@@ -37,7 +37,7 @@ class DetectionBuffers:
     image_height: int = 480
 
     # Center-box proportions (configurable)
-    center_box_width_ratio: float = 0.40  # Middle 40% of image width
+    center_box_width_ratio: float = 0.40  # Middle 25% of image width
     center_box_height_ratio: float = 0.60  # Bottom 60% of image height
 
     def reset(self):
@@ -115,6 +115,7 @@ class DetectionBuffers:
         obstacle_count = 0
         closest_obstacle_dist = 100.0
         closest_obstacle_type = self.OBSTACLE_NONE
+        closest_obstacle_offset = 0.0
 
         # Names that are NOT treated as in-path obstacles (signs, traffic lights)
         sign_keywords = {
@@ -138,27 +139,51 @@ class DetectionBuffers:
                 if bounding_boxes is not None and idx < len(bounding_boxes)
                 else None
             )
-            if any(kw in name_l for kw in traffic_vehicle_keywords) and counts["car"] < 6:
+            
+            # Calculate horizontal offset if we have a bounding box
+            offset = 0.0
+            if bbox is not None:
+                cx = (bbox[0] + bbox[2]) / 2.0
+                # Offset normalized to [-1.0, 1.0], where 0 is center, -1 is left edge, 1 is right edge
+                offset = (cx - (self.image_width / 2.0)) / (self.image_width / 2.0)
+
+            if any(kw in name_l for kw in traffic_vehicle_keywords):
                 counts["car"] += 1
-                self.car[counts["car"]] = det.distance
-            elif "stop sign" in name_l and counts["stop_sign"] < 6:
+                dist = det.distance
+                # Keep closest detection
+                if counts["car"] == 1 or dist < self.car[1]:
+                    self.car[1] = dist
+                    self.car[2] = offset
+            elif "stop sign" in name_l:
                 # Lane-side filter: only count stop signs on the right half
                 if not self._is_right_side(det, bbox):
                     continue
                 counts["stop_sign"] += 1
-                self.stop_sign[counts["stop_sign"]] = det.distance
-            elif "red" in name_l and counts["traffic"] < 6:
+                dist = det.distance
+                if counts["stop_sign"] == 1 or dist < self.stop_sign[1]:
+                    self.stop_sign[1] = dist
+                    self.stop_sign[2] = offset
+            elif "red" in name_l:
                 counts["traffic"] += 1
-                self.traffic[counts["traffic"]] = det.distance
-            elif "yield" in name_l and counts["yield"] < 6:
+                dist = det.distance
+                if counts["traffic"] == 1 or dist < self.traffic[1]:
+                    self.traffic[1] = dist
+                    self.traffic[2] = offset
+            elif "yield" in name_l:
                 # Lane-side filter: only count yield signs on the right half
                 if not self._is_right_side(det, bbox):
                     continue
                 counts["yield"] += 1
-                self.yield_sign[counts["yield"]] = det.distance
-            elif "person" in name_l and counts["person"] < 6:
+                dist = det.distance
+                if counts["yield"] == 1 or dist < self.yield_sign[1]:
+                    self.yield_sign[1] = dist
+                    self.yield_sign[2] = offset
+            elif "person" in name_l:
                 counts["person"] += 1
-                self.person[counts["person"]] = det.distance
+                dist = det.distance
+                if counts["person"] == 1 or dist < self.person[1]:
+                    self.person[1] = dist
+                    self.person[2] = offset
 
             # --- Center-box obstacle check ---
             # Check if this detection is in the center-front box of the image.
@@ -172,6 +197,7 @@ class DetectionBuffers:
                         dist = 100.0
                     if dist < closest_obstacle_dist:
                         closest_obstacle_dist = dist
+                        closest_obstacle_offset = offset
                         if "person" in name_l:
                             closest_obstacle_type = self.OBSTACLE_PERSON
                         elif any(kw in name_l for kw in cone_like_keywords):
