@@ -1,6 +1,6 @@
 """PP-map helper functions for `FollowingPathState`."""
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 import numpy as np
 
@@ -18,6 +18,7 @@ def build_pp_waypoint_array(
     rich_planner: Any,
     waypoint_sequence: Optional[np.ndarray],
     params: Optional[Dict[str, Any]] = None,
+    obstacles: Optional[Iterable[Any]] = None,
     logger: Any = None,
 ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, float, float]]:
     """
@@ -55,6 +56,7 @@ def build_pp_waypoint_array(
         desired_speed=desired_speed,
         min_speed=cfg.get("min_speed", 0.15),
         kappa_speed_gain=cfg.get("kappa_speed_gain", 2.0),
+        obstacles=obstacles,
         max_speed=cfg.get("max_speed", 0.8),
         hard_turn_kappa=cfg.get("hard_turn_kappa", 0.85),
         hard_turn_speed=cfg.get("hard_turn_speed", 0.32),
@@ -150,4 +152,3 @@ def project_to_route_frenet(
     if pp_track_length > 1e-6:
         s = s % pp_track_length
     return s, d
-

@@ -1,4 +1,0 @@
-# Requirements for YOLO Testing Scripts
-
-colorama>=0.4.4  # For colored terminal output (Windows compatible)
-numpy>=1.19.0     # Already required by QCAR project

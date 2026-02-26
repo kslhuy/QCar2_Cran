@@ -304,8 +304,13 @@ class RichSDCSPlanner:
                 continue
 
             rel = np.array([obs.x - x[idx], obs.y - y[idx]])
-            side = np.sign(np.dot(normals[:, idx], rel))
-            if side == 0:
+            cross_dist = np.dot(normals[:, idx], rel)
+            
+            # Prioritize steering left for new local path:
+            # Shift the decision boundary so the vehicle prefers to steer left
+            if cross_dist < 0.2:
+                side = -1.0
+            else:
                 side = 1.0
 
             amp = (obs.radius + obs.clearance) * (
@@ -316,8 +321,8 @@ class RichSDCSPlanner:
             weight = np.exp(-0.5 * ((index_axis - float(idx)) / sigma) ** 2)
             offsets += (-side * amp) * weight
 
-        max_shift = max(o.radius + o.clearance for o in obstacle_list)
-        offsets = np.clip(offsets, -1.5 * max_shift, 1.5 * max_shift)
+        # Constraints to keep in the lane (max deviation of 0.5m)
+        offsets = np.clip(offsets, -0.5, 0.5)
 
         x_shifted = x + offsets * normals[0, :]
         y_shifted = y + offsets * normals[1, :]

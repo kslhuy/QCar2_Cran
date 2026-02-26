@@ -3,16 +3,10 @@ YOLO Server Physical - Refactored for Robustness
 matches architecture of yolo_server_virtual.py but for physical QCar.
 """
 
-import numpy as np
-import time
 import cv2
-import os
-import sys
-import io
+
 import argparse
-from contextlib import contextmanager
-from dataclasses import dataclass, field
-from typing import Optional, Any
+from dataclasses import dataclass
 
 # Retaining original camera import as requested
 from pit.YOLO.utils import QCar2DepthAligned
@@ -20,6 +14,16 @@ from pit.YOLO.utils import QCar2DepthAligned
 # Using enhanced wrapper for consistency with virtual server (better rendering)
 from YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy, DetectionBuffers
 from Yolo.YoLo import YOLOPublisher, YOLOVideoPublisher
+
+# Import Lane Detection and Interface
+try:
+    from Yolo.LaneFollow import create_lane_detector
+    from Yolo.LaneFollow.lane_detection_interface import LaneDetectionResult
+
+    LANE_MODULE_AVAILABLE = True
+except ImportError as e:
+    print(f"[SERVER] WARNING: LaneFollow module not available: {e}")
+    LANE_MODULE_AVAILABLE = False
 
 
 # =============================================================================
@@ -34,6 +38,7 @@ class ServerConfig:
     height: int = 200
     car_id: int = 0
     probing: bool = False
+    show_obstacle_box: bool = False
     image_width: int = 640
     image_height: int = 480
     video_port: int = (
@@ -50,6 +55,11 @@ class ServerConfig:
         parser.add_argument("-ht", "--height", type=int, default=200)
         parser.add_argument("-idx", "--caridx", type=int, default=0)
         parser.add_argument("--video-port", type=int, default=18766)
+        parser.add_argument(
+            "--obsbox",
+            action="store_true",
+            help="Draw the center obstacle detection bounding box",
+        )
         # Note: --car-id was used in original script, mapping both just in case
         parser.add_argument("--car-id", type=int, dest="caridx_alt", default=None)
 
@@ -66,6 +76,7 @@ class ServerConfig:
             height=args.height,
             car_id=cid,
             probing=(args.probing == "True"),
+            show_obstacle_box=True,  # Always show the obstacle box
             video_port=args.video_port,
         )
 
@@ -99,11 +110,15 @@ class YOLOServerPhysical:
         # Initialize components
         self._init_camera()
         self._init_yolo()
+        self._init_lane_detector()
         self._init_publisher()
         self._init_video_publisher()
 
         # Pre-allocated buffers
-        self.buffers = DetectionBuffers()
+        self.buffers = DetectionBuffers(
+            image_width=config.image_width,
+            image_height=config.image_height,
+        )
 
         print(f"[SERVER] YOLOServerPhysical initialized for Car {config.car_id}")
 
@@ -127,6 +142,30 @@ class YOLOServerPhysical:
             imageHeight=self.config.image_height, imageWidth=self.config.image_width
         )
         print("[SERVER] YOLOv8 initialized")
+
+    def _init_lane_detector(self):
+        """Initialize UltraFast lane detector for physical car."""
+        self.lane_enabled = False
+        self.lane_detector = None
+
+        if not LANE_MODULE_AVAILABLE:
+            print("[SERVER] Lane module not available.")
+            return
+
+        try:
+            # Create UltraFast lane detector using the modular factory
+            self.lane_detector = create_lane_detector("ultrafast")
+            if self.lane_detector and self.lane_detector.is_initialized:
+                self.yolo.set_lane_detector(self.lane_detector)
+                self.lane_enabled = True
+                print("[SERVER] UltraFast Lane detector initialized")
+            else:
+                self.lane_detector = None
+                print(
+                    "[SERVER] UltraFast Lane detection initialization failed or fallback activated."
+                )
+        except Exception as e:
+            print(f"[SERVER] Failed to init lane detector: {e}")
 
     def _init_publisher(self):
         """Initialize YOLO data publisher."""
@@ -188,17 +227,57 @@ class YOLOServerPhysical:
 
         results = self.yolo.post_processing(alignedDepth=raw_depth, clippingDistance=10)
 
+        # Lane Detection
+        lane_result = None
+        if self.lane_enabled and self.lane_detector:
+            lane_result = self.lane_detector.detect(raw_rgb)
+            self.yolo.set_lane_result(lane_result)
+
         # Render annotated image
         # Even without Lane Detection, this renders bounding boxes nicer
         annotated = self.yolo.post_process_render(showFPS=True, show_lane_overlay=True)
 
+        bboxes = None
+        if hasattr(self.yolo, "predictions") and self.yolo.predictions is not None and len(self.yolo.predictions) > 0:
+            bboxes = self.yolo.predictions[0].boxes.xyxy.cpu().numpy()
+        else:
+            bboxes = getattr(self.yolo, "bounding", None)
+            
+        # Build and send detection packet first for obstacle state
+        self.buffers.fill_from_results(results, bounding_boxes=bboxes)
+        self.buffers.fill_lane(lane_result)
+
+        # Draw obstacle box if config says so
+        if getattr(self.config, "show_obstacle_box", False):
+            margin_x = (1.0 - self.buffers.center_box_width_ratio) / 2
+            x_min = int(self.config.image_width * margin_x)
+            x_max = int(self.config.image_width * (1.0 - margin_x))
+            y_min = int(
+                self.config.image_height * (1.0 - self.buffers.center_box_height_ratio)
+            )
+            y_max = int(self.config.image_height)
+
+            if self.buffers.obstacle[0] > 0:
+                color = (0, 0, 255)  # Red - obstacle
+                text = "Obstacle Detected"
+            else:
+                color = (0, 255, 0)  # Green - clear
+                text = "Clear Path"
+
+            cv2.rectangle(annotated, (x_min, y_min), (x_max, y_max), color, 2)
+            cv2.putText(
+                annotated,
+                text,
+                (x_min + 5, y_min + 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+            )
+
         # Send video if enabled
         if self.video_publisher:
             self.video_publisher.send(annotated)
-
-        # Build and send detection packet
-        self.buffers.fill_from_results(results)
-        # No lane data for physical car yet, buffer stays 0
 
         self.publisher.send(self.buffers.to_packet())
 

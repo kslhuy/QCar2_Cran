@@ -50,6 +50,7 @@ class VehicleLogic:
         # vehicle_id: Connection/network ID (used for Ground Station communication, file naming, etc.)
         self.vehicle_id = config.network.car_id
         self.vehicle_type = config.vehicle.vehicle_type
+        self.is_physical_qcar = IS_PHYSICAL_QCAR
 
         # self.Is_Limo_Car = config.network.car_id
 
@@ -126,7 +127,7 @@ class VehicleLogic:
         self.controller_manager = ControllerManager(logger=self.vehicle_logger)
 
         pid_params = self.controller_manager.config._get_pid_params()
-        self.v_ref = pid_params.get("v_ref", 0.75)
+        self.v_ref = pid_params.get("v_ref", 0.6)
         self.controller_manager.set_vehicle_logic(self)  # For waypoint access
 
         # Taxi Manager
@@ -823,6 +824,16 @@ class VehicleLogic:
                 # Payload for the handler
                 "data": v2v_details,
             }
+
+            # Append path visualization data from current state handler
+            try:
+                current_handler = self.state_machine.get_current_state_handler()
+                if current_handler and hasattr(current_handler, "get_path_visualization_data"):
+                    path_viz = current_handler.get_path_visualization_data()
+                    if path_viz:
+                        status_msg["path_viz"] = path_viz
+            except Exception:
+                pass  # Non-critical, don't let viz data break status broadcast
 
             if self.client_Ground_Station:
                 is_connected = getattr(

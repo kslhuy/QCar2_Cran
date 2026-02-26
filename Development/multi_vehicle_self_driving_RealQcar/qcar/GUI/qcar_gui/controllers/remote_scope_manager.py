@@ -532,6 +532,9 @@ def _run_scope_plot_process(
     else:
         fig, lines, axes = _create_local_layout(plt, car_id, field_names)
 
+    # Path visualization data from vehicle
+    path_viz_data = {}
+
     # Latest data storage
     latest_data = {}
 
@@ -560,7 +563,10 @@ def _run_scope_plot_process(
                 roadmap = SDCSRoadMap(leftHandTraffic=False, useSmallMap=False)
 
             # Generate path
+            # TODO : Need to more dynamic to know virtual or real path
+            scale = 0.975
             waypoints = roadmap.generate_path(node_sequence)
+            waypoints *= scale
 
             # Plot path
             if "trajectory_ref" in lines:
@@ -572,7 +578,7 @@ def _run_scope_plot_process(
             print(f"[ScopePlot] Error generating path: {e}")
 
     def update(frame):
-        nonlocal latest_data
+        nonlocal latest_data, path_viz_data
 
         # Check if we should stop
         if stop_event.is_set():
@@ -589,6 +595,8 @@ def _run_scope_plot_process(
                     info = packet["info"]
                     if "node_sequence" in info and info["node_sequence"]:
                         update_path(info["node_sequence"])
+                    if "path_viz" in info:
+                        path_viz_data.update(info["path_viz"])
                 else:
                     latest_data = packet
         except:
@@ -621,11 +629,21 @@ def _run_scope_plot_process(
                 min_len = min(len(x), len(y))
                 if min_len > 0:
                     lines["trajectory"].set_data(x[:min_len], y[:min_len])
-                    # Update head
-                    if "trajectory_head" in lines:
-                        lines["trajectory_head"].set_data(
-                            [x[min_len - 1]], [y[min_len - 1]]
-                        )
+
+                    # Update heading arrow using latest theta
+                    if "theta" in latest_data and latest_data["theta"]["v"]:
+                        last_theta = latest_data["theta"]["v"][-1]
+                        last_x = x[min_len - 1]
+                        last_y = y[min_len - 1]
+                        arrow_len = 0.15
+                        if "heading_arrow" in lines:
+                            q = lines["heading_arrow"]
+                            q.set_offsets(np.array([[last_x, last_y]]))
+                            import math
+                            q.set_UVC(
+                                [arrow_len * math.cos(last_theta)],
+                                [arrow_len * math.sin(last_theta)],
+                            )
 
             if (
                 "trajectory_gps" in lines
@@ -666,6 +684,29 @@ def _run_scope_plot_process(
                         head_key = f"traj_head_{i}"
                         if head_key in lines:
                             lines[head_key].set_data([x[min_len - 1]], [y[min_len - 1]])
+
+        # ---- Update path visualization (global / local / obstacles) ----
+        if path_viz_data:
+            # if "global_path_x" in path_viz_data and "global_path_y" in path_viz_data:
+            #     if "global_path" in lines:
+            #         lines["global_path"].set_data(
+            #             path_viz_data["global_path_x"],
+            #             path_viz_data["global_path_y"],
+            #         )
+            if "local_path_x" in path_viz_data and "local_path_y" in path_viz_data:
+                if "local_path" in lines:
+                    lines["local_path"].set_data(
+                        path_viz_data["local_path_x"],
+                        path_viz_data["local_path_y"],
+                    )
+            obstacles = path_viz_data.get("obstacles", [])
+            if "obstacles" in lines:
+                if obstacles:
+                    ox = [o[0] for o in obstacles]
+                    oy = [o[1] for o in obstacles]
+                    lines["obstacles"].set_data(ox, oy)
+                else:
+                    lines["obstacles"].set_data([], [])
 
         # Update axis limits
         for ax in axes.values():
@@ -709,22 +750,42 @@ def _create_local_layout(plt, car_id, field_names):
     ax_traj.set_ylim(-5, 5)
     axes["trajectory"] = ax_traj
 
-    # Reference Path (Planned)
+    # Reference Path (Planned) - now also labeled as "Global"  
     (line_ref,) = ax_traj.plot([], [], "k--", lw=1.5, alpha=0.6, label="Planned")
     lines["trajectory_ref"] = line_ref
+
+    # # Global path from path_viz (green dashed)
+    # (line_global,) = ax_traj.plot([], [], color="#2ca02c", ls="--", lw=1.8, alpha=0.7, label="Global Path")
+    # lines["global_path"] = line_global
+
+    # Local path from path_viz (orange solid, shows obstacle avoidance)
+    (line_local,) = ax_traj.plot([], [], color="#ff7f0e", ls="-", lw=2.5, alpha=0.85, label="Local Path")
+    lines["local_path"] = line_local
+
+    # Obstacle markers (red circles)
+    (obstacle_scatter,) = ax_traj.plot(
+        [], [], "ro", ms=10, alpha=0.8, markerfacecolor="none",
+        markeredgewidth=2.5, label="Obstacles", zorder=8,
+    )
+    lines["obstacles"] = obstacle_scatter
 
     # Est path
     (line,) = ax_traj.plot([], [], "b-", lw=2, label="Path Est")
     lines["trajectory"] = line
-    # Head marker
-    (line_head,) = ax_traj.plot([], [], "bo", ms=8, zorder=10)  # Blue dot
-    lines["trajectory_head"] = line_head
+    # Head marker removed — heading arrow already indicates car position
+
+    # Heading arrow (quiver) — initially empty
+    heading_quiver = ax_traj.quiver(
+        [], [], [], [], color="blue", scale=5, width=0.012,
+        headwidth=4, headlength=5, zorder=11,
+    )
+    lines["heading_arrow"] = heading_quiver
 
     # GPS path
     if "x_gps" in field_names:
         (line_gps,) = ax_traj.plot([], [], "r.", markersize=3, label="GPS")
         lines["trajectory_gps"] = line_gps
-    ax_traj.legend(loc="upper right", fontsize=8)
+    ax_traj.legend(loc="upper right", fontsize=7, ncol=2)
 
     # 2. Velocity (Top Right)
     ax_vel = fig.add_subplot(gs[0, 2])
