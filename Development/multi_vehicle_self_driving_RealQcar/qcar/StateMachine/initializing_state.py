@@ -370,12 +370,12 @@ class InitializingState(StateBase):
     def _initialize_simulated_qcar(self, readRobots):
         """Initialize simulated QCar"""
 
-        robotsDir = readRobots()
-        name = f"QC2_{self.vehicle_logic.vehicle_id}"
-        car_config = robotsDir[name]
+        # robotsDir = readRobots()
+        # name = f"QC2_{self.vehicle_logic.vehicle_id}"
+        # car_config = robotsDir[name]
 
         self.vehicle_logic.qcar = QCar(
-            readMode=1, frequency=100, hilPort=car_config["hilPort"]
+            readMode=1, frequency=100
         )
 
         # Check if calibration was requested
@@ -387,8 +387,8 @@ class InitializingState(StateBase):
         self.vehicle_logic.gps = QCarGPS(
             initialPose=self.config.path.calibration_pose,
             calibrate=calibrate_gps,
-            gpsPort=car_config["gpsPort"],
-            lidarIdealPort=car_config["lidarIdealPort"],
+            # gpsPort=car_config["gpsPort"],
+            # lidarIdealPort=car_config["lidarIdealPort"],
         )
 
     def _initialize_physical_qcar(self):

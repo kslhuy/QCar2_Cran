@@ -43,12 +43,15 @@ cd .\Development\QCar2_multi-vehicle_control\
 python .\initCars.py     
 
 #  Start GUI  (another cmd)
+# cd QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/GUI      
+
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\app_main.py
 
 
 # Run the real logic of vehicle 0   (another cmd)
 
+# cd QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar      
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 0
 

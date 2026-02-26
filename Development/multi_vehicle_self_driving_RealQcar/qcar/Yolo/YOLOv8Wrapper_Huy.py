@@ -90,9 +90,9 @@ class YOLOv8Wrapper_Huy(YOLOv8):
     - Support for custom lane detector instances
     """
     
-    def __init__(self, imageWidth=640, imageHeight=480, modelPath=None):
+    def __init__(self, imageWidth=640, imageHeight=480, modelPath=None, convert_tensorrt=True):
         """Initialize the enhanced YOLOv8 wrapper"""
-        super().__init__(imageWidth, imageHeight, modelPath)
+        super().__init__(imageWidth, imageHeight, modelPath, convert_tensorrt=convert_tensorrt)
         self.lane_result = None
         self.lane_detector = None
         print('YOLOv8Wrapper_Huy initialized with unified rendering support')

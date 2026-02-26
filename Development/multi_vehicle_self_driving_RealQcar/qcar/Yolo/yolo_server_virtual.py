@@ -93,16 +93,16 @@ class YOLOServerVirtual:
     
     def _init_camera(self):
         """Initialize depth-aligned camera."""
-        robots = readRobots()
-        name = f"QC2_{self.config.car_id}"
-        car_config = robots[name]
+        # robots = readRobots()
+        # name = f"QC2_{self.config.car_id}"
+        # car_config = robots[name]
         
         self.camera = QCar2DepthAlignedCamera(
             imageWidth=self.config.image_width,
             imageHeight=self.config.image_height,
             use_intrinsics=True,
             clipping_distance=10.0,
-            video3dPort=car_config['video3dPort'],
+            # video3dPort=car_config['video3dPort'],
             load_settings=True,
             use_fast_alignment=True
         )
@@ -111,7 +111,8 @@ class YOLOServerVirtual:
         """Initialize YOLO detector."""
         self.yolo = YOLOv8Wrapper_Huy(
             imageHeight=self.config.image_height,
-            imageWidth=self.config.image_width
+            imageWidth=self.config.image_width,
+            convert_tensorrt=False
         )
     
     def _init_lane_detector(self):

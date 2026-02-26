@@ -6,7 +6,11 @@ Provides aligned RGB and depth images from QCar RealSense camera.
 import numpy as np
 import cv2
 import json
-import os
+import os, getpass
+try:
+    os.getlogin()
+except OSError:
+    os.getlogin = getpass.getuser
 from pal.products.qcar import QCarRealSense
 
 try:
@@ -34,14 +38,15 @@ class QCar2DepthAlignedCamera:
         rgb_image = camera.rgb
         depth_image = camera.depth  # Aligned depth in meters
     """
-
+ git config --global user.email "huyq1471@gmail.com"
+  git config --global user.name "HUY"
     def __init__(
         self,
         imageWidth=640,
         imageHeight=480,
         use_intrinsics=True,
         clipping_distance=3.0,
-        video3dPort=18805,
+        video3dPort=18665,
         load_settings=True,
         use_fast_alignment=True,
     ):

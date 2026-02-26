@@ -9,7 +9,11 @@ import os
 # import random
 # from typing import Optional
 from threading import Event
-
+import os, getpass
+try:
+    os.getlogin()
+except OSError:
+    os.getlogin = getpass.getuser
 from pal.products.qcar import IS_PHYSICAL_QCAR
 # from hal.products.mats import SDCSRoadMap
 
