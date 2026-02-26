@@ -37,6 +37,12 @@ class YOLOData:
     car_dist: Optional[float] = None
     person_dist: Optional[float] = None
 
+    # Center-box obstacle data (new)
+    obstacle: np.ndarray = field(default_factory=lambda: np.zeros(7))
+    obstacle_in_path: bool = False  # True if any obstacle in center box
+    obstacle_type: float = 0.0  # 0=none, 1=person, 2=cone/other
+    obstacle_dist: Optional[float] = None  # Distance to closest center-box obstacle
+
     # Lane detection data
     lane_confidence: float = 0.0
     lane_steering: float = 0.0
@@ -61,6 +67,9 @@ class YOLOData:
             "is_valid": self.is_valid,
             "car_dist": self.car_dist,
             "person_dist": self.person_dist,
+            "obstacle_in_path": self.obstacle_in_path,
+            "obstacle_type": self.obstacle_type,
+            "obstacle_dist": self.obstacle_dist,
             "lane_confidence": self.lane_confidence,
             "lane_steering": self.lane_steering,
             "lane_slope": self.lane_curvature,  # Alias for backward compat
@@ -91,15 +100,16 @@ class YOLOReceiver:
         self.yieldSign = np.zeros((7), dtype=np.float64)
         self.person = np.zeros((7), dtype=np.float64)
         self.lane = np.zeros((7), dtype=np.float64)
+        self.obstacle = np.zeros((7), dtype=np.float64)
 
         self._shutting_down = False
         self.connected = False
         self._port = port
         self._ip = ip
 
-        # Expected packet shape
-        self._packet_shape = (6, 7)
-        self._packet_bytes = 6 * 7 * 8  # float64 = 8 bytes
+        # Expected packet shape (7 rows: stop, traffic, car, yield, person, lane, obstacle)
+        self._packet_shape = (7, 7)
+        self._packet_bytes = 7 * 7 * 8  # float64 = 8 bytes
 
         # ZMQ context and socket
         self._ctx = zmq.Context.instance()
@@ -149,6 +159,7 @@ class YOLOReceiver:
         self.yieldSign[:] = packet[3, :]
         self.person[:] = packet[4, :]
         self.lane[:] = packet[5, :]
+        self.obstacle[:] = packet[6, :]
 
     def read(self):
         """Read latest detection data. Returns True if new data received."""
@@ -323,7 +334,15 @@ class YOLOManager:
             data.cars = self.yolo.cars.copy()
             data.yield_sign = self.yolo.yieldSign.copy()
             data.person = self.yolo.person.copy()
+            data.obstacle = self.yolo.obstacle.copy()
             data.is_valid = new_data
+
+            # Extract obstacle data from receiver
+            obs = self.yolo.obstacle
+            if obs[0] > 0:
+                data.obstacle_in_path = True
+                data.obstacle_type = float(obs[2])
+                data.obstacle_dist = float(obs[1]) if obs[1] > 0 else None
 
             # Extract lane data from receiver
             lane = self.yolo.lane
@@ -344,6 +363,7 @@ class YOLOManager:
                         self.yolo.cars,
                         self.yolo.yieldSign,
                         self.yolo.person,
+                        self.yolo.obstacle,
                     )
                     # Get computed distances from drive logic
                     data.car_dist = getattr(self.yolo_drive, "carDist", None)
@@ -462,12 +482,13 @@ class YOLODriveLogic:
 
     def __init__(
         self,
-        stopSignThreshold=0.6,
-        trafficThreshold=1.7,
+        stopSignThreshold=0.3,
+        trafficThreshold=1.0,
         carThreshold=0.3,
-        yieldThreshold=1,
+        yieldThreshold=0.3,
         personThreshold=0.6,
         pulseLength=300,
+        min_confirm_frames=5,
     ):
         self.counter = 0
         self.counter_yield = 0
@@ -497,8 +518,27 @@ class YOLODriveLogic:
         self.trafficLightDist = 100
         self.yieldDist = 100
         self.personDist = 100
+        self.obstacleDist = 100
+        self.obstacle_in_path = False
+        self.obstacle_type = 0.0  # 0=none, 1=person, 2=cone, 3=car-as-obstacle
+        self.vGain_obstacle = 1
 
-    def check_yolo(self, stopSign, trafficLight, QCar, yieldSign, person):
+        # Overtake mode: when True, cars are treated as obstacles for replanning
+        # instead of causing a velocity gain reduction (trailing/stop).
+        # Set to False in FOLLOWING_LEADER to always trail the leader.
+        self.car_overtake_mode = False
+
+        # Temporal confirmation: require N consecutive frames before triggering
+        self.min_confirm_frames = min_confirm_frames
+        self._stop_confirm_count = 0
+        self._yield_confirm_count = 0
+        self._traffic_confirm_count = 0
+        # Traffic lights are more stable, require fewer frames
+        self._traffic_min_confirm = max(3, min_confirm_frames // 2)
+
+    def check_yolo(
+        self, stopSign, trafficLight, QCar, yieldSign, person, obstacle=None
+    ):
         """processes the YOLO predictions and returns the velocity gain."""
 
         self.stopSignPulse(stopSign)
@@ -515,22 +555,33 @@ class YOLODriveLogic:
 
         self.yieldPulse(yieldSign)
         if self.yieldTrigger == 1:
-            self.vGain_yield = 0.5
+            self.vGain_yield = 0.9  # Very slight slowdown for yield
             # return self.vGain
 
+        # Center-box obstacle: person → full stop, cone → gain unaffected (replanned)
+        if obstacle is not None:
+            self.obstaclePulse(obstacle)
+
         self.vGain = min(
-            [self.vGain_yield, self.vGain_stop, self.vGain_car, self.vGain_person]
+            [
+                self.vGain_yield,
+                self.vGain_stop,
+                self.vGain_car,
+                self.vGain_person,
+                self.vGain_obstacle,
+            ]
         )
         self.vGain_yield = 1
         self.vGain_stop = 1
         self.vGain_car = 1
         self.vGain_person = 1
+        self.vGain_obstacle = 1
         return self.vGain
 
     def stopSignPulse(self, stopSign):
-        """If a stop sign is closer than the threshold, a pulse with the length
-        of self.pulseLength is generated, reducing the velocity gain to 0 for the
-        during of the pulse. After the pulse, the detection for stop sign is paused
+        """If a stop sign is closer than the threshold AND has been detected for
+        min_confirm_frames consecutive frames, a pulse is generated reducing the
+        velocity gain to 0 for the duration. After the pulse, detection is paused
         for half the pulse time."""
 
         stopSignCount = stopSign[0]
@@ -539,11 +590,22 @@ class YOLODriveLogic:
             self.stopSignDist = stopSign[1:][stopSign[1:] != 0].min()
         else:
             self.stopSignDist = 100
+
         if not self.counterStart:
+            # Check distance threshold
             if stopSignCount > 0 and self.stopSignDist < self.stopSignThreshold:
-                self.counterStart = True
-                self.stopSignTrigger = 1
+                # Temporal confirmation: increment counter
+                self._stop_confirm_count += 1
+                if self._stop_confirm_count >= self.min_confirm_frames:
+                    # Confirmed! Start the stop pulse
+                    self.counterStart = True
+                    self.stopSignTrigger = 1
+                    self._stop_confirm_count = 0
+                else:
+                    self.stopSignTrigger = 0
             else:
+                # Not detected within threshold — reset confirmation
+                self._stop_confirm_count = 0
                 self.counterStart = False
                 self.stopSignTrigger = 0
         else:
@@ -558,12 +620,16 @@ class YOLODriveLogic:
                 self.stopSignTrigger = 0
 
     def trafficPulse(self, trafficLight):
-        """If a red traffic light is closer than the threshold, a pulse with the length
-        of self.pulseLength/6 is generated, reducing the velocity gain to 0 for the
-        during of the pulse."""
+        """If a red traffic light is within the stopping distance window [0.6m, 1.0m],
+        trigger a stop after temporal confirmation. Vehicle should stop before
+        crossing the roadmap."""
 
         trafficLightCount = trafficLight[0]
         trafficLight[np.isnan(trafficLight)] = 10
+
+        # Traffic light distance window for stopping
+        traffic_min_dist = 0.6  # Don't stop if already too close (past it)
+        traffic_max_dist = self.trafficThreshold  # Default 1.0m
 
         if trafficLightCount > 0:
             self.trafficLightDist = trafficLight[1:][trafficLight[1:] != 0].min()
@@ -574,12 +640,19 @@ class YOLODriveLogic:
         if not self.counterStart_traffic:
             if (
                 trafficLightCount > 0
-                and self.trafficLightDist < self.trafficThreshold
-                and self.trafficLightDist > self.trafficThreshold - 0.6
+                and self.trafficLightDist <= traffic_max_dist
+                and self.trafficLightDist >= traffic_min_dist
             ):
-                self.trafficTrigger = 1
-                self.counterStart_traffic = True
+                # Temporal confirmation for traffic lights
+                self._traffic_confirm_count += 1
+                if self._traffic_confirm_count >= self._traffic_min_confirm:
+                    self.trafficTrigger = 1
+                    self.counterStart_traffic = True
+                    self._traffic_confirm_count = 0
+                else:
+                    self.trafficTrigger = 0
             else:
+                self._traffic_confirm_count = 0
                 self.counterStart_traffic = False
                 self.trafficTrigger = 0
         else:
@@ -591,9 +664,9 @@ class YOLODriveLogic:
                 self.counterStart_traffic = False
 
     def yieldPulse(self, yieldSign):
-        """If a yeild sign is closer than the threshold, a pulse with the length
-        of self.pulseLength is generated, reducing the velocity gain to 0.5 for the
-        during of the pulse."""
+        """If a yield sign is closer than the threshold AND confirmed for
+        min_confirm_frames, reduce speed very slightly (gain = 0.9).
+        Lane-side filtering already done server-side."""
 
         yieldSignCount = yieldSign[0]
         yieldSign[np.isnan(yieldSign)] = 10
@@ -605,9 +678,16 @@ class YOLODriveLogic:
 
         if not self.counterStart_yield:
             if yieldSignCount > 0 and self.yieldDist < self.yieldThreshold:
-                self.counterStart_yield = True
-                self.yieldTrigger = 1
+                # Temporal confirmation
+                self._yield_confirm_count += 1
+                if self._yield_confirm_count >= self.min_confirm_frames:
+                    self.counterStart_yield = True
+                    self.yieldTrigger = 1
+                    self._yield_confirm_count = 0
+                else:
+                    self.yieldTrigger = 0
             else:
+                self._yield_confirm_count = 0
                 self.counterStart_yield = False
                 self.yieldTrigger = 0
         else:
@@ -622,7 +702,11 @@ class YOLODriveLogic:
         """If a car is closer than the threshold, the velocity gain will be
         reduced to a value between 0 and 1, depending on the distance to the car.
         The speed will start decresing at the distance of 1.2, and will be 0
-        at the distance of se;f.carThreshold."""
+        at the distance of self.carThreshold.
+
+        In OVERTAKE mode (car_overtake_mode=True), gain reduction is skipped
+        so the local planner can replan around the car instead of stopping.
+        Distance tracking (carDist) is always updated for obstacle extraction."""
 
         carCount = car[0]
         detect_threshold = 1.2
@@ -634,9 +718,17 @@ class YOLODriveLogic:
             self.carTrigger = 0
         if carCount > 0 and self.carDist < detect_threshold:
             self.carTrigger = 1
-            m = 1 / (detect_threshold - self.carThreshold)
-            b = -m * self.carThreshold
-            self.vGain_car = np.clip(m * self.carDist + b, 0, 1)
+            if self.car_overtake_mode:
+                # Overtake: skip gain reduction, mark car as obstacle for replanning
+                self.obstacle_in_path = True
+                self.obstacle_type = 3.0  # car-as-obstacle
+                self.obstacleDist = self.carDist
+                # vGain_car stays at 1.0 — local planner handles avoidance
+            else:
+                # Trailing: reduce gain to slow down / stop behind the car
+                m = 1 / (detect_threshold - self.carThreshold)
+                b = -m * self.carThreshold
+                self.vGain_car = np.clip(m * self.carDist + b, 0, 1)
         else:
             self.carTrigger = 0
 
@@ -661,6 +753,36 @@ class YOLODriveLogic:
             self.vGain_person = np.clip(m * self.personDist + b, 0, 1)
         else:
             self.personTrigger = 0
+
+    def obstaclePulse(self, obstacle):
+        """Handle center-box obstacle detection.
+
+        obstacle[0] = count of obstacles in center box
+        obstacle[1] = distance to closest obstacle
+        obstacle[2] = type: 1.0=person, 2.0=cone/other
+
+        Person in center box → full stop (gain = 0).
+        Cone in center box   → gain unchanged (path replanning handles avoidance).
+        """
+        obs_count = obstacle[0]
+        if obs_count <= 0:
+            self.obstacle_in_path = False
+            self.obstacle_type = 0.0
+            self.obstacleDist = 100
+            return
+
+        self.obstacle_in_path = True
+        self.obstacleDist = float(obstacle[1]) if obstacle[1] > 0 else 100
+        self.obstacle_type = float(obstacle[2])
+
+        # Person blocking the path → stop completely
+        if self.obstacle_type == 1.0:  # OBSTACLE_PERSON
+            obstacle_stop_dist = 1.5  # Start braking within 1.5m
+            if self.obstacleDist < obstacle_stop_dist:
+                m = 1 / (obstacle_stop_dist - 0.2)
+                b = -m * 0.2
+                self.vGain_obstacle = np.clip(m * self.obstacleDist + b, 0, 1)
+        # Cone → gain stays at 1.0 (replanning handles avoidance)
 
 
 class YOLOVideoPublisher:

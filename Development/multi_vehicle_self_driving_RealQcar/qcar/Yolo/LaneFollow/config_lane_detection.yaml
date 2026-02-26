@@ -9,6 +9,7 @@ lane_detection:
   # - 'hsv': Simple HSV color thresholding (fast, ~100+ FPS)
   # - 'bev': Bird's Eye View with sliding window 
   # - 'lanenet': LaneNet deep learning
+  # - 'ultrafast': UltraFast-v2 Lane Detection
   algorithm: 'hsv'
   
   # Enable/disable lane detection in yolo_server
@@ -77,3 +78,15 @@ lanenet_detector:
   image_height: 480
   row_upper_bound: 200
   use_clustering: false  # Slower but separates lanes
+
+# =============================================================================
+# ULTRAFAST DETECTOR SETTINGS
+# Used when source is 'local_ultrafast' or algorithm is 'ultrafast'
+# =============================================================================
+ultrafast_detector:
+  model_path: "C:\\Users\\Quang Huy Nugyen\\Documents\\Quanser\\libraries\\resources\\pretrained_models\\curvelanes_res18.pth"
+  model_type: "curvelanes_res18"
+  lane_exist_threshold: 0.35
+  max_lane: 2
+  center_smooth_alpha: 0.75
+  camera_y_offset_px: 10.0

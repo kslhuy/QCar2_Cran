@@ -1,0 +1,52 @@
+# =============================================================================
+# Requirements for multi_vehicle_self_driving_RealQcar
+# QCar2 Conda Environment
+# =============================================================================
+# NOTE: Quanser SDK packages (pal, hal, qvl, pit) are excluded — they are
+#       pre-installed in the QCar conda environment.
+# NOTE: ROS2 packages (rclpy, rospy, sensor_msgs, etc.) are excluded — they
+#       are provided by the ROS2 installation, not pip.
+# =============================================================================
+
+# ---------- Core scientific stack ----------
+numpy==2.4.2
+scipy==1.15.3
+pandas==2.3.1
+matplotlib==3.10.8
+
+# ---------- Configuration / serialization ----------
+PyYAML==6.0.2
+omegaconf==2.3.0
+
+# ---------- Computer vision ----------
+opencv-python==4.11.0.86
+
+# ---------- Deep learning ----------
+torch==2.8.0+cu126
+torchvision==0.23.0+cu126
+ultralytics==8.3.195
+
+# ---------- Optimization ----------
+casadi==3.7.2
+
+# ---------- SSH / remote deployment ----------
+paramiko==4.0.0
+scp==0.15.0
+
+# ---------- Networking / communication ----------
+pyzmq>=25.0.0
+websockets==15.0.1
+
+# ---------- Utilities ----------
+tqdm==4.67.1
+
+# ---------- Testing ----------
+pytest>=7.0.0
+
+# =============================================================================
+# To install PyTorch with CUDA 12.6 support, use:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+#
+# For CPU-only:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# =============================================================================

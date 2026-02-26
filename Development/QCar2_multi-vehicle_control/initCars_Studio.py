@@ -13,6 +13,7 @@ python initCars_Studio.py -n 3
 
 """
 
+from qvl.qcar2 import QLabsQCar2
 import sys
 import time
 import os
@@ -32,6 +33,8 @@ from qvl.basic_shape import QLabsBasicShape
 from qvl.stop_sign import QLabsStopSign
 from qvl.qcar_flooring import QLabsQCarFlooring
 from qvl.walls import QLabsWalls
+from qvl.traffic_cone import QLabsTrafficCone
+from qvl.person import QLabsPerson
 
 
 class QCarInitializer:
@@ -63,6 +66,11 @@ class QCarInitializer:
         self.traffic_lights = []
         self.traffic_light_thread = None
         self.stop_traffic_lights = threading.Event()
+
+        # Pedestrian control
+        self.pedestrian = None
+        self.pedestrian_thread = None
+        self.stop_pedestrian = threading.Event()
 
         # Initialize environment based on type
         self.InitEnv()
@@ -292,32 +300,57 @@ class QCarInitializer:
         )
         print("  ✓ Spawned 6 crosswalks")
 
-        # # Spawn traffic lights (4 total - for intersection)
-        # trafficLight1 = QLabsTrafficLight(self.qlabs)
-        # trafficLight2 = QLabsTrafficLight(self.qlabs)
-        # trafficLight3 = QLabsTrafficLight(self.qlabs)
-        # trafficLight4 = QLabsTrafficLight(self.qlabs)
+        # Spawn traffic lights (4 total - for intersection)
+        trafficLight1 = QLabsTrafficLight(self.qlabs)
+        trafficLight2 = QLabsTrafficLight(self.qlabs)
+        trafficLight3 = QLabsTrafficLight(self.qlabs)
+        trafficLight4 = QLabsTrafficLight(self.qlabs)
 
-        # # Intersection 1
-        # trafficLight1.spawn_id_degrees(actorNumber=1, location=[0.6, 1.55, 0.006],
-        #                                rotation=[0, 0, 0], scale=[0.1, 0.1, 0.1],
-        #                                configuration=0, waitForConfirmation=False)
+        # Intersection 1
+        trafficLight1.spawn_id_degrees(
+            actorNumber=1,
+            location=[0.6, 1.55, 0.006],
+            rotation=[0, 0, 0],
+            scale=[0.1, 0.1, 0.1],
+            configuration=0,
+            waitForConfirmation=False,
+        )
 
-        # trafficLight2.spawn_id_degrees(actorNumber=2, location=[-0.6, 1.28, 0.006],
-        #                                rotation=[0, 0, 90], scale=[0.1, 0.1, 0.1],
-        #                                configuration=0, waitForConfirmation=False)
+        trafficLight2.spawn_id_degrees(
+            actorNumber=2,
+            location=[-0.6, 1.28, 0.006],
+            rotation=[0, 0, 90],
+            scale=[0.1, 0.1, 0.1],
+            configuration=0,
+            waitForConfirmation=False,
+        )
 
-        # trafficLight3.spawn_id_degrees(actorNumber=3, location=[-0.37, 0.3, 0.006],
-        #                                rotation=[0, 0, 180], scale=[0.1, 0.1, 0.1],
-        #                                configuration=0, waitForConfirmation=False)
+        trafficLight3.spawn_id_degrees(
+            actorNumber=3,
+            location=[-0.37, 0.3, 0.006],
+            rotation=[0, 0, 180],
+            scale=[0.1, 0.1, 0.1],
+            configuration=0,
+            waitForConfirmation=False,
+        )
 
-        # trafficLight4.spawn_id_degrees(actorNumber=4, location=[0.75, 0.48, 0.006],
-        #                                rotation=[0, 0, -90], scale=[0.1, 0.1, 0.1],
-        #                                configuration=0, waitForConfirmation=False)
+        trafficLight4.spawn_id_degrees(
+            actorNumber=4,
+            location=[0.75, 0.48, 0.006],
+            rotation=[0, 0, -90],
+            scale=[0.1, 0.1, 0.1],
+            configuration=0,
+            waitForConfirmation=False,
+        )
 
-        # # Store traffic light references for control
-        # self.traffic_lights = [trafficLight1, trafficLight2, trafficLight3, trafficLight4]
-        # print("  ✓ Spawned 4 traffic lights")
+        # Store traffic light references for control
+        self.traffic_lights = [
+            trafficLight1,
+            trafficLight2,
+            trafficLight3,
+            trafficLight4,
+        ]
+        print("  ✓ Spawned 4 traffic lights")
 
         # Spawn signage line guidance (white lines - 3 basic shapes)
         mySpline = QLabsBasicShape(self.qlabs)
@@ -343,6 +376,30 @@ class QCarInitializer:
             waitForConfirmation=False,
         )
         print("  ✓ Spawned 3 guidance lines")
+
+        # # Spawn traffic cone
+        # myTrafficCone = QLabsTrafficCone(self.qlabs)
+        # myTrafficCone.spawn(
+        #     location=[0.26861999999999997, 1.849815, 0.006],
+        #     rotation=[0, 0, 1.5707963267948966],
+        #     scale=[0.8, 0.8, 0.8],
+        #     configuration=2,
+        # )
+        # myTrafficCone.set_material_properties(materialSlot=1, color=[1, 1, 1])
+        # print("  ✓ Spawned traffic cone")
+
+
+
+        # Spawn pedestrian
+        self.pedestrian = QLabsPerson(self.qlabs)
+        self.pedestrian.spawn_id_degrees(
+            actorNumber=1,
+            location=[-1.439, 0.146, 0.006],
+            rotation=[0, 0, 0],
+            scale=[0.1, 0.1, 0.1],
+            configuration=6,
+        )
+        print("  ✓ Spawned pedestrian")
 
         time.sleep(1)  # Allow time for environment setup
 
@@ -420,11 +477,78 @@ class QCarInitializer:
             self.traffic_light_thread = None
             print("Traffic light control stopped")
 
+    def _pedestrian_control_loop(self):
+        """
+        Background thread to control pedestrian movement
+        """
+        if not self.pedestrian:
+            print("Warning: Pedestrian not properly initialized")
+            return
+
+        LOC1 = [-1.439, 0.146, 0.006]
+        LOC2 = [-2.178, 0.224, 0.006]
+
+        print("Starting Pedestrian Sequence")
+
+        locationCounter = 0
+        setpointFlag = 0
+
+        while not self.stop_pedestrian.is_set():
+            try:
+                if locationCounter == 0:
+                    setpointFlag = self.pedestrian.move_to(
+                        location=LOC2,
+                        speed=self.pedestrian.WALK * 0.1,
+                        waitForConfirmation=True,
+                    )
+                if locationCounter == 1:
+                    setpointFlag = self.pedestrian.move_to(
+                        location=LOC1,
+                        speed=self.pedestrian.WALK * 0.1,
+                        waitForConfirmation=True,
+                    )
+
+                if setpointFlag == 1:
+                    locationCounter += 1
+                    locationCounter %= 2
+
+                # Sleep to prevent tight loops in case move_to returns immediately on error or completion
+                time.sleep(100)
+
+            except Exception as e:
+                print(f"Error in pedestrian control: {e}")
+                break
+
+        print("Pedestrian sequence stopped")
+
+    def start_pedestrian_control(self):
+        """
+        Start the pedestrian control in a background thread
+        """
+        if self.pedestrian and not self.pedestrian_thread:
+            self.stop_pedestrian.clear()
+            self.pedestrian_thread = threading.Thread(
+                target=self._pedestrian_control_loop, daemon=True
+            )
+            self.pedestrian_thread.start()
+            print("Pedestrian control started")
+
+    def stop_pedestrian_control(self):
+        """
+        Stop the pedestrian control thread
+        """
+        if self.pedestrian_thread:
+            self.stop_pedestrian.set()
+            self.pedestrian_thread.join(timeout=2.0)
+            self.pedestrian_thread = None
+            print("Pedestrian control stopped")
+
     def cleanup(self):
         """
         Cleanup resources - stop traffic lights and close QLabs connection
         """
         self.stop_traffic_light_control()
+        self.stop_pedestrian_control()
         try:
             if self.qlabs:
                 self.qlabs.close()
@@ -774,6 +898,7 @@ initializer = QCarInitializer(qlab_type="Studio")
 
 # Start traffic light control in background
 initializer.start_traffic_light_control()
+# initializer.start_pedestrian_control()
 
 # Update global references for backward compatibility
 environment_objects = initializer.environment_objects
@@ -781,10 +906,39 @@ environment_objects = initializer.environment_objects
 # print(QCars[0])
 # print(QCars[1])
 mySpawns = MultiAgent(QCars)
+# Spawn a QCar at the given initial pose
+# initialPosition=[-1.205, -0.83, 0.005]
+# initialOrientation=[0, 0, -44.7]
+# car2 = QLabsQCar2(initializer.qlabs)
+# car2.spawn_id(
+#     actorNumber=0,
+#     location=initialPosition,
+#     rotation=initialOrientation,
+#     scale=[0.1, 0.1, 0.1],
+#     configuration=0,
+#     waitForConfirmation=True,
+# )
+
+# Spawn a QCar at the given initial pose
+car2 = QLabsQCar2(initializer.qlabs)
+car2.spawn_id(
+    actorNumber=6,
+    location=[0.26861999999999997, 1.849815, 0.006],
+    rotation=[0, 0, 1.5707963267948966],
+    scale=[0.1, 0.1, 0.1],
+    configuration=0,
+)
+
+# rtModel = os.path.normpath(
+#     os.path.join(os.environ["RTMODELS_DIR"], "QCar2/QCar2_Workspace_studio")
+# )
+# QLabsRealTime().start_real_time_model(rtModel)
 # Set LED colors for spawned vehicles (safe for any number of vehicles)
-colors = [[40, 0, 0], [0, 40, 0], [0, 0, 40], [40, 40, 0]]
-for i, actor in enumerate(mySpawns.robotActors):
-    actor.set_led_strip_uniform(color=colors[i % len(colors)])
+
+
+# colors = [[40, 0, 0], [0, 40, 0], [0, 0, 40], [40, 40, 0]]
+# for i, actor in enumerate(mySpawns.robotActors):
+#     actor.set_led_strip_uniform(color=colors[i % len(colors)])
 
 
 def get_transform_input(car_number):

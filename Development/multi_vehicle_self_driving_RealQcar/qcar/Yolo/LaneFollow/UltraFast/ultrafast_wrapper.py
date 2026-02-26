@@ -1074,14 +1074,17 @@ class UltraFastV2Wrapper:
         circle_radius: int = 5,
         line_thickness: int = 2,
         draw_lines: bool = True,
+        image: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Draw detected lanes on the original image with clean colored overlays.
         """
-        if self.original_image is None:
-            raise RuntimeError("Call predict() before render().")
-
-        vis = self.original_image.copy()
+        if image is not None:
+            vis = image.copy()
+        else:
+            if self.original_image is None:
+                raise RuntimeError("Call predict() before render().")
+            vis = self.original_image.copy()
 
         for lane_idx, lane in enumerate(self.last_coords):
             color = self.LANE_COLORS[lane_idx % len(self.LANE_COLORS)]

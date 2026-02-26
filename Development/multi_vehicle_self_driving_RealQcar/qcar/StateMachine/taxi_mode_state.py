@@ -49,11 +49,17 @@ class TaxiModeState(FollowingPathState):
         self._yolo_stop_reason = ""
         self._yolo_log_cooldown = 0.0
 
+        self.scale_factor = 1.0
+
     def enter(self) -> bool:
         """Initialize taxi mode"""
         success = super().enter()
         if not success:
             return False
+
+        # Taxi segments are A→B (non-cyclic), override the default is_cyclic=True
+        if self.rich_planner is not None:
+            self.rich_planner.is_cyclic = False
 
         self.logger.logger.info("[TAXI] Entering TAXI_MODE state")
 
@@ -137,6 +143,18 @@ class TaxiModeState(FollowingPathState):
 
         try:
             new_waypoints = self.vehicle_logic.roadmap.generate_path(segment)
+
+            # # Use RichSDCSPlanner for unified path generation when available,
+            # # falling back to the raw roadmap otherwise.
+            # if self.rich_planner is not None:
+            #     self.rich_planner.is_cyclic = False  # Taxi segments are A→B
+            #     new_waypoints = self.rich_planner.generate_path(segment)
+            # else:
+            #     new_waypoints = self.vehicle_logic.roadmap.generate_path(segment)
+
+            if not self.vehicle_logic.is_physical_qcar and new_waypoints is not None:
+                new_waypoints = new_waypoints * 0.975
+
             self.update_path(new_waypoints)
 
             # Update the vehicle logic's node_sequence so that it gets broadcasted
@@ -314,7 +332,10 @@ class TaxiModeState(FollowingPathState):
             self.taxi_manager.cancel_current_trip()
             return (VehicleState.STOPPED, StateTransitionReason.STOP_COMMAND)
 
-        if command_type == CommandType.SET_TAXI_TRIP:
+        if (
+            command_type == CommandType.SET_PATH
+            or command_type == CommandType.SET_TAXI_TRIP
+        ):
             nodes = data.get("node_sequence", data.get("trip_nodes", []))
             success = self.taxi_manager.request_new_trip(nodes)
             if success:
@@ -352,5 +373,28 @@ class TaxiModeState(FollowingPathState):
         if person is not None and person[0] > 0:
             dist = yolo_data.get("person_dist", None)
             reasons.append(f"Pedestrian ({dist:.2f}m)" if dist else "Pedestrian")
+
+        # Center-box obstacle (person or cone directly in path)
+        if yolo_data.get("obstacle_in_path", False):
+            obs_type = yolo_data.get("obstacle_type", 0.0)
+            obs_dist = yolo_data.get("obstacle_dist", None)
+            if obs_type == 1.0:
+                reasons.append(
+                    f"Person blocking path ({obs_dist:.2f}m)"
+                    if obs_dist
+                    else "Person blocking path"
+                )
+            elif obs_type == 2.0:
+                reasons.append(
+                    f"Cone/obstacle in path ({obs_dist:.2f}m)"
+                    if obs_dist
+                    else "Cone in path"
+                )
+            elif obs_type == 3.0:
+                reasons.append(
+                    f"Car obstacle — overtaking ({obs_dist:.2f}m)"
+                    if obs_dist
+                    else "Car obstacle — overtaking"
+                )
 
         return " + ".join(reasons) if reasons else "Unknown YOLO trigger"
