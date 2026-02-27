@@ -7,6 +7,9 @@ import subprocess
 import os
 import sys
 
+# Shared pre-inference crop to remove hood/capo region from the camera image.
+YOLO_CROP_BOTTOM_PX = 40
+
 try:
     import zmq
 
@@ -493,13 +496,17 @@ class YOLODriveLogic:
 
     def __init__(
         self,
-        stopSignThreshold=0.3,
+        stopSignThreshold=0.8,
         trafficThreshold=1.0,
         carThreshold=0.3,
         yieldThreshold=0.3,
         personThreshold=0.6,
         pulseLength=300,
-        min_confirm_frames=5,
+        min_confirm_frames=12,
+        stopSignFrontOffsetThreshold=0.7,
+        trafficMinDistance=0.6,
+        trafficClearFrames=20,
+        obstacleStopDistance=1.0,
     ):
         self.counter = 0
         self.counter_yield = 0
@@ -522,10 +529,17 @@ class YOLODriveLogic:
         self.carThreshold = carThreshold
         self.yieldThreshold = yieldThreshold
         self.personThreshold = personThreshold
+        self.stopSignFrontOffsetThreshold = float(
+            np.clip(stopSignFrontOffsetThreshold, 0.05, 1.0)
+        )
+        self.trafficMinDistance = max(0.0, float(trafficMinDistance))
+        self.trafficClearFrames = max(1, int(trafficClearFrames))
+        self.obstacleStopDistance = max(0.2, float(obstacleStopDistance))
         self.pulseLength = pulseLength
 
         self.carDist = 100
         self.stopSignDist = 100
+        self.stopSignOffset = 0.0
         self.trafficLightDist = 100
         self.yieldDist = 100
         self.personDist = 100
@@ -550,6 +564,7 @@ class YOLODriveLogic:
         self._stop_confirm_count = 0
         self._yield_confirm_count = 0
         self._traffic_confirm_count = 0
+        self._traffic_clear_count = 0
         # Traffic lights are more stable, require fewer frames
         self._traffic_min_confirm = max(3, min_confirm_frames // 2)
 
@@ -575,7 +590,7 @@ class YOLODriveLogic:
             self.vGain_yield = 0.9  # Very slight slowdown for yield
             # return self.vGain
 
-        # Center-box obstacle: person → full stop, cone → gain unaffected (replanned)
+        # Center-box obstacle: stop and wait for clear path.
         if obstacle is not None:
             self.obstaclePulse(obstacle)
 
@@ -604,12 +619,21 @@ class YOLODriveLogic:
         stopSignCount = stopSign[0]
         if stopSignCount > 0:
             self.stopSignDist = stopSign[1]
+            self.stopSignOffset = float(stopSign[2]) if len(stopSign) > 2 else 0.0
         else:
             self.stopSignDist = 100
+            self.stopSignOffset = 0.0
 
         if not self.counterStart:
             # Check distance threshold
-            if stopSignCount > 0 and self.stopSignDist < self.stopSignThreshold:
+            is_front_stop_sign = (
+                abs(self.stopSignOffset) <= self.stopSignFrontOffsetThreshold
+            )
+            if (
+                stopSignCount > 0
+                and 0.0 < self.stopSignDist <= self.stopSignThreshold
+                and is_front_stop_sign
+            ):
                 # Temporal confirmation: increment counter
                 self._stop_confirm_count += 1
                 if self._stop_confirm_count >= self.min_confirm_frames:
@@ -636,47 +660,52 @@ class YOLODriveLogic:
                 self.stopSignTrigger = 0
 
     def trafficPulse(self, trafficLight):
-        """If a red traffic light is within the stopping distance window [0.6m, 1.0m],
-        trigger a stop after temporal confirmation. Vehicle should stop before
-        crossing the roadmap."""
+        """Hold a full stop while a confirmed red light remains in range."""
 
         trafficLightCount = trafficLight[0]
 
         # Traffic light distance window for stopping
-        traffic_min_dist = 0.6  # Don't stop if already too close (past it)
+        traffic_min_dist = self.trafficMinDistance
         traffic_max_dist = self.trafficThreshold  # Default 1.0m
 
+        traffic_detected_in_range = False
         if trafficLightCount > 0:
             self.trafficLightDist = trafficLight[1]
+            traffic_detected_in_range = (
+                0.0 < self.trafficLightDist <= traffic_max_dist
+                and self.trafficLightDist >= traffic_min_dist
+            )
         else:
             self.trafficLightDist = 100
-            self.trafficTrigger = 0
+
+        if traffic_detected_in_range:
+            self._traffic_confirm_count += 1
+            self._traffic_clear_count = 0
+        else:
+            self._traffic_confirm_count = 0
 
         if not self.counterStart_traffic:
             if (
-                trafficLightCount > 0
-                and self.trafficLightDist <= traffic_max_dist
-                and self.trafficLightDist >= traffic_min_dist
+                traffic_detected_in_range
+                and self._traffic_confirm_count >= self._traffic_min_confirm
             ):
-                # Temporal confirmation for traffic lights
-                self._traffic_confirm_count += 1
-                if self._traffic_confirm_count >= self._traffic_min_confirm:
-                    self.trafficTrigger = 1
-                    self.counterStart_traffic = True
-                    self._traffic_confirm_count = 0
-                else:
-                    self.trafficTrigger = 0
+                self.trafficTrigger = 1
+                self.counterStart_traffic = True
+                self._traffic_clear_count = 0
             else:
-                self._traffic_confirm_count = 0
-                self.counterStart_traffic = False
                 self.trafficTrigger = 0
         else:
-            self.counter_traffic += 1
-            if self.counter_traffic < int(self.pulseLength / 6):
+            if traffic_detected_in_range:
                 self.trafficTrigger = 1
+                self._traffic_clear_count = 0
             else:
-                self.counter_traffic = 0
-                self.counterStart_traffic = False
+                self._traffic_clear_count += 1
+                if self._traffic_clear_count >= self.trafficClearFrames:
+                    self.trafficTrigger = 0
+                    self.counterStart_traffic = False
+                    self._traffic_clear_count = 0
+                else:
+                    self.trafficTrigger = 1
 
     def yieldPulse(self, yieldSign):
         """If a yield sign is closer than the threshold AND confirmed for
@@ -777,8 +806,8 @@ class YOLODriveLogic:
         obstacle[1] = distance to closest obstacle
         obstacle[2] = type: 1.0=person, 2.0=cone/other
 
-        Person in center box → full stop (gain = 0).
-        Cone in center box   → gain unchanged (path replanning handles avoidance).
+        Person in center box → braking to full stop.
+        Cone in center box   → full stop (wait for clear path).
         """
         obs_count = obstacle[0]
         if obs_count <= 0:
@@ -800,7 +829,10 @@ class YOLODriveLogic:
                 m = 1 / (obstacle_stop_dist - 0.2)
                 b = -m * 0.2
                 self.vGain_obstacle = np.clip(m * self.obstacleDist + b, 0, 1)
-        # Cone → gain stays at 1.0 (replanning handles avoidance)
+        elif self.obstacle_type == 2.0:  # OBSTACLE_CONE / static obstacle
+            # Human-like behavior: do not overtake static center-path obstacle.
+            if self.obstacleDist < self.obstacleStopDistance:
+                self.vGain_obstacle = 0.0
 
 
 class YOLOVideoPublisher:
@@ -962,13 +994,71 @@ class YOLOLauncher:
                         cmd, creationflags=subprocess.CREATE_NEW_CONSOLE
                     )
                 else:
-                    yolo_process = subprocess.Popen(
-                        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                    )
+                    # Linux: try to open in a new terminal window
+                    # Check for available terminal emulators in order of preference
+
+                    cmd_str = " ".join(cmd)
+                    title = f"YOLO Server - Vehicle {vehicle_id}"
+                    launch_in_terminal = True
+
+                    if launch_in_terminal:
+                        import shutil
+                        launched = False
+                        if shutil.which("gnome-terminal"):
+                            terminal_cmd = [
+                                "gnome-terminal",
+                                "--title",
+                                title,
+                                "--",
+                            ] + cmd
+                            yolo_process = subprocess.Popen(terminal_cmd)
+                            launched = True
+                        elif shutil.which("xterm"):
+                            terminal_cmd = [
+                                "xterm",
+                                "-T",
+                                title,
+                                "-e",
+                            ] + cmd
+                            yolo_process = subprocess.Popen(terminal_cmd)
+                            launched = True
+
+                        if launched:
+                            if logger:
+                                logger.logger.info(
+                                    f"[PERCEPTION] YOLO server launched in new terminal window"
+                                )
+                        else:
+                            if logger:
+                                logger.logger.warning(
+                                    "[PERCEPTION] No supported terminal emulator found. Falling back to background process."
+                                )
+                            launch_in_terminal = False  # Fall through to background launch
+
+                    if not launch_in_terminal:
+                        # Launch YOLO server as a background subprocess
+                        log_dir = os.path.join(os.path.dirname(current_dir), "logs")
+                        os.makedirs(log_dir, exist_ok=True)
+                        yolo_log_path = os.path.join(log_dir, f"yolo_virtual_{vehicle_id}.log")
+                        if logger:
+                            logger.logger.info(
+                                f"[PERCEPTION] Launching YOLO server as background process (log: {yolo_log_path})"
+                            )
+                        f_log = open(yolo_log_path, "w")
+                        yolo_process = subprocess.Popen(
+                            cmd, stdout=f_log, stderr=subprocess.STDOUT
+                        )
+
 
                 # Wait for startup
                 # Wait briefly to catch immediate crashes (e.g. import errors)
                 time.sleep(0.5)
+                if yolo_process is None:
+                    if logger:
+                        logger.log_error(
+                            "[PERCEPTION] YOLO server process was not created"
+                        )
+                    return None
                 if yolo_process.poll() is not None:
                     if logger:
                         logger.log_error(

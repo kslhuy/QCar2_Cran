@@ -27,7 +27,7 @@ local:
   # EKF estimator defaults
   # ---------------------------------------------------------------------
   ekf:
-    use_qcar_ekf: true  # Whether to use QCarEKF (if available)
+    use_qcar_ekf: false  # Whether to use QCarEKF (if available)
 
   # ---------------------------------------------------------------------
   # Luenberger estimator defaults

@@ -640,6 +640,20 @@ def spawn_environment_objects(qlabs_instance):
     print("  ✓ Spawned 1 yield sign")
     # endregion
 
+    # region: Spawn stopsign
+    environment_objects["stop_signs"] = []
+    stopSign = QLabsStopSign(qlabs_instance)
+    stopSign.spawn(
+        location=[-0.508, -7.327, 0.2],
+        rotation=[0, 0, np.pi / 2],
+        scale=[1, 1, 1],
+        configuration=0,
+        waitForConfirmation=True,
+    )
+    environment_objects["stop_signs"].append(stopSign)
+    print("  ✓ Spawned 1 stop sign")
+    # endregion
+
     # region: roundabout
     NUMROUNDABOUTSIGNS = 3
     environment_objects["roundabout_signs"] = []
@@ -713,19 +727,7 @@ def spawn_environment_objects(qlabs_instance):
     print("  ✓ Spawned basic shapes (buildings)")
     # endregion
 
-    # region: Spawn stopsign
-    environment_objects["stop_signs"] = []
-    stopSign = QLabsStopSign(qlabs_instance)
-    stopSign.spawn(
-        location=[-0.508, -7.327, 0.2],
-        rotation=[0, 0, np.pi / 2],
-        scale=[1, 1, 1],
-        configuration=0,
-        waitForConfirmation=True,
-    )
-    environment_objects["stop_signs"].append(stopSign)
-    print("  ✓ Spawned 1 stop sign")
-    # endregion
+
 
     print("Environment objects spawned successfully!\n")
 

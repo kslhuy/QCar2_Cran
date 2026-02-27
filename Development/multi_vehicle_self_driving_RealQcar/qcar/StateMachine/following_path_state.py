@@ -139,6 +139,7 @@ class FollowingPathState(StateBase):
         self._original_waypoint_sequence = None  # Backup for restoration
         self._general_obstacle_path_active = False
         self._general_last_replan = 0.0
+        self._car_overtake_mode = False
 
     def _init_controllers(self, force: bool = False):
         """
@@ -549,6 +550,8 @@ class FollowingPathState(StateBase):
         sensor_data: Dict[str, Any],
     ) -> List[Any]:
         """Convert YOLO car/person distances and center-box obstacles into local planner obstacles."""
+        if not self._car_overtake_mode:
+            return []
         if LocalObstacle is None:
             return []
 
@@ -1237,7 +1240,7 @@ class FollowingPathState(StateBase):
             if yolo_gain < 1.0:
                 u = u * yolo_gain
 
-        # --- Center-box obstacle: person → full stop, cone → replanned above ---
+        # --- Center-box obstacle: stop and wait for clear path ---
         yolo_data = sensor_data.get("yolo_data", None)
         if yolo_data and yolo_data.get("obstacle_in_path", False):
             obs_type = yolo_data.get("obstacle_type", 0.0)
@@ -1253,14 +1256,16 @@ class FollowingPathState(StateBase):
                         f"[OBSTACLE] Person in path ({obs_dist:.2f}m) — stopped, waiting for clear path"
                     )
             elif obs_type == 2.0:
-                # Cone/other → path replanning already triggered in _maybe_replan_pp_with_obstacles
+                # Static obstacle in center path → wait (no overtaking/replanning).
+                if obs_dist is None or obs_dist < 1.2:
+                    u = 0.0
                 if (
                     hasattr(self.vehicle_logic, "loop_counter")
                     and self.vehicle_logic.loop_counter % 100 == 0
                 ):
-                    dist_str = f"{obs_dist:.2f}m" if obs_dist else "?"
+                    dist_str = f"{obs_dist:.2f}m" if obs_dist is not None else "?"
                     self.logger.logger.info(
-                        f"[OBSTACLE] Cone/obstacle in path ({dist_str}) — replanning route"
+                        f"[OBSTACLE] Cone/obstacle in path ({dist_str}) — stopped, waiting for clear path"
                     )
 
         gear = getattr(self.vehicle_logic, "gear", None)

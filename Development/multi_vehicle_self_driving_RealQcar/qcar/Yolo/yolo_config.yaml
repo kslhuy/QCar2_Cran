@@ -33,14 +33,14 @@ yolo:
   use_tracking: true
   classes_preset: traffic_plus
   classes: []
-  confidence: 0.4
+  confidence: 0.6
   half: true
   verbose: false
   tracker:
     persist: true
     name: botsort.yaml
   postprocess:
-    clipping_distance_m: 10.0
+    clipping_distance_m: 6.0
 
 sign_filter:
   invert_lr: false
@@ -51,15 +51,16 @@ buffers:
   center_box_height_ratio: 0.60
   bottom_ignore_px: 40
   center_box_raise_px: 40
+  stop_sign_front_max_abs_offset: 0.70
 
 lane:
-  enable_detection: true
-  show_overlay: true
+  enable_detection: false
+  show_overlay: false
 
 lidar_fusion:
-  enabled: true
-  show_overlay: true
-  show_bev: true
+  enabled: false
+  show_overlay: false
+  show_bev: false
   lidar_min_distance_m: 0.08
   # Association gate for fusing YOLO detections with LiDAR.
   # Increase this if BEV shows no fused objects at normal driving distance.

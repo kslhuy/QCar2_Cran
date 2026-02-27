@@ -43,7 +43,7 @@ cd .\Development\QCar2_multi-vehicle_control\
 python .\initCars.py     
 
 #  Start GUI  (another cmd)
-# cd QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/GUI      
+# cd python_dev/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/GUI      
 
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\app_main.py

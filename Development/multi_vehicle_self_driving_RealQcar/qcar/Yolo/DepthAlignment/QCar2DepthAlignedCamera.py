@@ -38,15 +38,13 @@ class QCar2DepthAlignedCamera:
         rgb_image = camera.rgb
         depth_image = camera.depth  # Aligned depth in meters
     """
- git config --global user.email "huyq1471@gmail.com"
-  git config --global user.name "HUY"
     def __init__(
         self,
         imageWidth=640,
         imageHeight=480,
         use_intrinsics=True,
         clipping_distance=3.0,
-        video3dPort=18665,
+        # video3dPort=18805,
         load_settings=True,
         use_fast_alignment=True,
     ):
@@ -101,7 +99,7 @@ class QCar2DepthAlignedCamera:
         self._calculate_focal_lengths()
 
         # Initialize camera
-        self._initialize_camera(video3dPort)
+        self._initialize_camera()
 
         # Load settings if requested
         if load_settings:
@@ -158,7 +156,7 @@ class QCar2DepthAlignedCamera:
             dtype=np.float64,
         )
 
-    def _initialize_camera(self, video3dPort):
+    def _initialize_camera(self):
         """Initialize QCar RealSense camera."""
 
         # Check resolution to decide which parameters to use
@@ -224,24 +222,13 @@ class QCar2DepthAlignedCamera:
             self.cx_depth = self.K_depth[0, 2]
             self.cy_depth = self.K_depth[1, 2]
 
-        # Initialize camera with the best available parameters
+        # Initialize camera – use only mode + port to match working Quanser
+        # examples.  Custom focal-length / principal-point overrides are
+        # rejected by the native Video3D layer ("One of the arguments is
+        # invalid").  The calibration matrices stored in self.K_rgb / K_depth
+        # are still used for the depth-alignment math.
         self.camera = QCarRealSense(
             mode="RGB, Depth",
-            focalLengthRGB=np.array(
-                [[self.fx_rgb / 2], [self.fy_rgb / 2]], dtype=np.float64
-            ),
-            principlePointRGB=np.array(
-                [[self.cx_rgb], [self.cy_rgb]], dtype=np.float64
-            ),
-            focalLengthDepth=np.array(
-                [[self.fx_depth / 2], [self.fy_depth / 2]], dtype=np.float64
-            ),
-            principlePointDepth=np.array(
-                [[self.cx_depth], [self.cy_depth]], dtype=np.float64
-            ),
-            skewDepth=0.0,
-            skewRGB=0.0,
-            video3dPort=video3dPort,
         )
 
         # If we didn't use user calibration, try to get from device as last resort

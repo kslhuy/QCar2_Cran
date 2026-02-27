@@ -131,10 +131,15 @@ timing:
 # YOLO Detection Configuration
 yolo:
   stop_sign_threshold: 0.6
+  stop_sign_front_offset_threshold: 0.7
+  min_confirm_frames: 7
   traffic_threshold: 1.7
+  traffic_min_distance: 0.6
+  traffic_clear_frames: 20
   car_threshold: 0.3
   yield_threshold: 1.0
   person_threshold: 0.6
+  obstacle_stop_distance: 1.2
   pulse_length_multiplier: 3
 
 # Safety Configuration
@@ -160,4 +165,3 @@ logging:
   
   # File naming strategy
   use_timestamped_log_files: true  # true = create new timestamped file/folder, false = use single static file (append/overwrite)
-

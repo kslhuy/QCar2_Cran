@@ -13,7 +13,7 @@ from pit.YOLO.utils import QCar2DepthAligned
 
 # Using enhanced wrapper for consistency with virtual server (better rendering)
 from YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy, DetectionBuffers
-from Yolo.YoLo import YOLOPublisher, YOLOVideoPublisher
+from Yolo.YoLo import YOLOPublisher, YOLOVideoPublisher, YOLO_CROP_BOTTOM_PX
 
 # Import Lane Detection and Interface
 try:
@@ -211,6 +211,28 @@ class YOLOServerPhysical:
         # QCar2DepthAligned puts them in .rgb and .depth attributes
         raw_rgb = self.camera.rgb
         raw_depth = self.camera.depth
+
+        # Keep processing geometry consistent with configured dimensions.
+        if (
+            raw_rgb.shape[1] != self.config.image_width
+            or raw_rgb.shape[0] != self.config.image_height
+        ):
+            raw_rgb = cv2.resize(raw_rgb, (self.config.image_width, self.config.image_height))
+        if (
+            raw_depth.shape[1] != self.config.image_width
+            or raw_depth.shape[0] != self.config.image_height
+        ):
+            raw_depth = cv2.resize(raw_depth, (self.config.image_width, self.config.image_height))
+
+        # Remove bottom strip before inference, then resize back to configured shape.
+        crop_bottom_px = int(max(0, YOLO_CROP_BOTTOM_PX))
+        max_valid_crop = min(raw_rgb.shape[0], raw_depth.shape[0]) - 1
+        crop_bottom_px = min(crop_bottom_px, max(0, max_valid_crop))
+        if crop_bottom_px > 0:
+            raw_rgb = raw_rgb[:-crop_bottom_px, :]
+            raw_depth = raw_depth[:-crop_bottom_px, :]
+            raw_rgb = cv2.resize(raw_rgb, (self.config.image_width, self.config.image_height))
+            raw_depth = cv2.resize(raw_depth, (self.config.image_width, self.config.image_height))
 
         # YOLO detection
         # Note: YOLOv8Wrapper_Huy might expect 640x480.

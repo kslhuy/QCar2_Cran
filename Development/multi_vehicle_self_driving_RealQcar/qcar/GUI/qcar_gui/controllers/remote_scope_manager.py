@@ -422,13 +422,22 @@ class RemoteScopeViewer:
             return
 
         import multiprocessing as mp
+        import platform
+
+        # On Linux, use 'spawn' start method to avoid inheriting the parent's
+        # X11 connection (forked X11 sockets cause "fatal IO error 25").
+        # Windows already defaults to 'spawn'.
+        if platform.system() == "Linux":
+            ctx = mp.get_context("spawn")
+        else:
+            ctx = mp.get_context()
 
         self.running = True
-        self._stop_event = mp.Event()
-        self._data_queue = mp.Queue(maxsize=100)
+        self._stop_event = ctx.Event()
+        self._data_queue = ctx.Queue(maxsize=100)
 
         # Start plot process
-        self._process = mp.Process(
+        self._process = ctx.Process(
             target=_run_scope_plot_process,
             args=(
                 self.car_id,
@@ -762,7 +771,7 @@ def _create_local_layout(plt, car_id, field_names):
     """
     Create Local with GridSpec (matching plot_scope_data.py).
     """
-    fig = plt.figure(figsize=(12, 8))
+    fig = plt.figure(figsize=(10, 6.5))
     fig.suptitle(f"Local State Estimation - Car {car_id}", fontsize=12)
 
     # 3 rows, 3 cols
@@ -851,8 +860,8 @@ def _create_local_layout(plt, car_id, field_names):
         lines["theta_gps"] = l
     ax_th.legend(fontsize=8)
 
-    # 4. Controls (Bottom Left 2 cols)
-    ax_ctrl = fig.add_subplot(gs[2, 0:2])
+    # 4. Controls (Bottom row - full width for single-controller view)
+    ax_ctrl = fig.add_subplot(gs[2, :])
     ax_ctrl.set_ylabel("Control")
     ax_ctrl.set_xlabel("Time [s]")
     ax_ctrl.grid(True, alpha=0.3)
@@ -865,11 +874,6 @@ def _create_local_layout(plt, car_id, field_names):
             )
             lines[f] = l
     ax_ctrl.legend(fontsize=8)
-
-    # 5. Info/Text (Bottom Right)
-    ax_info = fig.add_subplot(gs[2, 2])
-    ax_info.axis("off")
-    axes["info"] = ax_info
 
     return fig, lines, axes
 

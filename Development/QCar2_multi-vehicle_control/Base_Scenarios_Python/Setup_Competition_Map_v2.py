@@ -1,6 +1,5 @@
 # region: package imports
 import os
-import threading
 import time
 
 # environment objects
@@ -17,6 +16,10 @@ from qvl.crosswalk import QLabsCrosswalk
 from qvl.traffic_light import QLabsTrafficLight
 from qvl.person import QLabsPerson
 
+from qvl.roundabout_sign import QLabsRoundaboutSign
+from qvl.yield_sign import QLabsYieldSign
+from qvl.stop_sign import QLabsStopSign
+
 
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++#
 
@@ -25,13 +28,6 @@ from qvl.person import QLabsPerson
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++#
 
 # endregion
-
-
-# Global variables for background tasks
-stop_traffic_lights = threading.Event()
-traffic_light_thread = None
-stop_pedestrian = threading.Event()
-pedestrian_thread = None
 
 
 # Function to setup QLabs, Spawn in QCar, and run real time model
@@ -111,16 +107,16 @@ def setup(initialPosition=[-1.205, -0.83, 0.005], initialOrientation=[0, 0, -44.
         waitForConfirmation=True,
     )
 
-    # Spawn second QCar at specified pose
-    car2 = QLabsQCar2(qlabs)
-    car2.spawn_id(
-        actorNumber=1,
-        location=[0.26861999999999997, 1.849815, 0.006],
-        rotation=[0, 0, 1.5707963267948966],
-        scale=[0.1, 0.1, 0.1],
-        configuration=0,
-        waitForConfirmation=True,
-    )
+    # # Spawn second QCar at specified pose
+    # car2 = QLabsQCar2(qlabs)
+    # car2.spawn_id(
+    #     actorNumber=1,
+    #     location=[0.26861999999999997, 1.849815, 0.006],
+    #     rotation=[0, 0, 1.5707963267948966],
+    #     scale=[0.1, 0.1, 0.1],
+    #     configuration=0,
+    #     waitForConfirmation=True,
+    # )
 
     rtModel = os.path.normpath(
         os.path.join(os.environ["RTMODELS_DIR"], "QCar2/QCar2_Workspace_studio")
@@ -199,15 +195,100 @@ def setup(initialPosition=[-1.205, -0.83, 0.005], initialOrientation=[0, 0, -44.
         waitForConfirmation=False,
     )
 
-    # Start traffic light control thread
-    global traffic_light_thread
-    stop_traffic_lights.clear()
-    traffic_light_thread = threading.Thread(
-        target=traffic_light_control_loop,
-        args=(traffic_lights, stop_traffic_lights),
-        daemon=True,
+
+
+    # Spawn stop signs (4 total)
+    myStopSign = QLabsStopSign(qlabs)
+
+    # Parking lot stop signs
+    myStopSign.spawn_degrees(
+        location=[-1.5, 3.6, 0.006],
+        rotation=[0, 0, -35],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
     )
-    traffic_light_thread.start()
+
+    myStopSign.spawn_degrees(
+        location=[-1.5, 2.2, 0.006],
+        rotation=[0, 0, 35],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+
+    # X+ side stop signs
+    myStopSign.spawn_degrees(
+        location=[2.410, 0.206, 0.006],
+        rotation=[0, 0, -90],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+
+    myStopSign.spawn_degrees(
+        location=[1.766, 1.697, 0.006],
+        rotation=[0, 0, 90],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+    print("  ✓ Spawned 4 stop signs")
+
+    # Spawn roundabout signs (3 total)
+    myRoundaboutSign = QLabsRoundaboutSign(qlabs)
+
+    myRoundaboutSign.spawn_degrees(
+        location=[2.392, 2.522, 0.006],
+        rotation=[0, 0, -90],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+
+    myRoundaboutSign.spawn_degrees(
+        location=[0.698, 2.483, 0.006],
+        rotation=[0, 0, -145],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+
+    myRoundaboutSign.spawn_degrees(
+        location=[0.007, 3.973, 0.006],
+        rotation=[0, 0, 135],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+    print("  ✓ Spawned 3 roundabout signs")
+
+    # Spawn yield signs (4 total)
+    myYieldSign = QLabsYieldSign(qlabs)
+
+    # One way exit yield
+    myYieldSign.spawn_degrees(
+        location=[0.0, -1.3, 0.006],
+        rotation=[0, 0, -180],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+
+    # Roundabout yields
+    myYieldSign.spawn_degrees(
+        location=[2.4, 3.2, 0.006],
+        rotation=[0, 0, -90],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+
+    myYieldSign.spawn_degrees(
+        location=[1.1, 2.8, 0.006],
+        rotation=[0, 0, -145],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+
+    myYieldSign.spawn_degrees(
+        location=[0.49, 3.8, 0.006],
+        rotation=[0, 0, 135],
+        scale=[0.1, 0.1, 0.1],
+        waitForConfirmation=False,
+    )
+    print("  ✓ Spawned 4 yield signs")
 
     # Spawning pedestrian
     pedestrian = QLabsPerson(qlabs)
@@ -219,95 +300,93 @@ def setup(initialPosition=[-1.205, -0.83, 0.005], initialOrientation=[0, 0, -44.
         configuration=6,
     )
 
-    # Start pedestrian control thread
-    global pedestrian_thread
-    stop_pedestrian.clear()
-    pedestrian_thread = threading.Thread(
-        target=pedestrian_control_loop,
-        args=(pedestrian, stop_pedestrian),
-        daemon=True,
-    )
-    pedestrian_thread.start()
-
-    return [car1, car2]
-
-
-def traffic_light_control_loop(traffic_lights, stop_event):
-    """Background loop to cycle traffic lights."""
-    if len(traffic_lights) != 4:
-        return
-
-    t1, t2, t3, t4 = traffic_lights
-    state = 0
-    print("[SERVER] Traffic light sequence started")
-
-    while not stop_event.is_set():
-        try:
-            if state == 0:  # EW Green, NS Red
-                t1.set_color(color=QLabsTrafficLight.COLOR_RED)
-                t3.set_color(color=QLabsTrafficLight.COLOR_RED)
-                t2.set_color(color=QLabsTrafficLight.COLOR_GREEN)
-                t4.set_color(color=QLabsTrafficLight.COLOR_GREEN)
-            elif state == 1:  # EW Yellow, NS Red
-                t1.set_color(color=QLabsTrafficLight.COLOR_RED)
-                t3.set_color(color=QLabsTrafficLight.COLOR_RED)
-                t2.set_color(color=QLabsTrafficLight.COLOR_YELLOW)
-                t4.set_color(color=QLabsTrafficLight.COLOR_YELLOW)
-            elif state == 2:  # EW Red, NS Green
-                t1.set_color(color=QLabsTrafficLight.COLOR_GREEN)
-                t3.set_color(color=QLabsTrafficLight.COLOR_GREEN)
-                t2.set_color(color=QLabsTrafficLight.COLOR_RED)
-                t4.set_color(color=QLabsTrafficLight.COLOR_RED)
-            elif state == 3:  # EW Red, NS Yellow
-                t1.set_color(color=QLabsTrafficLight.COLOR_YELLOW)
-                t3.set_color(color=QLabsTrafficLight.COLOR_YELLOW)
-                t2.set_color(color=QLabsTrafficLight.COLOR_RED)
-                t4.set_color(color=QLabsTrafficLight.COLOR_RED)
-
-            state = (state + 1) % 4
-            time.sleep(5)
-        except Exception as e:
-            print(f"Error in traffic light loop: {e}")
-            break
-
-
-def pedestrian_control_loop(pedestrian, stop_event):
-    """Background loop to move pedestrian."""
-    LOC1 = [-1.439, 0.146, 0.006]
-    LOC2 = [-2.178, 0.224, 0.006]
-    state = 0
-    print("[SERVER] Pedestrian sequence started")
-
-    while not stop_event.is_set():
-        try:
-            target = LOC2 if state == 0 else LOC1
-            # Using speed multiplier like in initCars_Studio.py
-            pedestrian.move_to(
-                location=target,
-                speed=0.1,
-                waitForConfirmation=True,
-            )
-            state = (state + 1) % 2
-            time.sleep(1)  # Brief pause between moves
-        except Exception as e:
-            print(f"Error in pedestrian loop: {e}")
-            break
+    return car1, traffic_lights, pedestrian
 
 
 # function to terminate the real time model running
 def terminate():
-    stop_traffic_lights.set()
-    stop_pedestrian.set()
-    if traffic_light_thread:
-        traffic_light_thread.join(timeout=1.0)
-    if pedestrian_thread:
-        pedestrian_thread.join(timeout=1.0)
-
     rtModel = os.path.normpath(
         os.path.join(os.environ["RTMODELS_DIR"], "QCar2/QCar2_Workspace_studio")
     )
     QLabsRealTime().terminate_real_time_model(rtModel)
 
 
+def main_loop(traffic_lights, pedestrian):
+    """Main loop that cycles traffic lights and moves the pedestrian."""
+    t1, t2, t3, t4 = traffic_lights
+    traffic_state = 0
+
+    # Pedestrian waypoints (your locations)
+    PEDESTRIAN_LOC0 = [-0.984, -0.083, 0.006]
+    PEDESTRIAN_LOC1 = [-1.119, 0.224, 0.006]
+    PEDESTRIAN_LOC2 = [-2.178, 0.224, 0.006]
+    PEDESTRIAN_LOC3 = [-2.165, 0.817, 0.006]
+
+    setpointFlag = 0
+    locationCounter = 0
+
+    print("[SERVER] Traffic light sequence started")
+    print("[SERVER] Pedestrian sequence started")
+
+    try:
+        while True:
+            # --- Traffic lights ---
+            if traffic_state == 0:  # EW Green, NS Red
+                t1.set_color(color=QLabsTrafficLight.COLOR_RED)
+                t3.set_color(color=QLabsTrafficLight.COLOR_RED)
+                t2.set_color(color=QLabsTrafficLight.COLOR_GREEN)
+                t4.set_color(color=QLabsTrafficLight.COLOR_GREEN)
+            elif traffic_state == 1:  # EW Yellow, NS Red
+                t1.set_color(color=QLabsTrafficLight.COLOR_RED)
+                t3.set_color(color=QLabsTrafficLight.COLOR_RED)
+                t2.set_color(color=QLabsTrafficLight.COLOR_YELLOW)
+                t4.set_color(color=QLabsTrafficLight.COLOR_YELLOW)
+            elif traffic_state == 2:  # EW Red, NS Green
+                t1.set_color(color=QLabsTrafficLight.COLOR_GREEN)
+                t3.set_color(color=QLabsTrafficLight.COLOR_GREEN)
+                t2.set_color(color=QLabsTrafficLight.COLOR_RED)
+                t4.set_color(color=QLabsTrafficLight.COLOR_RED)
+            elif traffic_state == 3:  # EW Red, NS Yellow
+                t1.set_color(color=QLabsTrafficLight.COLOR_YELLOW)
+                t3.set_color(color=QLabsTrafficLight.COLOR_YELLOW)
+                t2.set_color(color=QLabsTrafficLight.COLOR_RED)
+                t4.set_color(color=QLabsTrafficLight.COLOR_RED)
+
+            traffic_state = (traffic_state + 1) % 4
+
+            # --- Pedestrian: varying speeds with pauses (from ACC pedestrian scenario) ---
+            if locationCounter == 0:
+                setpointFlag = pedestrian.move_to(location=PEDESTRIAN_LOC1, speed=pedestrian.JOG, waitForConfirmation=True)
+            if locationCounter == 1:
+                setpointFlag = pedestrian.move_to(location=PEDESTRIAN_LOC2, speed=pedestrian.WALK, waitForConfirmation=True)
+                time.sleep(4)
+            if locationCounter == 2:
+                setpointFlag = pedestrian.move_to(location=PEDESTRIAN_LOC3, speed=pedestrian.JOG, waitForConfirmation=True)
+            if locationCounter == 3:
+                setpointFlag = pedestrian.move_to(location=PEDESTRIAN_LOC2, speed=pedestrian.JOG, waitForConfirmation=True)
+            if locationCounter == 4:
+                setpointFlag = pedestrian.move_to(location=PEDESTRIAN_LOC1, speed=pedestrian.WALK, waitForConfirmation=True)
+                time.sleep(4)
+            if locationCounter == 5:
+                setpointFlag = pedestrian.move_to(location=PEDESTRIAN_LOC0, speed=pedestrian.JOG, waitForConfirmation=True)
+
+            if setpointFlag == 1:
+                locationCounter += 1
+                locationCounter = locationCounter % 6
+
+            time.sleep(2)
+
+    except KeyboardInterrupt:
+        print("\n[SERVER] Stopped by user")
+    except Exception as e:
+        print(f"Error in main loop: {e}")
+
+
 if __name__ == "__main__":
-    setup()
+    cars, traffic_lights, pedestrian = setup()
+    try:
+        main_loop(traffic_lights, pedestrian)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        terminate()

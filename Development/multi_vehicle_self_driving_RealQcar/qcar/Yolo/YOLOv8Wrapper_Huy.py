@@ -48,6 +48,8 @@ class DetectionBuffers:
     bottom_ignore_px: int = 0
     # Move center box upward by this many pixels.
     center_box_raise_px: int = 0
+    # Stop sign is considered frontal only when |offset| is below this threshold.
+    stop_sign_front_max_abs_offset: float = 0.70
 
     @classmethod
     def from_config(
@@ -64,6 +66,9 @@ class DetectionBuffers:
         center_h = float(np.clip(cfg.get("center_box_height_ratio", 0.60), 0.05, 1.0))
         bottom_ignore_px = int(max(0, cfg.get("bottom_ignore_px", 0)))
         center_box_raise_px = int(max(0, cfg.get("center_box_raise_px", 0)))
+        stop_sign_front_max_abs_offset = float(
+            np.clip(cfg.get("stop_sign_front_max_abs_offset", 0.70), 0.05, 1.0)
+        )
         return cls(
             image_width=int(image_width),
             image_height=int(image_height),
@@ -73,6 +78,7 @@ class DetectionBuffers:
             center_box_height_ratio=center_h,
             bottom_ignore_px=bottom_ignore_px,
             center_box_raise_px=center_box_raise_px,
+            stop_sign_front_max_abs_offset=stop_sign_front_max_abs_offset,
         )
 
     def reset(self):
@@ -238,6 +244,9 @@ class DetectionBuffers:
                 # Lane-side filter for stop signs.
                 if not self._is_sign_on_allowed_side(det, bbox):
                     continue
+                # Front-of-vehicle filter: reject far-side edge detections.
+                if abs(offset) > self.stop_sign_front_max_abs_offset:
+                    continue
                 counts["stop_sign"] += 1
                 dist = det.distance
                 if counts["stop_sign"] == 1 or dist < self.stop_sign[1]:
@@ -345,7 +354,7 @@ class YOLOv8Wrapper_Huy(YOLOv8):
         imageHeight=480,
         modelPath=None,
         runtime_config: Optional[Dict[str, Any]] = None,
-    , convert_tensorrt=True):
+        convert_tensorrt=True):
         """Initialize the enhanced YOLOv8 wrapper"""
         super().__init__(imageWidth, imageHeight, modelPath, convert_tensorrt=convert_tensorrt)
         self.lane_result = None

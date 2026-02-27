@@ -1027,12 +1027,20 @@ class StateBase:
                 self.config.timing.controller_update_rate
                 * self.config.yolo.pulse_length_multiplier
             )
+            yolo_cfg = self.config.yolo
             yolo_drive_logic = YOLODriveLogic(
-                stopSignThreshold=self.config.yolo.stop_sign_threshold,
-                trafficThreshold=self.config.yolo.traffic_threshold,
-                carThreshold=self.config.yolo.car_threshold,
-                yieldThreshold=self.config.yolo.yield_threshold,
-                personThreshold=self.config.yolo.person_threshold,
+                stopSignThreshold=yolo_cfg.stop_sign_threshold,
+                stopSignFrontOffsetThreshold=getattr(
+                    yolo_cfg, "stop_sign_front_offset_threshold", 0.7
+                ),
+                min_confirm_frames=getattr(yolo_cfg, "min_confirm_frames", 7),
+                trafficThreshold=yolo_cfg.traffic_threshold,
+                trafficMinDistance=getattr(yolo_cfg, "traffic_min_distance", 0.6),
+                trafficClearFrames=getattr(yolo_cfg, "traffic_clear_frames", 20),
+                carThreshold=yolo_cfg.car_threshold,
+                yieldThreshold=yolo_cfg.yield_threshold,
+                personThreshold=yolo_cfg.person_threshold,
+                obstacleStopDistance=getattr(yolo_cfg, "obstacle_stop_distance", 1.2),
                 pulseLength=pulse_length,
             )
 

@@ -26,6 +26,14 @@ import time
 from typing import List, Optional, ClassVar
 from enum import IntEnum
 
+try:
+    from Taxi.led_client import LedClient
+except ImportError:
+    try:
+        from led_client import LedClient
+    except ImportError:
+        LedClient = None  # LED control unavailable
+
 
 class TripSuperState(IntEnum):
     """Super state mapping for the overarching status of the taxi"""
@@ -81,6 +89,16 @@ class TaxiManager:
         # Stop-type tracking (for LED / telemetry)
         self._current_stop_type: str = "hub"
 
+        # LED control via UDP bridge to ROS 2 qcar2_hardware node
+        self._led_client: Optional["LedClient"] = None
+        if LedClient is not None:
+            try:
+                self._led_client = LedClient()
+                print("TaxiManager: LED client connected (UDP → taxi_led_bridge).")
+            except Exception as e:
+                print(f"TaxiManager: LED client init failed: {e}")
+        self._update_led()  # set initial LED (magenta = hub/idle)
+
     # ------------------------------------------------------------------
     # Trip lifecycle
     # ------------------------------------------------------------------
@@ -124,6 +142,7 @@ class TaxiManager:
         self.stop_index = 0
         self.current_trip_state = TripState.DRIVING  # driving to first stop
         self._current_stop_type = "driving"
+        self._update_led()
 
         return True
 
@@ -155,6 +174,7 @@ class TaxiManager:
             self.stop_index = 0
             self.current_trip_state = TripState.DRIVING
             self._current_stop_type = "driving"
+            self._update_led()
             return True
         else:
             print("TaxiManager: Already at the hub or serving rides.")
@@ -171,6 +191,7 @@ class TaxiManager:
             TripSuperState.INITIALIZING
         )  # Reset — require routing to hub again
         self._current_stop_type = "hub"
+        self._update_led()
 
     # ------------------------------------------------------------------
     # Arrival & waiting
@@ -183,7 +204,7 @@ class TaxiManager:
         """
         # Arriving at hub during initialisation phase
         if self.trip_super_state == TripSuperState.INITIALIZING:
-            self.set_arrived_at_hub()
+            self.set_arrived_at_hub()  # also updates LED to hub/magenta
             self.current_trip_status = False
             self.trip_nodes = []
             self.path_nodes = []
@@ -199,6 +220,7 @@ class TaxiManager:
             self.trip_nodes = []
             self._current_stop_type = "hub"
             self.current_trip_state = TripState.IDLE
+            self._update_led()
             return True
 
         # Determine stop type for the node we just arrived at
@@ -212,6 +234,7 @@ class TaxiManager:
         self.waiting_at_stop = True
         self.wait_timer_start = time.time()
         self.current_trip_state = TripState.WAITING  # waiting
+        self._update_led()
 
         return False
 
@@ -227,6 +250,7 @@ class TaxiManager:
             self.waiting_at_stop = False
             self.current_trip_state = TripState.DRIVING  # back to driving
             self._current_stop_type = "driving"
+            self._update_led()
             return True
 
         return False
@@ -296,6 +320,7 @@ class TaxiManager:
             self.trip_super_state = TripSuperState.SERVING_RIDES
             self.current_trip_state = TripState.IDLE
             self._current_stop_type = "hub"
+            self._update_led()
             print("TaxiManager: Arrived at Taxi Hub. Ready for rides.")
 
     # ------------------------------------------------------------------
@@ -323,3 +348,25 @@ class TaxiManager:
         if stop_idx == n - 2:
             return "dropoff"
         return "intermediate"
+
+    # ------------------------------------------------------------------
+    # LED control
+    # ------------------------------------------------------------------
+
+    def _update_led(self):
+        """
+        Push the current stop-type to the hardware LED strip via the
+        UDP bridge (taxi_led_bridge ROS 2 node).
+
+        Mapping (see led_client.py STOP_TYPE_TO_LED):
+            hub          → 5 (magenta)
+            driving      → 1 (green)
+            pickup       → 2 (blue)
+            dropoff      → 3 (yellow / orange)
+            intermediate → 4 (cyan)
+        """
+        if self._led_client is not None:
+            try:
+                self._led_client.set_color(self._current_stop_type)
+            except Exception as e:
+                print(f"TaxiManager: LED update failed: {e}")

@@ -51,6 +51,10 @@ class TaxiModeState(FollowingPathState):
 
         self.scale_factor = 1.0
 
+    def _set_stop_speed_reference(self) -> None:
+        """Ensure scope/telemetry reflects a full stop during taxi waits/stops."""
+        self.vehicle_logic.v_ref_actual = 0.0
+
     def enter(self) -> bool:
         """Initialize taxi mode"""
         success = super().enter()
@@ -180,6 +184,7 @@ class TaxiModeState(FollowingPathState):
         # 1. State machine tick for taxi logic
         # If no active trip, just stop.
         if not self.taxi_manager.current_trip_status:
+            self._set_stop_speed_reference()
             return 0.0, 0.0, None
 
         if self.taxi_manager.current_trip_state == TripState.WAITING:
@@ -194,9 +199,11 @@ class TaxiModeState(FollowingPathState):
                 if not segment_ready:
                     if not self.taxi_manager.current_trip_status:
                         self.logger.logger.info("[TAXI] Trip finished. Staying idle.")
+                        self._set_stop_speed_reference()
                         return 0.0, 0.0, None
             else:
                 # Still waiting at stop
+                self._set_stop_speed_reference()
                 return 0.0, 0.0, None
 
         # 2. We are driving (state == 1). Use FollowingPathState to compute control
@@ -243,6 +250,7 @@ class TaxiModeState(FollowingPathState):
                 if trip_done:
                     self.logger.logger.info("[TAXI] Entire trip completed.")
                 u = 0.0  # full stop
+                self._set_stop_speed_reference()
 
         return u, delta, transition
 

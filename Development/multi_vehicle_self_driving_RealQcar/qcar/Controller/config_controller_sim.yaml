@@ -46,12 +46,12 @@ cacc:
 
 # PID Velocity Controller Parameters
 pid:
-  kp: 0.1                   # Proportional gain (lower = softer accel response)
-  ki: 0.03                  # Integral gain (lower = less surge after target jumps)
-  kd: 0.0                    # Derivative gain (set to 0.0 to prevent throttle spikes)
-  max_throttle: 0.24         # Maximum throttle output (limits aggressive launches)
+  kp: 0.09                   # Proportional gain (lower = softer accel response)
+  ki: 0.05                  # Integral gain (lower = less surge after target jumps)
+  kd: 0.002                    # Derivative gain (set to 0.0 to prevent throttle spikes)
+  max_throttle: 0.3         # Maximum throttle output (limits aggressive launches)
   min_throttle: 0.0         # Minimum throttle (allows active braking in simulation)
-  ei_max: 0.5                # Integral anti-windup limit
+  ei_max: 0.4                # Integral anti-windup limit
   v_ref: 0.6                # Default reference velocity (m/s)
 
 
@@ -91,16 +91,16 @@ pure_pursuit:
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
 pp_map:
   sample_ds: 0.02                 # [m] path resampling spacing for rich trajectory
-  desired_speed: 0.55              # [m/s] design cruise speed used to build base speed profile
+  desired_speed: 0.6              # [m/s] design cruise speed used to build base speed profile
   min_speed: 0.4                  # [m/s] lower speed floor in profile generation
   kappa_speed_gain: 1.0           # Curvature->speed reduction gain (higher = slower in turns)
-  max_speed: 0.65                 # [m/s] upper bound of profile speed
+  max_speed: 0.7                 # [m/s] upper bound of profile speed
   hard_turn_kappa: 0.60           # [1/m] curvature threshold for "hard-turn" speed cap
   hard_turn_speed: 0.36           # [m/s] cap applied when |curvature| >= hard_turn_kappa
-  t_clip_min: 0.3                 # [m] minimum L1 lookahead distance
+  t_clip_min: 0.5                 # [m] minimum L1 lookahead distance
   t_clip_max: 1.0                 # [m] maximum L1 lookahead distance
-  m_l1: 0.50                      # L1 slope: lookahead contribution per m/s (L1 = q_l1 + m_l1*v)
-  q_l1: 0.15                      # [m] L1 base offset at low speed
+  m_l1: 0.6                      # L1 slope: lookahead contribution per m/s (L1 = q_l1 + m_l1*v)
+  q_l1: 0.2                      # [m] L1 base offset at low speed
   speed_lookahead: 0.2            # [s] forward prediction horizon for selecting speed waypoint
   lat_err_coeff: 0.15             # [0..1] speed downscale sensitivity to lateral error
   acc_scaler_for_steer: 1.0       # Steering scale when accelerating (acc_now >= +1 m/s^2)
@@ -115,15 +115,15 @@ pp_map:
   trailing_i_gain: 0.0            # I gain for trailing gap controller
   trailing_d_gain: 0.1            # D gain for trailing gap controller
   blind_trailing_speed: 0.2       # [m/s] minimum speed when opponent visibility is degraded
-  obstacle_avoidance_enabled: true
-  obstacle_replan_period: 0.4    # [s] minimum time between local avoidance replans
+  obstacle_avoidance_enabled: false   # wait behind obstacles instead of replanning/overtaking
+  obstacle_replan_period: 0.25    # [s] minimum time between local avoidance replans
   obstacle_min_detect_dist: 0.15   # [m] ignore detections closer than this (too late/noisy)
   obstacle_max_detect_dist: 1.5   # [m] far detections are ignored for local planning
   obstacle_car_radius: 0.1        # [m] local planner obstacle radius for cars
   obstacle_person_radius: 0.1     # [m] local planner obstacle radius for pedestrians
   obstacle_influence: 0.80        # [m] distance around obstacle where path is pushed away
   obstacle_clearance: 0.05        # [m] extra safety margin in addition to obstacle radius
-  car_overtake_mode: true         # false = trailing (stop behind car), true = overtake (replan around car)
+  car_overtake_mode: false         # false = trailing/wait, true = overtake (replan around car)
 
 # Stanley Controller Parameters
 stanley:

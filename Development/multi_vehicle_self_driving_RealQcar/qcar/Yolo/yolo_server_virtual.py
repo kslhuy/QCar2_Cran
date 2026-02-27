@@ -12,9 +12,11 @@ import argparse
 from typing import Optional
 
 from DepthAlignment.QCar2DepthAlignedCamera import QCar2DepthAlignedCamera
+from pit.YOLO.utils import QCar2DepthAligned
+
 from YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy, DetectionBuffers
 from qvl.multi_agent import readRobots
-from YoLo import YOLOPublisher, YOLOVideoPublisher
+from YoLo import YOLOPublisher, YOLOVideoPublisher, YOLO_CROP_BOTTOM_PX
 from yolo_config import DEFAULT_CONFIG_PATH, YoloServerConfig, parse_bool_string
 
 # LiDAR Fusion imports (optional, behind --lidar-fusion flag)
@@ -114,9 +116,9 @@ class YOLOServerVirtual:
         self._lidar_bev_scale = float(self.config.lidar_bev_pixels_per_meter)
         self._lidar_bev_max_range = float(self.config.lidar_bev_max_range_m)
 
-        robots = readRobots()
-        name = f"QC2_{self.config.car_id}"
-        self.car_config = robots[name]
+        # robots = readRobots()
+        # name = f"QC2_{self.config.car_id}"
+        # self.car_config = robots[name]
 
 
         # Initialize components
@@ -170,12 +172,18 @@ class YOLOServerVirtual:
         # robots = readRobots()
         # name = f"QC2_{self.config.car_id}"
         # car_config = robots[name]
+        # try:
+        #     self.camera = QCar2DepthAligned()
+        #     print("[SERVER] Camera initialized (QCar2DepthAligned)")
+        # except Exception as e:
+        #     print(f"[SERVER] Data capture init failed: {e}")
+        #     raise e
         
         self.camera = QCar2DepthAlignedCamera(
             imageWidth=self.config.image_width,
             imageHeight=self.config.image_height,
             use_intrinsics=True,
-            clipping_distance=10.0,
+            clipping_distance=6.0,
             # video3dPort=car_config['video3dPort'],
             load_settings=True,
             use_fast_alignment=True
@@ -187,7 +195,9 @@ class YOLOServerVirtual:
         self.yolo = YOLOv8Wrapper_Huy(
             imageHeight=self.config.image_height,
             imageWidth=self.config.image_width,
-            convert_tensorrt=False
+            modelPath=model_path,
+            runtime_config=self.config.to_yolo_runtime_config(),
+            convert_tensorrt=False,  # Avoid TensorRT conversion overhead in Python server (model should already be optimized)
         )
 
     def _init_lane_detector(self):
@@ -260,7 +270,7 @@ class YOLOServerVirtual:
                 numMeasurements=self.config.lidar.sensor.num_measurements,
                 rangingDistanceMode=self.config.lidar.sensor.ranging_distance_mode,
                 interpolationMode=self.config.lidar.sensor.interpolation_mode,
-                lidarPort=self.car_config["lidarPort"],
+                # lidarPort=self.car_config["lidarPort"],
             )
             print("[LIDAR] LiDAR fusion initialized (QCarLidar + RobotGeometryManager)")
         except Exception as e:
@@ -302,9 +312,7 @@ class YOLOServerVirtual:
         # Get aligned RGB and depth
         self.camera.read()
 
-        # Keep full frame geometry for LiDAR-camera projection consistency.
-        # Cropping + re-scaling changes effective intrinsics and causes vertical
-        # projection drift (LiDAR points appear above/below detections).
+        # Keep processing geometry consistent with configured dimensions.
         rgb = self.camera.rgb
         depth = self.camera.depth
 
@@ -312,6 +320,16 @@ class YOLOServerVirtual:
         if rgb.shape[1] != self.config.image_width or rgb.shape[0] != self.config.image_height:
             rgb = cv2.resize(rgb, (self.config.image_width, self.config.image_height))
         if depth.shape[1] != self.config.image_width or depth.shape[0] != self.config.image_height:
+            depth = cv2.resize(depth, (self.config.image_width, self.config.image_height))
+
+        # Remove bottom strip before inference, then resize back to configured shape.
+        crop_bottom_px = int(max(0, YOLO_CROP_BOTTOM_PX))
+        max_valid_crop = min(rgb.shape[0], depth.shape[0]) - 1
+        crop_bottom_px = min(crop_bottom_px, max(0, max_valid_crop))
+        if crop_bottom_px > 0:
+            rgb = rgb[:-crop_bottom_px, :]
+            depth = depth[:-crop_bottom_px, :]
+            rgb = cv2.resize(rgb, (self.config.image_width, self.config.image_height))
             depth = cv2.resize(depth, (self.config.image_width, self.config.image_height))
 
         # YOLO detection pipeline

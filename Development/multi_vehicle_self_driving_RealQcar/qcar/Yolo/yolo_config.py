@@ -213,6 +213,7 @@ class BufferSettings:
     center_box_height_ratio: float = 0.60
     bottom_ignore_px: int = 0
     center_box_raise_px: int = 0
+    stop_sign_front_max_abs_offset: float = 0.70
 
 
 @dataclass
@@ -519,6 +520,7 @@ class YoloServerConfig:
             "center_box_height_ratio": self.buffers.center_box_height_ratio,
             "bottom_ignore_px": self.buffers.bottom_ignore_px,
             "center_box_raise_px": self.buffers.center_box_raise_px,
+            "stop_sign_front_max_abs_offset": self.buffers.stop_sign_front_max_abs_offset,
         }
 
     def to_lidar_geometry_runtime_config(self) -> Dict[str, Any]:
@@ -736,6 +738,14 @@ class YoloServerConfig:
                         buffers_raw.get("center_box_raise_px"),
                         0,
                     ),
+                ),
+                stop_sign_front_max_abs_offset=_clamp(
+                    _to_float(
+                        buffers_raw.get("stop_sign_front_max_abs_offset"),
+                        0.70,
+                    ),
+                    0.05,
+                    1.0,
                 ),
             ),
             lane=LaneSettings(

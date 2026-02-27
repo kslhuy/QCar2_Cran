@@ -25,10 +25,15 @@ class YOLODetectionConfig:
     """YOLO detection thresholds"""
 
     stop_sign_threshold: float = 0.6
+    stop_sign_front_offset_threshold: float = 0.7
+    min_confirm_frames: int = 7
     traffic_threshold: float = 1.7
+    traffic_min_distance: float = 0.6
+    traffic_clear_frames: int = 20
     car_threshold: float = 0.3
     yield_threshold: float = 1.0
     person_threshold: float = 0.6
+    obstacle_stop_distance: float = 1.2
     pulse_length_multiplier: int = 3  # multiplied by controller update rate
 
 
