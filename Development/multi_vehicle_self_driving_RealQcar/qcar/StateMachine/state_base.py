@@ -396,7 +396,7 @@ class StateBase:
                 preset_names = data.get(
                     "preset_names", ["local_state", "local_control"]
                 )
-                stream_rate = data.get("stream_rate", 50.0)
+                stream_rate = data.get("stream_rate", 30.0)
                 success = self._enable_scope_streaming(preset_names, stream_rate)
                 if success:
                     self.logger.logger.info(
@@ -1154,7 +1154,7 @@ class StateBase:
         return probing_enabled
 
     def _enable_scope_streaming(
-        self, preset_names: list = None, stream_rate: float = 50.0
+        self, preset_names: list = None, stream_rate: float = 30.0
     ) -> bool:
         """
         Enable scope data streaming to Ground Station for remote plotting.

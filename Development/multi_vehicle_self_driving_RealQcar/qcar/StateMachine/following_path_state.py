@@ -823,14 +823,14 @@ class FollowingPathState(StateBase):
           - obstacles:       list of [x, y, radius]
           - avoidance_active: bool
         """
-        MAX_PTS = 80  # keep bandwidth reasonable
+        MAX_PTS = 40  # keep bandwidth reasonable
 
         def _downsample(arr, max_n):
-            """Downsample 1-D array to at most max_n equally-spaced points."""
+            """Downsample 1-D array to at most max_n equally-spaced points and round."""
             if len(arr) <= max_n:
-                return arr.tolist()
+                return [round(float(x), 2) for x in arr]
             idx = np.linspace(0, len(arr) - 1, max_n, dtype=int)
-            return arr[idx].tolist()
+            return [round(float(x), 2) for x in arr[idx]]
 
         def _trim_from_car(path_x, path_y, car_x, car_y):
             """Trim path arrays to start from the nearest point to car position."""
@@ -877,7 +877,7 @@ class FollowingPathState(StateBase):
         # Obstacle positions
         for obs in self._pp_current_obstacles:
             result["obstacles"].append(
-                [float(obs.x), float(obs.y), float(obs.radius)]
+                [round(float(obs.x), 2), round(float(obs.y), 2), round(float(obs.radius), 2)]
             )
 
         return result
@@ -934,6 +934,9 @@ class FollowingPathState(StateBase):
         # PP target speed is map/curvature based and may jump near lap wrap
         # or when entering/leaving a hard-turn segment.
         speed_target = max(float(speed_target), 0.0)
+
+        # Record actual target speed for scope display
+        self.vehicle_logic.v_ref_actual = speed_target
 
         # dt_safe = max(float(dt), 1e-3)
         dt_safe = max(float(dt), 1e-3)
@@ -1437,6 +1440,10 @@ class FollowingPathState(StateBase):
         ):
             yolo_gain = self.vehicle_logic.yolo_manager.get_yolo_gain()
         v_ref_adjusted = self.vehicle_logic.v_ref * yolo_gain
+        
+        # Record actual target speed for scope display
+        self.vehicle_logic.v_ref_actual = v_ref_adjusted
+        
         return self.speed_controller.update(velocity, v_ref_adjusted, dt)
 
     def _extract_lane_data(self, yolo_data: dict) -> dict:

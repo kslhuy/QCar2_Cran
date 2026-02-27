@@ -128,6 +128,7 @@ class VehicleLogic:
 
         pid_params = self.controller_manager.config._get_pid_params()
         self.v_ref = pid_params.get("v_ref", 0.6)
+        self.v_ref_actual = 0.0  # Tracks actual computed target speed for scope
         self.controller_manager.set_vehicle_logic(self)  # For waypoint access
 
         # Taxi Manager
@@ -428,6 +429,7 @@ class VehicleLogic:
 
                 # Add control signals
                 stream_data["v_ref"] = self.v_ref * self.yolo_manager.get_yolo_gain()
+                stream_data["v_ref_actual"] = getattr(self, "v_ref_actual", stream_data["v_ref"])
                 stream_data["steering"] = last_steering
                 stream_data["throttle"] = last_u
 

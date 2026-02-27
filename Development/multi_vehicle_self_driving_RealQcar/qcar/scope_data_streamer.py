@@ -10,7 +10,7 @@ to maintain consistent streaming rates (20-50Hz).
 Usage:
     from scope_data_streamer import ScopeDataStreamer
     
-    streamer = ScopeDataStreamer(gs_client, vehicle_id=0, stream_rate=50.0)
+    streamer = ScopeDataStreamer(gs_client, vehicle_id=0, stream_rate=20.0)
     streamer.enable(['local_state', 'local_control'])
     
     # In control loop:
@@ -37,10 +37,10 @@ SCOPE_DATA_HEADER = 0xAB
 PRESET_FIELDS = {
     'local_state': [
         'x', 'y', 'theta', 'velocity',
-        'x_gps', 'y_gps', 'theta_gps', 'v_ref'
+        'x_gps', 'y_gps', 'theta_gps', 'v_ref', 'v_ref_actual'
     ],
     'local_control': [
-        'velocity', 'v_ref', 'throttle', 'steering'
+        'velocity', 'v_ref', 'v_ref_actual', 'throttle', 'steering'
     ],
     'local_error': [
         'x_error', 'y_error', 'theta_error', 'acceleration'
@@ -60,7 +60,7 @@ PRESET_FIELDS = {
 # Combined default fields for local data
 DEFAULT_FIELDS = [
     'x', 'y', 'theta', 'velocity',           # Estimated state
-    'x_gps', 'y_gps', 'theta_gps', 'v_ref',   # Reference/GPS
+    'x_gps', 'y_gps', 'theta_gps', 'v_ref', 'v_ref_actual',  # Reference/GPS
     'throttle', 'steering',                   # Control
     'acceleration', 'yaw_rate'                # Dynamics
 ]
@@ -468,7 +468,7 @@ if __name__ == "__main__":
     print("=" * 60)
     
     # Test packing and unpacking
-    streamer = ScopeDataStreamer(None, vehicle_id=1, stream_rate=50.0)
+    streamer = ScopeDataStreamer(None, vehicle_id=1, stream_rate=20.0)
     streamer.enable(['local_state', 'local_control'])
     
     # Create test data
@@ -511,7 +511,7 @@ if __name__ == "__main__":
             return True
     
     mock_client = MockClient()
-    streamer2 = ScopeDataStreamer(mock_client, vehicle_id=0, stream_rate=50.0)
+    streamer2 = ScopeDataStreamer(mock_client, vehicle_id=0, stream_rate=20.0)
     streamer2.enable(['local_state'])
     
     start = time.time()

@@ -456,26 +456,31 @@ class RemoteScopeViewer:
 
         last_feed_time = 0
         feed_interval = 1.0 / self.fps
+        last_sent_count = 0
 
         while self.running and not self._stop_event.is_set():
             try:
                 current_time = time.time()
                 if current_time - last_feed_time >= feed_interval:
-                    # Get current data from buffer for each field
-                    data_packet = {"timestamp": current_time}
+                    current_count = self.buffer.sample_count
+                    if current_count > last_sent_count:
+                        new_samples = min(current_count - last_sent_count, self.buffer.max_samples)
+                        
+                        data_packet = {"type": "incremental", "timestamp": current_time, "fields": {}}
 
-                    for field in self.field_names:
-                        t, v = self.buffer.get_data(
-                            field, last_n=int(self.time_window * 50)
-                        )
-                        if len(t) > 0:
-                            data_packet[field] = {"t": t.tolist(), "v": v.tolist()}
+                        for field in self.field_names:
+                            t, v = self.buffer.get_data(
+                                field, last_n=new_samples
+                            )
+                            if len(t) > 0:
+                                data_packet["fields"][field] = {"t": t.tolist(), "v": v.tolist()}
 
-                    # Send to process (non-blocking)
-                    try:
-                        self._data_queue.put_nowait(data_packet)
-                    except:
-                        pass  # Queue full, skip this update
+                        # Send to process (non-blocking)
+                        try:
+                            self._data_queue.put_nowait(data_packet)
+                            last_sent_count = current_count
+                        except:
+                            pass  # Queue full, skip this update
 
                     last_feed_time = current_time
 
@@ -519,7 +524,16 @@ def _run_scope_plot_process(
     """
     import matplotlib
 
-    matplotlib.use("TkAgg")
+    # Try Qt5Agg first (more reliable on Ubuntu), fallback to TkAgg, then Agg
+    backends = ["TkAgg", "Qt5Agg", "GTK3Agg", "Agg"]
+    for backend in backends:
+        try:
+            matplotlib.use(backend)
+            # Test if it actually works by importing pyplot
+            import matplotlib.pyplot as plt
+            break
+        except Exception:
+            continue
     import matplotlib.pyplot as plt
     import matplotlib.animation as animation
     import numpy as np
@@ -542,6 +556,19 @@ def _run_scope_plot_process(
     roadmap = None
     path_generated = False
     last_node_sequence = None
+    
+    # Store accumulated data for incremental updates
+    from collections import deque
+    # Assuming max 50Hz for 15s = 750 points. 1000 is safe.
+    max_pts = 1000
+    accumulated_data = {
+        f: {"t": deque(maxlen=max_pts), "v": deque(maxlen=max_pts)}
+        for f in field_names
+    }
+    # Add accumulation fields for X, Y, and GPS components
+    for extra_field in ["x", "y", "x_gps", "y_gps", "theta"]:
+        if extra_field not in accumulated_data:
+            accumulated_data[extra_field] = {"t": deque(maxlen=max_pts), "v": deque(maxlen=max_pts)}
 
     def update_path(node_sequence):
         nonlocal roadmap, path_generated, last_node_sequence
@@ -586,6 +613,7 @@ def _run_scope_plot_process(
             return list(lines.values())
 
         # Get latest data from queue
+        has_new_data = False
         try:
             while not data_queue.empty():
                 packet = data_queue.get_nowait()
@@ -597,12 +625,17 @@ def _run_scope_plot_process(
                         update_path(info["node_sequence"])
                     if "path_viz" in info:
                         path_viz_data.update(info["path_viz"])
-                else:
-                    latest_data = packet
+                elif packet.get("type") == "incremental":
+                    fields = packet.get("fields", {})
+                    for field, data in fields.items():
+                        if field in accumulated_data:
+                            accumulated_data[field]["t"].extend(data["t"])
+                            accumulated_data[field]["v"].extend(data["v"])
+                    has_new_data = True
         except:
             pass
 
-        if not latest_data and not path_generated:
+        if not has_new_data and not path_generated:
             return list(lines.values())
 
         # Update standard time-series lines
@@ -616,23 +649,21 @@ def _run_scope_plot_process(
             ):
                 continue
 
-            if field in latest_data and "t" in latest_data[field]:
-                t = latest_data[field]["t"]
-                v = latest_data[field]["v"]
-                line.set_data(t, v)
+            if field in accumulated_data and accumulated_data[field]["t"]:
+                line.set_data(list(accumulated_data[field]["t"]), list(accumulated_data[field]["v"]))
 
         # Update Local Trajectory (X vs Y)
         if not is_fleet:
-            if "trajectory" in lines and "x" in latest_data and "y" in latest_data:
-                x = latest_data["x"]["v"]
-                y = latest_data["y"]["v"]
+            if "trajectory" in lines and accumulated_data["x"]["v"] and accumulated_data["y"]["v"]:
+                x = list(accumulated_data["x"]["v"])
+                y = list(accumulated_data["y"]["v"])
                 min_len = min(len(x), len(y))
                 if min_len > 0:
                     lines["trajectory"].set_data(x[:min_len], y[:min_len])
 
                     # Update heading arrow using latest theta
-                    if "theta" in latest_data and latest_data["theta"]["v"]:
-                        last_theta = latest_data["theta"]["v"][-1]
+                    if accumulated_data.get("theta") and accumulated_data["theta"]["v"]:
+                        last_theta = accumulated_data["theta"]["v"][-1]
                         last_x = x[min_len - 1]
                         last_y = y[min_len - 1]
                         arrow_len = 0.15
@@ -647,11 +678,11 @@ def _run_scope_plot_process(
 
             if (
                 "trajectory_gps" in lines
-                and "x_gps" in latest_data
-                and "y_gps" in latest_data
+                and accumulated_data.get("x_gps") and accumulated_data["x_gps"]["v"]
+                and accumulated_data.get("y_gps") and accumulated_data["y_gps"]["v"]
             ):
-                x = latest_data["x_gps"]["v"]
-                y = latest_data["y_gps"]["v"]
+                x = list(accumulated_data["x_gps"]["v"])
+                y = list(accumulated_data["y_gps"]["v"])
                 min_len = min(len(x), len(y))
                 if min_len > 0:
                     lines["trajectory_gps"].set_data(x[:min_len], y[:min_len])
@@ -674,9 +705,9 @@ def _run_scope_plot_process(
                 fx = f"fleet_x_{i}"
                 fy = f"fleet_y_{i}"
 
-                if line_key in lines and fx in latest_data and fy in latest_data:
-                    x = latest_data[fx]["v"]
-                    y = latest_data[fy]["v"]
+                if line_key in lines and fx in accumulated_data and accumulated_data[fx]["v"] and fy in accumulated_data and accumulated_data[fy]["v"]:
+                    x = list(accumulated_data[fx]["v"])
+                    y = list(accumulated_data[fy]["v"])
                     min_len = min(len(x), len(y))
                     if min_len > 0:
                         lines[line_key].set_data(x[:min_len], y[:min_len])
@@ -793,10 +824,10 @@ def _create_local_layout(plt, car_id, field_names):
     ax_vel.grid(True, alpha=0.3)
     axes["velocity"] = ax_vel
 
-    for f, c, s in [("velocity", "b", "-"), ("v_ref", "k", "--")]:
+    for f, c, s in [("velocity", "b", "-"), ("v_ref", "k", "--"), ("v_ref_actual", "r", "--")]:
         if f in field_names:
             (l,) = ax_vel.plot(
-                [], [], color=c, linestyle="None", marker=".", markersize=2, label=f
+                [], [], color=c, linestyle=s, marker="." if s == "None" else "None", markersize=2, label=f
             )
             lines[f] = l
     ax_vel.legend(fontsize=8)

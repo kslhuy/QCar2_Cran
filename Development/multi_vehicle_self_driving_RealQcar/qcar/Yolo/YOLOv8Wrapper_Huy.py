@@ -6,7 +6,7 @@ from pit.YOLO.utils import TrafficLight, Obstacle
 
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -35,10 +35,45 @@ class DetectionBuffers:
     # Image dimensions for center-box and lane-side filtering
     image_width: int = 640
     image_height: int = 480
+    # Horizontal offset sign convention:
+    # +1.0 => positive offset is image-right, -1.0 => positive offset is image-left.
+    offset_sign: float = 1.0
+    # Stop/yield lane-side filter mode: "right" (default), "left", or "both".
+    sign_filter_side: str = "right"
 
     # Center-box proportions (configurable)
     center_box_width_ratio: float = 0.40  # Middle 25% of image width
     center_box_height_ratio: float = 0.60  # Bottom 60% of image height
+    # Ignore detections whose center lies in this bottom strip (hood/capo area).
+    bottom_ignore_px: int = 0
+    # Move center box upward by this many pixels.
+    center_box_raise_px: int = 0
+
+    @classmethod
+    def from_config(
+        cls,
+        image_width: int,
+        image_height: int,
+        offset_sign: float = 1.0,
+        sign_filter_side: str = "right",
+        config: Optional[Dict[str, Any]] = None,
+    ) -> "DetectionBuffers":
+        """Factory to build buffers from a runtime config section."""
+        cfg = config or {}
+        center_w = float(np.clip(cfg.get("center_box_width_ratio", 0.40), 0.05, 1.0))
+        center_h = float(np.clip(cfg.get("center_box_height_ratio", 0.60), 0.05, 1.0))
+        bottom_ignore_px = int(max(0, cfg.get("bottom_ignore_px", 0)))
+        center_box_raise_px = int(max(0, cfg.get("center_box_raise_px", 0)))
+        return cls(
+            image_width=int(image_width),
+            image_height=int(image_height),
+            offset_sign=float(offset_sign),
+            sign_filter_side=str(sign_filter_side),
+            center_box_width_ratio=center_w,
+            center_box_height_ratio=center_h,
+            bottom_ignore_px=bottom_ignore_px,
+            center_box_raise_px=center_box_raise_px,
+        )
 
     def reset(self):
         """Reset all buffers to zero."""
@@ -50,8 +85,14 @@ class DetectionBuffers:
         self.lane.fill(0)
         self.obstacle.fill(0)
 
+    def _get_x_center(self, det, bbox=None) -> float:
+        """Get detection center x using bbox when available."""
+        if bbox is not None:
+            return float((bbox[0] + bbox[2]) / 2.0)
+        return float(det.x)
+
     def _is_right_side(self, det, bbox=None) -> bool:
-        """Check if detection bounding box center is on the right half of the image.
+        """Check if detection center is on the right half of the image.
 
         In right-hand traffic, signs on our current lane appear on the right side
         of the camera image. Signs on the left side are for the opposite lane.
@@ -60,11 +101,20 @@ class DetectionBuffers:
             det: Obstacle object with x attribute (top-left x of bbox)
             bbox: Optional [x1, y1, x2, y2] bounding box array for more accurate center
         """
-        if bbox is not None:
-            x_center = (bbox[0] + bbox[2]) / 2
-        else:
-            x_center = det.x
-        return x_center > (self.image_width / 2)
+        x_center = self._get_x_center(det, bbox)
+        return x_center >= (self.image_width / 2.0)
+
+    def _is_sign_on_allowed_side(self, det, bbox=None) -> bool:
+        """Check stop/yield sign side filter based on configured traffic side."""
+        side = str(self.sign_filter_side).lower()
+        if side == "both":
+            return True
+        x_center = self._get_x_center(det, bbox)
+        mid = self.image_width / 2.0
+        if side == "left":
+            return x_center <= mid
+        # Default to right-side filtering for invalid values.
+        return x_center >= mid
 
     def _is_in_center_box(self, bbox) -> bool:
         """Check if a bounding box overlaps the center-front region of the image.
@@ -92,9 +142,23 @@ class DetectionBuffers:
 
         # Vertical bounds: bottom portion of image (road area)
         y_min = self.image_height * (1.0 - self.center_box_height_ratio)
-        y_max = self.image_height
+        y_max = self.image_height - self.bottom_ignore_px
+        # Shift center region upward when needed.
+        y_min -= self.center_box_raise_px
+        y_max -= self.center_box_raise_px
+        y_min = max(0.0, y_min)
+        y_max = min(float(self.image_height), y_max)
+        if y_max <= y_min:
+            return False
 
         return x_min <= cx <= x_max and y_min <= cy <= y_max
+
+    def _is_in_bottom_ignore_strip(self, bbox) -> bool:
+        """Return True if bbox center is in the ignored bottom strip."""
+        if bbox is None or self.bottom_ignore_px <= 0:
+            return False
+        cy = (bbox[1] + bbox[3]) / 2.0
+        return cy >= (self.image_height - self.bottom_ignore_px)
 
     def fill_from_results(self, results: list, bounding_boxes=None):
         """Fill buffers from YOLO detection results.
@@ -145,9 +209,25 @@ class DetectionBuffers:
             if bbox is not None:
                 cx = (bbox[0] + bbox[2]) / 2.0
                 # Offset normalized to [-1.0, 1.0], where 0 is center, -1 is left edge, 1 is right edge
-                offset = (cx - (self.image_width / 2.0)) / (self.image_width / 2.0)
+                raw_offset = (cx - (self.image_width / 2.0)) / (self.image_width / 2.0)
+                offset = float(
+                    np.clip(raw_offset * float(self.offset_sign), -1.0, 1.0)
+                )
+            else:
+                try:
+                    raw_offset = (float(det.x) - (self.image_width / 2.0)) / (
+                        self.image_width / 2.0
+                    )
+                    offset = float(
+                        np.clip(raw_offset * float(self.offset_sign), -1.0, 1.0)
+                    )
+                except Exception:
+                    offset = 0.0
 
             if any(kw in name_l for kw in traffic_vehicle_keywords):
+                # Ignore hood/capo false positives near image bottom.
+                if self._is_in_bottom_ignore_strip(bbox):
+                    continue
                 counts["car"] += 1
                 dist = det.distance
                 # Keep closest detection
@@ -155,8 +235,8 @@ class DetectionBuffers:
                     self.car[1] = dist
                     self.car[2] = offset
             elif "stop sign" in name_l:
-                # Lane-side filter: only count stop signs on the right half
-                if not self._is_right_side(det, bbox):
+                # Lane-side filter for stop signs.
+                if not self._is_sign_on_allowed_side(det, bbox):
                     continue
                 counts["stop_sign"] += 1
                 dist = det.distance
@@ -170,8 +250,8 @@ class DetectionBuffers:
                     self.traffic[1] = dist
                     self.traffic[2] = offset
             elif "yield" in name_l:
-                # Lane-side filter: only count yield signs on the right half
-                if not self._is_right_side(det, bbox):
+                # Lane-side filter for yield signs.
+                if not self._is_sign_on_allowed_side(det, bbox):
                     continue
                 counts["yield"] += 1
                 dist = det.distance
@@ -217,6 +297,8 @@ class DetectionBuffers:
         self.obstacle[0] = obstacle_count
         self.obstacle[1] = closest_obstacle_dist if obstacle_count > 0 else 0.0
         self.obstacle[2] = closest_obstacle_type
+        # Preserve closest obstacle lateral offset for downstream path planning.
+        self.obstacle[3] = closest_obstacle_offset if obstacle_count > 0 else 0.0
 
     def fill_lane(self, lane_result):
         """Fill lane buffer from lane detection result."""
@@ -257,21 +339,39 @@ class YOLOv8Wrapper_Huy(YOLOv8):
     - Support for custom lane detector instances
     """
 
-    def __init__(self, imageWidth=640, imageHeight=480, modelPath=None):
+    def __init__(
+        self,
+        imageWidth=640,
+        imageHeight=480,
+        modelPath=None,
+        runtime_config: Optional[Dict[str, Any]] = None,
+    ):
         """Initialize the enhanced YOLOv8 wrapper"""
         super().__init__(imageWidth, imageHeight, modelPath)
         self.lane_result = None
         self.lane_detector = None
         self._tracking_initialized = False
+        runtime = runtime_config or {}
+        self.default_use_tracking = bool(runtime.get("use_tracking", True))
+        self.default_classes = list(runtime.get("classes", [2, 9, 11, 33]))
+        self.default_confidence = float(runtime.get("confidence", 0.3))
+        self.default_half = bool(runtime.get("half", True))
+        self.default_verbose = bool(runtime.get("verbose", False))
+        tracker_cfg = runtime.get("tracker", {}) or {}
+        self.tracker_name = str(tracker_cfg.get("name", "botsort.yaml"))
+        self.tracker_persist = bool(tracker_cfg.get("persist", True))
+        self.postprocess_clipping_distance_m = float(
+            runtime.get("postprocess_clipping_distance_m", 10.0)
+        )
         print("YOLOv8Wrapper_Huy initialized with unified rendering + tracking support")
 
     def track(
         self,
         inputImg,
-        classes=[2, 9, 11, 33],
-        confidence=0.3,
-        verbose=False,
-        half=False,
+        classes=None,
+        confidence=None,
+        verbose=None,
+        half=None,
     ):
         """Use YOLOv8 tracking mode (BoT-SORT) for persistent object IDs.
 
@@ -289,6 +389,11 @@ class YOLOv8Wrapper_Huy(YOLOv8):
         Returns:
             Ultralytics Results object.
         """
+        classes = self.default_classes if classes is None else classes
+        confidence = self.default_confidence if confidence is None else confidence
+        verbose = self.default_verbose if verbose is None else verbose
+        half = self.default_half if half is None else half
+
         try:
             self.predictions = self.net.track(
                 inputImg,
@@ -297,8 +402,8 @@ class YOLOv8Wrapper_Huy(YOLOv8):
                 classes=classes,
                 conf=confidence,
                 half=half,
-                persist=True,  # Maintain track IDs across frames
-                tracker="botsort.yaml",  # BoT-SORT tracker
+                persist=self.tracker_persist,
+                tracker=self.tracker_name,
             )
             self.objectsDetected = self.predictions[0].boxes.cls.cpu().numpy()
             self.FPS = 1000 / self.predictions[0].speed["inference"]
@@ -308,7 +413,56 @@ class YOLOv8Wrapper_Huy(YOLOv8):
             if not self._tracking_initialized:
                 print(f"[YOLO] Tracking init failed, falling back to predict: {e}")
             # Fallback to standard predict
-            return self.predict(inputImg, classes, confidence, verbose, half)
+            return self.predict(
+                inputImg=inputImg,
+                classes=classes,
+                confidence=confidence,
+                verbose=verbose,
+                half=half,
+            )
+
+    def run_inference(
+        self,
+        inputImg,
+        use_tracking=None,
+        classes=None,
+        confidence=None,
+        verbose=None,
+        half=None,
+    ):
+        """Run tracking or prediction with configured defaults."""
+        use_tracking = (
+            self.default_use_tracking if use_tracking is None else bool(use_tracking)
+        )
+        classes = self.default_classes if classes is None else classes
+        confidence = self.default_confidence if confidence is None else confidence
+        verbose = self.default_verbose if verbose is None else verbose
+        half = self.default_half if half is None else half
+
+        if use_tracking:
+            return self.track(
+                inputImg=inputImg,
+                classes=classes,
+                confidence=confidence,
+                verbose=verbose,
+                half=half,
+            )
+        return self.predict(
+            inputImg=inputImg,
+            classes=classes,
+            confidence=confidence,
+            verbose=verbose,
+            half=half,
+        )
+
+    def post_process_detections(self, alignedDepth=None, clippingDistance=None):
+        """Run post-processing with configurable clipping distance."""
+        clip = (
+            self.postprocess_clipping_distance_m
+            if clippingDistance is None
+            else clippingDistance
+        )
+        return self.post_processing(alignedDepth=alignedDepth, clippingDistance=clip)
 
     def set_lane_detector(self, lane_detector):
         """Set the lane detector instance for integrated rendering"""

@@ -581,6 +581,9 @@ class FollowingLeaderState(StateBase):
             follower_state=follower_state, leader_state=leader_state, u=u, delta=delta
         )
 
+        # Record actual target speed for scope display
+        self.vehicle_logic.v_ref_actual = base_velocity
+
         # u = 0.05
         # delta = 0
         return u, delta

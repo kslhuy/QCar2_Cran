@@ -242,7 +242,7 @@ class ManualModeState(StateBase):
                 return
 
             # Set LED indicators
-            LEDs = np.array([0, 0, 0, 0, 0, 0, 1, 1])  # Default: rear lights on
+            LEDs = np.array([0, 0, 0, 0, 0, 0, 0, 0])  # Default: rear lights off
 
             # Adjust LED indicators based on steering
             if steering > 0.1:

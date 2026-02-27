@@ -1127,7 +1127,7 @@ class QCarRemoteController:
     # ========== Scope Streaming Commands ==========
 
     def enable_scope_streaming(
-        self, car_id: int, preset_names: List[str] = None, stream_rate: float = 50.0
+        self, car_id: int, preset_names: List[str] = None, stream_rate: float = 20.0
     ) -> bool:
         """
         Enable scope data streaming from a vehicle for remote plotting.

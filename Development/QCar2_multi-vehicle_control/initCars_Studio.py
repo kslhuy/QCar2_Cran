@@ -920,14 +920,14 @@ mySpawns = MultiAgent(QCars)
 # )
 
 # Spawn a QCar at the given initial pose
-car2 = QLabsQCar2(initializer.qlabs)
-car2.spawn_id(
-    actorNumber=6,
-    location=[0.26861999999999997, 1.849815, 0.006],
-    rotation=[0, 0, 1.5707963267948966],
-    scale=[0.1, 0.1, 0.1],
-    configuration=0,
-)
+# car2 = QLabsQCar2(initializer.qlabs)
+# car2.spawn_id(
+#     actorNumber=6,
+#     location=[0.26861999999999997, 1.849815, 0.006],
+#     rotation=[0, 0, 1.5707963267948966],
+#     scale=[0.1, 0.1, 0.1],
+#     configuration=0,
+# )
 
 # rtModel = os.path.normpath(
 #     os.path.join(os.environ["RTMODELS_DIR"], "QCar2/QCar2_Workspace_studio")
