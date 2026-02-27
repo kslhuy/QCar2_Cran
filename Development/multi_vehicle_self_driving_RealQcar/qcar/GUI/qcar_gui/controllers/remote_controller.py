@@ -710,6 +710,10 @@ class QCarRemoteController:
             if self.scope_manager and "node_sequence" in data:
                 self.scope_manager.update_vehicle_info(car_id, data)
 
+            # Forward path visualization data (global/local paths, obstacles) to scope viewer
+            if self.scope_manager and "path_viz" in data:
+                self.scope_manager.update_vehicle_info(car_id, {"path_viz": data["path_viz"]})
+
             # Generate Path if node_sequence is present and roadmap is available
             if self.roadmap and "node_sequence" in data and data["node_sequence"]:
                 try:
@@ -1123,7 +1127,7 @@ class QCarRemoteController:
     # ========== Scope Streaming Commands ==========
 
     def enable_scope_streaming(
-        self, car_id: int, preset_names: List[str] = None, stream_rate: float = 50.0
+        self, car_id: int, preset_names: List[str] = None, stream_rate: float = 20.0
     ) -> bool:
         """
         Enable scope data streaming from a vehicle for remote plotting.

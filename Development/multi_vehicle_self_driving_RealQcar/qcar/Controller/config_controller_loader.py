@@ -205,7 +205,7 @@ class ControllerConfig:
             # Keep this explicit so config min_throttle affects PID behavior.
             "min_throttle": pid_config.get("min_throttle", 0.0),
             "ei_max": pid_config.get("ei_max", 1.0),
-            "v_ref": pid_config.get("v_ref", 0.75),
+            "v_ref": pid_config.get("v_ref", 0.6),
         }
 
     def _get_hybrid_longitudinal_params(self) -> Dict[str, Any]:
@@ -302,6 +302,20 @@ class ControllerConfig:
             "trailing_i_gain": pp_map_config.get("trailing_i_gain", 0.0),
             "trailing_d_gain": pp_map_config.get("trailing_d_gain", 0.1),
             "blind_trailing_speed": pp_map_config.get("blind_trailing_speed", 0.2),
+            "obstacle_avoidance_enabled": pp_map_config.get(
+                "obstacle_avoidance_enabled", True
+            ),
+            "obstacle_replan_period": pp_map_config.get("obstacle_replan_period", 0.25),
+            "obstacle_min_detect_dist": pp_map_config.get(
+                "obstacle_min_detect_dist", 0.25
+            ),
+            "obstacle_max_detect_dist": pp_map_config.get(
+                "obstacle_max_detect_dist", 2.0
+            ),
+            "obstacle_car_radius": pp_map_config.get("obstacle_car_radius", 0.22),
+            "obstacle_person_radius": pp_map_config.get("obstacle_person_radius", 0.16),
+            "obstacle_influence": pp_map_config.get("obstacle_influence", 0.90),
+            "obstacle_clearance": pp_map_config.get("obstacle_clearance", 0.12),
         }
 
     def _get_lookahead_params(self) -> Dict[str, Any]:

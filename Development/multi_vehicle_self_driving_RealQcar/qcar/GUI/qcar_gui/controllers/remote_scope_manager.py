@@ -456,26 +456,31 @@ class RemoteScopeViewer:
 
         last_feed_time = 0
         feed_interval = 1.0 / self.fps
+        last_sent_count = 0
 
         while self.running and not self._stop_event.is_set():
             try:
                 current_time = time.time()
                 if current_time - last_feed_time >= feed_interval:
-                    # Get current data from buffer for each field
-                    data_packet = {"timestamp": current_time}
+                    current_count = self.buffer.sample_count
+                    if current_count > last_sent_count:
+                        new_samples = min(current_count - last_sent_count, self.buffer.max_samples)
+                        
+                        data_packet = {"type": "incremental", "timestamp": current_time, "fields": {}}
 
-                    for field in self.field_names:
-                        t, v = self.buffer.get_data(
-                            field, last_n=int(self.time_window * 50)
-                        )
-                        if len(t) > 0:
-                            data_packet[field] = {"t": t.tolist(), "v": v.tolist()}
+                        for field in self.field_names:
+                            t, v = self.buffer.get_data(
+                                field, last_n=new_samples
+                            )
+                            if len(t) > 0:
+                                data_packet["fields"][field] = {"t": t.tolist(), "v": v.tolist()}
 
-                    # Send to process (non-blocking)
-                    try:
-                        self._data_queue.put_nowait(data_packet)
-                    except:
-                        pass  # Queue full, skip this update
+                        # Send to process (non-blocking)
+                        try:
+                            self._data_queue.put_nowait(data_packet)
+                            last_sent_count = current_count
+                        except:
+                            pass  # Queue full, skip this update
 
                     last_feed_time = current_time
 
@@ -519,7 +524,16 @@ def _run_scope_plot_process(
     """
     import matplotlib
 
-    matplotlib.use("TkAgg")
+    # Try Qt5Agg first (more reliable on Ubuntu), fallback to TkAgg, then Agg
+    backends = ["TkAgg", "Qt5Agg", "GTK3Agg", "Agg"]
+    for backend in backends:
+        try:
+            matplotlib.use(backend)
+            # Test if it actually works by importing pyplot
+            import matplotlib.pyplot as plt
+            break
+        except Exception:
+            continue
     import matplotlib.pyplot as plt
     import matplotlib.animation as animation
     import numpy as np
@@ -532,6 +546,9 @@ def _run_scope_plot_process(
     else:
         fig, lines, axes = _create_local_layout(plt, car_id, field_names)
 
+    # Path visualization data from vehicle
+    path_viz_data = {}
+
     # Latest data storage
     latest_data = {}
 
@@ -539,6 +556,19 @@ def _run_scope_plot_process(
     roadmap = None
     path_generated = False
     last_node_sequence = None
+    
+    # Store accumulated data for incremental updates
+    from collections import deque
+    # Assuming max 50Hz for 15s = 750 points. 1000 is safe.
+    max_pts = 1000
+    accumulated_data = {
+        f: {"t": deque(maxlen=max_pts), "v": deque(maxlen=max_pts)}
+        for f in field_names
+    }
+    # Add accumulation fields for X, Y, and GPS components
+    for extra_field in ["x", "y", "x_gps", "y_gps", "theta"]:
+        if extra_field not in accumulated_data:
+            accumulated_data[extra_field] = {"t": deque(maxlen=max_pts), "v": deque(maxlen=max_pts)}
 
     def update_path(node_sequence):
         nonlocal roadmap, path_generated, last_node_sequence
@@ -560,7 +590,10 @@ def _run_scope_plot_process(
                 roadmap = SDCSRoadMap(leftHandTraffic=False, useSmallMap=False)
 
             # Generate path
+            # TODO : Need to more dynamic to know virtual or real path
+            scale = 0.975
             waypoints = roadmap.generate_path(node_sequence)
+            waypoints *= scale
 
             # Plot path
             if "trajectory_ref" in lines:
@@ -572,7 +605,7 @@ def _run_scope_plot_process(
             print(f"[ScopePlot] Error generating path: {e}")
 
     def update(frame):
-        nonlocal latest_data
+        nonlocal latest_data, path_viz_data
 
         # Check if we should stop
         if stop_event.is_set():
@@ -580,6 +613,7 @@ def _run_scope_plot_process(
             return list(lines.values())
 
         # Get latest data from queue
+        has_new_data = False
         try:
             while not data_queue.empty():
                 packet = data_queue.get_nowait()
@@ -589,12 +623,19 @@ def _run_scope_plot_process(
                     info = packet["info"]
                     if "node_sequence" in info and info["node_sequence"]:
                         update_path(info["node_sequence"])
-                else:
-                    latest_data = packet
+                    if "path_viz" in info:
+                        path_viz_data.update(info["path_viz"])
+                elif packet.get("type") == "incremental":
+                    fields = packet.get("fields", {})
+                    for field, data in fields.items():
+                        if field in accumulated_data:
+                            accumulated_data[field]["t"].extend(data["t"])
+                            accumulated_data[field]["v"].extend(data["v"])
+                    has_new_data = True
         except:
             pass
 
-        if not latest_data and not path_generated:
+        if not has_new_data and not path_generated:
             return list(lines.values())
 
         # Update standard time-series lines
@@ -608,32 +649,40 @@ def _run_scope_plot_process(
             ):
                 continue
 
-            if field in latest_data and "t" in latest_data[field]:
-                t = latest_data[field]["t"]
-                v = latest_data[field]["v"]
-                line.set_data(t, v)
+            if field in accumulated_data and accumulated_data[field]["t"]:
+                line.set_data(list(accumulated_data[field]["t"]), list(accumulated_data[field]["v"]))
 
         # Update Local Trajectory (X vs Y)
         if not is_fleet:
-            if "trajectory" in lines and "x" in latest_data and "y" in latest_data:
-                x = latest_data["x"]["v"]
-                y = latest_data["y"]["v"]
+            if "trajectory" in lines and accumulated_data["x"]["v"] and accumulated_data["y"]["v"]:
+                x = list(accumulated_data["x"]["v"])
+                y = list(accumulated_data["y"]["v"])
                 min_len = min(len(x), len(y))
                 if min_len > 0:
                     lines["trajectory"].set_data(x[:min_len], y[:min_len])
-                    # Update head
-                    if "trajectory_head" in lines:
-                        lines["trajectory_head"].set_data(
-                            [x[min_len - 1]], [y[min_len - 1]]
-                        )
+
+                    # Update heading arrow using latest theta
+                    if accumulated_data.get("theta") and accumulated_data["theta"]["v"]:
+                        last_theta = accumulated_data["theta"]["v"][-1]
+                        last_x = x[min_len - 1]
+                        last_y = y[min_len - 1]
+                        arrow_len = 0.15
+                        if "heading_arrow" in lines:
+                            q = lines["heading_arrow"]
+                            q.set_offsets(np.array([[last_x, last_y]]))
+                            import math
+                            q.set_UVC(
+                                [arrow_len * math.cos(last_theta)],
+                                [arrow_len * math.sin(last_theta)],
+                            )
 
             if (
                 "trajectory_gps" in lines
-                and "x_gps" in latest_data
-                and "y_gps" in latest_data
+                and accumulated_data.get("x_gps") and accumulated_data["x_gps"]["v"]
+                and accumulated_data.get("y_gps") and accumulated_data["y_gps"]["v"]
             ):
-                x = latest_data["x_gps"]["v"]
-                y = latest_data["y_gps"]["v"]
+                x = list(accumulated_data["x_gps"]["v"])
+                y = list(accumulated_data["y_gps"]["v"])
                 min_len = min(len(x), len(y))
                 if min_len > 0:
                     lines["trajectory_gps"].set_data(x[:min_len], y[:min_len])
@@ -656,9 +705,9 @@ def _run_scope_plot_process(
                 fx = f"fleet_x_{i}"
                 fy = f"fleet_y_{i}"
 
-                if line_key in lines and fx in latest_data and fy in latest_data:
-                    x = latest_data[fx]["v"]
-                    y = latest_data[fy]["v"]
+                if line_key in lines and fx in accumulated_data and accumulated_data[fx]["v"] and fy in accumulated_data and accumulated_data[fy]["v"]:
+                    x = list(accumulated_data[fx]["v"])
+                    y = list(accumulated_data[fy]["v"])
                     min_len = min(len(x), len(y))
                     if min_len > 0:
                         lines[line_key].set_data(x[:min_len], y[:min_len])
@@ -666,6 +715,29 @@ def _run_scope_plot_process(
                         head_key = f"traj_head_{i}"
                         if head_key in lines:
                             lines[head_key].set_data([x[min_len - 1]], [y[min_len - 1]])
+
+        # ---- Update path visualization (global / local / obstacles) ----
+        if path_viz_data:
+            # if "global_path_x" in path_viz_data and "global_path_y" in path_viz_data:
+            #     if "global_path" in lines:
+            #         lines["global_path"].set_data(
+            #             path_viz_data["global_path_x"],
+            #             path_viz_data["global_path_y"],
+            #         )
+            if "local_path_x" in path_viz_data and "local_path_y" in path_viz_data:
+                if "local_path" in lines:
+                    lines["local_path"].set_data(
+                        path_viz_data["local_path_x"],
+                        path_viz_data["local_path_y"],
+                    )
+            obstacles = path_viz_data.get("obstacles", [])
+            if "obstacles" in lines:
+                if obstacles:
+                    ox = [o[0] for o in obstacles]
+                    oy = [o[1] for o in obstacles]
+                    lines["obstacles"].set_data(ox, oy)
+                else:
+                    lines["obstacles"].set_data([], [])
 
         # Update axis limits
         for ax in axes.values():
@@ -709,22 +781,42 @@ def _create_local_layout(plt, car_id, field_names):
     ax_traj.set_ylim(-5, 5)
     axes["trajectory"] = ax_traj
 
-    # Reference Path (Planned)
+    # Reference Path (Planned) - now also labeled as "Global"  
     (line_ref,) = ax_traj.plot([], [], "k--", lw=1.5, alpha=0.6, label="Planned")
     lines["trajectory_ref"] = line_ref
+
+    # # Global path from path_viz (green dashed)
+    # (line_global,) = ax_traj.plot([], [], color="#2ca02c", ls="--", lw=1.8, alpha=0.7, label="Global Path")
+    # lines["global_path"] = line_global
+
+    # Local path from path_viz (orange solid, shows obstacle avoidance)
+    (line_local,) = ax_traj.plot([], [], color="#ff7f0e", ls="-", lw=2.5, alpha=0.85, label="Local Path")
+    lines["local_path"] = line_local
+
+    # Obstacle markers (red circles)
+    (obstacle_scatter,) = ax_traj.plot(
+        [], [], "ro", ms=10, alpha=0.8, markerfacecolor="none",
+        markeredgewidth=2.5, label="Obstacles", zorder=8,
+    )
+    lines["obstacles"] = obstacle_scatter
 
     # Est path
     (line,) = ax_traj.plot([], [], "b-", lw=2, label="Path Est")
     lines["trajectory"] = line
-    # Head marker
-    (line_head,) = ax_traj.plot([], [], "bo", ms=8, zorder=10)  # Blue dot
-    lines["trajectory_head"] = line_head
+    # Head marker removed — heading arrow already indicates car position
+
+    # Heading arrow (quiver) — initially empty
+    heading_quiver = ax_traj.quiver(
+        [], [], [], [], color="blue", scale=5, width=0.012,
+        headwidth=4, headlength=5, zorder=11,
+    )
+    lines["heading_arrow"] = heading_quiver
 
     # GPS path
     if "x_gps" in field_names:
         (line_gps,) = ax_traj.plot([], [], "r.", markersize=3, label="GPS")
         lines["trajectory_gps"] = line_gps
-    ax_traj.legend(loc="upper right", fontsize=8)
+    ax_traj.legend(loc="upper right", fontsize=7, ncol=2)
 
     # 2. Velocity (Top Right)
     ax_vel = fig.add_subplot(gs[0, 2])
@@ -732,10 +824,10 @@ def _create_local_layout(plt, car_id, field_names):
     ax_vel.grid(True, alpha=0.3)
     axes["velocity"] = ax_vel
 
-    for f, c, s in [("velocity", "b", "-"), ("v_ref", "k", "--")]:
+    for f, c, s in [("velocity", "b", "-"), ("v_ref", "k", "--"), ("v_ref_actual", "r", "--")]:
         if f in field_names:
             (l,) = ax_vel.plot(
-                [], [], color=c, linestyle="None", marker=".", markersize=2, label=f
+                [], [], color=c, linestyle=s, marker="." if s == "None" else "None", markersize=2, label=f
             )
             lines[f] = l
     ax_vel.legend(fontsize=8)

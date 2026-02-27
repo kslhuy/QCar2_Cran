@@ -68,6 +68,20 @@ class FollowingLeaderState(StateBase):
         print("[DEBUG] ===============================")
         self.logger.logger.info("[FOLLOW] Entering FOLLOWING_LEADER state")
 
+        # Force trailing mode — never overtake the leader
+        try:
+            if (
+                hasattr(self.vehicle_logic, "yolo_manager")
+                and self.vehicle_logic.yolo_manager
+                and self.vehicle_logic.yolo_manager.yolo_drive is not None
+            ):
+                self.vehicle_logic.yolo_manager.yolo_drive.car_overtake_mode = False
+                self.logger.logger.info(
+                    "[FOLLOW] Car overtake mode forced OFF (trailing leader)"
+                )
+        except Exception:
+            pass
+
         # Check if formation data exists and set up if missing
         if hasattr(self.vehicle_logic, "platoon_controller"):
             self.vehicle_logic.platoon_controller.enable_as_follower()
@@ -566,6 +580,9 @@ class FollowingLeaderState(StateBase):
         self.logger.log_following_leader_control(
             follower_state=follower_state, leader_state=leader_state, u=u, delta=delta
         )
+
+        # Record actual target speed for scope display
+        self.vehicle_logic.v_ref_actual = base_velocity
 
         # u = 0.05
         # delta = 0

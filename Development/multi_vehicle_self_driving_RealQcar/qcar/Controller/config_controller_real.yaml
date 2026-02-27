@@ -112,6 +112,14 @@ pp_map:
   trailing_i_gain: 0.0
   trailing_d_gain: 0.1
   blind_trailing_speed: 0.2
+  obstacle_avoidance_enabled: true
+  obstacle_replan_period: 0.25      # [s] minimum time between local avoidance replans
+  obstacle_min_detect_dist: 0.25    # [m] ignore detections closer than this (too late/noisy)
+  obstacle_max_detect_dist: 2.0     # [m] far detections are ignored for local planning
+  obstacle_car_radius: 0.22         # [m] local planner obstacle radius for cars
+  obstacle_person_radius: 0.16      # [m] local planner obstacle radius for pedestrians
+  obstacle_influence: 0.90          # [m] distance around obstacle where path is pushed away
+  obstacle_clearance: 0.12          # [m] extra safety margin in addition to obstacle radius
 
 # Stanley Controller Parameters
 stanley:

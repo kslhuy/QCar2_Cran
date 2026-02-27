@@ -11,7 +11,7 @@ import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from .state_base import StateBase
 from .vehicle_state import VehicleState, StateTransitionReason, Gear
-from pal.products.qcar import IS_PHYSICAL_QCAR
+
 
 # Import CommandType once at module level
 import sys
@@ -130,7 +130,7 @@ class ManualModeState(StateBase):
             throttle = data.get("throttle", 0.0)
             steering = data.get("steering", 0.0)
 
-            if not IS_PHYSICAL_QCAR:
+            if not self.vehicle_logic.is_physical_qcar:
                 throttle *= 0.7  # Scale down for simulation (to sensible speeds)
 
             # Apply Gear-based throttle limiting
@@ -242,7 +242,7 @@ class ManualModeState(StateBase):
                 return
 
             # Set LED indicators
-            LEDs = np.array([0, 0, 0, 0, 0, 0, 1, 1])  # Default: rear lights on
+            LEDs = np.array([0, 0, 0, 0, 0, 0, 0, 0])  # Default: rear lights off
 
             # Adjust LED indicators based on steering
             if steering > 0.1:

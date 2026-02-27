@@ -76,7 +76,7 @@ class VehicleControlFullSystemQCar(Node):
             parameters=[
                 ('car_id', 3),
                 ('vehicle_type', 'Limo'),
-                ('v_ref', 0.75),
+                ('v_ref', 0.6),
                 ('controller_rate', 100),
                 ('calibrate', False),
                 ('path_number', 0),

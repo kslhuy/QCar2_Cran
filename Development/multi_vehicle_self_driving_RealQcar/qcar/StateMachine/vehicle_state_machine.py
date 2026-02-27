@@ -98,16 +98,16 @@ class VehicleStateMachine:
             # Get current state handler
             current_state = self.state_handlers[self.state]
 
-            # Log current state periodically (every 5 seconds)
-            if (
-                hasattr(self.vehicle_logic, "loop_counter")
-                and self.vehicle_logic.loop_counter % 1000 == 0
-            ):
-                if self.logger:
-                    time_in_state = self.get_time_in_state()
-                    self.logger.logger.info(
-                        f"[STATE] Current: {self.state.name} (for {time_in_state:.1f}s)"
-                    )
+            # # Log current state periodically (every 5 seconds)
+            # if (
+            #     hasattr(self.vehicle_logic, "loop_counter")
+            #     and self.vehicle_logic.loop_counter % 1000 == 0
+            # ):
+            #     if self.logger:
+            #         time_in_state = self.get_time_in_state()
+            #         self.logger.logger.info(
+            #             f"[STATE] Current: {self.state.name} (for {time_in_state:.1f}s)"
+            #         )
 
             # Update the current state
             throttle, steering, transition = current_state.update(dt, sensor_data)

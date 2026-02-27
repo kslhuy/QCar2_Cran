@@ -14,7 +14,7 @@ from typing import Dict, Any, Tuple, Optional
 from .state_base import StateBase
 from .vehicle_state import VehicleState, StateTransitionReason
 from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
-from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
+from pal.products.qcar import QCar, QCarGPS
 from hal.products.mats import SDCSRoadMap
 from ground_station_client import GroundStationClient
 
@@ -233,6 +233,9 @@ class InitializingState(StateBase):
         self.vehicle_logger.log_warning("=" * 60)
 
         # Update waypoint sequence to navigate to start
+        if not self.vehicle_logic.is_physical_qcar and init_waypoint_seq is not None:
+            init_waypoint_seq = init_waypoint_seq * 0.975
+
         self.waypoint_sequence = init_waypoint_seq
         if hasattr(self, "steering_controller") and self.steering_controller:
             self.steering_controller.reset(self.waypoint_sequence)
@@ -269,6 +272,10 @@ class InitializingState(StateBase):
             )
             if not self._validate_waypoint_sequence(waypoints):
                 return False
+
+            if not self.vehicle_logic.is_physical_qcar:
+                waypoints = waypoints * 0.975
+                self.logger.logger.info("Scaled virtual waypoints by 0.975")
 
             self.vehicle_logic.waypoint_sequence = waypoints
             self.logger.logger.info(
@@ -345,7 +352,10 @@ class InitializingState(StateBase):
                     "Limo Car detected - skipping QCar initialization"
                 )
 
-            elif not IS_PHYSICAL_QCAR and self.vehicle_logic.vehicle_type == "Qcar":
+            elif (
+                not self.vehicle_logic.is_physical_qcar
+                and self.vehicle_logic.vehicle_type == "Qcar"
+            ):
                 self.logger.logger.info("QCar Simulation mode detected")
                 from qvl.multi_agent import readRobots
 

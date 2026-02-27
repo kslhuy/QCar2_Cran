@@ -15,7 +15,7 @@ import time
 import sys
 import os
 
-from pal.products.qcar import QCarGPS, IS_PHYSICAL_QCAR
+from pal.products.qcar import QCarGPS
 import numpy as np
 
 # Add parent directory to sys.path to import command_types
@@ -167,6 +167,12 @@ class StateBase:
                         new_waypoints = self.vehicle_logic.roadmap.generate_path(
                             node_sequence
                         )
+                        if (
+                            not self.vehicle_logic.is_physical_qcar
+                            and new_waypoints is not None
+                        ):
+                            new_waypoints = new_waypoints * 0.975
+
                         self.vehicle_logic.waypoint_sequence = new_waypoints
 
                         # Update steering controller if it exists
@@ -390,7 +396,7 @@ class StateBase:
                 preset_names = data.get(
                     "preset_names", ["local_state", "local_control"]
                 )
-                stream_rate = data.get("stream_rate", 50.0)
+                stream_rate = data.get("stream_rate", 30.0)
                 success = self._enable_scope_streaming(preset_names, stream_rate)
                 if success:
                     self.logger.logger.info(
@@ -864,7 +870,7 @@ class StateBase:
                     pass
 
             # Reinitialize GPS with calibration
-            if not IS_PHYSICAL_QCAR:
+            if not self.vehicle_logic.is_physical_qcar:
                 # For fake vehicles: Update mock hardware positions
                 self._update_fake_vehicle_position(calibration_pose)
 
@@ -982,7 +988,7 @@ class StateBase:
 
             # Launch Server using YOLOLauncher
             yolo_process = YOLOLauncher.launch_server(
-                is_physical=IS_PHYSICAL_QCAR,
+                is_physical=self.vehicle_logic.is_physical_qcar,
                 vehicle_id=vehicle_id,
                 probing=probing_enabled,
                 logger=self.logger,
@@ -996,7 +1002,7 @@ class StateBase:
 
             # Connect Receiver
             # Physical QCar server uses hardcoded port 18666, Virtual uses 1866{id}
-            if IS_PHYSICAL_QCAR:
+            if self.vehicle_logic.is_physical_qcar:
                 yolo_port = "18666"
             else:
                 yolo_port = f"1866{vehicle_id}"
@@ -1148,7 +1154,7 @@ class StateBase:
         return probing_enabled
 
     def _enable_scope_streaming(
-        self, preset_names: list = None, stream_rate: float = 50.0
+        self, preset_names: list = None, stream_rate: float = 30.0
     ) -> bool:
         """
         Enable scope data streaming to Ground Station for remote plotting.

@@ -7,7 +7,7 @@ Uses single handle_event method for command processing.
 
 import time
 import numpy as np
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, Tuple, Optional, List
 from .state_base import StateBase
 from .vehicle_state import VehicleState, StateTransitionReason
 from .following_path import (
@@ -53,7 +53,10 @@ except ImportError as e:
 
 # Import MPC controller directly (standalone, no wrappers needed)
 try:
-    from Controller.mpc_controller import CasADiMPCController, MPCControllerFactory
+    from Controller.MPC_controller.mpc_controller import (
+        CasADiMPCController,
+        MPCControllerFactory,
+    )
 
     MPC_AVAILABLE = True
 except ImportError as e:
@@ -73,13 +76,14 @@ except ImportError as e:
     PP_Controller = None
 
 try:
-    from PathPlanner.path_rich import RichSDCSPlanner
+    from PathPlanner.path_rich import RichSDCSPlanner, LocalObstacle
 
     PATH_RICH_AVAILABLE = True
 except ImportError as e:
     print(f"WARNING: path_rich planner not available: {e}")
     PATH_RICH_AVAILABLE = False
     RichSDCSPlanner = None
+    LocalObstacle = None
 
 
 class FollowingPathState(StateBase):
@@ -114,6 +118,27 @@ class FollowingPathState(StateBase):
         self.pp_speed_profile_base = None  # Base speed profile from path_rich
         self.pp_profile_design_speed = 0.0  # desired_speed used to build base profile
         self.pp_last_v_ref = None  # For lightweight change logging
+
+        # Optional pp_map local obstacle-avoidance replanning from YOLO distances.
+        self.pp_obstacle_avoidance_enabled = False
+        self.pp_obstacle_replan_period = 0.25
+        self.pp_obstacle_min_dist = 0.25
+        self.pp_obstacle_max_dist = 2.0
+        self.pp_obstacle_car_radius = 0.1
+        self.pp_obstacle_person_radius = 0.1
+        self.pp_obstacle_influence = 0.90
+        self.pp_obstacle_clearance = 0.1
+        self._pp_last_obstacle_replan = 0.0
+        self._pp_obstacle_path_active = False
+
+        # Path visualization data (for GUI)
+        self._pp_current_obstacles = []  # List of LocalObstacle currently active
+        self._pp_local_path_xy = None    # 2xN local (avoidance) path
+
+        # General obstacle avoidance (works with any controller)
+        self._original_waypoint_sequence = None  # Backup for restoration
+        self._general_obstacle_path_active = False
+        self._general_last_replan = 0.0
 
     def _init_controllers(self, force: bool = False):
         """
@@ -229,6 +254,31 @@ class FollowingPathState(StateBase):
         # Initialize Lane Fusion system for lane-assisted path following
         self._init_lane_fusion()
 
+        # Propagate car_overtake_mode from config to YOLODriveLogic
+        # This works with ANY controller (Stanley, PP, etc.)
+        # The carPulse gain skip is universal; actual path replanning needs pp_map.
+        try:
+            if hasattr(self.vehicle_logic, "controller_manager"):
+                pp_params = self.vehicle_logic.controller_manager.config.get_lateral_params("pp_map")
+                overtake = bool(pp_params.get("car_overtake_mode", False))
+                self._car_overtake_mode = overtake
+                if (
+                    hasattr(self.vehicle_logic, "yolo_manager")
+                    and self.vehicle_logic.yolo_manager
+                    and self.vehicle_logic.yolo_manager.yolo_drive is not None
+                ):
+                    self.vehicle_logic.yolo_manager.yolo_drive.car_overtake_mode = overtake
+                    self.logger.logger.info(
+                        f"[PATH] Car overtake mode: {overtake}"
+                    )
+                    if overtake and not self._use_pp_map:
+                        self.logger.logger.info(
+                            "[PATH] Overtake mode active — initializing general obstacle avoidance"
+                        )
+                        self._init_general_obstacle_avoidance(pp_params)
+        except Exception:
+            pass  # Non-critical
+
         self._controllers_initialized = True
 
     # ------------------------------------------------------------------
@@ -326,6 +376,8 @@ class FollowingPathState(StateBase):
         self.pp_speed_profile_base = None
         self.pp_profile_design_speed = 0.0
         self.pp_last_v_ref = None
+        self._pp_last_obstacle_replan = 0.0
+        self._pp_obstacle_path_active = False
 
         if not PP_MAP_AVAILABLE:
             self.logger.logger.warning("[PATH] PP controller module is not available")
@@ -341,6 +393,23 @@ class FollowingPathState(StateBase):
         if cm.config:
             params = cm.config.get_lateral_params("pp_map")
         self.pp_map_params = params
+        self.pp_obstacle_avoidance_enabled = bool(
+            params.get("obstacle_avoidance_enabled", True)
+        )
+        self.pp_obstacle_replan_period = float(
+            params.get("obstacle_replan_period", 0.25)
+        )
+        self.pp_obstacle_min_dist = float(params.get("obstacle_min_detect_dist", 0.25))
+        self.pp_obstacle_max_dist = float(params.get("obstacle_max_detect_dist", 2.0))
+        self.pp_obstacle_car_radius = float(params.get("obstacle_car_radius", 0.22))
+        self.pp_obstacle_person_radius = float(
+            params.get("obstacle_person_radius", 0.16)
+        )
+        self.pp_obstacle_influence = float(params.get("obstacle_influence", 0.90))
+        self.pp_obstacle_clearance = float(params.get("obstacle_clearance", 0.12))
+
+        # Note: car_overtake_mode is propagated in _init_controllers() which
+        # runs for all controller types, not just pp_map.
 
         wheelbase = 0.256
         if cm.config:
@@ -390,7 +459,11 @@ class FollowingPathState(StateBase):
         ):
             self._build_pp_waypoint_array(self.vehicle_logic.waypoint_sequence)
 
-    def _build_pp_waypoint_array(self, waypoint_sequence: np.ndarray) -> bool:
+    def _build_pp_waypoint_array(
+        self,
+        waypoint_sequence: np.ndarray,
+        obstacles: Optional[List[Any]] = None,
+    ) -> bool:
         """
         Build PP waypoint map from [2, N] path using rich trajectory conversion.
 
@@ -401,6 +474,7 @@ class FollowingPathState(StateBase):
             rich_planner=self.rich_planner,
             waypoint_sequence=waypoint_sequence,
             params=self.pp_map_params,
+            obstacles=obstacles,
             logger=self.logger.logger if self.logger else None,
         )
         if result is None:
@@ -456,6 +530,358 @@ class FollowingPathState(StateBase):
             y=y,
         )
 
+    @staticmethod
+    def _has_yolo_detection(value: Any) -> bool:
+        """Check if YOLO class-array payload indicates at least one detection."""
+        if value is None:
+            return False
+        try:
+            arr = np.asarray(value).reshape(-1)
+            return arr.size > 0 and float(arr[0]) > 0.0
+        except Exception:
+            try:
+                return bool(value)
+            except Exception:
+                return False
+
+    def _extract_pp_obstacles_from_yolo(
+        self,
+        sensor_data: Dict[str, Any],
+    ) -> List[Any]:
+        """Convert YOLO car/person distances and center-box obstacles into local planner obstacles."""
+        if LocalObstacle is None:
+            return []
+
+        yolo_data = sensor_data.get("yolo_data", None)
+        if not yolo_data:
+            return []
+
+        x = float(sensor_data.get("x", 0.0))
+        y = float(sensor_data.get("y", 0.0))
+        theta = float(sensor_data.get("theta", 0.0))
+
+        obstacles: List[Any] = []
+
+        def _add_obstacle(distance_value: Any, offset_value: Any, radius: float) -> None:
+            if distance_value is None:
+                return
+            try:
+                dist = float(distance_value)
+            except Exception:
+                return
+            if not np.isfinite(dist):
+                return
+            if dist < self.pp_obstacle_min_dist or dist > self.pp_obstacle_max_dist:
+                return
+
+            # Default to center if no offset provided
+            offset = 0.0
+            if offset_value is not None:
+                try:
+                    offset = float(offset_value)
+                except Exception:
+                    pass
+
+            # Calculate lateral distance based on normalized offset (-1.0 to 1.0)
+            # Assuming a sensible camera FOV, 1.0 offset (edge of screen) roughly equals 0.6 * distance
+            lateral_dist = dist * offset * 0.6
+
+            # Transform from relative polar (with lateral offset) to global coordinates
+            # Positive offset (right) corresponds to negative lateral displacement in standard right-handed coordinates
+            obs_x = x + dist * np.cos(theta) - lateral_dist * np.sin(theta)
+            obs_y = y + dist * np.sin(theta) + lateral_dist * np.cos(theta)
+
+            obstacles.append(
+                LocalObstacle(
+                    x=float(obs_x),
+                    y=float(obs_y),
+                    radius=float(radius),
+                    influence=float(self.pp_obstacle_influence),
+                    clearance=float(self.pp_obstacle_clearance),
+                )
+            )
+
+        if self._has_yolo_detection(yolo_data.get("cars", None)):
+            _add_obstacle(
+                distance_value=yolo_data.get("car_dist", None),
+                offset_value=yolo_data.get("car_offset", None),
+                radius=self.pp_obstacle_car_radius,
+            )
+
+        if self._has_yolo_detection(yolo_data.get("person", None)):
+            _add_obstacle(
+                distance_value=yolo_data.get("person_dist", None),
+                offset_value=yolo_data.get("person_offset", None),
+                radius=self.pp_obstacle_person_radius,
+            )
+
+        # Center-box obstacle: cone/other (type 2.0) or car-as-obstacle (type 3.0)
+        obs_type = yolo_data.get("obstacle_type", 0.0)
+        if obs_type == 2.0:  # OBSTACLE_CONE
+            _add_obstacle(
+                distance_value=yolo_data.get("obstacle_dist", None),
+                offset_value=yolo_data.get("obstacle_offset", None),
+                radius=self.pp_obstacle_car_radius,  # treat cone size similar to car
+            )
+        elif obs_type == 3.0:  # CAR_AS_OBSTACLE (overtake mode)
+            _add_obstacle(
+                distance_value=yolo_data.get("obstacle_dist", None)
+                or yolo_data.get("car_dist", None),
+                offset_value=yolo_data.get("obstacle_offset", None)
+                or yolo_data.get("car_offset", None),
+                radius=self.pp_obstacle_car_radius,
+            )
+
+        return obstacles
+
+    def _maybe_replan_pp_with_obstacles(self, sensor_data: Dict[str, Any]) -> None:
+        """
+        Trigger a local pp_map waypoint rebuild when YOLO sees close obstacles.
+
+        Uses the current segment path (`vehicle_logic.waypoint_sequence`) as the
+        nominal route, then applies path_rich obstacle offsets on top.
+        """
+        if not self.pp_obstacle_avoidance_enabled:
+            return
+        if self.rich_planner is None or LocalObstacle is None:
+            return
+        if not (
+            hasattr(self.vehicle_logic, "waypoint_sequence")
+            and self.vehicle_logic.waypoint_sequence is not None
+        ):
+            return
+
+        now = time.time()
+        if now - self._pp_last_obstacle_replan < self.pp_obstacle_replan_period:
+            return
+
+        obstacles = self._extract_pp_obstacles_from_yolo(sensor_data)
+        if obstacles:
+            rebuilt = self._build_pp_waypoint_array(
+                self.vehicle_logic.waypoint_sequence,
+                obstacles=obstacles,
+            )
+            if rebuilt:
+                self._pp_obstacle_path_active = True
+                self._pp_last_obstacle_replan = now
+                # Store for GUI visualization
+                self._pp_current_obstacles = list(obstacles)
+                if self.pp_waypoint_array is not None:
+                    self._pp_local_path_xy = self.pp_waypoint_array[:, :2].T.copy()
+                if (
+                    hasattr(self.vehicle_logic, "loop_counter")
+                    and self.vehicle_logic.loop_counter % 20 == 0
+                ):
+                    self.logger.logger.info(
+                        f"[PP-PATH] Local obstacle replan active ({len(obstacles)} obstacle(s))"
+                    )
+            return
+
+        if self._pp_obstacle_path_active:
+            restored = self._build_pp_waypoint_array(
+                self.vehicle_logic.waypoint_sequence
+            )
+            if restored:
+                self._pp_obstacle_path_active = False
+                self._pp_last_obstacle_replan = now
+                # Clear visualization data
+                self._pp_current_obstacles = []
+                self._pp_local_path_xy = None
+                self.logger.logger.info(
+                    "[PP-PATH] Obstacles cleared, restored nominal path"
+                )
+
+    # ------------------------------------------------------------------
+    # General obstacle avoidance (works with ANY controller)
+    # ------------------------------------------------------------------
+
+    def _init_general_obstacle_avoidance(self, params: dict) -> None:
+        """Initialize RichSDCSPlanner for obstacle avoidance with non-pp_map controllers.
+
+        Creates a lightweight planner that can compute lateral offsets around
+        obstacles and apply them to waypoint_sequence so that ANY steering
+        controller (Stanley, MPC, etc.) drives the modified path.
+        """
+        if not PATH_RICH_AVAILABLE:
+            self.logger.logger.warning(
+                "[PATH] path_rich not available — general obstacle avoidance disabled"
+            )
+            return
+
+        # Read obstacle params (reuse pp_map config section)
+        self.pp_obstacle_avoidance_enabled = True
+        self.pp_obstacle_replan_period = float(params.get("obstacle_replan_period", 0.25))
+        self.pp_obstacle_min_dist = float(params.get("obstacle_min_detect_dist", 0.25))
+        self.pp_obstacle_max_dist = float(params.get("obstacle_max_detect_dist", 2.0))
+        self.pp_obstacle_car_radius = float(params.get("obstacle_car_radius", 0.22))
+        self.pp_obstacle_person_radius = float(params.get("obstacle_person_radius", 0.16))
+        self.pp_obstacle_influence = float(params.get("obstacle_influence", 0.90))
+        self.pp_obstacle_clearance = float(params.get("obstacle_clearance", 0.12))
+
+        sample_ds = float(params.get("sample_ds", 0.02))
+        path_cfg = getattr(self.config, "path", None)
+        self.rich_planner = RichSDCSPlanner(
+            leftHandTraffic=getattr(path_cfg, "left_hand_traffic", False),
+            useSmallMap=True,
+            sample_ds=sample_ds,
+            is_cyclic=True,
+        )
+
+        # Backup original waypoints for restoration
+        ws = getattr(self.vehicle_logic, "waypoint_sequence", None)
+        if ws is not None:
+            self._original_waypoint_sequence = ws.copy()
+            # Set as base path for the planner so apply_local_avoidance can work
+            self.rich_planner._base_path = self.rich_planner._resample_path(ws, sample_ds)
+            self.rich_planner._base_s = self.rich_planner._path_s(
+                self.rich_planner._base_path[0, :],
+                self.rich_planner._base_path[1, :],
+            )
+
+        self.logger.logger.info(
+            f"[PATH] General obstacle avoidance initialized "
+            f"(influence={self.pp_obstacle_influence}m, "
+            f"car_radius={self.pp_obstacle_car_radius}m)"
+        )
+
+    def _maybe_replan_general_with_obstacles(
+        self, sensor_data: Dict[str, Any]
+    ) -> None:
+        """Apply obstacle avoidance by modifying waypoint_sequence directly.
+
+        Works with ANY controller (Stanley, MPC, etc.) since all of them
+        read vehicle_logic.waypoint_sequence for their reference path.
+        """
+        if not self.pp_obstacle_avoidance_enabled:
+            return
+        if self.rich_planner is None or LocalObstacle is None:
+            return
+        if self._original_waypoint_sequence is None:
+            # First time: capture the original waypoints
+            ws = getattr(self.vehicle_logic, "waypoint_sequence", None)
+            if ws is None:
+                return
+            self._original_waypoint_sequence = ws.copy()
+            self.rich_planner._base_path = self.rich_planner._resample_path(
+                ws, self.rich_planner.sample_ds
+            )
+            self.rich_planner._base_s = self.rich_planner._path_s(
+                self.rich_planner._base_path[0, :],
+                self.rich_planner._base_path[1, :],
+            )
+
+        now = time.time()
+        if now - self._general_last_replan < self.pp_obstacle_replan_period:
+            return
+
+        obstacles = self._extract_pp_obstacles_from_yolo(sensor_data)
+
+        if obstacles:
+            # Apply lateral offsets to the original base path
+            base_xy = self._original_waypoint_sequence  # (2, N)
+            avoided_xy = self.rich_planner.apply_local_avoidance(base_xy, obstacles)
+
+            # Update waypoint_sequence so any controller reads the modified path
+            self.vehicle_logic.waypoint_sequence = avoided_xy
+            self._general_obstacle_path_active = True
+            self._pp_obstacle_path_active = True
+            self._general_last_replan = now
+
+            # Store for GUI visualization
+            self._pp_current_obstacles = list(obstacles)
+            self._pp_local_path_xy = avoided_xy.copy()
+
+            if (
+                hasattr(self.vehicle_logic, "loop_counter")
+                and self.vehicle_logic.loop_counter % 20 == 0
+            ):
+                self.logger.logger.info(
+                    f"[OBSTACLE] General replan active ({len(obstacles)} obstacle(s))"
+                )
+            return
+
+        # No obstacles — restore original path if we were avoiding
+        if self._general_obstacle_path_active:
+            self.vehicle_logic.waypoint_sequence = self._original_waypoint_sequence.copy()
+            self._general_obstacle_path_active = False
+            self._pp_obstacle_path_active = False
+            self._general_last_replan = now
+            # Clear visualization
+            self._pp_current_obstacles = []
+            self._pp_local_path_xy = None
+            self.logger.logger.info(
+                "[OBSTACLE] Obstacles cleared, restored original path"
+            )
+
+    def get_path_visualization_data(self) -> Optional[Dict[str, Any]]:
+        """
+        Return path and obstacle data for GUI visualization.
+
+        Returns dict with:
+          - global_path_x/y: nominal route (downsampled), trimmed from car position forward
+          - local_path_x/y:  obstacle-avoidance route (downsampled, or None)
+          - obstacles:       list of [x, y, radius]
+          - avoidance_active: bool
+        """
+        MAX_PTS = 40  # keep bandwidth reasonable
+
+        def _downsample(arr, max_n):
+            """Downsample 1-D array to at most max_n equally-spaced points and round."""
+            if len(arr) <= max_n:
+                return [round(float(x), 2) for x in arr]
+            idx = np.linspace(0, len(arr) - 1, max_n, dtype=int)
+            return [round(float(x), 2) for x in arr[idx]]
+
+        def _trim_from_car(path_x, path_y, car_x, car_y):
+            """Trim path arrays to start from the nearest point to car position."""
+            dists = np.hypot(path_x - car_x, path_y - car_y)
+            idx = int(np.argmin(dists))
+            return path_x[idx:], path_y[idx:]
+
+        # Get car position for trimming
+        car_x, car_y = None, None
+        try:
+            sd = self.vehicle_logic.vehicle_observer.get_estimated_state_for_control()
+            car_x = float(sd.get("x", 0.0))
+            car_y = float(sd.get("y", 0.0))
+        except Exception:
+            pass
+
+        result = {
+            "avoidance_active": bool(self._pp_obstacle_path_active),
+            "obstacles": [],
+        }
+
+        # Global path: NOT sent from car side.
+        # The GS reconstructs it from node_sequence using SDCSRoadMap.
+
+        # Local path (only when avoidance is active)
+        if self._pp_obstacle_path_active and self._pp_local_path_xy is not None:
+            lp = self._pp_local_path_xy  # shape (2, N)
+            lx, ly = lp[0, :], lp[1, :]
+            if car_x is not None and car_y is not None and len(lx) > 2:
+                lx, ly = _trim_from_car(lx, ly, car_x, car_y)
+            if len(lx) > 1:
+                result["local_path_x"] = _downsample(lx, MAX_PTS)
+                result["local_path_y"] = _downsample(ly, MAX_PTS)
+        elif self.pp_waypoint_array is not None:
+            # No avoidance → local path matches global, send PP path for reference
+            pp = self.pp_waypoint_array[:, :2].T  # (2, N)
+            lx, ly = pp[0, :], pp[1, :]
+            if car_x is not None and car_y is not None and len(lx) > 2:
+                lx, ly = _trim_from_car(lx, ly, car_x, car_y)
+            if len(lx) > 1:
+                result["local_path_x"] = _downsample(lx, MAX_PTS)
+                result["local_path_y"] = _downsample(ly, MAX_PTS)
+
+        # Obstacle positions
+        for obs in self._pp_current_obstacles:
+            result["obstacles"].append(
+                [round(float(obs.x), 2), round(float(obs.y), 2), round(float(obs.radius), 2)]
+            )
+
+        return result
+
     def _compute_pp_control(
         self, dt: float, sensor_data: Dict[str, Any]
     ) -> Tuple[float, float]:
@@ -472,6 +898,7 @@ class FollowingPathState(StateBase):
             self._build_pp_waypoint_array(self.vehicle_logic.waypoint_sequence)
         if self.pp_waypoint_array is None:
             return self._compute_speed_control(sensor_data["velocity"], dt), 0.0
+        self._maybe_replan_pp_with_obstacles(sensor_data)
         self._update_pp_runtime_speed_profile()
 
         x = float(sensor_data["x"])
@@ -507,6 +934,9 @@ class FollowingPathState(StateBase):
         # PP target speed is map/curvature based and may jump near lap wrap
         # or when entering/leaving a hard-turn segment.
         speed_target = max(float(speed_target), 0.0)
+
+        # Record actual target speed for scope display
+        self.vehicle_logic.v_ref_actual = speed_target
 
         # dt_safe = max(float(dt), 1e-3)
         dt_safe = max(float(dt), 1e-3)
@@ -647,6 +1077,22 @@ class FollowingPathState(StateBase):
             # Update vehicle logic waypoint sequence
             self.vehicle_logic.waypoint_sequence = new_waypoint_sequence
 
+            # Reset general obstacle avoidance with new base path
+            if self._general_obstacle_path_active or self._original_waypoint_sequence is not None:
+                self._original_waypoint_sequence = new_waypoint_sequence.copy()
+                self._general_obstacle_path_active = False
+                self._pp_obstacle_path_active = False
+                self._pp_current_obstacles = []
+                self._pp_local_path_xy = None
+                if self.rich_planner is not None and not self._use_pp_map:
+                    self.rich_planner._base_path = self.rich_planner._resample_path(
+                        new_waypoint_sequence, self.rich_planner.sample_ds
+                    )
+                    self.rich_planner._base_s = self.rich_planner._path_s(
+                        self.rich_planner._base_path[0, :],
+                        self.rich_planner._base_path[1, :],
+                    )
+
             if self._use_pp_map:
                 if self._build_pp_waypoint_array(new_waypoint_sequence):
                     self.logger.logger.info(
@@ -747,6 +1193,10 @@ class FollowingPathState(StateBase):
         if self.vehicle_logic.elapsed_time() < self.config.timing.start_delay:
             return 0.0, 0.0, None
 
+        # === GENERAL OBSTACLE AVOIDANCE (any controller) ===
+        if not self._use_pp_map:
+            self._maybe_replan_general_with_obstacles(sensor_data)
+
         # === CONTROL COMPUTATION ===
 
         if self._use_mpc and self.mpc_controller is not None:
@@ -779,10 +1229,39 @@ class FollowingPathState(StateBase):
         # (PID+Stanley branch already applies it inside _compute_speed_control)
         if self._use_mpc or self._use_pp_map:
             yolo_gain = 1.0
-            if hasattr(self.vehicle_logic, 'yolo_manager') and self.vehicle_logic.yolo_manager is not None:
+            if (
+                hasattr(self.vehicle_logic, "yolo_manager")
+                and self.vehicle_logic.yolo_manager is not None
+            ):
                 yolo_gain = self.vehicle_logic.yolo_manager.get_yolo_gain()
             if yolo_gain < 1.0:
                 u = u * yolo_gain
+
+        # --- Center-box obstacle: person → full stop, cone → replanned above ---
+        yolo_data = sensor_data.get("yolo_data", None)
+        if yolo_data and yolo_data.get("obstacle_in_path", False):
+            obs_type = yolo_data.get("obstacle_type", 0.0)
+            obs_dist = yolo_data.get("obstacle_dist", None)
+            if obs_type == 1.0 and obs_dist is not None and obs_dist < 1.5:
+                # Person blocking center-front → full stop and wait
+                u = 0.0
+                if (
+                    hasattr(self.vehicle_logic, "loop_counter")
+                    and self.vehicle_logic.loop_counter % 50 == 0
+                ):
+                    self.logger.logger.info(
+                        f"[OBSTACLE] Person in path ({obs_dist:.2f}m) — stopped, waiting for clear path"
+                    )
+            elif obs_type == 2.0:
+                # Cone/other → path replanning already triggered in _maybe_replan_pp_with_obstacles
+                if (
+                    hasattr(self.vehicle_logic, "loop_counter")
+                    and self.vehicle_logic.loop_counter % 100 == 0
+                ):
+                    dist_str = f"{obs_dist:.2f}m" if obs_dist else "?"
+                    self.logger.logger.info(
+                        f"[OBSTACLE] Cone/obstacle in path ({dist_str}) — replanning route"
+                    )
 
         gear = getattr(self.vehicle_logic, "gear", None)
         max_throttle = float(getattr(gear, "value", 0.1))
@@ -892,6 +1371,10 @@ class FollowingPathState(StateBase):
 
         try:
             new_waypoints = self.vehicle_logic.roadmap.generate_path(node_sequence)
+
+            if not self.vehicle_logic.is_physical_qcar and new_waypoints is not None:
+                new_waypoints = new_waypoints * 0.975
+
             self.update_path(new_waypoints)
             self.logger.logger.info(f"[OK] Path updated in {self.__class__.__name__}")
         except Exception as e:
@@ -951,9 +1434,16 @@ class FollowingPathState(StateBase):
         # Apply YOLO adjustments to reference velocity
         # Read yolo_gain from YOLOManager (not a vehicle_logic attribute)
         yolo_gain = 1.0
-        if hasattr(self.vehicle_logic, 'yolo_manager') and self.vehicle_logic.yolo_manager is not None:
+        if (
+            hasattr(self.vehicle_logic, "yolo_manager")
+            and self.vehicle_logic.yolo_manager is not None
+        ):
             yolo_gain = self.vehicle_logic.yolo_manager.get_yolo_gain()
         v_ref_adjusted = self.vehicle_logic.v_ref * yolo_gain
+        
+        # Record actual target speed for scope display
+        self.vehicle_logic.v_ref_actual = v_ref_adjusted
+        
         return self.speed_controller.update(velocity, v_ref_adjusted, dt)
 
     def _extract_lane_data(self, yolo_data: dict) -> dict:
@@ -1090,7 +1580,7 @@ class FollowingPathState(StateBase):
         if not hasattr(self.vehicle_logic, "loop_counter"):
             return
 
-        if self.vehicle_logic.loop_counter % 10 != 0:
+        if self.vehicle_logic.loop_counter % 500 != 0:
             return
 
         mode_str = "PATH"
