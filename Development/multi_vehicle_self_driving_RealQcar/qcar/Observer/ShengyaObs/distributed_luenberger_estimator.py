@@ -173,11 +173,11 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             self.adjacency_matrix = np.array(self.config['adjacency_matrix'])
         else:
             # Default chain topology
-            self.adjacency_matrix = self._create_chain_topology()
+            self.adjacency_matrix = self._create_fully_connected_topology()
 
         # Validate adjacency matrix dimensions
         if self.adjacency_matrix.shape != (self.observer_size, self.observer_size):
-            self.adjacency_matrix = self._create_chain_topology()
+            self.adjacency_matrix = self._create_fully_connected_topology()
         
         # Cache neighbor list at initialization
         self.my_neighbors = self.get_neighbors(self.vehicle_id)

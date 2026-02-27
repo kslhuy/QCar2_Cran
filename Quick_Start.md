@@ -22,6 +22,7 @@
 #Allow to run the script in current terminal window
 
  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass 
+ ./env/Scripts/Activate.ps1
 
 #Then, run the activate script again:
 ./env/Scripts/Activate.ps1

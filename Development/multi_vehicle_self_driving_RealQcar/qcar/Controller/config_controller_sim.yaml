@@ -206,38 +206,25 @@ per_vehicle_controllers:
     lateral_controller_type: 'fix_lateral'  # Straight line
     # Optional per-vehicle override for velocity schedule (FOLLOWING_PATH)
     velocity_sequence:
-      - {velocity: 0.45, duration: 9990}
-      # - {velocity: 0.8, duration: 9999}
-      # - {velocity: 0.24, duration: 1.5}
-      # - {velocity: 0.12, duration: 1.5}
-      # - {velocity: 0.00, duration: 20}
-      # - {velocity: 0.10, duration: 1.5}
-      # - {velocity: 0.18, duration: 1.5}
-      # - {velocity: 0.28, duration: 1.5}
-      # - {velocity: 0.40, duration: 1.5}
-      # - {velocity: 0.55, duration: 1.5}
-      # - {velocity: 0.68, duration: 1.5}
-      # - {velocity: 0.74, duration: 1.5}
-      # - {velocity: 0.87, duration: 1.5}
-      # - {velocity: 1, duration: 30}
-      # - {velocity: 0.85, duration: 1.5}
-      # - {velocity: 0.76, duration: 1.5}
-      # - {velocity: 0.65, duration: 1.5}
-      # - {velocity: 0.50, duration: 1.5}
-      # - {velocity: 0.36, duration: 1.5}
-      # - {velocity: 0.24, duration: 1.5}
-      # - {velocity: 0.12, duration: 1.5}
-      # - {velocity: 0.00, duration: 20}
-      # - {velocity: 0.08, duration: 1.5}
-      # - {velocity: 0.18, duration: 1.5}
-      # - {velocity: 0.32, duration: 1.5}
-      # - {velocity: 0.48, duration: 1.5}
-      # - {velocity: 0.65, duration: 1.5}
-      # - {velocity: 0.80, duration: 1.5}
-      # - {velocity: 1.0, duration: 45}
-      # - {velocity: 0.0, duration: 20}
-      # - {velocity: 0.1, duration: 40}
-      # - {velocity: 1.5, duration: 20}
+      - {velocity: 0.5, duration: 999999}
+      - {velocity: 0.1, duration: 1.5}
+      - {velocity: 0.2, duration: 1.5}
+      - {velocity: 0.3, duration: 1.5}
+      - {velocity: 0.4, duration: 1.5}
+      - {velocity: 0.5, duration: 1.5}
+      - {velocity: 0.6, duration: 40}
+      - {velocity: 0.45, duration: 1.5}
+      - {velocity: 0.3, duration: 1.5}
+      - {velocity: 0.0, duration: 10}
+      - {velocity: 0.2, duration: 1.5}
+      - {velocity: 0.4, duration: 1.5}
+      - {velocity: 0.8, duration: 1.5}
+      - {velocity: 1, duration: 40}
+      - {velocity: 0.75, duration: 1.5}
+      - {velocity: 0.5, duration: 1.5}
+      - {velocity: 0.25, duration: 1.5}
+      - {velocity: 0.00, duration: 20}
+
 
     fix:
       throttle: 0.075  # Constant speed 
@@ -285,7 +272,7 @@ per_vehicle_controllers:
   
   # Vehicle 1 (First Follower)
   1:
-    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
+    longitudinal_controller_type: 'classical_distributed'  # Uses true V2V states for control
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.00  # Constant speed
@@ -305,7 +292,7 @@ per_vehicle_controllers:
   
   # Vehicle 2 (Second Follower)
   2:
-    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
+    longitudinal_controller_type: 'classical_distributed'  # Uses true V2V states for control
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.0  # Constant speed
@@ -325,7 +312,7 @@ per_vehicle_controllers:
 
   # Vehicle 3 (Third Follower)
   3:
-    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
+    longitudinal_controller_type: 'classical_distributed'  # Uses true V2V states for control
     lateral_controller_type: 'fix_lateral'
     fix:
       throttle: 0.0  # Constant speed
