@@ -206,7 +206,7 @@ per_vehicle_controllers:
     lateral_controller_type: 'fix_lateral'  # Straight line
     # Optional per-vehicle override for velocity schedule (FOLLOWING_PATH)
     velocity_sequence:
-      - {velocity: 0.5, duration: 999999}
+      - {velocity: 0.0, duration: 10}
       - {velocity: 0.1, duration: 1.5}
       - {velocity: 0.2, duration: 1.5}
       - {velocity: 0.3, duration: 1.5}
