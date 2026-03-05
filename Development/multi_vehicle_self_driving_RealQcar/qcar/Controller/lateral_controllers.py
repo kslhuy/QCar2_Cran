@@ -862,11 +862,14 @@ class FusionLateralController(LateralControllerBase):
                 self.path_weight * path_steering + self.leader_weight * leader_steering
             )
 
-        # Apply output smoothing
-        smoothed = (
-            self.smoothing_factor * final_steering
-            + (1 - self.smoothing_factor) * self.prev_steering
-        )
+        # # Apply output smoothing
+        if self.smoothing_factor > 0:
+            smoothed = (
+                self.smoothing_factor * final_steering
+                + (1 - self.smoothing_factor) * self.prev_steering
+            )
+        else:
+            smoothed = final_steering
         self.prev_steering = smoothed
 
         return np.clip(smoothed, -self.max_steering, self.max_steering)

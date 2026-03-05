@@ -1127,7 +1127,8 @@ class QCarRemoteController:
     # ========== Scope Streaming Commands ==========
 
     def enable_scope_streaming(
-        self, car_id: int, preset_names: List[str] = None, stream_rate: float = 20.0
+        self, car_id: int, preset_names: List[str] = None, stream_rate: float = 20.0,
+        fleet_size: int = None
     ) -> bool:
         """
         Enable scope data streaming from a vehicle for remote plotting.
@@ -1135,7 +1136,8 @@ class QCarRemoteController:
         Args:
             car_id: Vehicle ID
             preset_names: List of preset names to stream (default: local_state, local_control)
-            stream_rate: Streaming rate in Hz (default 50)
+            stream_rate: Streaming rate in Hz (default 20)
+            fleet_size: Actual fleet size for dynamic fleet field generation
 
         Returns:
             bool: True if command sent successfully
@@ -1143,9 +1145,15 @@ class QCarRemoteController:
         if preset_names is None:
             preset_names = ["local_state", "local_control"]
 
+        # Get fleet_size from V2V status if not provided and fleet_state is requested
+        if fleet_size is None and 'fleet_state' in preset_names:
+            car_data = self.cars.get(car_id)
+            if car_data and car_data.last_data:
+                fleet_size = car_data.last_data.get('v2v_peers', 0) + 1
+
         # Start receiving on scope manager
         if self.scope_manager:
-            self.scope_manager.start_stream(car_id, preset_names)
+            self.scope_manager.start_stream(car_id, preset_names, fleet_size=fleet_size)
 
         return self.send_command(
             car_id,
@@ -1153,6 +1161,7 @@ class QCarRemoteController:
                 "type": CommandType.ENABLE_SCOPE_STREAMING.value,
                 "preset_names": preset_names,
                 "stream_rate": stream_rate,
+                "fleet_size": fleet_size,
             },
         )
 

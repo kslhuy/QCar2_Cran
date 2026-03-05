@@ -18,7 +18,8 @@ import threading
 import time
 import yaml
 import os
-from typing import Dict, List, Optional, Tuple
+import copy
+from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 
 from Observer.local_state_estimators import (
@@ -85,25 +86,49 @@ class VehicleObserver:
             config_path = os.path.join(
                 os.path.dirname(__file__), "config_fleet_estimators.yaml"
             )
+            trust_child_config_path = os.path.join(
+                os.path.dirname(__file__),
+                "TrustbasedDistributedObserver",
+                "config_trust_estimator.yaml",
+            )
             with open(config_path, "r") as f:
-                loaded = yaml.safe_load(f)
-                self.fleet_config_defaults = loaded.get("fleet", {})
-                self.fleet_estimator_type = loaded.get("fleet_estimator_type")
+                loaded = yaml.safe_load(f) or {}
 
-                # Load fleet plotting config
-                self.fleet_plotting_config = {
-                    "enabled": loaded.get("enable_plotting", False),
-                    "params": loaded.get("plotting", {}),
-                }
-                # Load fleet recording config
-                self.fleet_recording_enabled = loaded.get("enable_recording", False)
-                self.fleet_recording_overwrite = loaded.get(
-                    "recording_overwrite", False
+            # Merge trust child config into trust estimator sections.
+            try:
+                with open(trust_child_config_path, "r") as f:
+                    trust_child_loaded = yaml.safe_load(f) or {}
+                loaded = self._merge_trust_child_into_fleet_config(
+                    loaded, trust_child_loaded
                 )
+            except Exception as trust_cfg_error:
+                if self.vehicle_logger:
+                    self.vehicle_logger.log_warning(
+                        f"Trust child config not applied: {trust_cfg_error}"
+                    )
 
-                self.vehicle_logger.logger.info(
-                    f"Loaded fleet estimator config: {self.fleet_estimator_type}"
-                )
+            if not isinstance(loaded, dict):
+                loaded = {}
+
+            self.fleet_config_defaults = loaded.get("fleet", {})
+            selected_fleet_type = loaded.get("fleet_estimator_type")
+            if selected_fleet_type:
+                self.fleet_estimator_type = selected_fleet_type
+
+            # Load fleet plotting config
+            self.fleet_plotting_config = {
+                "enabled": loaded.get("enable_plotting", False),
+                "params": loaded.get("plotting", {}),
+            }
+            # Load fleet recording config
+            self.fleet_recording_enabled = loaded.get("enable_recording", False)
+            self.fleet_recording_overwrite = loaded.get(
+                "recording_overwrite", False
+            )
+
+            self.vehicle_logger.logger.info(
+                f"Loaded fleet estimator config: {self.fleet_estimator_type}"
+            )
         except Exception as e:
             if self.vehicle_logger:
                 self.vehicle_logger.log_warning(
@@ -245,6 +270,98 @@ class VehicleObserver:
             # f"local_estimator={local_estimator_type}, fleet_estimator={fleet_estimator_type}"
         )
 
+    @staticmethod
+    def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively merge override into base and return base."""
+        if not isinstance(base, dict) or not isinstance(override, dict):
+            return base
+
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(base.get(key), dict):
+                VehicleObserver._deep_merge_dict(base[key], value)
+            else:
+                base[key] = copy.deepcopy(value)
+        return base
+
+    def _merge_trust_child_into_fleet_config(
+        self, fleet_cfg: Dict[str, Any], trust_cfg: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Merge TrustbasedDistributedObserver child config into fleet estimator config.
+
+        Parent: Observer/config_fleet_estimators.yaml
+        Child: Observer/TrustbasedDistributedObserver/config_trust_estimator.yaml
+        """
+        merged = copy.deepcopy(fleet_cfg) if isinstance(fleet_cfg, dict) else {}
+        trust_cfg = trust_cfg or {}
+        if not isinstance(trust_cfg, dict) or not trust_cfg:
+            return merged
+
+        fleet_section = merged.setdefault("fleet", {})
+        if not isinstance(fleet_section, dict):
+            fleet_section = {}
+            merged["fleet"] = fleet_section
+
+        # Ensure trust estimator sections exist before merging child parameters.
+        trust_consensus = fleet_section.setdefault("trust_consensus", {})
+        trust_kalman = fleet_section.setdefault("trust_kalman", {})
+        if not isinstance(trust_consensus, dict):
+            trust_consensus = {}
+            fleet_section["trust_consensus"] = trust_consensus
+        if not isinstance(trust_kalman, dict):
+            trust_kalman = {}
+            fleet_section["trust_kalman"] = trust_kalman
+
+        # Allow an already-nested child layout:
+        # trust_cfg["fleet"]["trust_consensus"/"trust_kalman"].
+        child_fleet = trust_cfg.get("fleet", {})
+        if isinstance(child_fleet, dict):
+            child_consensus = child_fleet.get("trust_consensus", {})
+            child_kalman = child_fleet.get("trust_kalman", {})
+            if isinstance(child_consensus, dict):
+                self._deep_merge_dict(trust_consensus, child_consensus)
+            if isinstance(child_kalman, dict):
+                self._deep_merge_dict(trust_kalman, child_kalman)
+
+        # Backward-compatible child layout (top-level trust/weight/observer).
+        child_trust = trust_cfg.get("trust", {})
+        if isinstance(child_trust, dict):
+            self._deep_merge_dict(trust_consensus.setdefault("trust", {}), child_trust)
+            self._deep_merge_dict(trust_kalman.setdefault("trust", {}), child_trust)
+
+        child_weight = trust_cfg.get("weight", {})
+        if isinstance(child_weight, dict):
+            self._deep_merge_dict(
+                trust_consensus.setdefault("weight", {}), child_weight
+            )
+            self._deep_merge_dict(trust_kalman.setdefault("weight", {}), child_weight)
+
+        child_observer = trust_cfg.get("observer", {})
+        if isinstance(child_observer, dict):
+            observer_common = {
+                key: value for key, value in child_observer.items() if key != "kalman"
+            }
+            self._deep_merge_dict(trust_consensus, observer_common)
+            self._deep_merge_dict(trust_kalman, observer_common)
+
+            kalman_cfg = child_observer.get("kalman", {})
+            if isinstance(kalman_cfg, dict):
+                kalman_field_map = {
+                    "process_noise": "process_noise",
+                    "measurement_noise": "measurement_noise",
+                    "initial_covariance": "initial_covariance",
+                }
+                for src_key, dst_key in kalman_field_map.items():
+                    if src_key in kalman_cfg:
+                        trust_kalman[dst_key] = copy.deepcopy(kalman_cfg[src_key])
+
+        # Keep parent as source of truth for top-level estimator selection.
+        # Only fallback to child type if parent omitted it.
+        if "fleet_estimator_type" not in merged and "fleet_estimator_type" in trust_cfg:
+            merged["fleet_estimator_type"] = trust_cfg["fleet_estimator_type"]
+
+        return merged
+
     def _init_recorders(self):
         """Initialize data recorders if enabled in config."""
         try:
@@ -318,17 +435,25 @@ class VehicleObserver:
 
     # ===== Factory Methods for Creating Estimators =====
 
+    def _resolve_fleet_estimator_config(self) -> Dict[str, Any]:
+        """
+        Resolve effective fleet estimator config for the currently selected type.
+
+        Uses YAML defaults when available and falls back to observer-level gains.
+        """
+        fleet_config = self.fleet_config_defaults.get(self.fleet_estimator_type, {})
+        if isinstance(fleet_config, dict) and fleet_config:
+            return copy.deepcopy(fleet_config)
+
+        return {
+            "consensus_gain": self.observer_config.get("consensus_gain", 0.3),
+            "observer_gain": self.observer_config.get("observer_gain", 0.1),
+        }
+
     def _create_fleet_estimator(self):
         """Create fleet state estimator using factory"""
         try:
-            # Use config from file, fallback to observer_config if not available
-            fleet_config = self.fleet_config_defaults.get(self.fleet_estimator_type, {})
-            if not fleet_config:
-                fleet_config = {
-                    "consensus_gain": self.observer_config.get("consensus_gain", 0.3),
-                    "observer_gain": self.observer_config.get("observer_gain", 0.1),
-                }
-            # print(fleet_config)
+            fleet_config = self._resolve_fleet_estimator_config()
             self.fleet_estimator = FleetEstimatorFactory.create(
                 estimator_type=self.fleet_estimator_type,
                 vehicle_id=self.vehicle_id,
@@ -1030,6 +1155,41 @@ class VehicleObserver:
             self.vehicle_logger.log_error("Add received fleet state error", e)
             return False
 
+    def add_received_neighbor_trust_report(
+        self, reporter_id: int, opinions: Dict[int, float]
+    ) -> bool:
+        """
+        Add received neighbor trust opinions (reporter -> target trust).
+        """
+        try:
+            if reporter_id == self.vehicle_id:
+                return False
+            if self.fleet_estimator is None:
+                return False
+            if not hasattr(self.fleet_estimator, "add_neighbor_trust_report"):
+                return False
+
+            updates = 0
+            for target_id, score in opinions.items():
+                try:
+                    tid = int(target_id)
+                    trust_score = float(score)
+                    if not np.isfinite(trust_score):
+                        continue
+                    self.fleet_estimator.add_neighbor_trust_report(
+                        reporter_id=reporter_id,
+                        target_id=tid,
+                        trust_score=float(np.clip(trust_score, 0.0, 1.0)),
+                    )
+                    updates += 1
+                except (TypeError, ValueError):
+                    continue
+
+            return updates > 0
+        except Exception as e:
+            self.vehicle_logger.log_error("Add received neighbor trust report error", e)
+            return False
+
     def get_local_state(self) -> np.ndarray:
         """Get current local state estimate."""
         with self.lock:
@@ -1271,6 +1431,64 @@ class VehicleObserver:
                 "source": "fleet_consensus",
             }
 
+    def get_trust_report_for_broadcast(self) -> Optional[Dict[str, Any]]:
+        """
+        Get trust report for V2V broadcasting.
+
+        Returns None when trust data is unavailable.
+        """
+        with self.lock:
+            if self.fleet_estimator is None:
+                return None
+            if not hasattr(self.fleet_estimator, "get_all_trust_scores"):
+                return None
+
+            try:
+                raw_trust_scores = self.fleet_estimator.get_all_trust_scores()
+            except Exception:
+                return None
+
+            if not isinstance(raw_trust_scores, dict) or not raw_trust_scores:
+                return None
+
+            trust_scores: Dict[int, float] = {}
+            for target_id, score in raw_trust_scores.items():
+                try:
+                    tid = int(target_id)
+                    trust_score = float(score)
+                    if np.isfinite(trust_score):
+                        trust_scores[tid] = float(np.clip(trust_score, 0.0, 1.0))
+                except (TypeError, ValueError):
+                    continue
+
+            if not trust_scores:
+                return None
+
+            generalized_vector: Dict[int, float] = {}
+            if hasattr(self.fleet_estimator, "get_generalized_trust_vector"):
+                try:
+                    raw_generalized = self.fleet_estimator.get_generalized_trust_vector()
+                    if isinstance(raw_generalized, dict):
+                        for target_id, score in raw_generalized.items():
+                            try:
+                                tid = int(target_id)
+                                trust_score = float(score)
+                                if np.isfinite(trust_score):
+                                    generalized_vector[tid] = float(
+                                        np.clip(trust_score, 0.0, 1.0)
+                                    )
+                            except (TypeError, ValueError):
+                                continue
+                except Exception:
+                    generalized_vector = {}
+
+            return {
+                "reporter_id": self.vehicle_id,
+                "trust_scores": trust_scores,
+                "generalized_trust_vector": generalized_vector,
+                "source": "trust_estimator",
+            }
+
     def reinitialize_fleet_estimation(
         self, new_fleet_size: int, peer_vehicle_ids: List[int]
     ):
@@ -1291,10 +1509,7 @@ class VehicleObserver:
 
             # Create fresh fleet estimator with new fleet size (no old data to copy)
             try:
-                fleet_config = {
-                    "consensus_gain": self.observer_config.get("consensus_gain", 0.3),
-                    "observer_gain": self.observer_config.get("observer_gain", 0.1),
-                }
+                fleet_config = self._resolve_fleet_estimator_config()
 
                 # Create new fleet estimator with correct size
                 self.fleet_estimator = FleetEstimatorFactory.create(

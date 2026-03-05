@@ -826,11 +826,11 @@ class FollowingPathState(StateBase):
         MAX_PTS = 40  # keep bandwidth reasonable
 
         def _downsample(arr, max_n):
-            """Downsample 1-D array to at most max_n equally-spaced points and round."""
+            """Downsample 1-D array to at most max_n equally-spaced points."""
             if len(arr) <= max_n:
-                return [round(float(x), 2) for x in arr]
+                return arr.tolist()
             idx = np.linspace(0, len(arr) - 1, max_n, dtype=int)
-            return [round(float(x), 2) for x in arr[idx]]
+            return arr[idx].tolist()
 
         def _trim_from_car(path_x, path_y, car_x, car_y):
             """Trim path arrays to start from the nearest point to car position."""
@@ -877,7 +877,7 @@ class FollowingPathState(StateBase):
         # Obstacle positions
         for obs in self._pp_current_obstacles:
             result["obstacles"].append(
-                [round(float(obs.x), 2), round(float(obs.y), 2), round(float(obs.radius), 2)]
+                [float(obs.x), float(obs.y), float(obs.radius)]
             )
 
         return result

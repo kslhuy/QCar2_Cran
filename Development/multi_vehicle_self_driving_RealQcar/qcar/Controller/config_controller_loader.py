@@ -110,6 +110,7 @@ class ControllerConfig:
             types.append("lookahead")
         if "fusion_lateral" in self.config:
             types.append("fusion")
+            types.append("fusion_lateral")
         return types
 
     def get_longitudinal_params(
@@ -183,14 +184,17 @@ class ControllerConfig:
             "K": np.array([[K_spacing, K_velocity]]),
             "acc_to_throttle_gain": cacc_config.get("acc_to_throttle_gain", 0.5),
             "max_throttle": cacc_config.get("max_throttle", 0.3),
-            "alpha_filter": cacc_config.get("alpha_filter", 0.3),
-            "ki_velocity": cacc_config.get("ki_velocity", 0.1),
             "spacing_mode": cacc_config.get("spacing_mode", "path_or_projected"),
             "projection_heading_source": cacc_config.get(
                 "projection_heading_source", "leader"
             ),
             "blend_heading_deg": cacc_config.get("blend_heading_deg", 20.0),
             "min_effective_spacing": cacc_config.get("min_effective_spacing", 0.0),
+            "spacing_deadband": cacc_config.get("spacing_deadband", 0.2),
+            "velocity_deadband": cacc_config.get("velocity_deadband", 0.05),
+            "throttle_smoothing": cacc_config.get("throttle_smoothing", 0.7),
+            "brake_smoothing": cacc_config.get("brake_smoothing", 0.5),
+            "max_acc_rate": cacc_config.get("max_acc_rate", 2.0),
         }
 
     def _get_pid_params(self) -> Dict[str, Any]:

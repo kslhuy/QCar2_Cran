@@ -22,6 +22,12 @@ _QCAR_DIR = os.path.dirname(os.path.dirname(_THIS_DIR))  # …/qcar
 
 _LOCAL_OBS_PATH = os.path.join(_QCAR_DIR, "Observer", "config_local_estimators.yaml")
 _FLEET_OBS_PATH = os.path.join(_QCAR_DIR, "Observer", "config_fleet_estimators.yaml")
+_TRUST_OBS_PATH = os.path.join(
+    _QCAR_DIR,
+    "Observer",
+    "TrustbasedDistributedObserver",
+    "config_trust_estimator.yaml",
+)
 _CTRL_SIM_PATH = os.path.join(_QCAR_DIR, "Controller", "config_controller_sim.yaml")
 _CTRL_REAL_PATH = os.path.join(_QCAR_DIR, "Controller", "config_controller_real.yaml")
 
@@ -54,6 +60,91 @@ def _flatten_params(d: Any) -> Dict[str, Any]:
     return result
 
 
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge override into base and return base."""
+    if not isinstance(base, dict) or not isinstance(override, dict):
+        return base
+
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge_dict(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def _merge_trust_child_into_fleet_config(
+    fleet_cfg: Dict[str, Any], trust_cfg: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Merge child trust config into fleet estimator config.
+
+    Parent: Observer/config_fleet_estimators.yaml
+    Child: Observer/TrustbasedDistributedObserver/config_trust_estimator.yaml
+    """
+    merged = dict(fleet_cfg or {})
+    trust_cfg = trust_cfg or {}
+    if not isinstance(trust_cfg, dict) or not trust_cfg:
+        return merged
+
+    fleet_section = merged.setdefault("fleet", {})
+    if not isinstance(fleet_section, dict):
+        fleet_section = {}
+        merged["fleet"] = fleet_section
+
+    trust_consensus = fleet_section.setdefault("trust_consensus", {})
+    trust_kalman = fleet_section.setdefault("trust_kalman", {})
+    if not isinstance(trust_consensus, dict):
+        trust_consensus = {}
+        fleet_section["trust_consensus"] = trust_consensus
+    if not isinstance(trust_kalman, dict):
+        trust_kalman = {}
+        fleet_section["trust_kalman"] = trust_kalman
+
+    child_fleet = trust_cfg.get("fleet", {})
+    if isinstance(child_fleet, dict):
+        child_consensus = child_fleet.get("trust_consensus", {})
+        child_kalman = child_fleet.get("trust_kalman", {})
+        if isinstance(child_consensus, dict):
+            _deep_merge_dict(trust_consensus, child_consensus)
+        if isinstance(child_kalman, dict):
+            _deep_merge_dict(trust_kalman, child_kalman)
+
+    child_trust = trust_cfg.get("trust", {})
+    if isinstance(child_trust, dict):
+        _deep_merge_dict(trust_consensus.setdefault("trust", {}), child_trust)
+        _deep_merge_dict(trust_kalman.setdefault("trust", {}), child_trust)
+
+    child_weight = trust_cfg.get("weight", {})
+    if isinstance(child_weight, dict):
+        _deep_merge_dict(trust_consensus.setdefault("weight", {}), child_weight)
+        _deep_merge_dict(trust_kalman.setdefault("weight", {}), child_weight)
+
+    child_observer = trust_cfg.get("observer", {})
+    if isinstance(child_observer, dict):
+        observer_common = {
+            key: value for key, value in child_observer.items() if key != "kalman"
+        }
+        _deep_merge_dict(trust_consensus, observer_common)
+        _deep_merge_dict(trust_kalman, observer_common)
+
+        kalman_cfg = child_observer.get("kalman", {})
+        if isinstance(kalman_cfg, dict):
+            field_map = {
+                "process_noise": "process_noise",
+                "measurement_noise": "measurement_noise",
+                "initial_covariance": "initial_covariance",
+            }
+            for src_key, dst_key in field_map.items():
+                if src_key in kalman_cfg:
+                    trust_kalman[dst_key] = kalman_cfg[src_key]
+
+    if "fleet_estimator_type" not in merged and "fleet_estimator_type" in trust_cfg:
+        merged["fleet_estimator_type"] = trust_cfg["fleet_estimator_type"]
+
+    return merged
+
+
 # ── Observer Config ─────────────────────────────────────────────────
 
 
@@ -83,6 +174,8 @@ def load_local_observer_config() -> Dict[str, Any]:
 def load_fleet_observer_config() -> Dict[str, Any]:
     """Load fleet observer config and extract available types + params."""
     cfg = _load_yaml(_FLEET_OBS_PATH)
+    trust_cfg = _load_yaml(_TRUST_OBS_PATH)
+    cfg = _merge_trust_child_into_fleet_config(cfg, trust_cfg)
     fleet_section = cfg.get("fleet", {})
 
     # Filter out global settings (non-dict or common keys)

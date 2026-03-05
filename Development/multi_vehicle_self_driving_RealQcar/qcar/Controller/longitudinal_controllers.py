@@ -216,8 +216,6 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         K=None,
         acc_to_throttle_gain=0.5,
         max_throttle=0.3,
-        alpha_filter=0.3,
-        ki_velocity=0.1,
         brake_smoothing=0.5,
         max_acc_rate=2.0,
         spacing_deadband=0.2,
@@ -239,8 +237,6 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             K: Control gains [spacing_gain, velocity_gain]
             acc_to_throttle_gain: Gain to convert acceleration to throttle
             max_throttle: Maximum throttle output
-            alpha_filter: Low-pass filter coefficient (0-1)
-            ki_velocity: Velocity integral gain for additional stability
             brake_smoothing: Smoothing factor for negative throttle (0-1, higher = smoother)
             max_acc_rate: Maximum acceleration rate of change (m/s^3) to limit jerk
             spacing_deadband: Spacing error deadband to prevent oscillations (meters)
@@ -266,8 +262,6 @@ class CACCLongitudinalController(LongitudinalControllerBase):
                 "acc_to_throttle_gain", acc_to_throttle_gain
             )
             self.max_throttle = params.get("max_throttle", max_throttle)
-            self.alpha_filter = params.get("alpha_filter", alpha_filter)
-            self.ki_velocity = params.get("ki_velocity", ki_velocity)
             self.spacing_mode = params.get("spacing_mode", spacing_mode)
             self.projection_heading_source = params.get(
                 "projection_heading_source", projection_heading_source
@@ -276,24 +270,26 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.min_effective_spacing = params.get(
                 "min_effective_spacing", min_effective_spacing
             )
-            # self.spacing_deadband = params.get('spacing_deadband', spacing_deadband)
-            # self.velocity_deadband = params.get('velocity_deadband', velocity_deadband)
-            # self.throttle_smoothing = params.get('throttle_smoothing', throttle_smoothing)
+            self.spacing_deadband = params.get('spacing_deadband', spacing_deadband)
+            self.velocity_deadband = params.get('velocity_deadband', velocity_deadband)
+            self.throttle_smoothing = params.get('throttle_smoothing', throttle_smoothing)
+            self.brake_smoothing = params.get('brake_smoothing', brake_smoothing)
+            self.max_acc_rate = params.get('max_acc_rate', max_acc_rate)
         else:
             self.s0 = s0
             self.h = h
             self.K = K if K is not None else np.array([[0.2, 0.05]])
             self.acc_to_throttle_gain = acc_to_throttle_gain
             self.max_throttle = max_throttle
-            self.alpha_filter = alpha_filter
-            self.ki_velocity = ki_velocity
             self.spacing_mode = spacing_mode
             self.projection_heading_source = projection_heading_source
             self.blend_heading_deg = blend_heading_deg
             self.min_effective_spacing = min_effective_spacing
-        self.spacing_deadband = spacing_deadband
-        self.velocity_deadband = velocity_deadband
-        self.throttle_smoothing = throttle_smoothing
+            self.spacing_deadband = spacing_deadband
+            self.velocity_deadband = velocity_deadband
+            self.throttle_smoothing = throttle_smoothing
+            self.brake_smoothing = brake_smoothing
+            self.max_acc_rate = max_acc_rate
 
         allowed_spacing_modes = {
             "euclidean",
@@ -316,12 +312,10 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         # Velocity integral for additional stability (optional)
         self.velocity_integral = 0.0
 
-        # Brake smoothing
-        self.brake_smoothing = brake_smoothing
+        # Brake smoothing and acc rate are already set from config/kwargs
         self.prev_throttle = 0.0
 
         # Acceleration rate limiter to prevent sudden jumps
-        self.max_acc_rate = max_acc_rate  # Maximum change in acceleration per second
         self.prev_acc_desired = 0.0
 
         # Spacing error integral for steady-state accuracy
@@ -515,14 +509,14 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         # Convert acceleration to throttle (simplified linear mapping)
         throttle_raw = acc_desired * self.acc_to_throttle_gain
 
-        # Define control zones based on spacing error
-        spacing_error_abs = abs(spacing - spacing_target)
+        # # Define control zones based on spacing error
+        # spacing_error_abs = abs(spacing - spacing_target)
 
-        if spacing_error_abs < 0.3:  # Comfort zone - very gentle control
-            throttle_raw *= 0.5
-        elif spacing_error_abs < 0.8:  # Normal zone - standard control
-            throttle_raw *= 0.8
-        # else: Emergency zone - full control authority
+        # if spacing_error_abs < 0.3:  # Comfort zone - very gentle control
+        #     throttle_raw *= 0.5
+        # elif spacing_error_abs < 0.8:  # Normal zone - standard control
+        #     throttle_raw *= 0.8
+        # # else: Emergency zone - full control authority
 
         # Clamp to limits
         throttle_raw = np.clip(throttle_raw, -self.max_throttle, self.max_throttle)
@@ -530,22 +524,29 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         # Special handling for braking (negative throttle)
         if throttle_raw < 0:
             # More aggressive smoothing for braking to prevent jerky stops
-            smoothing_factor = 0.85
             throttle_raw = (
-                smoothing_factor * self.prev_throttle
-                + (1 - smoothing_factor) * throttle_raw
+                self.brake_smoothing * self.prev_throttle
+                + (1 - self.brake_smoothing) * throttle_raw
             )
             throttle_raw = max(throttle_raw, 0.0)  # No negative throttle output
 
-        # Apply exponential smoothing to final throttle command
-        throttle = (
-            self.throttle_smoothing * self.prev_throttle
-            + (1 - self.throttle_smoothing) * throttle_raw
-        )
+        if self.throttle_smoothing > 0:
+            # Apply exponential smoothing to final throttle command
+            throttle = (
+                self.throttle_smoothing * self.prev_throttle
+                + (1 - self.throttle_smoothing) * throttle_raw
+            )
+        else:
+            throttle = throttle_raw
 
         # Ensure throttle is non-negative
         throttle = max(throttle, 0.0)
 
+        # print("-----")
+        # print(f"CACC throttle: {throttle} throttle_raw: {throttle_raw} acc_desired: {acc_desired}")
+        # print(f"spacing_error: {spacing_error} velocity_error: {velocity_error} spacing: {spacing} spacing_target: {spacing_target}")
+        # print(f"velocity: {v} , lead velocity: {leader_state['velocity']}")
+        # print("**********")
         # Store for next iteration
         self.prev_throttle = throttle
 

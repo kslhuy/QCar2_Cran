@@ -1200,8 +1200,14 @@ class StateBase:
             # Enable streaming on client
             self.vehicle_logic.client_Ground_Station.enable_scope_streaming()
 
+            # Get fleet size for dynamic field generation
+            fleet_size = None
+            if 'fleet_state' in preset_names:
+                if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
+                    fleet_size = self.vehicle_logic.vehicle_observer.fleet_size
+
             # Enable streamer
-            success = self.vehicle_logic.scope_streamer.enable(preset_names)
+            success = self.vehicle_logic.scope_streamer.enable(preset_names, fleet_size=fleet_size)
 
             if success:
                 self.logger.logger.info(

@@ -33,6 +33,27 @@ from dataclasses import dataclass
 # Message header byte for scope data packets
 SCOPE_DATA_HEADER = 0xAB
 
+_DEFAULT_FLEET_SIZE = 2  # Overridden at runtime with actual fleet size
+
+
+def build_fleet_fields(fleet_size: int) -> list:
+    """
+    Build fleet field names dynamically based on actual fleet size.
+    
+    Args:
+        fleet_size: Number of vehicles in the fleet
+        
+    Returns:
+        List of field names for fleet state streaming
+    """
+    fields = []
+    for i in range(fleet_size):
+        for qty in ['x', 'y', 'theta', 'v']:
+            fields.append(f'fleet_{qty}_{i}')
+    fields.append('fleet_size')
+    return fields
+
+
 # Standard field definitions for different presets
 PRESET_FIELDS = {
     'local_state': [
@@ -45,16 +66,8 @@ PRESET_FIELDS = {
     'local_error': [
         'x_error', 'y_error', 'theta_error', 'acceleration'
     ],
-    'fleet_state': [
-        'fleet_x_0', 'fleet_y_0', 'fleet_theta_0', 'fleet_v_0',
-        'fleet_x_1', 'fleet_y_1', 'fleet_theta_1', 'fleet_v_1',
-        'fleet_x_2', 'fleet_y_2', 'fleet_theta_2', 'fleet_v_2'
-    ],
-    'fleet_consensus': [
-        'consensus_error',
-        'trust_0', 'trust_1', 'trust_2',
-        'fleet_size'
-    ]
+    # fleet_state is generated dynamically — this default is for import compatibility
+    'fleet_state': build_fleet_fields(_DEFAULT_FLEET_SIZE),
 }
 
 # Combined default fields for local data
@@ -65,13 +78,8 @@ DEFAULT_FIELDS = [
     'acceleration', 'yaw_rate'                # Dynamics
 ]
 
-# Fleet default fields
-FLEET_FIELDS = [
-    'fleet_x_0', 'fleet_y_0', 'fleet_theta_0', 'fleet_v_0',
-    'fleet_x_1', 'fleet_y_1', 'fleet_theta_1', 'fleet_v_1',
-    'fleet_x_2', 'fleet_y_2', 'fleet_theta_2', 'fleet_v_2',
-    'consensus_error', 'trust_0', 'trust_1', 'trust_2', 'fleet_size'
-]
+# Fleet default fields (for import compatibility — use build_fleet_fields at runtime)
+FLEET_FIELDS = build_fleet_fields(_DEFAULT_FLEET_SIZE)
 
 
 # ==============================================================================
@@ -143,7 +151,7 @@ class ScopeDataStreamer:
         self.samples_dropped = 0
         self.start_time = 0.0
     
-    def enable(self, preset_names: List[str] = None) -> bool:
+    def enable(self, preset_names: List[str] = None, fleet_size: int = None) -> bool:
         """
         Enable scope data streaming.
         
@@ -152,6 +160,8 @@ class ScopeDataStreamer:
                 - 'local_state', 'local_control', 'local_error'
                 - 'fleet_state'
                 If None, uses default local presets.
+            fleet_size: Actual fleet size for dynamic fleet field generation.
+                Only used when 'fleet_state' is in preset_names.
                 
         Returns:
             bool: True if streaming enabled successfully
@@ -162,7 +172,13 @@ class ScopeDataStreamer:
         # Build combined field list from presets
         self.active_fields = []
         for preset in preset_names:
-            if preset in PRESET_FIELDS:
+            if preset == 'fleet_state':
+                # Use dynamic fleet fields based on actual fleet size
+                n = fleet_size if fleet_size and fleet_size > 0 else _DEFAULT_FLEET_SIZE
+                for field in build_fleet_fields(n):
+                    if field not in self.active_fields:
+                        self.active_fields.append(field)
+            elif preset in PRESET_FIELDS:
                 for field in PRESET_FIELDS[preset]:
                     if field not in self.active_fields:
                         self.active_fields.append(field)

@@ -29,6 +29,7 @@ from scope_data_streamer import (
     PRESET_FIELDS,
     DEFAULT_FIELDS,
     FLEET_FIELDS,
+    build_fleet_fields,
 )
 
 
@@ -205,20 +206,27 @@ class RemoteScopeManager:
         """Check if a car is currently streaming scope data."""
         return car_id in self._streaming_cars
 
-    def start_stream(self, car_id: int, preset_names: List[str] = None):
+    def start_stream(self, car_id: int, preset_names: List[str] = None, fleet_size: int = None):
         """
         Start receiving scope data from a vehicle.
 
         Args:
             car_id: Vehicle ID
             preset_names: List of presets being streamed
+            fleet_size: Actual fleet size for dynamic fleet field generation
         """
         with self._lock:
             # Build field list from presets
             field_names = []
             if preset_names:
                 for preset in preset_names:
-                    if preset in PRESET_FIELDS:
+                    if preset == 'fleet_state':
+                        # Use dynamic fleet fields based on actual fleet size
+                        n = fleet_size if fleet_size and fleet_size > 0 else 2
+                        for field in build_fleet_fields(n):
+                            if field not in field_names:
+                                field_names.append(field)
+                    elif preset in PRESET_FIELDS:
                         for field in PRESET_FIELDS[preset]:
                             if field not in field_names:
                                 field_names.append(field)
@@ -425,7 +433,7 @@ class RemoteScopeViewer:
 
         self.running = True
         self._stop_event = mp.Event()
-        self._data_queue = mp.Queue(maxsize=100)
+        self._data_queue = mp.Queue(maxsize=200)
 
         # Start plot process
         self._process = mp.Process(
@@ -484,7 +492,7 @@ class RemoteScopeViewer:
 
                     last_feed_time = current_time
 
-                time.sleep(0.01)  # Small sleep to prevent busy-waiting
+                time.sleep(0.005)  # Small sleep to prevent busy-waiting
 
             except Exception as e:
                 print(f"[ScopeViewer] Data feed error: {e}")
@@ -876,30 +884,20 @@ def _create_local_layout(plt, car_id, field_names):
 
 def _create_fleet_layout(plt, car_id, field_names):
     """
-    Create Fleet with GridSpec.
+    Create Fleet layout with GridSpec.
+    Dynamically creates subplots only for vehicles present in field_names.
+    No trust subplot — only fleet estimation state (x, y, theta, v).
     """
     fig = plt.figure(figsize=(12, 10))
     fig.suptitle(f"Fleet State Estimation - Car {car_id}", fontsize=12)
 
-    # 3 rows, 2 cols (Trajectory on left column)
+    # 3 rows, 2 cols
     gs = fig.add_gridspec(3, 2, height_ratios=[2, 1, 1], hspace=0.35, wspace=0.3)
 
     axes = {}
     lines = {}
 
-    # 1. Fleet Trajectories (Left col, top 2 rows)
-    ax_traj = fig.add_subplot(gs[0:2, 0])
-    ax_traj.set_xlabel("X [m]")
-    ax_traj.set_ylabel("Y [m]")
-    ax_traj.set_title("Fleet Trajectories")
-    ax_traj.grid(True, alpha=0.3)
-    ax_traj.set_xlim(-5, 5)
-    ax_traj.set_ylim(-5, 5)
-    axes["trajectory"] = ax_traj
-
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
-
-    # Identify vehicles
+    # Identify vehicles dynamically from field names
     fleet_indices = set()
     for f in field_names:
         parts = f.split("_")
@@ -908,6 +906,19 @@ def _create_fleet_layout(plt, car_id, field_names):
                 fleet_indices.add(int(parts[2]))
             except:
                 pass
+
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+              "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+
+    # 1. Fleet Trajectories (Left col, top 2 rows)
+    ax_traj = fig.add_subplot(gs[0:2, 0])
+    ax_traj.set_xlabel("X [m]")
+    ax_traj.set_ylabel("Y [m]")
+    ax_traj.set_title(f"Fleet Trajectories ({len(fleet_indices)} vehicles)")
+    ax_traj.grid(True, alpha=0.3)
+    ax_traj.set_xlim(-5, 5)
+    ax_traj.set_ylim(-5, 5)
+    axes["trajectory"] = ax_traj
 
     for i in sorted(fleet_indices):
         c = colors[i % len(colors)]
@@ -922,9 +933,10 @@ def _create_fleet_layout(plt, car_id, field_names):
 
     ax_traj.legend(fontsize=8)
 
-    # 2. Velocities (Top Right)
+    # 2. Fleet Velocities (Top Right)
     ax_vel = fig.add_subplot(gs[0, 1])
     ax_vel.set_ylabel("Velocity [m/s]")
+    ax_vel.set_title("Fleet Velocities")
     ax_vel.grid(True, alpha=0.3)
     axes["velocity"] = ax_vel
 
@@ -933,49 +945,41 @@ def _create_fleet_layout(plt, car_id, field_names):
         f = f"fleet_v_{i}"
         if f in field_names:
             (l,) = ax_vel.plot(
-                [],
-                [],
-                color=c,
-                linestyle="None",
-                marker=".",
-                markersize=2,
-                label=f"V{i}",
+                [], [], color=c, linestyle="None", marker=".",
+                markersize=2, label=f"V{i}",
             )
             lines[f] = l
+    ax_vel.legend(fontsize=8)
 
-    # 3. Consensus (Mid Right)
-    ax_con = fig.add_subplot(gs[1, 1])
-    ax_con.set_ylabel("Consensus Err")
-    ax_con.grid(True, alpha=0.3)
-    axes["consensus"] = ax_con
-
-    if "consensus_error" in field_names:
-        (l,) = ax_con.plot([], [], "k.", markersize=2, label="Error")
-        lines["consensus_error"] = l
-
-    # 4. Trust (Bottom Left)
-    ax_trust = fig.add_subplot(gs[2, 0])
-    ax_trust.set_ylabel("Trust Score")
-    ax_trust.set_xlabel("Time [s]")
-    ax_trust.grid(True, alpha=0.3)
-    ax_trust.set_ylim(-0.1, 1.1)
-    axes["trust"] = ax_trust
+    # 3. Fleet Headings (Mid Right)
+    ax_theta = fig.add_subplot(gs[1, 1])
+    ax_theta.set_ylabel("Heading [rad]")
+    ax_theta.set_title("Fleet Headings")
+    ax_theta.grid(True, alpha=0.3)
+    axes["heading"] = ax_theta
 
     for i in sorted(fleet_indices):
         c = colors[i % len(colors)]
-        f = f"trust_{i}"
+        f = f"fleet_theta_{i}"
         if f in field_names:
-            (l,) = ax_trust.plot(
-                [],
-                [],
-                color=c,
-                linestyle="None",
-                marker=".",
-                markersize=2,
-                label=f"T{i}",
+            (l,) = ax_theta.plot(
+                [], [], color=c, linestyle="None", marker=".",
+                markersize=2, label=f"V{i}",
             )
             lines[f] = l
-    ax_trust.legend(fontsize=8)
+    ax_theta.legend(fontsize=8)
+
+    # 4. Fleet Size Info (Bottom Left)
+    ax_size = fig.add_subplot(gs[2, 0])
+    ax_size.set_ylabel("Fleet Size")
+    ax_size.set_xlabel("Time [s]")
+    ax_size.grid(True, alpha=0.3)
+    axes["fleet_size"] = ax_size
+
+    if "fleet_size" in field_names:
+        (l,) = ax_size.plot([], [], "k.", markersize=3, label="Fleet Size")
+        lines["fleet_size"] = l
+    ax_size.legend(fontsize=8)
 
     # 5. Info (Bottom Right)
     ax_info = fig.add_subplot(gs[2, 1])

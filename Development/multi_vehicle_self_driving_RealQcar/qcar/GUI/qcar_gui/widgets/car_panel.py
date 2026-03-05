@@ -1124,22 +1124,22 @@ class TaxiControl(BaseWidget):
             pady=3,
         ).pack(side="left")
 
-        # Help text
-        ThemedLabel(
-            content,
-            text="e.g. 20,9 → Hub(10)→20(pickup)→9(dropoff)→Hub(10)",
-            style="muted",
-            theme=self.theme,
-        ).pack(fill="x", pady=(2, 0))
+        # # Help text
+        # ThemedLabel(
+        #     content,
+        #     text="e.g. 20,9 → Hub(10)→20(pickup)→9(dropoff)→Hub(10)",
+        #     style="muted",
+        #     theme=self.theme,
+        # ).pack(fill="x", pady=(2, 0))
 
-        # Trip status row
-        self._status_label = ThemedLabel(
-            content,
-            text="Status: idle",
-            style="muted",
-            theme=self.theme,
-        )
-        self._status_label.pack(fill="x", pady=(3, 0))
+        # # Trip status row
+        # self._status_label = ThemedLabel(
+        #     content,
+        #     text="Status: idle",
+        #     style="muted",
+        #     theme=self.theme,
+        # )
+        # self._status_label.pack(fill="x", pady=(3, 0))
 
     def _toggle_taxi_mode(self) -> None:
         """Handle toggle taxi mode button click."""

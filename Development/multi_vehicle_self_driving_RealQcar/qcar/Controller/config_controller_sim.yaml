@@ -19,7 +19,7 @@ path_lateral_controller_type: 'pp_map'     # Lateral controller for FOLLOWING_PA
 
 # "Following Leader" state controllers (platoon / leader-tracking)
 leader_longitudinal_controller_type: 'cacc'      # Gap/speed tracking in FOLLOWING_LEADER
-leader_lateral_controller_type: 'pure_pursuit'   # Lateral mode while following leader
+leader_lateral_controller_type: 'fusion_lateral'   # Lateral mode while following leader
 
 # Legacy fallback (used if state-specific keys are missing)
 # ============================================================================
@@ -31,18 +31,21 @@ longitudinal_controller_type: 'pid'
 
 # CACC Controller Parameters
 cacc:
-  s0: 0.7                    # Minimum spacing (meters)
-  h: 0.6                     # Time headway (seconds)
-  K_spacing: 0.12             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
-  K_velocity: 0.35           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
+  s0: 0.25                    # Minimum spacing (meters)
+  h: 0.5                     # Time headway (seconds)
+  K_spacing: 0.3             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
+  K_velocity: 0.15           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
   spacing_mode: "path_or_projected"  # 'euclidean', 'projected', 'blended', 'path', 'path_or_projected'
   projection_heading_source: "leader" # Heading source for longitudinal projection ,  Assume the road's direction is the exact direction the "projection_heading_source" here is the leader car is currently pointing."
   blend_heading_deg: 20.0    # Used only when spacing_mode: 'blended'
   min_effective_spacing: 0.0 # Minimum gap fed to CACC after projectio
-  acc_to_throttle_gain: 0.65  # Conversion gain from acceleration to throttle
-  max_throttle: 0.25          # Maximum throttle output
-  alpha_filter: 0.3          # Low-pass filter coefficient (0-1) , Values closer to 1.0 pass raw jerky throttle commands directly to the motor. Values closer to 0.0 create a "lazy" and smooth pedal effect.
-  ki_velocity: 0.1           # Velocity integral gain for additional stability, High values make the car try to correct speed errors very aggressively, often causing oscillation (jerky speed changes).
+  acc_to_throttle_gain: 0.35  # Conversion gain from acceleration to throttle
+  max_throttle: 0.3          # Maximum throttle output
+  spacing_deadband: 0.2      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
+  velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
+  throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
+  brake_smoothing: 0.5      # Aggressive smoothing factor applied ONLY when braking/decelerating [0-1]. Higher values prevent jerky sudden stops. Default 0.85.
+  max_acc_rate: 2.0          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
 
 # PID Velocity Controller Parameters
 pid:
@@ -97,10 +100,10 @@ pp_map:
   max_speed: 0.65                 # [m/s] upper bound of profile speed
   hard_turn_kappa: 0.60           # [1/m] curvature threshold for "hard-turn" speed cap
   hard_turn_speed: 0.36           # [m/s] cap applied when |curvature| >= hard_turn_kappa
-  t_clip_min: 0.3                 # [m] minimum L1 lookahead distance
+  t_clip_min: 0.5                 # [m] minimum L1 lookahead distance
   t_clip_max: 1.0                 # [m] maximum L1 lookahead distance
   m_l1: 0.50                      # L1 slope: lookahead contribution per m/s (L1 = q_l1 + m_l1*v)
-  q_l1: 0.15                      # [m] L1 base offset at low speed
+  q_l1: 0.2                      # [m] L1 base offset at low speed
   speed_lookahead: 0.2            # [s] forward prediction horizon for selecting speed waypoint
   lat_err_coeff: 0.15             # [0..1] speed downscale sensitivity to lateral error
   acc_scaler_for_steer: 1.0       # Steering scale when accelerating (acc_now >= +1 m/s^2)
@@ -144,11 +147,11 @@ lookahead:
 
 # Fusion Lateral Controller Parameters (combines path + leader tracking)
 fusion_lateral:
-  mode: 'path_primary'       # 'path_primary', 'leader_primary', 'adaptive' , ''
-  path_weight: 0.7           # Weight for path reference (0-1)
-  leader_weight: 0.3         # Weight for leader adjustment (0-1)
-  deviation_threshold: 0.3   # Max leader deviation before override (radians)
-  smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother)
+  mode: 'leader_primary'       # 'path_primary', 'leader_primary', 'adaptive' , ''
+  path_weight: 0           # Weight for path reference (0-1)
+  leader_weight: 1         # Weight for leader adjustment (0-1)
+  deviation_threshold: 0.4   # Max leader deviation before override (radians)
+  smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother , 0 = raw output)
   max_steering: 0.5         # Maximum steering angle (radians)
 
 # ============================================================================

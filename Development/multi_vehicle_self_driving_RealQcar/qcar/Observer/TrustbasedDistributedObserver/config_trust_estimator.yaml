@@ -14,7 +14,7 @@ fleet_estimator_type: trust_consensus
 fleet:
   state_dim: 5                    # [x, y, theta, v, a]
   max_state_age_ns: 1000000000    # 1 second validity window
-  fleet_observer_rate: 50         # Hz
+  fleet_observer_rate: 25         # Hz
   received_local_states_limit: 10
   received_fleet_states_limit: 5
 
@@ -24,7 +24,11 @@ fleet:
 trust:
   # Component weights (exponents for score calculation)
   # Higher weight = more sensitive to errors in that component
-  weight_velocity: 12.0           # Velocity consistency weight
+  weight_velocity: 1.0           # Velocity consistency weight (exponent, lower = more tolerant)
+  velocity_tolerance: 0.22        # m/s - base absolute tolerance for velocity mismatch
+  min_velocity_tolerance: 0.08    # m/s - hard lower bound for adaptive tolerance
+  turn_velocity_tolerance_gain: 0.35   # extra tolerance in turns (scales with yaw-rate)
+  accel_velocity_tolerance_gain: 0.15  # extra tolerance during accel/decel transients
   weight_distance: 2.0            # Distance consistency weight  
   weight_acceleration: 0.3        # Acceleration plausibility weight
   weight_heading: 1.0             # Heading consistency weight
@@ -34,11 +38,17 @@ trust:
   
   # Dirichlet-based trust level parameters
   num_trust_levels: 5             # [Untrusted, Suspicious, Neutral, Trusted, Highly Trusted]
-  dirichlet_update_rate: 0.1      # How fast trust levels update (0-1)
+  dirichlet_update_rate: 0.1      # How fast trust levels update (0-1) — used by "ema" method
   dirichlet_type: "Dual"          # "Single" (local only) or "Dual" (local + cross-validation)
+  # Dirichlet method: "ema" (simple EMA update) or "matlab" (aging-factor + regularized score)
+  dirichlet_method: "ema"
+  # MATLAB Dirichlet parameters (only used when dirichlet_method: "matlab")
+  dirichlet_C: 0.2                # Regularization constant C
+  dirichlet_wt_local: 0.4         # Aging weight for local trust
+  dirichlet_wt_global: 0.5        # Aging weight for global trust
   
   # Attack detection settings
-  monitor_sudden_change: true     # Enable sudden trust change monitoring
+  monitor_sudden_change: false     # Enable sudden trust change monitoring
   sudden_change_threshold: 0.5    # Threshold for sudden change detection
   attack_detection_window: 10     # Number of samples for attack detection
   
@@ -49,6 +59,29 @@ trust:
   # EMA smoothing for trust scores
   ema_alpha: 0.3                  # Smoothing factor (0-1, higher = less smoothing)
 
+  # Validation and decay (MATLAB-parity features)
+  use_physical_constraints_check: false
+  use_temporal_consistency_check: false
+  max_velocity: 30.0
+  max_acceleration: 4.0
+  max_deceleration: -8.0
+  max_jerk: 10.0
+  temporal_pos_tolerance_m: 2.0
+  temporal_vel_tolerance: 1.0
+  trust_decay_lambda: 0.2
+
+  # Distributed trust covariance parameters (always paper-style)
+  distributed_trust_fallback: 0.2
+  distributed_trust_covariance_diag: [2.0, 2.0, 2.0, 2.0, 1.0] # Sigma^2 for gamma_host (full state: x,y,theta,v,a)
+  distributed_local_tau2_diag: [1.5, 0.5]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
+
+  # Generalized trust vector O_i(j) from exchanged trust reports
+  use_generalized_trust_vector: true
+  trust_vector_theta_min: 0.4
+
+  # Message age quality gate (disable if timestamps are unreliable)
+  use_message_age_quality: false
+
 # =====================================================================
 # Weight Calculation Configuration
 # =====================================================================
@@ -58,7 +91,7 @@ weight:
   # - 'equal': All neighbors get equal weight (simple consensus)
   # - 'trust_based': Trust-proportional weights with fixed w0 and w_self
   # - 'graph_based': Graph topology-based weights (matches old implementation)
-  weight_type: trust_based
+  weight_type: equal
   
   # Fixed weight allocations (for trust_based mode)
   w0_fixed: 0.3                   # Weight for direct measurement (target's own broadcast)
@@ -66,11 +99,11 @@ weight:
   
   # Neighbor weight constraints
   w_cap: 0.4                      # Maximum weight per neighbor (influence cap - 40%)
-  kappa: 5                        # Maximum neighbors to consider in consensus
+  kappa: 3                        # Smaller kappa gives stronger direct/neighbor corrections in small fleets
   
   # Temporal smoothing (EMA)
   eta: 0.15                       # EMA smoothing factor
-  enable_smoothing: true          # Enable weight smoothing between updates
+  enable_smoothing: false         # Enable weight smoothing between updates
   
   # Advanced options
   use_distance_weighting: false   # Weight by physical distance (experimental)
@@ -83,7 +116,18 @@ observer:
   consensus_gain: 0.2             # Consensus correction gain
   
   # Attack mitigation
-  attack_mitigation: true         # Enable automatic attack mitigation
+  attack_mitigation: false         # Enable automatic attack mitigation
+
+  # Prediction-only switch (MATLAB-style)
+  use_predict_observer: false
+  max_predict_only_time: 3.0
+  n_good: 3 
+  blend_thresh: 3.0
+  similarity_tolerances: [3.5, 2.0, 0.13962634, 2.0, 1.0]
+
+  # Trust-triggered contamination rollback
+  rollback_enabled: false
+  rollback_window_size: 15
   
   # Kalman-specific parameters (for trust_kalman type)
   kalman:

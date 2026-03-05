@@ -57,9 +57,9 @@ lane:
   show_overlay: true
 
 lidar_fusion:
-  enabled: true
-  show_overlay: true
-  show_bev: true
+  enabled: false
+  show_overlay: false
+  show_bev: false
   lidar_min_distance_m: 0.08
   # Association gate for fusing YOLO detections with LiDAR.
   # Increase this if BEV shows no fused objects at normal driving distance.

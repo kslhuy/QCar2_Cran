@@ -86,6 +86,7 @@ class VehicleLogic:
         v2v_config = V2VBroadcastConfig(
             local_state_frequency=25.0,  # Hz - High frequency for local states
             fleet_state_frequency=10.0,  # Hz - Lower frequency for fleet states
+            trust_report_frequency=2.0,  # Hz - Independent trust opinion exchange
             heartbeat_frequency=1.0,  # Hz - Very low frequency for heartbeats
         )
         self.v2v_manager = V2VManager(
@@ -438,26 +439,7 @@ class VehicleLogic:
                     stream_data["fleet_states"] = (
                         self.vehicle_observer.get_fleet_states()
                     )
-
-                    # Get consensus error if available
-                    if (
-                        hasattr(self.vehicle_observer, "fleet_observer")
-                        and self.vehicle_observer.fleet_observer
-                    ):
-                        stream_data["consensus_error"] = getattr(
-                            self.vehicle_observer.fleet_observer, "consensus_error", 0.0
-                        )
-
-                    # Get trust scores if available
-                    if (
-                        hasattr(self.vehicle_observer, "fleet_observer")
-                        and self.vehicle_observer.fleet_observer
-                    ):
-                        trust_scores = getattr(
-                            self.vehicle_observer.fleet_observer, "trust_scores", None
-                        )
-                        if trust_scores is not None:
-                            stream_data["trust_scores"] = trust_scores
+                    stream_data["fleet_size"] = self.vehicle_observer.fleet_size
 
                 # Stream to Ground Station (rate-limited internally)
                 self.scope_streamer.stream_sample(self.elapsed_time(), stream_data)
@@ -688,6 +670,7 @@ class VehicleLogic:
                         "v2v_protocol": "UDP-Manager" if is_active else "None",
                         "v2v_local_rate": self.v2v_manager.config.local_state_frequency,
                         "v2v_fleet_rate": self.v2v_manager.config.fleet_state_frequency,
+                        "v2v_trust_rate": self.v2v_manager.config.trust_report_frequency,
                     }
                 else:
                     self._v2v_status_cache = {
@@ -696,6 +679,7 @@ class VehicleLogic:
                         "v2v_protocol": "None",
                         "v2v_local_rate": 0.0,
                         "v2v_fleet_rate": 0.0,
+                        "v2v_trust_rate": 0.0,
                     }
                 self._v2v_status_cache_time = current_time
             except Exception as e:
@@ -709,6 +693,7 @@ class VehicleLogic:
                     "v2v_protocol": "None",
                     "v2v_local_rate": 0.0,
                     "v2v_fleet_rate": 0.0,
+                    "v2v_trust_rate": 0.0,
                 }
 
         return self._v2v_status_cache.copy()

@@ -22,6 +22,7 @@ class MessageType(Enum):
     INTENT = "intent"
     WARNING = "warning"
     HEARTBEAT = "heartbeat"
+    TRUST_REPORT = "trust_report"
 
 
 @dataclass
@@ -63,6 +64,7 @@ class V2VCommunication:
     DEFAULT_SEND_INTERVALS = {
         'local_state': 50_000_000,    # 50ms = 20 Hz - high frequency for position updates
         'fleet_state': 200_000_000,   # 200ms = 5 Hz - medium frequency for fleet consensus
+        'trust_report': 200_000_000,  # 200ms = 5 Hz - trust opinion exchange
         'heartbeat': 1_000_000_000,   # 1000ms = 1 Hz - low frequency for health checks
         'telemetry': 50_000_000,      # 50ms = 20 Hz - high frequency (legacy)
         'intent': 100_000_000,        # 100ms = 10 Hz - medium frequency for intentions

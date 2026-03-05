@@ -166,6 +166,9 @@ class V2VAttackInjector:
             
             # Process fleet state broadcast with attack injection  
             fleet_sent = self._broadcast_fleet_state_with_attack()
+
+            # Trust reports are forwarded without modification (independent V2V rate)
+            trust_sent = self._broadcast_trust_report()
             
             # Process heartbeat (usually not attacked but could be)
             heartbeat_sent = self._broadcast_heartbeat()
@@ -173,7 +176,7 @@ class V2VAttackInjector:
             # Process received messages (not attacked - incoming data)
             self._process_received_messages()
             
-            broadcast_sent = local_sent or fleet_sent or heartbeat_sent
+            broadcast_sent = local_sent or fleet_sent or trust_sent or heartbeat_sent
             
         except Exception as e:
             if self.logger:
@@ -256,6 +259,12 @@ class V2VAttackInjector:
     def _broadcast_heartbeat(self) -> bool:
         """Broadcast heartbeat message (delegated to V2VManager)."""
         return self.v2v_manager._broadcast_heartbeat()
+
+    def _broadcast_trust_report(self) -> bool:
+        """Broadcast trust report message (delegated to V2VManager)."""
+        if hasattr(self.v2v_manager, "_broadcast_trust_report"):
+            return self.v2v_manager._broadcast_trust_report()
+        return False
     
     def _process_received_messages(self) -> None:
         """Process received messages (delegated to V2VManager)."""

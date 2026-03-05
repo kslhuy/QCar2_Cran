@@ -164,7 +164,7 @@ class FollowingLeaderState(StateBase):
         u, delta = self._compute_control(dt, x, y, theta, velocity, v2v_data, yolo_data)
 
         # Enhanced periodic logging for debugging
-        self._log_status(velocity, u, v2v_data)
+        # self._log_status(velocity, u, v2v_data)
 
         return u, delta, None
 
@@ -548,6 +548,8 @@ class FollowingLeaderState(StateBase):
 
         # Compute path-based along-track gap when route waypoints are available.
         along_track = self._compute_along_track_gap(x, y, leader_x, leader_y)
+        # leader_state.get("path_d"), it is looking at a value that was entirely computed locally by the follower car based purely on the raw 
+        # (x, y) coordinates the leader sent over the network.
         if along_track is not None:
             gap_s, follower_frenet, leader_frenet = along_track
             follower_state["along_track_gap"] = gap_s

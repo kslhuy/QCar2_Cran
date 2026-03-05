@@ -162,6 +162,12 @@ class FleetStateEstimatorBase(ABC):
             if max_id_in_msg >= self.fleet_size:
                 self._ensure_fleet_capacity(max_id_in_msg)
 
+            # Convert keys to int (handles JSON serialization which makes all keys strings)
+            try:
+                fleet_estimates = {int(k): v for k, v in fleet_estimates.items()}
+            except (ValueError, TypeError):
+                pass
+
             # Store the raw fleet dictionary with timestamp
             self.received_fleet_states[sender_id].append((timestamp_ns, fleet_estimates))
 

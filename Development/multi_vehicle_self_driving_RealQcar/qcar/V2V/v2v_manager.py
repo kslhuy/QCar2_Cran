@@ -5,7 +5,7 @@ broadcasting logic, message routing, and high-level control operations
 """
 import time
 import threading
-from typing import Dict, List, Optional, Callable
+from typing import Dict, List, Optional, Callable, Any
 from queue import Queue, Empty
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -20,6 +20,7 @@ class V2VDataType(Enum):
     """Types of V2V data"""
     LOCAL_STATE = "local_state"
     FLEET_STATE = "fleet_state"
+    TRUST_REPORT = "trust_report"
     INTENT = "intent"
     WARNING = "warning"
     HEARTBEAT = "heartbeat"
@@ -29,7 +30,8 @@ class V2VDataType(Enum):
 class V2VBroadcastConfig:
     """Configuration for V2V broadcasting"""
     local_state_frequency: float = 20.0  # Hz - High frequency for local states
-    fleet_state_frequency: float = 5.0   # Hz - Lower frequency for fleet states
+    fleet_state_frequency: float = 10.0   # Hz - Lower frequency for fleet states
+    trust_report_frequency: float = 2.0  # Hz - Independent trust opinion exchange
     heartbeat_frequency: float = 1.0     # Hz - Very low frequency for heartbeats
     max_queue_size: int = 100
     state_timeout: float = 2.0           # Seconds before state is considered stale
@@ -59,8 +61,10 @@ class V2VManager:
         send_intervals = {
             'local_state': int((1.0 / self.config.local_state_frequency) * 1e9),  # Convert Hz to nanoseconds
             'fleet_state': int((1.0 / self.config.fleet_state_frequency) * 1e9),
+            'trust_report': int((1.0 / self.config.trust_report_frequency) * 1e9),
             'heartbeat': int((1.0 / self.config.heartbeat_frequency) * 1e9),
         }
+        print("send_intervals", send_intervals)
         
         # Initialize V2V Communication system internally with configured intervals
         self.v2v_communication = V2VCommunication(
@@ -80,6 +84,7 @@ class V2VManager:
         # Received data storage with timestamps
         self.received_local_states = defaultdict(lambda: deque(maxlen=50))  # vehicle_id -> deque of (timestamp, data)
         self.received_fleet_states = defaultdict(lambda: deque(maxlen=20))  # vehicle_id -> deque of (timestamp, data)
+        self.received_trust_reports = defaultdict(lambda: deque(maxlen=20))  # vehicle_id -> deque of (timestamp, opinions)
         self.received_intents = defaultdict(lambda: deque(maxlen=10))
         self.received_warnings = defaultdict(lambda: deque(maxlen=10))
         
@@ -99,6 +104,8 @@ class V2VManager:
         self.stats = {
             'local_broadcasts': 0,
             'fleet_broadcasts': 0,
+            'trust_broadcasts': 0,
+            'trust_reports_received': 0,
             'messages_received': 0,
             'messages_processed': 0
         }
@@ -117,6 +124,9 @@ class V2VManager:
         )
         self.v2v_communication.register_message_handler(
             "fleet_state", self._handle_fleet_state_message
+        )
+        self.v2v_communication.register_message_handler(
+            MessageType.TRUST_REPORT.value, self._handle_trust_report_message
         )
         self.v2v_communication.register_message_handler(
             MessageType.INTENT.value, self._handle_intent_message
@@ -140,6 +150,10 @@ class V2VManager:
             
             # Attempt to broadcast fleet state (V2VCommunication will rate-limit)
             if self._broadcast_fleet_state():
+                broadcast_sent = True
+
+            # Attempt to broadcast trust report (independent configurable rate)
+            if self._broadcast_trust_report():
                 broadcast_sent = True
             
             # Attempt to broadcast heartbeat (V2VCommunication will rate-limit)
@@ -251,6 +265,62 @@ class V2VManager:
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Heartbeat broadcast error: {e}")
+            return False
+
+    def _extract_trust_opinions(self, data: Dict[str, Any]) -> Dict[int, float]:
+        """
+        Normalize trust report payload into {target_id: score}.
+
+        Preference order:
+        1) generalized_trust_vector
+        2) trust_scores
+        """
+        if not isinstance(data, dict):
+            return {}
+
+        raw_opinions = data.get("generalized_trust_vector")
+        if not isinstance(raw_opinions, dict):
+            raw_opinions = data.get("trust_scores")
+            if not isinstance(raw_opinions, dict):
+                return {}
+
+        opinions: Dict[int, float] = {}
+        for target_id, score in raw_opinions.items():
+            try:
+                tid = int(target_id)
+                trust_score = float(score)
+                if np.isfinite(trust_score):
+                    opinions[tid] = float(np.clip(trust_score, 0.0, 1.0))
+            except (TypeError, ValueError):
+                continue
+
+        return opinions
+
+    def _broadcast_trust_report(self) -> bool:
+        """Broadcast trust opinions for neighbor O_i fusion."""
+        try:
+            if not self.vehicle_observer:
+                return False
+            if not hasattr(self.vehicle_observer, "get_trust_report_for_broadcast"):
+                return False
+
+            trust_report = self.vehicle_observer.get_trust_report_for_broadcast()
+            if not trust_report:
+                return False
+
+            success = self.v2v_communication.send_message(
+                message_type=MessageType.TRUST_REPORT.value,
+                data=trust_report,
+            )
+
+            if success:
+                with self._lock:
+                    self.stats["trust_broadcasts"] += 1
+
+            return success
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Trust report broadcast error: {e}")
             return False
     
     def _process_received_messages(self):
@@ -476,6 +546,46 @@ class V2VManager:
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Fleet state message handling error: {e}")
+
+    def _handle_trust_report_message(self, message: V2VMessage):
+        """
+        Handle trust report messages.
+
+        Expected payload:
+        {
+            "reporter_id": int,
+            "trust_scores": {target_id: score},
+            "generalized_trust_vector": {target_id: score},  # optional
+            "source": "trust_estimator"
+        }
+        """
+        try:
+            sender_id = message.sender_id
+            data = message.data
+            send_time_ns = message.send_time_ns
+
+            if not isinstance(data, dict):
+                return
+
+            opinions = self._extract_trust_opinions(data)
+            if not opinions:
+                return
+
+            with self._lock:
+                self.received_trust_reports[sender_id].append((send_time_ns, opinions))
+                self.stats["trust_reports_received"] += 1
+
+            if (
+                self.vehicle_observer is not None
+                and hasattr(self.vehicle_observer, "add_received_neighbor_trust_report")
+            ):
+                self.vehicle_observer.add_received_neighbor_trust_report(
+                    reporter_id=sender_id, opinions=opinions
+                )
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Trust report message handling error: {e}")
     
     def _validate_local_state_data(self, data: dict, sender_id: int) -> bool:
         """Validate local state data integrity and ranges"""
@@ -777,8 +887,10 @@ class V2VManager:
                 # 'warning_queue_size': self.received_warnings.qsize(),
                 'active_local_peers': len(self.received_local_states),
                 'active_fleet_peers': len(self.received_fleet_states),
+                'active_trust_peers': len(self.received_trust_reports),
                 'local_broadcast_rate': self.config.local_state_frequency,
                 'fleet_broadcast_rate': self.config.fleet_state_frequency,
+                'trust_broadcast_rate': self.config.trust_report_frequency,
                 'local_state_messages_received': self._local_state_log_counter,
                 'fleet_state_messages_received': self._fleet_state_log_counter
             })
@@ -804,7 +916,8 @@ class V2VManager:
                 self.logger.info(f"V2VManager activated for vehicle {self.vehicle_id} "
                                f"with {len(peer_vehicles)} peers (fleet size: {fleet_size})")
                 self.logger.info(f"Broadcast rates: Local={self.config.local_state_frequency}Hz, "
-                               f"Fleet={self.config.fleet_state_frequency}Hz")
+                               f"Fleet={self.config.fleet_state_frequency}Hz, "
+                               f"Trust={self.config.trust_report_frequency}Hz")
             
             return success
             
@@ -853,7 +966,11 @@ class V2VManager:
                 fleet_size = len(peer_vehicles) + 1
                 if self.logger:
                     self.logger.info(f"V2VManager: V2V communication activated successfully")
-                    self.logger.info(f"V2VManager: Broadcasting rates - Local: {self.config.local_state_frequency}Hz, Fleet: {self.config.fleet_state_frequency}Hz")
+                    self.logger.info(
+                        f"V2VManager: Broadcasting rates - Local: {self.config.local_state_frequency}Hz, "
+                        f"Fleet: {self.config.fleet_state_frequency}Hz, "
+                        f"Trust: {self.config.trust_report_frequency}Hz"
+                    )
                 
                 # Report activation to Ground Station via vehicle_logic
                 if self.vehicle_logic and hasattr(self.vehicle_logic, 'report_v2v_status_to_gs'):
@@ -963,6 +1080,7 @@ class V2VManager:
                 'broadcast_config': {
                     'local_state_frequency': self.config.local_state_frequency,
                     'fleet_state_frequency': self.config.fleet_state_frequency,
+                    'trust_report_frequency': self.config.trust_report_frequency,
                     'heartbeat_frequency': self.config.heartbeat_frequency
                 }
             }
@@ -1059,6 +1177,14 @@ class V2VManager:
                         if states:
                             latest_data = states[-1][1]
                             self.logger.info(f"  Vehicle {vehicle_id}: {len(states)} states, latest keys: {list(latest_data.keys())}")
+
+                    # Trust reports summary
+                    trust_count = sum(len(states) for states in self.received_trust_reports.values())
+                    self.logger.info(f"Trust reports: {trust_count} total from {len(self.received_trust_reports)} vehicles")
+                    for vehicle_id, states in self.received_trust_reports.items():
+                        if states:
+                            latest_opinions = states[-1][1]
+                            self.logger.info(f"  Vehicle {vehicle_id}: {len(states)} reports, latest opinions: {len(latest_opinions)}")
                     
                     # Position mapping
                     if self.position_to_vehicle_id_map:

@@ -423,15 +423,21 @@ class YOLOServerVirtual:
                 2,
             )
 
+        # Final output crop for displayed/streamed annotated image.
+        final_annotated = annotated
+        crop_px = 50
+        if annotated is not None and annotated.shape[0] > crop_px:
+            final_annotated = annotated[:-crop_px, :]
+
         # Send video over ZMQ if probing is enabled
-        if self.video_publisher and annotated is not None:
-            self.video_publisher.send(annotated)
+        if self.video_publisher and final_annotated is not None:
+            self.video_publisher.send(final_annotated)
 
         has_local_window = False
 
         # Show image locally if enabled
-        if self.config.show_image and annotated is not None:
-            cv2.imshow("YOLO Server", annotated)
+        if self.config.show_image and final_annotated is not None:
+            cv2.imshow("YOLO Server", final_annotated)
             has_local_window = True
 
         # Show lane debug if enabled
