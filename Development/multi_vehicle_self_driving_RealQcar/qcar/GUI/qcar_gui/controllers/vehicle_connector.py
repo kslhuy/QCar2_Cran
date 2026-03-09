@@ -539,6 +539,7 @@ class VehicleConnector:
                 "simulation",
                 "Calibration",
                 "PathPlanner",
+                "Taxi",
             ]
             for folder_name in folders:
                 folder_path = os.path.join(self.scripts_path, folder_name)
@@ -562,6 +563,25 @@ class VehicleConnector:
                         f"Car {car_id}: {folder_name} folder not found (skipped)",
                         "WARNING",
                     )
+
+            resolved_type = (
+                self._normalize_vehicle_type(vehicle_type)
+                if vehicle_type
+                else self._vehicle_types.get(car_id)
+            )
+
+            if resolved_type == "Limo":
+                self._progress("Building ROS2 workspace on Limo...")
+                self._log(f"Car {car_id}: Running colcon build for limo_nav_huy_test...", "INFO")
+                build_cmd = "bash -c 'cd /home/agilex/agilex_ws && colcon build --packages-select limo_nav_huy_test --symlink-install'"
+                stdin, stdout, stderr = ssh.exec_command(build_cmd)
+                exit_status = stdout.channel.recv_exit_status()
+                
+                if exit_status == 0:
+                    self._log(f"Car {car_id}: Build successful.", "SUCCESS")
+                else:
+                    err = stderr.read().decode().strip()
+                    self._log(f"Car {car_id}: Build failed: {err}", "ERROR")
 
             self._log(
                 f"Car {car_id}: Upload complete ({uploaded_count} files total)",
@@ -770,7 +790,7 @@ class VehicleConnector:
             # ── Step 0: Kill any existing processes ───────────────────────────
             self._progress("Limo: Stopping existing processes...")
             ssh.exec_command("pkill -f limo_start 2>/dev/null; true")
-            ssh.exec_command("pkill -f navigationV2V_qcar_frames 2>/dev/null; true")
+            ssh.exec_command("pkill -f localization_slam_toolbox 2>/dev/null; true")
             ssh.exec_command("pkill -f vehicle_main_ros_qcar 2>/dev/null; true")
             ssh.exec_command("pkill -f waypoint_alignment 2>/dev/null; true")
             time.sleep(1)
@@ -794,8 +814,7 @@ class VehicleConnector:
             self._progress("Limo: Step 2/3 — Navigation V2V stack...")
             nav_cmd = (
                 f"bash -c '{source} && "
-                f"ros2 launch limo_nav_huy_test navigationV2V_qcar_frames.launch.py "
-                f"start_vehicle_main:=false "
+                f"ros2 launch limo_nav_huy_test localization_slam_toolbox_qcar.launch.py "
                 f"{_redir('nav')}' &"
             )
             ssh.exec_command(nav_cmd)
@@ -820,9 +839,15 @@ class VehicleConnector:
 
             # ── Step 3b: ROS2 vehicle_main node ──────────────────────────────
             self._progress("Limo: Step 3/3 — Starting vehicle_main_ros_qcar...")
+            
+            # Detect GS IP and port
+            host = self._get_best_host_ip(ip) if ip else self.gs_config.local_ip
+            port = self.gs_config.base_port
+            
             vm_cmd = (
                 f"bash -c '{source} && "
-                f"ros2 run limo_nav_huy_test vehicle_main_ros_qcar "
+                f"ros2 run limo_nav_huy_test vehicle_main_ros_qcar --ros-args "
+                f"-p car_id:={car_id} -p host:={host} -p port:={port} "
                 f"{_redir('vehicle')}' &"
             )
             ssh.exec_command(vm_cmd)
@@ -830,7 +855,7 @@ class VehicleConnector:
 
             # ── Verify processes are alive ────────────────────────────────────
             stdin, stdout, _ = ssh.exec_command(
-                "pgrep -fa 'limo_start\|navigationV2V\|vehicle_main_ros_qcar'"
+                "pgrep -fa 'limo_start|vehicle_main_ros_qcar'"
             )
             pids = stdout.read().decode().strip()
 
@@ -944,11 +969,11 @@ class VehicleConnector:
         try:
             # Check what's running
             # Include ROS2 processes for Limo
-            stdin, stdout, stderr = ssh.exec_command(
-                "pgrep -f 'vehicle_main|yolo_server|ros2|rclpy'"
-            )
+            terminal_pattern = "vehicle_main|yolo_server|ros2|rclpy|limo_start|localization_slam_toolbox|waypoint_alignment|nav2|amcl|bt_navigator|robot_state_publisher|ekf_filter_node|limo_base_node|static_transform_publisher"
+            
+            stdin, stdout, stderr = ssh.exec_command(f"pgrep -f '{terminal_pattern}'")
             running_pids = stdout.read().decode().strip()
-
+            
             if not running_pids:
                 return True, "No processes running"
 
@@ -958,16 +983,11 @@ class VehicleConnector:
             )
 
             # Send SIGTERM first (graceful)
-            ssh.exec_command("pkill -15 -f 'vehicle_main'")
-            ssh.exec_command("pkill -15 -f 'yolo_server'")
-            ssh.exec_command("pkill -15 -f 'ros2'")  # For Limo
-            ssh.exec_command("pkill -15 -f 'rclpy'")  # For Limo
+            ssh.exec_command(f"pkill -15 -f '{terminal_pattern}'")
             time.sleep(2)
 
             # Check if still running
-            stdin, stdout, stderr = ssh.exec_command(
-                "pgrep -f 'vehicle_main|yolo_server|ros2|rclpy'"
-            )
+            stdin, stdout, stderr = ssh.exec_command(f"pgrep -f '{terminal_pattern}'")
             remaining = stdout.read().decode().strip()
 
             if remaining:
@@ -975,14 +995,11 @@ class VehicleConnector:
                 self._log(
                     f"Car {car_id}: Force killing remaining processes...", "WARNING"
                 )
-                ssh.exec_command("pkill -9 -f 'vehicle_main'")
-                ssh.exec_command("pkill -9 -f 'yolo_server'")
+                ssh.exec_command(f"pkill -9 -f '{terminal_pattern}'")
                 time.sleep(1)
 
                 # Final check
-                stdin, stdout, stderr = ssh.exec_command(
-                    "pgrep -f 'vehicle_main|yolo_server'"
-                )
+                stdin, stdout, stderr = ssh.exec_command(f"pgrep -f '{terminal_pattern}'")
                 still_running = stdout.read().decode().strip()
                 if still_running:
                     return False, f"Some processes still running: {still_running}"

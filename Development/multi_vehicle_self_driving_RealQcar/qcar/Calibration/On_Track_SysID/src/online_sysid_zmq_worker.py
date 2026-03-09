@@ -26,9 +26,19 @@ except Exception as exc:
 from online_sysid_service import OnlineSysIDService
 
 
+SAMPLE_RCVHWM = 8192
+CONTROL_RCVHWM = 256
+STATUS_SNDHWM = 128
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ZMQ worker for online SysID")
-    parser.add_argument("--vehicle-id", type=int, default=-1, help="Filter by vehicle_id. -1 means accept all.")
+    parser.add_argument(
+        "--vehicle-id",
+        type=int,
+        default=0,
+        help="Fixed vehicle_id to accept from sample and command channels.",
+    )
     parser.add_argument("--sample-host", default="127.0.0.1")
     parser.add_argument("--sample-port", type=int, default=18880)
     parser.add_argument("--control-host", default="127.0.0.1")
@@ -37,8 +47,8 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--racecar-version", default="SIM")
     parser.add_argument("--sample-dt", type=float, default=0.02)
-    parser.add_argument("--min-speed-threshold", type=float, default=0.3)
-    parser.add_argument("--min-samples", type=int, default=500)
+    parser.add_argument("--min-speed-threshold", type=float, default=1.0)
+    parser.add_argument("--min-samples", type=int, default=1500)
     parser.add_argument("--save-lut-name", default="online_sysid")
     parser.add_argument("--generate-lut", action="store_true")
     parser.add_argument("--plot-model", action="store_true")
@@ -64,7 +74,7 @@ def main() -> int:
 
     service = OnlineSysIDService(
         logger=None,
-        vehicle_id=max(args.vehicle_id, 0),
+        vehicle_id=args.vehicle_id,
         racecar_version=args.racecar_version,
         sample_dt=args.sample_dt,
         min_speed_threshold=args.min_speed_threshold,
@@ -81,20 +91,20 @@ def main() -> int:
 
     sample_sub = ctx.socket(zmq.SUB)
     sample_sub.setsockopt(zmq.SUBSCRIBE, b"")
-    sample_sub.setsockopt(zmq.CONFLATE, 1)
+    sample_sub.setsockopt(zmq.RCVHWM, SAMPLE_RCVHWM)
     sample_sub.setsockopt(zmq.RCVTIMEO, 0)
     sample_sub.setsockopt(zmq.LINGER, 0)
     sample_sub.connect(f"tcp://{args.sample_host}:{args.sample_port}")
 
     control_sub = ctx.socket(zmq.SUB)
     control_sub.setsockopt(zmq.SUBSCRIBE, b"")
-    control_sub.setsockopt(zmq.CONFLATE, 1)
+    control_sub.setsockopt(zmq.RCVHWM, CONTROL_RCVHWM)
     control_sub.setsockopt(zmq.RCVTIMEO, 0)
     control_sub.setsockopt(zmq.LINGER, 0)
     control_sub.connect(f"tcp://{args.control_host}:{args.control_port}")
 
     status_pub = ctx.socket(zmq.PUB)
-    status_pub.setsockopt(zmq.SNDHWM, 1)
+    status_pub.setsockopt(zmq.SNDHWM, STATUS_SNDHWM)
     status_pub.setsockopt(zmq.LINGER, 0)
     status_pub.bind(f"tcp://*:{args.status_port}")
 
@@ -102,7 +112,7 @@ def main() -> int:
         "[OnlineSysID-Worker] Started | "
         f"sample=tcp://{args.sample_host}:{args.sample_port}, "
         f"control=tcp://{args.control_host}:{args.control_port}, "
-        f"status=tcp://*:{args.status_port}, filter_vehicle_id={args.vehicle_id}"
+        f"status=tcp://*:{args.status_port}, vehicle_id={args.vehicle_id}"
     )
 
     # Allow subscribers to connect.
@@ -120,28 +130,39 @@ def main() -> int:
             events = dict(poller.poll(timeout=50))
 
             if sample_sub in events and events[sample_sub] == zmq.POLLIN:
-                try:
-                    msg = sample_sub.recv_json(flags=zmq.NOBLOCK)
-                except Exception:
-                    msg = None
+                while True:
+                    try:
+                        msg = sample_sub.recv_json(flags=zmq.NOBLOCK)
+                    except zmq.Again:
+                        break
+                    except Exception:
+                        break
 
-                if isinstance(msg, dict) and msg.get("type") == "sample":
-                    vehicle_id = int(msg.get("vehicle_id", -1))
-                    if args.vehicle_id >= 0 and vehicle_id != args.vehicle_id:
-                        pass
-                    else:
+                    if isinstance(msg, dict) and msg.get("type") == "sample":
+                        vehicle_id = int(msg.get("vehicle_id", -1))
+                        if vehicle_id != args.vehicle_id:
+                            continue
                         sample = np.asarray(msg.get("sample", []), dtype=np.float32)
                         if sample.size == 4:
                             ts = float(msg.get("timestamp", time.time()))
                             service.submit_sample(sample, timestamp=ts)
 
             if control_sub in events and events[control_sub] == zmq.POLLIN:
-                try:
-                    cmd = control_sub.recv_json(flags=zmq.NOBLOCK)
-                except Exception:
-                    cmd = None
+                while True:
+                    try:
+                        cmd = control_sub.recv_json(flags=zmq.NOBLOCK)
+                    except zmq.Again:
+                        break
+                    except Exception:
+                        break
 
-                if isinstance(cmd, dict) and cmd.get("type") == "cmd":
+                    if not isinstance(cmd, dict) or cmd.get("type") != "cmd":
+                        continue
+
+                    cmd_vehicle_id = int(cmd.get("vehicle_id", -1))
+                    if cmd_vehicle_id != args.vehicle_id:
+                        continue
+
                     action = str(cmd.get("action", "")).strip().lower()
                     ok = True
                     message = "ok"
@@ -202,4 +223,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

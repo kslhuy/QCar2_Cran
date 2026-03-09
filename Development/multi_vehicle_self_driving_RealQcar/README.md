@@ -158,8 +158,13 @@ colcon build --packages-select limo_base limo_bringup limo_nav_huy_test --symlin
 ros2 launch limo_bringup limo_start.launch.py
 ```
 # Terminal 1 (without vehicle_main)
-```bash
+<!-- ```bash
 ros2 launch limo_nav_huy_test navigationV2V_qcar_frames.launch.py start_vehicle_main:=false
+``` -->
+
+-- Slam toolbox localization (new)
+```bash
+ros2 launch limo_nav_huy_test localization_slam_toolbox_qcar.launch.py
 ```
 
 # Terminal 2 (vehicle_main separate)

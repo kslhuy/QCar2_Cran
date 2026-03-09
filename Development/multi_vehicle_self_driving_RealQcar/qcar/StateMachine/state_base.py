@@ -869,8 +869,15 @@ class StateBase:
                 except:
                     pass
 
-            # Reinitialize GPS with calibration
-            if not self.vehicle_logic.is_physical_qcar:
+            # Reinitialize GPS with calibration            
+            if self.vehicle_logic.vehicle_type == "Limo":
+                if hasattr(self.vehicle_logic.gps, "send_initial_pose"):
+                    x, y, theta = calibration_pose
+                    self.vehicle_logic.gps.send_initial_pose(x, y, np.rad2deg(theta))
+                    self.logger.logger.info("GPS recalibrated (Limo ROS AMCL via send_initial_pose)")
+                else:
+                    self.logger.log_error("Limo GPS adapter missing send_initial_pose method")
+            elif not self.vehicle_logic.is_physical_qcar:
                 # For fake vehicles: Update mock hardware positions
                 self._update_fake_vehicle_position(calibration_pose)
 

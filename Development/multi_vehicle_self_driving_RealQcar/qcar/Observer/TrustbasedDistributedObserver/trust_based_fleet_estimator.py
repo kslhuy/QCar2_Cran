@@ -212,6 +212,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         # Attack mitigation enabled
         
         self.attack_mitigation_enabled = self.config.get("attack_mitigation", True)
+        self.turn_steering_threshold = self.config.get("trust", {}).get("turn_steering_threshold", 0.05)
         # print("Attack mitigation enabled:", self.attack_mitigation_enabled)
 
         # Prediction-only mode settings (MATLAB parity)
@@ -349,6 +350,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 "generalized_trust": {
                     k: float(v) for k, v in self.generalized_trust_vector.items()
                 },
+                "is_turning": int(abs(control[0]) >= self.turn_steering_threshold),
+                "host_steering": float(control[0]),
                 "neighbors": {},
             }
 
@@ -373,6 +376,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         "d_host_mean": trust_result.d_host_mean,
                         "d_local_mean": trust_result.d_local_mean,
                         "d_self": trust_result.d_self,
+                        "mi_veh_id": trust_result.mi_veh_id,
+                        "mi_dist": trust_result.mi_dist,
+                        "mi_elem_idx": trust_result.mi_elem_idx,
+                        "mi_elem_val": trust_result.mi_elem_val,
                         "w_neighbor": neighbor_weight,
                         "flag_target_attack": trust_result.flag_target_attack,
                         "flag_local_est_check": trust_result.flag_local_est_check,

@@ -84,6 +84,8 @@ class PathPlanningConfig:
             return [0, 2, 4, 6, 8, 10, 1, 10, 2, 4, 6, 0]
         elif self.path_number == 3:
             return [0, 2, 4, 6, 13, 19, 17, 15, 6, 0]
+        elif self.path_number == 3:
+            return [0, 2, 4, 6, 13, 19, 17, 15, 6, 0]
 
     @property
     def calibration_pose(self) -> List[float]:

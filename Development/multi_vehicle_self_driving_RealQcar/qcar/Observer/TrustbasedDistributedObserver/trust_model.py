@@ -142,6 +142,12 @@ class TrustScore:
     d_local_mean: float = float("nan")
     d_self: float = float("nan")
 
+    # Impact elements for logging
+    mi_elem_idx: int = -1
+    mi_elem_val: float = float("nan")
+    mi_veh_id: int = -1
+    mi_dist: float = float("nan")
+
     # Trust rating vector (5 levels)
     trust_levels: np.ndarray = field(
         default_factory=lambda: np.array([0.0, 0.0, 0.2, 0.4, 0.4])
@@ -319,6 +325,10 @@ class TriPTrustModel:
         trust.d_host_mean = float(global_components.get("d_host_mean", float("nan")))
         trust.d_local_mean = float(global_components.get("d_local_mean", float("nan")))
         trust.d_self = float(global_components.get("d_self", float("nan")))
+        trust.mi_veh_id = int(global_components.get("mi_veh_id", -1))
+        trust.mi_dist = float(global_components.get("mi_dist", float("nan")))
+        trust.mi_elem_idx = int(global_components.get("mi_elem_idx", -1))
+        trust.mi_elem_val = float(global_components.get("mi_elem_val", float("nan")))
 
         # Apply separate local/global decay using local/global beacon channels
         trust.local_trust_sample = self._apply_trust_decay(
@@ -1021,6 +1031,11 @@ class TriPTrustModel:
         d_host_total = 0.0
         n_host_valid = 0
 
+        mi_veh_id = -1
+        mi_dist = -1.0
+        mi_elem_idx = -1
+        mi_elem_val = -1.0
+
         if target_fleet_estimates is not None and host_fleet_estimates is not None:
             # target_fleet_estimates is Dict[int, Dict] parsing Target's broadcast
             for vid, b_est_dict in target_fleet_estimates.items():
@@ -1034,8 +1049,16 @@ class TriPTrustModel:
                 if b_est_vec is None:
                     continue
                     
-                d_host_total += self._mahalanobis_distance(a_est_vec, b_est_vec)
+                total_dist, contributions = self._mahalanobis_components(a_est_vec, b_est_vec)
+                d_host_total += total_dist
                 n_host_valid += 1
+
+                # Track max impact neighbor
+                if total_dist > mi_dist:
+                    mi_dist = float(total_dist)
+                    mi_veh_id = int(vid)
+                    mi_elem_idx = int(np.argmax(contributions))
+                    mi_elem_val = float(contributions[mi_elem_idx])
 
         if n_host_valid > 0:
             d_host_mean_val = d_host_total / n_host_valid
@@ -1087,6 +1110,10 @@ class TriPTrustModel:
             "d_host_mean": float(d_host_total / max(1, n_host_valid)),
             "d_local_mean": float(d_local_total / max(1, n_local_valid)),
             "d_self": float(d_self),
+            "mi_veh_id": int(mi_veh_id),
+            "mi_dist": float(mi_dist),
+            "mi_elem_idx": int(mi_elem_idx),
+            "mi_elem_val": float(mi_elem_val),
         }
 
     def _state_to_array(self, state: object) -> Optional[np.ndarray]:
@@ -1132,6 +1159,19 @@ class TriPTrustModel:
         diag = diag[:n]
         inv_diag = 1.0 / np.maximum(diag, 1e-6)
         return float(np.dot(diff * inv_diag, diff))
+
+    def _mahalanobis_components(self, x1: np.ndarray, x2: np.ndarray) -> Tuple[float, np.ndarray]:
+        """Compute Mahalanobis distance and return element-wise squared contributions."""
+        diff = x1 - x2
+        n = diff.size
+        diag = np.asarray(self.config.distributed_trust_covariance_diag, dtype=float)
+        if diag.size < n:
+            diag = np.pad(diag, (0, n - diag.size), mode="edge")
+        diag = diag[:n]
+        inv_diag = 1.0 / np.maximum(diag, 1e-6)
+        contributions = (diff * diff) * inv_diag
+        total_dist = float(np.sum(contributions))
+        return total_dist, contributions
 
     def _update_trust_levels(
         self, target_id: int, gamma_local: float, gamma_cross: float

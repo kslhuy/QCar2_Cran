@@ -106,15 +106,20 @@ class LimoYOLO:
     """
     Standalone YOLO wrapper for Limo replacing Quanser's proprietary implementation.
     """
-    def __init__(self, imageWidth=640, imageHeight=480, modelPath='yolov8n-seg.pt'):
-        self.imageWidth = imageWidth
-        self.imageHeight = imageHeight
-        self.modelPath = modelPath
+    def __init__(self, imageWidth=640, imageHeight=480, modelPath=None):
+        # Force 640x640 for OpenVINO static model
+        self.imageWidth = 640
+        self.imageHeight = 640
+        if modelPath is None:
+            import os
+            self.modelPath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolo26n-seg_openvino_model')
+        else:
+            self.modelPath = modelPath
         self.net = YOLO(self.modelPath, task='segment')
         self.img = np.empty((self.imageHeight, self.imageWidth, 3), dtype=np.uint8)
         self._calc_distance = False
         self.FPS = 0.0
-        print(f"LimoYOLO initialized with model: {self.modelPath}")
+        print(f"LimoYOLO initialized with model: {self.modelPath} explicitly using 640x640")
 
     def pre_process(self, inputImg):
         self.inputShape = inputImg.shape[:2]
@@ -127,7 +132,7 @@ class LimoYOLO:
         self.predictions = self.net.predict(
             inputImg,
             verbose=verbose,
-            imgsz=(self.imageHeight, self.imageWidth),
+            imgsz=640,
             classes=classes,  # 0: person, 2: car, 9: traffic light, 11: stop sign, 33: suitcase(yield?)
             conf=confidence,
             half=half
@@ -193,6 +198,11 @@ class LimoYOLO:
                 else:
                     mask = self.predictions[0].masks.data.cpu()[i]
                 
+                # Failsafe resize mask if it doesn't match depthTensor exact shape
+                if mask.shape != self.depthTensor.shape[:2]:
+                    import torch.nn.functional as F
+                    mask = F.interpolate(mask.unsqueeze(0).unsqueeze(0).float(), size=self.depthTensor.shape[:2], mode='nearest').squeeze()
+
                 distance_raw = self.check_distance(mask, self.depthTensor[:,:,:1])
                 distance = distance_raw * scale_to_meters
                 if torch.is_tensor(distance):
@@ -293,6 +303,10 @@ class LimoYOLO:
         else:
              masks = self.predictions[0].masks.data.cpu()
              
+        if masks.shape[1:] != self.img.shape[:2]:
+            import torch.nn.functional as F
+            masks = F.interpolate(masks.unsqueeze(1).float(), size=self.img.shape[:2], mode='nearest').squeeze(1)
+
         boxes = self.predictions[0].boxes.xyxy.cpu().numpy().astype(int)
         imgClone = self.img.copy()
 
@@ -324,3 +338,46 @@ class LimoYOLO:
             imgMask = cv2.resize(imgMask, (self.inputShape[1], self.inputShape[0]))
             
         return imgMask
+
+def detect_line_and_draw(image):
+    """
+    Detects a black line using HSV thresholding (V <= 46), 
+    draws the target point, and computes steering command.
+    Returns:
+        steer_angle, linear_velocity
+    """
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    lower_black = np.array([0, 0, 0])
+    upper_black = np.array([180, 255, 46])
+    mask = cv2.inRange(hsv, lower_black, upper_black)
+
+    h, w = image.shape[:2]
+    search_top = 3 * h // 4
+    search_bot = search_top + 20
+
+    # Mask out everything except the narrow horizontal band
+    mask[0:search_top, :] = 0
+    mask[search_bot:h, :] = 0
+
+    M = cv2.moments(mask)
+    steering_angle = 0.0
+    linear_x = 0.0
+
+    if M['m00'] > 0:
+        cx = int(M['m10'] / M['m00'])
+        cy = int(M['m01'] / M['m00'])
+        cv2.circle(image, (cx, cy), 10, (0, 0, 255), -1)
+        
+        # Calculate steering angle (proportional to offset)
+        error = cx - w / 2.0
+        # Formula from cpp: twist_angular_z = -error / 300 * 0.4
+        # Since ackermann steering command is steering angle (radians), we use the same formula
+        steering_angle = -error / 300.0 * 0.4
+        linear_x = 0.1
+        
+        cv2.putText(image, f"LineCmd: V={linear_x:.2f}, Steer={steering_angle:.3f} rad", 
+                    (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    else:
+        cv2.putText(image, "Line: Not Found", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    return steering_angle, linear_x

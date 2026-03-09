@@ -35,6 +35,10 @@ class Gear(Enum):
     DRIVE_1 = 0.1  # Low speed / Safe mode
     DRIVE_2 = 0.2  # Medium speed
     DRIVE_3 = 0.3  # High speed / Full power
+    DRIVE_4 = 0.4  # Highest speed / Maximum power
+    DRIVE_5 = 0.5  # Highest speed / Maximum power
+
+
 
 
 class StateTransitionReason(Enum):

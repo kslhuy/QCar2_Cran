@@ -570,6 +570,7 @@ environment_objects = {
 }
 
 
+
 def spawn_environment_objects(qlabs_instance):
     """Spawn all environment objects (crosswalks, traffic lights, signs, etc.)"""
     global environment_objects
@@ -785,10 +786,28 @@ def load_fleet_config(
         return yaml.safe_load(f)
 
 
-def build_qcars_from_config(cfg: dict, num_cars_override: int = None) -> list:
+def build_qcars_from_config(
+    cfg: dict,
+    num_cars_override: int = None,
+    direct_positions: list = None,
+) -> list:
+    """Create the list of spawn definitions used by MultiAgent.
+
+    Args:
+        cfg: parsed fleet_config dictionary.
+        num_cars_override: optionally limit the number of vehicles to spawn.
+        direct_positions: if provided, a list of [x,y,theta_deg] triples that will
+            override whatever is calculated from the config.  Thetas are converted
+            to radians and applied to the returned spawn dicts.  This is used for
+            the ``--use-direct-poses`` or ``--direct-poses`` command line options.
+    """
+
     qcars = []
     nodes = cfg.get("nodes", {})
     paths = cfg.get("paths", {})
+
+    # (legacy) hardcoded direct positions are now declared at module level
+    # under DIRECT_SET_POS; the CLI layer will pass them in when requested.
 
     # fallback node poses (same reference used in qcar/config_main.py)
     fallback_node_poses = {
@@ -867,20 +886,53 @@ def build_qcars_from_config(cfg: dict, num_cars_override: int = None) -> list:
             }
         )
 
+    # apply direct overrides if requested
+    if direct_positions is not None:
+        for idx, pos in enumerate(direct_positions):
+            if idx < len(qcars):
+                try:
+                    x, y, theta_deg = pos
+                except Exception:
+                    continue
+                qcars[idx]["Location"] = [x, y, 0.005]
+                # convert degrees to radians for the stored rotation
+                qcars[idx]["Rotation"] = [0, 0, theta_deg * np.pi / 180.0]
+                print(f"[spawn] vehicle {idx} direct position override -> {qcars[idx]['Location']} {qcars[idx]['Rotation']} (rad)")
+
     return qcars
 
+
+# hardcoded list of direct spawn positions (x,y,theta in degrees)
+# moved to module level so the CLI parser can reference it as well
+DIRECT_SET_POS = [
+    [-1.064, -0.673, -39.775],
+    [-1.491, -0.264, -39.775],
+    [-1.884, 0.222, -80],
+]
 
 # Parse command-line arguments to optionally override the number of cars
 parser = argparse.ArgumentParser(description="Initialize QCar Environment")
 parser.add_argument(
     "--num-cars", "-n", type=int, default=None, help="Override number of cars to spawn"
 )
+parser.add_argument(
+    "--use-direct-poses", "-u", action="store_true",
+    help="Use the hardcoded `DIRECT_SET_POS` list instead of node-based poses from fleet_config",
+)
 args, unknown = parser.parse_known_args()
+
+# If the user asked to use hardcoded direct poses
+# they will override the normal config-based spawn locations.
+direct_positions = DIRECT_SET_POS if args.use_direct_poses else None
 
 # Try to load fleet config and build QCars list; if fails, fall back to the original hardcoded spawns
 try:
     cfg = load_fleet_config()
-    QCars = build_qcars_from_config(cfg, num_cars_override=args.num_cars)
+    QCars = build_qcars_from_config(
+        cfg,
+        num_cars_override=args.num_cars,
+        direct_positions=direct_positions,
+    )
     if not QCars:
         print(
             "No enabled vehicles found in fleet_config.yaml; falling back to defaults"

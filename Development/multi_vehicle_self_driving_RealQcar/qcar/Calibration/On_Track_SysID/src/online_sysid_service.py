@@ -57,8 +57,8 @@ class OnlineSysIDService:
         vehicle_id: int,
         racecar_version: str = "SIM",
         sample_dt: float = 0.02,
-        min_speed_threshold: float = 0.3,
-        min_samples: int = 500,
+        min_speed_threshold: float = 1.0,
+        min_samples: int = 1500,
         sample_queue_size: int = 2048,
         buffer_size: int = 20000,
         save_lut_name: str = "online_sysid",
@@ -462,7 +462,7 @@ class OnlineSysIDService:
         try:
             self._zmq_ctx = zmq.Context.instance()
             self._zmq_pub = self._zmq_ctx.socket(zmq.PUB)
-            self._zmq_pub.setsockopt(zmq.SNDHWM, 1)
+            self._zmq_pub.setsockopt(zmq.SNDHWM, 64)
             self._zmq_pub.setsockopt(zmq.LINGER, 0)
             self._zmq_pub.bind(f"tcp://*:{self._zmq_pub_port}")
             time.sleep(0.2)  # allow subscribers to connect
@@ -539,4 +539,3 @@ class OnlineSysIDService:
                 print(f"{msg}: {exc}")
             else:
                 print(msg)
-

@@ -125,7 +125,7 @@ class VehicleLogic:
         platoon_config = PlatoonConfig()
         self.platoon_controller = PlatoonController(platoon_config, self.vehicle_logger)
         # Controller Manager - centralized tracking of active controllers
-        self.controller_manager = ControllerManager(logger=self.vehicle_logger)
+        self.controller_manager = ControllerManager(logger=self.vehicle_logger, vehicle_type=self.vehicle_type)
 
         pid_params = self.controller_manager.config._get_pid_params()
         self.v_ref = pid_params.get("v_ref", 0.6)
@@ -406,7 +406,7 @@ class VehicleLogic:
             )
 
             # Feed Online SysID with latest [v_x, v_y, omega, delta] sample.
-            sample = self.vehicle_observer.get_online_sysid_sample()
+            sample = self.vehicle_observer.get_online_sysid_sample(dt=dt)
             if sample is not None:
                 if hasattr(self, "online_sysid_zmq") and self.online_sysid_zmq:
                     if self.online_sysid_zmq.is_collecting():
@@ -491,11 +491,6 @@ class VehicleLogic:
                 # self.vehicle_logger.log_error("State machine returned invalid control commands")
                 return True  # Skip sending commands
 
-            # u = 0.075 # Test value
-            # delta = 0.0 # Test value
-
-            # print(f"Throttle: {u}, Steering: {delta}")
-            # Send commands to vehicle hardware
 
             self._last_steering = delta
 
@@ -512,10 +507,15 @@ class VehicleLogic:
                 delta = max(-1.0, min(1.0, delta))
 
             if self.qcar is not None:
-                max_throttle = float(getattr(self.gear, "value", 0.1))
-                if abs(u) > max_throttle:
-                    u = np.clip(u, -max_throttle, max_throttle)
-                self.qcar.write(throttle=u, steering=delta)
+                if self.vehicle_type == "Limo":
+                    # For Limo, u is a velocity command in m/s
+                    u_clipped = float(np.clip(u, -0.3, 1.2)) # Max ~1.2 m/s
+                    self.qcar.write(throttle=u_clipped, steering=delta)
+                else:
+                    max_throttle = float(getattr(self.gear, "value", 0.1))
+                    if abs(u) > max_throttle:
+                        u = np.clip(u, -max_throttle, max_throttle)
+                    self.qcar.write(throttle=u, steering=delta)
 
             # Store steering and throttle for next EKF update and telemetry
             self._last_u = u

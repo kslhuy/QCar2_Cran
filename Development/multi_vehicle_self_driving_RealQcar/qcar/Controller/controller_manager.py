@@ -62,15 +62,17 @@ class ControllerManager:
         """Return True if *ctrl_type* handles both lon and lat jointly."""
         return ctrl_type in cls.COUPLED_CONTROLLERS
 
-    def __init__(self, logger=None, config=None):
+    def __init__(self, logger=None, config=None, vehicle_type="QCar"):
         """
         Initialize ControllerManager.
 
         Args:
             logger: Logger instance
+            vehicle_type: Type of the vehicle (e.g., 'QCar' or 'Limo')
         """
         self.config = config if config else get_controller_config()
         self.logger = logger
+        self.vehicle_type = vehicle_type
 
         # Active controllers
         self._longitudinal: Optional[ControllerInfo] = None
@@ -150,6 +152,8 @@ class ControllerManager:
             params = {}
             if self.config:
                 params = self.config.get_longitudinal_params(ctrl_type)
+                
+            params['vehicle_type'] = self.vehicle_type
 
             controller = ControllerFactory.create(
                 ctrl_type,
@@ -211,6 +215,8 @@ class ControllerManager:
             params = {}
             if self.config:
                 params = self.config.get_lateral_params(ctrl_type)
+
+            params['vehicle_type'] = self.vehicle_type
 
             controller = LateralControllerFactory.create(
                 ctrl_type,

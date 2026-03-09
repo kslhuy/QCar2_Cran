@@ -871,12 +871,11 @@ class VehicleObserver:
                 time.time_ns()
             )  # Use nanoseconds for consistency with V2V timestamps
 
-            # Get control input (steering, throttle) - use zeros as default
-            # TODO : pass actual control inputs , have size of fleet and size of control input (steering, throttle)
-            control = np.array(
-                [0.0, 0.0]
-            )  # Will be passed from vehicle_logic in future
-            # control input can be estimated by observer state. Based on the co-design method
+            # Pass actual control inputs (steering, throttle)
+            control = np.array([
+                self.control_input.get("steering", 0.0),
+                self.control_input.get("throttle", 0.0)
+            ])
 
             # Update fleet estimates using pluggable estimator
             current_local = self.local_state.copy()
@@ -1287,28 +1286,54 @@ class VehicleObserver:
         except Exception:
             return 0.0
 
-    def _estimate_lateral_velocity_locked(self, vx: float, omega: float) -> float:
+    def _estimate_lateral_velocity_locked(
+        self, vx: float, omega: float, dt_hint: Optional[float] = None
+    ) -> float:
         """
-        Estimate v_y using an Extended Kalman Filter with IMU relation vdot_y ~= a_y - v_x * omega.
+        Estimate v_y using an Extended Kalman Filter with IMU relation
+        vdot_y ~= a_y - v_x * omega.
+
+        Args:
+            vx: Measured/estimated longitudinal speed.
+            omega: Measured yaw rate.
+            dt_hint: Optional dynamic timestep from caller (seconds). If valid,
+                this is preferred over timestamp differencing.
         """
         ts = float(self.sensor_data.get("timestamp", 0.0))
         if ts <= 0.0:
             ts = time.time()
 
+        dt = 0.0
+        if dt_hint is not None:
+            try:
+                dt = float(dt_hint)
+            except Exception:
+                dt = 0.0
+
         if self.vy_ekf is None:
-            self.vy_ekf = LateralVelocityEKF(dt=0.01)
+            init_dt = dt if dt > 0.0 else 0.01
+            if init_dt > 0.2:
+                init_dt = 0.2
+            self.vy_ekf = LateralVelocityEKF(dt=init_dt)
             self._vy_est_last_time = ts
             return 0.0
 
-        if self._vy_est_last_time <= 0.0:
+        # Prefer caller-provided dynamic timestep from control/observer loop.
+        if dt > 0.0:
+            if dt > 0.2:
+                dt = 0.2
             self._vy_est_last_time = ts
-            return float(self.vy_ekf.x_state[4])
+        else:
+            # Fallback: derive dt from sensor timestamp progression.
+            if self._vy_est_last_time <= 0.0:
+                self._vy_est_last_time = ts
+                return float(self.vy_ekf.x_state[4])
 
-        dt = ts - self._vy_est_last_time
-        self._vy_est_last_time = ts
+            dt = ts - self._vy_est_last_time
+            self._vy_est_last_time = ts
 
-        if dt <= 0.0:
-            return float(self.vy_ekf.x_state[4])
+            if dt <= 0.0:
+                return float(self.vy_ekf.x_state[4])
 
         if dt > 0.2:
             dt = 0.2
@@ -1344,7 +1369,7 @@ class VehicleObserver:
 
         return float(vy_est)
 
-    def get_online_sysid_sample(self) -> Optional[np.ndarray]:
+    def get_online_sysid_sample(self, dt: Optional[float] = None) -> Optional[np.ndarray]:
         """
         Build one SysID sample [v_x, v_y, omega, delta].
 
@@ -1362,7 +1387,7 @@ class VehicleObserver:
             delta = float(self.control_input.get("steering", 0.0))
 
             # 2. Update EKF (vy_kalman_filter.py)
-            self._estimate_lateral_velocity_locked(vx_meas, omega_meas)
+            self._estimate_lateral_velocity_locked(vx_meas, omega_meas, dt_hint=dt)
 
             # 3. Extract filtered states from EKF
             if self.vy_ekf is not None:

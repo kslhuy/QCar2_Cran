@@ -25,6 +25,11 @@ except Exception:
     ZMQ_AVAILABLE = False
 
 
+SAMPLE_SNDHWM = 4096
+CONTROL_SNDHWM = 128
+STATUS_RCVHWM = 64
+
+
 class OnlineSysIDZMQClient:
     """Vehicle-side ZMQ transport for external online SysID worker."""
 
@@ -76,18 +81,19 @@ class OnlineSysIDZMQClient:
             self._ctx = zmq.Context.instance()
 
             self._sample_pub = self._ctx.socket(zmq.PUB)
-            self._sample_pub.setsockopt(zmq.SNDHWM, 1)
+            self._sample_pub.setsockopt(zmq.SNDHWM, SAMPLE_SNDHWM)
             self._sample_pub.setsockopt(zmq.LINGER, 0)
             self._sample_pub.bind(f"tcp://{self.bind_ip}:{self.sample_port}")
 
             self._control_pub = self._ctx.socket(zmq.PUB)
-            self._control_pub.setsockopt(zmq.SNDHWM, 1)
+            self._control_pub.setsockopt(zmq.SNDHWM, CONTROL_SNDHWM)
             self._control_pub.setsockopt(zmq.LINGER, 0)
             self._control_pub.bind(f"tcp://{self.bind_ip}:{self.control_port}")
 
             self._status_sub = self._ctx.socket(zmq.SUB)
             self._status_sub.setsockopt(zmq.SUBSCRIBE, b"")
             self._status_sub.setsockopt(zmq.CONFLATE, 1)
+            self._status_sub.setsockopt(zmq.RCVHWM, STATUS_RCVHWM)
             self._status_sub.setsockopt(zmq.RCVTIMEO, 0)
             self._status_sub.setsockopt(zmq.LINGER, 0)
             self._status_sub.connect(f"tcp://{self.status_host}:{self.status_port}")
@@ -270,4 +276,3 @@ class OnlineSysIDZMQClient:
                 self.logger.logger.error(f"{msg}: {exc}")
         else:
             print(msg if exc is None else f"{msg}: {exc}")
-

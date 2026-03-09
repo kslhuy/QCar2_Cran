@@ -92,6 +92,8 @@ class VehicleControlFullSystemQCar(Node):
                 ('sdc_initialpose_topic', '/initialpose_sdc'),
                 ('sdc_initialpose_input_frame', 'SDCQcar'),
                 ('require_path_for_ready', False),
+                ('host', ''),
+                ('port', 0),
             ]
         )
         
@@ -118,6 +120,8 @@ class VehicleControlFullSystemQCar(Node):
             'sdc_initialpose_input_frame').value
         require_path_for_ready = self.get_parameter(
             'require_path_for_ready').value
+        host = self.get_parameter('host').value
+        port = self.get_parameter('port').value
         
         self.get_logger().info(f"QCar Style - Car ID: {car_id}, v_ref: {v_ref}, rate: {controller_rate} Hz")
         
@@ -229,6 +233,11 @@ class VehicleControlFullSystemQCar(Node):
             config = VehicleMainConfig()
             
         config.network.car_id = car_id
+        if host and str(host).strip():
+            config.network.host_ip = str(host).strip()
+        if port:
+            config.network.base_port = int(port)
+            
         vehicle_type_normalized = str(vehicle_type).strip().lower()
         if vehicle_type_normalized == 'limo':
             config.vehicle.vehicle_type = 'Limo'

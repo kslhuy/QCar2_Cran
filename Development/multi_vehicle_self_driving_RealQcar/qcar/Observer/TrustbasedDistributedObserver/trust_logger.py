@@ -88,6 +88,8 @@ class TrustWeightLogger:
             "platoon_conf_min",
             "platoon_conf_max",
             "prediction_mode_count",
+            "is_turning",
+            "host_steering",
         ]
 
         for i in range(max_vehicles):
@@ -104,6 +106,10 @@ class TrustWeightLogger:
                     f"d_host_mean_{i}",
                     f"d_local_mean_{i}",
                     f"d_self_{i}",
+                    f"mi_veh_id_{i}",
+                    f"mi_dist_{i}",
+                    f"mi_elem_idx_{i}",
+                    f"mi_elem_val_{i}",
                     f"v_score_{i}",
                     f"d_score_{i}",
                     f"a_score_{i}",
@@ -182,6 +188,8 @@ class TrustWeightLogger:
             "platoon_conf_min": nan_val,
             "platoon_conf_max": nan_val,
             "prediction_mode_count": 0,
+            "is_turning": int(data.get("is_turning", 0)),
+            "host_steering": self._to_float_or_nan(data.get("host_steering", nan_val)),
         }
 
         active_vehicle_count = 0
@@ -209,6 +217,10 @@ class TrustWeightLogger:
             row[f"d_host_mean_{i}"] = nan_val
             row[f"d_local_mean_{i}"] = nan_val
             row[f"d_self_{i}"] = nan_val
+            row[f"mi_veh_id_{i}"] = nan_val
+            row[f"mi_dist_{i}"] = nan_val
+            row[f"mi_elem_idx_{i}"] = nan_val
+            row[f"mi_elem_val_{i}"] = nan_val
             row[f"v_score_{i}"] = nan_val
             row[f"d_score_{i}"] = nan_val
             row[f"a_score_{i}"] = nan_val
@@ -276,6 +288,18 @@ class TrustWeightLogger:
                 )
                 row[f"d_self_{i}"] = self._to_float_or_nan(
                     ndata.get("d_self", nan_val)
+                )
+                row[f"mi_veh_id_{i}"] = self._to_float_or_nan(
+                    ndata.get("mi_veh_id", nan_val)
+                )
+                row[f"mi_dist_{i}"] = self._to_float_or_nan(
+                    ndata.get("mi_dist", nan_val)
+                )
+                row[f"mi_elem_idx_{i}"] = self._to_float_or_nan(
+                    ndata.get("mi_elem_idx", nan_val)
+                )
+                row[f"mi_elem_val_{i}"] = self._to_float_or_nan(
+                    ndata.get("mi_elem_val", nan_val)
                 )
                 if not math.isnan(row[f"gamma_host_{i}"]):
                     gamma_host_values.append(row[f"gamma_host_{i}"])

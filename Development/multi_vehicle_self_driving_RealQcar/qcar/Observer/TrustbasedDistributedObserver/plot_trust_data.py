@@ -19,6 +19,7 @@ from typing import Dict, List, Tuple
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
+import argparse
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ def _extract_vehicle_ids(columns: List[str]) -> List[int]:
         "b_score", "q_factor", "local_trust", "global_trust",
         "gamma_host", "gamma_local_peer", "gamma_self",
         "d_host_mean", "d_local_mean", "d_self",
+        "mi_dist", "mi_veh_id", "mi_elem_idx", "mi_elem_val",
     }
     for col in columns:
         m = re.search(r"_(\d+)$", col)
@@ -121,9 +123,17 @@ def _style(ax, title="", ylabel="", xlabel="", legend=True):
     if legend:
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-            ax.legend(fontsize=7, ncol=max(1, len(handles) // 2),
+            # Avoid duplicate legend entries for Turn Section if plotted multiple times
+            by_label = dict(zip(labels, handles))
+            ax.legend(by_label.values(), by_label.keys(), fontsize=7, ncol=max(1, len(by_label) // 2),
                       loc="best", framealpha=0.7)
 
+def _add_turn_sections(ax, times, rows):
+    is_turning = _col_to_array(rows, "is_turning")
+    if np.any(np.isfinite(is_turning)) and np.any(is_turning > 0):
+        import matplotlib.transforms as mtransforms
+        trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
+        ax.fill_between(times, 0, 1, where=(is_turning >= 1), color='gold', alpha=0.25, transform=trans, label='Turn Section')
 
 # ──────────────────────────────────────────────────────────────────────
 # Figure builders
@@ -132,22 +142,22 @@ def _style(ax, title="", ylabel="", xlabel="", legend=True):
 def _fig_trust(times, rows, active, focus, host_id):
     """
     Figure 1 - Trust Calculation
-    Layout (4 rows x 2 cols):
-      [0,0] Final direct trust per vehicle    [0,1] Generalized trust O_i(j)
-      [1,0] Local trust per vehicle           [1,1] Global (distributed) trust
-      [2,0] Component scores (focus vehicle)  [2,1] gamma_host/gamma_local/gamma_self
-      [3,0] Mahalanobis distance terms        [3,1] Attack flags (focus vehicle)
+    Layout (3 rows x 4 cols):
+      [0,0] Direct trust                      [0,1] Generalized trust O_i(j)  [0,2] Local trust               [0,3] Global trust
+      [1,0] Component scores (focus vehicle)  [1,1] Global trust factors      [1,2] Mahalanobis distances     [1,3] Attack flags
+      [2,0:2] Max Impact Distance vs Vehicle  [2,2:4] Max Impact Element
     """
-    fig = plt.figure(figsize=(16, 13))
-    fig.suptitle(f"Trust Calculation  (Host V{host_id})", fontsize=13,
+    fig = plt.figure(figsize=(24, 12))
+    fig.suptitle(f"Trust Calculation  (Host V{host_id})", fontsize=15,
                  fontweight="bold")
-    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.35, wspace=0.25)
+    gs = gridspec.GridSpec(3, 4, figure=fig, hspace=0.35, wspace=0.25)
 
     # (0,0) Direct trust
     ax = fig.add_subplot(gs[0, 0])
     if _plot_series(ax, times, rows, "trust", active) == 0:
         _no_data(ax, "Direct Trust Score")
     ax.axhline(0.5, color="r", ls=":", lw=0.8, alpha=0.6, label="threshold")
+    _add_turn_sections(ax, times, rows)
     _style(ax, "Direct Trust Score", "Trust [0,1]")
 
     # (0,1) Generalized trust
@@ -155,24 +165,27 @@ def _fig_trust(times, rows, active, focus, host_id):
     if _plot_series(ax, times, rows, "gtrust", active) == 0:
         _no_data(ax, "Generalized Trust O_i(j)")
     ax.axhline(0.5, color="r", ls=":", lw=0.8, alpha=0.6)
+    _add_turn_sections(ax, times, rows)
     _style(ax, "Generalized Trust O_i(j)", "Trust [0,1]")
 
-    # (1,0) Local trust
-    ax = fig.add_subplot(gs[1, 0])
+    # (0,2) Local trust
+    ax = fig.add_subplot(gs[0, 2])
     if _plot_series(ax, times, rows, "local_trust", active,
                     label_fmt="LT V{}") == 0:
         _no_data(ax, "Local Trust (gamma_local)")
+    _add_turn_sections(ax, times, rows)
     _style(ax, "Local Trust (gamma_local)", "Trust [0,1]")
 
-    # (1,1) Global trust
-    ax = fig.add_subplot(gs[1, 1])
+    # (0,3) Global trust
+    ax = fig.add_subplot(gs[0, 3])
     if _plot_series(ax, times, rows, "global_trust", active,
                     label_fmt="GT V{}") == 0:
         _no_data(ax, "Global Trust (gamma_cross)")
+    _add_turn_sections(ax, times, rows)
     _style(ax, "Global Trust (gamma_cross)", "Trust [0,1]")
 
-    # (2,0) Trust components for focus vehicle
-    ax = fig.add_subplot(gs[2, 0])
+    # (1,0) Trust components for focus vehicle
+    ax = fig.add_subplot(gs[1, 0])
     comp = [
         (f"v_score_{focus}", "Velocity"),
         (f"d_score_{focus}", "Distance"),
@@ -191,8 +204,8 @@ def _fig_trust(times, rows, active, focus, host_id):
         _no_data(ax, f"Component Scores (V{focus})")
     _style(ax, f"Component Scores (V{focus})", "Score [0,1]")
 
-    # (2,1) Global trust factors for focus vehicle
-    ax = fig.add_subplot(gs[2, 1])
+    # (1,1) Global trust factors for focus vehicle
+    ax = fig.add_subplot(gs[1, 1])
     gamma_cols = [
         (f"gamma_host_{focus}", "gamma_host"),
         (f"gamma_local_peer_{focus}", "gamma_local_peer"),
@@ -209,8 +222,8 @@ def _fig_trust(times, rows, active, focus, host_id):
         _no_data(ax, f"Global Trust Factors (V{focus})")
     _style(ax, f"Global Trust Factors (V{focus})", "Value [0,1]")
 
-    # (3,0) Mahalanobis distance terms for focus vehicle
-    ax = fig.add_subplot(gs[3, 0])
+    # (1,2) Mahalanobis distance terms for focus vehicle
+    ax = fig.add_subplot(gs[1, 2])
     dist_cols = [
         (f"d_host_mean_{focus}", "d_host_mean"),
         (f"d_local_mean_{focus}", "d_local_mean"),
@@ -226,8 +239,8 @@ def _fig_trust(times, rows, active, focus, host_id):
         _no_data(ax, f"Mahalanobis Distances (V{focus})")
     _style(ax, f"Mahalanobis Distances (V{focus})", "Distance", xlabel="Time [s]")
 
-    # (3,1) Attack flags for focus vehicle
-    ax = fig.add_subplot(gs[3, 1])
+    # (1,3) Attack flags for focus vehicle
+    ax = fig.add_subplot(gs[1, 3])
     flag_cols = [
         (f"flag_attack_{focus}", "Target Attack"),
         (f"flag_local_{focus}", "Local Est Check"),
@@ -244,6 +257,49 @@ def _fig_trust(times, rows, active, focus, host_id):
     if n == 0:
         _no_data(ax, f"Attack Flags (V{focus})")
     _style(ax, f"Attack Flags (V{focus})", "Flag", xlabel="Time [s]")
+
+    # (2,0:2) Max Impact Distance
+    ax = fig.add_subplot(gs[2, 0:2])
+    arr_dist = _col_to_array(rows, f"mi_dist_{focus}")
+    arr_veh = _col_to_array(rows, f"mi_veh_id_{focus}")
+    if np.any(np.isfinite(arr_dist)) and np.any(np.isfinite(arr_veh)):
+        ax.plot(times, arr_dist, label="Max Impact Distance", color="tab:red", lw=1.5)
+        ax2 = ax.twinx()
+        valid_idx = np.isfinite(arr_veh)
+        ax2.scatter(np.array(times)[valid_idx], arr_veh[valid_idx], s=10, c="tab:blue", alpha=0.5, label="Impact Veh ID")
+        ax2.set_ylabel("Vehicle ID")
+        y_max = int(np.nanmax(arr_veh))
+        ax2.set_yticks(range(max(1, y_max + 1)))
+        
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=7)
+    else:
+        _no_data(ax, f"Max Impact Dist (V{focus})")
+    _style(ax, f"Max Impact Dist & Vehicle (V{focus})", "Distance", xlabel="Time [s]", legend=False)
+
+    # (2,2:4) Max Impact Element
+    ax = fig.add_subplot(gs[2, 2:4])
+    arr_idx = _col_to_array(rows, f"mi_elem_idx_{focus}")
+    arr_val = _col_to_array(rows, f"mi_elem_val_{focus}")
+    if np.any(np.isfinite(arr_idx)) and np.any(np.isfinite(arr_val)):
+        ax.plot(times, arr_val, label="Max Element Value", color="tab:orange", lw=1.5)
+        ax2 = ax.twinx()
+        valid_idx = np.isfinite(arr_idx)
+        ax2.scatter(np.array(times)[valid_idx], arr_idx[valid_idx], s=10, c="tab:green", alpha=0.5, label="Element Index")
+        # use descriptive tick labels instead of raw numbers
+        ax2.set_ylabel("Impact Element", fontsize=8)
+        ticks = [0, 1, 2, 3, 4]
+        labels = ["x", "y", "theta", "v", "a"]
+        ax2.set_yticks(ticks)
+        ax2.set_yticklabels(labels)
+        
+        lines1, labels1 = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=7)
+    else:
+        _no_data(ax, f"Max Impact Element (V{focus})")
+    _style(ax, f"Max Impact Element Index & Score (V{focus})", "Contribution / Score", xlabel="Time [s]", legend=False)
 
     return fig
 
@@ -420,11 +476,122 @@ def _fig_estimation(times, rows, active, host_id):
     return fig
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────────────────────────────
+def _fig_impact_histograms(rows, active, focus, host_id):
+    """
+    Figure 4 - Impact Overview Histograms
+    Layout (1 row x 2 cols):
+      [0,0] Max Impact Vehicle Frequency  [0,1] Max Impact Element Frequency
+    """
+    fig = plt.figure(figsize=(12, 5))
+    fig.suptitle(f"Max Impact Overview (Host V{host_id}, Focus V{focus})", fontsize=13, fontweight="bold")
+    gs = gridspec.GridSpec(1, 2, figure=fig, wspace=0.3)
+    
+    # [0,0] Max Impact Vehicle
+    ax1 = fig.add_subplot(gs[0, 0])
+    veh_col = _col_to_array(rows, f"mi_veh_id_{focus}")
+    if np.any(np.isfinite(veh_col)):
+        valid_vehs = veh_col[np.isfinite(veh_col)].astype(int)
+        unique_vehs, counts = np.unique(valid_vehs, return_counts=True)
+        ax1.bar([f"V{v}" for v in unique_vehs], counts, color="tab:blue", alpha=0.7)
+        for i, count in enumerate(counts):
+            ax1.text(i, count, str(count), ha="center", va="bottom", fontsize=9)
+        ax1.set_ylabel("Frequency")
+        ax1.set_title(f"Max Impact Vehicle Frequency (Focus V{focus})")
+    else:
+        _no_data(ax1, f"Max Impact Vehicle (V{focus})")
+        
+    # [0,1] Max Impact Element Index
+    ax2 = fig.add_subplot(gs[0, 1])
+    idx_col = _col_to_array(rows, f"mi_elem_idx_{focus}")
+    if np.any(np.isfinite(idx_col)):
+        valid_idxs = idx_col[np.isfinite(idx_col)].astype(int)
+        unique_idxs, counts = np.unique(valid_idxs, return_counts=True)
+        elem_names = {0: "x", 1: "y", 2: "theta", 3: "v", 4: "a"}
+        labels = [elem_names.get(i, str(i)) for i in unique_idxs]
+        ax2.bar(labels, counts, color="tab:orange", alpha=0.7)
+        for i, count in enumerate(counts):
+            ax2.text(i, count, str(count), ha="center", va="bottom", fontsize=9)
+        ax2.set_ylabel("Frequency")
+        ax2.set_title(f"Max Impact Element Frequency (Focus V{focus})")
+    else:
+        _no_data(ax2, f"Max Impact Element (V{focus})")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig
+
+
+def _print_static_metrics(rows, active):
+    """
+    Print an analytic summary of the trust logging run to the console.
+    Helps tune parameters by surfacing the most common threshold breakers.
+    """
+    print("\n" + "="*80)
+    print(f"{'STATIC METRICS DASHBOARD':^80}")
+    print("="*80)
+    
+    elem_names = {0: "x", 1: "y", 2: "theta", 3: "v", 4: "a"}
+
+    print(f"{'Vehicle':<10} | {'Target Atk':<12} | {'Local Est Bad':<15} | {'Global Est Bad':<16} | {'Max Impact Elements (Count)'}")
+    print("-" * 80)
+
+    for vid in active:
+        # Tally attack flags
+        target_atk_col = _col_to_array(rows, f"flag_attack_{vid}")
+        local_est_col = _col_to_array(rows, f"flag_local_{vid}")
+        global_est_col = _col_to_array(rows, f"flag_global_{vid}")
+        
+        target_atks = int(np.nansum(target_atk_col)) if np.any(np.isfinite(target_atk_col)) else 0
+        local_bads = int(np.nansum(local_est_col)) if np.any(np.isfinite(local_est_col)) else 0
+        global_bads = int(np.nansum(global_est_col)) if np.any(np.isfinite(global_est_col)) else 0
+        
+        # Determine element offenders
+        elem_idx_col = _col_to_array(rows, f"mi_elem_idx_{vid}")
+        dist_col = _col_to_array(rows, f"mi_dist_{vid}")
+        
+        elem_str = "None"
+        if np.any(np.isfinite(elem_idx_col)):
+            valid_idx = np.isfinite(elem_idx_col)
+            valid_elems = elem_idx_col[valid_idx].astype(int)
+            valid_dists = dist_col[valid_idx] if np.any(np.isfinite(dist_col)) else np.zeros_like(valid_elems)
+            
+            # Count the occurrences of each element being the max impact
+            counts = {i: 0 for i in range(5)}
+            dist_sums = {i: 0.0 for i in range(5)}
+            
+            for e, d in zip(valid_elems, valid_dists):
+                if e in counts:
+                    counts[e] += 1
+                    dist_sums[e] += d
+                    
+            # Sort by count descending
+            sorted_elems = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+            
+            elem_strs = []
+            for e, count in sorted_elems:
+                if count > 0:
+                    avg_d = dist_sums[e] / count
+                    name = elem_names.get(e, str(e))
+                    elem_strs.append(f"{name} ({count}x, avg dist: {avg_d:.2f})")
+            
+            if elem_strs:
+                elem_str = ", ".join(elem_strs[:2]) # Show top 2
+        
+        print(f"V{vid:<9} | {target_atks:<12} | {local_bads:<15} | {global_bads:<16} | {elem_str}")
+
+    print("="*80 + "\n")
+
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Plot trust/weight logs."
+    )
+    parser.add_argument("--file", "-f", help="path to a specific CSV file to plot")
+    parser.add_argument("--all", action="store_true",
+                        help="generate figures for every candidate focus vehicle")
+    parser.add_argument("--focus", type=int,
+                        help="vehicle ID to use as focus (overrides interactive choice)")
+    args = parser.parse_args()
+
     directory = os.path.dirname(os.path.abspath(__file__))
     csv_files = sorted(glob.glob(os.path.join(directory,
                                               "trust_weight_log_V*.csv")))
@@ -432,17 +599,23 @@ def main():
         print("No trust log files found in:", directory)
         return
 
-    print("Found files:")
-    for i, f in enumerate(csv_files):
-        print(f"[{i}] {os.path.basename(f)}")
+    if args.file:
+        file_to_plot = args.file
+        if not os.path.isfile(file_to_plot):
+            print(f"Specified file does not exist: {file_to_plot}")
+            return
+    else:
+        print("Found files:")
+        for i, f in enumerate(csv_files):
+            print(f"[{i}] {os.path.basename(f)}")
 
-    choice = input(f"Select file to plot [0-{len(csv_files) - 1}]: ").strip()
-    try:
-        choice = int(choice)
-        file_to_plot = csv_files[choice]
-    except (ValueError, IndexError):
-        print("Invalid choice. Exiting.")
-        return
+        choice = input(f"Select file to plot [0-{len(csv_files) - 1}]: ").strip()
+        try:
+            choice = int(choice)
+            file_to_plot = csv_files[choice]
+        except (ValueError, IndexError):
+            print("Invalid choice. Exiting.")
+            return
 
     columns, rows = _load_csv(file_to_plot)
     if "time" not in columns:
@@ -461,19 +634,49 @@ def main():
     host_match = re.search(r"V(\d+)\.csv$", os.path.basename(file_to_plot))
     host_id = int(host_match.group(1)) if host_match else -1
 
-    # Pick a neighbor (not host) as focus for component breakdown
+    # Determine list of candidate focus vehicles (exclude host if possible)
     neighbors = [v for v in active if v != host_id]
-    focus = neighbors[0] if neighbors else active[0]
+    focus_candidates = neighbors or active[:]
 
     print(f"Host vehicle: V{host_id}")
     print(f"Active vehicles: {active}")
-    print(f"Focus vehicle for components: V{focus}")
+    print(f"Candidate focus vehicles: {focus_candidates}")
     print(f"Total samples: {len(rows)}\n")
 
-    # Build the three figures
-    _fig_trust(times, rows, active, focus, host_id)
-    _fig_weights(times, rows, active, host_id)
-    _fig_estimation(times, rows, active, host_id)
+    # Print analytic summary
+    _print_static_metrics(rows, active)
+
+    # Choose focus vehicles according to command-line flags or interactive input
+    if args.all:
+        focuses = focus_candidates
+    elif args.focus is not None:
+        if args.focus in focus_candidates:
+            focuses = [args.focus]
+        else:
+            print(f"Requested focus V{args.focus} not in candidate list; using {focus_candidates[0]}")
+            focuses = [focus_candidates[0]]
+    else:
+        # interactive prompt if no CLI preference provided
+        focus_selection = input(
+            "Enter a focus vehicle ID from the list above, or type 'all' to generate a separate set of figures for every candidate (default = first): "
+        ).strip().lower()
+
+        if focus_selection == "all":
+            focuses = focus_candidates
+        else:
+            try:
+                fid = int(focus_selection)
+                focuses = [fid] if fid in focus_candidates else [focus_candidates[0]]
+            except ValueError:
+                focuses = [focus_candidates[0]]
+
+    # Build the figures (multiple sets if necessary)
+    for focus in focuses:
+        print(f"Plotting figures with focus vehicle: V{focus} ...")
+        _fig_trust(times, rows, active, focus, host_id)
+        _fig_weights(times, rows, active, host_id)
+        _fig_estimation(times, rows, active, host_id)
+        _fig_impact_histograms(rows, active, focus, host_id)
 
     plt.show()
 

@@ -56,16 +56,16 @@ vehicles:
     initial_v_ref: 0.6
     description: "Follower vehicle"
   
-  # - car_id: 2
-  #   ip: 192.168.2.108
-  #   vehicle_type: "Limo"   # Vehicle type: "Qcar" or "Limo"
-  #   enabled: true
-  #   probing: true         # Enable probing for follower
-  #   calibrate: false
-  #   path_number: 0         # Same path as leader
-  #   left_hand_traffic: false
-  #   initial_v_ref: 0.75
-  #   description: "Follower vehicle"
+  - car_id: 2
+    ip: 192.168.2.108
+    vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
+    enabled: true
+    probing: true         # Enable probing for follower
+    calibrate: false
+    path_number: 0         # Same path as leader
+    left_hand_traffic: false
+    initial_v_ref: 0.6
+    description: "Follower vehicle"
 
 # Path Definitions
 # Available paths that vehicles can follow

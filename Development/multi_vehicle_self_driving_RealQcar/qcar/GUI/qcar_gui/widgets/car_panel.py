@@ -912,6 +912,10 @@ class VelocityControl(BaseWidget):
             next_gear = "DRIVE_2"
         elif self._current_gear == "DRIVE_2":
             next_gear = "DRIVE_3"
+        elif self._current_gear == "DRIVE_3":
+            next_gear = "DRIVE_4"
+        elif self._current_gear == "DRIVE_4":
+            next_gear = "DRIVE_5"
 
         if next_gear and self.callbacks.on_set_gear:
             self.callbacks.on_set_gear(self.car_id, next_gear)
@@ -923,6 +927,10 @@ class VelocityControl(BaseWidget):
             next_gear = "DRIVE_2"
         elif self._current_gear == "DRIVE_2":
             next_gear = "DRIVE_1"
+        elif self._current_gear == "DRIVE_4":
+            next_gear = "DRIVE_3"
+        elif self._current_gear == "DRIVE_5":
+            next_gear = "DRIVE_4"
 
         if next_gear and self.callbacks.on_set_gear:
             self.callbacks.on_set_gear(self.car_id, next_gear)

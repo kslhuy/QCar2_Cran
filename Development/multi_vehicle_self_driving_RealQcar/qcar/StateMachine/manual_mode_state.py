@@ -171,9 +171,9 @@ class ManualModeState(StateBase):
             else:
                 steering = max(-1.0, min(1.0, steering))
 
-            print(
-                f"ManualModeState: Received MANUAL_CONTROL command - throttle={throttle:.2f}, steering={steering:.2f}"
-            )
+            # print(
+            #     f"ManualModeState: Received MANUAL_CONTROL command - throttle={throttle:.2f}, steering={steering:.2f}"
+            # )
 
             # Update state data
             self.state_data["current_throttle"] = throttle
