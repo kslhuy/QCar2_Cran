@@ -48,6 +48,10 @@ from Observer.TrustbasedDistributedObserver.weight_trust_module import (
     WeightResult,
 )
 from Observer.TrustbasedDistributedObserver.trust_logger import TrustWeightLogger
+from Observer.TrustbasedDistributedObserver.motor_model import (
+    AccelDragMotorModel,
+    MotorModelConfig,
+)
 
 
 class TrustBasedFleetEstimator(FleetStateEstimatorBase):
@@ -107,6 +111,46 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             accel_velocity_tolerance_gain=trust_config_dict.get(
                 "accel_velocity_tolerance_gain", 0.15
             ),
+            acceleration_base_tolerance=trust_config_dict.get(
+                "acceleration_base_tolerance", 1.2
+            ),
+            acceleration_speed_tolerance_gain=trust_config_dict.get(
+                "acceleration_speed_tolerance_gain", 0.35
+            ),
+            acceleration_host_tolerance_gain=trust_config_dict.get(
+                "acceleration_host_tolerance_gain", 0.6
+            ),
+            acceleration_turn_tolerance_gain=trust_config_dict.get(
+                "acceleration_turn_tolerance_gain", 0.8
+            ),
+            acceleration_distance_base_tolerance=trust_config_dict.get(
+                "acceleration_distance_base_tolerance", 0.35
+            ),
+            acceleration_distance_turn_gain=trust_config_dict.get(
+                "acceleration_distance_turn_gain", 0.4
+            ),
+            acceleration_rel_velocity_tolerance=trust_config_dict.get(
+                "acceleration_rel_velocity_tolerance", 0.3
+            ),
+            heading_min_movement_m=trust_config_dict.get("heading_min_movement_m", 0.05),
+            heading_base_tolerance_rad=trust_config_dict.get(
+                "heading_base_tolerance_rad", 0.35
+            ),
+            heading_turn_tolerance_gain=trust_config_dict.get(
+                "heading_turn_tolerance_gain", 1.0
+            ),
+            heading_yaw_rate_tolerance=trust_config_dict.get(
+                "heading_yaw_rate_tolerance", 0.8
+            ),
+            theta_similarity_distance_scale=trust_config_dict.get(
+                "theta_similarity_distance_scale", 1.5
+            ),
+            theta_similarity_velocity_scale=trust_config_dict.get(
+                "theta_similarity_velocity_scale", 1.0
+            ),
+            theta_similarity_gain=trust_config_dict.get("theta_similarity_gain", 2.5),
+            theta_turn_gain=trust_config_dict.get("theta_turn_gain", 2.0),
+            theta_contribution_cap=trust_config_dict.get("theta_contribution_cap", 3.0),
             weight_distance=trust_config_dict.get("weight_distance", 2.0),
             weight_acceleration=trust_config_dict.get("weight_acceleration", 0.3),
             weight_heading=trust_config_dict.get("weight_heading", 1.0),
@@ -169,6 +213,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 "temporal_vel_tolerance", 1.0
             ),
             trust_decay_lambda=trust_config_dict.get("trust_decay_lambda", 0.2),
+            distance_to_gamma_method=trust_config_dict.get("distance_to_gamma_method", "exponential"),
+            gamma_piecewise_min=trust_config_dict.get("gamma_piecewise_min", 1.5),
+            gamma_piecewise_max=trust_config_dict.get("gamma_piecewise_max", 5.0),
+            gamma_gaussian_sigma=trust_config_dict.get("gamma_gaussian_sigma", 2.0),
+            gamma_sigmoid_k=trust_config_dict.get("gamma_sigmoid_k", 2.0),
+            gamma_sigmoid_thresh=trust_config_dict.get("gamma_sigmoid_thresh", 3.0),
+            gamma_chi2_dof_local=int(trust_config_dict.get("gamma_chi2_dof_local", 2)),
+            gamma_chi2_dof_global=int(trust_config_dict.get("gamma_chi2_dof_global", 5)),
         )
 
         # Create Weight Configuration
@@ -212,7 +264,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         # Attack mitigation enabled
         
         self.attack_mitigation_enabled = self.config.get("attack_mitigation", True)
-        self.turn_steering_threshold = self.config.get("trust", {}).get("turn_steering_threshold", 0.05)
+        self.turn_steering_threshold = self.config.get("trust", {}).get("turn_steering_threshold", 0.1)
         # print("Attack mitigation enabled:", self.attack_mitigation_enabled)
 
         # Prediction-only mode settings (MATLAB parity)
@@ -265,12 +317,54 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 f"weight_type={self.weight_config.weight_type}"
             )
 
+        # ---- Motor model for dynamics prediction ----
+        vehicle_config = self.config.get("vehicle", {})
+        motor_cfg_dict = vehicle_config.get("motor_model", {})
+        self.motor_model_config = MotorModelConfig.from_dict(motor_cfg_dict)
+        self.motor_model = AccelDragMotorModel(self.motor_model_config)
+        # Per-vehicle persistent motor acceleration state [m/s^2]
+        self._motor_accel_state: Dict[int, float] = {}
+        # Per-vehicle cached control inputs from V2V
+        self._received_control_inputs: Dict[int, Dict[str, float]] = {}
+
+        if self.logger:
+            self.logger.logger.info(
+                f"Motor model {'ENABLED' if self.motor_model_config.enabled else 'DISABLED'}"
+                f" (tau={self.motor_model_config.tau}, k_th={self.motor_model_config.k_th})"
+            )
+
         # Initialize specialized logger for trusts & weights
         self.trust_weight_logger = TrustWeightLogger(
             output_dir=os.path.dirname(os.path.abspath(__file__)), max_vehicles=max(10, fleet_size)
         )
         self.trust_weight_logger.start(vehicle_id)
         self._init_time = time.time()
+
+    # ------------------------------------------------------------------
+    # Override add_received_local_state to also cache control_input
+    # ------------------------------------------------------------------
+    def add_received_local_state(
+        self, sender_id: int, state, timestamp_ns: int
+    ) -> bool:
+        """Intercept to cache the sender's control_input before converting to ndarray."""
+        if isinstance(state, dict):
+            ctrl = state.get("control_input", {})
+            if ctrl:
+                self._received_control_inputs[sender_id] = {
+                    "steering": float(ctrl.get("steering", 0.0)),
+                    "throttle": float(ctrl.get("throttle", 0.0)),
+                }
+        return super().add_received_local_state(sender_id, state, timestamp_ns)
+
+    def _get_target_control(self, target_id: int, host_control: np.ndarray) -> np.ndarray:
+        """Return the target vehicle's latest control input from V2V cache.
+
+        Falls back to the host's own control if the target's is unavailable.
+        """
+        cached = self._received_control_inputs.get(target_id)
+        if cached is not None:
+            return np.array([cached["steering"], cached["throttle"]])
+        return host_control
 
     def update(
         self,
@@ -380,6 +474,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         "mi_dist": trust_result.mi_dist,
                         "mi_elem_idx": trust_result.mi_elem_idx,
                         "mi_elem_val": trust_result.mi_elem_val,
+                        "v2v_details": trust_result.v2v_details,
                         "w_neighbor": neighbor_weight,
                         "flag_target_attack": trust_result.flag_target_attack,
                         "flag_local_est_check": trust_result.flag_local_est_check,
@@ -458,8 +553,11 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         "dynamics_delta": np.zeros(self.state_dim),
                     }
 
+                target_ctrl = self._get_target_control(target_id, control)
                 predicted_only_est = self._apply_state_constraints(
-                    self._predict_dynamics(current_est, control, dt)
+                    self._predict_dynamics(
+                        current_est, target_ctrl, dt, target_id=target_id
+                    )
                 )
                 final_est, confidence = self._apply_prediction_mode_switch(
                     target_id=target_id,
@@ -829,7 +927,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         # === Dynamics Prediction (optional) ===
         # Only apply if no direct measurement available
         if direct_state is None and dt > 0:
-            dynamics_pred = self._predict_dynamics(current_est, control, dt)
+            target_ctrl = self._get_target_control(target_id, control)
+            dynamics_pred = self._predict_dynamics(
+                current_est, target_ctrl, dt, target_id=target_id
+            )
             dynamics_correction = self.observer_gain * (dynamics_pred - current_est)
             total_correction += dynamics_correction
             components["dynamics_delta"] = dynamics_correction
@@ -865,12 +966,28 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         return new_est
 
     def _predict_dynamics(
-        self, state: np.ndarray, control: np.ndarray, dt: float
+        self,
+        state: np.ndarray,
+        control: np.ndarray,
+        dt: float,
+        target_id: int = -1,
     ) -> np.ndarray:
         """
-        Predict next state using simple dynamics model
+        Predict next state using bicycle kinematics + first-order lag motor model.
 
-        Uses bicycle model for position/heading update
+        When the calibrated motor model is enabled, throttle is mapped to
+        acceleration through the AccelDragMotorModel (first-order lag with
+        drag/friction).  When disabled, falls back to using the V2V-exchanged
+        acceleration (state[4]) for velocity integration.
+
+        Args:
+            state:     Current state [x, y, theta, v, a]
+            control:   Control input [steering, throttle]
+            dt:        Time step [s]
+            target_id: Vehicle ID (for per-vehicle motor state tracking)
+
+        Returns:
+            Predicted state [x_new, y_new, theta_new, v_new, a_new]
         """
         x, y, theta, v = state[:4]
         a = state[4] if len(state) > 4 else 0.0
@@ -879,14 +996,33 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         throttle = control[1] if len(control) > 1 else 0.0
 
         # Wheelbase (QCar)
-        L = 0.256  # meters
+        vehicle_cfg = self.config.get("vehicle", {})
+        L = vehicle_cfg.get("wheelbase", 0.256)
 
-        # Simple bicycle model
+        # --- Bicycle kinematics (position / heading) ---
         x_new = x + v * np.cos(theta) * dt
         y_new = y + v * np.sin(theta) * dt
         theta_new = theta + (v * np.tan(steering) / L) * dt
-        v_new = v + throttle * dt
-        a_new = throttle / dt if dt > 0 else a
+
+        # --- Velocity / acceleration prediction ---
+        if self.motor_model_config.enabled and dt > 0:
+            # Retrieve persistent motor acceleration state for this vehicle
+            motor_accel = self._motor_accel_state.get(target_id, 0.0)
+
+            v_new, a_new, motor_accel_new = self.motor_model.predict(
+                throttle=throttle,
+                v=v,
+                motor_accel=motor_accel,
+                dt=dt,
+            )
+
+            # Persist updated motor state
+            self._motor_accel_state[target_id] = motor_accel_new
+        else:
+            # Fallback: use V2V-exchanged acceleration (state[4]) directly
+            # This is still better than the old "v + throttle * dt"
+            a_new = a  # keep the received acceleration
+            v_new = v + a * dt
 
         return np.array([x_new, y_new, theta_new, v_new, a_new])
 
@@ -1263,7 +1399,10 @@ class TrustBasedKalmanEstimator(TrustBasedFleetEstimator):
         P = self.covariances[target_id]
 
         # === Prediction Step ===
-        predicted = self._predict_dynamics(current_est, control, dt)
+        target_ctrl = self._get_target_control(target_id, control)
+        predicted = self._predict_dynamics(
+            current_est, target_ctrl, dt, target_id=target_id
+        )
 
         # Process noise
         Q = np.eye(self.state_dim) * self.process_noise

@@ -37,6 +37,22 @@ class TrustConfig:
     min_velocity_tolerance: float = 0.05  # m/s - lower bound for adaptive tolerance
     turn_velocity_tolerance_gain: float = 0.35  # [m/s]/[rad/s] gain for turn-aware tolerance
     accel_velocity_tolerance_gain: float = 0.15  # [m/s]/[m/s^2] gain for acceleration-aware tolerance
+    acceleration_base_tolerance: float = 1.2
+    acceleration_speed_tolerance_gain: float = 0.35
+    acceleration_host_tolerance_gain: float = 0.6
+    acceleration_turn_tolerance_gain: float = 0.8
+    acceleration_distance_base_tolerance: float = 0.35
+    acceleration_distance_turn_gain: float = 0.4
+    acceleration_rel_velocity_tolerance: float = 0.3
+    heading_min_movement_m: float = 0.05
+    heading_base_tolerance_rad: float = 0.35
+    heading_turn_tolerance_gain: float = 1.0
+    heading_yaw_rate_tolerance: float = 0.8
+    theta_similarity_distance_scale: float = 1.5
+    theta_similarity_velocity_scale: float = 1.0
+    theta_similarity_gain: float = 2.5
+    theta_turn_gain: float = 2.0
+    theta_contribution_cap: float = 3.0
 
     # Dirichlet parameters
     num_trust_levels: int = 5
@@ -97,6 +113,16 @@ class TrustConfig:
     # Trust decay for missing beacons
     trust_decay_lambda: float = 0.2
 
+    # Distance to Trust conversion method
+    distance_to_gamma_method: str = "exponential"  # "exponential", "piecewise_linear", "gaussian", "sigmoid", "chi_squared"
+    gamma_piecewise_min: float = 1.5
+    gamma_piecewise_max: float = 5.0
+    gamma_gaussian_sigma: float = 2.0
+    gamma_sigmoid_k: float = 2.0
+    gamma_sigmoid_thresh: float = 3.0
+    gamma_chi2_dof_local: int = 2
+    gamma_chi2_dof_global: int = 5
+
 
 @dataclass
 class VehicleData:
@@ -147,6 +173,9 @@ class TrustScore:
     mi_elem_val: float = float("nan")
     mi_veh_id: int = -1
     mi_dist: float = float("nan")
+
+    # Detailed vehicle-to-vehicle tracking
+    v2v_details: Dict[int, Dict[str, float]] = field(default_factory=dict)
 
     # Trust rating vector (5 levels)
     trust_levels: np.ndarray = field(
@@ -202,6 +231,9 @@ class TriPTrustModel:
         self.previous_states: Dict[int, VehicleData] = {}
         self.distance_buffers: Dict[int, np.ndarray] = defaultdict(lambda: np.zeros(5))
         self.buffer_size = 5
+        self.previous_host_state: Optional[VehicleData] = None
+        self.current_host_state: Optional[VehicleData] = None
+        self._host_cycle_timestamp_ns: int = -1
 
         # Generalized trust vector O_i(j)
         self.opinion_vector: Dict[int, float] = {self.vehicle_id: 1.0}
@@ -245,6 +277,7 @@ class TriPTrustModel:
         if current_time_ns is None:
             current_time_ns = int(time.time() * 1e9)
 
+        self._update_host_state_cache(host_state, current_time_ns)
         target_id = target_data.vehicle_id
 
         # Initialize or get existing trust score
@@ -329,6 +362,7 @@ class TriPTrustModel:
         trust.mi_dist = float(global_components.get("mi_dist", float("nan")))
         trust.mi_elem_idx = int(global_components.get("mi_elem_idx", -1))
         trust.mi_elem_val = float(global_components.get("mi_elem_val", float("nan")))
+        trust.v2v_details = global_components.get("v2v_details", {})
 
         # Apply separate local/global decay using local/global beacon channels
         trust.local_trust_sample = self._apply_trust_decay(
@@ -481,6 +515,71 @@ class TriPTrustModel:
 
         return float(np.clip(score, 0.0, 1.0))
 
+    @staticmethod
+    def _wrap_angle(angle: float) -> float:
+        """Wrap angle to [-pi, pi]."""
+        return float(np.arctan2(np.sin(angle), np.cos(angle)))
+
+    @staticmethod
+    def _robust_score(error: float, tolerance: float) -> float:
+        """
+        Robust consistency score in [0,1].
+
+        Uses a Cauchy-like kernel so moderate errors do not collapse trust
+        while large persistent errors are still penalized.
+        """
+        tol = max(float(tolerance), 1e-3)
+        ratio = abs(float(error)) / tol
+        return float(1.0 / (1.0 + ratio * ratio))
+
+    def _yaw_rate_from_states(
+        self, prev_state: Optional[VehicleData], curr_state: Optional[VehicleData]
+    ) -> float:
+        """Compute absolute yaw rate from two states."""
+        if prev_state is None or curr_state is None:
+            return 0.0
+        if prev_state.timestamp_ns <= 0 or curr_state.timestamp_ns <= 0:
+            return 0.0
+        dt = max((curr_state.timestamp_ns - prev_state.timestamp_ns) / 1e9, 0.01)
+        dtheta = self._wrap_angle(float(curr_state.theta) - float(prev_state.theta))
+        return float(abs(dtheta) / dt)
+
+    def _update_host_state_cache(self, host_state: Dict, current_time_ns: int) -> None:
+        """
+        Maintain previous/current host states once per cycle timestamp.
+
+        This avoids target-order effects when multiple targets are processed
+        within the same observer cycle.
+        """
+        x = float(host_state.get("x", 0.0))
+        y = float(host_state.get("y", 0.0))
+        theta = float(host_state.get("theta", 0.0))
+        velocity = float(host_state.get("velocity", host_state.get("v", 0.0)))
+        acceleration = float(host_state.get("acceleration", host_state.get("a", 0.0)))
+
+        if current_time_ns != self._host_cycle_timestamp_ns:
+            if self.current_host_state is not None:
+                self.previous_host_state = VehicleData(
+                    vehicle_id=self.vehicle_id,
+                    x=float(self.current_host_state.x),
+                    y=float(self.current_host_state.y),
+                    theta=float(self.current_host_state.theta),
+                    velocity=float(self.current_host_state.velocity),
+                    acceleration=float(self.current_host_state.acceleration),
+                    timestamp_ns=int(self.current_host_state.timestamp_ns),
+                )
+            self._host_cycle_timestamp_ns = int(current_time_ns)
+
+        self.current_host_state = VehicleData(
+            vehicle_id=self.vehicle_id,
+            x=x,
+            y=y,
+            theta=theta,
+            velocity=velocity,
+            acceleration=acceleration,
+            timestamp_ns=int(current_time_ns),
+        )
+
     def _calculate_distance_score(
         self, host_state: Dict, target_data: VehicleData
     ) -> float:
@@ -535,113 +634,171 @@ class TriPTrustModel:
         self, host_state: Dict, target_data: VehicleData
     ) -> float:
         """
-        Calculate acceleration consistency score based on dynamics.
+        Calculate acceleration consistency using distance, velocity, and turn context.
 
-        Uses distance buffer to compute relative velocity and expected acceleration.
-        a_score = max(1 - |d_add * delta_acc|, 0)^w_a
-
-        Special handling for stationary vehicles to tolerate measurement noise.
+        Three robust terms are blended:
+        1) Temporal consistency: reported acceleration vs dv/dt
+        2) Relative-distance consistency: distance evolution vs relative v/a
+        3) Relative-velocity consistency: distance rate vs reported relative velocity
         """
         target_id = target_data.vehicle_id
-        a_target = target_data.acceleration
-        a_host = host_state.get("acceleration", 0.0)
-        v_target = target_data.velocity
-        v_host = host_state.get("velocity", 0.0)
+        a_target = float(target_data.acceleration)
+        a_host = float(host_state.get("acceleration", 0.0))
+        v_target = float(target_data.velocity)
+        v_host = float(host_state.get("velocity", 0.0))
 
-        # Special case: both vehicles are stationary
+        prev_target = self.previous_states.get(target_id)
+        if prev_target is None:
+            return 1.0
+
+        dt = max((target_data.timestamp_ns - prev_target.timestamp_ns) / 1e9, 0.01)
+
+        # Stationary case: keep highly tolerant to avoid noise-induced trust collapse.
         stationary_threshold = self.config.stationary_velocity_threshold
         if abs(v_target) < stationary_threshold and abs(v_host) < stationary_threshold:
-            # Both stationary - expect near-zero acceleration
-            # Allow for measurement noise
             a_error = abs(a_target - a_host)
-            noise_tolerance = (
-                0.5  # m/s^2 - typical sensor noise for stationary vehicles
+            noise_tolerance = max(
+                0.35,
+                3.0 * float(self.config.stationary_noise_tolerance),
             )
+            stationary_score = self._robust_score(a_error, noise_tolerance)
+            sensitivity = float(np.clip(self.config.weight_acceleration, 0.1, 3.0))
+            return float(np.clip(stationary_score**sensitivity, 0.0, 1.0))
 
-            if a_error < noise_tolerance:
-                return (
-                    1.0  # High trust for small acceleration differences when stationary
-                )
-            else:
-                # Larger acceleration difference - penalize but not too harshly
-                normalized_error = min(
-                    a_error / noise_tolerance, 2.0
-                )  # Cap at 2x tolerance
-                score = (
-                    max(1.0 - normalized_error / 2.0, 0.0)
-                    ** self.config.weight_acceleration
-                )
-                return float(np.clip(score, 0.0, 1.0))
+        target_yaw_rate = self._yaw_rate_from_states(prev_target, target_data)
+        host_yaw_rate = self._yaw_rate_from_states(
+            self.previous_host_state, self.current_host_state
+        )
+        combined_yaw_rate = max(target_yaw_rate, host_yaw_rate)
 
-        # Normal case: at least one vehicle is moving
-        # Calculate expected acceleration based on velocity change rather than double differentiating distance
-        if target_id in self.previous_states:
-            prev = self.previous_states[target_id]
-            dt = max(
-                (target_data.timestamp_ns - prev.timestamp_ns) / 1e9, 0.01
-            )  # Avoid div by zero
+        # 1) Temporal consistency: reported acceleration vs differentiated velocity.
+        a_from_velocity = (v_target - float(prev_target.velocity)) / dt
+        a_error = a_target - a_from_velocity
+        a_tol = (
+            float(self.config.acceleration_base_tolerance)
+            + float(self.config.acceleration_speed_tolerance_gain)
+            * max(abs(v_target), abs(v_host))
+            + float(self.config.acceleration_host_tolerance_gain) * abs(a_host)
+            + float(self.config.acceleration_turn_tolerance_gain)
+            * combined_yaw_rate
+            * max(abs(v_target), 0.2)
+        )
+        score_temporal = self._robust_score(a_error, a_tol)
 
-            # Expected acceleration of target
-            expected_a_target = (v_target - prev.velocity) / dt
-
-            # Calculate error
-            a_error = abs(a_target - expected_a_target)
-
-            # Normalize error (tolerate up to 2.0 m/s^2 difference gracefully)
-            normalization_factor = 2.0
-            normalized_error = min(a_error / normalization_factor, 2.0)
-
-            score = (
-                max(1.0 - normalized_error / 2.0, 0.0)
-                ** self.config.weight_acceleration
-            )
+        # 2) Relative distance consistency against reported relative velocity/acceleration.
+        host_x = float(host_state.get("x", 0.0))
+        host_y = float(host_state.get("y", 0.0))
+        if self.previous_host_state is not None and self.previous_host_state.timestamp_ns > 0:
+            host_prev_x = float(self.previous_host_state.x)
+            host_prev_y = float(self.previous_host_state.y)
+            host_prev_v = float(self.previous_host_state.velocity)
         else:
-            score = 1.0  # First observation
+            host_prev_x = host_x
+            host_prev_y = host_y
+            host_prev_v = v_host
 
+        d_prev = float(np.hypot(float(prev_target.x) - host_prev_x, float(prev_target.y) - host_prev_y))
+        d_curr = float(np.hypot(float(target_data.x) - host_x, float(target_data.y) - host_y))
+
+        v_rel_prev = float(prev_target.velocity) - host_prev_v
+        v_rel_now = v_target - v_host
+        a_rel = a_target - a_host
+        d_pred = d_prev + v_rel_prev * dt + 0.5 * a_rel * (dt * dt)
+        d_error = d_curr - d_pred
+        d_tol = (
+            float(self.config.acceleration_distance_base_tolerance)
+            + 0.25 * max(abs(v_rel_prev), abs(v_rel_now)) * dt
+            + float(self.config.acceleration_distance_turn_gain)
+            * combined_yaw_rate
+            * max(d_curr, 0.5)
+            * dt
+        )
+        score_distance = self._robust_score(d_error, d_tol)
+
+        # 3) Relative velocity consistency from distance change.
+        v_rel_measured = (d_curr - d_prev) / dt
+        v_error = v_rel_now - v_rel_measured
+        v_tol = (
+            max(
+                float(self.config.acceleration_rel_velocity_tolerance),
+                0.75 * float(self.config.velocity_tolerance),
+            )
+            + 0.2 * combined_yaw_rate * max(d_curr, 0.5)
+        )
+        score_rel_velocity = self._robust_score(v_error, v_tol)
+
+        combined = (
+            0.45 * score_temporal
+            + 0.35 * score_distance
+            + 0.20 * score_rel_velocity
+        )
+        sensitivity = float(np.clip(self.config.weight_acceleration, 0.1, 3.0))
+        score = combined**sensitivity
         return float(np.clip(score, 0.0, 1.0))
 
     def _calculate_heading_score(
         self, host_state: Dict, target_data: VehicleData
     ) -> float:
         """
-        Calculate heading consistency score.
+        Calculate heading/path consistency score.
 
-        Compares trajectory-based estimated heading with reported heading.
-        h_score = max(1 - theta_diff / theta_max, 0)
+        Robustly blends:
+        - absolute heading agreement with host
+        - self-motion heading consistency from target trajectory
+        - yaw-rate similarity (same-path behavior), weighted stronger in turns
         """
         target_id = target_data.vehicle_id
-        theta_reported = target_data.theta
+        theta_reported = float(target_data.theta)
+        theta_host = float(host_state.get("theta", 0.0))
 
-        # Check if we have previous position data
-        if target_id not in self.previous_states:
-            return 1.0  # First observation, cannot compute heading
+        prev_target = self.previous_states.get(target_id)
+        if prev_target is None:
+            return 1.0
 
-        prev = self.previous_states[target_id]
+        delta_x = float(target_data.x) - float(prev_target.x)
+        delta_y = float(target_data.y) - float(prev_target.y)
+        movement = float(np.hypot(delta_x, delta_y))
 
-        # Calculate position change
-        delta_x = target_data.x - prev.x
-        delta_y = target_data.y - prev.y
+        target_yaw_rate = self._yaw_rate_from_states(prev_target, target_data)
+        host_yaw_rate = self._yaw_rate_from_states(
+            self.previous_host_state, self.current_host_state
+        )
+        turn_context = max(target_yaw_rate, host_yaw_rate)
+        turn_factor = float(np.clip(turn_context / 0.8, 0.0, 1.0))
 
-        # Only compute if there's meaningful movement
-        movement = np.sqrt(delta_x**2 + delta_y**2)
-        if (
-            movement < 0.5
-        ):  # Less than 0.5m movement makes heading estimation too susceptible to GPS noise
-            return 1.0  # Not enough movement, can't estimate heading reliably
-
-        # Estimate heading from trajectory
-        theta_est = np.arctan2(delta_y, delta_x)
-
-        # Calculate heading difference (handle circular nature of angles)
-        theta_diff = np.arctan2(
-            np.sin(theta_reported - theta_est), np.cos(theta_reported - theta_est)
+        heading_tol = float(self.config.heading_base_tolerance_rad) + (
+            float(self.config.heading_turn_tolerance_gain) * turn_factor
+        )
+        score_abs = self._robust_score(
+            self._wrap_angle(theta_reported - theta_host),
+            heading_tol,
         )
 
-        # Maximum expected heading difference (90 degrees)
-        theta_max = np.pi / 2
-        normalized_diff = abs(theta_diff) / theta_max
-        score = max(1.0 - normalized_diff, 0.0)
+        if movement >= float(self.config.heading_min_movement_m):
+            theta_from_motion = float(np.arctan2(delta_y, delta_x))
+            motion_tol = float(self.config.heading_base_tolerance_rad) + (
+                0.5 * float(self.config.heading_turn_tolerance_gain) * turn_factor
+            )
+            score_motion = self._robust_score(
+                self._wrap_angle(theta_reported - theta_from_motion),
+                motion_tol,
+            )
+        else:
+            score_motion = 1.0
 
+        yaw_rate_tol = float(self.config.heading_yaw_rate_tolerance) * (
+            1.0 + 0.5 * turn_factor
+        )
+        score_path = self._robust_score(target_yaw_rate - host_yaw_rate, yaw_rate_tol)
+
+        # In turns, prefer path similarity over raw absolute heading.
+        w_abs = 0.45 - 0.30 * turn_factor
+        w_motion = 0.35
+        w_path = 1.0 - w_abs - w_motion
+        combined = w_abs * score_abs + w_motion * score_motion + w_path * score_path
+
+        sensitivity = float(np.clip(self.config.weight_heading, 0.2, 3.0))
+        score = combined**sensitivity
         return float(np.clip(score, 0.0, 1.0))
 
     def _calculate_beacon_score(self, target_id: int, current_time_ns: int) -> float:
@@ -862,15 +1019,42 @@ class TriPTrustModel:
             target_fleet_estimates=target_fleet_estimates,
         )
 
-    def _distance_to_gamma(self, distance: float) -> float:
+    def _distance_to_gamma(self, distance: float, dof: int = 5) -> float:
         """
         Convert Mahalanobis distance to trust gamma in [0,1].
-
-        MATLAB-faithful: gamma = exp(-D)  (TriPTrustModel.m lines 1734, 1828)
         """
         d = max(float(distance), 0.0)
-        gamma = np.exp(-d)
-        return float(np.clip(gamma, 0.0, 1.0))
+        method = self.config.distance_to_gamma_method
+
+        if method == "piecewise_linear":
+            d_min = self.config.gamma_piecewise_min
+            d_max = self.config.gamma_piecewise_max
+            if d <= d_min:
+                return 1.0
+            elif d >= d_max:
+                return 0.0
+            else:
+                return 1.0 - ((d - d_min) / (d_max - d_min))
+        
+        elif method == "gaussian":
+            sigma = self.config.gamma_gaussian_sigma
+            gamma = np.exp(-(d**2) / (2 * sigma**2))
+            return float(np.clip(gamma, 0.0, 1.0))
+            
+        elif method == "sigmoid":
+            k = self.config.gamma_sigmoid_k
+            d_thresh = self.config.gamma_sigmoid_thresh
+            gamma = 1.0 / (1.0 + np.exp(k * (d - d_thresh)))
+            return float(np.clip(gamma, 0.0, 1.0))
+            
+        elif method == "chi_squared":
+            import scipy.stats
+            # Squared Mahalanobis distance follows a Chi-squared distribution
+            return 1.0 - scipy.stats.chi2.cdf(d**2, dof)
+            
+        else:  # "exponential" (default/MATLAB-faithful)
+            gamma = np.exp(-d)
+            return float(np.clip(gamma, 0.0, 1.0))
 
     # ------------------------------------------------------------------ #
     #  Relative-measurement helpers  (MATLAB: tau2_matrix_gamma_local)    #
@@ -1024,7 +1208,7 @@ class TriPTrustModel:
         #                 |v_target_est - v_host|]
         y_self_est = self._compute_relative_measurement(host_state, host_est_as_vd)
         d_self = self._relative_mahalanobis(y_local, y_self_est)
-        gamma_self = self._distance_to_gamma(d_self)
+        gamma_self = self._distance_to_gamma(d_self, dof=self.config.gamma_chi2_dof_local)
 
         # ===== gamma_host (MATLAB: gamma_cross) =====
         # Full-state Mahalanobis: Host's entire fleet estimates vs Target's entire fleet estimates
@@ -1035,8 +1219,20 @@ class TriPTrustModel:
         mi_dist = -1.0
         mi_elem_idx = -1
         mi_elem_val = -1.0
+        v2v_details = {}
+
+        # Compute turn context to adapt theta trust during turns
+        target_yaw_rate = 0.0
+        prev_target = self.previous_states.get(int(target_data.vehicle_id))
+        if prev_target is not None and prev_target.timestamp_ns > 0:
+            dt_target = max((target_data.timestamp_ns - prev_target.timestamp_ns) / 1e9, 0.01)
+            heading_delta_target = self._wrap_angle(float(target_data.theta) - float(prev_target.theta))
+            target_yaw_rate = abs(heading_delta_target) / dt_target
+        host_yaw_rate = self._yaw_rate_from_states(self.previous_host_state, self.current_host_state)
+        turn_context = max(target_yaw_rate, host_yaw_rate)
 
         if target_fleet_estimates is not None and host_fleet_estimates is not None:
+
             # target_fleet_estimates is Dict[int, Dict] parsing Target's broadcast
             for vid, b_est_dict in target_fleet_estimates.items():
                 if vid >= host_fleet_estimates.shape[1]:
@@ -1049,20 +1245,33 @@ class TriPTrustModel:
                 if b_est_vec is None:
                     continue
                     
-                total_dist, contributions = self._mahalanobis_components(a_est_vec, b_est_vec)
+                total_dist, contributions = self._mahalanobis_components(
+                    a_est_vec,
+                    b_est_vec,
+                    yaw_rate=turn_context,
+                )
                 d_host_total += total_dist
                 n_host_valid += 1
+
+                # Track per-vehicle distance and impact element
+                elem_idx = int(np.argmax(contributions))
+                elem_val = float(contributions[elem_idx])
+                v2v_details[int(vid)] = {
+                    "dist": float(total_dist),
+                    "idx": elem_idx,
+                    "val": elem_val
+                }
 
                 # Track max impact neighbor
                 if total_dist > mi_dist:
                     mi_dist = float(total_dist)
                     mi_veh_id = int(vid)
-                    mi_elem_idx = int(np.argmax(contributions))
-                    mi_elem_val = float(contributions[mi_elem_idx])
+                    mi_elem_idx = elem_idx
+                    mi_elem_val = elem_val
 
         if n_host_valid > 0:
             d_host_mean_val = d_host_total / n_host_valid
-            gamma_host = self._distance_to_gamma(d_host_mean_val)
+            gamma_host = self._distance_to_gamma(d_host_mean_val, dof=self.config.gamma_chi2_dof_global)
         else:
             gamma_host = fallback
 
@@ -1087,7 +1296,7 @@ class TriPTrustModel:
 
         if n_local_valid > 0:
             d_local_mean_val = d_local_total / n_local_valid
-            gamma_local_peer = self._distance_to_gamma(d_local_mean_val)
+            gamma_local_peer = self._distance_to_gamma(d_local_mean_val, dof=self.config.gamma_chi2_dof_local)
         else:
             # The target didn't have estimates of both host and itself → fallback
             gamma_local_peer = fallback
@@ -1114,6 +1323,7 @@ class TriPTrustModel:
             "mi_dist": float(mi_dist),
             "mi_elem_idx": int(mi_elem_idx),
             "mi_elem_val": float(mi_elem_val),
+            "v2v_details": v2v_details,
         }
 
     def _state_to_array(self, state: object) -> Optional[np.ndarray]:
@@ -1149,27 +1359,56 @@ class TriPTrustModel:
         except Exception:
             return None
 
-    def _mahalanobis_distance(self, x1: np.ndarray, x2: np.ndarray) -> float:
-        """Compute Mahalanobis distance with configurable diagonal covariance."""
+    def _prepare_mahalanobis_terms(
+        self, x1: np.ndarray, x2: np.ndarray, yaw_rate: float = 0.0
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Prepare wrapped state residual and inverse covariance diagonal.
+
+        Theta variance is inflated when:
+        - the target is turning (yaw_rate)
+        - states are otherwise path-similar (close x/y and velocity), where
+          heading mismatch is often a benign lag effect in turns.
+        """
         diff = x1 - x2
+        if diff.size > 2:
+            diff[2] = self._wrap_angle(float(diff[2]))
+
         n = diff.size
-        diag = np.asarray(self.config.distributed_trust_covariance_diag, dtype=float)
+        diag = np.asarray(self.config.distributed_trust_covariance_diag, dtype=float).copy()
         if diag.size < n:
             diag = np.pad(diag, (0, n - diag.size), mode="edge")
         diag = diag[:n]
+
+        if n > 2:
+            xy_distance = float(np.linalg.norm(diff[:2])) if n >= 2 else 0.0
+            velocity_diff = abs(float(diff[3])) if n > 3 else 0.0
+            d_scale = max(float(self.config.theta_similarity_distance_scale), 1e-3)
+            v_scale = max(float(self.config.theta_similarity_velocity_scale), 1e-3)
+            similarity = np.exp(-((xy_distance / d_scale) ** 2 + (velocity_diff / v_scale) ** 2))
+            theta_gain = (
+                1.0
+                + float(self.config.theta_similarity_gain) * float(similarity)
+                + float(self.config.theta_turn_gain) * max(float(yaw_rate), 0.0)
+            )
+            diag[2] = max(float(diag[2]) * theta_gain, 1e-6)
+
         inv_diag = 1.0 / np.maximum(diag, 1e-6)
+        return diff, inv_diag
+
+    def _mahalanobis_distance(self, x1: np.ndarray, x2: np.ndarray, yaw_rate: float = 0.0) -> float:
+        """Compute Mahalanobis distance with adaptive theta robustness."""
+        diff, inv_diag = self._prepare_mahalanobis_terms(x1, x2, yaw_rate=yaw_rate)
         return float(np.dot(diff * inv_diag, diff))
 
-    def _mahalanobis_components(self, x1: np.ndarray, x2: np.ndarray) -> Tuple[float, np.ndarray]:
-        """Compute Mahalanobis distance and return element-wise squared contributions."""
-        diff = x1 - x2
-        n = diff.size
-        diag = np.asarray(self.config.distributed_trust_covariance_diag, dtype=float)
-        if diag.size < n:
-            diag = np.pad(diag, (0, n - diag.size), mode="edge")
-        diag = diag[:n]
-        inv_diag = 1.0 / np.maximum(diag, 1e-6)
+    def _mahalanobis_components(self, x1: np.ndarray, x2: np.ndarray, yaw_rate: float = 0.0) -> Tuple[float, np.ndarray]:
+        """Compute Mahalanobis distance and return element-wise contributions."""
+        diff, inv_diag = self._prepare_mahalanobis_terms(x1, x2, yaw_rate=yaw_rate)
         contributions = (diff * diff) * inv_diag
+        if contributions.size > 2:
+            cap = float(self.config.theta_contribution_cap)
+            if cap > 0.0:
+                contributions[2] = min(float(contributions[2]), cap)
         total_dist = float(np.sum(contributions))
         return total_dist, contributions
 
@@ -1564,6 +1803,9 @@ class TriPTrustModel:
         self.neighbor_trust_reports.clear()
         self.previous_states.clear()
         self.distance_buffers.clear()
+        self.previous_host_state = None
+        self.current_host_state = None
+        self._host_cycle_timestamp_ns = -1
         self.previous_trust_local.clear()
         self.previous_trust_global.clear()
         self.opinion_vector = {self.vehicle_id: 1.0}

@@ -716,22 +716,29 @@ class QCarRemoteController:
 
             # Generate Path if node_sequence is present and roadmap is available
             if self.roadmap and "node_sequence" in data and data["node_sequence"]:
-                try:
-                    # Generate path points (3xN array: x, y, z)
-                    waypoints = self.roadmap.generate_path(data["node_sequence"])
+                node_seq = tuple(data["node_sequence"])
+                # Initialize state if not present
+                if "last_node_sequence" not in self.cars[car_id].last_data:
+                    self.cars[car_id].last_data["last_node_sequence"] = None
+                    self.cars[car_id].last_data["path_x"] = []
+                    self.cars[car_id].last_data["path_y"] = []
+                
+                # Only regenerate path if the sequence has changed
+                if self.cars[car_id].last_data["last_node_sequence"] != node_seq:
+                    try:
+                        # Generate path points (3xN array: x, y, z)
+                        waypoints = self.roadmap.generate_path(data["node_sequence"])
 
-                    # Add path points to data for WebSocket broadcast
-                    ws_data["path_x"] = waypoints[0, :].tolist()
-                    ws_data["path_y"] = waypoints[1, :].tolist()
+                        # Update cache in last_data
+                        self.cars[car_id].last_data["path_x"] = waypoints[0, :].tolist()
+                        self.cars[car_id].last_data["path_y"] = waypoints[1, :].tolist()
+                        self.cars[car_id].last_data["last_node_sequence"] = node_seq
+                    except Exception as e:
+                        print(f"[Ground Station] Error generating path for Car {car_id}: {e}")
 
-                    # Update cache in last_data so new clients get it immediately
-                    self.cars[car_id].last_data["path_x"] = ws_data["path_x"]
-                    self.cars[car_id].last_data["path_y"] = ws_data["path_y"]
-
-                except Exception as e:
-                    print(
-                        f"[Ground Station] Error generating path for Car {car_id}: {e}"
-                    )
+                # Always add cached path points to data for WebSocket broadcast
+                ws_data["path_x"] = self.cars[car_id].last_data["path_x"]
+                ws_data["path_y"] = self.cars[car_id].last_data["path_y"]
 
             self._handle_special_message(car_id, msg_type, data)
 

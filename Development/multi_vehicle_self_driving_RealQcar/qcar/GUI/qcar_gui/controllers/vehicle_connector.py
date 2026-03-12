@@ -448,7 +448,7 @@ class VehicleConnector:
                 return False
 
     def upload_files(
-        self, car_id: int, ip: str = None, vehicle_type: Optional[str] = None
+        self, car_id: int, ip: str = None, vehicle_type: Optional[str] = None, folders_to_upload: Optional[List[str]] = None, upload_root_files: bool = True
     ) -> Tuple[bool, str]:
         """
         Upload Python scripts, YAML configs, and folders to a vehicle.
@@ -457,6 +457,8 @@ class VehicleConnector:
             car_id: Vehicle identifier
             ip: IP address (optional, will reconnect if provided)
             vehicle_type: Optional vehicle type ("Qcar" or "Limo")
+            folders_to_upload: Optional list of folders to upload
+            upload_root_files: Whether to upload root py/yaml/txt files
 
         Returns:
             Tuple of (success, message)
@@ -488,49 +490,50 @@ class VehicleConnector:
             ssh.exec_command(f"mkdir -p {remote_path}")
             time.sleep(0.5)
 
-            # Upload Python files
-            self._progress("Uploading Python files...")
-            py_files = glob.glob(os.path.join(self.scripts_path, "*.py"))
-            for file in py_files:
-                try:
-                    scp.put(file, remote_path)
-                    uploaded_count += 1
-                except Exception as e:
-                    self._log(
-                        f"Failed to upload {os.path.basename(file)}: {e}", "WARNING"
-                    )
-            self._log(f"Car {car_id}: Uploaded {len(py_files)} Python files", "INFO")
+            if upload_root_files:
+                # Upload Python files
+                self._progress("Uploading Python files...")
+                py_files = glob.glob(os.path.join(self.scripts_path, "*.py"))
+                for file in py_files:
+                    try:
+                        scp.put(file, remote_path)
+                        uploaded_count += 1
+                    except Exception as e:
+                        self._log(
+                            f"Failed to upload {os.path.basename(file)}: {e}", "WARNING"
+                        )
+                self._log(f"Car {car_id}: Uploaded {len(py_files)} Python files", "INFO")
 
-            # Upload YAML files
-            self._progress("Uploading YAML configuration files...")
-            yaml_files = glob.glob(
-                os.path.join(self.scripts_path, "*.yaml")
-            ) + glob.glob(os.path.join(self.scripts_path, "*.yml"))
-            for file in yaml_files:
-                try:
-                    scp.put(file, remote_path)
-                    uploaded_count += 1
-                except Exception as e:
-                    self._log(
-                        f"Failed to upload {os.path.basename(file)}: {e}", "WARNING"
-                    )
-            self._log(f"Car {car_id}: Uploaded {len(yaml_files)} YAML files", "INFO")
+                # Upload YAML files
+                self._progress("Uploading YAML configuration files...")
+                yaml_files = glob.glob(
+                    os.path.join(self.scripts_path, "*.yaml")
+                ) + glob.glob(os.path.join(self.scripts_path, "*.yml"))
+                for file in yaml_files:
+                    try:
+                        scp.put(file, remote_path)
+                        uploaded_count += 1
+                    except Exception as e:
+                        self._log(
+                            f"Failed to upload {os.path.basename(file)}: {e}", "WARNING"
+                        )
+                self._log(f"Car {car_id}: Uploaded {len(yaml_files)} YAML files", "INFO")
 
-            # Upload text files
-            self._progress("Uploading text files...")
-            txt_files = glob.glob(os.path.join(self.scripts_path, "*.txt"))
-            for file in txt_files:
-                try:
-                    scp.put(file, remote_path)
-                    uploaded_count += 1
-                except Exception as e:
-                    self._log(
-                        f"Failed to upload {os.path.basename(file)}: {e}", "WARNING"
-                    )
-            self._log(f"Car {car_id}: Uploaded {len(txt_files)} text files", "INFO")
+                # Upload text files
+                self._progress("Uploading text files...")
+                txt_files = glob.glob(os.path.join(self.scripts_path, "*.txt"))
+                for file in txt_files:
+                    try:
+                        scp.put(file, remote_path)
+                        uploaded_count += 1
+                    except Exception as e:
+                        self._log(
+                            f"Failed to upload {os.path.basename(file)}: {e}", "WARNING"
+                        )
+                self._log(f"Car {car_id}: Uploaded {len(txt_files)} text files", "INFO")
 
             # Upload required folders
-            folders = [
+            folders = folders_to_upload if folders_to_upload is not None else [
                 "StateMachine",
                 "Yolo",
                 "Observer",

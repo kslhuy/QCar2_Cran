@@ -425,7 +425,9 @@ class ControllerManager:
             controller = self.get_lateral_controller(new_type)
 
             # Update config for persistence
-            if self.config and (controller is not None or new_type == "pp_map"):
+            # coupled types such as pp_map and mpc may not immediately produce a
+            # controller instance, but we still want to remember the choice
+            if self.config and (controller is not None or new_type in ("pp_map", "mpc")):
                 config_key = f"{state}_lateral_controller_type"
                 self.config.config[config_key] = new_type
                 self.config.config["lateral_controller_type"] = new_type
@@ -435,7 +437,7 @@ class ControllerManager:
                     f"[ControllerManager] Switched {state} lateral → {new_type}"
                 )
 
-            return controller is not None or new_type == "pp_map"
+            return controller is not None or new_type in ("pp_map", "mpc")
 
         except Exception as e:
             if self.logger:
@@ -525,23 +527,26 @@ class ControllerManager:
                         f"Failed to update params on active controller {active_type}", e
                     )
 
-        # Special case for pp_map since it's managed separately by the state machine
-        if category == "lateral" and active_type == "pp_map":
-            # The state machine (FollowingPathState) holds the pp_controller instance.
-            # We attempt to find it via vehicle_logic and update it.
+        # Special case for pp_map and MPC since these coupled controllers are
+        # managed inside the state machine rather than by ControllerManager.
+        if category == "lateral" and active_type in ("pp_map", "mpc"):
+            # The state machine (FollowingPathState) holds the controller instance.
+            # We attempt to locate it via vehicle_logic and then update it.
             if self.vehicle_logic and hasattr(
                 self.vehicle_logic, "current_state_handler"
             ):
                 state = self.vehicle_logic.current_state_handler
-                if hasattr(state, "pp_controller") and state.pp_controller is not None:
+                ctrl_attr = "pp_controller" if active_type == "pp_map" else "mpc_controller"
+                if hasattr(state, ctrl_attr) and getattr(state, ctrl_attr) is not None:
+                    controller_obj = getattr(state, ctrl_attr)
                     try:
-                        if hasattr(state.pp_controller, "update_params"):
-                            state.pp_controller.update_params(params)
+                        if hasattr(controller_obj, "update_params"):
+                            controller_obj.update_params(params)
                             success = True
                     except Exception as e:
                         if self.logger:
                             self.logger.log_error(
-                                "Failed to update params on pp_controller", e
+                                f"Failed to update params on {ctrl_attr}", e
                             )
 
         # 2. Update ControllerConfig to persist changes

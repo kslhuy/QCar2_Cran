@@ -7,6 +7,8 @@ Three separate figures with GridSpec layout:
   Figure 1 – Trust Calculation (component scores, local/global, final trust, flags)
   Figure 2 – Weight Calculation  (w0, w_self, w_neighbor, summary metrics)
   Figure 3 – State Estimation     (estimated states, confidence, prediction mode)
+  Figure 4 – Max Impact Histograms
+  Figure 5 – V2V Detailed Tracking (per-vehicle distances and element values)
 """
 
 import os
@@ -520,6 +522,121 @@ def _fig_impact_histograms(rows, active, focus, host_id):
     return fig
 
 
+def _fig_v2v_details(times, rows, active, focus, host_id):
+    """
+    Figure 5 - Detailed V2V Tracking for Global Trust
+    Layout (2 rows x 2 cols):
+      [0,0] Distance per evaluated vehicle    [0,1] Element Value per evaluated vehicle
+      [1,0:2] Element Index per evaluated vehicle (Scatter)
+    """
+    fig = plt.figure(figsize=(16, 10))
+    fig.suptitle(f"V2V Detailed Tracking (Host V{host_id} evaluating Focus V{focus})", fontsize=13, fontweight="bold")
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.25)
+
+    # Find the k indices that have data
+    available_k = []
+    # Test up to 20 just in case
+    for k in range(20):
+        if _col_to_array(rows, f"g_dist_v{k}_{focus}").any():
+            available_k.append(k)
+
+    if not available_k:
+        # Fallback if no detailed data
+        ax = fig.add_subplot(gs[0, 0])
+        _no_data(ax, "V2V Distance Tracking")
+        return fig
+
+    elem_markers = {0: 's', 1: 'D', 2: '^', 3: 'v', 4: 'o'}
+    elem_names = {0: "x", 1: "y", 2: "theta", 3: "v", 4: "a"}
+
+    # [0,0] Distances
+    ax = fig.add_subplot(gs[0, 0])
+    
+    # Add dummy legend entries for marker shapes
+    for idx, m in elem_markers.items():
+        ax.plot([], [], color='gray', marker=m, linestyle='None', label=f"Impact: {elem_names[idx]}")
+
+    n = 0
+    for k in available_k:
+        col_dist = f"g_dist_v{k}_{focus}"
+        col_idx = f"g_idx_v{k}_{focus}"
+        arr_dist = _col_to_array(rows, col_dist)
+        arr_idx = _col_to_array(rows, col_idx)
+
+        if np.any(np.isfinite(arr_dist)):
+            p = ax.plot(times, arr_dist, label=f"V{k}")
+            color = p[0].get_color()
+            
+            # Overlay markers indicating max impact element
+            valid_mask = np.isfinite(arr_dist) & np.isfinite(arr_idx)
+            if np.any(valid_mask):
+                t_valid = np.array(times)[valid_mask]
+                d_valid = arr_dist[valid_mask]
+                i_valid = arr_idx[valid_mask].astype(int)
+                
+                for idx in np.unique(i_valid):
+                    idx_mask = (i_valid == idx)
+                    ax.scatter(t_valid[idx_mask], d_valid[idx_mask], color=color, marker=elem_markers.get(idx, 'o'), s=30, alpha=0.7, zorder=3)
+            n += 1
+
+    if n == 0:
+        _no_data(ax, "V2V Distance")
+    _style(ax, "Mahalanobis Distance per Vehicle", "Distance", xlabel="Time [s]")
+
+    # [0,1] Element Values
+    ax = fig.add_subplot(gs[0, 1])
+    # Add dummy legend entries for marker shapes
+    for idx, m in elem_markers.items():
+        ax.plot([], [], color='gray', marker=m, linestyle='None', label=f"Impact: {elem_names[idx]}")
+
+    n = 0
+    for k in available_k:
+        col_val = f"g_val_v{k}_{focus}"
+        col_idx = f"g_idx_v{k}_{focus}"
+        arr_val = _col_to_array(rows, col_val)
+        arr_idx = _col_to_array(rows, col_idx)
+
+        if np.any(np.isfinite(arr_val)):
+            p = ax.plot(times, arr_val, label=f"V{k}")
+            color = p[0].get_color()
+            
+            # Overlay markers indicating max impact element
+            valid_mask = np.isfinite(arr_val) & np.isfinite(arr_idx)
+            if np.any(valid_mask):
+                t_valid = np.array(times)[valid_mask]
+                v_valid = arr_val[valid_mask]
+                i_valid = arr_idx[valid_mask].astype(int)
+                
+                for idx in np.unique(i_valid):
+                    idx_mask = (i_valid == idx)
+                    ax.scatter(t_valid[idx_mask], v_valid[idx_mask], color=color, marker=elem_markers.get(idx, 'o'), s=30, alpha=0.7, zorder=3)
+            n += 1
+
+    if n == 0:
+        _no_data(ax, "V2V Element Value")
+    _style(ax, "Max Impact Element Value per Vehicle", "Value", xlabel="Time [s]")
+
+    # [1,0:2] Element Indices
+    ax = fig.add_subplot(gs[1, 0:2])
+    n = 0
+    for k in available_k:
+        col = f"g_idx_v{k}_{focus}"
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            valid_mask = np.isfinite(arr)
+            ax.scatter(np.array(times)[valid_mask], arr[valid_mask], s=15, alpha=0.6, label=f"V{k}")
+            n += 1
+
+    if n == 0:
+        _no_data(ax, "V2V Element Index")
+    else:
+        ax.set_yticks([0, 1, 2, 3, 4])
+        ax.set_yticklabels(["x", "y", "theta", "v", "a"])
+    _style(ax, "Max Impact Element Index per Vehicle", "Element", xlabel="Time [s]")
+
+    return fig
+
+
 def _print_static_metrics(rows, active):
     """
     Print an analytic summary of the trust logging run to the console.
@@ -677,6 +794,7 @@ def main():
         _fig_weights(times, rows, active, host_id)
         _fig_estimation(times, rows, active, host_id)
         _fig_impact_histograms(rows, active, focus, host_id)
+        _fig_v2v_details(times, rows, active, focus, host_id)
 
     plt.show()
 

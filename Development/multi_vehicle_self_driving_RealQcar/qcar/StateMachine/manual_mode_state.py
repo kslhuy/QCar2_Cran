@@ -134,16 +134,19 @@ class ManualModeState(StateBase):
                 throttle *= 0.7  # Scale down for simulation (to sensible speeds)
 
             # Apply Gear-based throttle limiting
+            limit = 0.2  # Default full power
             if hasattr(self.vehicle_logic, "gear"):
                 current_gear = self.vehicle_logic.gear
-                limit = 0.2  # Default full power
-
                 if current_gear == Gear.DRIVE_1:
                     limit = 0.2  # Limit to 50% power in Gear 1
                 elif current_gear == Gear.DRIVE_2:
                     limit = 0.4  # Limit to 75% power in Gear 2
                 elif current_gear == Gear.DRIVE_3:
                     limit = 0.6  # Full power in Gear 3
+                elif current_gear == Gear.DRIVE_4:
+                    limit = 0.8
+                elif current_gear == Gear.DRIVE_5:
+                    limit = 1.0
 
                 # # Apply limit to throttle magnitude
                 # throttle = min(throttle, limit)

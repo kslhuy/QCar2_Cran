@@ -24,6 +24,7 @@ from .following_leader_state import FollowingLeaderState
 from .taxi_mode_state import TaxiModeState
 from .stopped_state import StoppedState
 from .manual_mode_state import ManualModeState
+from .calibrating_state import CalibratingState
 
 
 class VehicleStateMachine:
@@ -47,6 +48,7 @@ class VehicleStateMachine:
             VehicleState.TAXI_MODE: TaxiModeState(self.vehicle_logic),
             VehicleState.STOPPED: StoppedState(self.vehicle_logic),
             VehicleState.MANUAL_MODE: ManualModeState(self.vehicle_logic),
+            VehicleState.CALIBRATING: CalibratingState(self.vehicle_logic),
         }
 
         # Statistics

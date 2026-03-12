@@ -23,10 +23,47 @@ Supports THREE modes:
   --qlabs    : QLabs virtual QCar via readRobots() (run initPlatoon.py first)
   (default)  : physical QCar hardware
 
-Outputs:
-  results/throttle_accel_step_raw_<tag>.csv
-  results/throttle_accel_lookup_<tag>.csv
-  results/throttle_accel_model_<tag>.yaml
+INCREMENTAL DATABASE:
+  The environment may be too small to test all transitions in one run.
+  This script supports an **incremental calibration database**: each run
+  tests one or a few transitions, and results are saved to a persistent
+  database (CSV + YAML). Across multiple runs you build up a complete
+  lookup table covering many throttle profiles.
+
+  After each transition completes, you are prompted:
+    "Save this transition? [y/n/q]"   (y=save, n=discard, q=quit early)
+  Use --auto_save to skip prompts and save everything automatically.
+
+  Example multi-run workflow:
+    # Run 1: adjacent steps 0.0 <-> 0.1
+    python 07_... --sim --throttle_levels 0.0,0.1
+
+    # Run 2: bigger jump 0.0 <-> 0.2
+    python 07_... --sim --throttle_levels 0.0,0.2
+
+    # Run 3: large jump 0.0 <-> 0.4
+    python 07_... --sim --throttle_levels 0.0,0.4 --max_throttle 0.5
+
+    # Check what's in the database:
+    python 07_... --list_db
+
+    # Wipe and restart from scratch:
+    python 07_... --reset_db
+
+  Merge strategy (--merge_strategy):
+    latest   : keep only the newest result per (u_from, u_to) pair
+    average  : average parameters across all runs of the same pair
+    keep_all : keep every run entry (for statistical analysis)
+
+Outputs (per-run, transient):
+  results/07_.../throttle_accel_step_raw_<tag>.csv
+  results/07_.../throttle_accel_lookup_<tag>.csv
+  results/07_.../throttle_accel_model_<tag>.yaml
+
+Outputs (incremental database, persistent):
+  results/07_.../database/calibration_db_raw.csv
+  results/07_.../database/calibration_db_lookup.csv
+  results/07_.../database/calibration_db_model.yaml
 """
 
 import argparse
@@ -34,7 +71,8 @@ import csv
 import os
 import sys
 import time
-from typing import Dict, List, Tuple
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
 import yaml
 
@@ -48,6 +86,29 @@ for _p in [_CAL_DIR, _QCAR_DIR]:
 
 RESULTS_DIR = os.path.join(_CAL_DIR, "results", "07_throttle_acceleration_calibration")
 os.makedirs(RESULTS_DIR, exist_ok=True)
+
+DB_DIR = os.path.join(RESULTS_DIR, "database")
+os.makedirs(DB_DIR, exist_ok=True)
+
+# Database file paths
+DB_RAW_CSV = os.path.join(DB_DIR, "calibration_db_raw.csv")
+DB_LOOKUP_CSV = os.path.join(DB_DIR, "calibration_db_lookup.csv")
+DB_MODEL_YAML = os.path.join(DB_DIR, "calibration_db_model.yaml")
+
+# Column definitions for the database CSVs
+DB_RAW_COLUMNS = [
+    "run_id", "run_tag", "transition_idx", "phase", "time_s",
+    "rel_time_s", "throttle_cmd", "velocity_mps", "accel_mps2",
+    "accel_source",
+]
+DB_LOOKUP_COLUMNS = [
+    "run_id", "run_tag", "transition", "u_from", "u_to", "delta_u",
+    "accel_source", "imu_bias_mps2", "v0_mps", "vss_mps", "delta_v_mps",
+    "tau_s", "k_local_mps_per_throttle", "a0_model_mps2",
+    "a_peak_meas_mps2", "a_mean_early_mps2", "acc_to_throttle_model",
+    "acc_to_throttle_peak", "t63_s", "t90_s", "t95_s", "lead_time_s",
+    "fit_method",
+]
 
 
 class CSVLogger:
@@ -111,6 +172,232 @@ def print_section(title: str):
 
 
 # ---------------------------------------------------------------------------
+# Incremental calibration database helpers
+# ---------------------------------------------------------------------------
+def _db_append_csv(filepath: str, columns: List[str], rows: List[List]) -> None:
+    """Append rows to a CSV file in the database; create with header if new."""
+    file_exists = os.path.exists(filepath) and os.path.getsize(filepath) > 0
+    with open(filepath, "a", newline="") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(columns)
+        for row in rows:
+            writer.writerow(
+                [f"{v:.6f}" if isinstance(v, float) else v for v in row]
+            )
+
+
+def _db_load_lookup_csv(filepath: str = DB_LOOKUP_CSV) -> List[Dict[str, object]]:
+    """Load the lookup database CSV as a list of dicts. Returns [] if absent."""
+    if not os.path.exists(filepath):
+        return []
+    rows = []
+    with open(filepath, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            # Convert numeric fields
+            converted = {}
+            for k, v in row.items():
+                try:
+                    converted[k] = float(v)
+                except (ValueError, TypeError):
+                    converted[k] = v
+            rows.append(converted)
+    return rows
+
+
+def _db_merge_lookup(
+    existing: List[Dict[str, object]],
+    new_entries: List[Dict[str, object]],
+    strategy: str = "latest",
+) -> List[Dict[str, object]]:
+    """Merge new lookup entries into existing database entries.
+
+    strategy:
+        latest   - keep newest entry per (u_from, u_to) pair
+        average  - average numeric fields across all entries of same pair
+        keep_all - keep every entry (no dedup)
+    """
+    if strategy == "keep_all":
+        return existing + new_entries
+
+    # Build map: (u_from, u_to) -> list of entries
+    from collections import OrderedDict
+    pair_map: OrderedDict = OrderedDict()
+    for entry in existing + new_entries:
+        key = (float(entry.get("u_from", 0)), float(entry.get("u_to", 0)))
+        if key not in pair_map:
+            pair_map[key] = []
+        pair_map[key].append(entry)
+
+    merged = []
+    _NUMERIC_FIELDS = [
+        "delta_u", "imu_bias_mps2", "v0_mps", "vss_mps", "delta_v_mps",
+        "tau_s", "k_local_mps_per_throttle", "a0_model_mps2",
+        "a_peak_meas_mps2", "a_mean_early_mps2", "acc_to_throttle_model",
+        "acc_to_throttle_peak", "t63_s", "t90_s", "t95_s", "lead_time_s",
+    ]
+
+    for key, entries in pair_map.items():
+        if strategy == "latest":
+            merged.append(entries[-1])  # last added = newest
+        elif strategy == "average":
+            avg = dict(entries[-1])  # copy last for string fields
+            for field in _NUMERIC_FIELDS:
+                vals = [
+                    float(e[field]) for e in entries
+                    if field in e and _is_finite(e[field])
+                ]
+                if vals:
+                    avg[field] = float(np.mean(vals))
+            avg["fit_method"] = f"avg_{len(entries)}_runs"
+            avg["run_id"] = entries[-1].get("run_id", "")
+            merged.append(avg)
+        else:
+            merged.extend(entries)
+
+    return merged
+
+
+def _is_finite(v) -> bool:
+    """Check if a value is a finite number."""
+    try:
+        return np.isfinite(float(v))
+    except (ValueError, TypeError):
+        return False
+
+
+def _db_rebuild_model_yaml(
+    lookup_entries: List[Dict[str, object]],
+    settings: dict,
+    strategy: str,
+) -> None:
+    """Regenerate the canonical database model YAML from merged lookup data."""
+    # Build a clean lookup table for YAML (strip run_id/run_tag columns)
+    clean_table = []
+    for entry in lookup_entries:
+        clean = {k: v for k, v in entry.items() if k not in ("run_id", "run_tag")}
+        clean_table.append(clean)
+
+    model = {
+        "description": "Incremental throttle-step acceleration dynamics database",
+        "merge_strategy": strategy,
+        "total_entries": len(clean_table),
+        "unique_transitions": len(set(
+            (float(e.get("u_from", 0)), float(e.get("u_to", 0)))
+            for e in clean_table
+        )),
+        "model_assumption": {
+            "equation": "tau * dv/dt + v = K_local * u (local per transition)",
+            "velocity_response": "v(t) = v_ss + (v0 - v_ss) * exp(-t/tau)",
+            "accel_response": "a(t) = ((v_ss - v0)/tau) * exp(-t/tau)",
+        },
+        "settings": settings,
+        "lookup_table": clean_table,
+        "usage": {
+            "lookup_key": "select by nearest (u_from, u_to) transition",
+            "preview_formula": "lead_time = -tau * ln(1 - ratio)",
+            "note": (
+                "This file is rebuilt after each incremental run. "
+                "Use --reset_db to clear and restart."
+            ),
+        },
+    }
+
+    with open(DB_MODEL_YAML, "w") as f:
+        yaml.dump(model, f, default_flow_style=False, sort_keys=False)
+    print(f"[DB] Model YAML rebuilt -> {DB_MODEL_YAML}")
+
+    # Also write the canonical filename for downstream tooling
+    canonical = os.path.join(RESULTS_DIR, "throttle_accel_model.yaml")
+    with open(canonical, "w") as f:
+        yaml.dump(model, f, default_flow_style=False, sort_keys=False)
+    print(f"[DB] Canonical model -> {canonical}")
+
+
+def _db_reset() -> None:
+    """Delete all files in the database directory."""
+    for fpath in [DB_RAW_CSV, DB_LOOKUP_CSV, DB_MODEL_YAML]:
+        if os.path.exists(fpath):
+            os.remove(fpath)
+            print(f"[DB] Deleted {os.path.basename(fpath)}")
+    print("[DB] Database reset complete -- starting fresh.")
+
+
+def _db_list() -> None:
+    """Print the current contents of the calibration database."""
+    print_section("Calibration Database Contents")
+
+    entries = _db_load_lookup_csv()
+    if not entries:
+        print("  (empty -- no transitions saved yet)")
+        print("  Run calibrations and save results to build up the database.")
+        return
+
+    # Count unique transitions and runs
+    transitions = set()
+    run_ids = set()
+    for e in entries:
+        transitions.add((float(e.get("u_from", 0)), float(e.get("u_to", 0))))
+        run_ids.add(e.get("run_id", "?"))
+
+    print(f"  Total entries   : {len(entries)}")
+    print(f"  Unique transitions : {len(transitions)}")
+    print(f"  Runs recorded   : {len(run_ids)}")
+    print()
+
+    # Print summary table
+    print(
+        f"  {'Step':>13}  {'run_id':>22}  {'tau[s]':>8}  {'Kloc':>9}  "
+        f"{'a0[m/s2]':>10}  {'fit':>12}"
+    )
+    print(f"  {'-' * 13}  {'-' * 22}  {'-' * 8}  {'-' * 9}  {'-' * 10}  {'-' * 12}")
+
+    for row in entries:
+        u_from = float(row.get("u_from", 0))
+        u_to = float(row.get("u_to", 0))
+        step_name = f"{u_from:.2f}->{u_to:.2f}"
+        run_id = str(row.get("run_id", "?"))[:22]
+        tau = float(row.get("tau_s", float("nan")))
+        k_loc = float(row.get("k_local_mps_per_throttle", float("nan")))
+        a0 = float(row.get("a0_model_mps2", float("nan")))
+        fit = str(row.get("fit_method", "?"))[:12]
+        print(
+            f"  {step_name:>13}  {run_id:>22}  {tau:8.4f}  "
+            f"{k_loc:9.4f}  {a0:10.4f}  {fit:>12}"
+        )
+
+
+def _db_save_transition(
+    run_id: str,
+    run_tag: str,
+    transition_idx: int,
+    info: Dict[str, object],
+    raw_rows: List[List],
+) -> None:
+    """Save a single transition's results to the database (raw + lookup)."""
+    # Append raw time-series rows
+    if raw_rows:
+        _db_append_csv(DB_RAW_CSV, DB_RAW_COLUMNS, raw_rows)
+
+    # Append lookup row
+    transition_name = f"{info['u_from']:.3f}->{info['u_to']:.3f}"
+    lookup_row = [[
+        run_id, run_tag, transition_name,
+        info["u_from"], info["u_to"], info["delta_u"],
+        info["accel_source"], info["imu_bias_mps2"],
+        info["v0_mps"], info["vss_mps"], info["delta_v_mps"],
+        info["tau_s"], info["k_local_mps_per_throttle"],
+        info["a0_model_mps2"], info["a_peak_meas_mps2"],
+        info["a_mean_early_mps2"], info["acc_to_throttle_model"],
+        info["acc_to_throttle_peak"], info["t63_s"], info["t90_s"],
+        info["t95_s"], info["lead_time_s"], info["fit_method"],
+    ]]
+    _db_append_csv(DB_LOOKUP_CSV, DB_LOOKUP_COLUMNS, lookup_row)
+    print(f"  [DB] Saved transition {transition_name} (run {run_id})")
+
+
+# ---------------------------------------------------------------------------
 # CLI arguments
 # ---------------------------------------------------------------------------
 parser = argparse.ArgumentParser(
@@ -141,7 +428,7 @@ parser.add_argument(
 parser.add_argument(
     "--max_throttle",
     type=float,
-    default=0.3,
+    default=1.0,
     help="Maximum throttle value kept from --throttle_levels",
 )
 parser.add_argument(
@@ -157,7 +444,7 @@ parser.add_argument(
 parser.add_argument(
     "--pre_hold",
     type=float,
-    default=5.0,
+    default=0.5,
     help="Time [s] to hold u_from before each step (default 5.0s)",
 )
 parser.add_argument(
@@ -239,10 +526,19 @@ parser.add_argument(
     help="Ratio for lead-time suggestion (0.632 means 63.2%% response)",
 )
 parser.add_argument(
+    "--frequency",
+    type=int,
+    default=500,
+    help="QCar HIL task frequency [Hz]. Controls the QUARC model step rate. "
+         "Higher values give better motor physics (the model integrates faster). "
+         "The data-collection rate is controlled by --dt independently. "
+         "Set 0 to omit (model uses its compiled default). (default: 500)",
+)
+parser.add_argument(
     "--dt",
     type=float,
-    default=0.02,
-    help="Control loop timestep [s] (default 20ms)",
+    default=0.01,
+    help="Control loop timestep [s] (default 10ms to match 100Hz controller rate)",
 )
 parser.add_argument(
     "--sim_tau",
@@ -267,7 +563,56 @@ parser.add_argument(
     action="store_true",
     help="Do not plot results at the end",
 )
+# --- Incremental database flags ---
+parser.add_argument(
+    "--reset_db",
+    action="store_true",
+    help="Delete entire calibration database and start fresh (then exit unless transitions given)",
+)
+parser.add_argument(
+    "--list_db",
+    action="store_true",
+    help="Print current database contents and exit (no hardware needed)",
+)
+parser.add_argument(
+    "--auto_save",
+    action="store_true",
+    help="Automatically save every transition to the database (no prompt)",
+)
+parser.add_argument(
+    "--no_save",
+    action="store_true",
+    help="Do not save anything to the database (dry-run; per-run CSV still written)",
+)
+parser.add_argument(
+    "--merge_strategy",
+    type=str,
+    default="latest",
+    choices=["latest", "average", "keep_all"],
+    help="How to handle duplicate (u_from,u_to) pairs in the database "
+         "(default: latest = keep newest only)",
+)
 args = parser.parse_args()
+
+# --- Handle --reset_db and --list_db early (no hardware needed) ---
+if args.reset_db:
+    _db_reset()
+
+if args.list_db:
+    _db_list()
+    sys.exit(0)
+
+if args.reset_db:
+    # If only --reset_db was given (no --list_db), show confirmation and exit
+    # unless the user also specified transitions to run
+    _db_list()
+    # Continue to run transitions if levels were specified, otherwise exit
+    # (the default throttle_levels always produces transitions, so we check
+    #  if the user explicitly wants to just reset by not providing any mode)
+    if not (args.sim or args.qlabs):
+        # No mode specified alongside --reset_db -> just exit
+        print("\n  Use --sim or --qlabs with transitions to start a new run.")
+        sys.exit(0)
 
 
 def _parse_levels(levels_str: str, max_throttle: float) -> List[float]:
@@ -327,6 +672,18 @@ if args.dt <= 0.0:
     print("[ERROR] --dt must be > 0.")
     sys.exit(1)
 
+# Info: dt controls data-collection rate, frequency controls HIL model step rate
+if args.frequency > 0:
+    print(
+        f"[INFO] HIL model step rate: {args.frequency} Hz  |  "
+        f"Data collection rate: {1.0/args.dt:.0f} Hz (dt={args.dt}s)"
+    )
+else:
+    print(
+        f"[INFO] HIL model step rate: compiled default  |  "
+        f"Data collection rate: {1.0/args.dt:.0f} Hz (dt={args.dt}s)"
+    )
+
 if args.pre_hold < 0.0 or args.step_time <= 0.0:
     print("[ERROR] Require --pre_hold >= 0 and --step_time > 0.")
     sys.exit(1)
@@ -361,12 +718,28 @@ else:
 # Hardware interface
 # ---------------------------------------------------------------------------
 class QCarHardwareInterface:
-    """Unified wrapper for physical and QLabs virtual QCar access."""
+    """Unified wrapper for physical and QLabs virtual QCar access.
 
-    def __init__(self, qlabs_mode: bool = False, actor_name: str = "QC2_0"):
+    The ``frequency`` parameter sets the QUARC real-time model's task step
+    rate.  Higher values mean the motor physics integrates more times per
+    second, giving correct dynamics.  The Python-side data-collection rate
+    is controlled separately via ``time.sleep(dt)``.
+
+    When ``frequency`` is set, ``qcar.read()`` blocks until the next HIL
+    tick (1/frequency seconds).  We deliberately set a HIGH frequency
+    (e.g. 500 Hz) so the motor model runs fast, then pace the outer Python
+    loop with ``time.sleep(dt)`` to collect data at 100 Hz.
+
+    Set ``frequency=0`` to omit the parameter entirely (model uses its
+    compiled default rate).
+    """
+
+    def __init__(self, qlabs_mode: bool = False, actor_name: str = "QC2_0",
+                 frequency: int = 500):
         self._qcar = None
         self._qlabs_mode = qlabs_mode
         self._actor_name = actor_name
+        self._frequency = frequency
 
     def connect(self):
         from pal.products.qcar import QCar
@@ -386,14 +759,23 @@ class QCarHardwareInterface:
                     f"hilPort=None for actor '{self._actor_name}'. "
                     "QLabs model may not be running."
                 )
-            self._qcar = QCar(readMode=1, hilPort=hil_port)
+            if self._frequency > 0:
+                self._qcar = QCar(readMode=1, frequency=self._frequency,
+                                  hilPort=hil_port)
+            else:
+                self._qcar = QCar(readMode=1, hilPort=hil_port)
+            freq_label = f"{self._frequency}Hz" if self._frequency > 0 else "default"
             print(
                 f"[QLABS] Connected to virtual QCar '{self._actor_name}' "
-                f"(hilPort={hil_port})"
+                f"(hilPort={hil_port}, frequency={freq_label})"
             )
         else:
-            self._qcar = QCar(readMode=1)
-            print("[HW] Physical QCar connected.")
+            if self._frequency > 0:
+                self._qcar = QCar(readMode=1, frequency=self._frequency)
+            else:
+                self._qcar = QCar(readMode=1)
+            freq_label = f"{self._frequency}Hz" if self._frequency > 0 else "default"
+            print(f"[HW] Physical QCar connected (frequency={freq_label}).")
 
     def send_throttle(self, throttle: float, steering: float = 0.0):
         self._qcar.write(
@@ -496,6 +878,17 @@ def _collect_step_response(
     raw_log: CSVLogger,
     t_global0: float,
 ) -> Dict[str, object]:
+    """Collect pre-hold + step response data.
+
+    Uses READ -> WRITE cadence.  The QCar model runs at ``frequency`` Hz
+    internally (e.g. 500 Hz for correct motor physics).  The Python loop
+    is paced by ``time.sleep(dt)`` to collect data at ~100 Hz.
+
+    Each iteration:
+      1. READ sensors   (qcar.read -- blocks ~1/frequency seconds)
+      2. WRITE command   (qcar.write)
+      3. SLEEP remainder  (time.sleep to reach dt)
+    """
     pre_v: List[float] = []
     pre_imu: List[float] = []
     step_t: List[float] = []
@@ -510,25 +903,34 @@ def _collect_step_response(
     a_filt = 0.0
     every_sec_steps = max(1, int(round(1.0 / dt)))
 
-    def _read_sample(throttle_cmd: float) -> Tuple[float, np.ndarray]:
+    def _read_sensors() -> Tuple[float, np.ndarray]:
+        """READ sensors -- blocks on HIL sample when frequency is set."""
         if sim_mode:
-            v_sample = interface.step(throttle_cmd, dt)
-            return float(v_sample), np.array([np.nan, np.nan, np.nan], dtype=float)
-        interface.send_throttle(throttle_cmd)
+            return float(interface.v), np.array([np.nan, np.nan, np.nan], dtype=float)
         return interface.read_state()
+
+    def _write_command(throttle_cmd: float):
+        """WRITE actuator command."""
+        if sim_mode:
+            interface.step(throttle_cmd, dt)
+        else:
+            interface.send_throttle(throttle_cmd)
 
     def _tach_accel(v_curr: float, dt_actual: float) -> float:
         if prev_v is None or dt_actual <= 0.0:
             return 0.0
         return float((v_curr - prev_v) / dt_actual)
 
-    # Pre-hold at u_from
+    # ------------------------------------------------------------------ #
+    #  PRE-HOLD at u_from                                                 #
+    # ------------------------------------------------------------------ #
     phase_t0 = time.time()
     for k in range(pre_steps):
         loop_start = time.time()
-        v, accel_vec = _read_sample(u_from)
 
-        # Compute actual dt for tach derivative
+        # 1. READ sensors (blocks for ~1/frequency seconds on real HW)
+        v, accel_vec = _read_sensors()
+
         now = time.time()
         dt_actual = (now - prev_t) if prev_t is not None else dt
 
@@ -540,7 +942,7 @@ def _collect_step_response(
             else:
                 if not imu_failed:
                     print(
-                        "  [WARN] IMU acceleration unavailable. "
+                        "  [WARN] IMU acceleration unavailable during pre-hold. "
                         "Falling back to tach derivative."
                     )
                 imu_failed = True
@@ -567,27 +969,38 @@ def _collect_step_response(
             effective_source,
         )
 
-        # Wall-clock-aligned sleep: target next sample at phase_t0 + (k+1)*dt
+        # 2. WRITE command (same READ -> WRITE order as production)
+        _write_command(u_from)
+
+        # 3. Wall-clock-aligned sleep to reach dt (data-collection rate)
         t_target = phase_t0 + (k + 1) * dt
         t_sleep = t_target - time.time()
-        if t_sleep > 0.0:
+        if t_sleep > 0:
             time.sleep(t_sleep)
 
         if (k + 1) % every_sec_steps == 0:
-            print(f"  pre  t={t_rel:5.2f}s  v={v: .4f} m/s  (loop {(time.time()-loop_start)*1e3:.1f}ms)")
+            print(
+                f"  pre  t={t_rel:5.2f}s  v={v: .4f} m/s"
+                f"  thr={u_from:.3f}"
+                f"  (loop {(time.time()-loop_start)*1e3:.1f}ms)"
+            )
 
+    # Compute IMU bias from pre-hold window (if requested)
     if effective_source == "imu" and imu_remove_bias and len(pre_imu) > 0:
         bias_steps = max(1, int(round(imu_bias_window / dt)))
         imu_bias = float(np.mean(pre_imu[-min(len(pre_imu), bias_steps) :]))
         print(f"  IMU bias estimate: {imu_bias:.4f} m/s^2")
 
-    # Step to u_to
+    # ------------------------------------------------------------------ #
+    #  STEP to u_to                                                       #
+    # ------------------------------------------------------------------ #
     step_t0 = time.time()
     for k in range(step_steps):
         loop_start = time.time()
-        v, accel_vec = _read_sample(u_to)
 
-        # Compute actual dt for tach derivative
+        # 1. READ sensors (blocks for ~1/frequency seconds on real HW)
+        v, accel_vec = _read_sensors()
+
         now = time.time()
         dt_actual = (now - prev_t) if prev_t is not None else dt
 
@@ -628,15 +1041,19 @@ def _collect_step_response(
             effective_source,
         )
 
-        # Wall-clock-aligned sleep: target next sample at step_t0 + (k+1)*dt
+        # 2. WRITE command (same READ -> WRITE order as production)
+        _write_command(u_to)
+
+        # 3. Wall-clock-aligned sleep to reach dt (data-collection rate)
         t_target = step_t0 + (k + 1) * dt
         t_sleep = t_target - time.time()
-        if t_sleep > 0.0:
+        if t_sleep > 0:
             time.sleep(t_sleep)
 
         if (k + 1) % every_sec_steps == 0:
             print(
                 f"  step t={t_rel:5.2f}s  v={v: .4f} m/s  a={a_filt: .4f} m/s^2"
+                f"  thr={u_to:.3f}"
                 f"  (loop {(time.time()-loop_start)*1e3:.1f}ms)"
             )
 
@@ -752,10 +1169,11 @@ def _settle_at_throttle(
     settle_time: float = 5.0,
     threshold: float = 0.02,
 ):
-    """Hold throttle and wait until velocity stabilises (like 01's coast-back).
+    """Hold throttle and wait until velocity stabilises.
 
-    If threshold > 0, will monitor velocity std over a 1s window and stop early
-    once std < threshold. Otherwise, just waits settle_time seconds.
+    Uses READ -> WRITE order matching the production system.
+    Wall-clock-aligned ``time.sleep()`` paces the loop at ``dt`` regardless
+    of the HIL frequency (which may be much higher).
     """
     print(f"  [settle] Holding throttle={throttle:.3f} for up to {settle_time:.1f}s ...")
     n_steps = max(1, int(settle_time / dt))
@@ -764,7 +1182,7 @@ def _settle_at_throttle(
     t0 = time.time()
 
     for k in range(n_steps):
-        interface.send_throttle(throttle)
+        # 1. READ sensors (blocks on HIL sample when frequency is set)
         v, _ = interface.read_state()
         recent_v.append(v)
 
@@ -781,10 +1199,13 @@ def _settle_at_throttle(
                 )
                 return
 
-        # Wall-clock aligned sleep
+        # 2. WRITE command
+        interface.send_throttle(throttle)
+
+        # 3. Wall-clock-aligned sleep to reach dt (data-collection rate)
         t_target = t0 + (k + 1) * dt
         t_sleep = t_target - time.time()
-        if t_sleep > 0.0:
+        if t_sleep > 0:
             time.sleep(t_sleep)
 
         # Progress every 2 seconds
@@ -807,6 +1228,8 @@ def run_calibration(
     imu_sign: float,
     imu_remove_bias: bool,
     imu_bias_window: float,
+    run_id: str = "",
+    run_tag: str = "",
 ):
     dt = args.dt
     pre_steps = max(1, int(round(args.pre_hold / dt)))
@@ -816,6 +1239,7 @@ def run_calibration(
     lookup_csv = f"throttle_accel_lookup{TAG}.csv"
 
     results: List[Dict[str, object]] = []
+    saved_count = 0
 
     with (
         CSVLogger(
@@ -881,6 +1305,19 @@ def run_calibration(
                     for _ in range(max(1, int(args.settle_time / dt))):
                         interface.step(u_from, dt)
 
+            # Collect raw rows for the database (we buffer them in memory
+            # so we can decide whether to save after analysing)
+            _db_raw_buffer: List[List] = []
+            _orig_write = raw_log.write
+
+            def _capturing_write(*values, _buf=_db_raw_buffer, _orig=_orig_write):
+                """Write to per-run CSV and also buffer for potential DB save."""
+                _orig(*values)
+                # Prepend run_id and run_tag for the DB format
+                _buf.append([run_id, run_tag] + list(values))
+
+            raw_log.write = _capturing_write  # type: ignore[assignment]
+
             data = _collect_step_response(
                 interface=interface,
                 sim_mode=sim_mode,
@@ -899,6 +1336,9 @@ def run_calibration(
                 raw_log=raw_log,
                 t_global0=t_global0,
             )
+
+            # Restore original write method
+            raw_log.write = _orig_write  # type: ignore[assignment]
 
             info = _analyse_transition(
                 u_from=u_from,
@@ -954,6 +1394,43 @@ def run_calibration(
                 f"({info['fit_method']})"
             )
 
+            # ── Incremental database save decision ──
+            if args.no_save:
+                print("  [DB] --no_save: skipping database save.")
+            elif args.auto_save:
+                _db_save_transition(run_id, run_tag, idx, info, _db_raw_buffer)
+                saved_count += 1
+            else:
+                # Interactive prompt
+                while True:
+                    try:
+                        ans = input(
+                            f"\n  Save {transition_name} to database? "
+                            "[y]es / [n]o / [q]uit : "
+                        ).strip().lower()
+                    except (EOFError, KeyboardInterrupt):
+                        ans = "q"
+
+                    if ans in ("y", "yes", ""):
+                        _db_save_transition(
+                            run_id, run_tag, idx, info, _db_raw_buffer
+                        )
+                        saved_count += 1
+                        break
+                    elif ans in ("n", "no"):
+                        print("  [DB] Transition discarded.")
+                        break
+                    elif ans in ("q", "quit"):
+                        print("  [DB] Quitting early.")
+                        print(
+                            f"\n  Transitions saved to DB this run: "
+                            f"{saved_count}/{idx}"
+                        )
+                        return results
+                    else:
+                        print("  Please answer y, n, or q.")
+
+    print(f"\n  Transitions saved to DB this run: {saved_count}/{len(transitions)}")
     return results
 
 
@@ -1067,13 +1544,22 @@ def main():
         print("[WARN] --accel_source imu is unavailable in --sim. Using tach instead.")
         accel_source = "tach"
 
+    # Generate a unique run ID (ISO8601 timestamp)
+    run_id = datetime.now().strftime("%Y%m%dT%H%M%S")
+    run_tag = TAG.lstrip("_") if TAG else "default"
+
+    # Show existing database state
+    _db_list()
+
     print_section("QCar Throttle-Step -> Acceleration Calibration")
     print(f"  Mode           : {mode_label}")
+    print(f"  Run ID         : {run_id}")
     print(f"  Levels         : {LEVELS}")
     print(f"  Transitions    : {[(round(a, 3), round(b, 3)) for a, b in TRANSITIONS]}")
     print(f"  pre_hold       : {args.pre_hold}s")
     print(f"  step_time      : {args.step_time}s")
     print(f"  dt             : {args.dt}s")
+    print(f"  frequency      : {args.frequency}Hz")
     print(f"  max_throttle   : {args.max_throttle}")
     print(f"  accel_source   : {accel_source}")
     if accel_source == "imu":
@@ -1081,13 +1567,23 @@ def main():
         print(f"  imu_remove_bias: {bool(args.imu_remove_bias)}")
         print(f"  imu_bias_window: {args.imu_bias_window}s")
     print(f"  lookahead_ratio: {args.lookahead_ratio}")
+    print(f"  merge_strategy : {args.merge_strategy}")
+    if args.auto_save:
+        print(f"  save_mode      : auto_save (no prompts)")
+    elif args.no_save:
+        print(f"  save_mode      : no_save (dry run)")
+    else:
+        print(f"  save_mode      : interactive (prompt per transition)")
 
     if args.sim:
         interface = FirstOrderMotorSim(
             tau=args.sim_tau, K=args.sim_gain, noise_std=0.01
         )
     else:
-        interface = QCarHardwareInterface(qlabs_mode=args.qlabs, actor_name=args.actor)
+        interface = QCarHardwareInterface(
+            qlabs_mode=args.qlabs, actor_name=args.actor,
+            frequency=args.frequency,
+        )
         interface.connect()
 
     try:
@@ -1100,6 +1596,8 @@ def main():
             imu_sign=args.imu_sign,
             imu_remove_bias=args.imu_remove_bias,
             imu_bias_window=args.imu_bias_window,
+            run_id=run_id,
+            run_tag=run_tag,
         )
     finally:
         if args.sim:
@@ -1114,9 +1612,11 @@ def main():
 
     print_summary(rows)
 
+    # ── Per-run tagged YAML (transient, same as before) ──
     model_yaml = {
         "description": "Throttle-step to acceleration dynamics lookup table",
         "mode": "simulation" if args.sim else ("qlabs" if args.qlabs else "hardware"),
+        "run_id": run_id,
         "model_assumption": {
             "equation": "tau * dv/dt + v = K_local * u (local per transition)",
             "velocity_response": "v(t) = v_ss + (v0 - v_ss) * exp(-t/tau)",
@@ -1155,8 +1655,20 @@ def main():
     }
 
     save_yaml(model_yaml, f"throttle_accel_model{TAG}.yaml")
-    # Canonical filename for downstream tooling
-    save_yaml(model_yaml, "throttle_accel_model.yaml")
+
+    # ── Rebuild the incremental database model YAML ──
+    if not args.no_save:
+        existing_lookup = _db_load_lookup_csv()
+        merged = _db_merge_lookup(
+            existing_lookup, [], strategy=args.merge_strategy
+        )
+        settings_for_db = model_yaml["settings"].copy()
+        settings_for_db["merge_strategy"] = args.merge_strategy
+        _db_rebuild_model_yaml(merged, settings_for_db, args.merge_strategy)
+
+        # Show final database state
+        print()
+        _db_list()
 
     print("\n[OK] Throttle-step acceleration calibration complete.")
 

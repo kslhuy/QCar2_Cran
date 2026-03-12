@@ -35,6 +35,13 @@ try:
 except Exception:
     OnlineSysIDZMQClient = None
 
+try:
+    from Calibration.online_calibration_zmq_client import (
+        OnlineCalibrationZMQClient,
+    )
+except Exception:
+    OnlineCalibrationZMQClient = None
+
 # Note: Controllers (PIDVelocityController, StanleyController) are now imported
 # in state machine states, not here
 
@@ -195,6 +202,10 @@ class VehicleLogic:
         # It is created/activated only when commanded at runtime.
         self.online_sysid_zmq = None  # Separated ZMQ mode
 
+        # Online Calibration (ZMQ mode) — passive data collection.
+        # Activated at runtime via ENABLE_ONLINE_CALIBRATION command.
+        self.online_calibration_zmq = None
+
     def elapsed_time(self) -> float:
         """Get elapsed time since start"""
         return time.time() - self.start_time
@@ -278,6 +289,67 @@ class VehicleLogic:
             status["mode"] = "zmq"
             status["zmq"] = self.online_sysid_zmq.get_status()
 
+        return status
+
+    # ===== Online Calibration (passive data collection) =====
+    def enable_online_calibration_zmq(self, config: dict = None) -> bool:
+        """
+        Enable passive online calibration transport over ZMQ.
+        Creates sockets only when requested by command.
+        """
+        cfg = config or {}
+        if self.online_calibration_zmq is None:
+            if OnlineCalibrationZMQClient is None:
+                self.vehicle_logger.log_warning(
+                    "Online Calibration ZMQ client unavailable (import failed)"
+                )
+                return False
+
+            sample_port = int(cfg.get("sample_port", 18890))
+            control_port = int(cfg.get("control_port", 18891))
+            status_host = str(cfg.get("status_host", "127.0.0.1"))
+            status_port = int(cfg.get("status_port", 18892))
+            bind_ip = str(cfg.get("bind_ip", "*"))
+
+            self.online_calibration_zmq = OnlineCalibrationZMQClient(
+                logger=self.vehicle_logger,
+                vehicle_id=self.vehicle_id,
+                sample_port=sample_port,
+                control_port=control_port,
+                status_host=status_host,
+                status_port=status_port,
+                bind_ip=bind_ip,
+            )
+
+        started = self.online_calibration_zmq.start_collection()
+        if not started:
+            return False
+
+        self.vehicle_logger.logger.info(
+            "[OnlineCal] Passive calibration data collection ENABLED"
+        )
+        return True
+
+    def disable_online_calibration_zmq(self) -> None:
+        """Disable and close Online Calibration ZMQ transport."""
+        if self.online_calibration_zmq is not None:
+            try:
+                self.online_calibration_zmq.stop()
+            except Exception as e:
+                self.vehicle_logger.log_error(
+                    "Failed to stop Online Calibration ZMQ client", e
+                )
+            self.online_calibration_zmq = None
+            self.vehicle_logger.logger.info(
+                "[OnlineCal] Passive calibration data collection DISABLED"
+            )
+
+    def _get_online_calibration_status(self) -> dict:
+        """Collect status from the Online Calibration ZMQ backend."""
+        status = {"enabled": False}
+        if self.online_calibration_zmq is not None:
+            status["enabled"] = True
+            status["zmq"] = self.online_calibration_zmq.get_status()
         return status
 
     def run(self):
@@ -411,6 +483,13 @@ class VehicleLogic:
                 if hasattr(self, "online_sysid_zmq") and self.online_sysid_zmq:
                     if self.online_sysid_zmq.is_collecting():
                         self.online_sysid_zmq.submit_sample(sample)
+
+            # Feed passive calibration with [v, throttle, steering, yaw_rate, ax, ay, az].
+            cal_sample = self.vehicle_observer.get_calibration_sample()
+            if cal_sample is not None:
+                if hasattr(self, "online_calibration_zmq") and self.online_calibration_zmq:
+                    if self.online_calibration_zmq.is_collecting():
+                        self.online_calibration_zmq.submit_sample(cal_sample)
 
             # Stream scope data to Ground Station (if streaming enabled)
             if (

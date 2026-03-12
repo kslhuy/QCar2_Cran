@@ -504,6 +504,11 @@ class StateBase:
                 self._handle_online_sysid_params(params)
                 return None
 
+            if category == "online_calibration":
+                if not isinstance(params, dict):
+                    params = {}
+                self._handle_online_calibration_params(params)
+                return None
             if category and params:
                 if self.logger:
                     self.logger.logger.info(
@@ -572,6 +577,45 @@ class StateBase:
                     self.logger.log_error(f"[MANUAL] Invalid gear name: {gear_name}")
                 except ValueError:
                     self.logger.log_error(f"[MANUAL] Invalid gear value: {gear_name}")
+            return None
+
+        # Handle Online Calibration (passive data collection) enable/disable
+        elif command_type == CommandType.ENABLE_ONLINE_CALIBRATION:
+            self.logger.logger.info("[CMD] Enabling passive online calibration")
+            try:
+                cfg = data.get("config", {})
+                if hasattr(self.vehicle_logic, "enable_online_calibration_zmq"):
+                    success = self.vehicle_logic.enable_online_calibration_zmq(cfg)
+                    if success:
+                        self.logger.logger.info(
+                            "[CMD] Online calibration enabled successfully"
+                        )
+                    else:
+                        self.logger.log_error(
+                            "[CMD] Failed to enable online calibration"
+                        )
+                else:
+                    self.logger.log_warning(
+                        "[CMD] vehicle_logic does not expose enable_online_calibration_zmq"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error enabling online calibration", e)
+            return None
+
+        elif command_type == CommandType.DISABLE_ONLINE_CALIBRATION:
+            self.logger.logger.info("[CMD] Disabling passive online calibration")
+            try:
+                if hasattr(self.vehicle_logic, "disable_online_calibration_zmq"):
+                    self.vehicle_logic.disable_online_calibration_zmq()
+                    self.logger.logger.info(
+                        "[CMD] Online calibration disabled successfully"
+                    )
+                else:
+                    self.logger.log_warning(
+                        "[CMD] vehicle_logic does not expose disable_online_calibration_zmq"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error disabling online calibration", e)
             return None
 
         return None
@@ -765,6 +809,58 @@ class StateBase:
         self.logger.log_warning(
             f"[CMD] Unknown online_sysid action '{action}'. "
             "Valid: start, stop, train, status, set_config, clear"
+        )
+        return False
+
+    def _handle_online_calibration_params(self, params: Dict[str, Any]) -> bool:
+        """
+        Handle SET_PARAMS category='online_calibration'.
+        action: 'analyse', 'clear', 'status'
+        calibration_type: 'throttle_velocity', 'steering_curvature', etc.
+        """
+        action = str(params.get("action", "status")).strip().lower()
+        client = getattr(self.vehicle_logic, "online_calibration_zmq", None)
+
+        if client is None:
+            self.logger.log_warning("[CMD] Online calibration client not available")
+            return False
+
+        import time
+        if action in ("analyse", "trigger_analyse", "analyze"):
+            calibration_type = params.get("calibration_type")
+            if calibration_type:
+                client.trigger_analyse(calibration_type=calibration_type, options=params.get("options"))
+                self.logger.logger.info(f"[CMD] ZMQ Online Calibration analyse command sent for {calibration_type}")
+                return True
+            else:
+                self.logger.log_warning("[CMD] Online calibration analyse requested but calibration_type missing")
+                return False
+
+        if action in ("clear", "reset_buffer"):
+            client.clear_buffer()
+            self.logger.logger.info("[CMD] ZMQ Online Calibration clear command sent")
+            return True
+
+        if action in ("status", "get_status"):
+            client.request_status()
+            status = client.get_status()
+            if (
+                hasattr(self.vehicle_logic, "client_Ground_Station")
+                and self.vehicle_logic.client_Ground_Station
+            ):
+                self.vehicle_logic.client_Ground_Station.queue_telemetry(
+                    {
+                        "type": "online_calibration_status",
+                        "timestamp": time.time(),
+                        "car_id": getattr(self.vehicle_logic, "vehicle_id", 0),
+                        "data": {"mode": "zmq", "status": status},
+                    }
+                )
+            return True
+
+        self.logger.log_warning(
+            f"[CMD] Unknown online_calibration action '{action}'. "
+            "Valid: analyse, status, clear"
         )
         return False
 

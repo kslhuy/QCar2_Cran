@@ -154,8 +154,9 @@ class FollowingPathState(StateBase):
             cm = self.vehicle_logic.controller_manager
             lateral_type = cm.get_lateral_type(state="path")
             self._use_pp_map = lateral_type == "pp_map"
+            self._use_mpc = lateral_type == "mpc"
 
-            # Speed controller (PID for path following)
+            # Speed controller (PID for path following) unless we're in MPC mode
             # TODO : Instead of get_speed_controller(), use get_longitudinal_controller()
             # Currently only PID is available for path following
             self.speed_controller = cm.get_speed_controller()
@@ -195,19 +196,23 @@ class FollowingPathState(StateBase):
         # Initialize MPC controller for combined throttle+steering (test mode)
         if self._use_mpc and MPC_AVAILABLE:
             try:
-                mpc_params = {
-                    "horizon": 15,  # 15×0.05=0.75s lookahead (enough to see curves)
-                    "dt_mpc": 0.05,
-                    "Q_pos": 200.0,  # Position tracking (moderate to avoid over-correction)
-                    "Q_heading": 100.0,  # Heading tracking (align with path tangent)
-                    "Q_vel": 50.0,  # Higher velocity weight: maintain forward speed!
-                    "R_delta": 5.0,  # Moderate: smooth steering
-                    "R_acc": 5.0,  # Moderate: smooth throttle
-                    "R_delta_rate": 15.0,  # Penalize jerky steering
-                    "R_acc_rate": 15.0,  # Penalize jerky throttle (prevents oscillation)
-                    "Qf_pos": 200.0,  # Terminal position
-                    "Qf_heading": 200.0,  # Terminal heading
-                    "Qf_vel": 50.0,  # Terminal velocity (keep moving!)
+                # load default parameters or override with config
+                if cm.config and hasattr(cm.config, "get_mpc_params"):
+                    mpc_params = cm.config.get_mpc_params()
+                else:
+                    mpc_params = {
+                        "horizon": 15,  # 15×0.05=0.75s lookahead (enough to see curves)
+                        "dt_mpc": 0.05,
+                        "Q_pos": 200.0,  # Position tracking (moderate to avoid over-correction)
+                        "Q_heading": 100.0,  # Heading tracking (align with path tangent)
+                        "Q_vel": 50.0,  # Higher velocity weight: maintain forward speed!
+                        "R_delta": 5.0,  # Moderate: smooth steering
+                        "R_acc": 5.0,  # Moderate: smooth throttle
+                        "R_delta_rate": 15.0,  # Penalize jerky steering
+                        "R_acc_rate": 15.0,  # Penalize jerky throttle (prevents oscillation)
+                        "Qf_pos": 200.0,  # Terminal position
+                        "Qf_heading": 200.0,  # Terminal heading
+                        "Qf_vel": 50.0,  # Terminal velocity (keep moving!)
                     "path_lookahead_scale": 1,  # More lookahead for smoother curves
                     "desired_spacing": 0.5,
                     "max_steering_rate": 1.0,  # Reasonable steering rate
@@ -303,14 +308,17 @@ class FollowingPathState(StateBase):
 
         # --- Lateral switch in path-following mode ---
         if category == "lateral":
-            was_pp_map = self._use_pp_map
+            was_coupled = self._use_pp_map or self._use_mpc
             now_pp_map = controller_type == "pp_map"
+            now_mpc = controller_type == "mpc"
+            now_coupled = now_pp_map or now_mpc
 
-            if was_pp_map and not now_pp_map:
-                # ---- Leaving pp_map → switch to PID speed + steering ----
+            if was_coupled and not now_coupled:
+                # ---- Leaving coupled mode → revert to separate controllers ----
                 self._use_pp_map = False
                 self._use_mpc = False
                 self.pp_controller = None  # deactivate PP pipeline
+                self.mpc_controller = None  # deactivate MPC pipeline
 
                 # Ensure PID speed controller is active
                 self.speed_controller = cm.get_speed_controller()
@@ -323,10 +331,10 @@ class FollowingPathState(StateBase):
                     self.vehicle_logic.steering_controller = self.steering_controller
 
                 self.logger.logger.info(
-                    f"[PATH] PP map deactivated → PID speed + {controller_type} steering"
+                    f"[PATH] Coupled controller deactivated → PID speed + {controller_type} steering"
                 )
 
-            elif not was_pp_map and now_pp_map:
+            elif not was_coupled and now_pp_map:
                 # ---- Entering pp_map → initialize PP pipeline ----
                 self._use_pp_map = True
                 self._use_mpc = False
@@ -344,6 +352,31 @@ class FollowingPathState(StateBase):
                         "[PATH] PP map requested but unavailable — falling back"
                     )
                     self._use_pp_map = False
+
+            elif not was_coupled and now_mpc:
+                # ---- Entering MPC → init combined controller ----
+                self._use_mpc = True
+                self._use_pp_map = False
+                self._init_controllers(force=True)
+                if self.mpc_controller is not None:
+                    self.logger.logger.info("[PATH] MPC controller activated")
+                else:
+                    self.logger.logger.warning(
+                        "[PATH] MPC requested but unavailable — falling back"
+                    )
+                    self._use_mpc = False
+
+            elif was_coupled and now_coupled:
+                # switching between two coupled controllers
+                if now_pp_map:
+                    self._use_mpc = False
+                    self._use_pp_map = True
+                    self._init_pp_mode()
+                elif now_mpc:
+                    self._use_pp_map = False
+                    self._use_mpc = True
+                    self._init_controllers(force=True)
+                self.logger.logger.info(f"[PATH] Coupled lateral switched to {controller_type}")
 
             else:
                 # Same regime (non-coupled → non-coupled), just refresh steering
@@ -1237,7 +1270,7 @@ class FollowingPathState(StateBase):
             if yolo_gain < 1.0:
                 u = u * yolo_gain
 
-        # --- Center-box obstacle: person → full stop, cone → replanned above ---
+        # # --- Center-box obstacle: person → full stop, cone → replanned above ---
         yolo_data = sensor_data.get("yolo_data", None)
         if yolo_data and yolo_data.get("obstacle_in_path", False):
             obs_type = yolo_data.get("obstacle_type", 0.0)
@@ -1265,6 +1298,11 @@ class FollowingPathState(StateBase):
 
         gear = getattr(self.vehicle_logic, "gear", None)
         max_throttle = float(getattr(gear, "value", 0.1))
+        
+        if getattr(self.vehicle_logic, "vehicle_type", "") == "Limo":
+            gear_mult = getattr(self.vehicle_logic.config.vehicle, "limo_gear_multiplier", 3.0)
+            max_throttle *= gear_mult  # Limo velocity limits (m/s) based on gear with configurable gain
+
         if abs(u) > max_throttle:
             u = np.clip(u, -max_throttle, max_throttle)
 

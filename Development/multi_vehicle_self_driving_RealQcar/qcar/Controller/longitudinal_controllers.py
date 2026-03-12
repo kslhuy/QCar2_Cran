@@ -8,7 +8,7 @@ Easy to switch between different controllers.
 import math
 import numpy as np
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 
 def _wrap_to_pi(angle: float) -> float:
@@ -162,7 +162,7 @@ class PIDVelocityController(LongitudinalControllerBase):
             if v_ref < 0.05 and self.cmd_v < 0.1:
                 self.cmd_v = 0.0
                 
-            self.cmd_v = np.clip(self.cmd_v, 0.0, 1.2) # Absolute max speed limit for Limo
+            self.cmd_v = np.clip(self.cmd_v, 0.0, 3.0) # Absolute max speed limit for Limo increased to 3.0 to allow Gear scaling
             
             self.last_error = e
             return self.cmd_v
@@ -251,6 +251,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         blend_heading_deg=20.0,
         min_effective_spacing=0.0,
         use_feedforward=False,
+        leader_acceleration_weight: float = 0.0,
         config=None,
         logger=None,
         **kwargs,
@@ -273,6 +274,11 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             projection_heading_source: Heading source for projection ('leader', 'follower', 'average')
             blend_heading_deg: Heading difference where blended mode becomes fully projected
             min_effective_spacing: Minimum spacing used by controller (can be <= 0 for signed spacing)
+            use_feedforward: Boolean enabling velocity feedforward term (legacy)
+            leader_acceleration_weight: Optional weight applied to acceleration
+                difference (leader minus follower) and treated as an extra
+                velocity-error term. Use this instead of feedforward; set to 0
+                for traditional CACC behaviour.
             config: Optional config object (takes precedence)
             logger: Logger instance
         """
@@ -303,6 +309,10 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.brake_smoothing = params.get('brake_smoothing', brake_smoothing)
             self.max_acc_rate = params.get('max_acc_rate', max_acc_rate)
             self.use_feedforward = params.get('use_feedforward', use_feedforward)
+            # read new weight; fallback to old gain key for backwards compat
+            self.leader_acceleration_weight = params.get(
+                'leader_acceleration_weight', params.get('leader_acceleration_gain', 0.0)
+            )
             self.vehicle_type = kwargs.get("vehicle_type", params.get('vehicle_type', 'QCar'))
         else:
             self.s0 = s0
@@ -320,6 +330,8 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.brake_smoothing = brake_smoothing
             self.max_acc_rate = max_acc_rate
             self.use_feedforward = use_feedforward
+            # take argument value when config not used
+            self.leader_acceleration_weight = leader_acceleration_weight
             self.vehicle_type = kwargs.get('vehicle_type', 'QCar')
 
         # Command velocity used for Limo rate limiting
@@ -473,7 +485,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             return 0.0
         return value - np.sign(value) * deadband
 
-    def _calculate_tracking_errors(self, follower_state: Dict[str, float], leader_state: Dict[str, float]) -> tuple[float, float]:
+    def _calculate_tracking_errors(self, follower_state: Dict[str, float], leader_state: Dict[str, float]) -> Tuple[float, float]:
         """Calculate spacing and velocity errors."""
         v = follower_state["velocity"]
         
@@ -483,6 +495,12 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         
         spacing_error = spacing - spacing_target
         velocity_error = self._compute_velocity_error(follower_state, leader_state, spacing_info)
+
+        # incorporate acceleration difference if weight configured
+        if self.leader_acceleration_weight:
+            leader_acc = leader_state.get("acceleration", 0.0)
+            follower_acc = follower_state.get("acceleration", 0.0)
+            velocity_error += self.leader_acceleration_weight * (leader_acc - follower_acc)
         
         spacing_error = self._apply_deadband(spacing_error, self.spacing_deadband)
         velocity_error = self._apply_deadband(velocity_error, self.velocity_deadband)
@@ -511,14 +529,23 @@ class CACCLongitudinalController(LongitudinalControllerBase):
 
     def _compute_limo_velocity_cmd(self, acc_desired: float, follower_state: Dict[str, float], leader_state: Dict[str, float], dt: float) -> float:
         """Compute the velocity command for the Limo robot."""
+        # Using our own velocity prevents relying on potentially attacked leader velocity data.
+        # We integrate the desired acceleration from our current actual velocity.
         v = follower_state["velocity"]
+        
+        # If cmd_v is vastly different from actual v (e.g., CACC just engaged or we were blocked),
+        # snap it to the current velocity so we don't get integral windup or cold starts.
+        if abs(self.cmd_v - v) > 0.5:
+            self.cmd_v = v
+             
+        # Integrate acceleration to get the new velocity command
         self.cmd_v += acc_desired * dt
         
-        throttle_raw = acc_desired * self.acc_to_throttle_gain
-        if throttle_raw < 0 and v < 0.05 and leader_state.get("velocity", 0.0) < 0.05:
-            self.cmd_v = 0.0  # Force stop if leader is stopped and we are slow
+        # Stop condition: if trying to slow down, and both vehicles are nearly stopped
+        if acc_desired < 0 and v < 0.05 and leader_state.get("velocity", 0.0) < 0.05:
+            self.cmd_v = 0.0  # Force stop
             
-        self.cmd_v = np.clip(self.cmd_v, 0.0, 1.2)  # Absolute limit
+        self.cmd_v = np.clip(self.cmd_v, 0.0, 3.0)  # Absolute limit increased to 3.0 to allow Gear scaling
         self.prev_throttle = self.cmd_v
         return float(self.cmd_v)
 
@@ -566,6 +593,8 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         # 3. Compute desired acceleration (CACC Control Law)
         acc_desired = self._compute_desired_acceleration(spacing_error, velocity_error, dt)
 
+        # note: acceleration weight is handled inside _calculate_tracking_errors
+
         # 4. Generate vehicle-specific hardware commands
         if getattr(self, "vehicle_type", "QCar") == "Limo":
             return self._compute_limo_velocity_cmd(acc_desired, follower_state, leader_state, dt)
@@ -584,6 +613,9 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             if hasattr(self, param):
                 if param == "K":
                     setattr(self, param, np.array(value))
+                elif param in ("leader_acceleration_gain", "leader_acceleration_weight"):
+                    # ensure float conversion; accept either key for compatibility
+                    self.leader_acceleration_weight = float(value)
                 else:
                     setattr(self, param, value)
 

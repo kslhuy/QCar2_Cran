@@ -31,32 +31,40 @@ longitudinal_controller_type: 'cacc'
 
 # CACC Controller Parameters
 cacc:
-  s0: 0.8                    # Minimum spacing (meters)
-  h: 0.3                     # Time headway (seconds)
-  K_spacing: 0.3             # Spacing error gain
-  K_velocity: 0.05           # Velocity error gain
+  s0: 0.25                    # Minimum spacing (meters)
+  h: 0.5                     # Time headway (seconds)
+  K_spacing: 0.3             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
+  K_velocity: 0.15           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
   spacing_mode: "path_or_projected"  # 'euclidean', 'projected', 'blended', 'path', 'path_or_projected'
-  projection_heading_source: "leader" # Heading source for longitudinal projection
+  projection_heading_source: "leader" # Heading source for longitudinal projection ,  Assume the road's direction is the exact direction the "projection_heading_source" here is the leader car is currently pointing."
   blend_heading_deg: 20.0    # Used only when spacing_mode: 'blended'
-  min_effective_spacing: 0.0 # Minimum gap fed to CACC after projection
-  acc_to_throttle_gain: 0.5  # Conversion gain from acceleration to throttle
+  min_effective_spacing: 0.0 # Minimum gap fed to CACC after projectio
+  acc_to_throttle_gain: 0.35  # Conversion gain from acceleration to throttle
   max_throttle: 0.3          # Maximum throttle output
+  # Optional weight applied to the *difference* between leader and
+  # follower acceleration. This is treated like an additional tracking
+  # error term rather than a feedforward command, making the controller
+  # respond when the leader changes acceleration faster/slower than the
+  # follower. Set to 0 (default) to ignore acceleration information.
+  leader_acceleration_weight: 1.0
+  # (alias for backwards compatibility)
+  leader_acceleration_gain: 0.0
   spacing_deadband: 0.2      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
   velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
-  throttle_smoothing: 0.7    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
-  brake_smoothing: 0.85      # Aggressive smoothing factor applied ONLY when braking/decelerating [0-1]. Higher values prevent jerky sudden stops. Default 0.85.
+  throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
+  brake_smoothing: 0.5      # Aggressive smoothing factor applied ONLY when braking/decelerating [0-1]. Higher values prevent jerky sudden stops. Default 0.85.
   max_acc_rate: 2.0          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
-  use_feedforward: false     # Add velocity feedforward for faster response
+  use_feedforward: true     # Add velocity feedforward for faster response
 
 # PID Velocity Controller Parameters
 pid:
-  kp: 0.45                   # Proportional gain (increased for cornering)
-  ki: 0.15                   # Integral gain (increased to overcome turning stiction)
-  kd: 0.0                    # Derivative gain
-  max_throttle: 0.30         # Maximum throttle output
-  min_throttle: 0.04         # Minimum throttle when coasting
-  ei_max: 1.0                # Integral anti-windup limit
-  v_ref: 0.6                 # Default reference velocity (m/s)
+  kp: 0.1                   # Proportional gain (lower = softer accel response)
+  ki: 0.03                  # Integral gain (lower = less surge after target jumps)
+  kd: 0.0                    # Derivative gain (set to 0.0 to prevent throttle spikes)
+  max_throttle: 0.24         # Maximum throttle output (limits aggressive launches)
+  min_throttle: 0.0         # Minimum throttle (allows active braking in simulation)
+  ei_max: 0.5                # Integral anti-windup limit
+  v_ref: 0.6                # Default reference velocity (m/s)
 
 
 
@@ -126,6 +134,30 @@ pp_map:
   obstacle_clearance: 0.05        # [m] extra safety margin in addition to obstacle radius
   car_overtake_mode: true         # false = trailing (stop behind car), true = overtake (replan around car)
 
+# ------------------------------------------------------------------------
+# MPC Controller Parameters
+# ------------------------------------------------------------------------
+# Defaults used when MPC is selected as a coupled lateral controller.
+mpc:
+  horizon: 10                       # prediction horizon (steps)
+  dt_mpc: 0.05                      # MPC timestep (s)
+  Q_pos: 500.0                      # position tracking weight
+  Q_heading: 300.0                  # heading tracking weight
+  Q_vel: 10.0                       # velocity tracking weight
+  R_delta: 1.0                      # steering effort penalty
+  R_acc: 1.0                        # acceleration effort penalty
+  R_delta_rate: 3.0                 # steering rate penalty
+  R_acc_rate: 3.0                   # acceleration rate penalty
+  Qf_pos: 500.0                     # terminal state position weight
+  Qf_heading: 500.0                 # terminal state heading weight
+  Qf_vel: 10.0                      # terminal state velocity weight
+  max_steering_rate: 3.0            # bound on steering rate (rad/s)
+  path_lookahead_scale: 0.4         # path lookahead scaling factor
+  desired_spacing: 0.5              # longitudinal following spacing (m)
+  time_headway: 0.5                 # longitudinal headway (s)
+  solver_print_level: 0             # IPOPT verbosity
+  solver_max_iter: 100              # IPOPT max iterations
+
 
 # Stanley Controller Parameters
 stanley:
@@ -151,6 +183,8 @@ fusion_lateral:
   deviation_threshold: 0.3   # Max leader deviation before override (radians)
   smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother)
   max_steering: 0.5         # Maximum steering angle (radians)
+
+
 
 # ============================================================================
 # VEHICLE PARAMETERS (for all controllers)
@@ -214,3 +248,5 @@ vehicle:
 #   k1: 1.2
 #   k2: 1.0
 #   ri: 1.5
+
+

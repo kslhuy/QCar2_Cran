@@ -223,6 +223,7 @@ _KNOWN_LATERAL = {
     "hybrid_lateral",
     "fusion_lateral",
     "path",
+    "mpc",
 }
 
 

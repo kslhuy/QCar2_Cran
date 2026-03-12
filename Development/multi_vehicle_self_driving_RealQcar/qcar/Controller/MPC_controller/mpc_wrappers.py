@@ -60,6 +60,19 @@ class MPCLongitudinalWrapper(LongitudinalControllerBase):
         self.mpc.reset()
         self.last_steering = 0.0
 
+    def update_params(self, params: Dict[str, Any]):
+        """Update underlying MPC parameters and rebuild solver if needed."""
+        # apply any attributes directly to the MPC instance
+        for k, v in params.items():
+            if hasattr(self.mpc, k):
+                setattr(self.mpc, k, v)
+        # some parameters affect solver structure and require rebuild
+        if hasattr(self.mpc, '_build_solver'):
+            try:
+                self.mpc._build_solver()
+            except Exception:
+                pass
+
 
 class MPCLateralWrapper(LateralControllerBase):
     """
@@ -108,6 +121,17 @@ class MPCLateralWrapper(LateralControllerBase):
         """Reset controller state."""
         self.mpc.reset()
         self.last_throttle = 0.0
+
+    def update_params(self, params: Dict[str, Any]):
+        """Update underlying MPC parameters and rebuild solver if needed."""
+        for k, v in params.items():
+            if hasattr(self.mpc, k):
+                setattr(self.mpc, k, v)
+        if hasattr(self.mpc, '_build_solver'):
+            try:
+                self.mpc._build_solver()
+            except Exception:
+                pass
 
 
 class MPCCombinedController:
@@ -187,6 +211,17 @@ class MPCCombinedController:
         self.mpc.reset()
         self.last_throttle = 0.0
         self.last_steering = 0.0
+
+    def update_params(self, params: Dict[str, Any]):
+        """Update MPC parameters and rebuild if necessary."""
+        for k, v in params.items():
+            if hasattr(self.mpc, k):
+                setattr(self.mpc, k, v)
+        if hasattr(self.mpc, '_build_solver'):
+            try:
+                self.mpc._build_solver()
+            except Exception:
+                pass
 
 
 # Add MPC to the factory registries in longitudinal and lateral controllers

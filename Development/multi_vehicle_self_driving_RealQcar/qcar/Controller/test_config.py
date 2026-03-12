@@ -43,6 +43,14 @@ def test_config_loading():
         print(f"✓ Controller types loaded:")
         print(f"  Longitudinal: {long_type}")
         print(f"  Lateral: {lat_type}")
+        # verify availability lists include entries
+        avail_lon = config.get_available_longitudinal_types()
+        avail_lat = config.get_available_lateral_types()
+        print(f"  Available longitudinal types: {avail_lon}")
+        print(f"  Available lateral types: {avail_lat}")
+        if 'mpc' in config.config and 'mpc' not in avail_lat:
+            print("✗ MPC defined in config but not advertised as available")
+            return False
     except Exception as e:
         print(f"✗ Failed to get controller types: {e}")
         return False
@@ -53,6 +61,8 @@ def test_config_loading():
         print(f"✓ Longitudinal parameters loaded:")
         for key, value in long_params.items():
             print(f"  {key}: {value}")
+        if 'leader_acceleration_weight' in long_params or 'leader_acceleration_gain' in long_params:
+            print("  (leader_acceleration_weight setting available for CACC)")
     except Exception as e:
         print(f"✗ Failed to get longitudinal params: {e}")
         return False

@@ -129,6 +129,14 @@ class TrustWeightLogger:
                     f"flag_global_{i}",
                 ]
             )
+            for k in range(max_vehicles):
+                columns.extend(
+                    [
+                        f"g_dist_v{k}_{i}",
+                        f"g_idx_v{k}_{i}",
+                        f"g_val_v{k}_{i}",
+                    ]
+                )
         return columns
 
     def start(self, vehicle_id: int):
@@ -221,6 +229,10 @@ class TrustWeightLogger:
             row[f"mi_dist_{i}"] = nan_val
             row[f"mi_elem_idx_{i}"] = nan_val
             row[f"mi_elem_val_{i}"] = nan_val
+            for k in range(self.max_vehicles):
+                row[f"g_dist_v{k}_{i}"] = nan_val
+                row[f"g_idx_v{k}_{i}"] = nan_val
+                row[f"g_val_v{k}_{i}"] = nan_val
             row[f"v_score_{i}"] = nan_val
             row[f"d_score_{i}"] = nan_val
             row[f"a_score_{i}"] = nan_val
@@ -301,6 +313,15 @@ class TrustWeightLogger:
                 row[f"mi_elem_val_{i}"] = self._to_float_or_nan(
                     ndata.get("mi_elem_val", nan_val)
                 )
+
+                v2v = ndata.get("v2v_details", {})
+                for k in range(self.max_vehicles):
+                    if k in v2v:
+                        kdata = v2v[k]
+                        row[f"g_dist_v{k}_{i}"] = self._to_float_or_nan(kdata.get("dist", nan_val))
+                        row[f"g_idx_v{k}_{i}"] = self._to_float_or_nan(kdata.get("idx", nan_val))
+                        row[f"g_val_v{k}_{i}"] = self._to_float_or_nan(kdata.get("val", nan_val))
+
                 if not math.isnan(row[f"gamma_host_{i}"]):
                     gamma_host_values.append(row[f"gamma_host_{i}"])
                 if not math.isnan(row[f"gamma_local_peer_{i}"]):

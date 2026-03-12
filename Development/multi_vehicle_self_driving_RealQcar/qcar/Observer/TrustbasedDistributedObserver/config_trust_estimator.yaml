@@ -29,6 +29,25 @@ trust:
   min_velocity_tolerance: 0.08    # m/s - hard lower bound for adaptive tolerance
   turn_velocity_tolerance_gain: 0.35   # extra tolerance in turns (scales with yaw-rate)
   accel_velocity_tolerance_gain: 0.15  # extra tolerance during accel/decel transients
+  # Adaptive acceleration consistency (distance + relative velocity + turn-aware)
+  acceleration_base_tolerance: 1.0
+  acceleration_speed_tolerance_gain: 0.15
+  acceleration_host_tolerance_gain: 0.6
+  acceleration_turn_tolerance_gain: 0.8
+  acceleration_distance_base_tolerance: 0.35
+  acceleration_distance_turn_gain: 0.4
+  acceleration_rel_velocity_tolerance: 0.2
+  # Adaptive heading/path similarity
+  heading_min_movement_m: 0.05
+  heading_base_tolerance_rad: 0.35
+  heading_turn_tolerance_gain: 1.0
+  heading_yaw_rate_tolerance: 0.8
+  # Turn-aware theta robustness in global trust Mahalanobis
+  theta_similarity_distance_scale: 1.5
+  theta_similarity_velocity_scale: 1.0
+  theta_similarity_gain: 2.5
+  theta_turn_gain: 2.0
+  theta_contribution_cap: 3.0
   weight_distance: 2.0            # Distance consistency weight  
   weight_acceleration: 0.3        # Acceleration plausibility weight
   weight_heading: 1.0             # Heading consistency weight
@@ -69,6 +88,17 @@ trust:
   temporal_pos_tolerance_m: 2.0
   temporal_vel_tolerance: 1.0
   trust_decay_lambda: 0.2
+
+  # Distance to Trust conversion method
+  # Options: 'exponential', 'piecewise_linear', 'gaussian', 'sigmoid', 'chi_squared'
+  distance_to_gamma_method: 'exponential'
+  gamma_piecewise_min: 1.5
+  gamma_piecewise_max: 5.0
+  gamma_gaussian_sigma: 2.0
+  gamma_sigmoid_k: 2.0
+  gamma_sigmoid_thresh: 3.0
+  gamma_chi2_dof_local: 2
+  gamma_chi2_dof_global: 5
 
   # Distributed trust covariance parameters (always paper-style)
   distributed_trust_fallback: 0.2
@@ -143,6 +173,24 @@ vehicle:
   max_velocity: 2.0               # Maximum velocity m/s
   max_acceleration: 5.0           # Maximum acceleration m/s^2
   max_steering: 0.5               # Maximum steering angle rad
+
+  # First-order lag motor model (AccelDragMotorModel)
+  # Replaces the naive "v += throttle * dt" in _predict_dynamics().
+  # Parameters from Calibration/results/06_throttle_acceleration_model_calibration/
+  motor_model:
+    enabled: false                # Set true once calibrated params are validated
+    # QLabs (simulation) calibrated values:
+    tau: 0.318                    # Motor time constant [s]
+    k_th: 4.5795                  # Forward throttle gain [m/s^2 per throttle]
+    k_br: 4.5772                  # Brake gain [m/s^2 per throttle]
+    c_v: 5.0                      # Velocity-proportional drag [1/s]
+    c_fric: 2.0                   # Coulomb friction [m/s^2]
+    # For real QCar hardware, use these instead (from motor_model_id.yaml):
+    # tau: 1.82
+    # k_th: 6.57
+    # k_br: 6.57
+    # c_v: 5.0
+    # c_fric: 2.0
 
 # =====================================================================
 # Logging and Debugging

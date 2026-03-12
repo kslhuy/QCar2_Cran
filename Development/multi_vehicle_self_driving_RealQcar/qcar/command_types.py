@@ -58,6 +58,9 @@ class CommandType(Enum):
     SHUTDOWN = "shutdown"
     RESET = "reset"
     CALIBRATE = "calibrate"
+    ENABLE_CALIBRATION_MODE = "enable_calibration_mode"
+    ENABLE_ONLINE_CALIBRATION = "enable_online_calibration"
+    DISABLE_ONLINE_CALIBRATION = "disable_online_calibration"
 
     # Runtime switching commands
     SET_LOCAL_OBSERVER = "set_local_observer"

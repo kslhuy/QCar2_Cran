@@ -16,17 +16,8 @@ from .base import (
     FormRow,
 )
 
-from .car_panel import (
-    CarState,
-    CarPanelCallbacks,
-    CarPanelWidget,
-    TelemetryDisplay,
-    ControlButtons,
-    ManualControlPanel,
-    VelocityControl,
-    PathControl,
-    PlatoonControl,
-)
+from .car_panel import CarPanelWidget
+from .car_components import CarState, CarPanelCallbacks
 
 from .fleet_controls import (
     FleetControlCallbacks,
@@ -63,12 +54,6 @@ __all__ = [
     'CarState',
     'CarPanelCallbacks',
     'CarPanelWidget',
-    'TelemetryDisplay',
-    'ControlButtons',
-    'ManualControlPanel',
-    'VelocityControl',
-    'PathControl',
-    'PlatoonControl',
     
     # Fleet controls
     'FleetControlCallbacks',

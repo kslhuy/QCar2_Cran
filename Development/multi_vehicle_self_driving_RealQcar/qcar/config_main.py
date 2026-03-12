@@ -113,6 +113,7 @@ class VehicleConfig:
 
     vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
     probing: bool = False  # Enable YOLO perception system
+    limo_gear_multiplier: float = 3.5  # Gear multiplier for Limo velocity limits
 
     def __post_init__(self):
         """Validate vehicle type"""
@@ -250,6 +251,7 @@ class VehicleMainConfig:
             config_dict["vehicle"] = {
                 "vehicle_type": vehicle_entry.get("vehicle_type", "Qcar"),
                 "probing": vehicle_entry.get("probing", False),
+                "limo_gear_multiplier": vehicle_entry.get("limo_gear_multiplier", 6.0),
             }
             config_dict["path"] = {
                 "path_number": vehicle_entry.get("path_number", 0),

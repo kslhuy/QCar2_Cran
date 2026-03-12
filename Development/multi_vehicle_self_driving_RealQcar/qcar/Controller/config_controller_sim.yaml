@@ -41,6 +41,14 @@ cacc:
   min_effective_spacing: 0.0 # Minimum gap fed to CACC after projectio
   acc_to_throttle_gain: 0.35  # Conversion gain from acceleration to throttle
   max_throttle: 0.3          # Maximum throttle output
+  # Optional weight applied to the *difference* between leader and
+  # follower acceleration. This is treated like an additional tracking
+  # error term rather than a feedforward command, making the controller
+  # respond when the leader changes acceleration faster/slower than the
+  # follower. Set to 0 (default) to ignore acceleration information.
+  leader_acceleration_weight: 1.0
+  # (alias for backwards compatibility)
+  leader_acceleration_gain: 0.0
   spacing_deadband: 0.2      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
   velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
   throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
@@ -99,8 +107,8 @@ pp_map:
   min_speed: 0.4                  # [m/s] lower speed floor in profile generation
   kappa_speed_gain: 1.0           # Curvature->speed reduction gain (higher = slower in turns)
   max_speed: 0.65                 # [m/s] upper bound of profile speed
-  hard_turn_kappa: 0.60           # [1/m] curvature threshold for "hard-turn" speed cap
-  hard_turn_speed: 0.36           # [m/s] cap applied when |curvature| >= hard_turn_kappa
+  hard_turn_kappa: 0.60           # [1/m] curvature threshold for "hard-turn" speed cap (maybe in u turn shape , like )
+  hard_turn_speed: 0.36           # [m/s] cap applied when |curvature| >= hard_turn_kappa (car will run at that speed , if reach hard_turn_kappa  )
   t_clip_min: 0.5                 # [m] minimum L1 lookahead distance
   t_clip_max: 1.0                 # [m] maximum L1 lookahead distance
   m_l1: 0.50                      # L1 slope: lookahead contribution per m/s (L1 = q_l1 + m_l1*v)
@@ -109,7 +117,8 @@ pp_map:
   lat_err_coeff: 0.15             # [0..1] speed downscale sensitivity to lateral error
   acc_scaler_for_steer: 1.0       # Steering scale when accelerating (acc_now >= +1 m/s^2)
   dec_scaler_for_steer: 1.0       # Steering scale when decelerating (acc_now <= -1 m/s^2)
-  start_scale_speed: 0.25         # [m/s] begin steering downscale above this speed
+  start_scale_speed: 0.25         # [m/s] begin steering downscale above this speed  , the system artificially limits how sharply the wheels can turn. 
+                                  # If the car is going 0.85 m/s or faster, the steering angle output is cut down by up to 45% (0.45).
   end_scale_speed: 0.85           # [m/s] full steering downscale reached at this speed
   downscale_factor: 0.45          # Max steering reduction at/above end_scale_speed
   speed_lookahead_for_steer: 0.18 # [s] forward prediction horizon for steer scaling speed
@@ -128,6 +137,34 @@ pp_map:
   obstacle_influence: 0.80        # [m] distance around obstacle where path is pushed away
   obstacle_clearance: 0.05        # [m] extra safety margin in addition to obstacle radius
   car_overtake_mode: true         # false = trailing (stop behind car), true = overtake (replan around car)
+
+# ------------------------------------------------------------------------
+# MPC Controller Parameters
+# ------------------------------------------------------------------------
+# This section defines default parameters for the MPC controller. When
+# lateral_controller_type or path_lateral_controller_type is set to 'mpc'
+# the vehicle will use a combined throttle/steering MPC. Tune weights here
+# to adjust behavior without touching code.
+# Example values mirror the defaults used in the Python controller class.
+mpc:
+  horizon: 10                       # prediction horizon (steps)
+  dt_mpc: 0.05                      # MPC timestep (s)
+  Q_pos: 500.0                      # position tracking weight
+  Q_heading: 300.0                  # heading tracking weight
+  Q_vel: 10.0                       # velocity tracking weight
+  R_delta: 1.0                      # steering effort penalty
+  R_acc: 1.0                        # acceleration effort penalty
+  R_delta_rate: 3.0                 # steering rate penalty
+  R_acc_rate: 3.0                   # acceleration rate penalty
+  Qf_pos: 500.0                     # terminal state position weight
+  Qf_heading: 500.0                 # terminal state heading weight
+  Qf_vel: 10.0                      # terminal state velocity weight
+  max_steering_rate: 3.0            # bound on steering rate (rad/s)
+  path_lookahead_scale: 0.4         # path lookahead scaling factor
+  desired_spacing: 0.5              # longitudinal following spacing (m)
+  time_headway: 0.5                 # longitudinal headway (s)
+  solver_print_level: 0             # IPOPT verbosity
+  solver_max_iter: 100              # IPOPT max iterations
 
 # Stanley Controller Parameters
 stanley:
@@ -217,3 +254,5 @@ vehicle:
 #   k1: 1.2
 #   k2: 1.0
 #   ri: 1.5
+
+

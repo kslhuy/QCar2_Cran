@@ -111,6 +111,19 @@ class StoppedState(StateBase):
             # Stay in STOPPED state - no transition needed
             return None
 
+        # Handle active calibration mode - transition to CALIBRATING
+        elif command_type == CommandType.ENABLE_CALIBRATION_MODE:
+            cal_type = data.get("calibration_type", "throttle_velocity")
+            cal_params = data.get("params", {})
+            self.logger.logger.info(
+                f"[CAL] Calibration mode requested from STOPPED: {cal_type}"
+            )
+            self.vehicle_logic._calibration_request = {
+                "calibration_type": cal_type,
+                "params": cal_params,
+            }
+            return (VehicleState.CALIBRATING, StateTransitionReason.START_COMMAND)
+
         # Handle initial position updates - set the vehicle's starting position (with optional GPS recalibration)
         elif command_type == CommandType.SET_INITIAL_POSITION:
             import numpy as np

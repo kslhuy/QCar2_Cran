@@ -95,6 +95,9 @@ class ControllerConfig:
             types.append("pid")
         if "sa_acc" in self.config:
             types.append("sa_acc")
+        # coupled MPC may also be listed even though typically selected via lateral
+        if "mpc" in self.config:
+            types.append("mpc")
         return types
 
     def get_available_lateral_types(self) -> list:
@@ -111,6 +114,9 @@ class ControllerConfig:
         if "fusion_lateral" in self.config:
             types.append("fusion")
             types.append("fusion_lateral")
+        # MPC behaves like pp_map: coupled controller handled via lateral selection
+        if "mpc" in self.config:
+            types.append("mpc")
         return types
 
     def get_longitudinal_params(
@@ -135,6 +141,8 @@ class ControllerConfig:
 
         elif controller_type == "sa_acc":
             return self._get_sa_acc_params()
+        elif controller_type == "mpc":
+            return self._get_mpc_params()
         else:
             raise ValueError(f"Unknown longitudinal controller type: {controller_type}")
 
@@ -163,6 +171,8 @@ class ControllerConfig:
             return self._get_lookahead_params()
         elif controller_type in ("fusion", "fusion_lateral"):
             return self._get_fusion_lateral_params()
+        elif controller_type == "mpc":
+            return self._get_mpc_params()
         else:
             raise ValueError(f"Unknown lateral controller type: {controller_type}")
 
@@ -195,6 +205,11 @@ class ControllerConfig:
             "throttle_smoothing": cacc_config.get("throttle_smoothing", 0.7),
             "brake_smoothing": cacc_config.get("brake_smoothing", 0.5),
             "max_acc_rate": cacc_config.get("max_acc_rate", 2.0),
+            # New optional leader acceleration feedforward gain. Set to 0 to disable.
+            # legacy key kept for compatibility, semantics now represent an error weight
+            "leader_acceleration_weight": cacc_config.get("leader_acceleration_gain", 0.0),
+            "leader_acceleration_gain": cacc_config.get("leader_acceleration_gain", 0.0),  # alias for backward compat
+
         }
 
     def _get_pid_params(self) -> Dict[str, Any]:
@@ -358,6 +373,19 @@ class ControllerConfig:
             "l_r": vehicle_config.get("l_r", 0.141),
             "l_f": vehicle_config.get("l_f", 0.115),
         }
+
+    # ------------------------------------------------------------------
+    # MPC parameter support
+    # ------------------------------------------------------------------
+    def get_mpc_params(self) -> Dict[str, Any]:
+        """Retrieve MPC configuration dictionary from YAML.
+
+        Returns an empty dict if section is missing. This is used both by the
+        MPC wrappers and by the controllers themselves when they accept a
+        config object.
+        """
+        return self.config.get("mpc", {})
+
 
     def get_enable_steering_control(self) -> bool:
         """Get enable_steering_control flag"""

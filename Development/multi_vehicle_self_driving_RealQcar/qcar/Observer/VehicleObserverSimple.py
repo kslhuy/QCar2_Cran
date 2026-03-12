@@ -1404,6 +1404,33 @@ class VehicleObserver:
                 return None
             return sample
 
+    def get_calibration_sample(self) -> Optional[np.ndarray]:
+        """
+        Build one calibration sample [v, throttle, steering, yaw_rate, ax, ay, az].
+
+        Used by CalibratingState to record data during active calibration
+        sequences (throttle-velocity, steering-curvature, throttle-acceleration).
+        """
+        with self.lock:
+            v = (
+                float(self.local_state[3])
+                if len(self.local_state) > 3
+                else float(self.sensor_data.get("motor_tach", 0.0))
+            )
+            throttle = float(self.control_input.get("throttle", 0.0))
+            steering = float(self.control_input.get("steering", 0.0))
+            yaw_rate = float(self.sensor_data.get("gyro_z", 0.0))
+            accel = self.sensor_data.get("accelerometer", np.zeros(3))
+
+            sample = np.array(
+                [v, throttle, steering, yaw_rate,
+                 float(accel[0]), float(accel[1]), float(accel[2])],
+                dtype=np.float32,
+            )
+            if not np.all(np.isfinite(sample)):
+                return None
+            return sample
+
     def get_local_state_for_broadcast(self) -> dict:
         """
         Get local state information for V2V broadcasting.

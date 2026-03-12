@@ -118,6 +118,20 @@ class WaitingForStartState(StateBase):
             # Stay in WAITING_FOR_START state - no transition needed
             return None
 
+        # Handle active calibration mode - DIRECT TRANSITION to CALIBRATING!
+        if command_type == CommandType.ENABLE_CALIBRATION_MODE:
+            cal_type = data.get("calibration_type", "throttle_velocity")
+            cal_params = data.get("params", {})
+            self.logger.logger.info(
+                f"[CAL] Calibration mode requested: {cal_type}"
+            )
+            # Store calibration request for CalibratingState.enter() to read
+            self.vehicle_logic._calibration_request = {
+                "calibration_type": cal_type,
+                "params": cal_params,
+            }
+            return (VehicleState.CALIBRATING, StateTransitionReason.START_COMMAND)
+
         # Handle start command - DIRECT TRANSITION (Normal start only)!
         if command_type == CommandType.START:
             self.logger.logger.info(

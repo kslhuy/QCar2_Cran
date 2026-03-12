@@ -64,6 +64,11 @@ s0 = 1.5              # Minimum spacing (m)
 h = 0.5               # Time headway (s)
 K = [[0.2, 0.05]]     # [spacing_gain, velocity_gain]
 max_throttle = 0.3
+# Optional weight on leader-vs-follower acceleration difference
+# (added to velocity error). A nonzero value biases the controller to
+# match the leader's changing acceleration rather than blindly following
+# spacing/velocity alone.
+leader_acceleration_weight = 0.0
 ```
 
 **Pure Pursuit (Lateral):**

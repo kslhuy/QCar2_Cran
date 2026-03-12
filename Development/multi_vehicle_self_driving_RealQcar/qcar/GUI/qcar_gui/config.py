@@ -37,10 +37,10 @@ class GUIConfig:
     """GUI configuration settings."""
 
     window_title: str = "🚗 QCar Fleet Controller"
-    window_width: int = 1400
+    window_width: int = 1300
     window_height: int = 900
     update_rate_hz: float = 20.0
-    max_cars: int = 10
+    max_cars: int = 8
     default_num_cars: int = 5
 
 
@@ -93,7 +93,7 @@ class VehicleDeploymentConfig:
     scripts_path: str = "../../qcar"
 
     # Default vehicle settings
-    default_ip_prefix: str = "192.168.2."
+    default_ip_prefix: str = "192.168.137."
     default_vehicle_type: str = "Qcar"
     default_velocity: float = 0.6
 
@@ -140,17 +140,17 @@ class AppConfig:
 
 # Telemetry field definitions for display
 TELEMETRY_FIELDS = [
-    ("position", "Position (m):", "(0.00, 0.00)", 14),
-    ("velocity", "Velocity (m/s):", "0.00", 8),
-    ("heading", "Heading (rad):", "0.00", 8),
-    ("state", "Vehicle State:", "Unknown", 15),
-    ("path_long_ctrl", "🛤️ Path Long:", "unknown", 10),
-    ("path_lat_ctrl", "🛤️ Path Lat:", "unknown", 12),
-    ("leader_long_ctrl", "🚗 Lead Long:", "unknown", 10),
-    ("leader_lat_ctrl", "🚗 Lead Lat:", "unknown", 12),
-    ("throttle", "Throttle:", "0.00", 8),
-    ("steering", "Steering:", "0.00", 8),
-    ("perception", "👁️ Perception:", "OFF", 6),
+    ("position", "Pos:", "(0.0, 0.0)", 9),
+    ("velocity", "Vel:", "0.00", 4),
+    ("heading", "Heading:", "0.00", 4),
+    ("state", "State:", "Unknown", 10),
+    ("path_long_ctrl", "Path Long Ctrl:", "unk", 6),
+    ("path_lat_ctrl", "Path Lat Ctrl:", "unk", 8),
+    ("leader_long_ctrl", "Leader Long Ctrl:", "unk", 6),
+    ("leader_lat_ctrl", "Leader Lat Ctrl:", "unk", 8),
+    ("throttle", "Throttle:", "0.00", 4),
+    ("steering", "Steering:", "0.00", 4),
+    ("perception", "Perception:", "OFF", 3),
 ]
 
 

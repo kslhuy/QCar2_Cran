@@ -62,13 +62,13 @@ class FontScheme:
     family_mono: str = 'Consolas'
     
     # Size definitions
-    size_title: int = 24
-    size_subtitle: int = 14
-    size_heading: int = 12
-    size_body: int = 11
-    size_small: int = 10
-    size_tiny: int = 9
-    size_log: int = 9
+    size_title: int = 16
+    size_subtitle: int = 12
+    size_heading: int = 10
+    size_body: int = 9
+    size_small: int = 8
+    size_tiny: int = 8
+    size_log: int = 8
     
     def title(self) -> tuple:
         return (self.family, self.size_title, 'bold')

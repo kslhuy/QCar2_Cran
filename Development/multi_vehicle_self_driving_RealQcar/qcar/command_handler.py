@@ -224,6 +224,9 @@ class CommandHandler:
             # Taxi commands
             CommandType.SET_TAXI_TRIP,
             CommandType.DISABLE_TAXI_MODE,
+            # Online calibration commands
+            CommandType.ENABLE_ONLINE_CALIBRATION,
+            CommandType.DISABLE_ONLINE_CALIBRATION,
         ]
 
         if command_type in NON_TRANSITION_COMMANDS:

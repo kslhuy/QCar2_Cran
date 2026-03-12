@@ -25,6 +25,9 @@ class VehicleState(Enum):
     # Manual control
     MANUAL_MODE = auto()  # Direct manual control from Ground Station
 
+    # Calibration
+    CALIBRATING = auto()  # Active calibration sequences (throttle/steering/accel)
+
     # Stopped state
     STOPPED = auto()  # Vehicle stopped (manual stop, safety stop, etc.)
 
@@ -61,6 +64,9 @@ class StateTransitionReason(Enum):
     # Safety events
     EMERGENCY_STOP = auto()
     COLLISION_RISK = auto()
+
+    # Calibration events
+    CALIBRATION_COMPLETE = auto()
 
     # System events
     SHUTDOWN = auto()
