@@ -509,6 +509,11 @@ class StateBase:
                     params = {}
                 self._handle_online_calibration_params(params)
                 return None
+            if category == "robust_kalmannet_dataset":
+                if not isinstance(params, dict):
+                    params = {}
+                self._handle_robust_kalmannet_dataset_params(params)
+                return None
             if category and params:
                 if self.logger:
                     self.logger.logger.info(
@@ -861,6 +866,88 @@ class StateBase:
         self.logger.log_warning(
             f"[CMD] Unknown online_calibration action '{action}'. "
             "Valid: analyse, status, clear"
+        )
+        return False
+
+    def _handle_robust_kalmannet_dataset_params(
+        self, params: Dict[str, Any]
+    ) -> bool:
+        """
+        Handle SET_PARAMS category='robust_kalmannet_dataset'.
+
+        actions:
+            - start: begin local dataset collection
+            - stop: stop and save dataset
+            - discard: stop without saving
+            - status: publish current recorder status
+        """
+        action = str(params.get("action", "status")).strip().lower()
+        cfg = params.get("config", {})
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        vehicle_logic = getattr(self, "vehicle_logic", None)
+        if vehicle_logic is None:
+            self.logger.log_warning("[CMD] vehicle_logic unavailable for RKNet dataset")
+            return False
+
+        if action in ("start", "collect_on"):
+            if not hasattr(vehicle_logic, "enable_robust_kalmannet_dataset"):
+                self.logger.log_warning(
+                    "[CMD] vehicle_logic does not expose enable_robust_kalmannet_dataset"
+                )
+                return False
+            success = vehicle_logic.enable_robust_kalmannet_dataset(cfg)
+            if success:
+                self.logger.logger.info("[CMD] Robust KalmanNet dataset collection started")
+            else:
+                self.logger.log_warning("[CMD] Failed to start Robust KalmanNet dataset collection")
+            return success
+
+        if action in ("stop", "collect_off", "save"):
+            if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
+                return False
+            saved_path = vehicle_logic.disable_robust_kalmannet_dataset(save=True)
+            if saved_path:
+                self.logger.logger.info(
+                    f"[CMD] Robust KalmanNet dataset saved to {saved_path}"
+                )
+                return True
+            self.logger.log_warning("[CMD] Robust KalmanNet dataset stop requested but nothing was saved")
+            return False
+
+        if action in ("discard", "reset"):
+            if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
+                return False
+            vehicle_logic.disable_robust_kalmannet_dataset(save=False)
+            self.logger.logger.info(
+                "[CMD] Robust KalmanNet dataset collection stopped without saving"
+            )
+            return True
+
+        if action in ("status", "get_status"):
+            status = (
+                vehicle_logic._get_robust_kalmannet_dataset_status()
+                if hasattr(vehicle_logic, "_get_robust_kalmannet_dataset_status")
+                else {"enabled": False}
+            )
+            if (
+                hasattr(vehicle_logic, "client_Ground_Station")
+                and vehicle_logic.client_Ground_Station
+            ):
+                vehicle_logic.client_Ground_Station.queue_telemetry(
+                    {
+                        "type": "robust_kalmannet_dataset_status",
+                        "timestamp": time.time(),
+                        "car_id": getattr(vehicle_logic, "vehicle_id", 0),
+                        "robust_kalmannet_dataset_status": status,
+                    }
+                )
+            return True
+
+        self.logger.log_warning(
+            f"[CMD] Unknown robust_kalmannet_dataset action '{action}'. "
+            "Valid: start, stop, discard, status"
         )
         return False
 
@@ -1359,7 +1446,9 @@ class StateBase:
         Switch the local state estimator at runtime.
 
         Args:
-            observer_type: Type of local estimator ('ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger')
+            observer_type: Type of local estimator
+                ('ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger',
+                'robust_kalman_net')
 
         Returns:
             bool: True if successful
@@ -1367,7 +1456,13 @@ class StateBase:
         try:
             from Observer.local_state_estimators import LocalEstimatorFactory
 
-            valid_types = ["ekf", "luenberger", "dead_reckoning", "neural_luenberger"]
+            valid_types = [
+                "ekf",
+                "luenberger",
+                "dead_reckoning",
+                "neural_luenberger",
+                "robust_kalman_net",
+            ]
             if observer_type not in valid_types:
                 self.logger.log_error(
                     f"Invalid local observer type: {observer_type}. Valid: {valid_types}"

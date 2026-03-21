@@ -95,6 +95,7 @@ class VehicleDeploymentConfig:
     # Default vehicle settings
     default_ip_prefix: str = "192.168.137."
     default_vehicle_type: str = "Qcar"
+    default_programme_type: str = "Py"
     default_velocity: float = 0.6
 
     # Upload settings

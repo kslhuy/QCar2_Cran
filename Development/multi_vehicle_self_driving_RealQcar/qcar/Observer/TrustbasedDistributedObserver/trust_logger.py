@@ -88,6 +88,8 @@ class TrustWeightLogger:
             "platoon_conf_min",
             "platoon_conf_max",
             "prediction_mode_count",
+            "rel_meas_used_global_count",
+            "yolo_rel_meas_used_global_count",
             "is_turning",
             "host_steering",
         ]
@@ -103,6 +105,18 @@ class TrustWeightLogger:
                     f"gamma_host_{i}",
                     f"gamma_local_peer_{i}",
                     f"gamma_self_{i}",
+                    f"rel_meas_used_global_{i}",
+                    f"yolo_rel_meas_used_global_{i}",
+                    f"rel_dist_meas_used_{i}",
+                    f"rel_vel_meas_used_{i}",
+                    f"y_local_distance_{i}",
+                    f"y_true_distance_{i}",
+                    f"yolo_true_rel_dist_error_{i}",
+                    f"y_local_rel_velocity_{i}",
+                    f"y_true_rel_velocity_{i}",
+                    f"yolo_true_rel_vel_error_{i}",
+                    f"yolo_rel_distance_{i}",
+                    f"yolo_rel_velocity_{i}",
                     f"d_host_mean_{i}",
                     f"d_local_mean_{i}",
                     f"d_self_{i}",
@@ -196,6 +210,8 @@ class TrustWeightLogger:
             "platoon_conf_min": nan_val,
             "platoon_conf_max": nan_val,
             "prediction_mode_count": 0,
+            "rel_meas_used_global_count": 0,
+            "yolo_rel_meas_used_global_count": 0,
             "is_turning": int(data.get("is_turning", 0)),
             "host_steering": self._to_float_or_nan(data.get("host_steering", nan_val)),
         }
@@ -222,6 +238,18 @@ class TrustWeightLogger:
             row[f"gamma_host_{i}"] = nan_val
             row[f"gamma_local_peer_{i}"] = nan_val
             row[f"gamma_self_{i}"] = nan_val
+            row[f"rel_meas_used_global_{i}"] = 0
+            row[f"yolo_rel_meas_used_global_{i}"] = 0
+            row[f"rel_dist_meas_used_{i}"] = 0
+            row[f"rel_vel_meas_used_{i}"] = 0
+            row[f"y_local_distance_{i}"] = nan_val
+            row[f"y_true_distance_{i}"] = nan_val
+            row[f"yolo_true_rel_dist_error_{i}"] = nan_val
+            row[f"y_local_rel_velocity_{i}"] = nan_val
+            row[f"y_true_rel_velocity_{i}"] = nan_val
+            row[f"yolo_true_rel_vel_error_{i}"] = nan_val
+            row[f"yolo_rel_distance_{i}"] = nan_val
+            row[f"yolo_rel_velocity_{i}"] = nan_val
             row[f"d_host_mean_{i}"] = nan_val
             row[f"d_local_mean_{i}"] = nan_val
             row[f"d_self_{i}"] = nan_val
@@ -291,6 +319,42 @@ class TrustWeightLogger:
                 )
                 row[f"gamma_self_{i}"] = self._to_float_or_nan(
                     ndata.get("gamma_self", nan_val)
+                )
+                row[f"rel_meas_used_global_{i}"] = (
+                    1 if bool(ndata.get("rel_meas_used_global", False)) else 0
+                )
+                row[f"yolo_rel_meas_used_global_{i}"] = (
+                    1 if bool(ndata.get("yolo_rel_meas_used_global", False)) else 0
+                )
+                row[f"rel_dist_meas_used_{i}"] = (
+                    1 if bool(ndata.get("rel_dist_meas_used", False)) else 0
+                )
+                row[f"rel_vel_meas_used_{i}"] = (
+                    1 if bool(ndata.get("rel_vel_meas_used", False)) else 0
+                )
+                row[f"y_local_distance_{i}"] = self._to_float_or_nan(
+                    ndata.get("y_local_distance", nan_val)
+                )
+                row[f"y_true_distance_{i}"] = self._to_float_or_nan(
+                    ndata.get("y_true_distance", nan_val)
+                )
+                row[f"yolo_true_rel_dist_error_{i}"] = self._to_float_or_nan(
+                    ndata.get("yolo_true_rel_dist_error", nan_val)
+                )
+                row[f"y_local_rel_velocity_{i}"] = self._to_float_or_nan(
+                    ndata.get("y_local_rel_velocity", nan_val)
+                )
+                row[f"y_true_rel_velocity_{i}"] = self._to_float_or_nan(
+                    ndata.get("y_true_rel_velocity", nan_val)
+                )
+                row[f"yolo_true_rel_vel_error_{i}"] = self._to_float_or_nan(
+                    ndata.get("yolo_true_rel_vel_error", nan_val)
+                )
+                row[f"yolo_rel_distance_{i}"] = self._to_float_or_nan(
+                    ndata.get("yolo_rel_distance", nan_val)
+                )
+                row[f"yolo_rel_velocity_{i}"] = self._to_float_or_nan(
+                    ndata.get("yolo_rel_velocity", nan_val)
                 )
                 row[f"d_host_mean_{i}"] = self._to_float_or_nan(
                     ndata.get("d_host_mean", nan_val)
@@ -364,6 +428,10 @@ class TrustWeightLogger:
                 )
                 row[f"flag_global_{i}"] = (
                     1 if ndata.get("flag_global_est_check", False) else 0
+                )
+                row["rel_meas_used_global_count"] += int(row[f"rel_meas_used_global_{i}"])
+                row["yolo_rel_meas_used_global_count"] += int(
+                    row[f"yolo_rel_meas_used_global_{i}"]
                 )
 
             if i in estimation_conf:

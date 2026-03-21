@@ -10,7 +10,7 @@ from .config import (
     ControllerTuningControl,
     RuntimeSwitchingControl,
 )
-from .calibration import OnlineSysidControl, CalibrationControl
+from .calibration import OnlineSysidControl, CalibrationControl, RobustDatasetControl
 
 __all__ = [
     "CarState",
@@ -26,4 +26,5 @@ __all__ = [
     "RuntimeSwitchingControl",
     "OnlineSysidControl",
     "CalibrationControl",
+    "RobustDatasetControl",
 ]

@@ -1,7 +1,7 @@
 import numpy as np
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Dict, Any
 import cv2  # Added for video streaming
 import subprocess
 import os
@@ -403,6 +403,72 @@ class YOLOManager:
         Kept for backward compatibility with existing code.
         """
         return self._cached_data.to_dict()
+
+    def get_relative_car_measurement(
+        self, source: str = "yolo_car_dist"
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Return a validated host-to-car relative measurement for observers.
+
+        The measurement is extracted from cached YOLO outputs and normalized into
+        a single schema so callers do not reimplement validity checks.
+        """
+        data = self._cached_data
+
+        if not data.is_valid:
+            return None
+
+        car_detected = False
+        cars_raw = data.cars
+        if isinstance(cars_raw, np.ndarray) and cars_raw.size > 0:
+            car_detected = float(cars_raw[0]) > 0.0
+        elif isinstance(cars_raw, (list, tuple)) and len(cars_raw) > 0:
+            car_detected = float(cars_raw[0]) > 0.0
+
+        if not car_detected:
+            return None
+
+        if data.car_dist is None:
+            return None
+
+        rel_distance = float(data.car_dist)
+        if not np.isfinite(rel_distance) or rel_distance <= 0.0:
+            return None
+
+        car_count = 1.0
+        if isinstance(cars_raw, np.ndarray) and cars_raw.size > 0:
+            car_count = float(cars_raw[0])
+        elif isinstance(cars_raw, (list, tuple)) and len(cars_raw) > 0:
+            car_count = float(cars_raw[0])
+        if not np.isfinite(car_count):
+            car_count = 1.0
+
+        car_offset = data.car_offset
+        if car_offset is None and isinstance(cars_raw, np.ndarray) and cars_raw.size > 2:
+            car_offset = float(cars_raw[2])
+        elif car_offset is None and isinstance(cars_raw, (list, tuple)) and len(cars_raw) > 2:
+            car_offset = float(cars_raw[2])
+
+        offset_abs = abs(float(car_offset)) if car_offset is not None and np.isfinite(car_offset) else 0.5
+
+        count_factor = float(np.clip(car_count / 2.0, 0.0, 1.0))
+        distance_factor = float(np.exp(-max(rel_distance - 6.0, 0.0) / 4.0))
+        offset_factor = float(np.clip(1.0 - 0.6 * offset_abs, 0.0, 1.0))
+        confidence = float(
+            np.clip(
+                0.5 * count_factor + 0.3 * distance_factor + 0.2 * offset_factor,
+                0.0,
+                1.0,
+            )
+        )
+
+        return {
+            "distance": rel_distance,
+            "relative_velocity": float("nan"),
+            "confidence": confidence,
+            "source": str(source),
+            "timestamp_ns": int(float(data.timestamp) * 1e9),
+        }
 
     def get_default_yolo_data(self) -> dict:
         """Get default YOLO data when YOLO is not available"""

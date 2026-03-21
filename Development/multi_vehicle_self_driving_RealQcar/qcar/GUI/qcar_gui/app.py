@@ -322,6 +322,7 @@ class QCarFleetController(DeploymentMixin, FleetCommandsMixin, VehicleCommandsMi
             on_set_controller=self._set_controller,
             on_set_controller_params=self._set_controller_params,
             on_set_online_sysid=self._set_online_sysid,
+            on_set_robust_kalmannet_dataset=self._set_robust_kalmannet_dataset,
             on_start_online_calibration=self._start_online_calibration,
             on_stop_online_calibration=self._stop_online_calibration,
             on_trigger_online_analysis=self._trigger_online_analysis,
@@ -406,6 +407,9 @@ class QCarFleetController(DeploymentMixin, FleetCommandsMixin, VehicleCommandsMi
                     gear=telemetry.get("operational_status", {}).get("gear", "DRIVE_1"),
                     online_sysid_status=telemetry.get("online_sysid_status", {}),
                     online_calibration_status=telemetry.get("online_calibration_status", {}),
+                    robust_kalmannet_dataset_status=telemetry.get(
+                        "robust_kalmannet_dataset_status", {}
+                    ),
                 )
                 panel.update_state(state)
 

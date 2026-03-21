@@ -104,6 +104,10 @@ trust:
   distributed_trust_fallback: 0.2
   distributed_trust_covariance_diag: [2.0, 2.0, 2.0, 2.0, 1.0] # Sigma^2 for gamma_host (full state: x,y,theta,v,a)
   distributed_local_tau2_diag: [1.5, 0.5]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
+  # Relative-trust mode:
+  # true  = use [distance, relative_velocity]
+  # false = use [distance] only (simple mode)
+  use_relative_velocity_in_relative_trust: false
 
   # Generalized trust vector O_i(j) from exchanged trust reports
   use_generalized_trust_vector: true

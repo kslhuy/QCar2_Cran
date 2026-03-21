@@ -145,6 +145,9 @@ class DeploymentMixin:
             car_id=car_id,
             ip=f"{self.config.deployment.default_ip_prefix}{100 + car_id}",
             vehicle_type=self.config.deployment.default_vehicle_type,
+            programme_type=getattr(
+                self.config.deployment, "default_programme_type", "Py"
+            ),
             initial_v_ref=self.config.deployment.default_velocity,
         )
 
@@ -234,7 +237,12 @@ class DeploymentMixin:
             self._vehicle_connector.progress_callback = panel.set_progress
 
         success, message = self._vehicle_connector.upload_files(
-            config.car_id, config.ip, config.vehicle_type, config.folders_to_upload, config.upload_root_files
+            config.car_id,
+            config.ip,
+            config.vehicle_type,
+            config.programme_type,
+            config.folders_to_upload,
+            config.upload_root_files,
         )
 
         if panel:
@@ -253,6 +261,7 @@ class DeploymentMixin:
             car_id=config.car_id,
             ip=config.ip,
             vehicle_type=config.vehicle_type,
+            programme_type=config.programme_type,
             path_number=config.path_number,
             calibrate=config.calibrate,
             left_hand_traffic=config.left_hand_traffic,

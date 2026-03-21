@@ -455,6 +455,31 @@ class VehicleCommandsMixin:
             self._commands_failed_gui += 1
             self.log(f"Car {car_id}: Failed to send Online SysID [{action}] command", "ERROR")
 
+    def _set_robust_kalmannet_dataset(
+        self, car_id: int, action: str, params: dict = None
+    ) -> None:
+        """Send a Robust KalmanNet offline dataset command to a vehicle."""
+        if params is None:
+            params = {}
+        params["action"] = action
+        command = {
+            "type": "set_params",
+            "category": "robust_kalmannet_dataset",
+            "params": params,
+        }
+        if self._remote.send_command(car_id, command):
+            self._commands_sent_gui += 1
+            self.log(
+                f"Car {car_id}: RKNet dataset [{action}] command sent",
+                "SUCCESS",
+            )
+        else:
+            self._commands_failed_gui += 1
+            self.log(
+                f"Car {car_id}: Failed to send RKNet dataset [{action}] command",
+                "ERROR",
+            )
+
     def _start_online_calibration(self, car_id: int) -> None:
         """Start passive online calibration."""
         if self._remote.send_command(car_id, {"type": "enable_online_calibration", "config": {}}):

@@ -31,6 +31,7 @@ class CarState:
     gear: str = "DRIVE_1"
     online_sysid_status: dict = field(default_factory=dict)
     online_calibration_status: dict = field(default_factory=dict)
+    robust_kalmannet_dataset_status: dict = field(default_factory=dict)
 
 @dataclass
 class CarPanelCallbacks:
@@ -55,6 +56,7 @@ class CarPanelCallbacks:
     on_set_controller: Callable[[int, str, str, str], None] = None
     on_set_controller_params: Callable[[int, str, dict, str], None] = None
     on_set_online_sysid: Callable[[int, str, dict], None] = None
+    on_set_robust_kalmannet_dataset: Callable[[int, str, dict], None] = None
     on_start_online_calibration: Callable[[int], None] = None
     on_stop_online_calibration: Callable[[int], None] = None
     on_trigger_online_analysis: Callable[[int, str, dict], None] = None

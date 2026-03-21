@@ -390,7 +390,8 @@ class RuntimeSwitchingControl(BaseWidget):
         c = self.theme.colors
 
         local_obs = self.config.get(
-            "local_observers", ["ekf", "luenberger", "neural_luenberger"]
+            "local_observers",
+            ["ekf", "luenberger", "neural_luenberger", "robust_kalman_net"],
         )
         fleet_obs = self.config.get(
             "fleet_observers",

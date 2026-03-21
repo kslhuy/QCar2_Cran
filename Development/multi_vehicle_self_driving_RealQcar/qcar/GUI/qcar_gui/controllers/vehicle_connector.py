@@ -140,6 +140,13 @@ class VehicleConnector:
             return "Limo"
         return "Qcar"
 
+    @staticmethod
+    def _normalize_programme_type(programme_type: Optional[str]) -> str:
+        """Normalize runtime selection labels ("Py" or "Ros")."""
+        if str(programme_type or "").strip().lower() == "ros":
+            return "Ros"
+        return "Py"
+
     def _resolve_fleet_config_path(
         self, fleet_config_path: Optional[str]
     ) -> Optional[str]:
@@ -448,7 +455,13 @@ class VehicleConnector:
                 return False
 
     def upload_files(
-        self, car_id: int, ip: str = None, vehicle_type: Optional[str] = None, folders_to_upload: Optional[List[str]] = None, upload_root_files: bool = True
+        self,
+        car_id: int,
+        ip: str = None,
+        vehicle_type: Optional[str] = None,
+        programme_type: Optional[str] = None,
+        folders_to_upload: Optional[List[str]] = None,
+        upload_root_files: bool = True,
     ) -> Tuple[bool, str]:
         """
         Upload Python scripts, YAML configs, and folders to a vehicle.
@@ -457,6 +470,7 @@ class VehicleConnector:
             car_id: Vehicle identifier
             ip: IP address (optional, will reconnect if provided)
             vehicle_type: Optional vehicle type ("Qcar" or "Limo")
+            programme_type: Optional runtime mode ("Py" or "Ros")
             folders_to_upload: Optional list of folders to upload
             upload_root_files: Whether to upload root py/yaml/txt files
 
@@ -572,6 +586,7 @@ class VehicleConnector:
                 if vehicle_type
                 else self._vehicle_types.get(car_id)
             )
+            runtime_mode = self._normalize_programme_type(programme_type)
 
             if resolved_type == "Limo":
                 self._progress("Building ROS2 workspace on Limo...")
@@ -585,6 +600,26 @@ class VehicleConnector:
                 else:
                     err = stderr.read().decode().strip()
                     self._log(f"Car {car_id}: Build failed: {err}", "ERROR")
+            elif resolved_type == "Qcar" and runtime_mode == "Ros":
+                self._progress("Building ROS2 workspace on QCar...")
+                self._log(
+                    f"Car {car_id}: Running colcon build for ros2test...",
+                    "INFO",
+                )
+                build_cmd = (
+                    "bash -c 'cd /home/nvidia/Documents/qcar2/Development/ros2 && "
+                    "colcon build --packages-select ros2test --symlink-install'"
+                )
+                stdin, stdout, stderr = ssh.exec_command(build_cmd)
+                exit_status = stdout.channel.recv_exit_status()
+
+                if exit_status == 0:
+                    self._log(f"Car {car_id}: ROS build successful.", "SUCCESS")
+                else:
+                    err = stderr.read().decode().strip()
+                    msg = f"ROS build failed: {err}" if err else "ROS build failed"
+                    self._log(f"Car {car_id}: {msg}", "ERROR")
+                    return False, msg
 
             self._log(
                 f"Car {car_id}: Upload complete ({uploaded_count} files total)",
@@ -602,6 +637,7 @@ class VehicleConnector:
         car_id: int,
         ip: str,
         vehicle_type: str = "Qcar",
+        programme_type: str = "Py",
         path_number: int = 0,
         calibrate: bool = False,
         left_hand_traffic: bool = False,
@@ -615,6 +651,7 @@ class VehicleConnector:
             car_id: Vehicle identifier
             ip: IP address of the vehicle
             vehicle_type: "Qcar" or "Limo"
+            programme_type: "Py" (legacy) or "Ros" (new; QCar only)
             path_number: Path selection number (QCar only)
             calibrate: Whether to start in calibration mode (QCar only)
             left_hand_traffic: Use left-hand traffic rules (QCar only)
@@ -633,8 +670,11 @@ class VehicleConnector:
             if not success:
                 return False, msg
 
+        resolved_vehicle_type = self._normalize_vehicle_type(vehicle_type)
+        runtime_mode = self._normalize_programme_type(programme_type)
+
         # Dispatch based on vehicle type
-        if self._normalize_vehicle_type(vehicle_type) == "Limo":
+        if resolved_vehicle_type == "Limo":
             return self._start_limo_vehicle(
                 car_id=car_id,
                 ip=ip,
@@ -643,16 +683,25 @@ class VehicleConnector:
                 calibrate=calibrate,
                 initial_v_ref=initial_v_ref,
             )
-        else:  # Default to Qcar
-            return self._start_qcar_vehicle(
-                car_id,
-                ip,
-                path_number,
-                calibrate,
-                left_hand_traffic,
-                initial_v_ref,
-                enable_logs,
+
+        if runtime_mode == "Ros":
+            return self._start_qcar_vehicle_ros(
+                car_id=car_id,
+                ip=ip,
+                initial_v_ref=initial_v_ref,
+                enable_logs=enable_logs,
             )
+
+        # Default QCar legacy Python flow
+        return self._start_qcar_vehicle(
+            car_id,
+            ip,
+            path_number,
+            calibrate,
+            left_hand_traffic,
+            initial_v_ref,
+            enable_logs,
+        )
 
     def _start_qcar_vehicle(
         self,
@@ -749,6 +798,95 @@ class VehicleConnector:
 
         except Exception as e:
             msg = f"Failed to start QCar: {str(e)}"
+            self._log(f"Car {car_id}: {msg}", "ERROR")
+            return False, msg
+
+    def _start_qcar_vehicle_ros(
+        self,
+        car_id: int,
+        ip: str,
+        initial_v_ref: float,
+        enable_logs: bool,
+    ) -> Tuple[bool, str]:
+        """
+        Start QCar in ROS mode.
+
+        Sequence:
+        1) ros2 launch ros2test localization_cartographer_qcar.launch.py
+        2) ros2 run ros2test vehicle_main_ros_qcar --ros-args ...
+        """
+        with self._lock:
+            if car_id not in self._connections:
+                return False, "Not connected"
+            ssh, _ = self._connections[car_id]
+
+        try:
+            ws = "/home/nvidia/Documents/qcar2/Development/ros2"
+            source = "source install/setup.bash"
+
+            # Stop prior runs from either mode
+            self._progress("QCar ROS: Stopping existing processes...")
+            ssh.exec_command("pkill -f vehicle_main 2>/dev/null; true")
+            ssh.exec_command("pkill -f vehicle_main_ros_qcar 2>/dev/null; true")
+            ssh.exec_command("pkill -f localization_cartographer_qcar 2>/dev/null; true")
+            ssh.exec_command("pkill -f yolo_server 2>/dev/null; true")
+            time.sleep(1)
+
+            stdin, stdout, _ = ssh.exec_command(f"test -d {ws} && echo OK || echo MISSING")
+            if stdout.read().decode().strip() != "OK":
+                return False, f"ROS workspace not found: {ws}"
+
+            def _redir(tag: str) -> str:
+                if enable_logs:
+                    return f">> /tmp/qcar_{car_id}_{tag}.log 2>&1"
+                return "> /dev/null 2>&1"
+
+            self._progress("QCar ROS: Step 1/2 - Starting localization...")
+            localization_cmd = (
+                f"bash -lc 'cd {ws} && {source} && "
+                f"nohup ros2 launch ros2test localization_cartographer_qcar.launch.py "
+                f"{_redir('localization')} &'"
+            )
+            ssh.exec_command(localization_cmd)
+            time.sleep(3)
+
+            host = self._get_best_host_ip(ip) if ip else self.gs_config.local_ip
+            self._progress("QCar ROS: Step 2/2 - Starting vehicle_main_ros_qcar...")
+            vehicle_cmd = (
+                f"bash -lc 'cd {ws} && {source} && "
+                f"nohup ros2 run ros2test vehicle_main_ros_qcar --ros-args "
+                f"-p car_id:={car_id} -p host:={host} -p v_ref:={initial_v_ref} "
+                f"-p vehicle_type:=Qcar -p programme_type:=Ros "
+                f"{_redir('vehicle')} &'"
+            )
+            ssh.exec_command(vehicle_cmd)
+            time.sleep(3)
+
+            stdin, stdout, _ = ssh.exec_command(
+                "pgrep -fa 'localization_cartographer_qcar|vehicle_main_ros_qcar'"
+            )
+            pids = stdout.read().decode().strip()
+            if pids:
+                self._log(
+                    f"Car {car_id}: QCar ROS nodes running - {pids.replace(chr(10), ' | ')[:140]}",
+                    "SUCCESS",
+                )
+                return True, "QCar started in ROS mode"
+
+            if enable_logs:
+                for log_file in (
+                    f"/tmp/qcar_{car_id}_localization.log",
+                    f"/tmp/qcar_{car_id}_vehicle.log",
+                ):
+                    stdin, stdout, _ = ssh.exec_command(f"tail -10 {log_file} 2>/dev/null")
+                    log_tail = stdout.read().decode().strip()
+                    if log_tail:
+                        self._log(f"Car {car_id} log ({log_file}): {log_tail}", "WARNING")
+
+            return False, "QCar ROS processes did not start (check /tmp/qcar_* logs)"
+
+        except Exception as e:
+            msg = f"Failed to start QCar ROS: {str(e)}"
             self._log(f"Car {car_id}: {msg}", "ERROR")
             return False, msg
 
@@ -972,7 +1110,7 @@ class VehicleConnector:
         try:
             # Check what's running
             # Include ROS2 processes for Limo
-            terminal_pattern = "vehicle_main|yolo_server|ros2|rclpy|limo_start|localization_slam_toolbox|waypoint_alignment|nav2|amcl|bt_navigator|robot_state_publisher|ekf_filter_node|limo_base_node|static_transform_publisher"
+            terminal_pattern = "vehicle_main|vehicle_main_ros_qcar|yolo_server|ros2|rclpy|limo_start|localization_slam_toolbox|localization_cartographer_qcar|cartographer|waypoint_alignment|nav2|amcl|bt_navigator|robot_state_publisher|ekf_filter_node|limo_base_node|static_transform_publisher"
             
             stdin, stdout, stderr = ssh.exec_command(f"pgrep -f '{terminal_pattern}'")
             running_pids = stdout.read().decode().strip()

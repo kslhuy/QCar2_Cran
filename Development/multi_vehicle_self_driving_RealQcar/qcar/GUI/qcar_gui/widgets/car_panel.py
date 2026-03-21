@@ -25,6 +25,7 @@ from .car_components import (
     RuntimeSwitchingControl,
     OnlineSysidControl,
     CalibrationControl,
+    RobustDatasetControl,
 )
 
 class CarPanelWidget(BaseWidget):
@@ -59,6 +60,7 @@ class CarPanelWidget(BaseWidget):
         self._platoon_control: Optional[PlatoonControl] = None
         self._sysid_control: Optional[OnlineSysidControl] = None
         self._calibration_control: Optional[CalibrationControl] = None
+        self._robust_dataset_control: Optional[RobustDatasetControl] = None
         self._tuning_control: Optional[ControllerTuningControl] = None
 
         # Status indicators
@@ -221,6 +223,11 @@ class CarPanelWidget(BaseWidget):
         )
         self._sysid_control.pack(fill="x", pady=(5, 0))
 
+        self._robust_dataset_control = RobustDatasetControl(
+            right_section, self.car_id, self.callbacks, theme=self.theme
+        )
+        self._robust_dataset_control.pack(fill="x", pady=(5, 0))
+
         # Calibration control
         self._calibration_control = CalibrationControl(
             right_section, self.car_id, self.callbacks, theme=self.theme
@@ -282,6 +289,11 @@ class CarPanelWidget(BaseWidget):
         # Update Online SysID status
         if self._sysid_control:
             self._sysid_control.update_status(state.online_sysid_status)
+
+        if self._robust_dataset_control:
+            self._robust_dataset_control.update_status(
+                state.robust_kalmannet_dataset_status
+            )
 
         # Update Calibration status
         if self._calibration_control:

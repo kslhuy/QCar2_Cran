@@ -347,11 +347,9 @@ class InitializingState(StateBase):
         """
         try:
             # Initialize QCar and GPS based on physical/simulation mode
-            if self.vehicle_logic.vehicle_type == "Limo":
-                self.logger.logger.info(
-                    "Limo Car detected - skipping QCar initialization"
-                )
-
+            if self.vehicle_logic.programme_type == "Ros":
+                self.logger.logger.info("ROS mode detected - skipping direct QCar initialization")
+                # return True
             elif (
                 not self.vehicle_logic.is_physical_qcar
                 and self.vehicle_logic.vehicle_type == "Qcar"
@@ -360,6 +358,7 @@ class InitializingState(StateBase):
                 from qvl.multi_agent import readRobots
 
                 self._initialize_simulated_qcar(readRobots)
+            
             else:
                 self._initialize_physical_qcar()
 

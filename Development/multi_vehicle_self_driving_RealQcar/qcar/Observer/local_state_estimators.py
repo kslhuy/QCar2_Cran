@@ -432,6 +432,21 @@ class LocalEstimatorFactory:
                 )
 
     @staticmethod
+    def _lazy_load_robust_kalman_net_estimator():
+        """Lazy load Robust KalmanNet estimator to avoid hard torch dependency."""
+        try:
+            import importlib
+
+            module = importlib.import_module("Observer.KalmaNet.Robust.robustKLnet")
+            return module.RobustKalmanNetStateEstimator
+        except (ImportError, ModuleNotFoundError) as e:
+            raise ImportError(
+                "Robust KalmanNet estimator requires torch and the "
+                "Observer/KalmaNet/Robust package to be importable. "
+                f"Error: {e}"
+            )
+
+    @staticmethod
     def create(
         estimator_type: str,
         initial_pose: Optional[np.ndarray] = None,
@@ -443,7 +458,8 @@ class LocalEstimatorFactory:
         Create a local state estimator
 
         Args:
-            estimator_type: One of 'ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger'
+            estimator_type: One of 'ekf', 'luenberger', 'dead_reckoning',
+                'neural_luenberger', 'robust_kalman_net'
             initial_pose: Initial pose [x, y, theta]
             gps: GPS instance (for EKF)
             logger: Logger instance
@@ -461,11 +477,19 @@ class LocalEstimatorFactory:
                 initial_pose=initial_pose, config=config, logger=logger
             )
 
+        if estimator_type == "robust_kalman_net":
+            RobustKalmanNetStateEstimator = (
+                LocalEstimatorFactory._lazy_load_robust_kalman_net_estimator()
+            )
+            return RobustKalmanNetStateEstimator(
+                initial_pose=initial_pose, config=config, logger=logger
+            )
+
         # Standard estimators
         if estimator_type not in LocalEstimatorFactory.ESTIMATOR_TYPES:
             raise ValueError(
                 f"Unknown estimator type: {estimator_type}. "
-                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys()) + ['neural_luenberger']}"
+                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys()) + ['neural_luenberger', 'robust_kalman_net']}"
             )
 
         estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]

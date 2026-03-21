@@ -30,6 +30,7 @@ class VehicleConnectionConfig:
     car_id: int = 0
     ip: str = ""
     vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
+    programme_type: str = "Py"  # "Py" (legacy) or "Ros" (new)
     enabled: bool = True
     # probing removed
     calibrate: bool = False
@@ -105,6 +106,8 @@ class VehicleConnectionPanel(BaseWidget):
         # UI components
         self._ip_entry: Optional[ThemedEntry] = None
         self._vehicle_type_var: Optional[tk.StringVar] = None
+        self._programme_type_var: Optional[tk.StringVar] = None
+        self._programme_mode_radios: List[tk.Radiobutton] = []
         # Removed settings UI elements
         # self._path_entry: Optional[ThemedEntry] = None
         # self._velocity_entry: Optional[ThemedEntry] = None
@@ -231,6 +234,34 @@ class VehicleConnectionPanel(BaseWidget):
                 selectcolor=c.bg_light,
                 font=self.theme.fonts.small(),
             ).pack(side="left", padx=(0, 15))
+
+        # Program mode row (QCar: legacy Python or new ROS)
+        mode_row = tk.Frame(content, bg=c.bg_medium)
+        mode_row.pack(fill="x", pady=2)
+
+        ThemedLabel(mode_row, text="Program Mode:", style="muted", theme=self.theme).pack(
+            side="left", padx=(0, 10)
+        )
+
+        default_programme_type = self.default_config.programme_type
+        if default_programme_type not in ("Py", "Ros"):
+            default_programme_type = "Py"
+
+        self._programme_type_var = tk.StringVar(value=default_programme_type)
+        self._programme_mode_radios = []
+        for text, value in [("Legacy Py", "Py"), ("ROS (New)", "Ros")]:
+            rb = tk.Radiobutton(
+                mode_row,
+                text=text,
+                variable=self._programme_type_var,
+                value=value,
+                bg=c.bg_medium,
+                fg=c.fg_primary,
+                selectcolor=c.bg_light,
+                font=self.theme.fonts.small(),
+            )
+            rb.pack(side="left", padx=(0, 15))
+            self._programme_mode_radios.append(rb)
 
     # _build_vehicle_settings REMOVED
 
@@ -403,6 +434,18 @@ class VehicleConnectionPanel(BaseWidget):
             return
         is_limo = self._vehicle_type_var.get() == "Limo"
 
+        # Limo currently uses ROS launch flow only.
+        if self._programme_type_var:
+            if is_limo:
+                self._programme_type_var.set("Ros")
+                for rb in self._programme_mode_radios:
+                    rb.config(state="disabled")
+            else:
+                for rb in self._programme_mode_radios:
+                    rb.config(state="normal")
+                if self._programme_type_var.get() not in ("Py", "Ros"):
+                    self._programme_type_var.set("Py")
+
         if self._calibrate_btn:
             new_label = "🧭 Align Waypoints" if is_limo else "📐 Calibrate LiDAR"
             self._calibrate_btn.config(text=new_label)
@@ -553,7 +596,10 @@ class VehicleConnectionPanel(BaseWidget):
         """Handle start vehicle button click."""
         config = self._get_current_config()
 
-        self._set_status("starting", "Starting vehicle control program...")
+        mode = config.programme_type if config.vehicle_type == "Qcar" else "Ros"
+        self._set_status(
+            "starting", f"Starting {config.vehicle_type} ({mode}) control program..."
+        )
         self._start_btn.config(state="disabled")
 
         if self.callbacks.on_start_vehicle:
@@ -618,6 +664,9 @@ class VehicleConnectionPanel(BaseWidget):
             car_id=self.car_id,
             ip=self._ip_entry.get().strip(),
             vehicle_type=self._vehicle_type_var.get(),
+            programme_type=(
+                self._programme_type_var.get() if self._programme_type_var else "Py"
+            ),
             enabled=True,
             # Defaults for removed UI elements
             calibrate=False,

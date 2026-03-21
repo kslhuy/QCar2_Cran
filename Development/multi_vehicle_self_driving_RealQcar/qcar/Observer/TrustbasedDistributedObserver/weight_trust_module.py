@@ -13,7 +13,7 @@ Key features:
 """
 import numpy as np
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from collections import defaultdict
 
 
@@ -38,6 +38,15 @@ class WeightConfig:
     # Trust integration
     trust_threshold: float = 0.5   # Minimum trust to be considered neighbor
     use_distance_weighting: bool = False  # Weight by distance (reserved)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "WeightConfig":
+        """Create config from a dictionary, using dataclass defaults for missing keys."""
+        if not d:
+            return cls()
+        known = {f.name for f in dataclass_fields(cls)}
+        kwargs = {k: v for k, v in d.items() if k in known}
+        return cls(**kwargs)
 
 
 @dataclass

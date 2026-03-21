@@ -293,3 +293,100 @@ class CalibrationControl(BaseWidget):
                 text=f"Passive: Idle ({samples})",
                 fg=self.theme.colors.accent_blue,
             )
+
+
+class RobustDatasetControl(BaseWidget):
+    """Widget for Robust KalmanNet offline dataset collection."""
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        car_id: int,
+        callbacks: CarPanelCallbacks,
+        theme: Theme = None,
+    ):
+        self.car_id = car_id
+        self.callbacks = callbacks
+        self._status_label: Optional[tk.Label] = None
+        super().__init__(parent, theme)
+
+    def _build(self) -> None:
+        c = self.theme.colors
+
+        self.frame = ThemedLabelFrame(
+            self.parent, text="Offline RKNet Data", theme=self.theme
+        )
+
+        content = tk.Frame(self.frame, bg=c.bg_medium)
+        content.pack(fill="x", padx=6, pady=4)
+
+        row1 = tk.Frame(content, bg=c.bg_medium)
+        row1.pack(fill="x", pady=(0, 3))
+
+        self._status_label = ThemedLabel(
+            row1, text="Status: Idle", style="muted", theme=self.theme
+        )
+        self._status_label.pack(side="left")
+
+        row2 = tk.Frame(content, bg=c.bg_medium)
+        row2.pack(fill="x")
+
+        ThemedButton(
+            row2,
+            text="Start",
+            button_type="start",
+            command=lambda: self._send_action("start"),
+            padx=8,
+            pady=3,
+        ).pack(side="left", expand=True, fill="x", padx=(0, 2))
+
+        ThemedButton(
+            row2,
+            text="Save",
+            button_type="command",
+            command=lambda: self._send_action("stop"),
+            padx=8,
+            pady=3,
+        ).pack(side="left", expand=True, fill="x", padx=2)
+
+        ThemedButton(
+            row2,
+            text="Discard",
+            button_type="warning",
+            command=lambda: self._send_action("discard"),
+            padx=8,
+            pady=3,
+        ).pack(side="left", expand=True, fill="x", padx=(2, 0))
+
+    def _send_action(self, action: str) -> None:
+        if self.callbacks.on_set_robust_kalmannet_dataset:
+            self.callbacks.on_set_robust_kalmannet_dataset(self.car_id, action, {})
+
+    def update_status(self, status: dict) -> None:
+        if not self._status_label:
+            return
+
+        if not status or not hasattr(status, "get"):
+            self._status_label.config(
+                text="Status: Idle", fg=self.theme.colors.fg_muted
+            )
+            return
+
+        is_enabled = bool(status.get("enabled", False))
+        is_recording = bool(status.get("recording", False))
+        samples = int(status.get("buffered_samples", 0))
+
+        if not is_enabled:
+            self._status_label.config(
+                text="Status: Idle", fg=self.theme.colors.fg_muted
+            )
+        elif is_recording:
+            self._status_label.config(
+                text=f"Status: Recording ({samples})",
+                fg=self.theme.colors.accent_green,
+            )
+        else:
+            self._status_label.config(
+                text=f"Status: Ready ({samples})",
+                fg=self.theme.colors.accent_blue,
+            )

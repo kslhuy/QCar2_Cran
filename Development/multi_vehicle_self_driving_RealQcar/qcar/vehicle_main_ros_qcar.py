@@ -18,16 +18,21 @@ import numpy as np
 from threading import Event
 import math
 import yaml
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
-from sensor_msgs.msg import JointState, Imu
-from geometry_msgs.msg import Twist, PoseStamped , PoseWithCovarianceStamped
-from nav_msgs.msg import Odometry, Path
-from limo_msgs.msg import LimoStatus
-from std_msgs.msg import String, Float32MultiArray
+from sensor_msgs.msg import BatteryState, JointState, Imu
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path as NavPath
+from qcar2_interfaces.msg import MotorCommands
+from std_msgs.msg import Float32MultiArray
 from tf2_ros import Buffer, TransformListener
 from scipy.spatial.transform import Rotation as R
+try:
+    from ament_index_python.packages import get_package_share_directory
+except Exception:
+    get_package_share_directory = None
 
 # ===== ADD PATH TO QCAR FOLDER =====
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -50,10 +55,36 @@ else:
     print(f"[PATH ERROR] QCar module path not found: {qcar_module_path}")
     raise FileNotFoundError(f"Required directory not found: {qcar_module_path}")
 
-from qcar.config_main import VehicleMainConfig
-from qcar.vehicle_logic import VehicleLogic
-from qcar.command_types import CommandType
-from limo.limo import ROSQCarAdapter, ROSGPSAdapterQCar
+from config_main import VehicleMainConfig
+from vehicle_logic import VehicleLogic
+from command_types import CommandType
+from QcarAdaptRos.qcarRos import ROSQCarAdapter, ROSGPSAdapterQCar
+
+
+def _resolve_default_config_path():
+    """Return (config_path, source_hint) for default vehicle config discovery."""
+    module_dir = Path(current_dir).resolve()
+    candidates = [
+        ("fleet_config.yaml", module_dir / "fleet_config.yaml"),
+        ("config_vehicle_main.yaml", module_dir / "config_vehicle_main.yaml"),
+    ]
+
+    if get_package_share_directory is not None:
+        try:
+            share_dir = Path(get_package_share_directory("ros2test")).resolve()
+            candidates.extend([
+                ("share/config/fleet_config.yaml", share_dir / "config" / "fleet_config.yaml"),
+                ("share/config/config_vehicle_main.yaml", share_dir / "config" / "config_vehicle_main.yaml"),
+            ])
+        except Exception:
+            pass
+
+    for source_hint, path in candidates:
+        if path.exists():
+            return str(path), source_hint
+
+    # Keep previous fallback behavior.
+    return str(Path(qcar_path) / "qcar" / "config_vehicle_main.yaml"), "default fallback"
 
 
 # ===== MAIN ROS NODE (QCar Style) =====
@@ -75,7 +106,8 @@ class VehicleControlFullSystemQCar(Node):
             namespace='',
             parameters=[
                 ('car_id', 3),
-                ('vehicle_type', 'Limo'),
+                ('vehicle_type', 'Qcar'),
+                ('programme_type', 'Ros'),
                 ('v_ref', 0.6),
                 ('controller_rate', 100),
                 ('calibrate', False),
@@ -99,6 +131,7 @@ class VehicleControlFullSystemQCar(Node):
         
         car_id = self.get_parameter('car_id').value
         vehicle_type = self.get_parameter('vehicle_type').value
+        programme_type = self.get_parameter('programme_type').value
         v_ref = self.get_parameter('v_ref').value
         controller_rate = self.get_parameter('controller_rate').value
         calibrate = self.get_parameter('calibrate').value
@@ -126,12 +159,12 @@ class VehicleControlFullSystemQCar(Node):
         self.get_logger().info(f"QCar Style - Car ID: {car_id}, v_ref: {v_ref}, rate: {controller_rate} Hz")
         
         # ===== INITIALIZE DATA STORAGE =====
-        self.latest_odom = None
         self.latest_imu = None
-        self.latest_limo_status = None
+        self.latest_battery = None
+        self.latest_joint = None
         
         # ===== ROS PUBLISHERS =====
-        self.motor_pub = self.create_publisher(Twist, "/cmd_vel", 30)
+        self.motor_pub = self.create_publisher(MotorCommands, "/qcar2_motor_speed_cmd", 30)
         
         # ===== CREATE ROS ADAPTERS (QCar Style) =====
         self.qcar_adapter = ROSQCarAdapter(self)
@@ -162,14 +195,14 @@ class VehicleControlFullSystemQCar(Node):
                 "Startup initial pose is disabled; use RViz 2D Pose Estimate.")
         
         # ===== ROS SUBSCRIPTIONS =====
-        self.odom_sub = self.create_subscription(
-            Odometry, '/odom', self._odom_callback, 15
-        )
         self.imu_sub = self.create_subscription(
-            Imu, '/imu', self._imu_callback, 15
+            Imu, '/qcar2_imu', self._imu_callback, 15
         )
-        self.limo_status_sub = self.create_subscription(
-            LimoStatus, '/limo_status', self._limo_status_callback, 10
+        self.battery_sub = self.create_subscription(
+            BatteryState, '/qcar2_battery', self._battery_callback, 10
+        )
+        self.joint_sub = self.create_subscription(
+            JointState, '/qcar2_joint', self._joint_callback, 15
         )
         
         # Subscribe to new ROS 2 YOLO Detections instead of ZMQ
@@ -178,7 +211,7 @@ class VehicleControlFullSystemQCar(Node):
         )
         # Subscribe to QCar-style path topic
         self.path_sub = self.create_subscription(
-            Path, '/plan_qcar', self._path_callback, 10
+            NavPath, '/plan_qcar', self._path_callback, 10
         )
 
         if enable_sdc_initialpose_listener:
@@ -201,15 +234,9 @@ class VehicleControlFullSystemQCar(Node):
         if config_file and config_file.strip():
             config_path = config_file.strip()
         else:
-            fleet_config_path = os.path.join(qcar_path, 'qcar', 'fleet_config.yaml')
-            local_config_path = os.path.join(qcar_path, 'qcar', 'config_vehicle_main.yaml')
-            if os.path.exists(fleet_config_path):
-                config_path = fleet_config_path
-                self.get_logger().info("No config_file provided; using fleet_config.yaml")
-            else:
-                config_path = local_config_path
-                self.get_logger().info(
-                    "No config_file provided; fleet_config.yaml not found, using config_vehicle_main.yaml")
+            config_path, config_source = _resolve_default_config_path()
+            self.get_logger().info(
+                f"No config_file provided; selected default config source: {config_source}")
         
         if os.path.exists(config_path):
             if config_path.endswith('.json'):
@@ -241,8 +268,10 @@ class VehicleControlFullSystemQCar(Node):
         vehicle_type_normalized = str(vehicle_type).strip().lower()
         if vehicle_type_normalized == 'limo':
             config.vehicle.vehicle_type = 'Limo'
+            config.vehicle.programme_type = 'Ros'
         elif vehicle_type_normalized == 'qcar':
             config.vehicle.vehicle_type = 'Qcar'
+            config.vehicle.programme_type = 'Ros'
         else:
             self.get_logger().warning(
                 f"Unknown vehicle_type='{vehicle_type}', keeping config value '{config.vehicle.vehicle_type}'")
@@ -303,22 +332,20 @@ class VehicleControlFullSystemQCar(Node):
         
     # ===== ROS CALLBACKS =====
     
-    def _odom_callback(self, msg: Odometry):
-        """Update motor tach from odometry data"""
-        linear_vel = msg.twist.twist.linear.x
-        self.qcar_adapter.update_motor_tach(linear_vel)
-        
-        if not self.pose_received:
-            self.pose_received = True
-            self.get_logger().info("✓ Odometry topic connected")
-    
-    def _limo_status_callback(self, msg: LimoStatus):
-        """Handle Limo status updates"""
-        self.qcar_adapter.update_Limo_status(msg)
-        
+    def _battery_callback(self, msg: BatteryState):
+        """Update battery status from qcar2_hardware."""
+        self.latest_battery = msg
+        self.qcar_adapter.update_battery_state(msg)
+
+    def _joint_callback(self, msg: JointState):
+        """Update motor tach from qcar2_hardware joint state."""
+        self.latest_joint = msg
+        if msg.velocity:
+            self.qcar_adapter.update_motor_tach(msg.velocity[0])
+
         if not self.joint_received:
             self.joint_received = True
-            self.get_logger().info("✓ Limo status topic connected")
+            self.get_logger().info("✓ Joint state topic connected")
             
     def _yolo_callback(self, msg: Float32MultiArray):
         """Handle native ROS 2 YOLO detection array updates"""
@@ -351,12 +378,13 @@ class VehicleControlFullSystemQCar(Node):
             
     def _imu_callback(self, msg: Imu):
         """Update gyroscope data"""
+        self.latest_imu = msg
         gyro_z = msg.angular_velocity.z
         accel_x = msg.linear_acceleration.x
         self.qcar_adapter.update_gyro(gyro_z)
         self.qcar_adapter.update_accel(accel_x, msg.linear_acceleration.y, msg.linear_acceleration.z)
         
-    def _path_callback(self, msg: Path):
+    def _path_callback(self, msg: NavPath):
         """Receive path from waypoints_qcar node (in SDCQcar frame)"""
         if len(msg.poses) < 2:
             self.get_logger().warning("Received path with less than 2 waypoints, ignoring")
@@ -382,8 +410,8 @@ class VehicleControlFullSystemQCar(Node):
 
     def _publish_pending_initial_pose_when_ready(self):
         """Publish queued /initialpose once AMCL subscriber is available."""
-        if self.pending_initial_pose_xyz_deg is None:
-            return
+        # if self.pending_initial_pose_xyz_deg is None:
+        #     return
 
         if len(self.get_subscriptions_info_by_topic('/initialpose')) == 0:
             if not self.pending_initial_pose_wait_logged:
@@ -497,7 +525,9 @@ class VehicleControlFullSystemQCar(Node):
     
     def _update_gps_from_tf(self):
         """Update GPS adapter from TF transform (SDCQcar -> base_link)"""
-        self.gps_adapter.update_from_tf()
+        if self.gps_adapter.update_from_tf() and not self.pose_received:
+            self.pose_received = True
+            self.get_logger().info("✓ TF pose lookup connected (SDCQcar -> base_link)")
     
     # ===== OBSERVER UPDATE LOOP =====
     

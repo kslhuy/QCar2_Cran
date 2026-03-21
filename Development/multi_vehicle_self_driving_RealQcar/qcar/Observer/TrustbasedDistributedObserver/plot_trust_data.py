@@ -137,6 +137,14 @@ def _add_turn_sections(ax, times, rows):
         trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
         ax.fill_between(times, 0, 1, where=(is_turning >= 1), color='gold', alpha=0.25, transform=trans, label='Turn Section')
 
+
+def _yolo_usage_mask(rows: List[dict], vid: int) -> np.ndarray:
+    """Return boolean mask where YOLO relative measurement was used for global trust."""
+    yolo_flag = _col_to_array(rows, f"yolo_rel_meas_used_global_{vid}")
+    if not np.any(np.isfinite(yolo_flag)):
+        return np.zeros(len(rows), dtype=bool)
+    return np.isfinite(yolo_flag) & (yolo_flag >= 0.5)
+
 # ──────────────────────────────────────────────────────────────────────
 # Figure builders
 # ──────────────────────────────────────────────────────────────────────
@@ -147,7 +155,8 @@ def _fig_trust(times, rows, active, focus, host_id):
     Layout (3 rows x 4 cols):
       [0,0] Direct trust                      [0,1] Generalized trust O_i(j)  [0,2] Local trust               [0,3] Global trust
       [1,0] Component scores (focus vehicle)  [1,1] Global trust factors      [1,2] Mahalanobis distances     [1,3] Attack flags
-      [2,0:2] Max Impact Distance vs Vehicle  [2,2:4] Max Impact Element
+      [2,0] Relative distance comparison       [2,1] 
+      [2,2] YOLO-vs-true relative errors       [2,3] Relative measurement usage flags
     """
     fig = plt.figure(figsize=(24, 12))
     fig.suptitle(f"Trust Calculation  (Host V{host_id})", fontsize=15,
@@ -260,28 +269,26 @@ def _fig_trust(times, rows, active, focus, host_id):
         _no_data(ax, f"Attack Flags (V{focus})")
     _style(ax, f"Attack Flags (V{focus})", "Flag", xlabel="Time [s]")
 
-    # (2,0:2) Max Impact Distance
-    ax = fig.add_subplot(gs[2, 0:2])
-    arr_dist = _col_to_array(rows, f"mi_dist_{focus}")
-    arr_veh = _col_to_array(rows, f"mi_veh_id_{focus}")
-    if np.any(np.isfinite(arr_dist)) and np.any(np.isfinite(arr_veh)):
-        ax.plot(times, arr_dist, label="Max Impact Distance", color="tab:red", lw=1.5)
-        ax2 = ax.twinx()
-        valid_idx = np.isfinite(arr_veh)
-        ax2.scatter(np.array(times)[valid_idx], arr_veh[valid_idx], s=10, c="tab:blue", alpha=0.5, label="Impact Veh ID")
-        ax2.set_ylabel("Vehicle ID")
-        y_max = int(np.nanmax(arr_veh))
-        ax2.set_yticks(range(max(1, y_max + 1)))
-        
-        lines1, labels1 = ax.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(lines1 + lines2, labels1 + labels2, loc="upper right", fontsize=7)
-    else:
-        _no_data(ax, f"Max Impact Dist (V{focus})")
-    _style(ax, f"Max Impact Dist & Vehicle (V{focus})", "Distance", xlabel="Time [s]", legend=False)
+    # (2,0) Relative distance comparison for focus vehicle
+    ax = fig.add_subplot(gs[2, 0])
+    n = 0
+    rel_dist_cols = [
+        (f"y_local_distance_{focus}", "Local rel dist"),
+        (f"y_true_distance_{focus}", "True rel dist (fallback)"),
+        (f"yolo_rel_distance_{focus}", "YOLO rel dist"),
+    ]
+    for col, lbl in rel_dist_cols:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            style = "-" if "YOLO" in lbl else "--"
+            ax.plot(times, arr, style, lw=1.3, label=lbl)
+            n += 1
+    if n == 0:
+        _no_data(ax, f"Relative Distance (V{focus})")
+    _style(ax, f"Relative Distance (V{focus})", "Distance [m]", xlabel="Time [s]")
 
-    # (2,2:4) Max Impact Element
-    ax = fig.add_subplot(gs[2, 2:4])
+    # (2,1) Max Impact Element
+    ax = fig.add_subplot(gs[2, 1])
     arr_idx = _col_to_array(rows, f"mi_elem_idx_{focus}")
     arr_val = _col_to_array(rows, f"mi_elem_val_{focus}")
     if np.any(np.isfinite(arr_idx)) and np.any(np.isfinite(arr_val)):
@@ -302,6 +309,43 @@ def _fig_trust(times, rows, active, focus, host_id):
     else:
         _no_data(ax, f"Max Impact Element (V{focus})")
     _style(ax, f"Max Impact Element Index & Score (V{focus})", "Contribution / Score", xlabel="Time [s]", legend=False)
+
+    # (2,2) YOLO-vs-true errors
+    ax = fig.add_subplot(gs[2, 2])
+    n = 0
+    err_cols = [
+        (f"yolo_true_rel_dist_error_{focus}", "YOLO-True dist error"),
+        (f"yolo_true_rel_vel_error_{focus}", "YOLO-True rel vel error"),
+    ]
+    for col, lbl in err_cols:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, lw=1.3, label=lbl)
+            n += 1
+    if n > 0:
+        ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
+    if n == 0:
+        _no_data(ax, f"YOLO vs True Error (V{focus})")
+    _style(ax, f"YOLO vs True Error (V{focus})", "Error", xlabel="Time [s]")
+
+    # (2,3) Relative measurement usage flags
+    ax = fig.add_subplot(gs[2, 3])
+    n = 0
+    flag_cols = [
+        (f"rel_meas_used_global_{focus}", "Any external rel used"),
+        (f"yolo_rel_meas_used_global_{focus}", "YOLO rel used"),
+        (f"rel_dist_meas_used_{focus}", "External dist used"),
+        (f"rel_vel_meas_used_{focus}", "External rel vel used"),
+    ]
+    offsets = [0.00, 0.08, 0.16, 0.24]
+    for (col, lbl), off in zip(flag_cols, offsets):
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.fill_between(times, off, arr + off, alpha=0.5, step="post", label=lbl)
+            n += 1
+    if n == 0:
+        _no_data(ax, f"Relative Measurement Usage (V{focus})")
+    _style(ax, f"Relative Measurement Usage (V{focus})", "Flag", xlabel="Time [s]")
 
     return fig
 
@@ -529,7 +573,7 @@ def _fig_v2v_details(times, rows, active, focus, host_id):
       [0,0] Distance per evaluated vehicle    [0,1] Element Value per evaluated vehicle
       [1,0:2] Element Index per evaluated vehicle (Scatter)
     """
-    fig = plt.figure(figsize=(16, 10))
+    fig = plt.figure(figsize=(14, 9))
     fig.suptitle(f"V2V Detailed Tracking (Host V{host_id} evaluating Focus V{focus})", fontsize=13, fontweight="bold")
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.25)
 
@@ -801,4 +845,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

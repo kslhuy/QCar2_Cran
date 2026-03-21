@@ -16,7 +16,7 @@ Reference: Trust-Based Distributed Observer Framework
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 import time
 
 
@@ -87,6 +87,10 @@ class TrustConfig:
     # Tau^2 covariance for gamma_local_peer / gamma_self  (relative measurement)
     # [relative_distance, relative_velocity]  — matches MATLAB tau2_diag_element
     distributed_local_tau2_diag: Tuple[float, ...] = (1.5, 0.5)
+    # Relative-measurement trust mode:
+    # True  -> [distance, relative_velocity]
+    # False -> [distance] only (simple mode; ignores relative velocity channel)
+    use_relative_velocity_in_relative_trust: bool = True
 
     # Generalized trust vector O_i
     use_generalized_trust_vector: bool = False
@@ -123,10 +127,29 @@ class TrustConfig:
     gamma_chi2_dof_local: int = 2
     gamma_chi2_dof_global: int = 5
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "TrustConfig":
+        """Create config from a dictionary, using dataclass defaults for missing keys.
+
+        Tuple fields (e.g. covariance diags) are auto-converted from lists.
+        """
+        if not d:
+            return cls()
+        known = {f.name for f in dataclass_fields(cls)}
+        kwargs = {}
+        for key, value in d.items():
+            if key not in known:
+                continue
+            field_obj = next(f for f in dataclass_fields(cls) if f.name == key)
+            # Convert list -> tuple for Tuple[...] annotated fields
+            if isinstance(value, list) and field_obj.type is not None and "Tuple" in str(field_obj.type):
+                value = tuple(value)
+            kwargs[key] = value
+        return cls(**kwargs)
+
 
 @dataclass
 class VehicleData:
-    """Data structure for received vehicle information"""
 
     vehicle_id: int
     x: float = 0.0
@@ -137,8 +160,12 @@ class VehicleData:
     timestamp_ns: int = 0
 
     # Derived metrics
-    distance_from_host: float = 0.0
+    distance_from_host: float = float("nan")
+    relative_velocity_from_host: float = float("nan")
+    relative_measurement_confidence: float = float("nan")
     relative_heading: float = 0.0
+    relative_measurement_source: str = ""
+    relative_measurement_timestamp_ns: int = 0
 
 
 @dataclass
@@ -167,6 +194,19 @@ class TrustScore:
     d_host_mean: float = float("nan")
     d_local_mean: float = float("nan")
     d_self: float = float("nan")
+    relative_measurement_used_global: bool = False
+    yolo_relative_measurement_used_global: bool = False
+    relative_distance_measurement_used: bool = False
+    relative_velocity_measurement_used: bool = False
+    relative_measurement_source: str = ""
+    y_local_distance: float = float("nan")
+    y_true_distance: float = float("nan")
+    yolo_true_rel_dist_error: float = float("nan")
+    y_local_rel_velocity: float = float("nan")
+    y_true_rel_velocity: float = float("nan")
+    yolo_true_rel_vel_error: float = float("nan")
+    yolo_rel_distance: float = float("nan")
+    yolo_rel_velocity: float = float("nan")
 
     # Impact elements for logging
     mi_elem_idx: int = -1
@@ -358,6 +398,41 @@ class TriPTrustModel:
         trust.d_host_mean = float(global_components.get("d_host_mean", float("nan")))
         trust.d_local_mean = float(global_components.get("d_local_mean", float("nan")))
         trust.d_self = float(global_components.get("d_self", float("nan")))
+        trust.relative_measurement_used_global = bool(
+            float(global_components.get("rel_meas_used_global", 0.0)) >= 0.5
+        )
+        trust.yolo_relative_measurement_used_global = bool(
+            float(global_components.get("yolo_rel_meas_used_global", 0.0)) >= 0.5
+        )
+        trust.relative_distance_measurement_used = bool(
+            float(global_components.get("rel_dist_meas_used", 0.0)) >= 0.5
+        )
+        trust.relative_velocity_measurement_used = bool(
+            float(global_components.get("rel_vel_meas_used", 0.0)) >= 0.5
+        )
+        trust.relative_measurement_source = str(
+            getattr(target_data, "relative_measurement_source", "")
+        )
+        trust.y_local_distance = float(global_components.get("y_local_distance", float("nan")))
+        trust.y_true_distance = float(global_components.get("y_true_distance", float("nan")))
+        trust.yolo_true_rel_dist_error = float(
+            global_components.get("yolo_true_rel_dist_error", float("nan"))
+        )
+        trust.y_local_rel_velocity = float(
+            global_components.get("y_local_rel_velocity", float("nan"))
+        )
+        trust.y_true_rel_velocity = float(
+            global_components.get("y_true_rel_velocity", float("nan"))
+        )
+        trust.yolo_true_rel_vel_error = float(
+            global_components.get("yolo_true_rel_vel_error", float("nan"))
+        )
+        trust.yolo_rel_distance = float(
+            global_components.get("yolo_rel_distance", float("nan"))
+        )
+        trust.yolo_rel_velocity = float(
+            global_components.get("yolo_rel_velocity", float("nan"))
+        )
         trust.mi_veh_id = int(global_components.get("mi_veh_id", -1))
         trust.mi_dist = float(global_components.get("mi_dist", float("nan")))
         trust.mi_elem_idx = int(global_components.get("mi_elem_idx", -1))
@@ -423,6 +498,12 @@ class TriPTrustModel:
             theta=target_data.theta,
             velocity=target_data.velocity,
             acceleration=target_data.acceleration,
+            distance_from_host=target_data.distance_from_host,
+            relative_velocity_from_host=target_data.relative_velocity_from_host,
+            relative_measurement_confidence=target_data.relative_measurement_confidence,
+            relative_heading=target_data.relative_heading,
+            relative_measurement_source=target_data.relative_measurement_source,
+            relative_measurement_timestamp_ns=target_data.relative_measurement_timestamp_ns,
             timestamp_ns=current_time_ns,
         )
 
@@ -591,23 +672,26 @@ class TriPTrustModel:
         """
         target_id = target_data.vehicle_id
 
-        # Calculate current distance from host to target
-        dx = target_data.x - host_state.get("x", 0.0)
-        dy = target_data.y - host_state.get("y", 0.0)
-        d_current = np.sqrt(dx**2 + dy**2)
+        # Prefer measured relative distance (e.g., YOLO/radar) when available.
+        d_current = self._resolve_relative_distance(host_state, target_data)
 
         # Get previous state if available
         if target_id in self.previous_states:
             prev = self.previous_states[target_id]
 
             # Previous distance
-            prev_host_x = host_state.get(
-                "x", 0.0
-            )  # Approximate, using current host position
-            prev_host_y = host_state.get("y", 0.0)
-            prev_dx = prev.x - prev_host_x
-            prev_dy = prev.y - prev_host_y
-            d_prev = np.sqrt(prev_dx**2 + prev_dy**2)
+            if np.isfinite(float(prev.distance_from_host)) and float(prev.distance_from_host) > 0.0:
+                d_prev = float(prev.distance_from_host)
+            else:
+                if self.previous_host_state is not None and self.previous_host_state.timestamp_ns > 0:
+                    prev_host_x = float(self.previous_host_state.x)
+                    prev_host_y = float(self.previous_host_state.y)
+                else:
+                    prev_host_x = float(host_state.get("x", 0.0))
+                    prev_host_y = float(host_state.get("y", 0.0))
+                prev_dx = float(prev.x) - prev_host_x
+                prev_dy = float(prev.y) - prev_host_y
+                d_prev = float(np.hypot(prev_dx, prev_dy))
 
             # Expected distance change based on relative velocity
             v_target = target_data.velocity
@@ -619,7 +703,7 @@ class TriPTrustModel:
             d_expected = d_prev + v_rel * dt
 
             # Calculate error between expected and actual distance
-            d_measured = max(d_current, 0.1)
+            d_measured = max(float(d_current), 0.1)
             d_error = abs(d_current - d_expected)
             normalized_error = d_error / d_measured
 
@@ -697,8 +781,16 @@ class TriPTrustModel:
             host_prev_y = host_y
             host_prev_v = v_host
 
-        d_prev = float(np.hypot(float(prev_target.x) - host_prev_x, float(prev_target.y) - host_prev_y))
-        d_curr = float(np.hypot(float(target_data.x) - host_x, float(target_data.y) - host_y))
+        if np.isfinite(float(prev_target.distance_from_host)) and float(prev_target.distance_from_host) > 0.0:
+            d_prev = float(prev_target.distance_from_host)
+        else:
+            d_prev = float(
+                np.hypot(
+                    float(prev_target.x) - host_prev_x,
+                    float(prev_target.y) - host_prev_y,
+                )
+            )
+        d_curr = self._resolve_relative_distance(host_state, target_data)
 
         v_rel_prev = float(prev_target.velocity) - host_prev_v
         v_rel_now = v_target - v_host
@@ -855,7 +947,19 @@ class TriPTrustModel:
         covariance = 0.0
         cov_factor = 1.0 / (1.0 + 0.2 * covariance)
 
-        quality = age_factor * drop_factor * cov_factor
+        # External sensor quality factor (YOLO/radar confidence, etc.)
+        source_quality = 1.0
+        source_name = str(
+            getattr(target_data, "relative_measurement_source", "")
+        ).lower()
+        if source_name.startswith("yolo"):
+            rel_conf = float(
+                getattr(target_data, "relative_measurement_confidence", float("nan"))
+            )
+            if np.isfinite(rel_conf):
+                source_quality = float(np.clip(rel_conf, 0.0, 1.0))
+
+        quality = age_factor * drop_factor * cov_factor * source_quality
 
         return float(np.clip(quality, 0.0, 1.0))
 
@@ -1069,23 +1173,74 @@ class TriPTrustModel:
 
         Returns:
             np.array([relative_distance, relative_velocity])  (2-element vector)
+            where relative_velocity is signed (target - host).
 
         This measurement is analogous to what MATLAB computes from
         ``predecessor.state(1) - host_vehicle.state(1)`` and
-        ``|predecessor.state(4) - host_vehicle.state(4)|``.
+        ``predecessor.state(4) - host_vehicle.state(4)``.
 
         When real LiDAR/radar is available in the future, replace this
         with actual sensor readings.
         """
-        dx = float(state_b_data.x) - float(state_a.get("x", state_a.get(0, 0.0)))
-        dy = float(state_b_data.y) - float(state_a.get("y", state_a.get(1, 0.0)))
-        rel_distance = np.sqrt(dx ** 2 + dy ** 2)
+        rel_distance = self._resolve_relative_distance(state_a, state_b_data)
+        if not bool(self.config.use_relative_velocity_in_relative_trust):
+            return np.array([rel_distance], dtype=float)
 
-        vel_a = float(state_a.get("velocity", state_a.get(3, 0.0)))
-        vel_b = float(state_b_data.velocity)
-        rel_velocity = abs(vel_b - vel_a)
-
+        rel_velocity = self._resolve_relative_velocity(state_a, state_b_data)
         return np.array([rel_distance, rel_velocity], dtype=float)
+
+    def _compute_true_relative_measurement(
+        self, host_state: Dict, target_data: VehicleData
+    ) -> np.ndarray:
+        """
+        Compute fallback/true relative measurement from host-target states only.
+
+        This is the baseline used when no external relative sensor (YOLO/radar)
+        measurement is available.
+        """
+        host_x = float(host_state.get("x", host_state.get(0, 0.0)))
+        host_y = float(host_state.get("y", host_state.get(1, 0.0)))
+        dx = float(target_data.x) - host_x
+        dy = float(target_data.y) - host_y
+        rel_distance = float(np.hypot(dx, dy))
+        if not bool(self.config.use_relative_velocity_in_relative_trust):
+            return np.array([rel_distance], dtype=float)
+
+        vel_a = float(host_state.get("velocity", host_state.get(3, 0.0)))
+        rel_velocity = float(target_data.velocity) - vel_a
+        return np.array([rel_distance, rel_velocity], dtype=float)
+
+    def _resolve_relative_distance(self, host_state: Dict, target_data: VehicleData) -> float:
+        """
+        Resolve host-target distance with sensor-first priority.
+
+        Uses externally measured distance (YOLO/radar) when available; otherwise
+        falls back to geometric distance from host/target states.
+        """
+        measured_distance = float(getattr(target_data, "distance_from_host", float("nan")))
+        if np.isfinite(measured_distance) and measured_distance > 0.0:
+            return measured_distance
+
+        dx = float(target_data.x) - float(host_state.get("x", host_state.get(0, 0.0)))
+        dy = float(target_data.y) - float(host_state.get("y", host_state.get(1, 0.0)))
+        return float(np.hypot(dx, dy))
+
+    def _resolve_relative_velocity(self, host_state: Dict, target_data: VehicleData) -> float:
+        """
+        Resolve host-target signed relative velocity with sensor-first priority.
+
+        Positive means opening distance (target faster than host).
+        Negative means closing distance (host faster than target).
+        """
+        measured_rel_velocity = float(
+            getattr(target_data, "relative_velocity_from_host", float("nan"))
+        )
+        if np.isfinite(measured_rel_velocity):
+            return measured_rel_velocity
+
+        vel_a = float(host_state.get("velocity", host_state.get(3, 0.0)))
+        vel_b = float(target_data.velocity)
+        return vel_b - vel_a
 
     def _compute_relative_from_estimates(
         self, est_host: VehicleData, est_target: VehicleData
@@ -1096,11 +1251,15 @@ class TriPTrustModel:
 
         Returns:
             np.array([relative_distance, relative_velocity])  (2-element vector)
+            with signed relative velocity.
         """
         dx = float(est_target.x) - float(est_host.x)
         dy = float(est_target.y) - float(est_host.y)
         rel_distance = np.sqrt(dx ** 2 + dy ** 2)
-        rel_velocity = abs(float(est_target.velocity) - float(est_host.velocity))
+        if not bool(self.config.use_relative_velocity_in_relative_trust):
+            return np.array([rel_distance], dtype=float)
+
+        rel_velocity = float(est_target.velocity) - float(est_host.velocity)
         return np.array([rel_distance, rel_velocity], dtype=float)
 
     def _relative_mahalanobis(self, y_measured: np.ndarray, y_estimated: np.ndarray) -> float:
@@ -1111,15 +1270,25 @@ class TriPTrustModel:
         Returns:
             e' * inv(Tau2) * e   (scalar)
         """
-        tau2_diag = np.array(self.config.distributed_local_tau2_diag, dtype=float)
-        # Ensure same length as the relative vector (2 elements)
-        if len(tau2_diag) < 2:
-            tau2_diag = np.pad(tau2_diag, (0, 2 - len(tau2_diag)), constant_values=1.0)
-        tau2_diag = tau2_diag[:2]
+        y_measured = np.asarray(y_measured, dtype=float).flatten()
+        y_estimated = np.asarray(y_estimated, dtype=float).flatten()
+        n = int(min(y_measured.size, y_estimated.size))
+        if n <= 0:
+            return 0.0
+
+        y_measured = y_measured[:n]
+        y_estimated = y_estimated[:n]
+
+        tau2_diag = np.asarray(self.config.distributed_local_tau2_diag, dtype=float).flatten()
+        if tau2_diag.size == 0:
+            tau2_diag = np.ones(n, dtype=float)
+        elif tau2_diag.size < n:
+            tau2_diag = np.pad(tau2_diag, (0, n - tau2_diag.size), mode="edge")
+        tau2_diag = tau2_diag[:n]
         tau2_inv = 1.0 / np.maximum(tau2_diag, 1e-9)
 
         e = y_estimated - y_measured
-        return float(e @ np.diag(tau2_inv) @ e)
+        return float(np.dot(e * e, tau2_inv))
 
     # ------------------------------------------------------------------ #
     #  Paper-style global trust (MATLAB-unified)                         #
@@ -1176,6 +1345,18 @@ class TriPTrustModel:
             "d_host_mean": _nan,
             "d_local_mean": _nan,
             "d_self": _nan,
+            "rel_meas_used_global": 0.0,
+            "yolo_rel_meas_used_global": 0.0,
+            "rel_dist_meas_used": 0.0,
+            "rel_vel_meas_used": 0.0,
+            "y_local_distance": _nan,
+            "y_true_distance": _nan,
+            "yolo_true_rel_dist_error": _nan,
+            "y_local_rel_velocity": _nan,
+            "y_true_rel_velocity": _nan,
+            "yolo_true_rel_vel_error": _nan,
+            "yolo_rel_distance": _nan,
+            "yolo_rel_velocity": _nan,
         }
 
         if host_target_estimate is None:
@@ -1187,10 +1368,53 @@ class TriPTrustModel:
         if host_vec is None or target_vec is None:
             return fallback, dict(_default)
 
+        source_name = str(
+            getattr(target_data, "relative_measurement_source", "")
+        ).strip()
+        source_name_l = source_name.lower()
+        rel_distance_meas = float(
+            getattr(target_data, "distance_from_host", float("nan"))
+        )
+        rel_velocity_meas = float(
+            getattr(target_data, "relative_velocity_from_host", float("nan"))
+        )
+        rel_dist_meas_used = bool(np.isfinite(rel_distance_meas) and rel_distance_meas > 0.0)
+        rel_vel_meas_used = bool(
+            bool(self.config.use_relative_velocity_in_relative_trust)
+            and np.isfinite(rel_velocity_meas)
+        )
+        rel_meas_used_global = bool(rel_dist_meas_used or rel_vel_meas_used)
+        yolo_rel_meas_used_global = bool(
+            rel_meas_used_global and source_name_l.startswith("yolo")
+        )
+
         # ===== Host's local relative measurement (fake sensor) =====
-        # y_local = [distance(host, target), |v_target - v_host|]
+        # y_local = [distance(host, target), v_target - v_host]
         # In the future this can be replaced by real LiDAR/radar readings.
         y_local = self._compute_relative_measurement(host_state, target_data)
+        y_true = self._compute_true_relative_measurement(host_state, target_data)
+
+        y_local_distance = float(y_local[0]) if y_local.size > 0 else _nan
+        y_true_distance = float(y_true[0]) if y_true.size > 0 else _nan
+        yolo_true_rel_dist_error = (
+            y_local_distance - y_true_distance
+            if yolo_rel_meas_used_global and y_local.size > 0 and y_true.size > 0
+            else _nan
+        )
+
+        y_local_rel_velocity = float(y_local[1]) if y_local.size > 1 else _nan
+        y_true_rel_velocity = float(y_true[1]) if y_true.size > 1 else _nan
+        yolo_true_rel_vel_error = (
+            y_local_rel_velocity - y_true_rel_velocity
+            if yolo_rel_meas_used_global and y_local.size > 1 and y_true.size > 1
+            else _nan
+        )
+        yolo_rel_distance = (
+            rel_distance_meas if yolo_rel_meas_used_global and rel_dist_meas_used else _nan
+        )
+        yolo_rel_velocity = (
+            rel_velocity_meas if yolo_rel_meas_used_global and rel_vel_meas_used else _nan
+        )
 
         # ===== gamma_self (MATLAB: gamma_local_our_self) =====
         # Host's OWN global estimate implied relative vs host's local relative.
@@ -1205,10 +1429,11 @@ class TriPTrustModel:
         )
         # Host's global estimate implies a relative state:
         #   y_self_est = [dist(host_local, host_global_est_of_target),
-        #                 |v_target_est - v_host|]
+        #                 v_target_est - v_host]
         y_self_est = self._compute_relative_measurement(host_state, host_est_as_vd)
+        local_relative_dof = max(1, int(y_local.size))
         d_self = self._relative_mahalanobis(y_local, y_self_est)
-        gamma_self = self._distance_to_gamma(d_self, dof=self.config.gamma_chi2_dof_local)
+        gamma_self = self._distance_to_gamma(d_self, dof=local_relative_dof)
 
         # ===== gamma_host (MATLAB: gamma_cross) =====
         # Full-state Mahalanobis: Host's entire fleet estimates vs Target's entire fleet estimates
@@ -1287,7 +1512,8 @@ class TriPTrustModel:
             est_host = neighbor_host_estimates.get(int(target_data.vehicle_id))
             
             if est_target is not None and est_host is not None:
-                # Target's implied relative: [dist(Target_est_host, Target_est_target), |v_diff|]
+                # Target's implied relative: [dist(Target_est_host, Target_est_target), v_diff]
+                # Sign convention for velocity is preserved: v_target - v_host.
                 y_target_rel = self._compute_relative_from_estimates(est_host, est_target)
 
                 # Compare against our local relative measurement
@@ -1296,7 +1522,9 @@ class TriPTrustModel:
 
         if n_local_valid > 0:
             d_local_mean_val = d_local_total / n_local_valid
-            gamma_local_peer = self._distance_to_gamma(d_local_mean_val, dof=self.config.gamma_chi2_dof_local)
+            gamma_local_peer = self._distance_to_gamma(
+                d_local_mean_val, dof=local_relative_dof
+            )
         else:
             # The target didn't have estimates of both host and itself → fallback
             gamma_local_peer = fallback
@@ -1319,6 +1547,18 @@ class TriPTrustModel:
             "d_host_mean": float(d_host_total / max(1, n_host_valid)),
             "d_local_mean": float(d_local_total / max(1, n_local_valid)),
             "d_self": float(d_self),
+            "rel_meas_used_global": 1.0 if rel_meas_used_global else 0.0,
+            "yolo_rel_meas_used_global": 1.0 if yolo_rel_meas_used_global else 0.0,
+            "rel_dist_meas_used": 1.0 if rel_dist_meas_used else 0.0,
+            "rel_vel_meas_used": 1.0 if rel_vel_meas_used else 0.0,
+            "y_local_distance": float(y_local_distance),
+            "y_true_distance": float(y_true_distance),
+            "yolo_true_rel_dist_error": float(yolo_true_rel_dist_error),
+            "y_local_rel_velocity": float(y_local_rel_velocity),
+            "y_true_rel_velocity": float(y_true_rel_velocity),
+            "yolo_true_rel_vel_error": float(yolo_true_rel_vel_error),
+            "yolo_rel_distance": float(yolo_rel_distance),
+            "yolo_rel_velocity": float(yolo_rel_velocity),
             "mi_veh_id": int(mi_veh_id),
             "mi_dist": float(mi_dist),
             "mi_elem_idx": int(mi_elem_idx),
@@ -1630,6 +1870,19 @@ class TriPTrustModel:
         trust.timestamp = current_time_s
         trust.beacon_score = 0.0
         trust.quality_factor = 0.0
+        trust.relative_measurement_used_global = False
+        trust.yolo_relative_measurement_used_global = False
+        trust.relative_distance_measurement_used = False
+        trust.relative_velocity_measurement_used = False
+        trust.relative_measurement_source = ""
+        trust.y_local_distance = float("nan")
+        trust.y_true_distance = float("nan")
+        trust.yolo_true_rel_dist_error = float("nan")
+        trust.y_local_rel_velocity = float("nan")
+        trust.y_true_rel_velocity = float("nan")
+        trust.yolo_true_rel_vel_error = float("nan")
+        trust.yolo_rel_distance = float("nan")
+        trust.yolo_rel_velocity = float("nan")
         if never_seen:
             # Keep unknown vehicles near neutral until at least one packet is observed.
             neutral = float(np.clip(self.config.distributed_trust_fallback, 0.0, 1.0))

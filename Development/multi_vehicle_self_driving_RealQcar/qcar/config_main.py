@@ -112,6 +112,7 @@ class VehicleConfig:
     """Vehicle-specific configuration"""
 
     vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
+    programme_type: str = "Py"  # "Ros" or "Py"
     probing: bool = False  # Enable YOLO perception system
     limo_gear_multiplier: float = 3.5  # Gear multiplier for Limo velocity limits
 
