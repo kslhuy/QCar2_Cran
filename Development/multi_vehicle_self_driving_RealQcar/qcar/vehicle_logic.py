@@ -556,7 +556,7 @@ class VehicleLogic:
         # waypoint_index = steering_controller.get_waypoint_index() if steering_controller else 0
         # errors = steering_controller.get_errors() if steering_controller else (0.0, 0.0)
         
-        return {
+        telemetry = {
             'timestamp': time.time(),
             'time': self.elapsed_time(),
             'x': float(state_info['x']),
@@ -574,6 +574,101 @@ class VehicleLogic:
             'gps_valid': self.vehicle_observer.is_gps_valid() if hasattr(self, 'vehicle_observer') and self.vehicle_observer else False,
             # Observer/Controller types moved to _broadcast_periodic_status (1Hz) to reduce bandwidth
         }
+
+        # Attach distributed observer debug signals for live plotting.
+        # This avoids relying on CSV files that may be locked while running.
+        telemetry.update(self._collect_distributed_debug_telemetry())
+        return telemetry
+
+    def _collect_distributed_debug_telemetry(self) -> dict:
+        """Collect flattened distributed-observer debug signals for telemetry."""
+        try:
+            if not hasattr(self, 'vehicle_observer') or self.vehicle_observer is None:
+                return {}
+
+            fleet_estimator = getattr(self.vehicle_observer, 'fleet_estimator', None)
+            if fleet_estimator is None or not hasattr(fleet_estimator, 'get_debug_data'):
+                return {}
+
+            debug_data = fleet_estimator.get_debug_data()
+            if not isinstance(debug_data, dict) or not debug_data:
+                return {}
+
+            out = {}
+
+            def _to_float(value, default=0.0):
+                try:
+                    return float(value)
+                except Exception:
+                    return float(default)
+
+            def _flatten_triplet_array(src_key: str, dst_prefix: str, max_items: int = 8):
+                arr = np.asarray(debug_data.get(src_key, []), dtype=float).reshape(-1)
+                if arr.size < 3:
+                    return
+                count = min(max_items, arr.size // 3)
+                for i in range(count):
+                    base = i * 3
+                    idx = i + 1
+                    out[f'{dst_prefix}_p{idx}'] = _to_float(arr[base])
+                    out[f'{dst_prefix}_v{idx}'] = _to_float(arr[base + 1])
+                    out[f'{dst_prefix}_a{idx}'] = _to_float(arr[base + 2])
+
+            _flatten_triplet_array('x_vec_before', 'x_vec_before')
+            _flatten_triplet_array('x_vec_after', 'x_vec_after')
+            _flatten_triplet_array('dynamics_term', 'dynamics')
+            _flatten_triplet_array('measurement_term', 'measurement')
+            _flatten_triplet_array('consensus_term', 'consensus')
+
+            # Measurement vectors
+            local_meas = np.asarray(debug_data.get('local_measurement', []), dtype=float).reshape(-1)
+            est_meas = np.asarray(debug_data.get('estimated_measurement', []), dtype=float).reshape(-1)
+            meas_err = np.asarray(debug_data.get('measurement_error', []), dtype=float).reshape(-1)
+
+            if local_meas.size >= 2:
+                out['local_meas_rel_pos'] = _to_float(local_meas[0])
+                out['local_meas_vel'] = _to_float(local_meas[1])
+            if est_meas.size >= 2:
+                out['est_meas_rel_pos'] = _to_float(est_meas[0])
+                out['est_meas_vel'] = _to_float(est_meas[1])
+            if meas_err.size >= 2:
+                out['meas_err_rel_pos'] = _to_float(meas_err[0])
+                out['meas_err_vel'] = _to_float(meas_err[1])
+
+            # Scalars
+            out['neighbor_count'] = int(debug_data.get('neighbor_count', 0))
+            out['consensus_norm'] = _to_float(debug_data.get('consensus_norm', 0.0))
+            out['dt'] = _to_float(debug_data.get('dt', 0.0))
+            out['position'] = _to_float(debug_data.get('position', 0.0))
+            out['velocity'] = _to_float(debug_data.get('velocity', 0.0))
+            out['acceleration'] = _to_float(debug_data.get('acceleration', 0.0))
+            out['control_input'] = _to_float(debug_data.get('control_input', 0.0))
+            out['local_measurement_p'] = _to_float(debug_data.get('local_measurement_p', 0.0))
+            out['local_measurement_v'] = _to_float(debug_data.get('local_measurement_v', 0.0))
+
+            # Collective control vector
+            cc = np.asarray(debug_data.get('collective_control', []), dtype=float).reshape(-1)
+            for i, value in enumerate(cc[:8], start=1):
+                out[f'collective_control_{i}'] = _to_float(value)
+
+            # Flatten fleet states to fleet_x_i / fleet_v_i for plotting
+            fleet = np.asarray(debug_data.get('fleet_states', []), dtype=float)
+            if fleet.ndim == 2 and fleet.shape[0] >= 4:
+                num_veh = min(fleet.shape[1], 8)
+                for vid in range(num_veh):
+                    out[f'fleet_x_{vid}'] = _to_float(fleet[0, vid])
+                    out[f'fleet_v_{vid}'] = _to_float(fleet[3, vid])
+
+            # Pass through true_* fields when available
+            for key, value in debug_data.items():
+                if key.startswith('true_position_') or key.startswith('true_velocity_') or key.startswith('true_acceleration_'):
+                    out[key] = _to_float(value, default=np.nan)
+
+            return out
+
+        except Exception:
+            # Telemetry path must remain non-blocking and resilient.
+            return {}
     
     def _get_v2v_status_cache(self) -> dict:
         """Get V2V status with caching to avoid repeated queries (updated every 1 second)"""
