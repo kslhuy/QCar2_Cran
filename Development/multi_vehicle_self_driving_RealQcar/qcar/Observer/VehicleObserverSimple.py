@@ -364,6 +364,16 @@ class VehicleObserver:
         if "fleet_estimator_type" not in merged and "fleet_estimator_type" in trust_cfg:
             merged["fleet_estimator_type"] = trust_cfg["fleet_estimator_type"]
 
+        child_vehicle = trust_cfg.get("vehicle", {})
+        if isinstance(child_vehicle, dict):
+            self._deep_merge_dict(trust_consensus.setdefault("vehicle", {}), child_vehicle)
+            self._deep_merge_dict(trust_kalman.setdefault("vehicle", {}), child_vehicle)
+
+        child_logging = trust_cfg.get("logging", {})
+        if isinstance(child_logging, dict):
+            self._deep_merge_dict(trust_consensus.setdefault("logging", {}), child_logging)
+            self._deep_merge_dict(trust_kalman.setdefault("logging", {}), child_logging)
+
         return merged
 
     def _init_recorders(self):
@@ -628,6 +638,9 @@ class VehicleObserver:
         merged["fleet_observer_rate"] = cfg_dict.get(
             "fleet_observer_rate", merged["fleet_observer_rate"]
         )
+
+        if "camera_distance_offset" in cfg_dict:
+            merged["camera_distance_offset"] = cfg_dict.get("camera_distance_offset")
 
         return merged
 
@@ -1019,6 +1032,11 @@ class VehicleObserver:
             source_name = str(source)
             source_name_l = source_name.lower()
 
+            # Add camera-to-center offset to make YOLO distance comparable to GPS center-to-center distance
+            camera_offset = float(self.observer_config.get("camera_distance_offset", 0.40))
+            if "yolo" in source_name_l:
+                rel_distance += camera_offset
+
             base_conf = float("nan")
             if measurement_confidence is not None:
                 try:
@@ -1144,6 +1162,17 @@ class VehicleObserver:
         Args:
             estimator: LocalStateEstimatorBase instance
         """
+        previous_estimator = getattr(self, "local_estimator", None)
+        if previous_estimator is not None and previous_estimator is not estimator:
+            try:
+                if hasattr(previous_estimator, "stop_recording"):
+                    previous_estimator.stop_recording()
+            except Exception as e:
+                if self.vehicle_logger:
+                    self.vehicle_logger.log_warning(
+                        f"Failed to stop previous local estimator recording: {e}"
+                    )
+
         self.local_estimator = estimator
         self.vehicle_logger.logger.info(
             f"Local estimator set for vehicle {self.vehicle_id}: {type(estimator).__name__}"

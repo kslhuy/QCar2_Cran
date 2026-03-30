@@ -152,6 +152,7 @@ class FollowingLeaderState(StateBase):
         # Extract basic sensor data
         x, y, theta = sensor_data["x"], sensor_data["y"], sensor_data["theta"]
         velocity = sensor_data["velocity"]
+        acceleration = float(sensor_data.get("acceleration", 0.0))
         yolo_data = sensor_data.get("yolo_data", {})
 
         # Update Data for PlatoonController (perception and V2V data)
@@ -161,7 +162,9 @@ class FollowingLeaderState(StateBase):
         v2v_data = self._get_v2v_leader_data()
 
         # Compute control using PlatoonController (pass yolo_data for turning detection)
-        u, delta = self._compute_control(dt, x, y, theta, velocity, v2v_data, yolo_data)
+        u, delta = self._compute_control(
+            dt, x, y, theta, velocity, acceleration, v2v_data, yolo_data
+        )
 
         # Enhanced periodic logging for debugging
         # self._log_status(velocity, u, v2v_data)
@@ -499,6 +502,7 @@ class FollowingLeaderState(StateBase):
         y: float,
         theta: float,
         velocity: float,
+        acceleration: float,
         v2v_data: Optional[Dict[str, Any]],
         yolo_data: Dict[str, Any] = None,
     ) -> Tuple[float, float]:
@@ -528,6 +532,7 @@ class FollowingLeaderState(StateBase):
             "y": y,
             "theta": theta,
             "velocity": velocity,
+            "acceleration": acceleration,
             "target_velocity": base_velocity,
             # Turning context for dynamic lookahead
             "is_turning": is_turning,

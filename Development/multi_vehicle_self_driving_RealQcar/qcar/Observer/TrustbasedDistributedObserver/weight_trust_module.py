@@ -39,6 +39,11 @@ class WeightConfig:
     trust_threshold: float = 0.5   # Minimum trust to be considered neighbor
     use_distance_weighting: bool = False  # Weight by distance (reserved)
 
+    # Flag-driven w₀ adaptation factors
+    flag_w0_target_attack_factor: float = 1.0    # Keep w₀ full when target under attack (local is reliable)
+    flag_w0_global_est_check_factor: float = 0.3 # Reduce w₀ when local sensors are faulty
+    flag_w0_local_est_check_factor: float = 0.5  # Reduce w₀ when local measurements unreliable
+
     @classmethod
     def from_dict(cls, d: dict) -> "WeightConfig":
         """Create config from a dictionary, using dataclass defaults for missing keys."""
@@ -553,6 +558,46 @@ class WeightTrustModule:
         }
 
         used = weights["w0"] + sum(weights["neighbors"].values())
+        weights["w_self"] = max(0.0, 1.0 - used)
+        return weights
+
+    @staticmethod
+    def apply_flag_adaptation(
+        weights: Dict[str, object],
+        trust_score,
+        config: WeightConfig,
+    ) -> Dict[str, object]:
+        """
+        
+        Adjust per-target weights based on trust model attack flags.
+
+        Flag logic:
+        - flag_target_attack  (local OK, global BAD):  keep w₀ high
+        - flag_global_est_check (local BAD, global OK): reduce w₀
+        - flag_local_est_check  (local BAD):            reduce w₀
+
+        Freed budget is absorbed by w_self (own dynamics prediction).
+        """
+        if trust_score is None:
+            return weights
+
+        w0_original = weights.get("w0", 0.0)
+
+        if trust_score.flag_target_attack:
+            # Local sensors say OK, fleet says BAD → trust your own sensor
+            factor = config.flag_w0_target_attack_factor
+            weights["w0"] = max(w0_original, w0_original * factor)
+        elif trust_score.flag_global_est_check:
+            # Local sensors BAD, fleet says OK → reduce local, lean on neighbors
+            weights["w0"] = w0_original * config.flag_w0_global_est_check_factor
+        elif trust_score.flag_local_est_check:
+            # Local measurements unreliable
+            weights["w0"] = w0_original * config.flag_w0_local_est_check_factor
+        else:
+            return weights  # no flag active, nothing to change
+
+        # Rebalance: w_self absorbs the residual
+        used = weights["w0"] + sum(weights.get("neighbors", {}).values())
         weights["w_self"] = max(0.0, 1.0 - used)
         return weights
     

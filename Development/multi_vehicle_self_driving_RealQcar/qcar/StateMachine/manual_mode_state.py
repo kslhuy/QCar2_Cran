@@ -10,7 +10,7 @@ import time
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from .state_base import StateBase
-from .vehicle_state import VehicleState, StateTransitionReason, Gear
+from .vehicle_state import VehicleState, StateTransitionReason
 
 
 # Import CommandType once at module level
@@ -130,26 +130,9 @@ class ManualModeState(StateBase):
             throttle = data.get("throttle", 0.0)
             steering = data.get("steering", 0.0)
 
-            if not self.vehicle_logic.is_physical_qcar:
-                throttle *= 0.7  # Scale down for simulation (to sensible speeds)
-
-            # Apply Gear-based throttle limiting
-            limit = 0.2  # Default full power
-            if hasattr(self.vehicle_logic, "gear"):
-                current_gear = self.vehicle_logic.gear
-                if current_gear == Gear.DRIVE_1:
-                    limit = 0.2  # Limit to 50% power in Gear 1
-                elif current_gear == Gear.DRIVE_2:
-                    limit = 0.4  # Limit to 75% power in Gear 2
-                elif current_gear == Gear.DRIVE_3:
-                    limit = 0.6  # Full power in Gear 3
-                elif current_gear == Gear.DRIVE_4:
-                    limit = 0.8
-                elif current_gear == Gear.DRIVE_5:
-                    limit = 1.0
-
-                # # Apply limit to throttle magnitude
-                # throttle = min(throttle, limit)
+            # Keep manual-mode throttle limiting consistent with the rest of the
+            # control stack: the gear enum value is the effective max throttle.
+            limit = float(getattr(getattr(self.vehicle_logic, "gear", None), "value", 0.1))
 
             # Validate and clamp control inputs
             throttle = max(-limit, min(limit, throttle))

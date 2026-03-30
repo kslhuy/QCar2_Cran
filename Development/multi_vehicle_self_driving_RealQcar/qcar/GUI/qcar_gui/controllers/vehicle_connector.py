@@ -39,7 +39,7 @@ class RemoteConfig:
 
     username: str = "nvidia"
     password: str = "nvidia"
-    remote_path: str = "/home/nvidia/Documents/multi_vehicle_RealCar"
+    remote_path: str = "/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar"
     timeout: int = 10
 
 
@@ -557,6 +557,7 @@ class VehicleConnector:
                 "Calibration",
                 "PathPlanner",
                 "Taxi",
+                "GUI",
             ]
             for folder_name in folders:
                 folder_path = os.path.join(self.scripts_path, folder_name)
@@ -603,21 +604,26 @@ class VehicleConnector:
             elif resolved_type == "Qcar" and runtime_mode == "Ros":
                 self._progress("Building ROS2 workspace on QCar...")
                 self._log(
-                    f"Car {car_id}: Running colcon build for ros2test...",
+                    f"Car {car_id}: Building ros2test package in /home/nvidia/Documents/qcar2/Development/ros2...",
                     "INFO",
                 )
                 build_cmd = (
                     "bash -c 'cd /home/nvidia/Documents/qcar2/Development/ros2 && "
-                    "colcon build --packages-select ros2test --symlink-install'"
+                    "colcon build --packages-select ros2test'"
                 )
                 stdin, stdout, stderr = ssh.exec_command(build_cmd)
                 exit_status = stdout.channel.recv_exit_status()
+                
+                # Capture output for potential troubleshooting
+                output = stdout.read().decode().strip()
+                if output:
+                    self._log(f"Car {car_id} build log (tail): {output[-200:]}", "DEBUG")
 
                 if exit_status == 0:
                     self._log(f"Car {car_id}: ROS build successful.", "SUCCESS")
                 else:
                     err = stderr.read().decode().strip()
-                    msg = f"ROS build failed: {err}" if err else "ROS build failed"
+                    msg = f"ROS build failed (exit {exit_status}): {err}" if err else f"ROS build failed (exit {exit_status})"
                     self._log(f"Car {car_id}: {msg}", "ERROR")
                     return False, msg
 
@@ -926,14 +932,38 @@ class VehicleConnector:
         try:
             # ROS2 workspace on Limo (all launch commands use ros2 run/launch directly)
             ws = "/home/agilex/agilex_ws"
-            source = f"source {ws}/install/setup.bash"
+            # Source both the ROS2 base install AND the workspace overlay.
+            # bash -lc does NOT fully source .bashrc on Ubuntu (non-interactive
+            # guard exits early), so we source explicitly here.
+            ros_source = (
+                "export ROS_DOMAIN_ID=1; "
+                "source /opt/ros/*/setup.bash 2>/dev/null; "
+                f"source {ws}/install/setup.bash"
+            )
 
             # ── Step 0: Kill any existing processes ───────────────────────────
             self._progress("Limo: Stopping existing processes...")
-            ssh.exec_command("pkill -f limo_start 2>/dev/null; true")
-            ssh.exec_command("pkill -f localization_slam_toolbox 2>/dev/null; true")
-            ssh.exec_command("pkill -f vehicle_main_ros_qcar 2>/dev/null; true")
-            ssh.exec_command("pkill -f waypoint_alignment 2>/dev/null; true")
+            cleanup_patterns = (
+                "limo_start.launch.py",
+                "localization_cartographer_qcar.launch.py",
+                "vehicle_main_ros_limo",
+                "vehicle_control_full_system_qcar",
+                "waypoint_alignment_helper",
+                "cartographer_node",
+                "cartographer_occupancy_grid_node",
+                "cartographer_initialpose_bridge",
+                "limo_base_node",
+                "robot_state_publisher",
+                "joint_state_publisher",
+                "rf2o_laser_odometry",
+                "ydlidar_ros2_driver_node",
+                "ekf_filter_node",
+                "sdcqcar_to_map",
+                "base_link_to_laser_link",
+                "waypoints_qcar",
+            )
+            for pattern in cleanup_patterns:
+                ssh.exec_command(f"pkill -f '{pattern}' 2>/dev/null; true")
             time.sleep(1)
 
             def _redir(tag: str) -> str:
@@ -941,79 +971,191 @@ class VehicleConnector:
                     return f">> /tmp/limo_{car_id}_{tag}.log 2>&1"
                 return "> /dev/null 2>&1"
 
+            # Diagnostic: verify ros2 is reachable before launching
+            stdin, stdout, _ = ssh.exec_command(
+                f"bash -c '{ros_source} && which ros2'"
+            )
+            ros2_path = stdout.read().decode().strip()
+            if not ros2_path:
+                self._log(
+                    f"Car {car_id} (Limo): 'ros2' not found after sourcing setup scripts. "
+                    "Check /opt/ros/ and workspace install on robot.",
+                    "ERROR",
+                )
+                return False, "ros2 not found on Limo (source setup failed)"
+            self._log(f"Car {car_id} (Limo): ros2 found at {ros2_path}", "INFO")
+
             # ── Step 1: Hardware bringup ──────────────────────────────────────
             self._progress("Limo: Step 1/3 — Hardware bringup...")
             bringup_cmd = (
-                f"bash -c '{source} && "
-                f"ros2 launch limo_bringup limo_start.launch.py "
-                f"{_redir('bringup')}' &"
+                f"bash -c '{ros_source} && cd {ws} && "
+                f"nohup ros2 launch limo_bringup limo_start.launch.py "
+                f"{_redir('bringup')} &'"
             )
             ssh.exec_command(bringup_cmd)
             time.sleep(3)
 
-            # ── Step 2: Navigation V2V stack (nav2 + AMCL + TF) ──────────────
-            self._progress("Limo: Step 2/3 — Navigation V2V stack...")
+            # ── Step 2: Localization (Cartographer) ───────────────────────────
+            self._progress("Limo: Step 2/3 — Cartographer localization...")
             nav_cmd = (
-                f"bash -c '{source} && "
-                f"ros2 launch limo_nav_huy_test localization_slam_toolbox_qcar.launch.py "
-                f"{_redir('nav')}' &"
+                f"bash -c '{ros_source} && cd {ws} && "
+                f"nohup ros2 launch limo_nav_huy_test localization_cartographer_qcar.launch.py "
+                f"runtime_mapping:=false load_frozen_state:=true "
+                f"{_redir('nav')} &'"
             )
             ssh.exec_command(nav_cmd)
-            time.sleep(4)
+            time.sleep(5)
 
-            # ── Step 3a: Calibration / alignment helper ───────────────────────
-            if calibrate:
-                self._progress("Limo: Step 3/3 — Waypoint alignment helper...")
-                align_cmd = (
-                    f"bash -c '{source} && "
-                    f"ros2 run limo_nav_huy_test waypoint_alignment_helper "
-                    f"{_redir('align')}' &"
-                )
-                ssh.exec_command(align_cmd)
-                time.sleep(2)
-                self._log(
-                    f"Car {car_id} (Limo): Alignment helper launched — "
-                    "use RViz/initialpose_sdc topic to align, then restart without calibration.",
-                    "INFO",
-                )
-                return True, "Limo: bringup + nav + alignment helper running"
+            # # ── Step 3a: Calibration / alignment helper ───────────────────────
+            # if calibrate:
+            #     self._progress("Limo: Step 3/3 — Waypoint alignment helper...")
+            #     align_cmd = (
+            #         f"bash -c '{ros_source} && cd {ws} && "
+            #         f"nohup ros2 run limo_nav_huy_test waypoint_alignment_helper "
+            #         f"{_redir('align')} &'"
+            #     )
+            #     ssh.exec_command(align_cmd)
+            #     time.sleep(2)
+            #     self._log(
+            #         f"Car {car_id} (Limo): Alignment helper launched — "
+            #         "use RViz/initialpose_sdc topic to align, then restart without calibration.",
+            #         "INFO",
+            #     )
+            #     return True, "Limo: bringup + nav + alignment helper running"
 
             # ── Step 3b: ROS2 vehicle_main node ──────────────────────────────
-            self._progress("Limo: Step 3/3 — Starting vehicle_main_ros_qcar...")
+            self._progress("Limo: Step 3/3 — Starting vehicle_main_ros_limo...")
             
             # Detect GS IP and port
             host = self._get_best_host_ip(ip) if ip else self.gs_config.local_ip
-            port = self.gs_config.base_port
+            # port = self.gs_config.base_port
             
             vm_cmd = (
-                f"bash -c '{source} && "
-                f"ros2 run limo_nav_huy_test vehicle_main_ros_qcar --ros-args "
-                f"-p car_id:={car_id} -p host:={host} -p port:={port} "
-                f"{_redir('vehicle')}' &"
+                f"bash -c '{ros_source} && cd {ws} && "
+                f"nohup ros2 run limo_nav_huy_test vehicle_main_ros_limo --ros-args "
+                f"-p car_id:={car_id} -p host:={host} "
+                f"{_redir('vehicle')} &'"
             )
             ssh.exec_command(vm_cmd)
             time.sleep(3)
 
-            # ── Verify processes are alive ────────────────────────────────────
-            stdin, stdout, _ = ssh.exec_command(
-                "pgrep -fa 'limo_start|vehicle_main_ros_qcar'"
-            )
-            pids = stdout.read().decode().strip()
+            # ── Verify core vehicle process and GS connection ──────────────────
+            target_port = self.gs_config.base_port + car_id
 
-            if pids:
+            vm_live = ""
+            infra_live = ""
+            gs_connected = False
+
+            for _ in range(10):
+                vm_check_cmd = (
+                    "ps -eo pid=,args= | grep -E "
+                    "'vehicle_main_ros_limo|vehicle_control_full_system_qcar' | "
+                    "grep -v 'bash -c' | grep -v 'grep -E'"
+                )
+                stdin, stdout, _ = ssh.exec_command(vm_check_cmd)
+                vm_live = stdout.read().decode().strip()
+
+                infra_cmd = (
+                    "ps -eo pid=,args= | grep -E "
+                    "'limo_start.launch.py|localization_cartographer_qcar.launch.py|"
+                    "limo_base_node|cartographer_node|robot_state_publisher' | "
+                    "grep -v 'bash -c' | grep -v 'grep -E'"
+                )
+                stdin, stdout, _ = ssh.exec_command(infra_cmd)
+                infra_live = stdout.read().decode().strip()
+
+                # Prefer explicit application-level success marker first.
+                log_connect_cmd = (
+                    f"test -f /tmp/limo_{car_id}_vehicle.log && "
+                    f"grep -E 'Connected to Ground Station successfully|Ground Station communication established' "
+                    f"/tmp/limo_{car_id}_vehicle.log | tail -n 1"
+                )
+                stdin, stdout, _ = ssh.exec_command(log_connect_cmd)
+                if stdout.read().decode().strip():
+                    gs_connected = True
+
+                # Fallback: verify TCP ESTABLISHED to the expected GS host:port.
+                if not gs_connected:
+                    tcp_check_cmd = (
+                        f"ss -tn | grep '{host}:{target_port}' | grep ESTAB"
+                    )
+                    stdin, stdout, _ = ssh.exec_command(tcp_check_cmd)
+                    if stdout.read().decode().strip():
+                        gs_connected = True
+
+                if vm_live and gs_connected:
+                    break
+
+                time.sleep(1)
+
+            if vm_live and gs_connected:
+                merged_live = " | ".join(
+                    item for item in (vm_live, infra_live) if item
+                )
                 self._log(
-                    f"Car {car_id} (Limo): ROS2 nodes running — "
-                    f"{pids.replace(chr(10), ' | ')[:120]}",
+                    f"Car {car_id} (Limo): ROS2 nodes running - "
+                    f"{merged_live[:220]}",
                     "SUCCESS",
                 )
-                return True, "Limo started: bringup + nav + vehicle_main_ros_qcar"
-            else:
+                return (
+                    True,
+                    f"Limo started and connected to GS ({host}:{target_port})",
+                )
+
+            if vm_live and not gs_connected:
                 self._log(
-                    f"Car {car_id} (Limo): No processes detected after launch "
-                    "(check /tmp/limo_*.log on robot)",
+                    f"Car {car_id} (Limo): vehicle_main is running but not connected to "
+                    f"Ground Station at {host}:{target_port}",
                     "WARNING",
                 )
-                return False, "Limo: processes did not start (see /tmp/limo_*.log)"
+
+                if infra_live:
+                    self._log(
+                        f"Car {car_id} (Limo): active ROS infra - "
+                        f"{infra_live.replace(chr(10), ' | ')[:220]}",
+                        "INFO",
+                    )
+
+                if enable_logs:
+                    stdin, stdout, _ = ssh.exec_command(
+                        f"test -f /tmp/limo_{car_id}_vehicle.log && tail -n 40 /tmp/limo_{car_id}_vehicle.log"
+                    )
+                    vehicle_tail = stdout.read().decode().strip()
+                    if vehicle_tail:
+                        self._log(
+                            f"Car {car_id} (Limo): tail /tmp/limo_{car_id}_vehicle.log - "
+                            f"{vehicle_tail.replace(chr(10), ' | ')[:240]}",
+                            "WARNING",
+                        )
+
+                return (
+                    False,
+                    f"Limo vehicle_main started but GS connection failed ({host}:{target_port})",
+                )
+
+            if enable_logs:
+                for log_file in (
+                    f"/tmp/limo_{car_id}_bringup.log",
+                    f"/tmp/limo_{car_id}_nav.log",
+                    f"/tmp/limo_{car_id}_vehicle.log",
+                ):
+                    stdin, stdout, _ = ssh.exec_command(
+                        f"test -f {log_file} && tail -n 20 {log_file}"
+                    )
+                    snippet = stdout.read().decode().strip()
+                    if snippet:
+                        self._log(
+                            f"Car {car_id} (Limo): tail {log_file} - "
+                            f"{snippet.replace(chr(10), ' | ')[:220]}",
+                            "WARNING",
+                        )
+
+            self._log(
+                f"Car {car_id} (Limo): No real ROS processes detected after launch "
+                "(check /tmp/limo_*.log on robot)",
+                "WARNING",
+            )
+            return False, "Limo: processes did not start (see /tmp/limo_*.log)"
 
         except Exception as e:
             msg = f"Limo start failed: {str(e)}"
@@ -1110,7 +1252,7 @@ class VehicleConnector:
         try:
             # Check what's running
             # Include ROS2 processes for Limo
-            terminal_pattern = "vehicle_main|vehicle_main_ros_qcar|yolo_server|ros2|rclpy|limo_start|localization_slam_toolbox|localization_cartographer_qcar|cartographer|waypoint_alignment|nav2|amcl|bt_navigator|robot_state_publisher|ekf_filter_node|limo_base_node|static_transform_publisher"
+            terminal_pattern = "vehicle_main|vehicle_main_ros_qcar|vehicle_main_ros_limo|yolo_server|ros2|rclpy|limo_start|localization_slam_toolbox|localization_cartographer_qcar|cartographer|waypoint_alignment|waypoints_qcar|joint_state_publisher|nav2|amcl|bt_navigator|robot_state_publisher|ekf_filter_node|limo_base_node|static_transform_publisher|astra_camera"
             
             stdin, stdout, stderr = ssh.exec_command(f"pgrep -f '{terminal_pattern}'")
             running_pids = stdout.read().decode().strip()
@@ -1441,3 +1583,9 @@ except Exception as e:
         self.remote_config = RemoteConfig(
             username=username, password=password, remote_path=remote_path
         )
+
+    def get_vehicle_type(
+        self, car_id: int, fallback: Optional[str] = None
+    ) -> Optional[str]:
+        """Get the tracked vehicle type for a specific car."""
+        return self._vehicle_types.get(car_id, fallback)

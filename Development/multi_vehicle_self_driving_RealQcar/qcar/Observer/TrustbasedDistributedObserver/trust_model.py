@@ -127,6 +127,12 @@ class TrustConfig:
     gamma_chi2_dof_local: int = 2
     gamma_chi2_dof_global: int = 5
 
+    # Minimum longitudinal distance limit (meters) for preceding/following cross-check
+    minimum_longitudinal_distance: float = 0.1
+
+    # Offset for relative distance from camera (camera is mounted at the front, GPS at the center)
+    camera_distance_offset: float = 0.50 # Default offset to add to YOLO measurements
+
     @classmethod
     def from_dict(cls, d: dict) -> "TrustConfig":
         """Create config from a dictionary, using dataclass defaults for missing keys.
@@ -1434,6 +1440,34 @@ class TriPTrustModel:
         local_relative_dof = max(1, int(y_local.size))
         d_self = self._relative_mahalanobis(y_local, y_self_est)
         gamma_self = self._distance_to_gamma(d_self, dof=local_relative_dof)
+
+        # New Feature: Fleet-Wide Longitudinal Distance Sanity Check
+        # Validate distances between consecutive vehicles within the host's own global estimation.
+        # If any vehicle is too close to its predecessor (or order is violated), self-trust is broken.
+        if host_fleet_estimates is not None:
+            num_vehicles = host_fleet_estimates.shape[1]
+            min_dist = self.config.minimum_longitudinal_distance
+
+            # We iterate from i=1 to num_vehicles-1 to check ID [i-1] (predecessor) against ID [i] (follower).
+            for i in range(1, num_vehicles):
+                pred_vec = host_fleet_estimates[:, i - 1]
+                follower_vec = host_fleet_estimates[:, i]
+
+                # If either estimate vector is empty/zeroed, we skip it
+                if np.all(pred_vec == 0) or np.all(follower_vec == 0):
+                    continue
+
+                dx = float(pred_vec[0]) - float(follower_vec[0])
+                dy = float(pred_vec[1]) - float(follower_vec[1])
+                follower_theta = float(follower_vec[2])
+
+                # Project the relative position of the predecessor onto the follower's heading.
+                # Since [i-1] is the predecessor, this longitudinal distance should be positive.
+                longitudinal_dist = dx * np.cos(follower_theta) + dy * np.sin(follower_theta)
+
+                if longitudinal_dist < min_dist:
+                    gamma_self = 0.0
+                    break
 
         # ===== gamma_host (MATLAB: gamma_cross) =====
         # Full-state Mahalanobis: Host's entire fleet estimates vs Target's entire fleet estimates

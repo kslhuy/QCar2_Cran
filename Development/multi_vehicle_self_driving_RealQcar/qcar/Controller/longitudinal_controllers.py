@@ -252,6 +252,12 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         min_effective_spacing=0.0,
         use_feedforward=False,
         leader_acceleration_weight: float = 0.0,
+        limo_max_speed: float = 0.8,
+        limo_max_accel: float = 0.4,
+        limo_max_decel: float = 0.8,
+        limo_leader_speed_margin: float = 0.12,
+        limo_gap_closing_gain: float = 0.25,
+        limo_close_gap_gain: float = 0.8,
         config=None,
         logger=None,
         **kwargs,
@@ -309,9 +315,21 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.brake_smoothing = params.get('brake_smoothing', brake_smoothing)
             self.max_acc_rate = params.get('max_acc_rate', max_acc_rate)
             self.use_feedforward = params.get('use_feedforward', use_feedforward)
-            # read new weight; fallback to old gain key for backwards compat
             self.leader_acceleration_weight = params.get(
-                'leader_acceleration_weight', params.get('leader_acceleration_gain', 0.0)
+                'leader_acceleration_weight',
+                params.get('leader_acceleration_gain', leader_acceleration_weight),
+            )
+            self.limo_max_speed = params.get("limo_max_speed", limo_max_speed)
+            self.limo_max_accel = params.get("limo_max_accel", limo_max_accel)
+            self.limo_max_decel = params.get("limo_max_decel", limo_max_decel)
+            self.limo_leader_speed_margin = params.get(
+                "limo_leader_speed_margin", limo_leader_speed_margin
+            )
+            self.limo_gap_closing_gain = params.get(
+                "limo_gap_closing_gain", limo_gap_closing_gain
+            )
+            self.limo_close_gap_gain = params.get(
+                "limo_close_gap_gain", limo_close_gap_gain
             )
             self.vehicle_type = kwargs.get("vehicle_type", params.get('vehicle_type', 'QCar'))
         else:
@@ -332,6 +350,12 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.use_feedforward = use_feedforward
             # take argument value when config not used
             self.leader_acceleration_weight = leader_acceleration_weight
+            self.limo_max_speed = limo_max_speed
+            self.limo_max_accel = limo_max_accel
+            self.limo_max_decel = limo_max_decel
+            self.limo_leader_speed_margin = limo_leader_speed_margin
+            self.limo_gap_closing_gain = limo_gap_closing_gain
+            self.limo_close_gap_gain = limo_close_gap_gain
             self.vehicle_type = kwargs.get('vehicle_type', 'QCar')
 
         # Command velocity used for Limo rate limiting
@@ -527,7 +551,36 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         self.prev_acc_desired = acc_desired
         return acc_desired
 
-    def _compute_limo_velocity_cmd(self, acc_desired: float, follower_state: Dict[str, float], leader_state: Dict[str, float], dt: float) -> float:
+    def _compute_limo_speed_cap(
+        self,
+        spacing_error: float,
+        follower_state: Dict[str, float],
+        leader_state: Dict[str, float],
+    ) -> float:
+        """
+        Compute a conservative speed ceiling for the Limo follower.
+
+        Poor localization can make the gap estimate jump. This speed cap keeps
+        the follower close to the leader's speed unless the spacing error is
+        clearly positive.
+        """
+        leader_v = max(0.0, float(leader_state.get("velocity", 0.0)))
+        recovery_speed = self.limo_gap_closing_gain * max(spacing_error, 0.0)
+        speed_cap = leader_v + self.limo_leader_speed_margin + recovery_speed
+
+        if spacing_error < 0.0:
+            speed_cap += self.limo_close_gap_gain * spacing_error
+
+        return float(np.clip(speed_cap, 0.0, self.limo_max_speed))
+
+    def _compute_limo_velocity_cmd(
+        self,
+        acc_desired: float,
+        spacing_error: float,
+        follower_state: Dict[str, float],
+        leader_state: Dict[str, float],
+        dt: float,
+    ) -> float:
         """Compute the velocity command for the Limo robot."""
         # Using our own velocity prevents relying on potentially attacked leader velocity data.
         # We integrate the desired acceleration from our current actual velocity.
@@ -537,15 +590,23 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         # snap it to the current velocity so we don't get integral windup or cold starts.
         if abs(self.cmd_v - v) > 0.5:
             self.cmd_v = v
-             
+
+        # Limo needs a much gentler velocity profile than QCar effort control.
+        acc_desired = float(
+            np.clip(acc_desired, -self.limo_max_decel, self.limo_max_accel)
+        )
+
         # Integrate acceleration to get the new velocity command
         self.cmd_v += acc_desired * dt
         
         # Stop condition: if trying to slow down, and both vehicles are nearly stopped
         if acc_desired < 0 and v < 0.05 and leader_state.get("velocity", 0.0) < 0.05:
             self.cmd_v = 0.0  # Force stop
-            
-        self.cmd_v = np.clip(self.cmd_v, 0.0, 3.0)  # Absolute limit increased to 3.0 to allow Gear scaling
+
+        speed_cap = self._compute_limo_speed_cap(
+            spacing_error, follower_state, leader_state
+        )
+        self.cmd_v = np.clip(self.cmd_v, 0.0, speed_cap)
         self.prev_throttle = self.cmd_v
         return float(self.cmd_v)
 
@@ -597,7 +658,9 @@ class CACCLongitudinalController(LongitudinalControllerBase):
 
         # 4. Generate vehicle-specific hardware commands
         if getattr(self, "vehicle_type", "QCar") == "Limo":
-            return self._compute_limo_velocity_cmd(acc_desired, follower_state, leader_state, dt)
+            return self._compute_limo_velocity_cmd(
+                acc_desired, spacing_error, follower_state, leader_state, dt
+            )
         else:
             # Inject velocity feedforward for QCar effort control
             if getattr(self, "use_feedforward", False):
@@ -614,7 +677,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
                 if param == "K":
                     setattr(self, param, np.array(value))
                 elif param in ("leader_acceleration_gain", "leader_acceleration_weight"):
-                    # ensure float conversion; accept either key for compatibility
+                    # Ensure numeric conversion for control calculations.
                     self.leader_acceleration_weight = float(value)
                 else:
                     setattr(self, param, value)

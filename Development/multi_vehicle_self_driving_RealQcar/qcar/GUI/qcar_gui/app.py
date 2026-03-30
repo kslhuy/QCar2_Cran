@@ -79,6 +79,9 @@ class QCarFleetController(DeploymentMixin, FleetCommandsMixin, VehicleCommandsMi
         )
         self._remote.websocket_port = ws_port
         self._input = ManualInputController(self.config.manual_control)
+        self._input.set_keyboard_profile_callback(
+            self._on_manual_keyboard_profile_changed
+        )
 
         # Load dynamic configurations
         self._dynamic_config = get_available_config(controller_mode="sim")
@@ -311,6 +314,7 @@ class QCarFleetController(DeploymentMixin, FleetCommandsMixin, VehicleCommandsMi
             on_set_initial_position=self._set_initial_position,
             on_toggle_manual=self._toggle_manual_mode,
             on_update_control_type=self._update_control_type,
+            on_update_manual_profile=self._update_manual_profile,
             on_platoon_position_change=self._update_platoon_position,
             on_toggle_perception=self._toggle_perception_car,
             on_toggle_probing=self._toggle_probing_car,
@@ -360,6 +364,10 @@ class QCarFleetController(DeploymentMixin, FleetCommandsMixin, VehicleCommandsMi
                 )
                 panel.pack(fill="x", pady=(0, 15))
                 self._car_panels[car_id] = panel
+                vehicle_type = self._get_manual_vehicle_type(car_id)
+                panel.set_manual_keyboard_profile(
+                    self._input.get_keyboard_profile(car_id, vehicle_type)
+                )
                 self.log(f"Car {car_id} connected - New panel created", "SUCCESS")
 
         if not current_connected:

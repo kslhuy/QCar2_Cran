@@ -15,8 +15,7 @@ python multi_probing.py --car 0
 ```powershell
 python multi_probing.py --car 1
 ```
-
-<!-- python multi_probing.py --ip 192.168.1.50 --car 3 -->
+python multi_probing.py --ip 192.168.1.50 --car 3 
 
 
 ### Options

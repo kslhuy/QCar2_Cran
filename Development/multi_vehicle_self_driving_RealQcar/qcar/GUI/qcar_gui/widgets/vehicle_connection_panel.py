@@ -49,6 +49,7 @@ class VehicleConnectionConfig:
             "Calibration",
             "PathPlanner",
             "Taxi",
+            "GUI",
         ]
     )
     upload_root_files: bool = True
@@ -525,17 +526,7 @@ class VehicleConnectionPanel(BaseWidget):
             dialog, text="Select items to upload:", style="normal", theme=self.theme
         ).pack(pady=10, padx=10, anchor="w")
 
-        folders = [
-            "StateMachine",
-            "Yolo",
-            "Observer",
-            "V2V",
-            "Controller",
-            "simulation",
-            "Calibration",
-            "PathPlanner",
-            "Taxi",
-        ]
+        folders = self.default_config.folders_to_upload.copy()
         
         frame = tk.Frame(dialog, bg=c.bg_panel)
         frame.pack(fill="both", expand=True, padx=20)

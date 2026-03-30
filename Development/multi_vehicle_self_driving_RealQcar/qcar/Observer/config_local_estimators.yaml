@@ -49,10 +49,22 @@ local:
   # ---------------------------------------------------------------------
   robust_kalman_net:
     use_model: true              # Create the network adapter and try to use learned inference.
-    load_pretrained: false       # Set true after training and saving a checkpoint.
+    load_pretrained: true       # Set true after training and saving a checkpoint.
     model_path: models/robust_kalmannet.pt # Relative to Observer/KalmaNet/Robust/
     allow_untrained_model: false # Keep false for runtime use; random weights are not useful.
-    use_fallback: true           # Use GPS-corrected kinematic fallback when no checkpoint is available.
+    use_fallback: false           # Use GPS-corrected kinematic fallback when no checkpoint is available.
+    enable_ekf_comparator: true  # Run the standard EKF in parallel for online comparison.
+    comparator_console_log: false # Keep console quiet during runtime.
+    comparator_log_interval: 100  # If console logging is enabled, log every N updates.
+    comparator_history_size: 200 # Keep the last N comparison snapshots in memory.
+    comparator_record_to_file: true # Write comparator samples to CSV for offline plotting.
+    comparator_record_interval: 1 # Record every N updates to the CSV file.
+    comparator_flush_interval: 25 # Flush the comparator CSV every N recorded rows.
+    comparator_output_dir: logs/comparator # Relative to Observer/KalmaNet/Robust/
+    comparator_file_prefix: rknet_comparison
+    comparator_overwrite: false
+    mask_branch_active_threshold: 0.5 # For log interpretation only; marks a branch as "active" when mean mask >= threshold.
+    comparator_use_qcar_ekf: true # Use QCarEKF inside the comparator when available.
     sequence_length: 20          # Rolling window length for sequence inference.
     min_history: 5               # Minimum history before running the network.
     dt: 0.02                     # Nominal sample time used by the model config.

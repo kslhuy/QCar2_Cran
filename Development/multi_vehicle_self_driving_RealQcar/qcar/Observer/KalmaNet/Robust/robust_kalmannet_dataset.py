@@ -140,13 +140,14 @@ class RobustKalmanNetDatasetRecorder:
                 dtype=np.float32,
             )
 
+            target_w = float(target[4]) if target.size > 4 else w
             x_gt = np.array(
                 [
                     float(target[0]),
                     float(target[1]),
                     _wrap_angle(float(target[2])),
                     float(target[3]),
-                    w,
+                    target_w,
                 ],
                 dtype=np.float32,
             )
@@ -183,13 +184,27 @@ class RobustKalmanNetDatasetRecorder:
             return False
 
     def stop(self, save: bool = True) -> Optional[str]:
-        if not self.recording:
-            return self.last_saved_path
+        """Stop recording and optionally save the buffer."""
+        already_stopped = not self.recording
         self.recording = False
+        
         if not save:
-            self._log_info(f"[RKNetDataset] Recording stopped without saving for V{self.vehicle_id}")
+            if not already_stopped:
+                self._log_info(f"[RKNetDataset] Recording stopped for V{self.vehicle_id}")
             return None
-        return self._save_dataset()
+            
+        # If we want to save, check if we have data even if already stopped
+        sample_count = len(self._buffers.get("timestamps", []))
+        if sample_count > 0:
+            return self._save_dataset()
+            
+        return self.last_saved_path
+
+    def clear(self) -> None:
+        """Clear all buffered samples."""
+        self._buffers = {}
+        self._log_info(f"[RKNetDataset] Buffer cleared for V{self.vehicle_id}")
+
 
     def _save_dataset(self) -> Optional[str]:
         try:

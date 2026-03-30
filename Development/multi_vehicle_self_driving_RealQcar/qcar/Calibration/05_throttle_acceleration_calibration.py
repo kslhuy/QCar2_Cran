@@ -240,15 +240,6 @@ parser.add_argument(
     help="Ratio for lead-time suggestion (0.632 means 63.2%% response)",
 )
 parser.add_argument(
-    "--frequency",
-    type=int,
-    default=500,
-    help="QCar HIL task frequency [Hz]. Controls the QUARC model step rate. "
-         "Higher values give better motor physics (the model integrates faster). "
-         "The data-collection rate is controlled by --dt independently. "
-         "Set 0 to omit (model uses its compiled default). (default: 500)",
-)
-parser.add_argument(
     "--dt",
     type=float,
     default=0.02,
@@ -371,20 +362,12 @@ else:
 # Hardware interface
 # ---------------------------------------------------------------------------
 class QCarHardwareInterface:
-    """Unified wrapper for physical and QLabs virtual QCar access.
+    """Unified wrapper for physical and QLabs virtual QCar access."""
 
-    IMPORTANT: ``frequency`` must be passed to the QCar constructor so that
-    ``qcar.read()`` blocks until the next HIL sample is ready.  Without it
-    ``read()`` returns immediately with stale/cached data.
-    Matches production pattern in ``initializing_state.py``.
-    """
-
-    def __init__(self, qlabs_mode: bool = False, actor_name: str = "QC2_0",
-                 frequency: int = 500):
+    def __init__(self, qlabs_mode: bool = False, actor_name: str = "QC2_0"):
         self._qcar = None
         self._qlabs_mode = qlabs_mode
         self._actor_name = actor_name
-        self._frequency = frequency
 
     def connect(self):
         from pal.products.qcar import QCar
@@ -404,23 +387,14 @@ class QCarHardwareInterface:
                     f"hilPort=None for actor '{self._actor_name}'. "
                     "QLabs model may not be running."
                 )
-            if self._frequency > 0:
-                self._qcar = QCar(readMode=1, frequency=self._frequency,
-                                  hilPort=hil_port)
-            else:
-                self._qcar = QCar(readMode=1, hilPort=hil_port)
-            freq_label = f"{self._frequency}Hz" if self._frequency > 0 else "default"
+            self._qcar = QCar(readMode=1, hilPort=hil_port)
             print(
                 f"[QLABS] Connected to virtual QCar '{self._actor_name}' "
-                f"(hilPort={hil_port}, frequency={freq_label})"
+                f"(hilPort={hil_port})"
             )
         else:
-            if self._frequency > 0:
-                self._qcar = QCar(readMode=1, frequency=self._frequency)
-            else:
-                self._qcar = QCar(readMode=1)
-            freq_label = f"{self._frequency}Hz" if self._frequency > 0 else "default"
-            print(f"[HW] Physical QCar connected (frequency={freq_label}).")
+            self._qcar = QCar(readMode=1)
+            print("[HW] Physical QCar connected.")
 
     def send_throttle(self, throttle: float, steering: float = 0.0):
         self._qcar.write(
@@ -832,45 +806,42 @@ def run_calibration(
 
     results: List[Dict[str, object]] = []
 
-    with (
-        CSVLogger(
-            raw_csv,
-            [
-                "transition_idx",
-                "phase",
-                "time_s",
-                "rel_time_s",
-                "throttle_cmd",
-                "velocity_mps",
-                "accel_mps2",
-                "accel_source",
-            ],
-        ) as raw_log,
-        CSVLogger(
-            lookup_csv,
-            [
-                "transition",
-                "u_from",
-                "u_to",
-                "delta_u",
-                "accel_source",
-                "imu_bias_mps2",
-                "v0_mps",
-                "vss_mps",
-                "delta_v_mps",
-                "tau_s",
-                "k_local_mps_per_throttle",
-                "a0_model_mps2",
-                "a_peak_meas_mps2",
-                "a_mean_early_mps2",
-                "t63_s",
-                "t90_s",
-                "t95_s",
-                "lead_time_s",
-                "fit_method",
-            ],
-        ) as lut_log,
-    ):
+    with CSVLogger(
+        raw_csv,
+        [
+            "transition_idx",
+            "phase",
+            "time_s",
+            "rel_time_s",
+            "throttle_cmd",
+            "velocity_mps",
+            "accel_mps2",
+            "accel_source",
+        ],
+    ) as raw_log, CSVLogger(
+        lookup_csv,
+        [
+            "transition",
+            "u_from",
+            "u_to",
+            "delta_u",
+            "accel_source",
+            "imu_bias_mps2",
+            "v0_mps",
+            "vss_mps",
+            "delta_v_mps",
+            "tau_s",
+            "k_local_mps_per_throttle",
+            "a0_model_mps2",
+            "a_peak_meas_mps2",
+            "a_mean_early_mps2",
+            "t63_s",
+            "t90_s",
+            "t95_s",
+            "lead_time_s",
+            "fit_method",
+        ],
+    ) as lut_log:
         t_global0 = time.time()
 
         for idx, (u_from, u_to) in enumerate(transitions, start=1):
@@ -1095,10 +1066,7 @@ def main():
             tau=args.sim_tau, K=args.sim_gain, noise_std=0.01
         )
     else:
-        interface = QCarHardwareInterface(
-            qlabs_mode=args.qlabs, actor_name=args.actor,
-            frequency=args.frequency,
-        )
+        interface = QCarHardwareInterface(qlabs_mode=args.qlabs, actor_name=args.actor)
         interface.connect()
 
     try:

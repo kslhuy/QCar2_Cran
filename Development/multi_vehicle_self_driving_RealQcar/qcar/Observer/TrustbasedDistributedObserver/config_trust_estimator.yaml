@@ -48,9 +48,10 @@ trust:
   theta_similarity_gain: 2.5
   theta_turn_gain: 2.0
   theta_contribution_cap: 3.0
+
   weight_distance: 2.0            # Distance consistency weight  
   weight_acceleration: 0.3        # Acceleration plausibility weight
-  weight_heading: 1.0             # Heading consistency weight
+  weight_heading: 0.5             # Heading consistency weight
   
   # Trust threshold for considering a vehicle "trusted"
   trust_threshold: 0.5
@@ -81,12 +82,12 @@ trust:
   # Validation and decay (MATLAB-parity features)
   use_physical_constraints_check: false
   use_temporal_consistency_check: false
-  max_velocity: 30.0
+  max_velocity: 5.0
   max_acceleration: 4.0
-  max_deceleration: -8.0
-  max_jerk: 10.0
-  temporal_pos_tolerance_m: 2.0
-  temporal_vel_tolerance: 1.0
+  max_deceleration: -5.0
+  max_jerk: 8.0
+  temporal_pos_tolerance_m: 0.5
+  temporal_vel_tolerance: 0.5
   trust_decay_lambda: 0.2
 
   # Distance to Trust conversion method
@@ -139,6 +140,12 @@ weight:
   eta: 0.15                       # EMA smoothing factor
   enable_smoothing: false         # Enable weight smoothing between updates
   
+  # Flag-driven w₀ adaptation factors
+  # These multiply w₀ when an attack flag fires for the target being estimated
+  flag_w0_target_attack_factor: 1.0     # Keep w₀ full when target under attack (local is reliable)
+  flag_w0_global_est_check_factor: 0.3  # Reduce w₀ when local sensors are faulty
+  flag_w0_local_est_check_factor: 0.5   # Reduce w₀ when local measurements unreliable
+
   # Advanced options
   use_distance_weighting: false   # Weight by physical distance (experimental)
 

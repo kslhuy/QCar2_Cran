@@ -904,7 +904,14 @@ class StateBase:
                 self.logger.log_warning("[CMD] Failed to start Robust KalmanNet dataset collection")
             return success
 
-        if action in ("stop", "collect_off", "save"):
+        if action in ("stop", "collect_off", "pause"):
+            if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
+                return False
+            vehicle_logic.disable_robust_kalmannet_dataset(save=False)
+            self.logger.logger.info("[CMD] Robust KalmanNet dataset recording paused")
+            return True
+
+        if action in ("save",):
             if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
                 return False
             saved_path = vehicle_logic.disable_robust_kalmannet_dataset(save=True)
@@ -913,17 +920,22 @@ class StateBase:
                     f"[CMD] Robust KalmanNet dataset saved to {saved_path}"
                 )
                 return True
-            self.logger.log_warning("[CMD] Robust KalmanNet dataset stop requested but nothing was saved")
+            self.logger.log_warning("[CMD] Robust KalmanNet dataset save requested but nothing was saved")
             return False
 
-        if action in ("discard", "reset"):
+        if action in ("discard", "reset", "clear"):
             if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
                 return False
+            # Stop if recording
             vehicle_logic.disable_robust_kalmannet_dataset(save=False)
+            # Then clear buffer
+            if hasattr(vehicle_logic, "clear_robust_kalmannet_dataset"):
+                vehicle_logic.clear_robust_kalmannet_dataset()
             self.logger.logger.info(
-                "[CMD] Robust KalmanNet dataset collection stopped without saving"
+                "[CMD] Robust KalmanNet dataset discarded/cleared"
             )
             return True
+
 
         if action in ("status", "get_status"):
             status = (
@@ -1171,7 +1183,8 @@ class StateBase:
             vehicle_id = self.vehicle_logic.vehicle_id
 
             # Get probing flag from config
-            probing_enabled = self.config.vehicle.probing
+            # probing_enabled = self.config.vehicle.probing
+            probing_enabled = True
             self.logger.logger.info(
                 f"[PERCEPTION] Starting YOLO system for vehicle {vehicle_id} with probing {probing_enabled}..."
             )
@@ -1182,6 +1195,7 @@ class StateBase:
                 vehicle_id=vehicle_id,
                 probing=probing_enabled,
                 logger=self.logger,
+                vehicle_type=self.vehicle_logic.vehicle_type,
             )
 
             if yolo_process:

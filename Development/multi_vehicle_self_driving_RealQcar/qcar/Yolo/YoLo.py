@@ -966,7 +966,7 @@ class YOLOLauncher:
 
     @staticmethod
     def launch_server(
-        is_physical: bool, vehicle_id: int, probing: bool, logger=None
+        is_physical: bool, vehicle_id: int, probing: bool, logger=None, vehicle_type: str = "Qcar"
     ) -> Optional[subprocess.Popen]:
         """
         Launch the YOLO server subprocess based on vehicle type.
@@ -976,6 +976,7 @@ class YOLOLauncher:
             vehicle_id: ID of the vehicle
             probing: Whether probing is enabled
             logger: Optional logger for status messages (can be None)
+            vehicle_type: Vehicle type (e.g., "Qcar", "Limo")
 
         Returns:
             subprocess.Popen object if successful, None otherwise
@@ -984,7 +985,52 @@ class YOLOLauncher:
             # Get script paths - assume we are in qcar/Yolo/ directory
             current_dir = os.path.dirname(os.path.abspath(__file__))
 
-            if not is_physical:
+            if vehicle_type == "Limo":
+                # Physical Limo
+                video_port = 18760 + vehicle_id
+                probing_value = "True" if probing else "False"
+                
+                if logger:
+                    logger.logger.info(f"[PERCEPTION] [->] Starting Limo ROS 2 perception stack...")
+                    logger.logger.info(
+                        f"[PERCEPTION] Probing: {probing}, Car ID: {vehicle_id}"
+                    )
+                
+                # We need to launch the astra camera and the YOLO server.
+                # Since YOLO server runs fine with astra camera in background:
+                yolo_port = "18666" if is_physical else f"1866{vehicle_id}"
+                
+                cmd_str = (
+                    "source /home/agilex/agilex_ws/install/setup.bash && "
+                    "ros2 launch astra_camera dabai.launch.py > /dev/null 2>&1 & "
+                    "ros2 run limo_nav_huy_test yolo_server_limo "
+                    f"--ros-args -p car_id:={vehicle_id} -p video_port:={video_port} "
+                    f"-p yolo_port:={yolo_port} -p enable_inference:=True "
+                    f"-p probing:={probing_value}"
+                )
+                    
+                cmd = ["bash", "-c", cmd_str]
+                
+                log_dir = os.path.join(os.path.dirname(current_dir), "logs")
+                os.makedirs(log_dir, exist_ok=True)
+                log_file = os.path.join(log_dir, f"yolo_limo_{vehicle_id}.log")
+                
+                if logger:
+                    logger.logger.info(f"[PERCEPTION] Command: {cmd_str}")
+                    logger.logger.info(f"[PERCEPTION] Redirecting output to {log_file}")
+                
+                f_log = open(log_file, "w")
+                yolo_process = subprocess.Popen(
+                    cmd, stdout=f_log, stderr=subprocess.STDOUT
+                )
+                
+                if logger:
+                    logger.logger.info(
+                        f"[PERCEPTION] [OK] Limo YOLO server started (PID: {yolo_process.pid})"
+                    )
+                return yolo_process
+
+            elif not is_physical:
                 # Virtual Vehicle
                 yolo_script = os.path.join(current_dir, "yolo_server_virtual.py")
                 yolo_port = f"1866{vehicle_id}"

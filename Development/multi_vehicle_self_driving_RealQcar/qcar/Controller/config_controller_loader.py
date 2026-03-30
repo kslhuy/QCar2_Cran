@@ -205,11 +205,24 @@ class ControllerConfig:
             "throttle_smoothing": cacc_config.get("throttle_smoothing", 0.7),
             "brake_smoothing": cacc_config.get("brake_smoothing", 0.5),
             "max_acc_rate": cacc_config.get("max_acc_rate", 2.0),
-            # New optional leader acceleration feedforward gain. Set to 0 to disable.
-            # legacy key kept for compatibility, semantics now represent an error weight
-            "leader_acceleration_weight": cacc_config.get("leader_acceleration_gain", 0.0),
-            "leader_acceleration_gain": cacc_config.get("leader_acceleration_gain", 0.0),  # alias for backward compat
-
+            "use_feedforward": cacc_config.get("use_feedforward", False),
+            "leader_acceleration_weight": cacc_config.get(
+                "leader_acceleration_weight",
+                cacc_config.get("leader_acceleration_gain", 0.0),
+            ),
+            "leader_acceleration_gain": cacc_config.get(
+                "leader_acceleration_gain", 0.0
+            ),
+            "limo_max_speed": cacc_config.get("limo_max_speed", 0.8),
+            "limo_max_accel": cacc_config.get("limo_max_accel", 0.4),
+            "limo_max_decel": cacc_config.get("limo_max_decel", 0.8),
+            "limo_leader_speed_margin": cacc_config.get(
+                "limo_leader_speed_margin", 0.12
+            ),
+            "limo_gap_closing_gain": cacc_config.get(
+                "limo_gap_closing_gain", 0.25
+            ),
+            "limo_close_gap_gain": cacc_config.get("limo_close_gap_gain", 0.8),
         }
 
     def _get_pid_params(self) -> Dict[str, Any]:

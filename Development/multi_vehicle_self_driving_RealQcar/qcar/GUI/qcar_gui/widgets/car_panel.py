@@ -75,10 +75,15 @@ class CarPanelWidget(BaseWidget):
         """Build the car panel widget."""
         c = self.theme.colors
 
+        # Extract vehicle type from config (e.g. Qcar, Limo)
+        vehicle_type = self.config.get("vehicle_type", "Car")
+        if vehicle_type.lower() == "qcar":
+            vehicle_type = "QCar"
+            
         # Create expandable panel
         self._expandable = ExpandablePanel(
             self.parent,
-            title=f"🚗 Car {self.car_id}",
+            title=f"🚗 {vehicle_type} {self.car_id}",
             expanded=self._expanded,
             theme=self.theme,
         )
@@ -309,6 +314,11 @@ class CarPanelWidget(BaseWidget):
             self._conn_indicator.set_status(
                 "connected" if connected else "disconnected"
             )
+
+    def set_manual_keyboard_profile(self, profile: dict) -> None:
+        """Update the manual keyboard profile shown in the panel."""
+        if self._manual_and_velocity:
+            self._manual_and_velocity.set_manual_profile(profile)
 
     @property
     def platoon_position(self) -> int:

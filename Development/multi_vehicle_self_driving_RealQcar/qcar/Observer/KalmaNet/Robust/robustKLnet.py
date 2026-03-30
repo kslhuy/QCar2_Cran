@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import csv
 from collections import deque
 from dataclasses import dataclass
+import importlib
 from pathlib import Path
 import time
 from types import SimpleNamespace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -60,6 +62,13 @@ class RSNConfig:
 
     use_hard_mask: bool = False
     dt: float = 0.02
+
+    # ── Modular prediction step ──────────────────────────────────────────
+    # "nn"        → RobustMotionPredictor (tri-LSTM, learnable, default)
+    # "kinematic" → KinematicPredictor   (unicycle model, no parameters)
+    predictor_mode: str = "nn"
+    # LPF alpha for velocity in the kinematic predictor
+    kin_v_lpf_alpha: float = 0.25
 
 
 # ============================================================
@@ -201,12 +210,13 @@ class RobustMotionPredictor(nn.Module):
         wheel_seq: torch.Tensor,
         prev_state_seq: torch.Tensor,
         hidden_dict: Optional[Dict] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict, torch.Tensor]:
         """
         returns:
             x_pred_seq: [B,T,5] predicted state x_{k|k-1}
             motion_seq: [B,T,5] [dxE,dyE,dpsi,v_next,w_next]
             hidden_dict
+            mask: [B,T,3*H] the learned feature mask (for supervision)
         """
         if hidden_dict is None:
             hidden_dict = {}
@@ -223,7 +233,7 @@ class RobustMotionPredictor(nn.Module):
         x_pred = self.motion_to_state(prev_state_seq, motion)
 
         hidden_out = {"imu": hI, "steer": hS, "wheel": hW}
-        return x_pred, motion, hidden_out
+        return x_pred, motion, hidden_out, mask
 
     @staticmethod
     def motion_to_state(prev_state_seq: torch.Tensor, motion_seq: torch.Tensor) -> torch.Tensor:
@@ -252,97 +262,203 @@ class RobustMotionPredictor(nn.Module):
 
 
 # ============================================================
+# KINEMATIC PREDICTOR (parameter-free alternative)
+# ============================================================
+
+class KinematicPredictor(nn.Module):
+    """
+    Parameter-free unicycle-model prediction step.
+
+    Accepts the exact same forward() signature as RobustMotionPredictor so that
+    RobustStateNet.forward() requires zero structural changes.
+
+    Kinematic equations (local body frame → global):
+        dxE   =  v_prev * dt          (forward motion; no lateral slip)
+        dyE   =  0
+        dpsi  =  wz * dt             (yaw integration)
+        v_next = alpha * motor_tach + (1 - alpha) * v_prev   (LPF)
+        w_next = wz
+
+    Signals are extracted from existing branch-input tensors:
+        wz         ← imu_seq[..., 4]    layout: [v, psi, ax, ay, wz]
+        motor_tach ← wheel_seq[..., 2]  layout: [v, psi, vfl, vfr, vrl, vrr]
+    """
+
+    def __init__(self, cfg: RSNConfig):
+        super().__init__()
+        self.dt = cfg.dt
+        self.alpha = float(cfg.kin_v_lpf_alpha)
+
+    def forward(
+        self,
+        imu_seq: torch.Tensor,       # [B, 1, 5]  [v, psi, ax, ay, wz]
+        steer_seq: torch.Tensor,     # [B, 1, 3]  [v, psi, delta]  (unused)
+        wheel_seq: torch.Tensor,     # [B, 1, 6]  [v, psi, vfl, vfr, vrl, vrr]
+        prev_state_seq: torch.Tensor,  # [B, 1, 5]  x_{k-1|k-1}
+        hidden_dict: Optional[Dict] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict, None]:
+        """
+        Returns:
+            x_pred   : [B, 1, 5]
+            motion   : [B, 1, 5]  [dxE, dyE, dpsi, v_next, w_next]
+            {}       : empty hidden dict (stateless)
+            None     : no feature mask
+        """
+        # ── extract signals ──────────────────────────────────────────────
+        v_prev     = prev_state_seq[..., 3:4]   # [B, 1, 1]
+        wz         = imu_seq[..., 4:5]          # [B, 1, 1]
+        motor_tach = wheel_seq[..., 2:3]        # [B, 1, 1]  use vfl as representative
+
+        # ── kinematic model ──────────────────────────────────────────────
+        v_next = self.alpha * motor_tach + (1.0 - self.alpha) * v_prev
+        w_next = wz
+        dxE    = v_prev * self.dt
+        dyE    = torch.zeros_like(dxE)
+        dpsi   = wz * self.dt
+
+        motion = torch.cat([dxE, dyE, dpsi, v_next, w_next], dim=-1)  # [B, 1, 5]
+        x_pred = RobustMotionPredictor.motion_to_state(prev_state_seq, motion)
+
+        return x_pred, motion, {}, None
+
+
+# ============================================================
 # UPDATE MODULE
 # ============================================================
 
-class UpdateMaskNet(nn.Module):
-    def __init__(self, feat_dim: int, hidden_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(feat_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, feat_dim),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, feat: torch.Tensor) -> torch.Tensor:
-        return self.net(feat)
-
-
-class GainHead(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int, state_dim: int, meas_dim: int):
-        super().__init__()
-        self.state_dim = state_dim
-        self.meas_dim = meas_dim
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, state_dim * meas_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.net(x)
-        return out.view(*out.shape[:-1], self.state_dim, self.meas_dim)
-
-
 class LearnedKalmanUpdate(nn.Module):
     """
-    Features from paper:
-    delta_x  = x_{k|k-1} - x_{k-1|k-1}
-    delta_zp = z_k - H x_{k|k-1}
-    delta_z  = z_k - z_{k-1}
-    then masking + GRU + MLP => K
-    then x_{k|k} = x_{k|k-1} + K(z_k - Hx_{k|k-1})
+    Features from original KalmanNet:
+    obs_diff       = z_k - z_{k-1}
+    obs_innov_diff = z_k - Hx_{k|k-1}
+    fw_evol_diff   = x_{k-1|k-1} - x_{k-2|k-2}
+    fw_update_diff = x_{k-1|k-1} - x_{k-1|k-2}
+    
+    Uses 3 cascaded GRUs (Q, Sigma, S) and backward flow to update h_Sigma.
     """
 
     def __init__(self, cfg: RSNConfig):
         super().__init__()
         self.cfg = cfg
-        feat_dim = cfg.state_dim + cfg.meas_dim + cfg.meas_dim
-        self.mask_net = UpdateMaskNet(feat_dim, cfg.mask_hidden)
-        self.gru = nn.GRU(
-            input_size=feat_dim,
-            hidden_size=cfg.upd_hidden,
-            num_layers=1,
-            batch_first=True,
+        self.m = cfg.state_dim
+        self.n = cfg.meas_dim
+        self.d_h = cfg.upd_hidden
+
+        # 1. Q-GRU (Process Noise)
+        self.fc5 = nn.Sequential(nn.Linear(self.m, self.d_h), nn.ReLU())
+        self.gru_q = nn.GRU(input_size=self.d_h, hidden_size=self.d_h, batch_first=True)
+
+        # 2. Sigma-GRU (State Uncertainty)
+        self.fc6 = nn.Sequential(nn.Linear(self.m, self.d_h), nn.ReLU())
+        self.gru_sigma = nn.GRU(input_size=self.d_h * 2, hidden_size=self.d_h, batch_first=True)
+
+        # 3. S-GRU (Measurement Uncertainty / Innovation)
+        self.fc1 = nn.Sequential(nn.Linear(self.d_h, self.d_h), nn.ReLU())
+        self.fc7 = nn.Sequential(nn.Linear(self.n * 2, self.d_h), nn.ReLU())
+        self.gru_s = nn.GRU(input_size=self.d_h * 2, hidden_size=self.d_h, batch_first=True)
+
+        # 4. Kalman Gain Intermediate
+        self.fc2 = nn.Sequential(
+            nn.Linear(self.d_h * 2, cfg.gain_hidden),
+            nn.ReLU(),
+            nn.Linear(cfg.gain_hidden, self.m * self.n)
         )
-        self.gain_head = GainHead(
-            cfg.upd_hidden,
-            cfg.gain_hidden,
-            cfg.state_dim,
-            cfg.meas_dim,
+
+        # 5. Backward Flow for Sigma
+        self.fc3 = nn.Sequential(nn.Linear(self.d_h + self.m * self.n, self.d_h), nn.ReLU())
+        self.fc4 = nn.Sequential(nn.Linear(self.d_h * 2, self.d_h), nn.ReLU())
+
+        # Measurement-level mask: learns to suppress corrupted z channels
+        feat_dim_all = self.m * 2 + self.n * 2
+        self.meas_mask_net = nn.Sequential(
+            nn.Linear(feat_dim_all, cfg.mask_hidden),
+            nn.ReLU(),
+            nn.Linear(cfg.mask_hidden, self.n),
+            nn.Sigmoid(),
         )
 
     def forward(
         self,
         x_pred_seq: torch.Tensor,
         x_prev_upd_seq: torch.Tensor,
+        x_prev_pred_seq: torch.Tensor,
+        x_prev_prev_upd_seq: torch.Tensor,
         z_seq: torch.Tensor,
         z_prev_seq: torch.Tensor,
-        hidden=None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        hidden: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         device = x_pred_seq.device
+        B, T, _ = z_seq.shape
         H = make_H(device=device, dtype=x_pred_seq.dtype)
-
         Hx_pred = torch.matmul(x_pred_seq, H.T)
-        delta_x = x_pred_seq - x_prev_upd_seq
-        delta_zp = z_seq - Hx_pred
-        delta_z = z_seq - z_prev_seq
 
-        feat = torch.cat([delta_x, delta_zp, delta_z], dim=-1)
-        mask = self.mask_net(feat)
-        feat_masked = feat * mask
+        def safe_norm(x):
+            return torch.nn.functional.normalize(x, p=2, dim=-1, eps=1e-12)
 
-        gru_out, hidden = self.gru(feat_masked, hidden)
-        K_seq = self.gain_head(gru_out)
+        # Differences and normalization
+        obs_diff = safe_norm(z_seq - z_prev_seq)
+        obs_innov_diff = safe_norm(z_seq - Hx_pred)
+        fw_evol_diff = safe_norm(x_prev_upd_seq - x_prev_prev_upd_seq)
+        fw_update_diff = safe_norm(x_prev_upd_seq - x_prev_pred_seq)
 
-        innovation = (z_seq - Hx_pred).unsqueeze(-1)
-        corr = torch.matmul(K_seq, innovation).squeeze(-1)
+        # Meas mask extraction
+        feat_all = torch.cat([fw_evol_diff, fw_update_diff, obs_innov_diff, obs_diff], dim=-1)
+        meas_mask = self.meas_mask_net(feat_all)
+
+        if hidden is None:
+            hidden = {}
+        h_q = hidden.get("q", torch.zeros(1, B, self.d_h, device=device))
+        h_sig = hidden.get("sig", torch.zeros(1, B, self.d_h, device=device))
+        h_s = hidden.get("s", torch.zeros(1, B, self.d_h, device=device))
+
+        K_list = []
+        for t in range(T):
+            o_d = obs_diff[:, t:t+1, :]
+            oi_d = obs_innov_diff[:, t:t+1, :]
+            fe_d = fw_evol_diff[:, t:t+1, :]
+            fu_d = fw_update_diff[:, t:t+1, :]
+
+            # Flow
+            out_fc5 = self.fc5(fu_d)
+            out_q, h_q = self.gru_q(out_fc5, h_q)
+
+            out_fc6 = self.fc6(fe_d)
+            in_sig = torch.cat([out_q, out_fc6], dim=-1)
+            out_sig, h_sig = self.gru_sigma(in_sig, h_sig)
+
+            out_fc1 = self.fc1(out_sig)
+            out_fc7 = self.fc7(torch.cat([o_d, oi_d], dim=-1))
+            in_s = torch.cat([out_fc1, out_fc7], dim=-1)
+            out_s, h_s = self.gru_s(in_s, h_s)
+
+            # Gain
+            in_fc2 = torch.cat([out_sig, out_s], dim=-1)
+            out_fc2 = self.fc2(in_fc2)
+            K_t = out_fc2.view(-1, 1, self.m, self.n)
+            K_list.append(K_t)
+
+            # Backward flow for next step
+            in_fc3 = torch.cat([out_s, out_fc2], dim=-1)
+            out_fc3 = self.fc3(in_fc3)
+            in_fc4 = torch.cat([out_sig, out_fc3], dim=-1)
+            h_sig = self.fc4(in_fc4).transpose(0, 1)
+
+        K_seq = torch.cat(K_list, dim=1)
+        hidden_out = {"q": h_q, "sig": h_sig, "s": h_s}
+
+        # Apply measurement mask to innovation before correction
+        raw_innovation = z_seq - Hx_pred
+        masked_innovation = (raw_innovation * meas_mask).unsqueeze(-1)
+        corr = torch.matmul(K_seq, masked_innovation).squeeze(-1)
 
         x_upd = x_pred_seq + corr
-        x_upd[..., 2] = wrap_angle(x_upd[..., 2])
+        x_upd = torch.cat([
+            x_upd[..., :2],
+            wrap_angle(x_upd[..., 2:3]),
+            x_upd[..., 3:],
+        ], dim=-1)
 
-        return x_upd, K_seq, hidden
+        return x_upd, K_seq, hidden_out, meas_mask
 
 
 # ============================================================
@@ -353,7 +469,11 @@ class RobustStateNet(nn.Module):
     def __init__(self, cfg: RSNConfig):
         super().__init__()
         self.cfg = cfg
-        self.predictor = RobustMotionPredictor(cfg)
+        # ── modular predictor selection ───────────────────────────────────
+        if cfg.predictor_mode == "kinematic":
+            self.predictor: nn.Module = KinematicPredictor(cfg)
+        else:
+            self.predictor = RobustMotionPredictor(cfg)
         self.updater = LearnedKalmanUpdate(cfg)
 
     def build_branch_inputs(
@@ -401,8 +521,12 @@ class RobustStateNet(nn.Module):
         x_upd_list = []
         motion_list = []
         K_list = []
+        pred_mask_list = []
+        meas_mask_list = []
 
         x_prev_upd = x0
+        x_prev_prev_upd = x0
+        x_prev_pred = x0
         z_prev = z_seq[:, 0, :]
 
         pred_hidden_local = pred_hidden
@@ -419,7 +543,7 @@ class RobustStateNet(nn.Module):
             imu_t, steer_t, wheel_t = self.build_branch_inputs(raw_t, state_input_t_seq)
 
             prev_state_seq = x_prev_upd.unsqueeze(1)
-            x_pred_t, motion_t, pred_hidden_local = self.predictor(
+            x_pred_t, motion_t, pred_hidden_local, mask_t = self.predictor(
                 imu_t,
                 steer_t,
                 wheel_t,
@@ -429,11 +553,15 @@ class RobustStateNet(nn.Module):
             z_t = z_seq[:, t : t + 1, :]
 
             x_prev_upd_seq = x_prev_upd.unsqueeze(1)
+            x_prev_pred_seq = x_prev_pred.unsqueeze(1)
+            x_prev_prev_upd_seq = x_prev_prev_upd.unsqueeze(1)
             z_prev_seq = z_prev.unsqueeze(1)
 
-            x_upd_t, K_t, upd_hidden_local = self.updater(
+            x_upd_t, K_t, upd_hidden_local, meas_mask_t = self.updater(
                 x_pred_t,
                 x_prev_upd_seq,
+                x_prev_pred_seq,
+                x_prev_prev_upd_seq,
                 z_t,
                 z_prev_seq,
                 upd_hidden_local,
@@ -443,20 +571,35 @@ class RobustStateNet(nn.Module):
             x_upd_t = x_upd_t[:, 0, :]
             motion_t = motion_t[:, 0, :]
             K_t = K_t[:, 0, :, :]
+            # mask_t is None when using KinematicPredictor (no learned mask)
+            mask_t = mask_t[:, 0, :] if mask_t is not None else None
+            meas_mask_t = meas_mask_t[:, 0, :]
 
             x_pred_list.append(x_pred_t)
             x_upd_list.append(x_upd_t)
             motion_list.append(motion_t)
             K_list.append(K_t)
+            pred_mask_list.append(mask_t)
+            meas_mask_list.append(meas_mask_t)
 
+            x_prev_prev_upd = x_prev_upd
+            x_prev_pred = x_pred_t
             x_prev_upd = x_upd_t
             z_prev = z_t[:, 0, :]
 
+        # pred_mask is None for kinematic predictor (no learnable mask)
+        pred_mask_out = (
+            torch.stack(pred_mask_list, dim=1)
+            if pred_mask_list and pred_mask_list[0] is not None
+            else None
+        )
         return {
             "x_pred": torch.stack(x_pred_list, dim=1),
             "x_upd": torch.stack(x_upd_list, dim=1),
             "motion": torch.stack(motion_list, dim=1),
             "K": torch.stack(K_list, dim=1),
+            "pred_mask": pred_mask_out,
+            "meas_mask": torch.stack(meas_mask_list, dim=1),
         }
 
 
@@ -508,6 +651,37 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self.load_pretrained = bool(self.config.get("load_pretrained", False))
         self.allow_untrained_model = bool(self.config.get("allow_untrained_model", False))
         self.use_fallback = bool(self.config.get("use_fallback", True))
+        self.enable_ekf_comparator = bool(self.config.get("enable_ekf_comparator", False))
+        self.comparator_log_interval = max(
+            1, int(self.config.get("comparator_log_interval", 25))
+        )
+        self.comparator_console_log = bool(
+            self.config.get("comparator_console_log", False)
+        )
+        self.comparator_history_size = max(
+            1, int(self.config.get("comparator_history_size", 200))
+        )
+        self.comparator_record_to_file = bool(
+            self.config.get("comparator_record_to_file", True)
+        )
+        self.comparator_record_interval = max(
+            1, int(self.config.get("comparator_record_interval", 1))
+        )
+        self.comparator_flush_interval = max(
+            1, int(self.config.get("comparator_flush_interval", 25))
+        )
+        self.comparator_output_dir = self._resolve_output_dir(
+            self.config.get("comparator_output_dir", "logs/comparator")
+        )
+        self.comparator_file_prefix = str(
+            self.config.get("comparator_file_prefix", "rknet_comparison")
+        ).strip() or "rknet_comparison"
+        self.comparator_overwrite = bool(
+            self.config.get("comparator_overwrite", False)
+        )
+        self.mask_branch_active_threshold = float(
+            self.config.get("mask_branch_active_threshold", 0.5)
+        )
 
         self.device = self._resolve_device(self.config.get("device", "auto"))
         self.model_cfg = RSNConfig(
@@ -518,16 +692,35 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             mask_hidden=int(self.config.get("mask_hidden", 64)),
             use_hard_mask=bool(self.config.get("use_hard_mask", False)),
             dt=float(self.config.get("dt", 0.02)),
+            predictor_mode=str(self.config.get("predictor_mode", "nn")),
+            kin_v_lpf_alpha=float(self.config.get("kin_v_lpf_alpha", 0.25)),
         )
 
         self.model = None
         if TORCH_AVAILABLE:
             self.model = RobustStateNet(self.model_cfg).to(self.device)
             self.model.eval()
+            self._log_info(
+                f"Robust KalmanNet predictor_mode='{self.model_cfg.predictor_mode}'"
+                + (f" (kin_v_lpf_alpha={self.model_cfg.kin_v_lpf_alpha})"
+                   if self.model_cfg.predictor_mode == "kinematic" else "")
+            )
         self.model_path = self._resolve_model_path(self.config.get("model_path"))
         self.model_ready = False
         self.last_update_used_model = False
         self.last_model_output = None
+        self.last_pred_mask = None
+        self.last_pred_mask_summary = None
+        self.update_count = 0
+        self.ekf_comparator = None
+        self.ekf_comparator_ready = False
+        self.last_comparator_output = None
+        self.last_comparison = None
+        self.comparison_history = deque(maxlen=self.comparator_history_size)
+        self.comparator_log_file = None
+        self.comparator_log_writer = None
+        self.comparator_log_path = None
+        self.comparator_record_count = 0
 
         self.raw_history = {
             key: deque(maxlen=self.sequence_length) for key in self.RAW_KEYS
@@ -543,6 +736,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self.state = self.internal_state[:4].astype(np.float64, copy=True)
 
         self._initialize_model()
+        self._initialize_ekf_comparator(initial_pose)
 
     @staticmethod
     def _resolve_device(device_name: str):
@@ -572,6 +766,18 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             return None
 
         candidate = Path(configured_path)
+        if candidate.is_absolute():
+            return candidate
+
+        module_dir = Path(__file__).resolve().parent
+        return (module_dir / candidate).resolve()
+
+    @staticmethod
+    def _resolve_output_dir(configured_path: Optional[str]) -> Optional[Path]:
+        if not configured_path:
+            return None
+
+        candidate = Path(str(configured_path))
         if candidate.is_absolute():
             return candidate
 
@@ -632,6 +838,206 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                 "Robust KalmanNet instantiated without pretrained weights; using fallback until a checkpoint is configured"
             )
 
+    def _build_ekf_comparator_config(self) -> Dict[str, Any]:
+        comparator_cfg = dict(self.config.get("ekf_comparator_config", {}))
+        comparator_cfg.setdefault(
+            "use_qcar_ekf",
+            bool(self.config.get("comparator_use_qcar_ekf", True)),
+        )
+        if "comparator_v_lpf_alpha" in self.config:
+            comparator_cfg.setdefault(
+                "v_lpf_alpha", float(self.config["comparator_v_lpf_alpha"])
+            )
+        return comparator_cfg
+
+    def _initialize_ekf_comparator(
+        self, initial_pose: Optional[np.ndarray] = None
+    ) -> None:
+        if not self.enable_ekf_comparator:
+            return
+
+        try:
+            module = importlib.import_module("Observer.local_state_estimators")
+            comparator_cls = getattr(module, "EKFStateEstimator")
+            comparator_cfg = self._build_ekf_comparator_config()
+            self.ekf_comparator = comparator_cls(
+                initial_pose=initial_pose,
+                config=comparator_cfg,
+                logger=self.logger,
+            )
+            self.ekf_comparator_ready = True
+            self._initialize_comparator_log_file()
+            self._log_info(
+                "[RKNetComparator] EKF comparator enabled"
+            )
+        except Exception as exc:
+            self.ekf_comparator = None
+            self.ekf_comparator_ready = False
+            self._close_comparator_log_file()
+            self._log_error(
+                "Failed to initialize EKF comparator for Robust KalmanNet",
+                exc,
+            )
+
+    def _initialize_comparator_log_file(self) -> None:
+        if not self.comparator_record_to_file or self.comparator_output_dir is None:
+            return
+        if self.comparator_log_file is not None:
+            return
+
+        try:
+            self.comparator_output_dir.mkdir(parents=True, exist_ok=True)
+            if self.comparator_overwrite:
+                filepath = self.comparator_output_dir / f"{self.comparator_file_prefix}.csv"
+            else:
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                filepath = self.comparator_output_dir / f"{self.comparator_file_prefix}_{timestamp}.csv"
+
+            self.comparator_log_file = open(filepath, "w", newline="", buffering=8192)
+            self.comparator_log_writer = csv.DictWriter(
+                self.comparator_log_file,
+                fieldnames=[
+                    "timestamp",
+                    "tick",
+                    "source",
+                    "dt",
+                    "motor_tach",
+                    "steering",
+                    "throttle",
+                    "gyro_z",
+                    "gps_valid",
+                    "gps_x",
+                    "gps_y",
+                    "gps_theta",
+                    "accel_x",
+                    "accel_y",
+                    "accel_z",
+                    "robust_x",
+                    "robust_y",
+                    "robust_theta",
+                    "robust_v",
+                    "ekf_x",
+                    "ekf_y",
+                    "ekf_theta",
+                    "ekf_v",
+                    "delta_x",
+                    "delta_y",
+                    "delta_theta",
+                    "delta_v",
+                    "position_error_norm",
+                    "heading_error",
+                    "velocity_error",
+                    "pred_mask_mean",
+                    "pred_mask_min",
+                    "pred_mask_max",
+                    "mask_imu_mean",
+                    "mask_steer_mean",
+                    "mask_wheel_mean",
+                    "mask_selected_branch",
+                    "mask_selected_score",
+                    "mask_imu_active",
+                    "mask_steer_active",
+                    "mask_wheel_active",
+                ],
+            )
+            self.comparator_log_writer.writeheader()
+            self.comparator_log_path = filepath
+            self.comparator_record_count = 0
+            self._log_info(f"[RKNetComparator] Recording comparisons to {filepath}")
+        except Exception as exc:
+            self._close_comparator_log_file()
+            self._log_error("Failed to open RKNet comparator log file", exc)
+
+    def _close_comparator_log_file(self) -> None:
+        if self.comparator_log_file is not None:
+            try:
+                self.comparator_log_file.flush()
+                self.comparator_log_file.close()
+            except Exception:
+                pass
+        self.comparator_log_file = None
+        self.comparator_log_writer = None
+        self.comparator_record_count = 0
+
+    def _record_comparison_to_file(
+        self,
+        comparison: Dict[str, Any],
+        motor_tach: float,
+        steering: float,
+        throttle: float,
+        dt: float,
+        gyro_z: float,
+        gps_data: Optional[Dict[str, Any]],
+        acceleration: Optional[np.ndarray],
+    ) -> None:
+        if not self.comparator_record_to_file:
+            return
+        if self.comparator_log_writer is None:
+            return
+        if self.update_count % self.comparator_record_interval != 0:
+            return
+
+        accel = np.asarray(
+            acceleration if acceleration is not None else np.zeros(3, dtype=np.float64),
+            dtype=np.float64,
+        ).reshape(-1)
+        gps_valid = bool(gps_data and gps_data.get("valid", True))
+        robust_state = comparison["robust_state"]
+        ekf_state = comparison["ekf_state"]
+        delta_state = comparison["delta_state"]
+
+        try:
+            self.comparator_log_writer.writerow(
+                {
+                    "timestamp": comparison["timestamp"],
+                    "tick": comparison["tick"],
+                    "source": comparison["robust_source"],
+                    "dt": float(dt),
+                    "motor_tach": float(motor_tach),
+                    "steering": float(steering),
+                    "throttle": float(throttle),
+                    "gyro_z": float(gyro_z),
+                    "gps_valid": int(gps_valid),
+                    "gps_x": float(gps_data.get("x", 0.0)) if gps_data else 0.0,
+                    "gps_y": float(gps_data.get("y", 0.0)) if gps_data else 0.0,
+                    "gps_theta": float(gps_data.get("theta", 0.0)) if gps_data else 0.0,
+                    "accel_x": float(accel[0]) if accel.size > 0 else 0.0,
+                    "accel_y": float(accel[1]) if accel.size > 1 else 0.0,
+                    "accel_z": float(accel[2]) if accel.size > 2 else 0.0,
+                    "robust_x": float(robust_state[0]),
+                    "robust_y": float(robust_state[1]),
+                    "robust_theta": float(robust_state[2]),
+                    "robust_v": float(robust_state[3]),
+                    "ekf_x": float(ekf_state[0]),
+                    "ekf_y": float(ekf_state[1]),
+                    "ekf_theta": float(ekf_state[2]),
+                    "ekf_v": float(ekf_state[3]),
+                    "delta_x": float(delta_state[0]),
+                    "delta_y": float(delta_state[1]),
+                    "delta_theta": float(delta_state[2]),
+                    "delta_v": float(delta_state[3]),
+                    "position_error_norm": float(comparison["position_error_norm"]),
+                    "heading_error": float(comparison["heading_error"]),
+                    "velocity_error": float(comparison["velocity_error"]),
+                    "pred_mask_mean": float(comparison.get("pred_mask_mean", np.nan)),
+                    "pred_mask_min": float(comparison.get("pred_mask_min", np.nan)),
+                    "pred_mask_max": float(comparison.get("pred_mask_max", np.nan)),
+                    "mask_imu_mean": float(comparison.get("mask_imu_mean", np.nan)),
+                    "mask_steer_mean": float(comparison.get("mask_steer_mean", np.nan)),
+                    "mask_wheel_mean": float(comparison.get("mask_wheel_mean", np.nan)),
+                    "mask_selected_branch": str(comparison.get("mask_selected_branch", "")),
+                    "mask_selected_score": float(comparison.get("mask_selected_score", np.nan)),
+                    "mask_imu_active": int(comparison.get("mask_imu_active", 0)),
+                    "mask_steer_active": int(comparison.get("mask_steer_active", 0)),
+                    "mask_wheel_active": int(comparison.get("mask_wheel_active", 0)),
+                }
+            )
+            self.comparator_record_count += 1
+            if self.comparator_record_count % self.comparator_flush_interval == 0:
+                self.comparator_log_file.flush()
+        except Exception as exc:
+            self._log_error("Failed to write RKNet comparator log row", exc)
+
     def _append_sample(self, raw_sample: Dict[str, float], measurement: np.ndarray) -> None:
         for key, value in raw_sample.items():
             self.raw_history[key].append(float(value))
@@ -662,6 +1068,48 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         x0 = torch.as_tensor(z_arr[0].reshape(1, 5), device=self.device)
         return raw_tensors, z_seq, x0
 
+    def _summarize_pred_mask(self, pred_mask: np.ndarray) -> Dict[str, Any]:
+        mask = np.asarray(pred_mask, dtype=np.float64).reshape(-1)
+        branch_dim = int(self.model_cfg.pred_hidden)
+        if branch_dim <= 0 or mask.size < 3 * branch_dim:
+            return {
+                "pred_mask_mean": float(np.nanmean(mask)) if mask.size else float("nan"),
+                "pred_mask_min": float(np.nanmin(mask)) if mask.size else float("nan"),
+                "pred_mask_max": float(np.nanmax(mask)) if mask.size else float("nan"),
+                "mask_imu_mean": float("nan"),
+                "mask_steer_mean": float("nan"),
+                "mask_wheel_mean": float("nan"),
+                "mask_selected_branch": "unknown",
+                "mask_selected_score": float("nan"),
+                "mask_imu_active": 0,
+                "mask_steer_active": 0,
+                "mask_wheel_active": 0,
+            }
+
+        imu_mask = mask[0:branch_dim]
+        steer_mask = mask[branch_dim : 2 * branch_dim]
+        wheel_mask = mask[2 * branch_dim : 3 * branch_dim]
+        branch_means = {
+            "imu": float(np.mean(imu_mask)),
+            "steer": float(np.mean(steer_mask)),
+            "wheel": float(np.mean(wheel_mask)),
+        }
+        selected_branch = max(branch_means, key=branch_means.get)
+        threshold = float(self.mask_branch_active_threshold)
+        return {
+            "pred_mask_mean": float(np.mean(mask)),
+            "pred_mask_min": float(np.min(mask)),
+            "pred_mask_max": float(np.max(mask)),
+            "mask_imu_mean": branch_means["imu"],
+            "mask_steer_mean": branch_means["steer"],
+            "mask_wheel_mean": branch_means["wheel"],
+            "mask_selected_branch": selected_branch,
+            "mask_selected_score": float(branch_means[selected_branch]),
+            "mask_imu_active": int(branch_means["imu"] >= threshold),
+            "mask_steer_active": int(branch_means["steer"] >= threshold),
+            "mask_wheel_active": int(branch_means["wheel"] >= threshold),
+        }
+
     def _predict_with_model(self) -> Optional[np.ndarray]:
         if (
             not TORCH_AVAILABLE
@@ -678,6 +1126,14 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         x_upd = out["x_upd"][0, -1].detach().cpu().numpy().astype(np.float64)
         if not np.all(np.isfinite(x_upd)):
             raise ValueError("Robust KalmanNet produced non-finite state")
+
+        pred_mask = out.get("pred_mask")
+        self.last_pred_mask = None
+        self.last_pred_mask_summary = None
+        if pred_mask is not None:
+            pred_mask_np = pred_mask[0, -1].detach().cpu().numpy().astype(np.float64)
+            self.last_pred_mask = pred_mask_np.copy()
+            self.last_pred_mask_summary = self._summarize_pred_mask(pred_mask_np)
 
         x_upd[2] = wrap_angle_scalar(float(x_upd[2]))
         self.last_model_output = x_upd.copy()
@@ -762,6 +1218,91 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         estimate = np.array([x_pred, y_pred, theta_pred, v, float(gyro_z)], dtype=np.float64)
         return self._post_process_estimate(estimate, motor_tach, gyro_z, gps_data)
 
+    def _record_comparison(
+        self,
+        robust_estimate: np.ndarray,
+        motor_tach: float,
+        steering: float,
+        throttle: float,
+        dt: float,
+        gyro_z: float,
+        gps_data: Optional[Dict[str, Any]],
+        acceleration: Optional[np.ndarray],
+    ) -> None:
+        if not self.ekf_comparator_ready or self.ekf_comparator is None:
+            return
+
+        ok = self.ekf_comparator.update(
+            motor_tach=motor_tach,
+            steering=steering,
+            throttle=throttle,
+            dt=dt,
+            gyro_z=gyro_z,
+            gps_data=gps_data,
+            acceleration=acceleration,
+        )
+        if not ok:
+            self._log_warning("[RKNetComparator] EKF comparator update failed")
+            return
+
+        ekf_state = np.asarray(self.ekf_comparator.get_state(), dtype=np.float64)
+        robust_state = np.asarray(robust_estimate[:4], dtype=np.float64)
+        delta_state = robust_state - ekf_state
+        delta_state[2] = wrap_angle_scalar(float(delta_state[2]))
+
+        comparison = {
+            "tick": self.update_count,
+            "timestamp": time.time(),
+            "robust_source": "model" if self.last_update_used_model else "fallback",
+            "robust_state": robust_state.copy(),
+            "ekf_state": ekf_state.copy(),
+            "delta_state": delta_state.copy(),
+            "position_error_norm": float(np.linalg.norm(delta_state[:2])),
+            "heading_error": float(delta_state[2]),
+            "velocity_error": float(delta_state[3]),
+        }
+        if self.last_pred_mask_summary is not None:
+            comparison.update(self.last_pred_mask_summary)
+        self.last_comparator_output = ekf_state.copy()
+        self.last_comparison = comparison
+        self.comparison_history.append(comparison)
+        self._record_comparison_to_file(
+            comparison=comparison,
+            motor_tach=motor_tach,
+            steering=steering,
+            throttle=throttle,
+            dt=dt,
+            gyro_z=gyro_z,
+            gps_data=gps_data,
+            acceleration=acceleration,
+        )
+
+        if self.comparator_console_log and self.update_count % self.comparator_log_interval == 0:
+            robust_state = comparison["robust_state"]
+            ekf_state = comparison["ekf_state"]
+            delta_state = comparison["delta_state"]
+            self._log_info(
+                "[RKNetComparator] "
+                f"tick={comparison['tick']} "
+                f"source={comparison['robust_source']} "
+                f"pos={comparison['position_error_norm']:.3f} "
+                f"dtheta={comparison['heading_error']:.3f} "
+                f"dv={comparison['velocity_error']:.3f} "
+                f"robust=[{robust_state[0]:.3f}, {robust_state[1]:.3f}, {robust_state[2]:.3f}, {robust_state[3]:.3f}] "
+                f"ekf=[{ekf_state[0]:.3f}, {ekf_state[1]:.3f}, {ekf_state[2]:.3f}, {ekf_state[3]:.3f}] "
+                f"delta=[{delta_state[0]:.3f}, {delta_state[1]:.3f}, {delta_state[2]:.3f}, {delta_state[3]:.3f}]"
+            )
+
+    @staticmethod
+    def _copy_comparison_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+        copied: Dict[str, Any] = {}
+        for key, value in entry.items():
+            if isinstance(value, np.ndarray):
+                copied[key] = value.copy()
+            else:
+                copied[key] = value
+        return copied
+
     def update(
         self,
         motor_tach: float,
@@ -774,6 +1315,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
     ) -> bool:
         try:
             dt = max(float(dt), 1e-3)
+            self.update_count += 1
             measurement = self._measurement_from_inputs(motor_tach, gyro_z, gps_data)
             raw_sample = self._raw_sample_from_inputs(motor_tach, steering, gyro_z, acceleration)
             self._append_sample(raw_sample, measurement)
@@ -795,6 +1337,16 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     return False
                 estimate = self._fallback_update(motor_tach, dt, gyro_z, gps_data)
 
+            self._record_comparison(
+                robust_estimate=estimate,
+                motor_tach=motor_tach,
+                steering=steering,
+                throttle=throttle,
+                dt=dt,
+                gyro_z=gyro_z,
+                gps_data=gps_data,
+                acceleration=acceleration,
+            )
             self.internal_state = estimate.astype(np.float32)
             self.state = self.internal_state[:4].astype(np.float64, copy=True)
             self.last_update_time = time.time()
@@ -810,6 +1362,23 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
     def get_internal_state(self) -> np.ndarray:
         return self.internal_state.copy()
 
+    def get_comparator_state(self) -> Optional[np.ndarray]:
+        if self.last_comparator_output is None:
+            return None
+        return self.last_comparator_output.copy()
+
+    def get_last_comparison(self) -> Optional[Dict[str, Any]]:
+        if self.last_comparison is None:
+            return None
+        return self._copy_comparison_entry(self.last_comparison)
+
+    def get_comparison_history(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        if limit is None or limit <= 0:
+            items = list(self.comparison_history)
+        else:
+            items = list(self.comparison_history)[-int(limit) :]
+        return [self._copy_comparison_entry(item) for item in items]
+
     def reset(self, initial_pose: Optional[np.ndarray] = None):
         self.raw_history = {
             key: deque(maxlen=self.sequence_length) for key in self.RAW_KEYS
@@ -823,7 +1392,23 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                 self.internal_state[2] = float(initial_pose[2])
         self.state = self.internal_state[:4].astype(np.float64, copy=True)
         self.last_model_output = None
+        self.last_pred_mask = None
+        self.last_pred_mask_summary = None
         self.last_update_used_model = False
+        self.update_count = 0
+        self.last_comparator_output = None
+        self.last_comparison = None
+        self.comparison_history.clear()
+        if self.comparator_log_file is not None:
+            try:
+                self.comparator_log_file.flush()
+            except Exception:
+                pass
+        if self.ekf_comparator is not None:
+            self.ekf_comparator.reset(initial_pose=initial_pose)
+
+    def stop_recording(self):
+        self._close_comparator_log_file()
 
 
 # ============================================================
@@ -840,11 +1425,40 @@ def weighted_state_mse(
     weights: [5] or None
     """
     err = pred - target
-    err[..., 2] = wrap_angle(err[..., 2])
+    # Out-of-place angle wrapping to avoid breaking autograd
+    err = torch.cat([
+        err[..., :2],
+        wrap_angle(err[..., 2:3]),
+        err[..., 3:],
+    ], dim=-1)
     if weights is not None:
         err = err * weights.view(1, 1, -1)
     return (err ** 2).mean()
 
+
+def meas_mask_supervision_loss(
+    meas_mask: torch.Tensor,
+    meas_attack_labels: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Supervised loss encouraging the measurement mask to suppress
+    corrupted measurement channels in the innovation.
+
+    Args:
+        meas_mask: [B, T, 5] — learned per-channel mask on measurements
+        meas_attack_labels: [B, 5] — 1 if that measurement channel was attacked
+
+    Returns:
+        Scalar loss
+    """
+    # Target: 1 for clean channels, 0 for attacked channels
+    target = (1.0 - meas_attack_labels).unsqueeze(1).expand_as(meas_mask)
+    loss = torch.nn.functional.binary_cross_entropy(
+        meas_mask.clamp(1e-6, 1.0 - 1e-6),
+        target,
+        reduction="mean",
+    )
+    return loss
 
 
 def robuststatenet_loss(
@@ -854,15 +1468,43 @@ def robuststatenet_loss(
     lambda_upd: float = 0.8,
     lambda_pred: float = 0.2,
     weights: Optional[torch.Tensor] = None,
+    pred_mask: Optional[torch.Tensor] = None,
+    attack_labels: Optional[torch.Tensor] = None,
+    lambda_mask: float = 0.1,
+    meas_mask: Optional[torch.Tensor] = None,
+    meas_attack_labels: Optional[torch.Tensor] = None,
+    lambda_meas_mask: float = 0.1,
 ):
     """
-    Paper-style combined loss:
+    Paper-style combined loss with optional mask supervision:
     L = lambda1 ||y_hat - y_u||^2 + lambda2 ||y_hat - y_p||^2
+      + lambda_mask * pred_mask_supervision_loss
+      + lambda_meas_mask * meas_mask_supervision_loss
+
+    When pred_mask and attack_labels are provided, the mask supervision
+    term encourages the prediction mask to suppress attacked branches.
+
+    When meas_mask and meas_attack_labels are provided, the measurement
+    mask supervision encourages the update mask to suppress corrupted
+    measurement channels in the innovation.
     """
     loss_upd = weighted_state_mse(x_upd, x_gt, weights)
     loss_pred = weighted_state_mse(x_pred, x_gt, weights)
     total = lambda_upd * loss_upd + lambda_pred * loss_pred
-    return total, {"loss_upd": loss_upd.item(), "loss_pred": loss_pred.item()}
+    logs = {"loss_upd": loss_upd.item(), "loss_pred": loss_pred.item()}
+
+    if pred_mask is not None and attack_labels is not None and lambda_mask > 0:
+        from sensor_attack_augmentation import mask_supervision_loss
+        loss_mask = mask_supervision_loss(pred_mask, attack_labels)
+        total = total + lambda_mask * loss_mask
+        logs["loss_mask"] = loss_mask.item()
+
+    if meas_mask is not None and meas_attack_labels is not None and lambda_meas_mask > 0:
+        loss_meas = meas_mask_supervision_loss(meas_mask, meas_attack_labels)
+        total = total + lambda_meas_mask * loss_meas
+        logs["loss_meas_mask"] = loss_meas.item()
+
+    return total, logs
 
 
 # ============================================================

@@ -1,6 +1,53 @@
 class VehicleCommandsMixin:
     """Mixin for individual vehicle remote commands."""
 
+    def _get_manual_vehicle_type(self, car_id: int) -> str:
+        """Resolve the most likely vehicle type for manual keyboard defaults."""
+        fallback = getattr(self.config.deployment, "default_vehicle_type", "Qcar")
+
+        deployment_panels = getattr(self, "_deployment_panels", {})
+        panel = deployment_panels.get(car_id) if deployment_panels else None
+        if panel and hasattr(panel, "_get_current_config"):
+            try:
+                return panel._get_current_config().vehicle_type or fallback
+            except Exception:
+                pass
+
+        if hasattr(self, "_vehicle_connector") and self._vehicle_connector:
+            return self._vehicle_connector.get_vehicle_type(car_id, fallback) or fallback
+
+        return fallback
+
+    def _sync_manual_keyboard_profile(self, car_id: int, profile: dict) -> None:
+        """Push the latest keyboard profile into the visible car panel."""
+        panel = self._car_panels.get(car_id)
+        if panel:
+            panel.set_manual_keyboard_profile(profile)
+
+    def _on_manual_keyboard_profile_changed(
+        self, car_id: int, profile: dict, reason: str
+    ) -> None:
+        """Handle live keyboard profile changes from hotkeys or GUI buttons."""
+        def _update():
+            self._sync_manual_keyboard_profile(car_id, profile)
+            if reason:
+                summary = (
+                    f"FWD={profile.get('max_forward_throttle', 0.0):.2f}, "
+                    f"REV={profile.get('max_reverse_throttle', 0.0):.2f}, "
+                    f"SLIM={profile.get('steering_limit', 0.0):.2f}, "
+                    f"TSTEP={profile.get('throttle_step', 0.0):.3f}, "
+                    f"SSTEP={profile.get('steering_step', 0.0):.3f}"
+                )
+                self.log(
+                    f"Car {car_id}: {reason} -> {summary}",
+                    "CONFIG",
+                )
+
+        if hasattr(self, "root"):
+            self.root.after(0, _update)
+        else:
+            _update()
+
     def _start_car(self, car_id: int) -> None:
         """Start a car."""
         if self._remote.start_car(car_id):
@@ -123,16 +170,24 @@ class VehicleCommandsMixin:
         """Enable manual mode for a car."""
         panel = self._car_panels.get(car_id)
         control_type = panel.control_type if panel else "keyboard"
+        vehicle_type = self._get_manual_vehicle_type(car_id)
 
         if self._remote.enable_manual_mode(car_id, control_type):
             self._manual_mode_active[car_id] = True
+
+            profile = self._input.get_keyboard_profile(car_id, vehicle_type)
+            self._sync_manual_keyboard_profile(car_id, profile)
 
             # Set input controller type
             if not getattr(self, "_input").set_control_type(control_type):
                 self.log(f"Warning: Could not initialize {control_type} controller", "WARNING")
 
             # Start input loop
-            self._input.start(car_id, self._send_manual_control)
+            self._input.start(
+                car_id,
+                self._send_manual_control,
+                vehicle_type=vehicle_type,
+            )
 
             self._commands_sent_gui += 1
             self.log(f"🎮 Car {car_id}: Manual mode ENABLED ({control_type.upper()})", "SUCCESS")
@@ -160,6 +215,17 @@ class VehicleCommandsMixin:
     def _update_control_type(self, car_id: int, control_type: str) -> None:
         """Update control type for a car."""
         self.log(f"Car {car_id}: Manual control type set to {control_type.upper()}", "CONFIG")
+
+    def _update_manual_profile(self, car_id: int, updates: dict) -> None:
+        """Apply manual keyboard profile changes from the GUI."""
+        vehicle_type = self._get_manual_vehicle_type(car_id)
+        profile = self._input.update_keyboard_profile(
+            car_id,
+            updates,
+            vehicle_type=vehicle_type,
+            reason="Keyboard profile adjusted",
+        )
+        self._sync_manual_keyboard_profile(car_id, profile)
 
     def _toggle_perception_car(self, car_id: int) -> None:
         """Toggle perception for a specific car."""
@@ -203,16 +269,27 @@ class VehicleCommandsMixin:
         """Start probing for a specific car - runs multi_probing.py."""
         import subprocess
         import os
+        import sys
 
         if not hasattr(self, "_probing_processes"):
             self._probing_processes = {}
 
         try:
-            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-            probing_script = os.path.join(base_path, "python", "multi_probing.py")
+            # Resolve probing script robustly by searching parent directories.
+            search_dir = os.path.dirname(os.path.abspath(__file__))
+            probing_script = None
+            for _ in range(8):
+                candidate = os.path.join(search_dir, "python", "multi_probing.py")
+                if os.path.exists(candidate):
+                    probing_script = candidate
+                    break
+                parent = os.path.dirname(search_dir)
+                if parent == search_dir:
+                    break
+                search_dir = parent
 
-            if not os.path.exists(probing_script):
-                self.log(f"Car {car_id}: Probing script not found at {probing_script}", "ERROR")
+            if not probing_script:
+                self.log(f"Car {car_id}: Probing script not found near {os.path.abspath(__file__)}", "ERROR")
                 return
 
             ip = self._remote.get_car_ip(car_id)
@@ -230,11 +307,24 @@ class VehicleCommandsMixin:
 
             self.log(f"Car {car_id}: Probing → IP={ip} (source: {ip_source})", "INFO")
 
-            cmd = ["python", probing_script, "--car", str(car_id), "--ip", ip]
+            expected_port = 18760 + car_id
+            self.log(f"Car {car_id}: Viewer target tcp://{ip}:{expected_port}", "INFO")
+
+            telemetry = self._remote.get_telemetry(car_id) or {}
+            if telemetry.get("perception_active", False):
+                self.log(
+                    f"Car {car_id}: If no frames arrive, restart perception with remote probing enabled.",
+                    "WARNING",
+                )
+            else:
+                self.log(
+                    f"Car {car_id}: Perception is OFF; the probe window will stay blank until YOLO is active.",
+                    "WARNING",
+                )
+
+            cmd = [sys.executable, probing_script, "--car", str(car_id), "--ip", ip]
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
 

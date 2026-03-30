@@ -13,6 +13,7 @@ except ImportError as exc:
 
 from robustKLnet import RSNConfig, RobustStateNet, robuststatenet_loss
 from robust_kalmannet_dataset import RAW_KEYS, build_training_windows, merge_recorded_datasets
+from sensor_attack_augmentation import AttackConfig, SensorAttackAugmenter
 
 
 class SlidingWindowDataset(Dataset):
@@ -68,7 +69,9 @@ def evaluate(model, loader, device, teacher_forcing: bool) -> Tuple[float, Dict[
                 teacher_forcing_state=x_gt if teacher_forcing else None,
             )
             state_weights = torch.tensor([1.0, 1.0, 5.0, 1.0, 1.0], device=device)
-            loss, _ = robuststatenet_loss(out["x_pred"], out["x_upd"], x_gt, weights=state_weights)
+            loss, _ = robuststatenet_loss(
+                out["x_pred"], out["x_upd"], x_gt, weights=state_weights,
+            )
             losses.append(float(loss.item()))
     mean_loss = float(np.mean(losses)) if losses else float("nan")
     return mean_loss, {"loss": mean_loss}
@@ -78,20 +81,35 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train Robust KalmanNet offline from recorded datasets")
     parser.add_argument("datasets", nargs="+", help="One or more .npz dataset files recorded from the vehicle")
     parser.add_argument("--output", default="models/robust_kalmannet.pt", help="Checkpoint path relative to this script")
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--phase1-epochs", type=int, default=15, help="Epochs for Phase 1 (teacher forcing, predictor focus)")
+    parser.add_argument("--phase2-epochs", type=int, default=15, help="Epochs for Phase 2 (no teacher forcing, end-to-end)")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--sequence-length", type=int, default=20)
     parser.add_argument("--stride", type=int, default=1)
     parser.add_argument("--val-split", type=float, default=0.2)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr-phase2", type=float, default=None, help="Learning rate for Phase 2 (default: lr / 5)")
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--teacher-forcing", action="store_true", default=True)
-    parser.add_argument("--no-teacher-forcing", dest="teacher_forcing", action="store_false")
+    parser.add_argument("--attack-prob", type=float, default=0.5, help="Probability of attacking a sample")
+    parser.add_argument("--attack-types", nargs="*", default=["bias", "scale", "freeze", "noise", "ramp", "zero_out"],
+                        help="Attack types to use during augmentation")
+    parser.add_argument("--no-augmentation", action="store_true", help="Disable attack augmentation (train on clean only)")
+    parser.add_argument("--lambda-mask", type=float, default=0.1, help="Weight for prediction mask supervision loss")
+    parser.add_argument("--lambda-meas-mask", type=float, default=0.1, help="Weight for measurement mask supervision loss")
+    parser.add_argument("--max-branches-attacked", type=int, default=1, help="Max branches attacked simultaneously")
+    parser.add_argument(
+        "--predictor-mode",
+        default="nn",
+        choices=["nn", "kinematic"],
+        help="Prediction step: 'nn' (tri-LSTM, learnable, default) | 'kinematic' (unicycle model, no trainable parameters)",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+
+    total_epochs = args.phase1_epochs + args.phase2_epochs
 
     device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else args.device if args.device != "auto" else "cpu")
     merged = merge_recorded_datasets(args.datasets)
@@ -105,7 +123,10 @@ def main() -> None:
 
     generator = torch.Generator().manual_seed(args.seed)
     if val_size > 0:
-        train_subset, val_subset = random_split(dataset, [train_size, val_size], generator=generator)
+        # Prevent data leakage: Use chronological split instead of random split for sliding window time series
+        indices = list(range(len(dataset)))
+        train_subset = torch.utils.data.Subset(dataset, indices[:train_size])
+        val_subset = torch.utils.data.Subset(dataset, indices[train_size:])
         val_loader = DataLoader(SubsetWithTransform(val_subset), batch_size=args.batch_size, shuffle=False, collate_fn=collate_batch)
     else:
         train_subset = dataset
@@ -113,33 +134,98 @@ def main() -> None:
 
     train_loader = DataLoader(SubsetWithTransform(train_subset), batch_size=args.batch_size, shuffle=True, collate_fn=collate_batch)
 
-    cfg = RSNConfig(dt=float(merged.get("metadata", {}).get("dt_mean", 0.02) or 0.02))
+    cfg = RSNConfig(
+        dt=float(merged.get("metadata", {}).get("dt_mean", 0.02) or 0.02),
+        predictor_mode=args.predictor_mode,
+    )
     model = RobustStateNet(cfg).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     state_weights = torch.tensor([1.0, 1.0, 5.0, 1.0, 1.0], device=device)
 
+    print(f"\nPredictor mode : {args.predictor_mode}")
+    if args.predictor_mode == "kinematic":
+        print("  → Kinematic predictor: unicycle model (no learnable parameters in prediction step).")
+        print("  → Phase 1 (teacher-forcing) trains the update step ONLY.")
+        print("  → Prediction mask supervision (lambda_mask) is automatically skipped (pred_mask=None).")
+
+    # Initialize attack augmenter
+    augmenter = None
+    if not args.no_augmentation:
+        attack_cfg = AttackConfig(
+            attack_prob=args.attack_prob,
+            enabled_attacks=args.attack_types,
+            max_branches_attacked=args.max_branches_attacked,
+        )
+        augmenter = SensorAttackAugmenter(attack_cfg)
+        print(f"Attack augmentation enabled: prob={args.attack_prob}, types={args.attack_types}")
+    else:
+        print("Attack augmentation DISABLED (training on clean data only)")
+
     best_val = float("inf")
     history = []
 
-    for epoch in range(1, args.epochs + 1):
+    print(f"\n{'='*60}")
+    print(f"Two-phase training: Phase 1 = {args.phase1_epochs} epochs (teacher forcing)")
+    print(f"                    Phase 2 = {args.phase2_epochs} epochs (end-to-end)")
+    print(f"{'='*60}\n")
+
+    for epoch in range(1, total_epochs + 1):
+        # Determine phase
+        if epoch <= args.phase1_epochs:
+            phase = 1
+            use_teacher_forcing = True
+            phase_label = "P1-TF"
+            # Phase 1 loss weights: focus on prediction quality
+            lambda_upd = 0.5
+            lambda_pred = 0.5
+        else:
+            phase = 2
+            use_teacher_forcing = False
+            phase_label = "P2-E2E"
+            # Phase 2 loss weights: focus on final updated state
+            lambda_upd = 0.8
+            lambda_pred = 0.2
+
+            # Switch to lower learning rate at phase transition
+            if epoch == args.phase1_epochs + 1:
+                lr_phase2 = args.lr_phase2 if args.lr_phase2 is not None else args.lr / 5.0
+                for pg in optimizer.param_groups:
+                    pg["lr"] = lr_phase2
+                print(f"\n{'='*60}")
+                print(f"Phase 2 started: teacher forcing OFF, lr={lr_phase2:.2e}")
+                print(f"{'='*60}\n")
+
         model.train()
         train_losses = []
         for batch in train_loader:
             raw_b, z_seq_b, x_gt_b, x0_b = move_batch_to_device(batch, device)
+
+            # Apply attack augmentation
+            attack_labels = None
+            meas_attack_labels = None
+            if augmenter is not None:
+                raw_b, z_seq_b, attack_labels, meas_attack_labels = augmenter.augment_batch(raw_b, z_seq_b)
+
             optimizer.zero_grad()
             out = model(
                 raw=raw_b,
                 z_seq=z_seq_b,
                 x0=x0_b,
-                teacher_forcing_state=x_gt_b if args.teacher_forcing else None,
+                teacher_forcing_state=x_gt_b if use_teacher_forcing else None,
             )
             loss, logs = robuststatenet_loss(
                 out["x_pred"],
                 out["x_upd"],
                 x_gt_b,
-                lambda_upd=0.8,
-                lambda_pred=0.2,
+                lambda_upd=lambda_upd,
+                lambda_pred=lambda_pred,
                 weights=state_weights,
+                pred_mask=out.get("pred_mask"),
+                attack_labels=attack_labels,
+                lambda_mask=args.lambda_mask,
+                meas_mask=out.get("meas_mask"),
+                meas_attack_labels=meas_attack_labels,
+                lambda_meas_mask=args.lambda_meas_mask,
             )
             loss.backward()
             optimizer.step()
@@ -152,8 +238,8 @@ def main() -> None:
         else:
             val_loss = train_loss
 
-        history.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
-        print(f"Epoch {epoch:03d} | train={train_loss:.6f} | val={val_loss:.6f}")
+        history.append({"epoch": epoch, "phase": phase, "train_loss": train_loss, "val_loss": val_loss})
+        print(f"[{phase_label}] Epoch {epoch:03d} | train={train_loss:.6f} | val={val_loss:.6f}")
 
         if val_loss < best_val:
             best_val = val_loss
@@ -179,3 +265,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

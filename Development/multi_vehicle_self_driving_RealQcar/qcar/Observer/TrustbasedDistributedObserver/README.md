@@ -985,3 +985,196 @@ python plot_trust_data.py
 ---
 
 *Built for the QCar Multi-Vehicle Research Project — Quang Huy Nguyen & Shengya*
+Let me read the main file and the related modules to trace the full flow for you.
+
+Viewed trust_based_fleet_estimator.py:1-800
+Viewed trust_based_kalman_estimator.py:1-139
+Viewed weight_trust_module.py:1-800
+Viewed trust_model.py:1-800
+Viewed external_measurement_cache.py:1-87
+Viewed contamination_rollback.py:1-197
+
+Now let me also see the remaining lines of the fleet estimator:
+
+Viewed trust_based_fleet_estimator.py:800-1098
+
+Here's the complete flow of the **Trust-Based Distributed State Estimator**, traced through the code:
+
+---
+
+## Flow Diagram
+
+```mermaid
+flowchart TD
+    START["<b>update()</b><br/>local_state, dt, current_time_ns, control"]
+    
+    subgraph STEP1["① Set Own State"]
+        S1A["Store host local_state in fleet_states[:, self_id]"]
+        S1B["Cache host_state dict {x, y, θ, v, a}"]
+    end
+
+    subgraph STEP2["② Trust Score Update"]
+        S2A["For each known vehicle j ≠ self:"]
+        S2B["Get latest V2V received state<br/>(received_local_states)"]
+        S2C{"V2V data<br/>received?"}
+        S2D["Build VehicleData + attach<br/>external sensor (YOLO/radar)"]
+        S2E["Collect neighbor estimates of j<br/>& neighbor estimates of host"]
+        S2F["<b>trust_model.calculate_trust()</b><br/>→ velocity, distance, accel, heading scores<br/>→ local_trust_sample (γ_local)<br/>→ global_trust_sample (γ_cross)<br/>→ Dirichlet update → final_score"]
+        S2G["update_missing_observation()<br/>(decay trust)"]
+    end
+
+    subgraph STEP2_1["②.1 Attack Mitigation"]
+        A1["Check trust_model attack flags<br/>If target_attack → halve trust score"]
+    end
+
+    subgraph STEP2_5["②.5 Generalized Trust Vector"]
+        G1{"use_generalized_trust_vector?"}
+        G2["O_i(j) = compute_generalized_trust_vector()<br/>(combine direct + neighbor opinions)"]
+        G3["O_i(j) = direct trust_scores"]
+    end
+
+    subgraph STEP3["③ Weight Calculation"]
+        W1["Select source: O_i(j) or trust_scores"]
+        W2["<b>weight_module.calculate_weights()</b><br/>Dispatch by weight_type:<br/>• equal: 1/n for all<br/>• trust_based: w0 fixed, proportional to trust<br/>• paper: bounded equal over legitimate neighbors<br/>• graph_based: topology-based"]
+        W3["Apply influence cap w_cap<br/>Apply EMA smoothing (η)"]
+    end
+
+    subgraph STEP4["④ State Estimation Update (per target j)"]
+        E0["current_est = fleet_states[:, j]"]
+        E1["<b>Per-target weight calculation</b><br/>calculate_paper_weights_for_target() or<br/>calculate_weights_for_target()"]
+        E2["<b>Direct measurement correction</b><br/>Δ_direct = w0 × (z_j − x̂_j)"]
+        E3["<b>Neighbor consensus correction</b><br/>Σ w_l × (x̂_l(j) − x̂_j)"]
+        E4{"Direct measurement<br/>available?"}
+        E5["<b>Dynamics prediction</b> (no direct)<br/>bicycle model + motor model<br/>Δ_dyn = L_obs × (f(x̂) − x̂)"]
+        E6["x̂_new = x̂_old + Δ_direct + Δ_neighbors + Δ_dyn"]
+        E7["Apply state constraints<br/>(angle wrap, velocity/accel clamp)"]
+        E8["<b>Prediction mode switch</b><br/>Compare normal vs predicted est<br/>→ blend/switch if needed"]
+    end
+
+    subgraph STEP5["⑤ Self-Belief & Logging"]
+        SB1["self_belief = mean(confidence scores)"]
+        SB2["Log trust, weights, fleet estimates"]
+    end
+
+    subgraph STEP6["⑥ Contamination Rollback"]
+        R1["Record step components in buffer"]
+        R2{"Newly malicious<br/>vehicle detected?"}
+        R3["Replay buffered steps<br/>excluding malicious contributions"]
+    end
+
+    STEP7["⑦ Cleanup old data"]
+    RETURN["Return fleet_states"]
+
+    START --> STEP1 --> STEP2
+    S2A --> S2B --> S2C
+    S2C -- Yes --> S2D --> S2E --> S2F
+    S2C -- No --> S2G
+    STEP2 --> STEP2_1 --> STEP2_5
+    G1 -- Yes --> G2
+    G1 -- No --> G3
+    STEP2_5 --> STEP3
+    W1 --> W2 --> W3
+    STEP3 --> STEP4
+    E0 --> E1 --> E2 --> E3 --> E4
+    E4 -- No --> E5 --> E6
+    E4 -- Yes --> E6
+    E6 --> E7 --> E8
+    STEP4 --> STEP5 --> STEP6
+    R1 --> R2
+    R2 -- Yes --> R3
+    R2 -- No --> STEP7
+    R3 --> STEP7 --> RETURN
+```
+
+---
+
+## Step-by-Step Explanation
+
+### ① **Set Own State** ([update()](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_based_fleet_estimator.py:264:4-419:43) lines 286–296)
+- Store [local_state](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_based_fleet_estimator.py:216:4-227:79) (from the host's own EKF/sensor) into `fleet_states[:, self_id]`
+- Cache `host_state = {x, y, θ, v, a}` for trust evaluation
+
+### ② **Trust Score Update** ([_update_trust_scores()](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_based_fleet_estimator.py:424:4-512:27))
+For each known vehicle `j ≠ self`:
+
+1. **Retrieve V2V data**: Get the latest `received_local_states[j]` (the raw broadcast from vehicle j)
+2. **No data?** → Call [update_missing_observation()](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_model.py:1846:4-1914:20) → decay trust via exponential λ
+3. **Data received?** →
+   - Build [VehicleData(x, y, θ, v, a)](cci:2://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_model.py:150:0-167:46) from the V2V packet
+   - Attach external relative measurements (YOLO/radar distance) if available from [ExternalMeasurementCache](cci:2://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/external_measurement_cache.py:12:0-85:20)
+   - Update beacon reception tracking
+   - Collect **neighbor fleet estimates** about target j and about the host (from `received_fleet_states`)
+   - Call **`trust_model.calculate_trust()`** which computes:
+     - **4 component scores**: velocity, distance, acceleration, heading (each ∈ [0,1])
+     - Optional gates: physical constraints check, temporal consistency check
+     - **Local trust sample** `γ_local` = weighted combination of component scores
+     - **Global trust sample** `γ_cross` = `γ_host × γ_local_peer × γ_self` (cross-validation with neighbor estimates, relative measurements)
+     - Trust decay based on beacon_score_local / beacon_score_global
+     - **Dirichlet trust level update** → 5-level rating vector → **[final_score](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_model.py:1692:4-1703:52)**
+     - EMA smoothing on final_score
+
+### ②.1 **Attack Mitigation** ([_apply_attack_mitigation()](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_based_fleet_estimator.py:808:4-820:58))
+- Check `trust_model.get_attack_flags()` for each vehicle
+- If `flag_target_attack == True` → halve trust score: `trust × 0.5`
+
+### ②.5 **Generalized Trust Vector** (lines 306–318)
+- If `use_generalized_trust_vector == True`: compute `O_i(j)` by combining direct trust + neighbor opinion reports
+- Otherwise: `O_i(j)` = the direct [trust_scores](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_based_fleet_estimator.py:424:4-512:27) from step ②
+
+### ③ **Weight Calculation** (`weight_module.calculate_weights()`)
+- Select input: `O_i(j)` for "paper" mode, or raw [trust_scores](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_based_fleet_estimator.py:424:4-512:27) for other modes
+- Dispatch by `weight_type`:
+  - **[trust_based](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_based_fleet_estimator.py:1062:0-1096:9)**: Fixed `w0=0.3`, `w_self=0.2`, distribute remaining budget proportional to trust, apply influence cap
+  - **[paper](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/weight_trust_module.py:192:4-252:9)**: `w = 1/n` for all legitimate neighbors where `O_i(l) ≥ θ_min`, `n = max(κ, |LN|+1)`
+  - **[equal](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/weight_trust_module.py:254:4-326:21)**: `w = 1/n` for all trusted neighbors
+  - **`graph_based`**: topology-aware using adjacency matrix
+- Apply EMA smoothing (`η`) on the weight vector
+
+### ④ **State Estimation Update** ([_trust_weighted_update_with_components()](cci:1://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/trust_based_fleet_estimator.py:592:4-690:34))
+For each target vehicle `j ≠ self`:
+
+1. **Per-target weight**: Recalculate weights specific to this target (which neighbors have estimates for j?)
+2. **Direct measurement correction**:
+   ```
+   Δ_direct = w0 × (z_j − x̂_j)
+   ```
+   where `z_j` = target j's broadcast state, `x̂_j` = current estimate
+3. **Neighbor consensus correction**:
+   ```
+   Δ_neighbors = Σ_l  w_l × (x̂_l(j) − x̂_j)
+   ```
+   where `x̂_l(j)` = neighbor l's fleet estimate of j
+4. **Dynamics prediction** (only when no direct measurement):
+   ```
+   x̂_pred = f(x̂_j, u_j, dt)    ← bicycle model + motor model
+   Δ_dyn = L_obs × (x̂_pred − x̂_j)
+   ```
+5. **Final update**: `x̂_new = x̂_old + Δ_direct + Δ_neighbors + Δ_dyn`
+6. **State constraints**: wrap θ to [-π,π], clamp velocity ∈ [-2,2], accel ∈ [-5,5]
+7. **Prediction mode switch**: compare `normal_est` vs `predicted_est` → output confidence, optionally blend
+
+### ⑤ **Self-Belief & Logging**
+- `self_belief = mean(per-target confidences)` — how well consensus matches dynamics
+- Log all trust scores, weights, fleet estimates, prediction modes
+
+### ⑥ **Contamination Rollback** ([ContaminationRollback](cci:2://file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/contamination_rollback.py:13:0-195:68))
+- Record the step's components (direct delta, neighbor deltas, dynamics delta) in a rolling buffer
+- Check if any vehicle **newly** fell below `trust_threshold`:
+  - **Yes** → Replay buffered steps from the oldest snapshot, **excluding** the malicious vehicle's contributions
+  - **No** → Keep current estimates
+
+### ⑦ **Cleanup Old Data**
+- Purge stale V2V entries older than `max_state_age_ns`
+
+---
+
+### Key Update Equation
+
+```
+x̂_i^(j)[k+1] = x̂_i^(j)[k]
+              + w0 × (z_j − x̂_i^(j)[k])                    ← direct measurement
+              + Σ_{l∈N_i} w_l × (x̂_l^(j) − x̂_i^(j)[k])   ← neighbor consensus
+              + L × (f(x̂, u) − x̂)                          ← dynamics (if no z_j)
+```
+
+Where weights `w0, w_l` are **trust-modulated** via the TriP model + Dirichlet levels.

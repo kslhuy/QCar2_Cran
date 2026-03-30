@@ -61,7 +61,7 @@ def test_config_loading():
         print(f"✓ Longitudinal parameters loaded:")
         for key, value in long_params.items():
             print(f"  {key}: {value}")
-        if 'leader_acceleration_weight' in long_params or 'leader_acceleration_gain' in long_params:
+        if 'leader_acceleration_weight' in long_params:
             print("  (leader_acceleration_weight setting available for CACC)")
     except Exception as e:
         print(f"✗ Failed to get longitudinal params: {e}")

@@ -7,7 +7,7 @@ steps while excluding the malicious source's contributions.
 """
 
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 from collections import deque
 
 
@@ -107,8 +107,10 @@ class ContaminationRollback:
                 if vehicle_id in self.malicious_vehicles:
                     self.malicious_vehicles.remove(vehicle_id)
 
-        for malicious_id in newly_malicious:
-            fleet_states = self._trigger(malicious_id, current_time_ns, fleet_states)
+        if newly_malicious:
+            fleet_states = self._trigger(
+                set(newly_malicious), current_time_ns, fleet_states
+            )
 
         return fleet_states
 
@@ -128,11 +130,11 @@ class ContaminationRollback:
 
     def _trigger(
         self,
-        malicious_vehicle_id: int,
+        malicious_ids: Set[int],
         current_time_ns: int,
         fleet_states: np.ndarray,
     ) -> np.ndarray:
-        """Replay buffered steps while excluding malicious source contributions."""
+        """Replay buffered steps while excluding all malicious source contributions."""
         if not self.buffer:
             return fleet_states
 
@@ -151,13 +153,13 @@ class ContaminationRollback:
                 corrected_states[:, target_id] = self._replay_without_malicious(
                     comp=comp,
                     previous_state=corrected_states[:, target_id],
-                    malicious_vehicle_id=malicious_vehicle_id,
+                    malicious_ids=malicious_ids,
                 )
 
         corrected_states[:, self.vehicle_id] = current_self_state
         self.buffer.clear()
         self.stats["total_rollbacks"] += 1
-        self.stats["vehicles_flagged"].append(int(malicious_vehicle_id))
+        self.stats["vehicles_flagged"].extend(int(mid) for mid in malicious_ids)
         self.stats["rollback_times_ns"].append(int(current_time_ns))
 
         return corrected_states
@@ -173,20 +175,20 @@ class ContaminationRollback:
         return constrained
 
     def _replay_without_malicious(
-        self, comp: Dict, previous_state: np.ndarray, malicious_vehicle_id: int
+        self, comp: Dict, previous_state: np.ndarray, malicious_ids: Set[int]
     ) -> np.ndarray:
-        """Rebuild one target update while excluding malicious contributors."""
+        """Rebuild one target update while excluding all malicious contributors."""
         delta = np.zeros(self.state_dim)
 
         direct = comp.get("direct", {})
         direct_src = int(direct.get("source", -1))
-        if direct_src != malicious_vehicle_id:
+        if direct_src not in malicious_ids:
             delta += np.asarray(
                 direct.get("delta", np.zeros(self.state_dim)), dtype=float
             )
 
         for neighbor_id, ndelta in comp.get("neighbors", {}).items():
-            if int(neighbor_id) == malicious_vehicle_id:
+            if int(neighbor_id) in malicious_ids:
                 continue
             delta += np.asarray(ndelta, dtype=float)
 

@@ -68,18 +68,22 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     Uses the TriP Trust Model for trust evaluation and the Weight Trust Module
     for adaptive weight calculation.
 
-    Algorithm:
+    Algorithm (Correction-then-Prediction):
     For each target vehicle T estimated by host H:
     1. Evaluate trust for all vehicles using TriP model
     2. Calculate adaptive weights based on trust scores
-    3. Update estimate using weighted consensus:
-       x̂_new(T) = x̂_old(T)
-                 + w0 * (T's_broadcast - x̂_old(T))
-                 + Σ w_N * (Neighbor_N's_estimate(T) - x̂_old(T))
+    3. Consensus correction:
+       x̂_corrected(T) = x̂_old(T)
+                       + w0 * (T's_broadcast - x̂_old(T))
+                       + Σ w_N * (Neighbor_N's_estimate(T) - x̂_old(T))
+    4. Dynamics prediction:
+       x̂_new(T) = f(x̂_corrected(T), u_T, dt)
 
     Where:
     - w0: Weight for direct measurement (from target)
     - w_N: Trust-weighted weight for neighbor N's estimate
+    - f(): Bicycle kinematics + motor model
+    - u_T: Target's control input [steering, throttle]
     """
 
     def __init__(
@@ -347,6 +351,29 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         control=control,
                         dt=dt,
                     )
+                    # Correction-then-Prediction: propagate the
+                    # consensus-corrected state through dynamics
+                    # x̂_new = f(x̂_corrected, u, dt)
+                    target_ctrl = self._get_target_control(target_id, control)
+
+                    saved_motor = self._motor_accel_state.get(target_id, 0.0)
+                    consensus_est = normal_est.copy()
+                    normal_est = self._apply_state_constraints(
+                        self._predict_dynamics(
+                            consensus_est, target_ctrl, dt, target_id=target_id
+                        )
+                    )
+                    components["dynamics_delta"] = normal_est - consensus_est
+                    primary_motor = self._motor_accel_state.get(target_id, saved_motor)
+                    # Predicted-only from old state for mode switch comparison
+                    self._motor_accel_state[target_id] = saved_motor
+                    predicted_only_est = self._apply_state_constraints(
+                        self._predict_dynamics(
+                            current_est, target_ctrl, dt, target_id=target_id
+                        )
+                    )
+                    self._motor_accel_state[target_id] = primary_motor
+
                 else:
                     # Keep child estimator behavior (e.g., TrustBasedKalmanEstimator)
                     normal_est = self._trust_weighted_update(
@@ -361,13 +388,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         "neighbors": {},
                         "dynamics_delta": np.zeros(self.state_dim),
                     }
-
-                target_ctrl = self._get_target_control(target_id, control)
-                predicted_only_est = self._apply_state_constraints(
-                    self._predict_dynamics(
-                        current_est, target_ctrl, dt, target_id=target_id
+                    target_ctrl = self._get_target_control(target_id, control)
+                    predicted_only_est = self._apply_state_constraints(
+                        self._predict_dynamics(
+                            current_est, target_ctrl, dt, target_id=target_id
+                        )
                     )
-                )
                 final_est, confidence = self._apply_prediction_mode_switch(
                     target_id=target_id,
                     normal_est=normal_est,
@@ -649,6 +675,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 direct_measurement=direct_state,
             )
 
+        # === Flag-Driven w₀ Adaptation ===
+        # TODO: Should implement that in the calculation of weights also , to prevent we ignore the w_0 in the beginning
+        trust_obj = self.trust_model.get_trust_score(target_id)
+        if trust_obj is not None:
+            target_weights = self.weight_module.apply_flag_adaptation(
+                target_weights, trust_obj, self.weight_config
+            )
+
         # === Direct Measurement Correction ===
         if direct_state is not None and target_weights["w0"] > 0:
             direct_delta = target_weights["w0"] * (direct_state - current_est)
@@ -674,17 +708,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             total_correction += neighbor_delta
             components["neighbors"][neighbor_id] = neighbor_delta
 
-        # === Dynamics Prediction (when no direct measurement) ===
-        if direct_state is None and dt > 0:
-            target_ctrl = self._get_target_control(target_id, control)
-            dynamics_pred = self._predict_dynamics(
-                current_est, target_ctrl, dt, target_id=target_id
-            )
-            dynamics_correction = self.observer_gain * (dynamics_pred - current_est)
-            total_correction += dynamics_correction
-            components["dynamics_delta"] = dynamics_correction
-
-        # === Apply Update ===
+        # === Apply Consensus Correction ===
+        # Dynamics propagation f(x̂_corrected, u, dt) is applied in update()
         new_est = self._apply_state_constraints(current_est + total_correction)
         self.stats["weight_updates"] += 1
 
@@ -735,12 +760,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         # Velocity / acceleration prediction
         if self.motor_model_config.enabled and dt > 0:
+            # print("Motor model enabled, using dynamic prediction")
             motor_accel = self._motor_accel_state.get(target_id, 0.0)
             v_new, a_new, motor_accel_new = self.motor_model.predict(
                 throttle=throttle, v=v, motor_accel=motor_accel, dt=dt,
             )
             self._motor_accel_state[target_id] = motor_accel_new
         else:
+            # print("Motor model disabled or dt=0, using simple kinematic prediction")
             a_new = a
             v_new = v + a * dt
 

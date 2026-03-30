@@ -331,45 +331,66 @@ class RobustDatasetControl(BaseWidget):
         row2 = tk.Frame(content, bg=c.bg_medium)
         row2.pack(fill="x")
 
-        ThemedButton(
+        self._buttons = {}
+        
+        # Start Button
+        self._buttons["start"] = ThemedButton(
             row2,
             text="Start",
             button_type="start",
             command=lambda: self._send_action("start"),
-            padx=8,
+            padx=4,
             pady=3,
-        ).pack(side="left", expand=True, fill="x", padx=(0, 2))
+        )
+        self._buttons["start"].pack(side="left", expand=True, fill="x", padx=(0, 1))
 
-        ThemedButton(
+        # Stop Button
+        self._buttons["stop"] = ThemedButton(
+            row2,
+            text="Stop",
+            button_type="warning",
+            command=lambda: self._send_action("stop"),
+            padx=4,
+            pady=3,
+        )
+        self._buttons["stop"].pack(side="left", expand=True, fill="x", padx=1)
+
+        # Save Button
+        self._buttons["save"] = ThemedButton(
             row2,
             text="Save",
             button_type="command",
-            command=lambda: self._send_action("stop"),
-            padx=8,
+            command=lambda: self._send_action("save"),
+            padx=4,
             pady=3,
-        ).pack(side="left", expand=True, fill="x", padx=2)
+        )
+        self._buttons["save"].pack(side="left", expand=True, fill="x", padx=1)
 
-        ThemedButton(
+        # Discard Button
+        self._buttons["discard"] = ThemedButton(
             row2,
             text="Discard",
-            button_type="warning",
+            button_type="danger",
             command=lambda: self._send_action("discard"),
-            padx=8,
+            padx=4,
             pady=3,
-        ).pack(side="left", expand=True, fill="x", padx=(2, 0))
+        )
+        self._buttons["discard"].pack(side="left", expand=True, fill="x", padx=(1, 0))
 
     def _send_action(self, action: str) -> None:
         if self.callbacks.on_set_robust_kalmannet_dataset:
             self.callbacks.on_set_robust_kalmannet_dataset(self.car_id, action, {})
 
+
     def update_status(self, status: dict) -> None:
-        if not self._status_label:
+        if not self._status_label or not self._buttons:
             return
 
         if not status or not hasattr(status, "get"):
             self._status_label.config(
                 text="Status: Idle", fg=self.theme.colors.fg_muted
             )
+            self._update_button_states(False, False, 0)
             return
 
         is_enabled = bool(status.get("enabled", False))
@@ -385,8 +406,39 @@ class RobustDatasetControl(BaseWidget):
                 text=f"Status: Recording ({samples})",
                 fg=self.theme.colors.accent_green,
             )
-        else:
+        elif samples > 0:
             self._status_label.config(
-                text=f"Status: Ready ({samples})",
+                text=f"Status: Stopped ({samples} buffered)",
                 fg=self.theme.colors.accent_blue,
             )
+        else:
+            self._status_label.config(
+                text="Status: Ready", fg=self.theme.colors.fg_muted
+            )
+
+        self._update_button_states(is_enabled, is_recording, samples)
+
+    def _update_button_states(
+        self, is_enabled: bool, is_recording: bool, samples: int
+    ) -> None:
+        """Helper to set button states based on recording status."""
+        if not self._buttons:
+            return
+
+        if is_recording:
+            self._buttons["start"].set_enabled(False)
+            self._buttons["stop"].set_enabled(True)
+            self._buttons["save"].set_enabled(False)
+            self._buttons["discard"].set_enabled(False)
+        elif samples > 0:
+            self._buttons["start"].set_enabled(True)
+            self._buttons["stop"].set_enabled(False)
+            self._buttons["save"].set_enabled(True)
+            self._buttons["discard"].set_enabled(True)
+        else:
+            self._buttons["start"].set_enabled(True)
+            self._buttons["stop"].set_enabled(False)
+            self._buttons["save"].set_enabled(False)
+            self._buttons["discard"].set_enabled(False)
+
+

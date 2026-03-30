@@ -46,12 +46,12 @@ class MotorModelConfig:
     def from_dict(cls, d: dict) -> "MotorModelConfig":
         """Create config from a dictionary (e.g., YAML section)."""
         return cls(
-            enabled=d.get("enabled", True),
-            tau=d.get("tau", cls.tau),
-            k_th=d.get("k_th", cls.k_th),
-            k_br=d.get("k_br", cls.k_br),
-            c_v=d.get("c_v", cls.c_v),
-            c_fric=d.get("c_fric", cls.c_fric),
+            enabled=d.get("enabled", False),
+            tau=d.get("tau", 0.318),
+            k_th=d.get("k_th", 4.5795),
+            k_br=d.get("k_br", 4.5772),
+            c_v=d.get("c_v", 5.0),
+            c_fric=d.get("c_fric", 2.0),
         )
 
 

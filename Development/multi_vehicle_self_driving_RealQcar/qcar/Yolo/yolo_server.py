@@ -3,22 +3,28 @@ YOLO Server Physical - Refactored for Robustness
 matches architecture of yolo_server_virtual.py but for physical QCar.
 """
 
+import os
+import sys
 import cv2
 
 import argparse
 from dataclasses import dataclass
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 
 # Retaining original camera import as requested
 from pit.YOLO.utils import QCar2DepthAligned
 
 # Using enhanced wrapper for consistency with virtual server (better rendering)
 from YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy, DetectionBuffers
-from Yolo.YoLo import YOLOPublisher, YOLOVideoPublisher
+from YoLo import YOLOPublisher, YOLOVideoPublisher
 
 # Import Lane Detection and Interface
 try:
-    from Yolo.LaneFollow import create_lane_detector
-    from Yolo.LaneFollow.lane_detection_interface import LaneDetectionResult
+    from LaneFollow import create_lane_detector
+    from LaneFollow.lane_detection_interface import LaneDetectionResult
 
     LANE_MODULE_AVAILABLE = True
 except ImportError as e:

@@ -1,0 +1,180 @@
+import argparse
+import csv
+from pathlib import Path
+from typing import Dict, List
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+DEFAULT_LOG_DIR = Path(__file__).resolve().parent / "logs" / "comparator"
+
+
+def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
+    with filepath.open("r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        rows: List[dict] = list(reader)
+
+    if not rows:
+        raise SystemExit(f"No data rows found in {filepath}")
+
+    numeric_columns = [
+        "timestamp",
+        "tick",
+        "robust_x",
+        "robust_y",
+        "robust_theta",
+        "robust_v",
+        "ekf_x",
+        "ekf_y",
+        "ekf_theta",
+        "ekf_v",
+        "delta_x",
+        "delta_y",
+        "delta_theta",
+        "delta_v",
+        "position_error_norm",
+        "heading_error",
+        "velocity_error",
+        "gps_valid",
+        "pred_mask_mean",
+        "pred_mask_min",
+        "pred_mask_max",
+        "mask_imu_mean",
+        "mask_steer_mean",
+        "mask_wheel_mean",
+        "mask_selected_score",
+        "mask_imu_active",
+        "mask_steer_active",
+        "mask_wheel_active",
+    ]
+    data: Dict[str, np.ndarray] = {}
+    for column in numeric_columns:
+        values = []
+        for row in rows:
+            raw = row.get(column, "")
+            try:
+                values.append(float(raw))
+            except (TypeError, ValueError):
+                values.append(np.nan)
+        data[column] = np.asarray(values, dtype=np.float64)
+
+    data["source"] = np.asarray([row.get("source", "") for row in rows], dtype=object)
+    data["mask_selected_branch"] = np.asarray(
+        [row.get("mask_selected_branch", "") for row in rows], dtype=object
+    )
+    return data
+
+
+def _resolve_input_file(filepath: str | None) -> Path:
+    if filepath:
+        candidate = Path(filepath)
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        return candidate.resolve()
+
+    csv_files = sorted(DEFAULT_LOG_DIR.glob("*.csv"))
+    if not csv_files:
+        raise SystemExit(f"No comparator CSV files found in {DEFAULT_LOG_DIR}")
+    return csv_files[-1]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Plot Robust KalmanNet vs EKF comparator logs"
+    )
+    parser.add_argument(
+        "--file",
+        help="Comparator CSV file. If omitted, the latest file under logs/comparator is used.",
+    )
+    args = parser.parse_args()
+
+    filepath = _resolve_input_file(args.file)
+    data = _load_csv_rows(filepath)
+    time_axis = data["timestamp"] - data["timestamp"][0]
+
+    fig, axes = plt.subplots(3, 2, figsize=(14, 12))
+    fig.suptitle(f"RKNet Comparator: {filepath.name}")
+
+    ax = axes[0, 0]
+    ax.plot(data["robust_x"], data["robust_y"], label="Robust", linewidth=1.8)
+    ax.plot(data["ekf_x"], data["ekf_y"], label="EKF", linewidth=1.4, linestyle="--")
+    ax.set_title("XY Trajectory")
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    ax = axes[0, 1]
+    ax.plot(time_axis, data["position_error_norm"], label="Position error norm")
+    ax.plot(time_axis, np.abs(data["heading_error"]), label="|Heading error|")
+    ax.plot(time_axis, np.abs(data["velocity_error"]), label="|Velocity error|")
+    ax.set_title("Absolute Errors")
+    ax.set_xlabel("time [s]")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    ax = axes[1, 0]
+    ax.plot(time_axis, data["delta_x"], label="dx")
+    ax.plot(time_axis, data["delta_y"], label="dy")
+    ax.plot(time_axis, data["delta_theta"], label="dtheta")
+    ax.plot(time_axis, data["delta_v"], label="dv")
+    ax.set_title("Signed State Differences")
+    ax.set_xlabel("time [s]")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    ax = axes[1, 1]
+    model_mask = data["source"] == "model"
+    fallback_mask = data["source"] == "fallback"
+    ax.plot(time_axis, model_mask.astype(float), label="model used", linewidth=1.2)
+    ax.plot(time_axis, fallback_mask.astype(float), label="fallback used", linewidth=1.2)
+    ax.plot(time_axis, data["gps_valid"], label="gps valid", linewidth=1.2)
+    ax.set_title("Source / GPS Flags")
+    ax.set_xlabel("time [s]")
+    ax.set_ylim(-0.1, 1.1)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    ax = axes[2, 0]
+    ax.plot(time_axis, data["mask_imu_mean"], label="imu mask")
+    ax.plot(time_axis, data["mask_steer_mean"], label="steer mask")
+    ax.plot(time_axis, data["mask_wheel_mean"], label="wheel mask")
+    ax.plot(time_axis, data["pred_mask_mean"], label="overall mean", linestyle="--")
+    ax.set_title("Predictor Mask Means")
+    ax.set_xlabel("time [s]")
+    ax.set_ylim(-0.05, 1.05)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+
+    ax = axes[2, 1]
+    branch_to_id = {"imu": 0.0, "steer": 1.0, "wheel": 2.0}
+    selected_ids = np.asarray(
+        [branch_to_id.get(name, np.nan) for name in data["mask_selected_branch"]],
+        dtype=np.float64,
+    )
+    ax.plot(time_axis, selected_ids, label="selected branch", linewidth=1.3)
+    ax.set_title("Mask Decision Summary")
+    ax.set_xlabel("time [s]")
+    ax.set_yticks([0.0, 1.0, 2.0], labels=["imu", "steer", "wheel"])
+    ax.set_ylim(-0.2, 2.2)
+    ax.grid(True, alpha=0.3)
+    ax2 = ax.twinx()
+    ax2.plot(
+        time_axis,
+        data["mask_selected_score"],
+        label="selected score",
+        linewidth=1.1,
+        color="tab:red",
+    )
+    ax2.set_ylim(-0.05, 1.05)
+    lines_1, labels_1 = ax.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax.legend(lines_1 + lines_2, labels_1 + labels_2)
+
+    fig.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

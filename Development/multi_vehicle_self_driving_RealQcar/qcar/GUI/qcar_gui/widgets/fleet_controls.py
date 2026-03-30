@@ -73,9 +73,9 @@ class FleetControlsWidget(BaseWidget):
             text="▶ Start All",
             button_type='start',
             command=self._safe_callback(self.callbacks.on_start_all),
-            font=self.theme.fonts.tiny(),
-            padx=4,
-            pady=2
+            font=self.theme.fonts.body_bold(),
+            padx=8,
+            pady=6
         ).pack(side='left', expand=True, fill='x', padx=(0, 2))
         
         ThemedButton(
@@ -83,9 +83,9 @@ class FleetControlsWidget(BaseWidget):
             text="⬛ Stop All",
             button_type='stop',
             command=self._safe_callback(self.callbacks.on_stop_all),
-            font=self.theme.fonts.tiny(),
-            padx=4,
-            pady=2
+            font=self.theme.fonts.body_bold(),
+            padx=8,
+            pady=6
         ).pack(side='left', expand=True, fill='x', padx=(2, 0))
     
     def _build_platoon_controls(self, parent: tk.Frame) -> None:
@@ -101,9 +101,9 @@ class FleetControlsWidget(BaseWidget):
             text="⚙️ Setup Platoon",
             button_type='command',
             command=self._safe_callback(self.callbacks.on_setup_platoon),
-            font=self.theme.fonts.tiny(),
-            padx=2,
-            pady=2
+            font=self.theme.fonts.small_bold(),
+            padx=6,
+            pady=5
         ).pack(side='left', expand=True, fill='x', padx=(0, 1))
         
         ThemedButton(
@@ -111,9 +111,9 @@ class FleetControlsWidget(BaseWidget):
             text="🚗🚗 Trigger Platoon",
             button_type='platoon',
             command=self._safe_callback(self.callbacks.on_trigger_platoon),
-            font=self.theme.fonts.tiny(),
-            padx=2,
-            pady=2
+            font=self.theme.fonts.small_bold(),
+            padx=6,
+            pady=5
         ).pack(side='left', expand=True, fill='x', padx=(1, 1))
         
         self._v2v_btn = ThemedButton(
@@ -121,9 +121,9 @@ class FleetControlsWidget(BaseWidget):
             text="📡 V2V Active",
             button_type='warning',
             command=self._safe_callback(self.callbacks.on_activate_v2v),
-            font=self.theme.fonts.tiny(),
-            padx=2,
-            pady=2
+            font=self.theme.fonts.small_bold(),
+            padx=6,
+            pady=5
         )
         self._v2v_btn.pack(side='left', expand=True, fill='x', padx=(1, 0))
         
@@ -136,9 +136,9 @@ class FleetControlsWidget(BaseWidget):
             text="Disable All Platoons",
             button_type='secondary',
             command=self._safe_callback(self.callbacks.on_disable_all_platoons),
-            font=self.theme.fonts.tiny(),
-            padx=2,
-            pady=2
+            font=self.theme.fonts.small_bold(),
+            padx=6,
+            pady=5
         ).pack(side='left', expand=True, fill='x', padx=(0, 1))
         
         self._disable_v2v_btn = tk.Button(
@@ -146,12 +146,12 @@ class FleetControlsWidget(BaseWidget):
             text="📡 Disable V2V",
             bg='#4d4d4d',
             fg='white',
-            font=self.theme.fonts.tiny(),
+            font=self.theme.fonts.small_bold(),
             command=self._safe_callback(self.callbacks.on_disable_v2v),
             relief='flat',
             state='disabled',
-            padx=2,
-            pady=2
+            padx=6,
+            pady=5
         )
         self._disable_v2v_btn.pack(side='left', expand=True, fill='x', padx=(1, 0))
     

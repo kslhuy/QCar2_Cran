@@ -524,32 +524,60 @@ class YOLOv8Wrapper_Huy(YOLOv8):
 
         # Render YOLO detections with masks
         colors = []
-        masks = self.predictions[0].masks.data.cuda()
+        masks = None
+        if self.predictions[0].masks is not None:
+            masks = self.predictions[0].masks.data
+            if torch.cuda.is_available():
+                masks = masks.cuda()
+            else:
+                masks = masks.cpu()
+
+            if masks.shape[1:] != self.img.shape[:2]:
+                import torch.nn.functional as F
+
+                masks = F.interpolate(
+                    masks.unsqueeze(1).float(),
+                    size=self.img.shape[:2],
+                    mode="nearest",
+                ).squeeze(1)
+
         boxes = self.predictions[0].boxes.xyxy.cpu().numpy().astype(int)
         imgClone = self.img.copy()
 
-        for i in range(len(self.objectsDetected)):
-            colors.append(MASK_COLORS_RGB[self.objectsDetected[i].astype(int)])
-            name = self.processedResults[i].name
-            x = self.processedResults[i].x
-            y = self.processedResults[i].y
-            distance = self.processedResults[i].distance
+        render_count = min(len(self.objectsDetected), len(self.processedResults), len(boxes))
+        for i in range(render_count):
+            class_idx = int(self.objectsDetected[i]) % len(MASK_COLORS_RGB)
+            color = tuple(int(channel) for channel in MASK_COLORS_RGB[class_idx][:3])
+            colors.append(color)
+            name = str(self.processedResults[i].name)
+            bbox = np.asarray(boxes[i], dtype=int).reshape(-1)
+            if bbox.size < 4:
+                continue
+            pt1 = (int(bbox[0]), int(bbox[1]))
+            pt2 = (int(bbox[2]), int(bbox[3]))
+            x = int(np.asarray(self.processedResults[i].x).reshape(-1)[0])
+            y = int(np.asarray(self.processedResults[i].y).reshape(-1)[0])
+            distance = float(self.processedResults[i].distance)
 
-            cv2.rectangle(
-                imgClone, (boxes[i, :2]), (boxes[i, 2:4]), colors[i], bbox_thickness
-            )
+            cv2.rectangle(imgClone, pt1, pt2, color, int(bbox_thickness))
             cv2.putText(
-                imgClone, name, (x, y - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, colors[i], 2
+                imgClone,
+                name,
+                (x, max(y - 30, 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2,
             )
 
             if self._calc_distence:
                 cv2.putText(
                     imgClone,
-                    str(distance) + " m",
-                    (x, y - 10),
+                    f"{distance:.2f} m",
+                    (x, max(y - 10, 40)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7,
-                    colors[i],
+                    color,
                     2,
                 )
 
@@ -564,9 +592,14 @@ class YOLOv8Wrapper_Huy(YOLOv8):
                 2,
             )
 
-        # Apply mask coloring
-        imgTensor = torch.from_numpy(imgClone).to("cuda:0")
-        imgMask = self.mask_color(masks, imgTensor, colors)
+        # Apply mask coloring when segmentation masks are available.
+        if masks is not None and len(colors) > 0:
+            imgTensor = torch.from_numpy(imgClone)
+            if torch.cuda.is_available():
+                imgTensor = imgTensor.to("cuda:0")
+            imgMask = self.mask_color(masks, imgTensor, colors)
+        else:
+            imgMask = imgClone
 
         if imgMask.shape[:2] != self.inputShape:
             imgMask = cv2.resize(imgMask, (self.inputShape[1], self.inputShape[0]))

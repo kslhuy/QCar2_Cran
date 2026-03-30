@@ -397,6 +397,11 @@ class VehicleLogic:
             return None
         return self.robust_kalmannet_dataset.stop(save=save)
 
+    def clear_robust_kalmannet_dataset(self) -> None:
+        """Clear the Robust KalmanNet dataset buffer."""
+        if self.robust_kalmannet_dataset is not None:
+            self.robust_kalmannet_dataset.clear()
+
     def _get_robust_kalmannet_dataset_status(self) -> dict:
         """Collect status from the Robust KalmanNet dataset recorder."""
         status = {"enabled": False}

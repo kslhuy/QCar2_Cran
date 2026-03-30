@@ -1241,47 +1241,44 @@ def run_calibration(
     results: List[Dict[str, object]] = []
     saved_count = 0
 
-    with (
-        CSVLogger(
-            raw_csv,
-            [
-                "transition_idx",
-                "phase",
-                "time_s",
-                "rel_time_s",
-                "throttle_cmd",
-                "velocity_mps",
-                "accel_mps2",
-                "accel_source",
-            ],
-        ) as raw_log,
-        CSVLogger(
-            lookup_csv,
-            [
-                "transition",
-                "u_from",
-                "u_to",
-                "delta_u",
-                "accel_source",
-                "imu_bias_mps2",
-                "v0_mps",
-                "vss_mps",
-                "delta_v_mps",
-                "tau_s",
-                "k_local_mps_per_throttle",
-                "a0_model_mps2",
-                "a_peak_meas_mps2",
-                "a_mean_early_mps2",
-                "acc_to_throttle_model",
-                "acc_to_throttle_peak",
-                "t63_s",
-                "t90_s",
-                "t95_s",
-                "lead_time_s",
-                "fit_method",
-            ],
-        ) as lut_log,
-    ):
+    with CSVLogger(
+        raw_csv,
+        [
+            "transition_idx",
+            "phase",
+            "time_s",
+            "rel_time_s",
+            "throttle_cmd",
+            "velocity_mps",
+            "accel_mps2",
+            "accel_source",
+        ],
+    ) as raw_log, CSVLogger(
+        lookup_csv,
+        [
+            "transition",
+            "u_from",
+            "u_to",
+            "delta_u",
+            "accel_source",
+            "imu_bias_mps2",
+            "v0_mps",
+            "vss_mps",
+            "delta_v_mps",
+            "tau_s",
+            "k_local_mps_per_throttle",
+            "a0_model_mps2",
+            "a_peak_meas_mps2",
+            "a_mean_early_mps2",
+            "acc_to_throttle_model",
+            "acc_to_throttle_peak",
+            "t63_s",
+            "t90_s",
+            "t95_s",
+            "lead_time_s",
+            "fit_method",
+        ],
+    ) as lut_log:
         t_global0 = time.time()
 
         for idx, (u_from, u_to) in enumerate(transitions, start=1):

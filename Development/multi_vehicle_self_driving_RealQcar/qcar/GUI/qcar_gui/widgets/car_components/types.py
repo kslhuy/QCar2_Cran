@@ -45,6 +45,7 @@ class CarPanelCallbacks:
     on_set_initial_position: Callable[[int, float, float, float, bool], None] = None
     on_toggle_manual: Callable[[int], None] = None
     on_update_control_type: Callable[[int, str], None] = None
+    on_update_manual_profile: Callable[[int, dict], None] = None
     on_platoon_position_change: Callable[[int, int], None] = None
     on_toggle_perception: Callable[[int], None] = None
     on_toggle_probing: Callable[[int], None] = None
