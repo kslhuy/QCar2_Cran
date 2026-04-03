@@ -24,6 +24,13 @@ plotting:
 # Local estimator defaults
 local:
   # ---------------------------------------------------------------------
+  # Shared sensor filtering defaults
+  # ---------------------------------------------------------------------
+  common:
+    v_lpf_alpha: 0.15  # LPF coefficient for motor_tach applied in VehicleObserver.
+    accel_ema_alpha: 0.25  # EMA coefficient for IMU acceleration applied in VehicleObserver.
+
+  # ---------------------------------------------------------------------
   # EKF estimator defaults
   # ---------------------------------------------------------------------
   ekf:
@@ -48,6 +55,7 @@ local:
   # Robust KalmanNet estimator
   # ---------------------------------------------------------------------
   robust_kalman_net:
+    predictor_mode: kinematic    # Explicitly use kinematic model for prediction, leaving only the update step to use the GRU NN
     use_model: true              # Create the network adapter and try to use learned inference.
     load_pretrained: true       # Set true after training and saving a checkpoint.
     model_path: models/robust_kalmannet.pt # Relative to Observer/KalmaNet/Robust/

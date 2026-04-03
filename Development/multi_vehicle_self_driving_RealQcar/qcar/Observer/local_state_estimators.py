@@ -110,9 +110,9 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         self.ekf = None
         self.ekf_initialized = False
 
-        # Low-pass filter coefficient for velocity (0 < alpha <= 1)
-        # Lower value = smoother but more delay. 1.0 = no filtering.
-        self.v_lpf_alpha = config.get("v_lpf_alpha", 0.15)
+        # # Low-pass filter coefficient for velocity (0 < alpha <= 1)
+        # # Lower value = smoother but more delay. 1.0 = no filtering.
+        # self.v_lpf_alpha = config.get("v_lpf_alpha", 0.15)
 
         # Fallback EKF matrices (if not using QCarEKF)
         self.P = np.eye(self.state_dim) * 0.1  # State covariance
@@ -194,11 +194,11 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             theta = self.ekf.x_hat[2, 0]
 
             # Apply Low-Pass Filter to smooth the motor_tach velocity
-            prev_v = self.state[3]
-            velocity = self.v_lpf_alpha * motor_tach + (1.0 - self.v_lpf_alpha) * prev_v
+            # prev_v = self.state[3]
+            # velocity = self.v_lpf_alpha * motor_tach + (1.0 - self.v_lpf_alpha) * prev_v
 
             # Update internal state
-            self.state = np.array([x, y, theta, velocity])
+            self.state = np.array([x, y, theta, motor_tach])
             self.last_update_time = time.time()
 
             return True

@@ -17,18 +17,19 @@ from sensor_attack_augmentation import AttackConfig, SensorAttackAugmenter
 
 
 class SlidingWindowDataset(Dataset):
-    def __init__(self, raw: Dict[str, np.ndarray], z_seq: np.ndarray, x_gt: np.ndarray, x0: np.ndarray):
+    def __init__(self, raw: Dict[str, np.ndarray], z_seq: np.ndarray, x_gt: np.ndarray, x0: np.ndarray, dt_seq: np.ndarray):
         self.raw = raw
         self.z_seq = z_seq
         self.x_gt = x_gt
         self.x0 = x0
+        self.dt_seq = dt_seq
 
     def __len__(self) -> int:
         return int(self.z_seq.shape[0])
 
     def __getitem__(self, idx: int):
         raw_item = {key: torch.from_numpy(self.raw[key][idx]) for key in RAW_KEYS}
-        return raw_item, torch.from_numpy(self.z_seq[idx]), torch.from_numpy(self.x_gt[idx]), torch.from_numpy(self.x0[idx])
+        return raw_item, torch.from_numpy(self.z_seq[idx]), torch.from_numpy(self.x_gt[idx]), torch.from_numpy(self.x0[idx]), torch.from_numpy(self.dt_seq[idx])
 
 
 class SubsetWithTransform(Dataset):
@@ -47,13 +48,14 @@ def collate_batch(batch):
     z_seq = torch.stack([item[1] for item in batch], dim=0)
     x_gt = torch.stack([item[2] for item in batch], dim=0)
     x0 = torch.stack([item[3] for item in batch], dim=0)
-    return raw, z_seq, x_gt, x0
+    dt_seq = torch.stack([item[4] for item in batch], dim=0)
+    return raw, z_seq, x_gt, x0, dt_seq
 
 
 def move_batch_to_device(batch, device: torch.device):
-    raw, z_seq, x_gt, x0 = batch
+    raw, z_seq, x_gt, x0, dt_seq = batch
     raw = {k: v.to(device=device, dtype=torch.float32) for k, v in raw.items()}
-    return raw, z_seq.to(device=device, dtype=torch.float32), x_gt.to(device=device, dtype=torch.float32), x0.to(device=device, dtype=torch.float32)
+    return raw, z_seq.to(device=device, dtype=torch.float32), x_gt.to(device=device, dtype=torch.float32), x0.to(device=device, dtype=torch.float32), dt_seq.to(device=device, dtype=torch.float32)
 
 
 def evaluate(model, loader, device, teacher_forcing: bool) -> Tuple[float, Dict[str, float]]:
@@ -61,12 +63,13 @@ def evaluate(model, loader, device, teacher_forcing: bool) -> Tuple[float, Dict[
     losses = []
     with torch.no_grad():
         for batch in loader:
-            raw, z_seq, x_gt, x0 = move_batch_to_device(batch, device)
+            raw, z_seq, x_gt, x0, dt_seq = move_batch_to_device(batch, device)
             out = model(
                 raw=raw,
                 z_seq=z_seq,
                 x0=x0,
                 teacher_forcing_state=x_gt if teacher_forcing else None,
+                dt_seq=dt_seq,
             )
             state_weights = torch.tensor([1.0, 1.0, 5.0, 1.0, 1.0], device=device)
             loss, _ = robuststatenet_loss(
@@ -75,6 +78,35 @@ def evaluate(model, loader, device, teacher_forcing: bool) -> Tuple[float, Dict[
             losses.append(float(loss.item()))
     mean_loss = float(np.mean(losses)) if losses else float("nan")
     return mean_loss, {"loss": mean_loss}
+
+
+def save_checkpoint(
+    model,
+    cfg,
+    args,
+    merged,
+    history,
+    best_val: float,
+    output_path: Path,
+    checkpoint_type: str,
+    epoch: int,
+    phase: int,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "config": vars(cfg),
+            "train_args": vars(args),
+            "history": history,
+            "metadata": merged.get("metadata", {}),
+            "best_val_loss": best_val,
+            "checkpoint_type": checkpoint_type,
+            "epoch": epoch,
+            "phase": phase,
+        },
+        output_path,
+    )
 
 
 def main() -> None:
@@ -113,8 +145,8 @@ def main() -> None:
 
     device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else args.device if args.device != "auto" else "cpu")
     merged = merge_recorded_datasets(args.datasets)
-    raw, z_seq, x_gt, x0 = build_training_windows(merged, sequence_length=args.sequence_length, stride=args.stride)
-    dataset = SlidingWindowDataset(raw, z_seq, x_gt, x0)
+    raw, z_seq, x_gt, x0, dt_seq = build_training_windows(merged, sequence_length=args.sequence_length, stride=args.stride)
+    dataset = SlidingWindowDataset(raw, z_seq, x_gt, x0, dt_seq)
 
     val_size = int(len(dataset) * args.val_split)
     train_size = len(dataset) - val_size
@@ -163,6 +195,9 @@ def main() -> None:
 
     best_val = float("inf")
     history = []
+    output_path = Path(__file__).resolve().parent / args.output
+    phase2_final_path = output_path.with_name(f"{output_path.stem}.phase2_final{output_path.suffix}")
+    final_path = output_path.with_name(f"{output_path.stem}.final{output_path.suffix}")
 
     print(f"\n{'='*60}")
     print(f"Two-phase training: Phase 1 = {args.phase1_epochs} epochs (teacher forcing)")
@@ -198,7 +233,7 @@ def main() -> None:
         model.train()
         train_losses = []
         for batch in train_loader:
-            raw_b, z_seq_b, x_gt_b, x0_b = move_batch_to_device(batch, device)
+            raw_b, z_seq_b, x_gt_b, x0_b, dt_seq_b = move_batch_to_device(batch, device)
 
             # Apply attack augmentation
             attack_labels = None
@@ -212,6 +247,7 @@ def main() -> None:
                 z_seq=z_seq_b,
                 x0=x0_b,
                 teacher_forcing_state=x_gt_b if use_teacher_forcing else None,
+                dt_seq=dt_seq_b,
             )
             loss, logs = robuststatenet_loss(
                 out["x_pred"],
@@ -243,22 +279,38 @@ def main() -> None:
 
         if val_loss < best_val:
             best_val = val_loss
-            output_path = Path(__file__).resolve().parent / args.output
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(
-                {
-                    "model_state_dict": model.state_dict(),
-                    "config": vars(cfg),
-                    "train_args": vars(args),
-                    "history": history,
-                    "metadata": merged.get("metadata", {}),
-                    "best_val_loss": best_val,
-                },
-                output_path,
+            save_checkpoint(
+                model=model,
+                cfg=cfg,
+                args=args,
+                merged=merged,
+                history=history,
+                best_val=best_val,
+                output_path=output_path,
+                checkpoint_type="best_overall",
+                epoch=epoch,
+                phase=phase,
             )
-            print(f"Saved checkpoint to {output_path}")
+            print(f"Saved best checkpoint to {output_path}")
 
-    summary_path = (Path(__file__).resolve().parent / args.output).with_suffix(".train_history.json")
+    final_checkpoint_path = phase2_final_path if args.phase2_epochs > 0 else final_path
+    final_checkpoint_type = "final_phase2" if args.phase2_epochs > 0 else "final"
+    final_phase = 2 if args.phase2_epochs > 0 else 1
+    save_checkpoint(
+        model=model,
+        cfg=cfg,
+        args=args,
+        merged=merged,
+        history=history,
+        best_val=best_val,
+        output_path=final_checkpoint_path,
+        checkpoint_type=final_checkpoint_type,
+        epoch=total_epochs,
+        phase=final_phase,
+    )
+    print(f"Saved final checkpoint to {final_checkpoint_path}")
+
+    summary_path = output_path.with_suffix(".train_history.json")
     summary_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
     print(f"Training history saved to {summary_path}")
 

@@ -28,6 +28,19 @@ upload:
   skip_upload: false
   enable_remote_logs: true
 
+# Vehicle geometry resolved by vehicle_type at runtime.
+# This lets QCar and Limo coexist in the same fleet with the correct model dimensions.
+vehicle_geometry:
+  Qcar:
+    wheelbase: 0.256
+    l_r: 0.141
+    l_f: 0.115
+  Limo:
+    wheelbase: 0.2
+    l_r: 0.1
+    l_f: 0.1
+    track: 0.172
+
 # Vehicle Configurations
 # Each vehicle can have individual settings
 # vehicle_type can be: "Qcar" or "Limo"

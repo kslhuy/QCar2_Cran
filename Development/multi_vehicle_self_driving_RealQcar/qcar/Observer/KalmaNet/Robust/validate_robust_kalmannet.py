@@ -66,13 +66,14 @@ def run_model(dataset: Dict[str, np.ndarray], checkpoint_path: Path, sequence_le
     model.to(device)
     model.eval()
 
-    raw_windows, z_windows, _, x0_windows = build_training_windows(dataset, sequence_length=sequence_length, stride=1)
+    raw_windows, z_windows, _, x0_windows, dt_windows = build_training_windows(dataset, sequence_length=sequence_length, stride=1)
     raw_tensors = {key: torch.from_numpy(raw_windows[key]).to(device=device, dtype=torch.float32) for key in RAW_KEYS}
     z_tensor = torch.from_numpy(z_windows).to(device=device, dtype=torch.float32)
     x0_tensor = torch.from_numpy(x0_windows).to(device=device, dtype=torch.float32)
+    dt_tensor = torch.from_numpy(dt_windows).to(device=device, dtype=torch.float32)
 
     with torch.no_grad():
-        out = model(raw=raw_tensors, z_seq=z_tensor, x0=x0_tensor, teacher_forcing_state=None)
+        out = model(raw=raw_tensors, z_seq=z_tensor, x0=x0_tensor, teacher_forcing_state=None, dt_seq=dt_tensor)
     predicted_windows = out["x_upd"].detach().cpu().numpy()
 
     seq_len = predicted_windows.shape[1]

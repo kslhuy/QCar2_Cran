@@ -28,6 +28,7 @@ from .car_components import (
     RobustDatasetControl,
 )
 
+
 class CarPanelWidget(BaseWidget):
     """Complete car control panel widget."""
 
@@ -49,14 +50,14 @@ class CarPanelWidget(BaseWidget):
         self._expandable: Optional[ExpandablePanel] = None
         self._telemetry: Optional[TelemetryDisplay] = None
         self._control_buttons: Optional[ControlButtons] = None
-        
+
         self._manual_and_velocity: Optional[ManualAndVelocityControl] = None
         self._navigation: Optional[NavigationControl] = None
-        
+
         self._perception_control: Optional[PerceptionControl] = None
         self._scopes_control: Optional[ScopesControl] = None
         self._runtime_switching: Optional[RuntimeSwitchingControl] = None
-        
+
         self._platoon_control: Optional[PlatoonControl] = None
         self._sysid_control: Optional[OnlineSysidControl] = None
         self._calibration_control: Optional[CalibrationControl] = None
@@ -68,26 +69,71 @@ class CarPanelWidget(BaseWidget):
         self._v2v_indicator: Optional[tk.Label] = None
         self._platoon_indicator: Optional[tk.Label] = None
         self._state_label: Optional[tk.Label] = None
+        self._identity_label: Optional[tk.Label] = None
 
         super().__init__(parent, theme)
 
+    @staticmethod
+    def _normalize_vehicle_type(vehicle_type: Optional[str]) -> str:
+        """Normalize vehicle labels for display."""
+        value = str(vehicle_type or "Car").strip()
+        if value.lower() == "qcar":
+            return "QCar"
+        return value or "Car"
+
+    @staticmethod
+    def _normalize_programme_type(programme_type: Optional[str]) -> str:
+        """Normalize runtime mode labels for display."""
+        value = str(programme_type or "Unknown").strip()
+        lowered = value.lower()
+        if lowered == "ros":
+            return "ROS"
+        if lowered == "py":
+            return "Python"
+        return value or "Unknown"
+
+    def _build_title(self, vehicle_type: Optional[str] = None) -> str:
+        """Build the panel title using the current vehicle type."""
+        return f"Vehicle {self._normalize_vehicle_type(vehicle_type)} {self.car_id}"
+
+    def _update_identity_display(
+        self,
+        vehicle_type: Optional[str] = None,
+        programme_type: Optional[str] = None,
+    ) -> None:
+        """Refresh the vehicle identity shown in the header."""
+        display_vehicle = self._normalize_vehicle_type(
+            vehicle_type or self.config.get("vehicle_type", "Car")
+        )
+        display_programme = self._normalize_programme_type(
+            programme_type or self.config.get("programme_type", "Unknown")
+        )
+
+        if self._expandable and hasattr(self._expandable, "_title_label"):
+            self._expandable._title_label.config(
+                text=self._build_title(display_vehicle)
+            )
+
+        if self._identity_label:
+            self._identity_label.config(
+                text=f"Type: {display_vehicle} | Mode: {display_programme}"
+            )
+
     def _build(self) -> None:
         """Build the car panel widget."""
-        c = self.theme.colors
-
-        # Extract vehicle type from config (e.g. Qcar, Limo)
-        vehicle_type = self.config.get("vehicle_type", "Car")
-        if vehicle_type.lower() == "qcar":
-            vehicle_type = "QCar"
-            
-        # Create expandable panel
         self._expandable = ExpandablePanel(
             self.parent,
-            title=f"🚗 {vehicle_type} {self.car_id}",
+            title=self._build_title(self.config.get("vehicle_type", "Car")),
             expanded=self._expanded,
             theme=self.theme,
         )
         self.frame = self._expandable.frame
+
+        # Keep the built-in title compact so the metadata block stays close to it.
+        if self._expandable and hasattr(self._expandable, "_title_label"):
+            self._expandable._title_label.pack_configure(
+                fill="y", expand=False, padx=(4, 4), pady=8
+            )
 
         # Add state label to header
         self._build_header_indicators()
@@ -106,35 +152,35 @@ class CarPanelWidget(BaseWidget):
             status="connected",
             theme=self.theme,
             font=self.theme.fonts.heading(),
-            padx=12,
+            padx=8,
         )
-        self._conn_indicator.pack(side="right", padx=12, pady=12)
+        self._conn_indicator.pack(side="left", padx=2, pady=12)
 
         # V2V indicator
         self._v2v_indicator = tk.Label(
             header,
-            text="📡 V2V: OFF",
+            text="V2V: OFF",
             bg=c.bg_header,
             fg=c.fg_muted,
             font=self.theme.fonts.small(),
-            padx=8,
+            padx=4,
         )
-        self._v2v_indicator.pack(side="right", padx=(0, 6), pady=12)
+        self._v2v_indicator.pack(side="left", padx=(0, 2), pady=12)
 
         # Platoon indicator
         self._platoon_indicator = tk.Label(
             header,
-            text="🚗 Solo",
+            text="Solo",
             bg=c.bg_header,
             fg=c.fg_muted,
             font=self.theme.fonts.small(),
-            padx=8,
+            padx=4,
         )
-        self._platoon_indicator.pack(side="right", padx=(0, 6), pady=12)
+        self._platoon_indicator.pack(side="left", padx=(0, 2), pady=12)
 
         # Add state label under title in header
         title_frame = tk.Frame(self._expandable.header, bg=c.bg_header)
-        title_frame.pack(side="left", fill="y", expand=True, padx=10)
+        title_frame.pack(side="left", fill="y", expand=False, padx=(0, 10))
 
         self._state_label = tk.Label(
             title_frame,
@@ -146,6 +192,17 @@ class CarPanelWidget(BaseWidget):
         )
         self._state_label.pack(anchor="w")
 
+        self._identity_label = tk.Label(
+            title_frame,
+            text="Type: Car | Mode: Unknown",
+            bg=c.bg_header,
+            fg=c.fg_muted,
+            font=self.theme.fonts.small(),
+        )
+        self._identity_label.pack(anchor="w")
+
+        self._update_identity_display()
+
     def _build_content(self) -> None:
         """Build the content area."""
         content = self._expandable.content
@@ -156,7 +213,7 @@ class CarPanelWidget(BaseWidget):
         main_layout = tk.Frame(content, bg=self.theme.colors.bg_medium)
         main_layout.pack(fill="x", pady=(0, 6))
 
-        ### Left section
+        # Left section
         left_section = tk.Frame(
             main_layout, bg=self.theme.colors.bg_medium, width=left_width
         )
@@ -179,7 +236,7 @@ class CarPanelWidget(BaseWidget):
             theme=self.theme,
         )
         self._runtime_switching.pack(fill="x", pady=(5, 0))
-        
+
         self._perception_control = PerceptionControl(
             left_section, self.car_id, self.callbacks, theme=self.theme
         )
@@ -191,20 +248,18 @@ class CarPanelWidget(BaseWidget):
         )
         self._scopes_control.pack(fill="x", pady=(5, 0))
 
-        
-
-        ### Right section
+        # Right section
         right_section = tk.Frame(
             main_layout, bg=self.theme.colors.bg_medium, width=right_width
         )
         right_section.pack(side="left", fill="both", expand=True, padx=(4, 0))
-        
+
         # Manual & Velocity combined
         self._manual_and_velocity = ManualAndVelocityControl(
             right_section, self.car_id, self.callbacks, theme=self.theme
         )
         self._manual_and_velocity.pack(fill="x", pady=(0, 4))
-        
+
         # Navigation & Taxi combined
         self._navigation = NavigationControl(
             right_section, self.car_id, self.callbacks, theme=self.theme
@@ -241,6 +296,13 @@ class CarPanelWidget(BaseWidget):
 
     def update_state(self, state: CarState) -> None:
         """Update the panel with current car state."""
+        if state.vehicle_type and state.vehicle_type != "Unknown":
+            self.config["vehicle_type"] = state.vehicle_type
+        if state.programme_type and state.programme_type != "Unknown":
+            self.config["programme_type"] = state.programme_type
+
+        self._update_identity_display(state.vehicle_type, state.programme_type)
+
         # Update telemetry
         if self._telemetry:
             self._telemetry.update(state)
@@ -253,12 +315,12 @@ class CarPanelWidget(BaseWidget):
         if self._v2v_indicator:
             if state.v2v_active and state.v2v_peers > 0:
                 self._v2v_indicator.config(
-                    text=f"📡 V2V: ON ({state.v2v_peers})",
+                    text=f"V2V: ON ({state.v2v_peers})",
                     fg=self.theme.colors.accent_green,
                 )
             else:
                 self._v2v_indicator.config(
-                    text="📡 V2V: OFF", fg=self.theme.colors.fg_muted
+                    text="V2V: OFF", fg=self.theme.colors.fg_muted
                 )
 
         # Update platoon indicator
@@ -266,16 +328,16 @@ class CarPanelWidget(BaseWidget):
             if state.platoon_enabled and state.platoon_position is not None:
                 if state.platoon_is_leader:
                     self._platoon_indicator.config(
-                        text="🚗 LEADER", fg=self.theme.colors.platoon_leader
+                        text="LEADER", fg=self.theme.colors.platoon_leader
                     )
                 else:
                     self._platoon_indicator.config(
-                        text=f"🚗 FOLLOWER-{state.platoon_position}",
+                        text=f"FOLLOWER-{state.platoon_position}",
                         fg=self.theme.colors.platoon_follower,
                     )
             else:
                 self._platoon_indicator.config(
-                    text="🚗 Solo", fg=self.theme.colors.fg_muted
+                    text="Solo", fg=self.theme.colors.fg_muted
                 )
 
         # Update manual mode and gear
@@ -330,4 +392,8 @@ class CarPanelWidget(BaseWidget):
     @property
     def control_type(self) -> str:
         """Get the selected manual control type."""
-        return self._manual_and_velocity.control_type if self._manual_and_velocity else "keyboard"
+        return (
+            self._manual_and_velocity.control_type
+            if self._manual_and_velocity
+            else "keyboard"
+        )

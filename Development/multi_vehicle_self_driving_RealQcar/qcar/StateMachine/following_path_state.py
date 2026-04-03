@@ -217,7 +217,14 @@ class FollowingPathState(StateBase):
                     "desired_spacing": 0.5,
                     "max_steering_rate": 1.0,  # Reasonable steering rate
                 }
-                # Use factory to create standalone MPC (auto-loads QCar vehicle params)
+                if "params" not in mpc_params and cm.config:
+                    vehicle_params = cm.config.get_vehicle_params()
+                    mpc_params["params"] = {
+                        "a": vehicle_params.get("l_f", 0.115),
+                        "b": vehicle_params.get("l_r", 0.141),
+                    }
+
+                # Use factory to create standalone MPC with the active vehicle geometry.
                 self.mpc_controller = MPCControllerFactory.create(
                     "mpc",
                     params=mpc_params,
@@ -1099,27 +1106,43 @@ class FollowingPathState(StateBase):
 
         self.logger.logger.info(f"[PATH] Lane fusion config updated: {kwargs}")
 
-    def update_path(self, new_waypoint_sequence: np.ndarray):
+    def update_path(
+        self,
+        new_waypoint_sequence: np.ndarray,
+        node_sequence: Optional[List[int]] = None,
+    ):
         """
         Update the waypoint sequence and reset the steering controller
 
         Args:
             new_waypoint_sequence: New waypoint sequence to follow
+            node_sequence: Optional node sequence backing the path. When provided,
+                it is broadcast to the Ground Station so the GUI can rebuild the
+                same global route immediately.
         """
         try:
+            if new_waypoint_sequence is None:
+                raise ValueError("new_waypoint_sequence cannot be None")
+
+            waypoint_sequence = np.asarray(new_waypoint_sequence, dtype=float)
+            if waypoint_sequence.ndim != 2 or waypoint_sequence.shape[1] < 2:
+                raise ValueError("new_waypoint_sequence must be a 2D array with at least 2 points")
+
             # Update vehicle logic waypoint sequence
-            self.vehicle_logic.waypoint_sequence = new_waypoint_sequence
+            self.vehicle_logic.waypoint_sequence = waypoint_sequence
+            if node_sequence is not None:
+                self.vehicle_logic.node_sequence = list(node_sequence)
 
             # Reset general obstacle avoidance with new base path
             if self._general_obstacle_path_active or self._original_waypoint_sequence is not None:
-                self._original_waypoint_sequence = new_waypoint_sequence.copy()
+                self._original_waypoint_sequence = waypoint_sequence.copy()
                 self._general_obstacle_path_active = False
                 self._pp_obstacle_path_active = False
                 self._pp_current_obstacles = []
                 self._pp_local_path_xy = None
                 if self.rich_planner is not None and not self._use_pp_map:
                     self.rich_planner._base_path = self.rich_planner._resample_path(
-                        new_waypoint_sequence, self.rich_planner.sample_ds
+                        waypoint_sequence, self.rich_planner.sample_ds
                     )
                     self.rich_planner._base_s = self.rich_planner._path_s(
                         self.rich_planner._base_path[0, :],
@@ -1127,7 +1150,7 @@ class FollowingPathState(StateBase):
                     )
 
             if self._use_pp_map:
-                if self._build_pp_waypoint_array(new_waypoint_sequence):
+                if self._build_pp_waypoint_array(waypoint_sequence):
                     self.logger.logger.info(
                         "[PATH] PP map waypoints rebuilt from new path"
                     )
@@ -1138,7 +1161,7 @@ class FollowingPathState(StateBase):
 
             # Reset steering controller with new waypoints
             if self.steering_controller:
-                self.steering_controller.reset(new_waypoint_sequence)
+                self.steering_controller.reset(waypoint_sequence)
                 self.logger.logger.info(
                     "[PATH] Steering controller updated with new path"
                 )
@@ -1147,9 +1170,9 @@ class FollowingPathState(StateBase):
             if self.mpc_controller is not None and hasattr(
                 self.mpc_controller, "set_waypoints"
             ):
-                self.mpc_controller.set_waypoints(new_waypoint_sequence, cyclic=True)
+                self.mpc_controller.set_waypoints(waypoint_sequence, cyclic=True)
                 self.logger.logger.info(
-                    f"[PATH] MPC updated with {new_waypoint_sequence.shape[1]} waypoints"
+                    f"[PATH] MPC updated with {waypoint_sequence.shape[1]} waypoints"
                 )
 
             if not self.steering_controller and self.mpc_controller is None:
@@ -1399,24 +1422,12 @@ class FollowingPathState(StateBase):
     def _handle_set_path_event(self, data: Dict[str, Any]) -> None:
         """Handle SET_PATH while in FOLLOWING_PATH."""
         node_sequence = data.get("node_sequence")
-        if not (node_sequence and isinstance(node_sequence, list)):
-            self.logger.logger.warning(f"[!] Invalid path update data: {data}")
+        new_waypoints = self._generate_waypoints_from_node_sequence(node_sequence)
+        if new_waypoints is None:
             return
 
-        if not (hasattr(self.vehicle_logic, "roadmap") and self.vehicle_logic.roadmap):
-            self.logger.logger.warning("[!] No roadmap available for path generation")
-            return
-
-        try:
-            new_waypoints = self.vehicle_logic.roadmap.generate_path(node_sequence)
-
-            if not self.vehicle_logic.is_physical_qcar and new_waypoints is not None:
-                new_waypoints = new_waypoints * 0.975
-
-            self.update_path(new_waypoints)
-            self.logger.logger.info(f"[OK] Path updated in {self.__class__.__name__}")
-        except Exception as e:
-            self.logger.log_error("Failed to generate path from nodes", e)
+        self.update_path(new_waypoint_sequence=new_waypoints, node_sequence=node_sequence)
+        self.logger.logger.info(f"[OK] Path updated in {self.__class__.__name__}")
 
     def _should_follow_leader(self, sensor_data: Dict[str, Any]) -> bool:
         """Check if we should transition to following a leader"""

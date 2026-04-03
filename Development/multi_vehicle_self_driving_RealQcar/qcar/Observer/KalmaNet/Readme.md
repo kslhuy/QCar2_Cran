@@ -298,3 +298,15 @@ For a first useful model:
 - only switch runtime to `robust_kalman_net` after the learned model beats the baseline offline
 
 
+# VALIDATION 
+cd Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Robust
+
+python validate_robust_kalmannet.py `
+  datasets\robust_kalmannet_dataset_V0_20260401_170829.npz `
+  --checkpoint models\robust_kalmannet.pt `
+  --output validation_metrics_best.json
+
+python validate_robust_kalmannet.py `
+  datasets\robust_kalmannet_dataset_V0_20260401_170829.npz `
+  --checkpoint models\robust_kalmannet.phase2_final.pt `
+  --output validation_metrics_phase2_final.json

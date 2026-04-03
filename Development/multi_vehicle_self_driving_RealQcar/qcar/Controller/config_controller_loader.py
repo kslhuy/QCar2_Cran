@@ -32,6 +32,7 @@ class ControllerConfig:
 
         self.config_path = config_path
         self.config = self._load_config()
+        self._vehicle_params_override: Dict[str, Any] = {}
 
     def _load_config(self) -> Dict[str, Any]:
         """Load YAML configuration file"""
@@ -353,12 +354,13 @@ class ControllerConfig:
     def _get_lookahead_params(self) -> Dict[str, Any]:
         """Get Lookahead controller parameters"""
         lookahead_config = self.config.get("lookahead", {})
+        vehicle_params = self.get_vehicle_params()
 
         return {
             "ri": lookahead_config.get("ri", 1.0),
             "hi": lookahead_config.get("hi", 0.3),
-            "l_r": lookahead_config.get("l_r", 0.141),
-            "l_f": lookahead_config.get("l_f", 0.115),
+            "l_r": lookahead_config.get("l_r", vehicle_params.get("l_r", 0.141)),
+            "l_f": lookahead_config.get("l_f", vehicle_params.get("l_f", 0.115)),
             "k1": lookahead_config.get("k1", 1.0),
             "k2": lookahead_config.get("k2", 1.0),
             "max_steering": lookahead_config.get("max_steering", 0.55),
@@ -380,11 +382,26 @@ class ControllerConfig:
     def get_vehicle_params(self) -> Dict[str, Any]:
         """Get vehicle physical parameters"""
         vehicle_config = self.config.get("vehicle", {})
-
-        return {
+        params = {
             "wheelbase": vehicle_config.get("wheelbase", 0.256),
             "l_r": vehicle_config.get("l_r", 0.141),
             "l_f": vehicle_config.get("l_f", 0.115),
+        }
+        for key, value in self._vehicle_params_override.items():
+            if value is not None:
+                params[key] = value
+        return params
+
+    def set_vehicle_params_override(self, vehicle_params: Optional[Dict[str, Any]]):
+        """Apply runtime vehicle-geometry overrides for the active vehicle."""
+        if not isinstance(vehicle_params, dict):
+            self._vehicle_params_override = {}
+            return
+
+        self._vehicle_params_override = {
+            key: value
+            for key, value in vehicle_params.items()
+            if key in {"wheelbase", "l_r", "l_f", "track"} and value is not None
         }
 
     # ------------------------------------------------------------------

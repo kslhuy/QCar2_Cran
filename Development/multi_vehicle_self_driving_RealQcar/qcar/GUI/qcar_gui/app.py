@@ -359,7 +359,7 @@ class QCarFleetController(DeploymentMixin, FleetCommandsMixin, VehicleCommandsMi
                     self._scrollable.content,
                     car_id=car_id,
                     callbacks=callbacks,
-                    config=self._dynamic_config,
+                    config=self._get_car_panel_config(car_id),
                     theme=self.theme,
                 )
                 panel.pack(fill="x", pady=(0, 15))
@@ -384,14 +384,51 @@ class QCarFleetController(DeploymentMixin, FleetCommandsMixin, VehicleCommandsMi
         self._platoon_config = PlatoonConfig()
         self._v2v_status.clear()
 
+    def _get_car_panel_config(
+        self, car_id: int, telemetry: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, str]:
+        """Resolve per-car metadata for the connected vehicle panel."""
+        resolved = {
+            "vehicle_type": getattr(
+                self.config.deployment, "default_vehicle_type", "Qcar"
+            ),
+            "programme_type": getattr(
+                self.config.deployment, "default_programme_type", "Py"
+            ),
+        }
+
+        deployment_panel = getattr(self, "_deployment_panels", {}).get(car_id)
+        if deployment_panel and hasattr(deployment_panel, "_get_current_config"):
+            config = deployment_panel._get_current_config()
+            resolved["vehicle_type"] = config.vehicle_type or resolved["vehicle_type"]
+            resolved["programme_type"] = (
+                config.programme_type or resolved["programme_type"]
+            )
+
+        if telemetry:
+            resolved["vehicle_type"] = telemetry.get(
+                "vehicle_type", resolved["vehicle_type"]
+            )
+            resolved["programme_type"] = telemetry.get(
+                "programme_type", resolved["programme_type"]
+            )
+
+        if str(resolved["vehicle_type"]).strip().lower() == "limo":
+            resolved["programme_type"] = "Ros"
+
+        return resolved
+
     def _update_car_states(self) -> None:
         """Update car panel states from telemetry."""
         for car_id, panel in self._car_panels.items():
             telemetry = self._remote.get_telemetry(car_id)
             if telemetry:
+                panel_config = self._get_car_panel_config(car_id, telemetry)
                 state = CarState(
                     car_id=car_id,
                     connected=True,
+                    vehicle_type=panel_config["vehicle_type"],
+                    programme_type=panel_config["programme_type"],
                     state=telemetry.get("state", "Unknown"),
                     position=(telemetry.get("x", 0), telemetry.get("y", 0)),
                     velocity=telemetry.get("v", 0),

@@ -352,19 +352,26 @@ class StanleyController(LateralControllerBase):
             return 0.0
 
         with self._lock:
-            # Get current waypoints
-            wp_1 = self.wp[:, np.mod(self.wpi, self.N - 1)]
-            wp_2 = self.wp[:, np.mod(self.wpi + 1, self.N - 1)]
+            # Get current waypoints safely, accounting for cyclic vs non-cyclic
+            if self.cyclic:
+                idx = self.wpi % (self.N - 1)
+            else:
+                idx = min(self.wpi, self.N - 2)
+                
+            wp_1 = self.wp[:, idx]
+            wp_2 = self.wp[:, (idx + 1) % self.N]
 
             # Path vector
             v = wp_2 - wp_1
             v_mag = np.linalg.norm(v)
 
-            # Handle zero-length segment (inspired by control.py)
-            try:
-                v_uv = v / v_mag
-            except ZeroDivisionError:
-                return 0
+            # Handle zero-length segment safely (e.g. duplicate waypoints)
+            if v_mag < 1e-6:
+                if self.cyclic or self.wpi < self.N - 2:
+                    self.wpi += 1
+                return 0.0
+
+            v_uv = v / v_mag
 
             # Path tangent angle
             tangent = np.arctan2(v_uv[1], v_uv[0])

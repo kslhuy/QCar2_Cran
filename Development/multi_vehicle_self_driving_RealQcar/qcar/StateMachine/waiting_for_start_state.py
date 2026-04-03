@@ -238,45 +238,26 @@ class WaitingForStartState(StateBase):
             )
             return (VehicleState.TAXI_MODE, StateTransitionReason.TAXI_MODE_ACTIVATED)
 
-        # Handle path updates - store for when we start
-        elif command_type == CommandType.SET_PATH:
-            node_sequence = data.get("node_sequence")
-            self.logger.logger.info(
-                f"Received SET_PATH command with node_sequence: {node_sequence}"
-            )
+        # # Handle path updates - store for when we start
+        # elif command_type == CommandType.SET_PATH:
+        #     node_sequence = data.get("node_sequence")
+        #     self.logger.logger.info(
+        #         f"Received SET_PATH command with node_sequence: {node_sequence}"
+        #     )
 
-            if node_sequence and isinstance(node_sequence, list):
-                # Generate waypoints from node sequence using roadmap
-                if (
-                    hasattr(self.vehicle_logic, "roadmap")
-                    and self.vehicle_logic.roadmap
-                ):
-                    try:
-                        new_waypoints = self.vehicle_logic.roadmap.generate_path(
-                            node_sequence
-                        )
-                        self.vehicle_logic.waypoint_sequence = new_waypoints
+        #     new_waypoints = self._generate_waypoints_from_node_sequence(node_sequence)
+        #     if self._store_active_path(node_sequence, new_waypoints):
+        #         # Update steering controller if it exists (though it shouldn't in waiting state)
+        #         if (
+        #             hasattr(self.vehicle_logic, "steering_controller")
+        #             and self.vehicle_logic.steering_controller
+        #         ):
+        #             self.vehicle_logic.steering_controller.reset(new_waypoints)
 
-                        # Update steering controller if it exists (though it shouldn't in waiting state)
-                        if (
-                            hasattr(self.vehicle_logic, "steering_controller")
-                            and self.vehicle_logic.steering_controller
-                        ):
-                            self.vehicle_logic.steering_controller.reset(new_waypoints)
-
-                        self.logger.logger.info(
-                            f"Path updated with {len(node_sequence)} nodes, generated {new_waypoints.shape[1]} waypoints"
-                        )
-                        return None
-                    except Exception as e:
-                        self.logger.log_error("Failed to generate path from nodes", e)
-                else:
-                    self.logger.logger.warning(
-                        "No roadmap available for path generation"
-                    )
-            else:
-                self.logger.logger.warning(f"Invalid path data: {node_sequence}")
-            return None
+        #         self.logger.logger.info(
+        #             f"Path updated with {len(node_sequence)} nodes, generated {new_waypoints.shape[1]} waypoints"
+        #         )
+        #     return None
 
         # Handle initial position updates - set the vehicle's starting position (with optional GPS recalibration)
         elif command_type == CommandType.SET_INITIAL_POSITION:

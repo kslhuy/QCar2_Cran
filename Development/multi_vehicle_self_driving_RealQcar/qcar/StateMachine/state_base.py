@@ -17,6 +17,9 @@ import os
 
 from pal.products.qcar import QCarGPS
 import numpy as np
+"""Get time spent in current state"""
+import time
+
 
 # Add parent directory to sys.path to import command_types
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -88,12 +91,70 @@ class StateBase:
         pass
 
     def get_time_in_state(self) -> float:
-        """Get time spent in current state"""
-        import time
 
         if self.state_entry_time:
             return time.time() - self.state_entry_time
         return 0.0
+
+    def _generate_waypoints_from_node_sequence(
+        self, node_sequence: Any
+    ) -> Optional[np.ndarray]:
+        """
+        Build a waypoint sequence from a node list.
+
+        Returns:
+            np.ndarray: waypoint array with shape [2, N] (or richer variants),
+            or None when the request is invalid.
+        """
+        if not (node_sequence and isinstance(node_sequence, list)):
+            if self.logger:
+                self.logger.logger.warning(
+                    f"[!] Invalid path update data: {node_sequence}"
+                )
+            return None
+
+        if not (hasattr(self.vehicle_logic, "roadmap") and self.vehicle_logic.roadmap):
+            if self.logger:
+                self.logger.logger.warning("[!] No roadmap available for path generation")
+            return None
+
+        try:
+            new_waypoints = self.vehicle_logic.roadmap.generate_path(node_sequence)
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error("Failed to generate path from nodes", e)
+            return None
+
+        if new_waypoints is None:
+            if self.logger:
+                self.logger.logger.warning(
+                    f"[!] Roadmap returned no path for nodes: {node_sequence}"
+                )
+            return None
+
+        new_waypoints = np.asarray(new_waypoints, dtype=float)
+        if new_waypoints.ndim != 2 or new_waypoints.shape[1] < 2:
+            if self.logger:
+                self.logger.logger.warning(
+                    f"[!] Generated path is invalid for nodes: {node_sequence}"
+                )
+            return None
+
+        if not self.vehicle_logic.is_physical_qcar:
+            new_waypoints = new_waypoints * 0.975
+
+        return new_waypoints
+
+    def _store_active_path(
+        self, node_sequence: Any, waypoint_sequence: Optional[np.ndarray]
+    ) -> bool:
+        """Persist the current route so control and telemetry stay aligned."""
+        if waypoint_sequence is None:
+            return False
+
+        self.vehicle_logic.node_sequence = list(node_sequence)
+        self.vehicle_logic.waypoint_sequence = waypoint_sequence
+        return True
 
     # === Single Event Handler Method ===
 
@@ -157,49 +218,19 @@ class StateBase:
         elif command_type == CommandType.SET_PATH:
             # Handle path updates without transitioning
             node_sequence = data.get("node_sequence")
-            if node_sequence and isinstance(node_sequence, list):
-                # Generate waypoints from node sequence using roadmap
+            new_waypoints = self._generate_waypoints_from_node_sequence(node_sequence)
+            if self._store_active_path(node_sequence, new_waypoints):
+                # Update steering controller if it exists
                 if (
-                    hasattr(self.vehicle_logic, "roadmap")
-                    and self.vehicle_logic.roadmap
+                    hasattr(self.vehicle_logic, "steering_controller")
+                    and self.vehicle_logic.steering_controller
                 ):
-                    try:
-                        new_waypoints = self.vehicle_logic.roadmap.generate_path(
-                            node_sequence
-                        )
-                        if (
-                            not self.vehicle_logic.is_physical_qcar
-                            and new_waypoints is not None
-                        ):
-                            new_waypoints = new_waypoints * 0.975
+                    self.vehicle_logic.steering_controller.reset(new_waypoints)
 
-                        self.vehicle_logic.waypoint_sequence = new_waypoints
-
-                        # Update steering controller if it exists
-                        if (
-                            hasattr(self.vehicle_logic, "steering_controller")
-                            and self.vehicle_logic.steering_controller
-                        ):
-                            self.vehicle_logic.steering_controller.reset(new_waypoints)
-
-                        if self.logger:
-                            self.logger.logger.info(
-                                f"[OK] Path updated with {len(node_sequence)} nodes in {self.__class__.__name__}"
-                            )
-                        return None
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.log_error(
-                                "Failed to generate path from nodes", e
-                            )
-                else:
-                    if self.logger:
-                        self.logger.logger.warning(
-                            "[!] No roadmap available for path generation"
-                        )
-            else:
                 if self.logger:
-                    self.logger.logger.warning(f"[!] Invalid path update data")
+                    self.logger.logger.info(
+                        f"[OK] Path updated with {len(node_sequence)} nodes in {self.__class__.__name__}"
+                    )
             return None
 
         elif command_type == CommandType.ACTIVATE_V2V:

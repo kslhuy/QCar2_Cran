@@ -25,10 +25,10 @@ trust:
   # Component weights (exponents for score calculation)
   # Higher weight = more sensitive to errors in that component
   weight_velocity: 1.0           # Velocity consistency weight (exponent, lower = more tolerant)
-  velocity_tolerance: 0.22        # m/s - base absolute tolerance for velocity mismatch
-  min_velocity_tolerance: 0.08    # m/s - hard lower bound for adaptive tolerance
-  turn_velocity_tolerance_gain: 0.35   # extra tolerance in turns (scales with yaw-rate)
-  accel_velocity_tolerance_gain: 0.15  # extra tolerance during accel/decel transients
+  velocity_tolerance: 0.2        # m/s - base absolute tolerance for velocity mismatch
+  min_velocity_tolerance: 0.05    # m/s - hard lower bound for adaptive tolerance
+  turn_velocity_tolerance_gain: 0.3   # extra tolerance in turns (scales with yaw-rate)
+  accel_velocity_tolerance_gain: 0.25  # extra tolerance during accel/decel transients
   # Adaptive acceleration consistency (distance + relative velocity + turn-aware)
   acceleration_base_tolerance: 1.0
   acceleration_speed_tolerance_gain: 0.15
@@ -51,7 +51,7 @@ trust:
 
   weight_distance: 2.0            # Distance consistency weight  
   weight_acceleration: 0.3        # Acceleration plausibility weight
-  weight_heading: 0.5             # Heading consistency weight
+  weight_heading: 0.3             # Heading consistency weight
   
   # Trust threshold for considering a vehicle "trusted"
   trust_threshold: 0.5
@@ -61,7 +61,7 @@ trust:
   dirichlet_update_rate: 0.1      # How fast trust levels update (0-1) — used by "ema" method
   dirichlet_type: "Dual"          # "Single" (local only) or "Dual" (local + cross-validation)
   # Dirichlet method: "ema" (simple EMA update) or "matlab" (aging-factor + regularized score)
-  dirichlet_method: "ema"
+  dirichlet_method: "matlab"
   # MATLAB Dirichlet parameters (only used when dirichlet_method: "matlab")
   dirichlet_C: 0.2                # Regularization constant C
   dirichlet_wt_local: 0.4         # Aging weight for local trust
@@ -126,7 +126,7 @@ weight:
   # - 'equal': All neighbors get equal weight (simple consensus)
   # - 'trust_based': Trust-proportional weights with fixed w0 and w_self
   # - 'graph_based': Graph topology-based weights (matches old implementation)
-  weight_type: equal
+  weight_type: trust_based
   
   # Fixed weight allocations (for trust_based mode)
   w0_fixed: 0.3                   # Weight for direct measurement (target's own broadcast)
@@ -164,7 +164,7 @@ observer:
   max_predict_only_time: 3.0
   n_good: 3 
   blend_thresh: 3.0
-  similarity_tolerances: [3.5, 2.0, 0.13962634, 2.0, 1.0]
+  similarity_tolerances: [3.5, 2.0, 0.14, 2.0, 1.0]
 
   # Trust-triggered contamination rollback
   rollback_enabled: false

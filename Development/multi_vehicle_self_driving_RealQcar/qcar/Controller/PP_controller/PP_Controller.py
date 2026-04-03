@@ -472,19 +472,40 @@ class PP_Controller:
 
         idx = int(np.clip(idx_waypoint_behind_car, 0, len(waypoints) - 1))
         distance = max(float(distance), 0.0)
-        if idx >= len(waypoints) - 1 or distance <= 0.0:
+        
+        if distance <= 0.0:
             return np.array(waypoints[idx])
+
+        # Check if the path is a closed loop (cyclic)
+        is_cyclic = False
+        if len(waypoints) > 1 and np.linalg.norm(waypoints[0] - waypoints[-1]) < 0.5:
+            is_cyclic = True
+
+        if not is_cyclic and idx >= len(waypoints) - 1:
+            return np.array(waypoints[-1])
 
         remain = distance
         i = idx
-        while i < len(waypoints) - 1:
+        max_iters = len(waypoints) * 2  # Safety against infinite loops
+        iters = 0
+
+        while iters < max_iters:
             p0 = waypoints[i]
-            p1 = waypoints[i + 1]
+            
+            next_i = i + 1
+            if next_i >= len(waypoints):
+                if is_cyclic:
+                    next_i = 0
+                else:
+                    return np.array(waypoints[-1])
+                    
+            p1 = waypoints[next_i]
             seg = p1 - p0
             seg_len = float(np.linalg.norm(seg))
 
             if seg_len < 1e-9:
-                i += 1
+                i = next_i
+                iters += 1
                 continue
 
             if seg_len >= remain:
@@ -492,6 +513,7 @@ class PP_Controller:
                 return np.array(p0 + ratio * seg)
 
             remain -= seg_len
-            i += 1
+            i = next_i
+            iters += 1
 
-        return np.array(waypoints[-1])
+        return np.array(waypoints[i])

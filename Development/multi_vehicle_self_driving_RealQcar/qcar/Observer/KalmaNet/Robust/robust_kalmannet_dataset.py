@@ -320,7 +320,7 @@ def build_training_windows(
     dataset: Dict[str, Any],
     sequence_length: int,
     stride: int = 1,
-) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     raw = {
         key: create_sliding_windows(np.asarray(dataset[key], dtype=np.float32).reshape(-1, 1), sequence_length, stride)
         for key in RAW_KEYS
@@ -328,7 +328,18 @@ def build_training_windows(
     z_seq = create_sliding_windows(np.asarray(dataset["z"], dtype=np.float32), sequence_length, stride)
     x_gt = create_sliding_windows(np.asarray(dataset["x_gt"], dtype=np.float32), sequence_length, stride)
     x0 = z_seq[:, 0, :].copy()
-    return raw, z_seq, x_gt, x0
+
+    timestamps = np.asarray(dataset["timestamps"], dtype=np.float64)
+    dt_array = np.zeros_like(timestamps, dtype=np.float32)
+    if len(timestamps) > 1:
+        dt_array[1:] = (timestamps[1:] - timestamps[:-1]).astype(np.float32)
+        mean_dt = float(dataset.get("metadata", {}).get("dt_mean", 0.02) or 0.02)
+        dt_array[0] = mean_dt
+    else:
+        dt_array[:] = 0.02
+    dt_seq = create_sliding_windows(dt_array.reshape(-1, 1), sequence_length, stride)
+
+    return raw, z_seq, x_gt, x0, dt_seq
 
 
 def compute_rmse(pred: np.ndarray, target: np.ndarray) -> Dict[str, Any]:

@@ -62,7 +62,13 @@ class ControllerManager:
         """Return True if *ctrl_type* handles both lon and lat jointly."""
         return ctrl_type in cls.COUPLED_CONTROLLERS
 
-    def __init__(self, logger=None, config=None, vehicle_type="QCar"):
+    def __init__(
+        self,
+        logger=None,
+        config=None,
+        vehicle_type="QCar",
+        vehicle_geometry=None,
+    ):
         """
         Initialize ControllerManager.
 
@@ -73,6 +79,12 @@ class ControllerManager:
         self.config = config if config else get_controller_config()
         self.logger = logger
         self.vehicle_type = vehicle_type
+        self.vehicle_geometry = self._normalize_vehicle_geometry(vehicle_geometry)
+        if (
+            self.vehicle_geometry
+            and hasattr(self.config, "set_vehicle_params_override")
+        ):
+            self.config.set_vehicle_params_override(self.vehicle_geometry)
 
         # Active controllers
         self._longitudinal: Optional[ControllerInfo] = None
@@ -94,6 +106,21 @@ class ControllerManager:
                 f"path[long={self._path_longitudinal_type}, lat={self._path_lateral_type}], "
                 f"leader[long={self._leader_longitudinal_type}, lat={self._leader_lateral_type}]"
             )
+
+    @staticmethod
+    def _normalize_vehicle_geometry(vehicle_geometry) -> Dict[str, float]:
+        """Convert runtime geometry data into a plain numeric dictionary."""
+        if isinstance(vehicle_geometry, dict):
+            source = vehicle_geometry
+        else:
+            source = getattr(vehicle_geometry, "__dict__", {}) or {}
+
+        normalized: Dict[str, float] = {}
+        for key in ("wheelbase", "l_r", "l_f", "track"):
+            value = source.get(key)
+            if value is not None:
+                normalized[key] = float(value)
+        return normalized
 
     def _load_config(self):
         """Load controller types and params from config."""

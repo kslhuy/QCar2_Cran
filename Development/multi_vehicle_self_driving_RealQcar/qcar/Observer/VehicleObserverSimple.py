@@ -171,6 +171,7 @@ class VehicleObserver:
 
         # Observer configuration (external per-vehicle overrides)
         self.observer_config = self._get_observer_config()
+        self.vehicle_geometry_config = self._get_vehicle_geometry_config()
 
         # Load relative estimator defaults
         self.relative_config_defaults = {}
@@ -228,9 +229,12 @@ class VehicleObserver:
         # ===== Sensor Data Cache =====
 
         self.sensor_data = {
+            "motor_tach_raw": 0.0,
             "motor_tach": 0.0,
             "gyro_z": 0.0,
+            "accelerometer_raw": np.zeros(3),
             "accelerometer": np.zeros(3),
+            "accel_magnitude_raw": 0.0,
             "accel_magnitude": 0.0,
             "timestamp": 0.0,
             "gps_valid": False,
@@ -246,6 +250,12 @@ class VehicleObserver:
         # ===== Control and Dynamics Cache =====
         # self.last_velocity = 0.0
         self.acceleration_magnitude = 0.0
+        self.v_lpf_alpha = 1.0
+        self._filtered_motor_tach = 0.0
+        self._motor_tach_filter_initialized = False
+        self.accel_ema_alpha = 1.0
+        self._filtered_accelerometer = np.zeros(3)
+        self._accel_filter_initialized = False
         self.control_input = {"steering": 0.0, "throttle": 0.0}
         # Lateral velocity fallback estimate for SysID when 6D observer state is unavailable.
         self._vy_estimate = 0.0
@@ -273,6 +283,17 @@ class VehicleObserver:
             f"Observer config: {self.config.get('observer', {}) if isinstance(self.config, dict) else getattr(self.config, 'observer', {})}, "
             # f"local_estimator={local_estimator_type}, fleet_estimator={fleet_estimator_type}"
         )
+        try:
+            common_cfg = self.local_config_defaults.get("common", {})
+            self.v_lpf_alpha = float(
+                np.clip(float(common_cfg.get("v_lpf_alpha", 1.0)), 0.0, 1.0)
+            )
+            self.accel_ema_alpha = float(
+                np.clip(float(common_cfg.get("accel_ema_alpha", 1.0)), 0.0, 1.0)
+            )
+        except (TypeError, ValueError):
+            self.v_lpf_alpha = 1.0
+            self.accel_ema_alpha = 1.0
 
     @staticmethod
     def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -376,6 +397,38 @@ class VehicleObserver:
 
         return merged
 
+    def _apply_acceleration_ema(self, accel_raw: np.ndarray) -> np.ndarray:
+        """Apply a simple EMA to the cached IMU acceleration."""
+        accel = np.asarray(accel_raw, dtype=float).reshape(-1)
+        if accel.size < 3:
+            accel = np.pad(accel, (0, 3 - accel.size), mode="constant")
+        accel = accel[:3]
+
+        if not self._accel_filter_initialized:
+            self._filtered_accelerometer = accel.copy()
+            self._accel_filter_initialized = True
+            return self._filtered_accelerometer.copy()
+
+        alpha = self.accel_ema_alpha
+        self._filtered_accelerometer = (
+            alpha * accel + (1.0 - alpha) * self._filtered_accelerometer
+        )
+        return self._filtered_accelerometer.copy()
+
+    def _apply_motor_tach_lpf(self, motor_tach_raw: float) -> float:
+        """Apply a simple LPF to the cached motor tach signal."""
+        motor_tach = float(motor_tach_raw)
+        if not self._motor_tach_filter_initialized:
+            self._filtered_motor_tach = motor_tach
+            self._motor_tach_filter_initialized = True
+            return self._filtered_motor_tach
+
+        alpha = self.v_lpf_alpha
+        self._filtered_motor_tach = (
+            alpha * motor_tach + (1.0 - alpha) * self._filtered_motor_tach
+        )
+        return self._filtered_motor_tach
+
     def _init_recorders(self):
         """Initialize data recorders if enabled in config."""
         try:
@@ -457,7 +510,14 @@ class VehicleObserver:
         """
         fleet_config = self.fleet_config_defaults.get(self.fleet_estimator_type, {})
         if isinstance(fleet_config, dict) and fleet_config:
-            return copy.deepcopy(fleet_config)
+            resolved = copy.deepcopy(fleet_config)
+            if self.vehicle_geometry_config:
+                vehicle_cfg = resolved.setdefault("vehicle", {})
+                if not isinstance(vehicle_cfg, dict):
+                    vehicle_cfg = {}
+                    resolved["vehicle"] = vehicle_cfg
+                vehicle_cfg.update(self.vehicle_geometry_config)
+            return resolved
 
         return {
             "consensus_gain": self.observer_config.get("consensus_gain", 0.3),
@@ -545,13 +605,34 @@ class VehicleObserver:
             estimator_params = estimator_params or {}
 
             # Merge with config defaults
-            config_defaults = self.local_config_defaults.get(
-                self.local_estimator_type, {}
+            config_defaults = copy.deepcopy(self.local_config_defaults.get("common", {}))
+            estimator_defaults = copy.deepcopy(
+                self.local_config_defaults.get(self.local_estimator_type, {})
             )
+            config_defaults.update(estimator_defaults)
             config_defaults.update(
                 estimator_params
             )  # estimator_params override defaults
             estimator_params = config_defaults
+            try:
+                self.v_lpf_alpha = float(
+                    np.clip(float(estimator_params.get("v_lpf_alpha", 1.0)), 0.0, 1.0)
+                )
+                self.accel_ema_alpha = float(
+                    np.clip(
+                        float(estimator_params.get("accel_ema_alpha", 1.0)),
+                        0.0,
+                        1.0,
+                    )
+                )
+            except (TypeError, ValueError):
+                self.v_lpf_alpha = 1.0
+                self.accel_ema_alpha = 1.0
+
+            # # motor_tach is filtered centrally in VehicleObserver, so disable
+            # # the EKF's extra LPF by default to avoid double filtering.
+            # if self.local_estimator_type == "ekf":
+            #     estimator_params["v_lpf_alpha"] = 1.0
 
             # Store GPS reference at observer level for centralized sensor reading
             self.gps = gps
@@ -644,6 +725,33 @@ class VehicleObserver:
 
         return merged
 
+    def _get_vehicle_geometry_config(self) -> dict:
+        """Extract resolved vehicle geometry from runtime config, if available."""
+        geometry_cfg = None
+        if isinstance(self.config, dict):
+            geometry_cfg = self.config.get("vehicle_geometry")
+        else:
+            geometry_cfg = getattr(self.config, "vehicle_geometry", None)
+
+        if geometry_cfg is None:
+            return {}
+
+        try:
+            cfg_dict = (
+                geometry_cfg
+                if isinstance(geometry_cfg, dict)
+                else getattr(geometry_cfg, "__dict__", {}) or {}
+            )
+        except Exception:
+            return {}
+
+        normalized = {}
+        for key in ("wheelbase", "l_r", "l_f", "track"):
+            value = cfg_dict.get(key)
+            if value is not None:
+                normalized[key] = float(value)
+        return normalized
+
     def update_sensor_data(self, qcar):
         """
         Update sensor data from QCar hardware AND GPS.
@@ -668,15 +776,26 @@ class VehicleObserver:
 
                 # Update sensor data cache
                 with self.lock:
-                    # Read accelerometer (x, y, z axes)
-                    accel_x = (
-                        qcar.accelerometer[0] if hasattr(qcar, "accelerometer") else 0.0
+                    motor_tach_raw = float(getattr(qcar, "motorTach", 0.0))
+                    motor_tach = self._apply_motor_tach_lpf(motor_tach_raw)
+                    accel_raw = (
+                        np.asarray(qcar.accelerometer, dtype=float)
+                        if hasattr(qcar, "accelerometer")
+                        else np.zeros(3)
                     )
-                    accel_y = (
-                        qcar.accelerometer[1] if hasattr(qcar, "accelerometer") else 0.0
+                    accel_raw = accel_raw.reshape(-1)
+                    if accel_raw.size < 3:
+                        accel_raw = np.pad(accel_raw, (0, 3 - accel_raw.size), mode="constant")
+                    accel_raw = accel_raw[:3]
+                    accel_filtered = self._apply_acceleration_ema(accel_raw)
+                    accel_magnitude_raw = float(
+                        np.linalg.norm(accel_raw[:2]) if accel_raw.size >= 2 else 0.0
                     )
-                    # Calculate horizontal acceleration magnitude (norm of x and y)
-                    accel_magnitude = float(np.sqrt(accel_x**2 + accel_y**2))
+                    accel_magnitude = float(
+                        np.linalg.norm(accel_filtered[:2])
+                        if accel_filtered.size >= 2
+                        else 0.0
+                    )
 
                     # Read GPS once here (centralized GPS reading)
                     gps_valid = False
@@ -702,13 +821,12 @@ class VehicleObserver:
 
                     self.sensor_data.update(
                         {
-                            "motor_tach": qcar.motorTach,
-                            "gyro_z": qcar.gyroscope[2]
-                            if hasattr(qcar, "gyroscope")
-                            else 0.0,
-                            "accelerometer": qcar.accelerometer
-                            if hasattr(qcar, "accelerometer")
-                            else np.zeros(3),
+                            "motor_tach_raw": motor_tach_raw,
+                            "motor_tach": motor_tach,
+                            "gyro_z": qcar.gyroscope[2],
+                            "accelerometer_raw": accel_raw.copy(),
+                            "accelerometer": accel_filtered.copy(),
+                            "accel_magnitude_raw": accel_magnitude_raw,
                             "accel_magnitude": accel_magnitude,
                             "timestamp": time.time(),
                             "gps_valid": gps_valid,
@@ -821,9 +939,7 @@ class VehicleObserver:
                     # Legacy 4D state: [x, y, theta, v] - add acceleration
                     self.local_state = np.zeros(5)
                     self.local_state[:4] = state.copy()
-                    self.local_state[4] = (
-                        self.acceleration_magnitude
-                    )  # Add current acceleration
+                    self.local_state[4] = self._extract_accel_x_locked()
                 else:
                     # 5D state: [x, y, theta, v, a]
                     self.local_state = state.copy()
@@ -1597,7 +1713,10 @@ class VehicleObserver:
             throttle = float(self.control_input.get("throttle", 0.0))
             steering = float(self.control_input.get("steering", 0.0))
             yaw_rate = float(self.sensor_data.get("gyro_z", 0.0))
-            accel = self.sensor_data.get("accelerometer", np.zeros(3))
+            accel = self.sensor_data.get(
+                "accelerometer_raw",
+                self.sensor_data.get("accelerometer", np.zeros(3)),
+            )
 
             sample = np.array(
                 [v, throttle, steering, yaw_rate,
@@ -1814,10 +1933,20 @@ class VehicleObserver:
             # Reset acceleration and control tracking
             # self.last_velocity = 0.0
             self.acceleration_magnitude = 0.0
+            self._filtered_motor_tach = 0.0
+            self._motor_tach_filter_initialized = False
+            self._filtered_accelerometer = np.zeros(3)
+            self._accel_filter_initialized = False
             self.control_input = {"steering": 0.0, "throttle": 0.0}
             self._vy_estimate = 0.0
             self._vy_est_last_time = 0.0
             self._last_relative_distance_by_target.clear()
+            self.sensor_data["motor_tach_raw"] = 0.0
+            self.sensor_data["motor_tach"] = 0.0
+            self.sensor_data["accelerometer_raw"] = np.zeros(3)
+            self.sensor_data["accelerometer"] = np.zeros(3)
+            self.sensor_data["accel_magnitude_raw"] = 0.0
+            self.sensor_data["accel_magnitude"] = 0.0
             self.sensor_data["relative_measurement"] = np.zeros(2)
             self.sensor_data["relative_measurement_valid"] = False
             self.sensor_data["relative_measurement_confidence"] = float("nan")

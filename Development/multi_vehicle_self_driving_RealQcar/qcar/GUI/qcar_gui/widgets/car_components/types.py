@@ -8,6 +8,8 @@ class CarState:
 
     car_id: int
     connected: bool = False
+    vehicle_type: str = "Unknown"
+    programme_type: str = "Unknown"
     state: str = "Unknown"
     position: tuple = (0.0, 0.0)
     velocity: float = 0.0
