@@ -205,6 +205,22 @@ class VehicleLogic:
         self._last_status_broadcast_time = 0.0
         self._status_broadcast_rate = 1.0  # 1 Hz
 
+        # Pre-allocate telemetry dict to save memory
+        self._telemetry_state = {
+            "timestamp": 0.0,
+            "time": 0.0,
+            "vehicle_type": self.vehicle_type,
+            "programme_type": self.programme_type,
+            "x": 0.0,
+            "y": 0.0,
+            "th": 0.0,
+            "v": 0.0,
+            "u": 0.0,
+            "delta": 0.0,
+            "state": "UNKNOWN",
+            "gps_valid": False,
+        }
+
         # Initialize Vehicle Observer for local and fleet state estimation
         # VehicleObserver is a manager class that coordinates:
         #   - LocalStateEstimator: Pluggable local state estimation (EKF, Luenberger, etc.)
@@ -252,6 +268,67 @@ class VehicleLogic:
             self.vehicle_logger.logger.info("V2V Attack Module ENABLED.")
         else:
             self.vehicle_logger.logger.warning("V2V Attack Module is not available.")
+
+    def disable_attack_module(self):
+        """Disable V2V attack injection if available."""
+        if hasattr(self.v2v_manager, "disable_attacks"):
+            self.v2v_manager.disable_attacks()
+            self.vehicle_logger.logger.info("V2V Attack Module DISABLED.")
+        else:
+            self.vehicle_logger.logger.warning("V2V Attack Module is not available.")
+
+    def trigger_v2v_attack(self, data: dict):
+        """Trigger a specific V2V attack from Ground Station"""
+        try:
+            if not hasattr(self, 'v2v_manager') or not hasattr(self.v2v_manager, 'add_attack_scenario'):
+                self.vehicle_logger.logger.warning("V2V Attack Module not available")
+                return
+
+            from V2V.AttackModule.AttackScenarios import make_scenario
+            
+            attack_type = data.get('attack_type', 'Bogus')
+            attacker_id = int(data.get('attacker_id', self.vehicle_id))
+            
+            # Since this function runs on the target car, we only apply if we are the attacker.
+            if attacker_id != int(self.vehicle_id) and attacker_id != -1:
+                return
+            
+            # Parse victims properly
+            victim_ids = data.get('victim_ids', [])
+            if isinstance(victim_ids, str):
+                try:
+                    import json
+                    victim_ids = json.loads(victim_ids)
+                except:
+                    victim_ids = []
+            
+            scenario = make_scenario(
+                attack_type=attack_type,
+                case_num=int(data.get('case_num', 1)),
+                attacker_id=attacker_id,
+                victim_ids=victim_ids,
+                data_type=data.get('data_type', 'local')
+            )
+            
+            if hasattr(self.v2v_manager, 'clear_attack_scenarios'):
+                self.v2v_manager.clear_attack_scenarios()
+            self.v2v_manager.add_attack_scenario(scenario)
+            self.v2v_manager.enable_attacks()
+            
+            self.vehicle_logger.logger.info(f"Triggered {attack_type} attack (Case {data.get('case_num', 1)}) on victims {victim_ids}")
+        except Exception as e:
+            self.vehicle_logger.log_error(f"Failed to trigger V2V attack", e)
+
+    def disable_v2v_attack(self):
+        """Disable all V2V attacks"""
+        try:
+            if hasattr(self, 'v2v_manager') and hasattr(self.v2v_manager, 'disable_attacks'):
+                self.v2v_manager.disable_attacks()
+                if hasattr(self.v2v_manager, 'clear_attack_scenarios'):
+                    self.v2v_manager.clear_attack_scenarios()
+                self.vehicle_logger.logger.info("Disabled all V2V attacks via Ground Station command")
+        except Exception as e:
+            self.vehicle_logger.log_error("Failed to disable V2V attack", e)
 
     def disable_attack_module(self):
         """Disable V2V attack injection if available."""
@@ -863,39 +940,22 @@ class VehicleLogic:
 
     def _build_telemetry_data(self) -> dict:
         """Build telemetry data dictionary - pure data collection"""
-        # Get current state from VehicleObserver
+        # Update pre-allocated telemetry dictionary in-place
         state_info = self.vehicle_observer.get_estimated_state_for_control()
 
-        # Get controller data safely (controllers may be in state machine, not vehicle_logic)
-        # Check if controllers exist (backward compatibility with FollowingPathState setting them)
-        # steering_controller = getattr(self, 'steering_controller', None)
-        # waypoint_index = steering_controller.get_waypoint_index() if steering_controller else 0
-        # errors = steering_controller.get_errors() if steering_controller else (0.0, 0.0)
+        self._telemetry_state["timestamp"] = time.time()
+        self._telemetry_state["time"] = self.elapsed_time()
+        self._telemetry_state["x"] = float(state_info["x"])
+        self._telemetry_state["y"] = float(state_info["y"])
+        self._telemetry_state["th"] = float(state_info["theta"])
+        self._telemetry_state["v"] = float(state_info["velocity"])
+        self._telemetry_state["u"] = float(getattr(self, "_last_u", 0.0))
+        self._telemetry_state["delta"] = float(getattr(self, "_last_steering", 0.0))
+        
+        self._telemetry_state["state"] = self.state_machine.state.name if hasattr(self.state_machine, "state") and self.state_machine.state else "UNKNOWN"
+        self._telemetry_state["gps_valid"] = self.vehicle_observer.is_gps_valid() if hasattr(self, "vehicle_observer") and self.vehicle_observer else False
 
-        return {
-            "timestamp": time.time(),
-            "time": self.elapsed_time(),
-            "vehicle_type": self.vehicle_type,
-            "programme_type": self.programme_type,
-            "x": float(state_info["x"]),
-            "y": float(state_info["y"]),
-            "th": float(state_info["theta"]),
-            "v": float(state_info["velocity"]),
-            "u": float(getattr(self, "_last_u", 0.0)),
-            "delta": float(getattr(self, "_last_steering", 0.0)),
-            # 'v_ref': float(self.v_ref * self.yolo_manager.get_yolo_gain()),
-            # 'yolo_gain': float(self.yolo_manager.get_yolo_gain()),
-            # 'waypoint_index': waypoint_index,
-            # 'cross_track_error': float(errors[0]),
-            # 'heading_error': float(errors[1]),
-            "state": self.state_machine.state.name
-            if hasattr(self.state_machine, "state") and self.state_machine.state
-            else "UNKNOWN",
-            "gps_valid": self.vehicle_observer.is_gps_valid()
-            if hasattr(self, "vehicle_observer") and self.vehicle_observer
-            else False,
-            # Observer/Controller types moved to _broadcast_periodic_status (1Hz) to reduce bandwidth
-        }
+        return self._telemetry_state
 
     def _get_v2v_status_cache(self) -> dict:
         """Get V2V status with caching to avoid repeated queries (updated every 1 second)"""

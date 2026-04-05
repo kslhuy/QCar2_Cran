@@ -181,9 +181,9 @@ lookahead:
 
 # Fusion Lateral Controller Parameters (combines path + leader tracking)
 fusion_lateral:
-  mode: 'path_primary'       # 'path_primary', 'leader_primary', 'adaptive'
-  path_weight: 0.8           # Weight for path reference (0-1)
-  leader_weight: 0.2         # Weight for leader adjustment (0-1)
+  mode: 'leader_primary'       # 'path_primary', 'leader_primary', 'adaptive'
+  path_weight: 0.2           # Weight for path reference (0-1)
+  leader_weight: 0.8         # Weight for leader adjustment (0-1)
   deviation_threshold: 0.3   # Max leader deviation before override (radians)
   smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother)
   max_steering: 0.5         # Maximum steering angle (radians)

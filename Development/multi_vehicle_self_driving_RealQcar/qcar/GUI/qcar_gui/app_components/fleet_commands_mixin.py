@@ -3,6 +3,22 @@ from tkinter import messagebox
 class FleetCommandsMixin:
     """Mixin for fleet-related commands."""
 
+    def _broadcast_global_status(self, v2v_activating: bool = False) -> None:
+        """Broadcast global status to websockets."""
+        if hasattr(self, "_remote") and hasattr(
+            self._remote, "_broadcast_to_websockets"
+        ):
+            v2v_connected = getattr(self, "_v2v_network_established", False)
+            msg = {
+                "type": "global_status",
+                "v2v_activating": v2v_activating,
+                "v2v_network_established": v2v_connected,
+                "platoon_setup_complete": self._platoon_config.setup_complete,
+                "platoon_leader_id": self._platoon_config.leader_id,
+                "platoon_formation": self._platoon_config.formation,
+            }
+            self._remote._broadcast_to_websockets(msg)
+
     def _start_all_cars(self) -> None:
         """Start all connected cars."""
         results = self._remote.start_all_cars()
@@ -74,6 +90,7 @@ class FleetCommandsMixin:
                 f"⚠️ Partial setup: {success_count}/{len(formation)} configured",
                 "WARNING",
             )
+        self._broadcast_global_status()
 
     def _trigger_platoon(self) -> None:
         """Trigger platoon start."""
@@ -113,6 +130,7 @@ class FleetCommandsMixin:
         successes = sum(1 for s in results.values() if s)
         self._platoon_config.setup_complete = False
         self.log(f"🚗 Disabled platoons: {successes}/{len(results)} cars", "INFO")
+        self._broadcast_global_status()
 
     def _activate_v2v(self) -> None:
         """Activate V2V communication."""
@@ -125,6 +143,7 @@ class FleetCommandsMixin:
 
         self._fleet_controls.set_v2v_activating(True)
         self.log("📡 Activating V2V communication...", "INFO")
+        self._broadcast_global_status(v2v_activating=True)
 
         success_count = 0
         connected_list = list(self._connected_cars)
@@ -165,12 +184,14 @@ class FleetCommandsMixin:
         else:
             self.log("Failed to send V2V activation", "ERROR")
             self._fleet_controls.set_v2v_activating(False)
+            self._broadcast_global_status(v2v_activating=False)
 
     def _v2v_activation_timeout(self) -> None:
         """Handle V2V activation timeout."""
         if self._fleet_controls:
             self._fleet_controls.set_v2v_activating(False)
             self.log("⏰ V2V activation timeout - button re-enabled", "WARNING")
+            self._broadcast_global_status(v2v_activating=False)
 
     def _disable_v2v(self) -> None:
         """Disable V2V communication."""
@@ -189,8 +210,10 @@ class FleetCommandsMixin:
             self._fleet_controls.reset_v2v_buttons()
             self._v2v_status.clear()
             self._v2v_network_established = False
+            self._broadcast_global_status(v2v_activating=False)
         else:
             self.log("❌ Failed to disable V2V", "ERROR")
+            self._broadcast_global_status(v2v_activating=False)
 
     def _activate_perception(self) -> None:
         """Activate perception system (YOLO) for all connected vehicles."""
@@ -278,6 +301,7 @@ class FleetCommandsMixin:
             if not getattr(self, "_v2v_network_established", False):
                 self._v2v_network_established = True
                 self.log("✅ V2V Network Fully Established", "SUCCESS")
+                self._broadcast_global_status(v2v_activating=False)
 
     def process_platoon_setup_confirmation(self, car_id: int, platoon_data: dict) -> None:
         """Process platoon setup confirmation from a vehicle."""
