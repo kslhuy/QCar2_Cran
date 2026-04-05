@@ -32,6 +32,7 @@ class VehicleCommandsMixin:
             self._sync_manual_keyboard_profile(car_id, profile)
             if reason:
                 summary = (
+                    f"FSTART={profile.get('starting_forward_throttle', 0.0):.2f}, "
                     f"FWD={profile.get('max_forward_throttle', 0.0):.2f}, "
                     f"REV={profile.get('max_reverse_throttle', 0.0):.2f}, "
                     f"SLIM={profile.get('steering_limit', 0.0):.2f}, "

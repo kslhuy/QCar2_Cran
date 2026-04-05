@@ -390,16 +390,16 @@ class QCarInitializer:
 
 
 
-        # Spawn pedestrian
-        self.pedestrian = QLabsPerson(self.qlabs)
-        self.pedestrian.spawn_id_degrees(
-            actorNumber=1,
-            location=[-1.439, 0.146, 0.006],
-            rotation=[0, 0, 0],
-            scale=[0.1, 0.1, 0.1],
-            configuration=6,
-        )
-        print("  ✓ Spawned pedestrian")
+        # # Spawn pedestrian
+        # self.pedestrian = QLabsPerson(self.qlabs)
+        # self.pedestrian.spawn_id_degrees(
+        #     actorNumber=1,
+        #     location=[-1.439, 0.146, 0.006],
+        #     rotation=[0, 0, 0],
+        #     scale=[0.1, 0.1, 0.1],
+        #     configuration=6,
+        # )
+        # print("  ✓ Spawned pedestrian")
 
         time.sleep(1)  # Allow time for environment setup
 

@@ -333,13 +333,16 @@ class KinematicPredictor(nn.Module):
 
 class LearnedKalmanUpdate(nn.Module):
     """
-    Features from original KalmanNet:
-    obs_diff       = z_k - z_{k-1}
-    obs_innov_diff = z_k - Hx_{k|k-1}
-    fw_evol_diff   = x_{k-1|k-1} - x_{k-2|k-2}
-    fw_update_diff = x_{k-1|k-1} - x_{k-1|k-2}
+    Simplified Update Module aligned with the "Minimum Viable Version"
+    from the RobustStateNet masking to-do list.
     
-    Uses 3 cascaded GRUs (Q, Sigma, S) and backward flow to update h_Sigma.
+    Features:
+    obs_diff       = z_k - z_{k-1}          (sz n)
+    obs_innov_diff = z_k - Hx_{k|k-1}       (sz n)
+    state_diff     = x_{k|k-1} - x_{k-1|k-1} (sz m)
+    
+    It concatenates these into a feature vector f_upd, generates an update mask
+    and multiplies it with the feature vector BEFORE passing to a single GRU.
     """
 
     def __init__(self, cfg: RSNConfig):
@@ -348,38 +351,29 @@ class LearnedKalmanUpdate(nn.Module):
         self.m = cfg.state_dim
         self.n = cfg.meas_dim
         self.d_h = cfg.upd_hidden
+        self.use_hard_mask = cfg.use_hard_mask
 
-        # 1. Q-GRU (Process Noise)
-        self.fc5 = nn.Sequential(nn.Linear(self.m, self.d_h), nn.ReLU())
-        self.gru_q = nn.GRU(input_size=self.d_h, hidden_size=self.d_h, batch_first=True)
+        self.feat_dim_upd = self.m + self.n + self.n
 
-        # 2. Sigma-GRU (State Uncertainty)
-        self.fc6 = nn.Sequential(nn.Linear(self.m, self.d_h), nn.ReLU())
-        self.gru_sigma = nn.GRU(input_size=self.d_h * 2, hidden_size=self.d_h, batch_first=True)
-
-        # 3. S-GRU (Measurement Uncertainty / Innovation)
-        self.fc1 = nn.Sequential(nn.Linear(self.d_h, self.d_h), nn.ReLU())
-        self.fc7 = nn.Sequential(nn.Linear(self.n * 2, self.d_h), nn.ReLU())
-        self.gru_s = nn.GRU(input_size=self.d_h * 2, hidden_size=self.d_h, batch_first=True)
-
-        # 4. Kalman Gain Intermediate
-        self.fc2 = nn.Sequential(
-            nn.Linear(self.d_h * 2, cfg.gain_hidden),
+        # Update mask network (outputs mask of same size as features)
+        self.mask_net = nn.Sequential(
+            nn.Linear(self.feat_dim_upd, cfg.mask_hidden),
             nn.ReLU(),
-            nn.Linear(cfg.gain_hidden, self.m * self.n)
+            nn.Linear(cfg.mask_hidden, self.feat_dim_upd),
         )
 
-        # 5. Backward Flow for Sigma
-        self.fc3 = nn.Sequential(nn.Linear(self.d_h + self.m * self.n, self.d_h), nn.ReLU())
-        self.fc4 = nn.Sequential(nn.Linear(self.d_h * 2, self.d_h), nn.ReLU())
+        # Single GRU for gain learning
+        self.gru = nn.GRU(
+            input_size=self.feat_dim_upd,
+            hidden_size=self.d_h,
+            batch_first=True
+        )
 
-        # Measurement-level mask: learns to suppress corrupted z channels
-        feat_dim_all = self.m * 2 + self.n * 2
-        self.meas_mask_net = nn.Sequential(
-            nn.Linear(feat_dim_all, cfg.mask_hidden),
+        # Kalman Gain Output MLP
+        self.gain_mlp = nn.Sequential(
+            nn.Linear(self.d_h, cfg.gain_hidden),
             nn.ReLU(),
-            nn.Linear(cfg.mask_hidden, self.n),
-            nn.Sigmoid(),
+            nn.Linear(cfg.gain_hidden, self.m * self.n)
         )
 
     def forward(
@@ -392,79 +386,63 @@ class LearnedKalmanUpdate(nn.Module):
         z_prev_seq: torch.Tensor,
         hidden: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
+        
         device = x_pred_seq.device
         B, T, _ = z_seq.shape
         H = make_H(device=device, dtype=x_pred_seq.dtype)
         Hx_pred = torch.matmul(x_pred_seq, H.T)
 
-        # Differences
-        # DO NOT use L2 normalization across features here! 
-        # Normalizing these vectors destroys magnitude information. If the 
-        # vehicle is stopped, noise becomes a unit vector, making the model 
-        # think there is movement.
-        obs_diff = z_seq - z_prev_seq
-        obs_innov_diff = z_seq - Hx_pred
-        fw_evol_diff = x_prev_upd_seq - x_prev_prev_upd_seq
-        fw_update_diff = x_prev_upd_seq - x_prev_pred_seq
+        # 1. Compute update features
+        dx = x_pred_seq - x_prev_upd_seq         # state diff: x_{k|k-1} - x_{k-1|k-1}
+        dz_p = z_seq - Hx_pred                   # innovation: z_k - Hx_{k|k-1}
+        dz = z_seq - z_prev_seq                  # meas diff: z_k - z_{k-1}
 
-        # Meas mask extraction
-        feat_all = torch.cat([fw_evol_diff, fw_update_diff, obs_innov_diff, obs_diff], dim=-1)
-        meas_mask = self.meas_mask_net(feat_all)
+        f_upd = torch.cat([dx, dz_p, dz], dim=-1) # [B, T, m+n+n]
 
+        # 2. Generate mask
+        mask_logits = self.mask_net(f_upd)
+        if self.use_hard_mask:
+            m_upd = hard_sigmoid_st(mask_logits)
+        else:
+            m_upd = torch.sigmoid(mask_logits)
+
+        # 3. Apply mask to features before GRU
+        f_upd_masked = f_upd * m_upd
+
+        # We return the middle portion (corresponding to dz_p -> innovation)
+        # to serve as 'meas_mask' for external supervision in the training loop.
+        # This aligns with the dimensions expected by `meas_attack_labels` [B, n]
+        meas_mask_out = m_upd[..., self.m : self.m + self.n]
+
+        # 4. Run GRU
         if hidden is None:
             hidden = {}
-        h_q = hidden.get("q", torch.zeros(1, B, self.d_h, device=device))
-        h_sig = hidden.get("sig", torch.zeros(1, B, self.d_h, device=device))
-        h_s = hidden.get("s", torch.zeros(1, B, self.d_h, device=device))
+        h_k = hidden.get("gru", torch.zeros(1, B, self.d_h, device=device))
+        
+        # We can pass the whole sequence through the GRU at once
+        out_gru, h_k_next = self.gru(f_upd_masked, h_k)
 
-        K_list = []
-        for t in range(T):
-            o_d = obs_diff[:, t:t+1, :]
-            oi_d = obs_innov_diff[:, t:t+1, :]
-            fe_d = fw_evol_diff[:, t:t+1, :]
-            fu_d = fw_update_diff[:, t:t+1, :]
+        # 5. Compute Kalman Gain
+        K_flat = self.gain_mlp(out_gru) # [B, T, m*n]
+        K_seq = K_flat.view(B, T, self.m, self.n)
 
-            # Flow
-            out_fc5 = self.fc5(fu_d)
-            out_q, h_q = self.gru_q(out_fc5, h_q)
-
-            out_fc6 = self.fc6(fe_d)
-            in_sig = torch.cat([out_q, out_fc6], dim=-1)
-            out_sig, h_sig = self.gru_sigma(in_sig, h_sig)
-
-            out_fc1 = self.fc1(out_sig)
-            out_fc7 = self.fc7(torch.cat([o_d, oi_d], dim=-1))
-            in_s = torch.cat([out_fc1, out_fc7], dim=-1)
-            out_s, h_s = self.gru_s(in_s, h_s)
-
-            # Gain
-            in_fc2 = torch.cat([out_sig, out_s], dim=-1)
-            out_fc2 = self.fc2(in_fc2)
-            K_t = out_fc2.view(-1, 1, self.m, self.n)
-            K_list.append(K_t)
-
-            # Backward flow for next step
-            in_fc3 = torch.cat([out_s, out_fc2], dim=-1)
-            out_fc3 = self.fc3(in_fc3)
-            in_fc4 = torch.cat([out_sig, out_fc3], dim=-1)
-            h_sig = self.fc4(in_fc4).transpose(0, 1)
-
-        K_seq = torch.cat(K_list, dim=1)
-        hidden_out = {"q": h_q, "sig": h_sig, "s": h_s}
-
-        # Apply measurement mask to innovation before correction
+        # 6. Apply additive correction
+        # x_{k|k} = x_{k|k-1} + K_k @ (z_k - Hx_{k|k-1})
         raw_innovation = z_seq - Hx_pred
-        masked_innovation = (raw_innovation * meas_mask).unsqueeze(-1)
-        corr = torch.matmul(K_seq, masked_innovation).squeeze(-1)
+        corr = torch.matmul(K_seq, raw_innovation.unsqueeze(-1)).squeeze(-1)
 
         x_upd = x_pred_seq + corr
+
         x_upd = torch.cat([
             x_upd[..., :2],
             wrap_angle(x_upd[..., 2:3]),
             x_upd[..., 3:],
         ], dim=-1)
 
-        return x_upd, K_seq, hidden_out, meas_mask
+        hidden_out = {"gru": h_k_next}
+
+        return x_upd, K_seq, hidden_out, meas_mask_out
+
 
 
 # ============================================================
@@ -720,6 +698,9 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self.last_model_output = None
         self.last_pred_mask = None
         self.last_pred_mask_summary = None
+        self.last_meas_mask = None
+        self.last_K = None
+        self.last_x_pred = None
         self.update_count = 0
         self.ekf_comparator = None
         self.ekf_comparator_ready = False
@@ -948,6 +929,24 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     "mask_imu_active",
                     "mask_steer_active",
                     "mask_wheel_active",
+                    "meas_mask_x",
+                    "meas_mask_y",
+                    "meas_mask_psi",
+                    "meas_mask_v",
+                    "meas_mask_w",
+                    "K_norm",
+                    "K_x_x",
+                    "K_y_y",
+                    "K_psi_psi",
+                    "K_v_v",
+                    "K_w_w",
+                    "innov_x",
+                    "innov_y",
+                    "innov_psi",
+                    "innov_v",
+                    "innov_w",
+                    "pred_x",
+                    "pred_y",
                 ],
             )
             self.comparator_log_writer.writeheader()
@@ -1040,6 +1039,24 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     "mask_imu_active": int(comparison.get("mask_imu_active", 0)),
                     "mask_steer_active": int(comparison.get("mask_steer_active", 0)),
                     "mask_wheel_active": int(comparison.get("mask_wheel_active", 0)),
+                    "meas_mask_x": float(comparison.get("meas_mask_x", np.nan)),
+                    "meas_mask_y": float(comparison.get("meas_mask_y", np.nan)),
+                    "meas_mask_psi": float(comparison.get("meas_mask_psi", np.nan)),
+                    "meas_mask_v": float(comparison.get("meas_mask_v", np.nan)),
+                    "meas_mask_w": float(comparison.get("meas_mask_w", np.nan)),
+                    "K_norm": float(comparison.get("K_norm", np.nan)),
+                    "K_x_x": float(comparison.get("K_x_x", np.nan)),
+                    "K_y_y": float(comparison.get("K_y_y", np.nan)),
+                    "K_psi_psi": float(comparison.get("K_psi_psi", np.nan)),
+                    "K_v_v": float(comparison.get("K_v_v", np.nan)),
+                    "K_w_w": float(comparison.get("K_w_w", np.nan)),
+                    "innov_x": float(comparison.get("innov_x", np.nan)),
+                    "innov_y": float(comparison.get("innov_y", np.nan)),
+                    "innov_psi": float(comparison.get("innov_psi", np.nan)),
+                    "innov_v": float(comparison.get("innov_v", np.nan)),
+                    "innov_w": float(comparison.get("innov_w", np.nan)),
+                    "pred_x": float(comparison.get("pred_x", np.nan)),
+                    "pred_y": float(comparison.get("pred_y", np.nan)),
                 }
             )
             self.comparator_record_count += 1
@@ -1146,6 +1163,8 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         if not np.all(np.isfinite(x_upd)):
             raise ValueError("Robust KalmanNet produced non-finite state")
 
+        self.last_x_pred = out["x_pred"][0, -1].detach().cpu().numpy().astype(np.float64)
+
         pred_mask = out.get("pred_mask")
         self.last_pred_mask = None
         self.last_pred_mask_summary = None
@@ -1153,6 +1172,18 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             pred_mask_np = pred_mask[0, -1].detach().cpu().numpy().astype(np.float64)
             self.last_pred_mask = pred_mask_np.copy()
             self.last_pred_mask_summary = self._summarize_pred_mask(pred_mask_np)
+
+        meas_mask_tensor = out.get("meas_mask")
+        if meas_mask_tensor is not None:
+            self.last_meas_mask = meas_mask_tensor[0, -1].detach().cpu().numpy().astype(np.float64)
+        else:
+            self.last_meas_mask = np.full(5, np.nan)
+            
+        K_tensor = out.get("K")
+        if K_tensor is not None:
+            self.last_K = K_tensor[0, -1].detach().cpu().numpy().astype(np.float64)
+        else:
+            self.last_K = np.full((5, 5), np.nan)
 
         x_upd[2] = wrap_angle_scalar(float(x_upd[2]))
         self.last_model_output = x_upd.copy()
@@ -1247,6 +1278,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         gyro_z: float,
         gps_data: Optional[Dict[str, Any]],
         acceleration: Optional[np.ndarray],
+        measurement: Optional[np.ndarray] = None,
     ) -> None:
         if not self.ekf_comparator_ready or self.ekf_comparator is None:
             return
@@ -1269,6 +1301,11 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         delta_state = robust_state - ekf_state
         delta_state[2] = wrap_angle_scalar(float(delta_state[2]))
 
+        if self.last_update_used_model and self.last_x_pred is not None and measurement is not None:
+            innovation = measurement - self.last_x_pred
+        else:
+            innovation = np.full(5, np.nan)
+
         comparison = {
             "tick": self.update_count,
             "timestamp": time.time(),
@@ -1279,6 +1316,24 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             "position_error_norm": float(np.linalg.norm(delta_state[:2])),
             "heading_error": float(delta_state[2]),
             "velocity_error": float(delta_state[3]),
+            "meas_mask_x": self.last_meas_mask[0] if self.last_meas_mask is not None else np.nan,
+            "meas_mask_y": self.last_meas_mask[1] if self.last_meas_mask is not None else np.nan,
+            "meas_mask_psi": self.last_meas_mask[2] if self.last_meas_mask is not None else np.nan,
+            "meas_mask_v": self.last_meas_mask[3] if self.last_meas_mask is not None else np.nan,
+            "meas_mask_w": self.last_meas_mask[4] if self.last_meas_mask is not None else np.nan,
+            "K_norm": float(np.linalg.norm(self.last_K)) if self.last_K is not None else np.nan,
+            "K_x_x": self.last_K[0, 0] if self.last_K is not None else np.nan,
+            "K_y_y": self.last_K[1, 1] if self.last_K is not None else np.nan,
+            "K_psi_psi": self.last_K[2, 2] if self.last_K is not None else np.nan,
+            "K_v_v": self.last_K[3, 3] if self.last_K is not None else np.nan,
+            "K_w_w": self.last_K[4, 4] if self.last_K is not None else np.nan,
+            "innov_x": innovation[0],
+            "innov_y": innovation[1],
+            "innov_psi": innovation[2],
+            "innov_v": innovation[3],
+            "innov_w": innovation[4],
+            "pred_x": self.last_x_pred[0] if self.last_x_pred is not None else np.nan,
+            "pred_y": self.last_x_pred[1] if self.last_x_pred is not None else np.nan,
         }
         if self.last_pred_mask_summary is not None:
             comparison.update(self.last_pred_mask_summary)
@@ -1365,6 +1420,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                 gyro_z=gyro_z,
                 gps_data=gps_data,
                 acceleration=acceleration,
+                measurement=measurement,
             )
             self.internal_state = estimate.astype(np.float32)
             self.state = self.internal_state[:4].astype(np.float64, copy=True)
@@ -1414,6 +1470,9 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self.last_model_output = None
         self.last_pred_mask = None
         self.last_pred_mask_summary = None
+        self.last_meas_mask = None
+        self.last_K = None
+        self.last_x_pred = None
         self.last_update_used_model = False
         self.update_count = 0
         self.last_comparator_output = None

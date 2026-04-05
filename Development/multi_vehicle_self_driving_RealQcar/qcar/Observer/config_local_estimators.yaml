@@ -55,7 +55,7 @@ local:
   # Robust KalmanNet estimator
   # ---------------------------------------------------------------------
   robust_kalman_net:
-    predictor_mode: kinematic    # Explicitly use kinematic model for prediction, leaving only the update step to use the GRU NN
+    predictor_mode: nn    # Explicitly use kinematic model for prediction, leaving only the update step to use the GRU NN
     use_model: true              # Create the network adapter and try to use learned inference.
     load_pretrained: true       # Set true after training and saving a checkpoint.
     model_path: models/robust_kalmannet.pt # Relative to Observer/KalmaNet/Robust/

@@ -32,6 +32,11 @@ except ImportError as e:
     CommandType = None
 
 
+MANUAL_THROTTLE_LIMIT = 0.30
+LIMO_MANUAL_VELOCITY_GAIN = 2.16
+LIMO_MANUAL_MAX_VELOCITY = 1.20
+
+
 class ManualModeState(StateBase):
     """Handler for MANUAL_MODE state with direct control from Ground Station"""
 
@@ -127,17 +132,27 @@ class ManualModeState(StateBase):
 
         # Handle manual control commands (throttle/steering updates)
         if command_type == CommandType.MANUAL_CONTROL:
-            throttle = data.get("throttle", 0.0)
+            throttle = float(data.get("throttle", 0.0))
             steering = data.get("steering", 0.0)
 
-            # Keep manual-mode throttle limiting consistent with the rest of the
-            # control stack: the gear enum value is the effective max throttle.
-            limit = float(getattr(getattr(self.vehicle_logic, "gear", None), "value", 0.1))
-
-            # Validate and clamp control inputs
-            throttle = max(-limit, min(limit, throttle))
+            # Manual mode bypasses gear selection and always accepts the full
+            # manual throttle envelope.
+            throttle = max(-MANUAL_THROTTLE_LIMIT, min(MANUAL_THROTTLE_LIMIT, throttle))
 
             if self.vehicle_logic.vehicle_type == "Limo":
+                # Ground-station manual input is expressed in QCar throttle
+                # units. Map it to the Limo's direct velocity command with a
+                # simple proportional gain fitted from:
+                #   0.15 -> 0.30 m/s
+                #   0.20 -> 0.45 m/s
+                throttle = float(
+                    np.clip(
+                        throttle * LIMO_MANUAL_VELOCITY_GAIN,
+                        -LIMO_MANUAL_MAX_VELOCITY,
+                        LIMO_MANUAL_MAX_VELOCITY,
+                    )
+                )
+
                 # Driver uses angular.z as Ackermann steering angle [rad] in
                 # steering_angle mode.
                 # Accept both command conventions:
@@ -150,10 +165,6 @@ class ManualModeState(StateBase):
                     desired_inner = max(-1.0, min(1.0, raw_steering)) * 0.48869
 
                 steering = max(-0.48869, min(0.48869, desired_inner))
-                # When reversing, invert steering so "left" always steers left
-                # from the driver's perspective
-                if throttle < 0:
-                    steering *= -1.0
             else:
                 steering = max(-1.0, min(1.0, steering))
 

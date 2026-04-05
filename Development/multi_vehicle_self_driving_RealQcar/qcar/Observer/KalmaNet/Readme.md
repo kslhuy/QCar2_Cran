@@ -265,8 +265,13 @@ Ensure you are in the Robust directory inside your conda environment, and simply
 
 To train the new Kinematic setup:
 
-bash
-python train_robust_kalmannet.py "C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Dataset_100ms.npz" --predictor-mode kinematic
+
+
+bash'''
+
+python train_robust_kalmannet.py "C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Robust\datasets\robust_kalmannet_dataset_V0_20260401_170829.npz" --predictor-mode kinematic
+
+'''
 (Note: Replace Dataset_100ms.npz with your actual dataset file name)
 
 To train the original NN Predictor setup (it still works!):

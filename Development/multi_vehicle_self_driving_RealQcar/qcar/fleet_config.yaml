@@ -50,6 +50,7 @@ vehicles:
     # ip: 192.168.137.102
     vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
+    enable_v2v_attack: false # Set true to inject attacks from this car
     probing: true          # Enable YOLO probing (object detection)
     calibrate: false       # Start in calibration mode
     path_number: 0         # Path selection (0, 1, 2, etc.)
@@ -62,6 +63,7 @@ vehicles:
     ip: 192.168.2.108   # Car 67 alway need be center map
     vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
+    enable_v2v_attack: false # Set true to inject attacks from this car
     probing: true         # Enable probing for follower
     calibrate: false
     path_number: 1         # Different path from leader
@@ -73,6 +75,7 @@ vehicles:
     ip: 192.168.2.108
     vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
+    enable_v2v_attack: false # Set true to inject attacks from this car
     probing: true         # Enable probing for follower
     calibrate: false
     path_number: 0         # Same path as leader

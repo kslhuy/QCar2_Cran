@@ -75,6 +75,7 @@ class ManualControlConfig:
     steering_scale: float = 0.5
     throttle_scale: float = 0.3
     deadzone: float = 0.05
+    update_interval_ms: int = 50
 
 
 @dataclass(frozen=True)

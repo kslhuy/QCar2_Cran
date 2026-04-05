@@ -105,7 +105,7 @@ class VehicleLogic:
             trust_report_frequency=2.0,  # Hz - Independent trust opinion exchange
             heartbeat_frequency=1.0,  # Hz - Very low frequency for heartbeats
         )
-        self.v2v_manager = V2VManager(
+        base_v2v_manager = V2VManager(
             vehicle_id=config.network.car_id,
             vehicle_logger=self.vehicle_logger,
             config=v2v_config,
@@ -114,6 +114,20 @@ class VehicleLogic:
             status_callback=self._handle_v2v_status_change,
             vehicle_logic=self,  # Pass reference to self for Ground Station reporting
         )
+
+        try:
+            from V2V.AttackModule.V2VAttackInjector import V2VAttackInjector
+            attack_config_path = os.path.join(os.path.dirname(__file__), "V2V", "AttackModule", "attack_config.yaml")
+            self.v2v_manager = V2VAttackInjector(
+                v2v_manager=base_v2v_manager,
+                attack_config_path=attack_config_path,
+                # enabled=config.vehicle.enable_v2v_attack  # Uses fleet_config.yaml
+                enabled = True
+            )
+            self.vehicle_logger.logger.info("V2VAttackInjector successfully wrapped V2VManager.")
+        except Exception as e:
+            self.vehicle_logger.logger.error(f"Failed to initialize V2VAttackInjector: {e}")
+            self.v2v_manager = base_v2v_manager
 
         # Safety systems
         self.watchdog = WatchdogTimer(
@@ -230,6 +244,22 @@ class VehicleLogic:
     def logger(self):
         """Backward compatibility property for accessing the vehicle logger"""
         return self.vehicle_logger
+
+    def enable_attack_module(self):
+        """Enable V2V attack injection if available."""
+        if hasattr(self.v2v_manager, "enable_attacks"):
+            self.v2v_manager.enable_attacks()
+            self.vehicle_logger.logger.info("V2V Attack Module ENABLED.")
+        else:
+            self.vehicle_logger.logger.warning("V2V Attack Module is not available.")
+
+    def disable_attack_module(self):
+        """Disable V2V attack injection if available."""
+        if hasattr(self.v2v_manager, "disable_attacks"):
+            self.v2v_manager.disable_attacks()
+            self.vehicle_logger.logger.info("V2V Attack Module DISABLED.")
+        else:
+            self.vehicle_logger.logger.warning("V2V Attack Module is not available.")
 
     def _guess_sysid_racecar_version(self) -> str:
         """

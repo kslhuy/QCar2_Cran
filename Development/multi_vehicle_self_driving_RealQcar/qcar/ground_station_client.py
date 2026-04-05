@@ -54,6 +54,8 @@ class GroundStationClient:
         self.telemetry_queue = queue.Queue(maxsize=self.MAX_QUEUE_SIZE)
         self.scope_data_queue = queue.Queue(maxsize=200)  # High-frequency scope data
         self.command_queue = queue.Queue(maxsize=10)
+        self._latest_manual_command: Optional[Dict[str, Any]] = None
+        self._manual_command_lock = threading.Lock()
         
         # Scope streaming state
         self._scope_streaming_enabled = False
@@ -276,11 +278,20 @@ class GroundStationClient:
                 line, self._recv_buffer = self._recv_buffer.split('\n', 1)
                 if line.strip():
                     command = json.loads(line)
-                    
+
+                    self.stats['commands_received'] += 1
+
+                    # High-rate manual control should not overwrite state/config
+                    # commands such as ENABLE_MANUAL_MODE. Keep only the latest
+                    # manual sample and process structural commands in order.
+                    if command.get("type") == "manual_control":
+                        with self._manual_command_lock:
+                            self._latest_manual_command = command
+                        continue
+
                     # Queue command (drop oldest if full)
                     try:
                         self.command_queue.put_nowait(command)
-                        self.stats['commands_received'] += 1
                     except queue.Full:
                         self.command_queue.get_nowait()  # Remove oldest
                         self.command_queue.put_nowait(command)
@@ -426,19 +437,22 @@ class GroundStationClient:
         self.logger.logger.info("Scope data streaming disabled")
     
     def get_latest_commands(self) -> Optional[Dict[str, Any]]:
-        """Get latest commands from queue"""
+        """Get the next command to process.
+
+        Structural commands are processed in FIFO order. High-rate manual
+        control is collapsed to the latest sample and returned only when there
+        are no queued structural commands waiting.
+        """
         if not self._running:
             return None
-        
-        latest_command = None
+
         try:
-            # Get the most recent command(s)
-            while True:
-                latest_command = self.command_queue.get_nowait()
+            return self.command_queue.get_nowait()
         except queue.Empty:
-            pass
-        
-        return latest_command
+            with self._manual_command_lock:
+                latest_command = self._latest_manual_command
+                self._latest_manual_command = None
+            return latest_command
     
     def stop_threads(self):
         """Stop communication thread gracefully"""
@@ -464,6 +478,9 @@ class GroundStationClient:
                 self.command_queue.get_nowait()
             except queue.Empty:
                 break
+
+        with self._manual_command_lock:
+            self._latest_manual_command = None
         
         self.logger.logger.info(f"Ground Station stopped. Stats: {self.get_statistics()}")
     

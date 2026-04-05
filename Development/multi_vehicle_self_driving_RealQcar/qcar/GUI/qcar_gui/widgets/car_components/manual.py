@@ -11,6 +11,7 @@ class ManualAndVelocityControl(BaseWidget):
     """Combined widget for manual control, velocity, and gear to save space."""
 
     PROFILE_STEPS = {
+        "starting_forward_throttle": 0.01,
         "max_forward_throttle": 0.01,
         "max_reverse_throttle": 0.01,
         "throttle_step": 0.005,
@@ -19,6 +20,7 @@ class ManualAndVelocityControl(BaseWidget):
     }
 
     PROFILE_FIELDS = (
+        ("FStart", "starting_forward_throttle"),
         ("FMax", "max_forward_throttle"),
         ("RMax", "max_reverse_throttle"),
         ("dThr", "throttle_step"),
@@ -43,6 +45,7 @@ class ManualAndVelocityControl(BaseWidget):
         self._manual_active = False
         self._manual_profile: Dict[str, float] = {
             "vehicle_type": "Qcar",
+            "starting_forward_throttle": 0.15,
             "max_forward_throttle": 0.30,
             "max_reverse_throttle": 0.18,
             "throttle_step": 0.02,
@@ -127,12 +130,21 @@ class ManualAndVelocityControl(BaseWidget):
 
         ThemedLabel(
             keyboard_content,
-            text="Profile only: FMax/RMax are limits, dThr/dStr are ramp steps",
+            text="Profile only: FStart is first forward command, FMax/RMax are limits",
             style="muted",
             theme=self.theme,
             font=self.theme.fonts.tiny(),
             anchor="w",
         ).pack(fill="x", pady=(4, 0))
+
+        ThemedLabel(
+            keyboard_content,
+            text="dThr/dStr are ramp steps after the initial forward command",
+            style="muted",
+            theme=self.theme,
+            font=self.theme.fonts.tiny(),
+            anchor="w",
+        ).pack(fill="x")
 
         ThemedLabel(
             keyboard_content,

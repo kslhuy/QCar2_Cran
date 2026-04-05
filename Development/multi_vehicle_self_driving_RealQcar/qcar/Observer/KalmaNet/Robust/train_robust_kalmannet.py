@@ -113,8 +113,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train Robust KalmanNet offline from recorded datasets")
     parser.add_argument("datasets", nargs="+", help="One or more .npz dataset files recorded from the vehicle")
     parser.add_argument("--output", default="models/robust_kalmannet.pt", help="Checkpoint path relative to this script")
-    parser.add_argument("--phase1-epochs", type=int, default=15, help="Epochs for Phase 1 (teacher forcing, predictor focus)")
-    parser.add_argument("--phase2-epochs", type=int, default=15, help="Epochs for Phase 2 (no teacher forcing, end-to-end)")
+    parser.add_argument("--phase-a-epochs", type=int, default=20, help="Epochs for Phase A (pretrain predictor alone)")
+    parser.add_argument("--phase-b-epochs", type=int, default=20, help="Epochs for Phase B (freeze predictor, train update loop)")
+    parser.add_argument("--phase-c-epochs", type=int, default=20, help="Epochs for Phase C (fine-tune full model end-to-end)")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--sequence-length", type=int, default=20)
     parser.add_argument("--stride", type=int, default=1)
@@ -129,7 +130,10 @@ def main() -> None:
     parser.add_argument("--no-augmentation", action="store_true", help="Disable attack augmentation (train on clean only)")
     parser.add_argument("--lambda-mask", type=float, default=0.1, help="Weight for prediction mask supervision loss")
     parser.add_argument("--lambda-meas-mask", type=float, default=0.1, help="Weight for measurement mask supervision loss")
+    parser.add_argument("--lambda-pred", type=float, default=0.2, help="Phase C prediction loss weight")
+    parser.add_argument("--lambda-upd", type=float, default=0.8, help="Phase C update loss weight")
     parser.add_argument("--max-branches-attacked", type=int, default=1, help="Max branches attacked simultaneously")
+    parser.add_argument("--reverse-split", action="store_true", help="Use first portion for validation and remaining for training")
     parser.add_argument(
         "--predictor-mode",
         default="nn",
@@ -141,7 +145,7 @@ def main() -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    total_epochs = args.phase1_epochs + args.phase2_epochs
+    total_epochs = args.phase_a_epochs + args.phase_b_epochs + args.phase_c_epochs
 
     device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else args.device if args.device != "auto" else "cpu")
     merged = merge_recorded_datasets(args.datasets)
@@ -157,8 +161,12 @@ def main() -> None:
     if val_size > 0:
         # Prevent data leakage: Use chronological split instead of random split for sliding window time series
         indices = list(range(len(dataset)))
-        train_subset = torch.utils.data.Subset(dataset, indices[:train_size])
-        val_subset = torch.utils.data.Subset(dataset, indices[train_size:])
+        if args.reverse_split:
+            val_subset = torch.utils.data.Subset(dataset, indices[:val_size])
+            train_subset = torch.utils.data.Subset(dataset, indices[val_size:])
+        else:
+            train_subset = torch.utils.data.Subset(dataset, indices[:train_size])
+            val_subset = torch.utils.data.Subset(dataset, indices[train_size:])
         val_loader = DataLoader(SubsetWithTransform(val_subset), batch_size=args.batch_size, shuffle=False, collate_fn=collate_batch)
     else:
         train_subset = dataset
@@ -177,8 +185,9 @@ def main() -> None:
     print(f"\nPredictor mode : {args.predictor_mode}")
     if args.predictor_mode == "kinematic":
         print("  → Kinematic predictor: unicycle model (no learnable parameters in prediction step).")
-        print("  → Phase 1 (teacher-forcing) trains the update step ONLY.")
+        print("  → Phase A (Pretrain Predictor) is automatically skipped.")
         print("  → Prediction mask supervision (lambda_mask) is automatically skipped (pred_mask=None).")
+        args.phase_a_epochs = 0
 
     # Initialize attack augmenter
     augmenter = None
@@ -196,38 +205,67 @@ def main() -> None:
     best_val = float("inf")
     history = []
     output_path = Path(__file__).resolve().parent / args.output
-    phase2_final_path = output_path.with_name(f"{output_path.stem}.phase2_final{output_path.suffix}")
+    phase_c_final_path = output_path.with_name(f"{output_path.stem}.phase_c_final{output_path.suffix}")
     final_path = output_path.with_name(f"{output_path.stem}.final{output_path.suffix}")
 
+    def set_module_trainable(module: torch.nn.Module, trainable: bool):
+        if hasattr(module, "parameters"):
+            for param in module.parameters():
+                param.requires_grad = trainable
+
     print(f"\n{'='*60}")
-    print(f"Two-phase training: Phase 1 = {args.phase1_epochs} epochs (teacher forcing)")
-    print(f"                    Phase 2 = {args.phase2_epochs} epochs (end-to-end)")
+    print(f"Three-phase training:")
+    print(f"  Phase A (Predictor Only) = {args.phase_a_epochs} epochs")
+    print(f"  Phase B (Updater Only)   = {args.phase_b_epochs} epochs")
+    print(f"  Phase C (End-to-End)     = {args.phase_c_epochs} epochs")
     print(f"{'='*60}\n")
 
     for epoch in range(1, total_epochs + 1):
         # Determine phase
-        if epoch <= args.phase1_epochs:
+        if epoch <= args.phase_a_epochs:
             phase = 1
+            phase_label = "Phase A"
             use_teacher_forcing = True
-            phase_label = "P1-TF"
-            # Phase 1 loss weights: focus on prediction quality
-            lambda_upd = 0.5
-            lambda_pred = 0.5
-        else:
-            phase = 2
-            use_teacher_forcing = False
-            phase_label = "P2-E2E"
-            # Phase 2 loss weights: focus on final updated state
-            lambda_upd = 0.8
-            lambda_pred = 0.2
+            lambda_pred = 1.0
+            lambda_upd = 0.0
+            lam_mask = args.lambda_mask
+            lam_meas_mask = 0.0
+            set_module_trainable(model.predictor, True)
+            set_module_trainable(model.updater, False)
 
-            # Switch to lower learning rate at phase transition
-            if epoch == args.phase1_epochs + 1:
-                lr_phase2 = args.lr_phase2 if args.lr_phase2 is not None else args.lr / 5.0
-                for pg in optimizer.param_groups:
-                    pg["lr"] = lr_phase2
+        elif epoch <= args.phase_a_epochs + args.phase_b_epochs:
+            phase = 2
+            phase_label = "Phase B"
+            use_teacher_forcing = True
+            lambda_pred = 0.0
+            lambda_upd = 1.0
+            lam_mask = 0.0
+            lam_meas_mask = args.lambda_meas_mask
+            set_module_trainable(model.predictor, False)
+            set_module_trainable(model.updater, True)
+
+            if epoch == args.phase_a_epochs + 1:
                 print(f"\n{'='*60}")
-                print(f"Phase 2 started: teacher forcing OFF, lr={lr_phase2:.2e}")
+                print(f"Phase B started: Predictor frozen, Updater training")
+                print(f"{'='*60}\n")
+
+        else:
+            phase = 3
+            phase_label = "Phase C"
+            use_teacher_forcing = False
+            lambda_pred = args.lambda_pred
+            lambda_upd = args.lambda_upd
+            lam_mask = args.lambda_mask
+            lam_meas_mask = args.lambda_meas_mask
+            set_module_trainable(model.predictor, True)
+            set_module_trainable(model.updater, True)
+
+            if epoch == args.phase_a_epochs + args.phase_b_epochs + 1:
+                lr_phase_e2e = args.lr_phase2 if args.lr_phase2 is not None else args.lr / 5.0
+                for pg in optimizer.param_groups:
+                    pg["lr"] = lr_phase_e2e
+                print(f"\n{'='*60}")
+                print(f"Phase C started: End-to-end, TF OFF, lr={lr_phase_e2e:.2e}")
                 print(f"{'='*60}\n")
 
         model.train()
@@ -258,10 +296,10 @@ def main() -> None:
                 weights=state_weights,
                 pred_mask=out.get("pred_mask"),
                 attack_labels=attack_labels,
-                lambda_mask=args.lambda_mask,
+                lambda_mask=lam_mask,
                 meas_mask=out.get("meas_mask"),
                 meas_attack_labels=meas_attack_labels,
-                lambda_meas_mask=args.lambda_meas_mask,
+                lambda_meas_mask=lam_meas_mask,
             )
             loss.backward()
             optimizer.step()
@@ -293,9 +331,9 @@ def main() -> None:
             )
             print(f"Saved best checkpoint to {output_path}")
 
-    final_checkpoint_path = phase2_final_path if args.phase2_epochs > 0 else final_path
-    final_checkpoint_type = "final_phase2" if args.phase2_epochs > 0 else "final"
-    final_phase = 2 if args.phase2_epochs > 0 else 1
+    final_checkpoint_path = phase_c_final_path if args.phase_c_epochs > 0 else final_path
+    final_checkpoint_type = "final_phase_c" if args.phase_c_epochs > 0 else "final"
+    final_phase = 3 if args.phase_c_epochs > 0 else (2 if args.phase_b_epochs > 0 else 1)
     save_checkpoint(
         model=model,
         cfg=cfg,

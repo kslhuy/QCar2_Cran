@@ -92,12 +92,29 @@ class StoppedState(StateBase):
             # Fallback to base class if CommandType not available
             return super().handle_event(command_type, data)
 
-        # Handle manual control commands - transition to manual mode
+        # Manual mode entry is explicit. Raw control samples are ignored until
+        # ENABLE_MANUAL_MODE is received.
         if command_type == CommandType.MANUAL_CONTROL:
             self.logger.logger.info(
-                "[STOP] Manual control command received - transitioning to MANUAL_MODE"
+                "[STOP] Manual control command received while stopped - ignoring until ENABLE_MANUAL_MODE"
             )
-            return (VehicleState.MANUAL_MODE, StateTransitionReason.START_COMMAND)
+            return None
+
+        elif command_type == CommandType.ENABLE_MANUAL_MODE:
+            control_type = data.get("control_type", "unknown")
+            self.logger.logger.info(
+                f"[STOP] Manual mode enabled ({control_type}) - transitioning to MANUAL_MODE"
+            )
+            return (
+                VehicleState.MANUAL_MODE,
+                StateTransitionReason.MANUAL_MODE_ACTIVATED,
+            )
+
+        elif command_type == CommandType.DISABLE_MANUAL_MODE:
+            self.logger.logger.info(
+                "[STOP] Manual mode disable received while stopped - already not in manual mode"
+            )
+            return None
 
         # Handle calibrate command - GPS-only recalibration without full reinitialization
         elif command_type == CommandType.CALIBRATE:

@@ -115,6 +115,7 @@ class VehicleConfig:
     programme_type: str = "Py"  # "Ros" or "Py"
     probing: bool = False  # Enable YOLO perception system
     limo_gear_multiplier: float = 3.5  # Gear multiplier for Limo velocity limits
+    enable_v2v_attack: bool = False  # Enable V2V attack injection using attack_config.yaml
 
     def __post_init__(self):
         """Validate vehicle type"""
@@ -271,6 +272,7 @@ class VehicleMainConfig:
                 "vehicle_type": vehicle_type,
                 "probing": vehicle_entry.get("probing", False),
                 "limo_gear_multiplier": vehicle_entry.get("limo_gear_multiplier", 6.0),
+                "enable_v2v_attack": vehicle_entry.get("enable_v2v_attack", False),
             }
             config_dict["path"] = {
                 "path_number": vehicle_entry.get("path_number", 0),

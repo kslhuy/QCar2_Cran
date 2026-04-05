@@ -220,6 +220,14 @@ class WaitingForStartState(StateBase):
             )
             return None
 
+        # Ignore raw manual-control samples until manual mode is explicitly
+        # enabled. This keeps manual mode entry consistent across states.
+        elif command_type == CommandType.MANUAL_CONTROL:
+            self.logger.logger.info(
+                " Manual control received while waiting - ignoring until ENABLE_MANUAL_MODE"
+            )
+            return None
+
         # Handle manual mode activation - DIRECT TRANSITION!
         elif command_type == CommandType.ENABLE_MANUAL_MODE:
             control_type = data.get("control_type", "unknown")
@@ -230,6 +238,13 @@ class WaitingForStartState(StateBase):
                 VehicleState.MANUAL_MODE,
                 StateTransitionReason.MANUAL_MODE_ACTIVATED,
             )
+
+        # If we're already not in manual mode, disabling it is a harmless no-op.
+        elif command_type == CommandType.DISABLE_MANUAL_MODE:
+            self.logger.logger.info(
+                " Manual mode disable received while waiting - already not in manual mode"
+            )
+            return None
 
         # Handle taxi mode activation - DIRECT TRANSITION!
         elif command_type == CommandType.ENABLE_TAXI_MODE:

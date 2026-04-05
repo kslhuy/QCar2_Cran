@@ -458,6 +458,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         known_vehicle_ids.discard(self.vehicle_id)
 
         for vehicle_id in sorted(known_vehicle_ids):
+            # Ensure fleet_states can accommodate this vehicle_id
+            # (vehicle IDs may be non-contiguous, e.g. [0, 2])
+            self._ensure_fleet_capacity(vehicle_id)
+            
             latest = self._get_latest_received_state_with_timestamp(
                 vehicle_id, current_time_ns
             )

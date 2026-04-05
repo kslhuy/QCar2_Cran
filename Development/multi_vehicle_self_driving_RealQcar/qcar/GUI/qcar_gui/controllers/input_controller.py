@@ -32,6 +32,7 @@ class KeyboardControlProfile:
     """Local keyboard tuning profile for a specific vehicle."""
 
     vehicle_type: str = "Qcar"
+    starting_forward_throttle: float = 0.15
     max_forward_throttle: float = 0.30
     max_reverse_throttle: float = 0.18
     throttle_step: float = 0.02
@@ -42,6 +43,7 @@ class KeyboardControlProfile:
         """Return a serializable profile dictionary for the GUI."""
         return {
             "vehicle_type": self.vehicle_type,
+            "starting_forward_throttle": self.starting_forward_throttle,
             "max_forward_throttle": self.max_forward_throttle,
             "max_reverse_throttle": self.max_reverse_throttle,
             "throttle_step": self.throttle_step,
@@ -54,6 +56,7 @@ class KeyboardController:
     """Handles keyboard input for manual vehicle control."""
 
     PROFILE_LIMITS = {
+        "starting_forward_throttle": (0.05, 0.30),
         "max_forward_throttle": (0.05, 0.60),
         "max_reverse_throttle": (0.05, 0.40),
         "throttle_step": (0.005, 0.15),
@@ -150,15 +153,17 @@ class KeyboardController:
         if normalized_type == "Limo":
             return KeyboardControlProfile(
                 vehicle_type="Limo",
-                max_forward_throttle=0.22,
-                max_reverse_throttle=0.12,
-                throttle_step=0.015,
+                starting_forward_throttle=0.15,
+                max_forward_throttle=0.30,
+                max_reverse_throttle=0.18,
+                throttle_step=0.02,
                 steering_limit=0.40,
                 steering_step=0.04,
             )
 
         return KeyboardControlProfile(
             vehicle_type="Qcar",
+            starting_forward_throttle=0.15,
             max_forward_throttle=max(0.20, self.config.throttle_scale),
             max_reverse_throttle=0.18,
             throttle_step=0.02,
@@ -270,15 +275,21 @@ class KeyboardController:
             keys = self._keys_pressed.copy()
 
         profile = self.ensure_profile(self._active_car_id or 0)
+        starting_forward_throttle = min(
+            profile.starting_forward_throttle, profile.max_forward_throttle
+        )
         throttle_step = profile.throttle_step
         steering_step = profile.steering_step
 
         # Throttle control
         if cfg.forward_key in keys:
-            self._current_throttle = min(
-                self._current_throttle + throttle_step,
-                profile.max_forward_throttle,
-            )
+            if self._current_throttle <= 0.0:
+                self._current_throttle = starting_forward_throttle
+            else:
+                self._current_throttle = min(
+                    self._current_throttle + throttle_step,
+                    profile.max_forward_throttle,
+                )
         elif cfg.backward_key in keys:
             self._current_throttle = max(
                 self._current_throttle - throttle_step,
@@ -556,7 +567,7 @@ class ManualInputController:
         car_id: int,
         callback: Callable[[int, float, float], None],
         vehicle_type: Optional[str] = None,
-        interval_ms: int = 20,
+        interval_ms: Optional[int] = None,
     ) -> None:
         """
         Start the manual control loop.
@@ -565,7 +576,8 @@ class ManualInputController:
             car_id: ID of the car to control
             callback: Function to call with (car_id, throttle, steering)
             vehicle_type: Vehicle type used to seed keyboard defaults
-            interval_ms: Update interval in milliseconds
+            interval_ms: Update interval in milliseconds. Defaults to the
+                configured manual-control update interval.
         """
         if self._running:
             self.stop()
@@ -578,7 +590,12 @@ class ManualInputController:
         def control_loop():
             import time
 
-            interval = interval_ms / 1000.0
+            configured_interval_ms = (
+                interval_ms
+                if interval_ms is not None
+                else max(10, int(self.config.update_interval_ms))
+            )
+            interval = configured_interval_ms / 1000.0
 
             while self._running and self._active_car_id is not None:
                 state = self.get_control_state()
