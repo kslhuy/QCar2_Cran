@@ -22,11 +22,13 @@ import yaml
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState, Imu
-from geometry_msgs.msg import Twist, PoseStamped , PoseWithCovarianceStamped
-from nav_msgs.msg import Odometry, Path
+from geometry_msgs.msg import Twist, PoseStamped, PoseWithCovarianceStamped, TransformStamped
+from nav_msgs.msg import Odometry, Path as NavPath
 from limo_msgs.msg import LimoStatus
 from std_msgs.msg import String, Float32MultiArray
-from tf2_ros import Buffer, TransformListener
+from tf2_ros import Buffer, TransformListener, TransformBroadcaster
+from visualization_msgs.msg import Marker, MarkerArray
+from builtin_interfaces.msg import Duration
 from scipy.spatial.transform import Rotation as R
 
 # ===== ADD PATH TO QCAR FOLDER =====
@@ -92,6 +94,20 @@ class VehicleControlFullSystemQCar(Node):
                 ('enable_sdc_initialpose_listener', True),
                 ('sdc_initialpose_topic', '/initialpose_sdc'),
                 ('sdc_initialpose_input_frame', 'SDCQcar'),
+                ('enable_sdc_map_tf_broadcaster', True),
+                ('sdc_map_update_topic', '/sdc_map_tf_update'),
+                ('sdc_map_tf_publish_rate', 20.0),
+                ('sdc_map_x', -0.1),
+                ('sdc_map_y', 0.0),
+                ('sdc_map_z', 0.0),
+                ('sdc_map_yaw', 1.3701),
+                ('sdc_map_pitch', 0.0),
+                ('sdc_map_roll', 0.0),
+                ('enable_external_path_subscriber', False),
+                ('external_path_topic', '/plan_qcar'),
+                ('publish_internal_path_for_rviz', True),
+                ('internal_path_topic', '/plan_qcar'),
+                ('internal_path_publish_rate', 2.0),
                 ('require_path_for_ready', False),
                 ('host', ''),
                 ('port', 0),
@@ -120,6 +136,26 @@ class VehicleControlFullSystemQCar(Node):
             'sdc_initialpose_topic').value
         sdc_initialpose_input_frame = self.get_parameter(
             'sdc_initialpose_input_frame').value
+        enable_sdc_map_tf_broadcaster = self.get_parameter(
+            'enable_sdc_map_tf_broadcaster').value
+        sdc_map_update_topic = self.get_parameter(
+            'sdc_map_update_topic').value
+        sdc_map_tf_publish_rate = self.get_parameter(
+            'sdc_map_tf_publish_rate').value
+        sdc_map_x = self.get_parameter('sdc_map_x').value
+        sdc_map_y = self.get_parameter('sdc_map_y').value
+        sdc_map_z = self.get_parameter('sdc_map_z').value
+        sdc_map_yaw = self.get_parameter('sdc_map_yaw').value
+        sdc_map_pitch = self.get_parameter('sdc_map_pitch').value
+        sdc_map_roll = self.get_parameter('sdc_map_roll').value
+        enable_external_path_subscriber = self.get_parameter(
+            'enable_external_path_subscriber').value
+        external_path_topic = self.get_parameter('external_path_topic').value
+        publish_internal_path_for_rviz = self.get_parameter(
+            'publish_internal_path_for_rviz').value
+        internal_path_topic = self.get_parameter('internal_path_topic').value
+        internal_path_publish_rate = self.get_parameter(
+            'internal_path_publish_rate').value
         require_path_for_ready = self.get_parameter(
             'require_path_for_ready').value
         host = self.get_parameter('host').value
@@ -152,6 +188,31 @@ class VehicleControlFullSystemQCar(Node):
             0.2, self._publish_pending_initial_pose_when_ready)
         self.require_path_for_ready = bool(require_path_for_ready)
 
+        self.enable_sdc_map_tf_broadcaster = bool(enable_sdc_map_tf_broadcaster)
+        self.sdc_map_update_topic = str(sdc_map_update_topic).strip() or '/sdc_map_tf_update'
+        self.sdc_map_tf_publish_rate = max(float(sdc_map_tf_publish_rate), 1.0)
+        self.sdc_map_tf_parent_frame = 'SDCQcar'
+        self.sdc_map_tf_child_frame = 'map'
+        self.sdc_map_tf_translation = [float(sdc_map_x), float(sdc_map_y), float(sdc_map_z)]
+        self.sdc_map_tf_rpy = [float(sdc_map_roll), float(sdc_map_pitch), float(sdc_map_yaw)]
+        self.sdc_map_tf_broadcaster = None
+        self.sdc_map_tf_timer = None
+
+        if self.enable_sdc_map_tf_broadcaster:
+            self.sdc_map_tf_broadcaster = TransformBroadcaster(self)
+            self.sdc_map_tf_timer = self.create_timer(
+                1.0 / self.sdc_map_tf_publish_rate, self._publish_sdc_map_tf
+            )
+            self.get_logger().info(
+                "Runtime SDCQcar->map TF broadcaster enabled "
+                f"at {self.sdc_map_tf_publish_rate:.1f} Hz"
+            )
+        else:
+            self.get_logger().info(
+                "Runtime SDCQcar->map TF broadcaster disabled "
+                "(expected when launch static TF fallback is used)"
+            )
+
         if send_initial_pose_on_startup:
             self.pending_initial_pose_xyz_deg = (
                 float(initial_x), float(initial_y), float(initial_yaw))
@@ -174,10 +235,61 @@ class VehicleControlFullSystemQCar(Node):
             LimoStatus, '/limo_status', self._limo_status_callback, 10
         )
         
-        # Subscribe to QCar-style path topic
-        self.path_sub = self.create_subscription(
-            Path, '/plan_qcar', self._path_callback, 10
+        # Subscribe to new ROS 2 YOLO Detections instead of ZMQ
+        self.yolo_sub = self.create_subscription(
+            Float32MultiArray, '/limo/yolo_detections', self._yolo_callback, 10
         )
+        self.enable_external_path_subscriber = bool(enable_external_path_subscriber)
+        self.external_path_topic = str(external_path_topic).strip() or '/plan_qcar'
+        self.publish_internal_path_for_rviz = bool(publish_internal_path_for_rviz)
+        self.internal_path_topic = str(internal_path_topic).strip() or '/plan_qcar'
+        self.internal_path_publish_rate = max(float(internal_path_publish_rate), 0.5)
+        self.internal_path_pub = self.create_publisher(
+            NavPath, self.internal_path_topic, 10
+        )
+        self.internal_vis_path_pub = self.create_publisher(
+            MarkerArray, "/waypoints_viz_qcar", 10
+        )
+        self.internal_path_timer = None
+        self._last_internal_path_point_count = -1
+
+        if (
+            self.enable_external_path_subscriber
+            and self.publish_internal_path_for_rviz
+            and self.internal_path_topic == self.external_path_topic
+        ):
+            self.get_logger().warning(
+                "Disabled internal path publishing because internal_path_topic "
+                "matches external_path_topic while external subscriber is enabled"
+            )
+            self.publish_internal_path_for_rviz = False
+
+        if self.publish_internal_path_for_rviz:
+            self.internal_path_timer = self.create_timer(
+                1.0 / self.internal_path_publish_rate,
+                self._publish_internal_path_for_rviz,
+            )
+            self.get_logger().info(
+                "Internal path publishing enabled for RViz on "
+                f"{self.internal_path_topic} at {self.internal_path_publish_rate:.1f} Hz"
+            )
+        else:
+            self.get_logger().info("Internal path publishing for RViz is disabled")
+
+        if self.enable_external_path_subscriber:
+            self.path_sub = self.create_subscription(
+                NavPath, self.external_path_topic, self._path_callback, 10
+            )
+            self.get_logger().info(
+                f"External path subscriber enabled on {self.external_path_topic}"
+            )
+        else:
+            self.path_sub = None
+            self.path_received = True
+            self.get_logger().info(
+                "External path subscriber disabled. Using internal path generation "
+                "(InitializingState + SET_PATH commands)."
+            )
 
         if enable_sdc_initialpose_listener:
             self.sdc_initialpose_sub = self.create_subscription(
@@ -192,6 +304,17 @@ class VehicleControlFullSystemQCar(Node):
         else:
             self.sdc_initialpose_sub = None
             self.get_logger().info("SDC initial pose listener disabled.")
+
+        self.sdc_map_tf_update_sub = self.create_subscription(
+            PoseStamped,
+            self.sdc_map_update_topic,
+            self._sdc_map_tf_update_callback,
+            10,
+        )
+        self.get_logger().info(
+            "Runtime SDCQcar->map TF update topic enabled "
+            f"on {self.sdc_map_update_topic}"
+        )
         
         # ===== LOAD CONFIGURATION =====
         self.get_logger().info("Loading VehicleMainConfig...")
@@ -271,6 +394,7 @@ class VehicleControlFullSystemQCar(Node):
         self.vehicle_logic.qcar = self.qcar_adapter
         self.vehicle_logic.gps = self.gps_adapter
         self.vehicle_logic.v_ref = v_ref
+        self.vehicle_logic.sdc_map_tf_update_callback = self._handle_sdc_map_tf_command
         
         self._setup_ros_initialization_override()
         self.get_logger().info("VehicleLogic created successfully")
@@ -290,7 +414,7 @@ class VehicleControlFullSystemQCar(Node):
         self.topics_ready = False
         self.pose_received = False
         self.joint_received = False
-        self.path_received = False
+        self.path_received = not self.enable_external_path_subscriber
         self._optional_path_notice_logged = False
         
         self.init_check_timer = self.create_timer(0.1, self._check_initialization)
@@ -300,6 +424,154 @@ class VehicleControlFullSystemQCar(Node):
         self.get_logger().info("Full Vehicle Control System Ready! (QCar Coordinate Style)")
         self.get_logger().info("TF tree: SDCQcar -> map -> odom -> base_link")
         self.get_logger().info("="*70)
+
+    def _publish_sdc_map_tf(self):
+        """Publish runtime SDCQcar->map transform from the current calibration state."""
+        if not self.enable_sdc_map_tf_broadcaster or self.sdc_map_tf_broadcaster is None:
+            return
+
+        transform = TransformStamped()
+        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.frame_id = str(self.sdc_map_tf_parent_frame)
+        transform.child_frame_id = str(self.sdc_map_tf_child_frame)
+        transform.transform.translation.x = float(self.sdc_map_tf_translation[0] or 0.0)
+        transform.transform.translation.y = float(self.sdc_map_tf_translation[1] or 0.0)
+        transform.transform.translation.z = float(self.sdc_map_tf_translation[2] or 0.0)
+
+        roll, pitch, yaw = [float(val) for val in self.sdc_map_tf_rpy]
+        quat = R.from_euler('xyz', [roll, pitch, yaw]).as_quat()
+        transform.transform.rotation.x = float(quat[0])
+        transform.transform.rotation.y = float(quat[1])
+        transform.transform.rotation.z = float(quat[2])
+        transform.transform.rotation.w = float(quat[3])
+
+        if self.sdc_map_tf_broadcaster:
+            self.sdc_map_tf_broadcaster.sendTransform(transform)
+
+    def _is_sdc_map_tf_update_safe(self, force: bool = False) -> bool:
+        """Only allow live frame recalibration in low-risk operating conditions."""
+        if force:
+            return True
+
+        current_state = None
+        if hasattr(self, 'vehicle_logic') and hasattr(self.vehicle_logic, 'state_machine'):
+            current_state = getattr(self.vehicle_logic.state_machine, 'current_state_id', None)
+
+        state_name = getattr(current_state, 'name', str(current_state)) if current_state is not None else ''
+        if state_name in {'STOPPED', 'WAITING_FOR_START', 'INITIALIZING'}:
+            return True
+
+        speed_mps = abs(float(getattr(self.qcar_adapter, 'motorTach', 0.0)))
+        if speed_mps <= 0.03:
+            return True
+
+        self.get_logger().warning(
+            "Rejected runtime SDCQcar->map TF update while moving. "
+            f"state={state_name}, speed={speed_mps:.3f} m/s"
+        )
+        return False
+
+    def _apply_sdc_map_tf_update(
+        self,
+        x: float,
+        y: float,
+        z: float,
+        yaw: float,
+        pitch: float = 0.0,
+        roll: float = 0.0,
+        source: str = 'runtime update',
+        force: bool = False,
+    ) -> bool:
+        """Apply a new SDCQcar->map transform used by the runtime broadcaster."""
+        if not self.enable_sdc_map_tf_broadcaster:
+            self.get_logger().warning(
+                "Runtime TF update ignored because enable_sdc_map_tf_broadcaster is false"
+            )
+            return False
+
+        if not self._is_sdc_map_tf_update_safe(force=force):
+            return False
+
+        self.sdc_map_tf_translation = [float(x), float(y), float(z)]
+        self.sdc_map_tf_rpy = [float(roll), float(pitch), float(yaw)]
+        self._publish_sdc_map_tf()
+
+        self.get_logger().info(
+            "Updated SDCQcar->map TF from "
+            f"{source}: x={x:.4f}, y={y:.4f}, z={z:.4f}, "
+            f"yaw={yaw:.4f}, pitch={pitch:.4f}, roll={roll:.4f}"
+        )
+        return True
+
+    def _sdc_map_tf_update_callback(self, msg: PoseStamped):
+        """Receive runtime SDCQcar->map transform updates from Ground Station."""
+        q = [
+            msg.pose.orientation.x,
+            msg.pose.orientation.y,
+            msg.pose.orientation.z,
+            msg.pose.orientation.w,
+        ]
+
+        try:
+            roll, pitch, yaw = R.from_quat(q).as_euler('xyz')
+        except Exception as exc:
+            self.get_logger().warning(f"Invalid quaternion on {self.sdc_map_update_topic}: {exc}")
+            return
+
+        self._apply_sdc_map_tf_update(
+            x=float(msg.pose.position.x),
+            y=float(msg.pose.position.y),
+            z=float(msg.pose.position.z),
+            yaw=float(yaw),
+            pitch=float(pitch),
+            roll=float(roll),
+            source=f"topic {self.sdc_map_update_topic}",
+            force=False,
+        )
+
+    def _handle_sdc_map_tf_command(self, params: dict) -> bool:
+        """Apply command-based runtime SDCQcar->map transform updates (SET_PARAMS)."""
+        if not isinstance(params, dict):
+            self.get_logger().warning("Invalid sdc_map_tf params payload (expected dict)")
+            return False
+
+        x = float(params.get('x', self.sdc_map_tf_translation[0]))
+        y = float(params.get('y', self.sdc_map_tf_translation[1]))
+        z = float(params.get('z', self.sdc_map_tf_translation[2]))
+
+        if 'yaw' in params:
+            yaw = float(params.get('yaw'))
+        elif 'yaw_deg' in params:
+            yaw = math.radians(float(params.get('yaw_deg')))
+        else:
+            yaw = float(self.sdc_map_tf_rpy[2])
+
+        if 'pitch' in params:
+            pitch = float(params.get('pitch'))
+        elif 'pitch_deg' in params:
+            pitch = math.radians(float(params.get('pitch_deg')))
+        else:
+            pitch = float(self.sdc_map_tf_rpy[1])
+
+        if 'roll' in params:
+            roll = float(params.get('roll'))
+        elif 'roll_deg' in params:
+            roll = math.radians(float(params.get('roll_deg')))
+        else:
+            roll = float(self.sdc_map_tf_rpy[0])
+
+        force = bool(params.get('force', False))
+
+        return self._apply_sdc_map_tf_update(
+            x=x,
+            y=y,
+            z=z,
+            yaw=yaw,
+            pitch=pitch,
+            roll=roll,
+            source='SET_PARAMS category=sdc_map_tf',
+            force=force,
+        )
         
     # ===== ROS CALLBACKS =====
     
@@ -327,28 +599,125 @@ class VehicleControlFullSystemQCar(Node):
         accel_x = msg.linear_acceleration.x
         self.qcar_adapter.update_gyro(gyro_z)
         self.qcar_adapter.update_accel(accel_x, msg.linear_acceleration.y, msg.linear_acceleration.z)
-        
-    def _path_callback(self, msg: Path):
-        """Receive path from waypoints_qcar node (in SDCQcar frame)"""
+
+    def _yolo_callback(self, msg: Float32MultiArray):
+        """Handle native ROS 2 YOLO detection array updates"""
+        try:
+            # Reconstruct the 6x7 numpy array from the 42-element Float32MultiArray
+            packet = np.array(msg.data, dtype=np.float64).reshape((6, 7))
+
+            # Inject it straight into the YOLOManager's cached data, bypassing ZMQ!
+            if hasattr(self, 'vehicle_logic') and self.vehicle_logic.yolo is not None:
+                # Get the cached data struct
+                data = self.vehicle_logic.yolo._cached_data
+
+                # Unpack Arrays
+                data.stop_sign[:] = packet[0, :]
+                data.traffic_light[:] = packet[1, :]
+                data.cars[:] = packet[2, :]
+                data.yield_sign[:] = packet[3, :]
+                data.person[:] = packet[4, :]
+                data.timestamp = time.time()
+                data.is_valid = True
+
+                # Check for velocity gain from YOLODriveLogic automatically
+                if self.vehicle_logic.yolo.yolo_drive is not None:
+                    data.yolo_gain = self.vehicle_logic.yolo.yolo_drive.check_yolo(
+                        data.stop_sign, data.traffic_light, data.cars,
+                        data.yield_sign, data.person
+                    )
+        except Exception as e:
+            self.get_logger().error(f"Failed to parse YOLO detection: {e}")
+
+    def _path_callback(self, msg: NavPath):
+        """Receive external path updates (expected in SDCQcar frame)."""
         if len(msg.poses) < 2:
             self.get_logger().warning("Received path with less than 2 waypoints, ignoring")
             return
-        
+
         waypoints_x = []
         waypoints_y = []
-        
+
         for pose_stamped in msg.poses:
             waypoints_x.append(pose_stamped.pose.position.x)
             waypoints_y.append(pose_stamped.pose.position.y)
-        
+
         waypoint_sequence = np.array([waypoints_x, waypoints_y])
         self.vehicle_logic.waypoint_sequence = waypoint_sequence
-        
+
         if not self.path_received:
             self.path_received = True
             self.get_logger().info(f"✓ QCar-style path received: {waypoint_sequence.shape[1]} waypoints")
             self.get_logger().info(f"  Start: ({waypoints_x[0]:.2f}, {waypoints_y[0]:.2f})")
             self.get_logger().info(f"  End: ({waypoints_x[-1]:.2f}, {waypoints_y[-1]:.2f})")
+
+    def _publish_internal_path_for_rviz(self):
+        """Publish internally generated waypoint_sequence for RViz visualization."""
+        if not self.publish_internal_path_for_rviz:
+            return
+
+        if not hasattr(self, 'vehicle_logic'):
+            return
+
+        waypoint_sequence = getattr(self.vehicle_logic, 'waypoint_sequence', None)
+        if waypoint_sequence is None:
+            return
+
+        if not isinstance(waypoint_sequence, np.ndarray):
+            return
+
+        if waypoint_sequence.ndim != 2 or waypoint_sequence.shape[0] < 2:
+            return
+
+        path_msg = NavPath()
+        path_msg.header.stamp = self.get_clock().now().to_msg()
+        path_msg.header.frame_id = 'SDCQcar'
+
+        marker_array = MarkerArray()
+
+        x_values = waypoint_sequence[0]
+        y_values = waypoint_sequence[1]
+        point_count = min(len(x_values), len(y_values))
+        if point_count < 2:
+            return
+
+        for i in range(point_count):
+            x_final = float(x_values[i])
+            y_final = float(y_values[i])
+
+            # --- Robot Path ---
+            pose = PoseStamped()
+            pose.header = path_msg.header
+            pose.pose.position.x = x_final
+            pose.pose.position.y = y_final
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.w = 1.0
+            path_msg.poses.append(pose)
+
+            # --- Visual Markers ---
+            marker = Marker()
+            marker.header.frame_id = "SDCQcar"
+            marker.type = Marker.SPHERE
+            marker.id = i
+            marker.action = Marker.ADD
+            marker.pose.position.x = x_final
+            marker.pose.position.y = y_final
+            marker.scale.x = 0.15
+            marker.scale.y = 0.15
+            marker.scale.z = 0.15
+            marker.color.a = 1.0
+            marker.color.r = 1.0
+            marker.color.g = 0.5
+            marker.lifetime = Duration(sec=1, nanosec=0)
+            marker_array.markers.append(marker)
+
+        self.internal_path_pub.publish(path_msg)
+        self.internal_vis_path_pub.publish(marker_array)
+        if point_count != self._last_internal_path_point_count:
+            self._last_internal_path_point_count = point_count
+            self.get_logger().info(
+                f"Published internal path to RViz: {point_count} waypoints on {self.internal_path_topic}"
+            )
     
     # ===== INITIALIZATION CHECK =====
 

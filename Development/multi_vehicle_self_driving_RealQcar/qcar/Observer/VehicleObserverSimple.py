@@ -1758,7 +1758,10 @@ class VehicleObserver:
         with self.lock:
             fleet_data = {}
             for vehicle_id in range(self.fleet_size):
-                # Include all vehicles in fleet (zeros or not) for proper fleet estimation
+                fs = self.fleet_states[:, vehicle_id]
+                if vehicle_id != self.vehicle_id and not np.any(fs):
+                    continue
+                # Include all tracked vehicles in fleet (zeros or not) for proper fleet estimation
                 # The receiver can decide whether to use the data based on confidence/age
                 fleet_data[vehicle_id] = {
                     "x": float(self.fleet_states[0, vehicle_id]),
