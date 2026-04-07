@@ -843,12 +843,17 @@ class FixConstantLateralController(LateralControllerBase):
         pass
 
 
+# Import custom Shengya lateral controller at the end to avoid circular import
+from .ShengyaCtr.stanley_y_hold_controller import StanleyYHoldController
+
+
 class LateralControllerFactory:
     """Factory to create lateral controllers by name"""
     
     CONTROLLER_TYPES = {
         'pure_pursuit': PurePursuitController,
         'stanley': StanleyController,
+        'stanley_y_hold': StanleyYHoldController,
         'lookahead': LookaheadController,
         'hybrid': HybridLateralController,
         'fusion': FusionLateralController,

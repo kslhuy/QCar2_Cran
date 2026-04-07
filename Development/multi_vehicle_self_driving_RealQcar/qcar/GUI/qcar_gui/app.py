@@ -9,6 +9,9 @@ import tkinter as tk
 from tkinter import messagebox
 import threading
 import time
+import subprocess
+import sys
+from pathlib import Path
 from typing import Dict, Optional, Set, Any
 from dataclasses import dataclass
 
@@ -81,6 +84,7 @@ class QCarFleetController:
         self._status_panel: Optional[StatusPanelWidget] = None
         self._log_panel: Optional[LogPanelWidget] = None
         self._no_cars_label: Optional[tk.Label] = None
+        self._plot_all_process: Optional[subprocess.Popen] = None
         
         # Threading
         self._running = True
@@ -157,6 +161,20 @@ class QCarFleetController:
         right_panel = tk.Frame(main_frame, bg=c.bg_dark, width=450)
         right_panel.pack(side='right', fill='both', padx=(10, 0))
         right_panel.pack_propagate(False)
+
+        # Quick access button for live distributed observer plotting
+        plot_btn = tk.Button(
+            right_panel,
+            text="📈 Plot All Observer",
+            command=self._launch_plot_all_observer_viewer,
+            bg=self.theme.colors.accent_blue,
+            fg='white',
+            activebackground=self.theme.colors.accent_green,
+            relief='flat',
+            padx=10,
+            pady=6,
+        )
+        plot_btn.pack(fill='x', pady=(0, 10))
         
         # Status panel
         self._status_panel = StatusPanelWidget(right_panel, theme=self.theme)
@@ -1022,6 +1040,37 @@ class QCarFleetController:
             uptime=time.time() - self._start_time,
             telemetry_rate=fleet['avg_telemetry_rate_hz']
         )
+
+    def _launch_plot_all_observer_viewer(self) -> None:
+        """Launch the standalone live observer plotting tool."""
+        try:
+            if self._plot_all_process and self._plot_all_process.poll() is None:
+                self.log("Plot All Observer viewer is already running", 'INFO')
+                return
+
+            # Search upwards from this file to find the repo root script.
+            script_path = None
+            repo_root = None
+            for parent in Path(__file__).resolve().parents:
+                candidate = parent / 'plot_all_observer_viewer.py'
+                if candidate.exists():
+                    script_path = candidate
+                    repo_root = parent
+                    break
+
+            if script_path is None or repo_root is None:
+                self.log("Plot script not found: plot_all_observer_viewer.py", 'ERROR')
+                return
+
+            self._plot_all_process = subprocess.Popen(
+                [sys.executable, str(script_path)],
+                cwd=str(repo_root),
+                creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0),
+            )
+            self.log("Started Plot All Observer viewer", 'SUCCESS')
+
+        except Exception as e:
+            self.log(f"Failed to launch Plot All Observer viewer: {e}", 'ERROR')
     
     # ========== Logging ==========
     
@@ -1046,6 +1095,13 @@ class QCarFleetController:
         
         # Close remote controller
         self._remote.close()
+
+        # Stop external plot viewer if started by this GUI
+        if self._plot_all_process and self._plot_all_process.poll() is None:
+            try:
+                self._plot_all_process.terminate()
+            except Exception:
+                pass
         
         # Destroy window
         self.root.destroy()

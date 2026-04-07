@@ -76,7 +76,7 @@ class ControllerConfig:
         # Merge controller-specific parameters
         for controller_type in ['cacc', 'pid', 'hybrid_longitudinal', 'fix', 'throttle_sequence', 'velocity_sequence',
                                'state_feedback', 'state_feedback_no_observer', 'classical_distributed',
-                               'pure_pursuit', 'stanley', 'lookahead', 'hybrid_lateral', 
+                               'pure_pursuit', 'stanley', 'stanley_y_hold', 'lookahead', 'hybrid_lateral', 
                                'fusion_lateral', 'fix_lateral']:
             if controller_type in vehicle_config:
                 if controller_type not in self.config:
@@ -131,6 +131,8 @@ class ControllerConfig:
             types.append('pure_pursuit')
         if 'stanley' in self.config:
             types.append('stanley')
+        if 'stanley_y_hold' in self.config:
+            types.append('stanley_y_hold')
         if 'lookahead' in self.config:
             types.append('lookahead')
         if 'hybrid_lateral' in self.config:
@@ -199,6 +201,8 @@ class ControllerConfig:
             return self._get_pure_pursuit_params()
         elif controller_type == 'stanley':
             return self._get_stanley_params()
+        elif controller_type == 'stanley_y_hold':
+            return self._get_stanley_y_hold_params()
         elif controller_type == 'lookahead':
             return self._get_lookahead_params()
         elif controller_type == 'hybrid':
@@ -352,6 +356,20 @@ class ControllerConfig:
             'k_e': stanley_config.get('k_e', 0.5),
             'k_soft': stanley_config.get('k_soft', 1.0),
             'max_steering': stanley_config.get('max_steering', 0.55),
+        }
+
+    def _get_stanley_y_hold_params(self) -> Dict[str, Any]:
+        """Get Stanley Y-hold controller parameters"""
+        syh_config = self.config.get('stanley_y_hold', {})
+
+        return {
+            'y_ref': syh_config.get('y_ref', -0.62),
+            'heading_ref': syh_config.get('heading_ref', 0.0),
+            'k_e': syh_config.get('k_e', 0.6),
+            'k_soft': syh_config.get('k_soft', 0.5),
+            'k_heading': syh_config.get('k_heading', 2.2),
+            'use_leader_heading': syh_config.get('use_leader_heading', False),
+            'max_steering': syh_config.get('max_steering', 0.55),
         }
     
     def _get_lookahead_params(self) -> Dict[str, Any]:

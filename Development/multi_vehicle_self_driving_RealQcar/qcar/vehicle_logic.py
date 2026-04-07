@@ -614,7 +614,13 @@ class VehicleLogic:
                     out[f'{dst_prefix}_v{idx}'] = _to_float(arr[base + 1])
                     out[f'{dst_prefix}_a{idx}'] = _to_float(arr[base + 2])
 
-            _flatten_triplet_array('x_vec_before', 'x_vec_before')
+            # DistributedLuenberger debug key is typically 'x_vec' (state before update).
+            # Keep compatibility with both key styles.
+            if 'x_vec_before' in debug_data:
+                _flatten_triplet_array('x_vec_before', 'x_vec_before')
+            elif 'x_vec' in debug_data:
+                _flatten_triplet_array('x_vec', 'x_vec_before')
+
             _flatten_triplet_array('x_vec_after', 'x_vec_after')
             _flatten_triplet_array('dynamics_term', 'dynamics')
             _flatten_triplet_array('measurement_term', 'measurement')

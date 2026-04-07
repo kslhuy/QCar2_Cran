@@ -30,7 +30,6 @@ from typing import Deque, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import numpy as np
-import tkinter as tk
 
 
 STATE_NAMES = ("position", "velocity", "acceleration")
@@ -74,8 +73,8 @@ VEHICLE_STYLE = {
 class ViewerConfig:
     ws_url: str = "ws://127.0.0.1:8080"
     refresh_ms: int = 300
-    time_window: Optional[float] = 20.0
-    max_points: int = 6000
+    time_window: Optional[float] = None
+    max_points: int = 0
 
 
 class LiveObserverBuffer:
@@ -90,7 +89,8 @@ class LiveObserverBuffer:
     def append(self, observer_id: int, t: float, values: Dict[str, float]) -> None:
         with self._lock:
             if observer_id not in self._times:
-                self._times[observer_id] = deque(maxlen=self.max_points)
+                maxlen = self.max_points if self.max_points > 0 else None
+                self._times[observer_id] = deque(maxlen=maxlen)
                 self._fields[observer_id] = {}
 
             self._times[observer_id].append(float(t))
@@ -100,7 +100,8 @@ class LiveObserverBuffer:
             for key, value in values.items():
                 if key not in field_map:
                     # Backfill historical samples so new fields align with existing time axis.
-                    field_map[key] = deque([np.nan] * (curr_len - 1), maxlen=self.max_points)
+                    maxlen = self.max_points if self.max_points > 0 else None
+                    field_map[key] = deque([np.nan] * (curr_len - 1), maxlen=maxlen)
                 field_map[key].append(float(value))
 
             # Keep lengths aligned by appending nan to fields not present in this message.
@@ -215,59 +216,25 @@ class WsSubscriber:
 
 
 class PlotAllLiveApp:
-    """Tk launcher + matplotlib live viewer."""
+    """Matplotlib live viewer (opens directly without launcher popup)."""
 
     def __init__(self, cfg: ViewerConfig):
         self.cfg = cfg
         self.buffer = LiveObserverBuffer(max_points=cfg.max_points)
         self.subscriber = WsSubscriber(cfg.ws_url, self.buffer)
-
-        self.root = tk.Tk()
-        self.root.title("Live Distributed Observer Viewer")
-        self.root.geometry("420x160")
-        self.root.resizable(False, False)
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        self.status_var = tk.StringVar(value=f"WS: {cfg.ws_url}")
+        self.status_text = f"WS: {cfg.ws_url}"
         self.figure = None
         self.anim = None
-
-        self._build_ui()
         self.subscriber.start()
-
-    def _build_ui(self) -> None:
-        frame = tk.Frame(self.root, padx=14, pady=14)
-        frame.pack(fill="both", expand=True)
-
-        btn = tk.Button(frame, text="Plot All", width=26, height=2, command=self._open_viewer)
-        btn.pack(pady=(0, 10))
-
-        label = tk.Label(frame, textvariable=self.status_var, anchor="w", justify="left")
-        label.pack(fill="x")
-
-        hint = tk.Label(
-            frame,
-            text=(
-                "Need fields like x_vec_before_p* / true_position_* in telemetry.\n"
-                "If blank, verify Ground Station and vehicle streaming pipeline."
-            ),
-            anchor="w",
-            justify="left",
-            fg="#555555",
-        )
-        hint.pack(fill="x", pady=(6, 0))
+        self._open_viewer()
 
     def _open_viewer(self) -> None:
         if self.figure is not None and plt.fignum_exists(self.figure.number):
-            try:
-                self.figure.canvas.manager.window.lift()
-            except Exception:
-                pass
-            self.status_var.set("Viewer already open")
             return
 
         self.figure = plt.figure(figsize=(14, 8))
         self.figure.suptitle("Live: True State vs Distributed Observer Estimates", fontsize=12)
+        self.figure.canvas.mpl_connect("close_event", lambda _evt: self._on_close())
         self.anim = FuncAnimation(
             self.figure,
             self._update_plot,
@@ -275,8 +242,6 @@ class PlotAllLiveApp:
             blit=False,
             cache_frame_data=False,
         )
-        plt.show(block=False)
-        self.status_var.set("Viewer running")
 
     def _update_plot(self, _frame_idx: int):
         snap = self.buffer.snapshot()
@@ -291,9 +256,24 @@ class PlotAllLiveApp:
         axes = self.figure.subplots(n_rows, n_cols, squeeze=False)
 
         self._plot_true_state_row(axes[0], snap)
-        self._plot_observer_estimation_row(axes[1], snap, observer_id=1)
-        self._plot_observer_estimation_row(axes[2], snap, observer_id=2)
-        self._plot_observer_estimation_row(axes[3], snap, observer_id=3)
+        self._plot_observer_estimation_row(
+            axes[1],
+            snap,
+            observer_label=1,
+            stream_id=self._resolve_observer_stream_id(snap, observer_label=1),
+        )
+        self._plot_observer_estimation_row(
+            axes[2],
+            snap,
+            observer_label=2,
+            stream_id=self._resolve_observer_stream_id(snap, observer_label=2),
+        )
+        self._plot_observer_estimation_row(
+            axes[3],
+            snap,
+            observer_label=3,
+            stream_id=self._resolve_observer_stream_id(snap, observer_label=3),
+        )
 
         for r in range(n_rows):
             for c in range(n_cols):
@@ -304,7 +284,7 @@ class PlotAllLiveApp:
         self.figure.canvas.draw_idle()
 
         active_observers = sorted(k for k in snap.keys() if k in OBSERVER_ROWS)
-        self.status_var.set(f"Observers active: {active_observers} | Refresh: {self.cfg.refresh_ms} ms")
+        self.status_text = f"Observers active: {active_observers} | Refresh: {self.cfg.refresh_ms} ms"
 
     def _plot_true_state_row(self, row_axes, snap: Dict[int, Dict[str, np.ndarray]]) -> None:
         ax_pos, ax_vel, ax_u = row_axes
@@ -315,12 +295,12 @@ class PlotAllLiveApp:
 
         ax_vel.set_title("True Velocity")
         ax_vel.set_ylabel("Velocity")
-        ax_vel.set_ylim(0.0, 1.0)
+        ax_vel.set_ylim(-0.1, 1.1)
         ax_vel.grid(True, alpha=0.3)
 
         ax_u.set_title("Control Input")
         ax_u.set_ylabel("Control Input")
-        ax_u.set_ylim(0.0, 0.5)
+        ax_u.set_ylim(-0.01, 0.25)
         ax_u.grid(True, alpha=0.3)
 
         for veh_id in TRUE_ROW_VEHICLES:
@@ -355,28 +335,43 @@ class PlotAllLiveApp:
             if handles:
                 ax.legend(fontsize=8, loc="upper right")
 
-    def _plot_observer_estimation_row(self, row_axes, snap: Dict[int, Dict[str, np.ndarray]], observer_id: int) -> None:
+    def _plot_observer_estimation_row(
+        self,
+        row_axes,
+        snap: Dict[int, Dict[str, np.ndarray]],
+        observer_label: int,
+        stream_id: Optional[int],
+    ) -> None:
         ax_p, ax_v, ax_a = row_axes
 
-        ax_p.set_title(f"Observer {observer_id} - x_vec_before")
+        ax_p.set_title(f"Ditributed Obsever {observer_label} - Relitive Position")
         ax_p.set_ylabel("Estimation of pi - p0 +di0")
         ax_p.grid(True, alpha=0.3)
 
-        ax_v.set_title(f"Observer {observer_id} - x_vec_before")
+        ax_v.set_title(f"Ditributed Obsever {observer_label} - Relitive Velocity")
         ax_v.set_ylabel("Estimation of vi - v0")
         ax_v.grid(True, alpha=0.3)
 
-        ax_a.set_title(f"Observer {observer_id} - x_vec_before")
+        ax_a.set_title(f"Ditributed Obsever {observer_label} - Relitive acceleration")
         ax_a.set_ylabel("Estimation of ai - a0")
         ax_a.grid(True, alpha=0.3)
 
-        if observer_id not in snap:
+        if stream_id is None or stream_id not in snap:
+            available = sorted(snap.keys())
             for ax in (ax_p, ax_v, ax_a):
-                ax.text(0.5, 0.5, f"Observer {observer_id} no data", transform=ax.transAxes, ha="center", va="center", fontsize=9)
+                ax.text(
+                    0.5,
+                    0.5,
+                    f"Observer {observer_label} no data\navailable streams: {available}",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                    fontsize=9,
+                )
             return
 
-        fields = snap[observer_id]["fields"]
-        t_ref = snap[observer_id]["time"]
+        fields = snap[stream_id]["fields"]
+        t_ref = snap[stream_id]["time"]
 
         for comp_idx in (1, 2, 3):
             color = COMPONENT_COLORS[comp_idx]
@@ -388,22 +383,46 @@ class PlotAllLiveApp:
             if key_p in fields:
                 t, y = self._window_series(t_ref, fields[key_p])
                 if t.size > 0:
-                    ax_p.plot(t, y, color=color, linestyle="-", linewidth=1.6, label=key_p)
+                    ax_p.plot(t, y, color=color, linestyle="-", linewidth=1.6, label=f"i = {comp_idx}")
 
             if key_v in fields:
                 t, y = self._window_series(t_ref, fields[key_v])
                 if t.size > 0:
-                    ax_v.plot(t, y, color=color, linestyle="-", linewidth=1.6, label=key_v)
+                    ax_v.plot(t, y, color=color, linestyle="-", linewidth=1.6, label=f"i = {comp_idx}")
 
             if key_a in fields:
                 t, y = self._window_series(t_ref, fields[key_a])
                 if t.size > 0:
-                    ax_a.plot(t, y, color=color, linestyle="-", linewidth=1.6, label=key_a)
+                    ax_a.plot(t, y, color=color, linestyle="-", linewidth=1.6, label=f"i = {comp_idx}")
 
         for ax in (ax_p, ax_v, ax_a):
             handles, labels = ax.get_legend_handles_labels()
             if handles:
                 ax.legend(fontsize=7, loc="upper right")
+
+    @staticmethod
+    def _has_xvec_before_fields(fields: Dict[str, np.ndarray]) -> bool:
+        for key in fields.keys():
+            if key.startswith("x_vec_before_p") or key.startswith("x_vec_before_v") or key.startswith("x_vec_before_a"):
+                return True
+        return False
+
+    def _resolve_observer_stream_id(self, snap: Dict[int, Dict[str, np.ndarray]], observer_label: int) -> Optional[int]:
+        """
+        Resolve stream id for observer label i.
+
+        In some deployments observer i may be sent by vehicle id i or i-1.
+        """
+        candidates = [observer_label, observer_label - 1]
+        for sid in candidates:
+            if sid in snap and self._has_xvec_before_fields(snap[sid]["fields"]):
+                return sid
+
+        for sid in sorted(snap.keys()):
+            if self._has_xvec_before_fields(snap[sid]["fields"]):
+                return sid
+
+        return None
 
     def _get_vehicle_series(
         self,
@@ -513,18 +532,17 @@ class PlotAllLiveApp:
             plt.close("all")
         except Exception:
             pass
-        self.root.destroy()
 
     def run(self) -> None:
-        self.root.mainloop()
+        plt.show()
 
 
 def parse_args() -> ViewerConfig:
     parser = argparse.ArgumentParser(description="Real-time Plot-All viewer via WebSocket")
     parser.add_argument("--ws-url", type=str, default="ws://127.0.0.1:8080", help="Ground Station websocket URL")
     parser.add_argument("--refresh-ms", type=int, default=300, help="Plot refresh interval in ms")
-    parser.add_argument("--time-window", type=float, default=20.0, help="Trailing time window in seconds (<=0 for full)")
-    parser.add_argument("--max-points", type=int, default=6000, help="Max samples buffered per observer")
+    parser.add_argument("--time-window", type=float, default=0.0, help="Trailing time window in seconds (<=0 keeps full history)")
+    parser.add_argument("--max-points", type=int, default=0, help="Max samples buffered per observer (<=0 keeps full history)")
     args = parser.parse_args()
 
     tw = None if args.time_window <= 0 else float(args.time_window)
@@ -532,7 +550,7 @@ def parse_args() -> ViewerConfig:
         ws_url=args.ws_url,
         refresh_ms=max(100, int(args.refresh_ms)),
         time_window=tw,
-        max_points=max(1000, int(args.max_points)),
+        max_points=max(0, int(args.max_points)),
     )
 
 

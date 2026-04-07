@@ -1,3 +1,21 @@
+# Update Log 2026/04/07 (Shengya MENG)
+
+**Commit Message**: Plot all observer states real-time in the GUI
+
+## Completed Tasks / 已完成任务:
+
+- [x] **Enhanced real-time observer state visualization in GUI** / **完善GUI中实时观测器状态绘制功能**
+  - Implemented new plotting window displaying each vehicle's observer states (position, velocity, acceleration) over time / 实现新的绘图窗口，展示每个车辆的观测器状态（位置、速度、加速度）随时间变化
+  - Uses distinct colors for different vehicles and adds legend & grid lines for improved readability / 使用不同颜色区分车辆状态，添加图例和网格线提升可读性
+  - Implementation: [plot_all_observer_viewer.py](plot_all_observer_viewer.py)
+
+- [x] **Added lateral controller to maintain vehicle y-position** / **添加横向控制器保持车辆y方向位置**
+  - Controller maintains vehicles at y=-0.62 to keep fleet centered on road / 控制器通过调整转向角保持车辆在y=-0.62位置，确保车队在道路中心
+  - Implementation: [stanley_y_hold_controller.py](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/ShengyaCtr/stanley_y_hold_controller.py)
+  - Configuration: Set `lateral_controller_type: 'stanley_y_hold'` in [config_controller_sim.yaml](Development/multi_vehicle_self_driving_RealQcar/qcar/Controller/config_controller_sim.yaml)
+  - Note: Use conservative tuning parameters to avoid aggressive control / 参数调整应保守，避免过于激进的控制
+
+
 # Update Log 2026/02/17 (Shengya MENG)
 
 Commit Message: Add wave road.

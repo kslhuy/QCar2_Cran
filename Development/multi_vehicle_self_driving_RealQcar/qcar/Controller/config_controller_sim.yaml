@@ -71,8 +71,8 @@ state_feedback_no_observer:
 # LATERAL CONTROLLER CONFIGURATION
 # ============================================================================
 
-# Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path', 'fix_lateral'
-lateral_controller_type: 'fix_lateral'
+# Controller type options: 'pure_pursuit', 'stanley', 'stanley_y_hold', 'lookahead', 'hybrid', 'fusion', 'path', 'fix_lateral'
+lateral_controller_type: 'stanley_y_hold'
 
 # Fix Lateral Controller Parameters (constant steering)
 fix_lateral:
@@ -94,6 +94,16 @@ stanley:
   k_e: 0.5                   # Cross-track error gain
   k_soft: 1.0                # Softening gain to prevent division by zero
   max_steering: 0.55         # Maximum steering angle (radians)
+
+# Stanley Y-Hold Controller Parameters (tracks fixed global y reference)
+stanley_y_hold:
+  y_ref: -0.62               # Target global y position
+  heading_ref: 0.0           # Heading target (0 rad = keep vehicle nose aligned with x-axis)
+  k_e: 0.1                   # Lateral error gain (reduced to avoid rear-vehicle oscillation)
+  k_soft: 0.0                # Softening gain for stable low-speed behavior
+  k_heading: 0.2             # Heading gain (stronger heading lock)
+  use_leader_heading: false  # Disable leader heading tracking; keep global heading_ref
+  max_steering: 0.05         # Maximum steering angle (radians)
 
 # Lookahead Controller Parameters
 lookahead:
@@ -203,7 +213,7 @@ per_vehicle_controllers:
   # Vehicle 0 (Leader in most formations)
   0:
     longitudinal_controller_type: 'pid'  # Fixed throttle for leader
-    lateral_controller_type: 'fix_lateral'  # Straight line
+    lateral_controller_type: 'stanley_y_hold'  # Keep y close to y_ref with heading alignment
     # Optional per-vehicle override for velocity schedule (FOLLOWING_PATH)
     velocity_sequence:
       - {velocity: 0.0, duration: 10}
@@ -273,7 +283,7 @@ per_vehicle_controllers:
   # Vehicle 1 (First Follower)
   1:
     longitudinal_controller_type: 'classical_distributed'  # Uses true V2V states for control
-    lateral_controller_type: 'fix_lateral'
+    lateral_controller_type: 'stanley_y_hold'
     fix:
       throttle: 0.00  # Constant speed
     classical_distributed:
@@ -293,7 +303,7 @@ per_vehicle_controllers:
   # Vehicle 2 (Second Follower)
   2:
     longitudinal_controller_type: 'classical_distributed'  # Uses true V2V states for control
-    lateral_controller_type: 'fix_lateral'
+    lateral_controller_type: 'stanley_y_hold'
     fix:
       throttle: 0.0  # Constant speed
     classical_distributed:
@@ -313,7 +323,7 @@ per_vehicle_controllers:
   # Vehicle 3 (Third Follower)
   3:
     longitudinal_controller_type: 'classical_distributed'  # Uses true V2V states for control
-    lateral_controller_type: 'fix_lateral'
+    lateral_controller_type: 'stanley_y_hold'
     fix:
       throttle: 0.0  # Constant speed
     classical_distributed:

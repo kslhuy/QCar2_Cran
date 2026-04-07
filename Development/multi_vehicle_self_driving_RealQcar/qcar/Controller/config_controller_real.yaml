@@ -47,7 +47,7 @@ hybrid_longitudinal:
 # LATERAL CONTROLLER CONFIGURATION
 # ============================================================================
 
-# Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid'
+# Controller type options: 'pure_pursuit', 'stanley', 'stanley_y_hold', 'lookahead', 'hybrid'
 lateral_controller_type: 'pure_pursuit'
 
 # Pure Pursuit Controller Parameters
@@ -61,6 +61,16 @@ pure_pursuit:
 stanley:
   k_e: 0.5                   # Cross-track error gain
   k_soft: 1.0                # Softening gain to prevent division by zero
+  max_steering: 0.55         # Maximum steering angle (radians)
+
+# Stanley Y-Hold Controller Parameters (tracks fixed global y reference)
+stanley_y_hold:
+  y_ref: -0.62               # Target global y position
+  heading_ref: 0.0           # Fallback heading reference (rad)
+  k_e: 0.5                   # Lateral error gain for y tracking
+  k_soft: 1.0                # Softening gain to avoid low-speed aggressiveness
+  k_heading: 1.0             # Heading error gain
+  use_leader_heading: true   # Use leader heading as reference when available
   max_steering: 0.55         # Maximum steering angle (radians)
 
 # Lookahead Controller Parameters
