@@ -29,13 +29,23 @@ init_distance = 15  # distance between cars
 init_rotation = [0, 0, 0]
 wave_road  = False  # Set to True to create wavy road at 500m, False for flat road
 
+# ===== Global Variables - Exported for Other Modules =====
+# These will be set during initialization and made available for import
+qlabs = None  # Will hold QuanserInteractiveLabs instance
+mySpawns = None  # Will hold MultiAgent with robots
+camera = None  # Will hold QLabsFreeCamera instance
+
+# Initialize QLabs connection
 qlabs = QuanserInteractiveLabs()
     
 print("Connecting to QLabs...")
 try:
     qlabs.open("localhost")
-    qlabs.destroy_all_spawned_actors()
-    QLabsRealTime().terminate_all_real_time_models()
+    # Only destroy actors if this is the main script (first initialization)
+    # If imported by another script, skip destruction to preserve actor state
+    if __name__ == "__main__":
+        qlabs.destroy_all_spawned_actors()
+        QLabsRealTime().terminate_all_real_time_models()
     print("Connected to QLabs")
 except:
     print("Unable to connect to QLabs")
@@ -43,9 +53,11 @@ except:
 
 print("Connected")  
 
-QLabsRealTime().terminate_all_real_time_models()
-time.sleep(1)
-qlabs.destroy_all_spawned_actors()
+# NOTE: Removed the second destroy_all_spawned_actors() call
+# Keeping connection active for multi-process usage
+# QLabsRealTime().terminate_all_real_time_models()
+# time.sleep(1)
+# qlabs.destroy_all_spawned_actors()
 
 hSystem = QLabsSystem(qlabs)
 ### Outdoor Environment
@@ -54,10 +66,7 @@ hSystem = QLabsSystem(qlabs)
 # hSystem.set_title_string('Blizzard')
 
 # create a camera in this qlabs instance
-camera = QLabsFreeCamera(qlabs)
-camera.spawn_degrees(location=[450, -21, 8], rotation=[0, 11, 122])
-# to switch our view from our current camera to the new camera we just initialized
-camera.possess()
+# Camera will be attached to car 3 after vehicles are spawned.
 
 # ============== Create Wavy Road at 500m (Conditional) ==============
 if wave_road:
@@ -127,9 +136,9 @@ else:
     print("\n=== Wavy Road Creation Skipped (wave_road = False) ===")
 # ============== End Wavy Road ==============
 
-qlabs.close()
-
-print("Disconnected from camera qlabs session") 
+# NOTE: Do NOT close qlabs here! Keep connection open for other processes
+# (camera_tracker_main.py, vehicle_main.py) to connect to same QLabs instance
+# qlabs.close()  # REMOVED - breaks multi-process coordination 
 
 QCars = []
 
@@ -153,8 +162,6 @@ mySpawns = MultiAgent(QCars)
 mySpawns.robotActors[0].set_led_strip_uniform(color=[40,0,0])
 mySpawns.robotActors[1].set_led_strip_uniform(color=[0,40,0])
 
-mySpawns.robotActors[3].possess()  # 跟随车辆3（最后一辆）
-
 # Set default transforms for all vehicles using predefined Location and Rotation
 print("\n=== Multi-Vehicle Default Transform Setup ===")
 try:
@@ -175,12 +182,59 @@ try:
 
     print("All vehicles configured with default transforms.")
 
+    # Spawn free camera attached to car 3 (4th car, 0-indexed)
+    # Calculate relative position: camera stays at fixed offset from car 3
+    car3_initial_location = [
+        init_location[0] - 3 * init_distance,
+        init_location[1],
+        init_location[2],
+    ]
+    camera_initial_world_location = [27.898, 8.143, 9.485]
+    camera_initial_rotation_deg = [0, 11.903, -43.203]
+    
+    # Compute relative offset from car 3
+    camera_relative_location = [
+        -1,
+        10,
+        5,
+    ]
+
+    camera = QLabsFreeCamera(mySpawns.qlabs)
+    # Get car 3 (4th car) reference for parent information
+    car3 = mySpawns.robotActors[3]
+    
+    # Spawn camera directly parented to car 3 with relative transform
+    camera_status = camera.spawn_id_and_parent_with_relative_transform_degrees(
+        actorNumber=9000,
+        location=camera_relative_location,
+        rotation=camera_initial_rotation_deg,
+        parentClassID=car3.classID,
+        parentActorNumber=car3.actorNumber,
+        parentComponent=0,
+        waitForConfirmation=True
+    )
+    if camera_status != 0:
+        raise RuntimeError(f"Camera spawn failed with status={camera_status}")
+
+    camera.possess()
+    print("[OK] Camera spawned and parented to car 2 at relative position.")
+    print("[INFO] Camera will now follow car 2's movements while maintaining relative transform.")
+    # Variables mySpawns, camera, and qlabs are now available at module level for import
+
 except KeyboardInterrupt:
     print("\n\nProgram terminated by user.")
 except Exception as e:
-    print(f"Error: {e}")
+    print(f"Error during initialization: {e}")
 
 
-qlabs.close()
+# Script execution: if run directly, show info message
+if __name__ == "__main__":
+    print("\n" + "="*70)
+    print("initPlatoon.py - QLabs Initialization Script")
+    print("="*70)
+    print("[INFO] Initialization complete!")
+    print("[INFO] Global variables set: mySpawns, camera, qlabs")
+    print("[INFO] To start camera tracking, run: python camera_tracker_main.py")
+    print("="*70 + "\n")
 
 

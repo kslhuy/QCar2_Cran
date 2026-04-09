@@ -26,6 +26,41 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 from scope_data_streamer import unpack_scope_data, PRESET_FIELDS, DEFAULT_FIELDS, FLEET_FIELDS
 
 
+OBSERVER_NUMERIC_FIELD_PREFIXES = (
+    "x_vec_after_",
+    "x_vec_before_",
+    "dynamics_",
+    "measurement_",
+    "consensus_",
+    "true_position_",
+    "true_velocity_",
+    "true_acceleration_",
+)
+OBSERVER_NUMERIC_EXACT_KEYS = (
+    "x",
+    "y",
+    "th",
+    "v",
+    "u",
+    "delta",
+    "acceleration",
+    "control_input",
+)
+TRUE_ROW_VEHICLES = (0, 1, 2, 3)
+OBSERVER_ROWS = (1, 2, 3)
+COMPONENT_COLORS = {
+    1: "b",
+    2: "r",
+    3: "g",
+}
+VEHICLE_STYLE = {
+    0: ("k", "--"),
+    1: ("b", "-"),
+    2: ("r", "-"),
+    3: ("g", "-"),
+}
+
+
 # ==============================================================================
 # Scope Data Buffer
 # ==============================================================================
@@ -159,6 +194,74 @@ class ScopeDataBuffer:
             self.sample_count = 0
 
 
+class ObserverDataBuffer:
+    """Thread-safe in-memory buffer for distributed observer telemetry."""
+
+    def __init__(self, max_points: int = 4000):
+        self.max_points = max_points
+        self._lock = threading.Lock()
+        self._times: Dict[int, deque] = {}
+        self._fields: Dict[int, Dict[str, deque]] = {}
+
+    def append(self, car_id: int, telemetry: Dict[str, Any]) -> None:
+        values: Dict[str, float] = {}
+        for key, value in telemetry.items():
+            if key == "time":
+                continue
+            if not key.startswith(OBSERVER_NUMERIC_FIELD_PREFIXES) and key not in OBSERVER_NUMERIC_EXACT_KEYS:
+                continue
+            try:
+                values[key] = float(value)
+            except Exception:
+                continue
+
+        if not values:
+            return
+
+        try:
+            t = float(telemetry.get("time", time.time()))
+        except Exception:
+            t = time.time()
+
+        with self._lock:
+            if car_id not in self._times:
+                maxlen = self.max_points if self.max_points > 0 else None
+                self._times[car_id] = deque(maxlen=maxlen)
+                self._fields[car_id] = {}
+
+            self._times[car_id].append(t)
+            curr_len = len(self._times[car_id])
+            field_map = self._fields[car_id]
+
+            for key, value in values.items():
+                if key not in field_map:
+                    maxlen = self.max_points if self.max_points > 0 else None
+                    field_map[key] = deque([np.nan] * (curr_len - 1), maxlen=maxlen)
+                field_map[key].append(float(value))
+
+            for series in field_map.values():
+                if len(series) < curr_len:
+                    series.append(np.nan)
+
+    def snapshot(self) -> Dict[int, Dict[str, np.ndarray]]:
+        with self._lock:
+            snap: Dict[int, Dict[str, np.ndarray]] = {}
+            for car_id, t_deque in self._times.items():
+                snap[car_id] = {
+                    "time": np.asarray(t_deque, dtype=float),
+                    "fields": {
+                        key: np.asarray(series, dtype=float)
+                        for key, series in self._fields[car_id].items()
+                    },
+                }
+            return snap
+
+    def clear(self) -> None:
+        with self._lock:
+            self._times.clear()
+            self._fields.clear()
+
+
 # ==============================================================================
 # Remote Scope Manager
 # ==============================================================================
@@ -175,6 +278,9 @@ class RemoteScopeManager:
         self.vehicle_buffers: Dict[int, ScopeDataBuffer] = {}
         self.vehicle_field_names: Dict[int, List[str]] = {}
         self.viewers: Dict[int, 'RemoteScopeViewer'] = {}
+        self.observer_buffer = ObserverDataBuffer(max_points=4000)
+        self.observer_viewer: Optional['RemoteObserverViewer'] = None
+        self._observer_plot_time_origin = time.monotonic()
         
         # Streaming state
         self._streaming_cars: set = set()
@@ -271,6 +377,18 @@ class RemoteScopeManager:
         except Exception as e:
             self.parse_errors += 1
             print(f"[RemoteScopeManager] Error processing scope data: {e}")
+
+    def receive_observer_telemetry(self, car_id: int, telemetry: Dict[str, Any]) -> None:
+        """Ingest regular telemetry for the Plot-All observer viewer."""
+        telemetry_for_plot = dict(telemetry)
+        telemetry_for_plot["time"] = time.monotonic() - self._observer_plot_time_origin
+        self.observer_buffer.append(car_id, telemetry_for_plot)
+
+    def reset_observer_plot_clock(self) -> None:
+        """Reset the Plot-All observer time base and discard pre-trigger samples."""
+        with self._lock:
+            self._observer_plot_time_origin = time.monotonic()
+            self.observer_buffer.clear()
     
     def get_buffer(self, car_id: int) -> Optional[ScopeDataBuffer]:
         """Get the buffer for a vehicle."""
@@ -309,6 +427,37 @@ class RemoteScopeManager:
             if car_id in self.viewers:
                 self.viewers[car_id].stop()
                 del self.viewers[car_id]
+
+    def open_observer_viewer(self, refresh_ms: int = 150, time_window: float = 0.0) -> bool:
+        """Open (or reuse) the Plot-All observer viewer in a separate process."""
+        with self._lock:
+            if self.observer_viewer and not self.observer_viewer.sync_state():
+                self.observer_viewer = None
+
+            if self.observer_viewer and self.observer_viewer.running:
+                return False
+
+            self.observer_viewer = RemoteObserverViewer(
+                buffer=self.observer_buffer,
+                refresh_ms=max(50, int(refresh_ms)),
+                time_window=max(0.0, float(time_window)),
+            )
+            self.observer_viewer.start()
+            return True
+
+    def close_observer_viewer(self) -> None:
+        """Close the Plot-All observer viewer if it is running."""
+        with self._lock:
+            if self.observer_viewer:
+                self.observer_viewer.stop()
+                self.observer_viewer = None
+
+    def is_observer_viewer_running(self) -> bool:
+        """Return True when the Plot-All observer viewer process is running."""
+        with self._lock:
+            if self.observer_viewer and not self.observer_viewer.sync_state():
+                self.observer_viewer = None
+            return bool(self.observer_viewer and self.observer_viewer.running)
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get overall statistics."""
@@ -344,6 +493,13 @@ class RemoteScopeManager:
             
             self.viewers.clear()
             self._streaming_cars.clear()
+
+            if self.observer_viewer:
+                try:
+                    self.observer_viewer.stop()
+                except Exception as e:
+                    print(f"[RemoteScopeManager] Error stopping observer viewer: {e}")
+                self.observer_viewer = None
             
         print("[RemoteScopeManager] Shutdown complete")
 
@@ -757,6 +913,347 @@ def _create_fleet_layout(plt, car_id, field_names):
     axes['info'] = ax_info
     
     return fig, lines, axes
+
+
+class RemoteObserverViewer:
+    """Plot-All observer viewer running in a separate process."""
+
+    def __init__(self, buffer: ObserverDataBuffer, refresh_ms: int = 150, time_window: float = 0.0):
+        self.buffer = buffer
+        self.refresh_ms = refresh_ms
+        self.time_window = time_window
+        self.running = False
+        self._process = None
+        self._data_queue = None
+        self._stop_event = None
+
+    def start(self) -> None:
+        if self.running:
+            return
+
+        import multiprocessing as mp
+
+        self.running = True
+        self._stop_event = mp.Event()
+        self._data_queue = mp.Queue(maxsize=4)
+        self._process = mp.Process(
+            target=_run_observer_plot_process,
+            args=(self._data_queue, self._stop_event, self.refresh_ms, self.time_window),
+            daemon=True,
+        )
+        self._process.start()
+
+        self._feeder_thread = threading.Thread(target=self._feed_data_to_process, daemon=True)
+        self._feeder_thread.start()
+
+    def is_alive(self) -> bool:
+        return bool(self._process and self._process.is_alive())
+
+    def sync_state(self) -> bool:
+        """Sync local running state with the child process lifecycle."""
+        alive = self.is_alive()
+        if self.running and not alive:
+            self.running = False
+            self._stop_event = None
+            self._data_queue = None
+            self._process = None
+        return alive
+
+    def _feed_data_to_process(self) -> None:
+        feed_interval = self.refresh_ms / 1000.0
+        last_feed_time = 0.0
+
+        while self.running and self._stop_event and not self._stop_event.is_set():
+            try:
+                now = time.time()
+                if now - last_feed_time >= feed_interval:
+                    snap = self.buffer.snapshot()
+                    if snap:
+                        trimmed = _observer_trim_snapshot(snap, self.time_window)
+                        try:
+                            self._data_queue.put_nowait(trimmed)
+                        except Exception:
+                            # Queue is full; keep viewer responsive by dropping stale frames.
+                            pass
+                    last_feed_time = now
+                time.sleep(0.01)
+            except Exception as e:
+                print(f"[ObserverViewer] Data feed error: {e}")
+                break
+
+    def stop(self) -> None:
+        self.running = False
+
+        if self._stop_event:
+            self._stop_event.set()
+
+        if self._process and self._process.is_alive():
+            self._process.terminate()
+            self._process.join(timeout=1.0)
+
+        self._stop_event = None
+        self._data_queue = None
+        self._process = None
+
+
+def _observer_trim_snapshot(snap: Dict[int, Dict[str, np.ndarray]], time_window: float) -> Dict[int, Dict[str, np.ndarray]]:
+    """Trim snapshot to trailing time window before passing through IPC queue."""
+    out: Dict[int, Dict[str, np.ndarray]] = {}
+    for sid, payload in snap.items():
+        t_ref = payload.get("time", np.array([]))
+        fields = payload.get("fields", {})
+        if t_ref.size == 0:
+            continue
+
+        # Keep one shared time axis per stream; do not trim fields independently.
+        # Preserve absolute time so x-axis increases continuously.
+        if time_window > 0:
+            keep = t_ref >= (t_ref[-1] - time_window)
+        else:
+            keep = np.ones_like(t_ref, dtype=bool)
+
+        t_out = t_ref[keep]
+        if t_out.size == 0:
+            continue
+
+        new_fields: Dict[str, np.ndarray] = {}
+        for key, y in fields.items():
+            n = min(t_ref.size, y.size)
+            if n == 0:
+                continue
+            if n == t_ref.size:
+                field_keep = keep
+            else:
+                field_keep = keep[:n]
+            y2 = y[:n][field_keep]
+            if y2.size > 0:
+                new_fields[key] = y2
+
+        if not new_fields:
+            continue
+
+        out[sid] = {
+            "time": t_out,
+            "fields": new_fields,
+        }
+
+    return out
+
+
+def _observer_window_series(t: np.ndarray, y: np.ndarray, time_window: float) -> tuple:
+    if t.size == 0 or y.size == 0:
+        return np.array([]), np.array([])
+
+    if t.size != y.size:
+        n = min(t.size, y.size)
+        t = t[:n]
+        y = y[:n]
+
+    mask = ~(np.isnan(t) | np.isnan(y))
+    t = t[mask]
+    y = y[mask]
+    if t.size == 0:
+        return t, y
+
+    if time_window > 0:
+        keep = t >= (t[-1] - time_window)
+        t = t[keep]
+        y = y[keep]
+    return t, y
+
+
+def _has_observer_fields(fields: Dict[str, np.ndarray]) -> bool:
+    for key in fields.keys():
+        if key.startswith("x_vec_before_p") or key.startswith("x_vec_before_v") or key.startswith("x_vec_before_a"):
+            return True
+    return False
+
+
+def _resolve_observer_stream_id(snap: Dict[int, Dict[str, np.ndarray]], observer_label: int) -> Optional[int]:
+    for sid in (observer_label, observer_label - 1):
+        if sid in snap and _has_observer_fields(snap[sid].get("fields", {})):
+            return sid
+
+    for sid in sorted(snap.keys()):
+        if _has_observer_fields(snap[sid].get("fields", {})):
+            return sid
+    return None
+
+
+def _run_observer_plot_process(data_queue, stop_event, refresh_ms: int, time_window: float):
+    """Render Plot-All observer layout in a dedicated process."""
+    import queue
+    import matplotlib
+    matplotlib.use('TkAgg')
+    import matplotlib.pyplot as plt
+    import matplotlib.animation as animation
+
+    fig = plt.figure(figsize=(14, 8))
+    fig.suptitle("Live: True State vs Distributed Observer Estimates", fontsize=12)
+    axes = fig.subplots(4, 3, squeeze=False)
+
+    # True-state row lines
+    true_lines = {
+        "pos": {},
+        "vel": {},
+        "u": {},
+    }
+    for veh_id in TRUE_ROW_VEHICLES:
+        color, style = VEHICLE_STYLE.get(veh_id, ("k", "-"))
+        true_lines["pos"][veh_id], = axes[0][0].plot([], [], color=color, linestyle=style, linewidth=1.8, label=f"V{veh_id}")
+        true_lines["vel"][veh_id], = axes[0][1].plot([], [], color=color, linestyle=style, linewidth=1.8, label=f"V{veh_id}")
+        true_lines["u"][veh_id], = axes[0][2].plot([], [], color=color, linestyle=style, linewidth=1.8, label=f"V{veh_id}")
+
+    obs_lines = {}
+    missing_text = {}
+    for row_idx, observer_label in enumerate(OBSERVER_ROWS, start=1):
+        obs_lines[observer_label] = {"p": {}, "v": {}, "a": {}}
+        missing_text[observer_label] = []
+        for col_idx, key in enumerate(("p", "v", "a")):
+            ax = axes[row_idx][col_idx]
+            for comp_idx in (1, 2, 3):
+                obs_lines[observer_label][key][comp_idx], = ax.plot(
+                    [], [], color=COMPONENT_COLORS[comp_idx], linestyle="-", linewidth=1.6, label=f"i = {comp_idx}"
+                )
+            txt = ax.text(
+                0.5,
+                0.5,
+                f"Observer {observer_label} no data",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=9,
+                visible=False,
+            )
+            missing_text[observer_label].append(txt)
+
+    # Keep basic layout from plot_all_observer_viewer.py.
+    axes[0][0].set_title("True Position")
+    axes[0][0].set_ylabel("Position")
+    axes[0][1].set_title("True Velocity")
+    axes[0][1].set_ylabel("Velocity")
+    axes[0][1].set_ylim(-0.1, 1.1)
+    axes[0][2].set_title("Control Input")
+    axes[0][2].set_ylabel("Control Input")
+    axes[0][2].set_ylim(-0.01, 0.25)
+
+    for row_idx, observer_label in enumerate(OBSERVER_ROWS, start=1):
+        axes[row_idx][0].set_title(f"Ditributed Obsever {observer_label} - Relative Position")
+        axes[row_idx][0].set_ylabel("Estimation of pi - p0 +di0")
+        axes[row_idx][1].set_title(f"Ditributed Obsever {observer_label} - Relative Velocity")
+        axes[row_idx][1].set_ylabel("Estimation of vi - v0")
+        axes[row_idx][2].set_title(f"Ditributed Obsever {observer_label} - Relative acceleration")
+        axes[row_idx][2].set_ylabel("Estimation of ai - a0")
+
+    for r in range(4):
+        for c in range(3):
+            axes[r][c].grid(True, alpha=0.3)
+            axes[r][c].set_xlabel("Time [s]")
+            axes[r][c].set_xlim(left=0.0)
+            handles, labels = axes[r][c].get_legend_handles_labels()
+            if handles:
+                axes[r][c].legend(fontsize=8 if r == 0 else 7, loc="upper right")
+
+    fig.tight_layout(rect=(0.02, 0.02, 0.98, 0.95))
+    latest_snap: Dict[int, Dict[str, np.ndarray]] = {}
+
+    def _set_true_line(line, snap, veh_id, candidates):
+        source_ids = [veh_id] + [sid for sid in sorted(snap.keys()) if sid != veh_id]
+        for sid in source_ids:
+            if sid not in snap:
+                continue
+            t = snap[sid].get("time", np.array([]))
+            fields = snap[sid].get("fields", {})
+            for key in candidates:
+                if key in fields:
+                    t2, y2 = _observer_window_series(t, fields[key], time_window)
+                    line.set_data(t2, y2)
+                    return
+        line.set_data([], [])
+
+    def update(_frame):
+        nonlocal latest_snap
+
+        if stop_event.is_set():
+            plt.close(fig)
+            return []
+
+        while True:
+            try:
+                latest_snap = data_queue.get_nowait()
+            except queue.Empty:
+                break
+            except Exception:
+                break
+
+        if not latest_snap:
+            return []
+
+        max_time_seen = 0.0
+
+        for veh_id in TRUE_ROW_VEHICLES:
+            _set_true_line(true_lines["pos"][veh_id], latest_snap, veh_id, (f"true_position_{veh_id}", "x"))
+            _set_true_line(true_lines["vel"][veh_id], latest_snap, veh_id, (f"true_velocity_{veh_id}", "v"))
+            _set_true_line(true_lines["u"][veh_id], latest_snap, veh_id, ("u", "control_input", f"collective_control_{veh_id + 1}"))
+
+        for observer_label in OBSERVER_ROWS:
+            sid = _resolve_observer_stream_id(latest_snap, observer_label)
+            if sid is None or sid not in latest_snap:
+                for txt in missing_text[observer_label]:
+                    txt.set_visible(True)
+                for key in ("p", "v", "a"):
+                    for comp_idx in (1, 2, 3):
+                        obs_lines[observer_label][key][comp_idx].set_data([], [])
+                continue
+
+            for txt in missing_text[observer_label]:
+                txt.set_visible(False)
+
+            fields = latest_snap[sid].get("fields", {})
+            t_ref = latest_snap[sid].get("time", np.array([]))
+            if t_ref.size > 0:
+                max_time_seen = max(max_time_seen, float(t_ref[-1]))
+            for comp_idx in (1, 2, 3):
+                for key, suffix in (("p", "p"), ("v", "v"), ("a", "a")):
+                    field_name = f"x_vec_before_{suffix}{comp_idx}"
+                    line = obs_lines[observer_label][key][comp_idx]
+                    if field_name in fields:
+                        max_time_seen = max(max_time_seen, float(t_ref[-1]) if t_ref.size > 0 else max_time_seen)
+                        t2, y2 = _observer_window_series(t_ref, fields[field_name], time_window)
+                        line.set_data(t2, y2)
+                    else:
+                        line.set_data([], [])
+
+        x_max = max(0.1, max_time_seen * 1.05)
+        for r in range(4):
+            for c in range(3):
+                axes[r][c].relim()
+                axes[r][c].autoscale_view(scalex=False, scaley=True)
+                axes[r][c].set_xlim(0.0, x_max)
+
+        artists = []
+        for group in true_lines.values():
+            artists.extend(group.values())
+        for observer_label in OBSERVER_ROWS:
+            for key in ("p", "v", "a"):
+                artists.extend(obs_lines[observer_label][key].values())
+            artists.extend(missing_text[observer_label])
+        return artists
+
+    anim = animation.FuncAnimation(
+        fig,
+        update,
+        interval=max(50, int(refresh_ms)),
+        blit=False,
+        cache_frame_data=False,
+    )
+    # Keep animation alive for the full viewer lifecycle.
+    fig._observer_anim = anim
+
+    try:
+        plt.show()
+    except Exception:
+        pass
 
 
 # ==============================================================================

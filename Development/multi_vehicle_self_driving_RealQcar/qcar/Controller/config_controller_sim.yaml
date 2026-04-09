@@ -282,7 +282,7 @@ per_vehicle_controllers:
   
   # Vehicle 1 (First Follower)
   1:
-    longitudinal_controller_type: 'classical_distributed'  # Uses true V2V states for control
+    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
     lateral_controller_type: 'stanley_y_hold'
     fix:
       throttle: 0.00  # Constant speed
@@ -302,7 +302,7 @@ per_vehicle_controllers:
   
   # Vehicle 2 (Second Follower)
   2:
-    longitudinal_controller_type: 'classical_distributed'  # Uses true V2V states for control
+    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
     lateral_controller_type: 'stanley_y_hold'
     fix:
       throttle: 0.0  # Constant speed
@@ -322,7 +322,7 @@ per_vehicle_controllers:
 
   # Vehicle 3 (Third Follower)
   3:
-    longitudinal_controller_type: 'classical_distributed'  # Uses true V2V states for control
+    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
     lateral_controller_type: 'stanley_y_hold'
     fix:
       throttle: 0.0  # Constant speed

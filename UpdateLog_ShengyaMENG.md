@@ -1,3 +1,40 @@
+# Update Log 2026/04/09 (Shengya MENG)
+
+**Commit Message**: Enhance Plot-All observer GUI workflow and spawn camera parented to car with fixed relative transform
+
+## Completed Tasks / 已完成任务:
+- [x] 完善GUI中的绘图Plot All Observer的功能
+
+  - 新增远程观测器数据缓冲模块 `ObserverDataBuffer`，支持按车辆与字段缓存并对齐实时遥测数据（缺失字段自动补 NaN）
+    - 实现文件: [remote_scope_manager.py](Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/controllers/remote_scope_manager.py)
+
+  - 在 `RemoteScopeManager` 中补充 Plot All Observer 的完整生命周期接口：接收数据、重置时间轴、打开/关闭/查询绘图进程
+    - 关键接口: `receive_observer_telemetry()` / `reset_observer_plot_clock()` / `open_observer_viewer()` / `close_observer_viewer()` / `is_observer_viewer_running()`
+    - 实现文件: [remote_scope_manager.py](Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/controllers/remote_scope_manager.py)
+
+  - 新增 `RemoteObserverViewer` 多进程绘图流程，复用 TkAgg + Matplotlib 动画机制，避免阻塞主 GUI 线程
+    - 关键流程: `RemoteObserverViewer` 与 `_run_observer_plot_process()`
+    - 实现文件: [remote_scope_manager.py](Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/controllers/remote_scope_manager.py)
+
+  - 增强观测器绘图稳定性：加入时间窗口裁剪、NaN 过滤、流 ID 解析与缺字段容错逻辑
+    - 关键函数: `_observer_trim_snapshot()` / `_observer_window_series()` / `_resolve_observer_stream_id()`
+    - 实现文件: [remote_scope_manager.py](Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/controllers/remote_scope_manager.py)
+
+  - 在远程控制器中完成 remote_scope 集成：
+    - 初始化时创建 `RemoteScopeManager`，在普通 telemetry 通道持续喂入 observer 数据，在 `scope_data` 消息中继续处理高频 scope 数据
+    - 对外新增 Plot-All 控制接口: `open_plot_all_observer_viewer()` / `close_plot_all_observer_viewer()` / `is_plot_all_observer_viewer_running()`
+    - 停止控制器时统一调用 `scope_manager.shutdown()` 回收绘图相关资源
+    - 实现文件: [remote_controller.py](Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/controllers/remote_controller.py)
+
+
+- [x] 在初始时将相机和车辆绑定，使得相机能够和车辆保持恒定的相对位置
+  - 将相机创建方式由世界坐标独立生成改为“创建时直接挂载到车辆”
+  - 使用 `spawn_id_and_parent_with_relative_transform_degrees(...)` 在初始化阶段完成父子绑定，避免后续额外追踪线程
+  - 父节点设置为 3 号车（`mySpawns.robotActors[3]`），并通过 `parentClassID` / `parentActorNumber` 建立运动学关系
+  - 相机使用固定相对偏移（`camera_relative_location`）与固定相对姿态（`camera_initial_rotation_deg`），车辆运动时相机自动跟随
+  - 同步更新初始化日志输出，明确相机已绑定并将保持相对位姿
+  - 实现文件: [initPlatoon.py](Development/QCar2_multi-vehicle_control/initPlatoon.py)
+
 # Update Log 2026/04/07 (Shengya MENG)
 
 **Commit Message**: Plot all observer states real-time in the GUI

@@ -9,9 +9,6 @@ import tkinter as tk
 from tkinter import messagebox
 import threading
 import time
-import subprocess
-import sys
-from pathlib import Path
 from typing import Dict, Optional, Set, Any
 from dataclasses import dataclass
 
@@ -84,7 +81,6 @@ class QCarFleetController:
         self._status_panel: Optional[StatusPanelWidget] = None
         self._log_panel: Optional[LogPanelWidget] = None
         self._no_cars_label: Optional[tk.Label] = None
-        self._plot_all_process: Optional[subprocess.Popen] = None
         
         # Threading
         self._running = True
@@ -162,8 +158,15 @@ class QCarFleetController:
         right_panel.pack(side='right', fill='both', padx=(10, 0))
         right_panel.pack_propagate(False)
 
-        # Quick access button for live distributed observer plotting
-        plot_btn = tk.Button(
+        # Status panel
+        self._status_panel = StatusPanelWidget(right_panel, theme=self.theme)
+        self._status_panel.pack(fill='x', pady=(0, 10))
+        
+        # Log panel
+        self._log_panel = LogPanelWidget(right_panel, theme=self.theme)
+        self._log_panel.pack(fill='both', expand=True)
+        
+        self._plot_all_observer_btn = tk.Button(
             right_panel,
             text="📈 Plot All Observer",
             command=self._launch_plot_all_observer_viewer,
@@ -174,16 +177,8 @@ class QCarFleetController:
             padx=10,
             pady=6,
         )
-        plot_btn.pack(fill='x', pady=(0, 10))
-        
-        # Status panel
-        self._status_panel = StatusPanelWidget(right_panel, theme=self.theme)
-        self._status_panel.pack(fill='x', pady=(0, 10))
-        
-        # Log panel
-        self._log_panel = LogPanelWidget(right_panel, theme=self.theme)
-        self._log_panel.pack(fill='both', expand=True)
-        
+        self._plot_all_observer_btn.pack(fill='x', pady=(0, 10))
+
         # Bind keyboard for manual control
         self._input.bind_keyboard(self.root)
     
@@ -778,6 +773,9 @@ class QCarFleetController:
         leader_id = self._platoon_config.leader_id
         
         self.log(f"🚀 Triggering platoon start with formation: {formation}", 'INFO')
+
+        if self._remote and self._remote.scope_manager:
+            self._remote.scope_manager.reset_observer_plot_clock()
         
         success_count = 0
         for car_id in formation.keys():
@@ -1010,6 +1008,8 @@ class QCarFleetController:
         """Update status panel."""
         if not self._status_panel:
             return
+
+        self._sync_plot_all_observer_button_state()
         
         fleet = self._remote.get_fleet_status()
         
@@ -1041,33 +1041,40 @@ class QCarFleetController:
             telemetry_rate=fleet['avg_telemetry_rate_hz']
         )
 
-    def _launch_plot_all_observer_viewer(self) -> None:
-        """Launch the standalone live observer plotting tool."""
-        try:
-            if self._plot_all_process and self._plot_all_process.poll() is None:
-                self.log("Plot All Observer viewer is already running", 'INFO')
-                return
+    def _sync_plot_all_observer_button_state(self) -> None:
+        """Keep the Plot All Observer button styled like the fleet plot buttons."""
+        if not hasattr(self, '_plot_all_observer_btn') or not self._plot_all_observer_btn:
+            return
 
-            # Search upwards from this file to find the repo root script.
-            script_path = None
-            repo_root = None
-            for parent in Path(__file__).resolve().parents:
-                candidate = parent / 'plot_all_observer_viewer.py'
-                if candidate.exists():
-                    script_path = candidate
-                    repo_root = parent
-                    break
-
-            if script_path is None or repo_root is None:
-                self.log("Plot script not found: plot_all_observer_viewer.py", 'ERROR')
-                return
-
-            self._plot_all_process = subprocess.Popen(
-                [sys.executable, str(script_path)],
-                cwd=str(repo_root),
-                creationflags=getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0),
+        is_running = self._remote.is_plot_all_observer_viewer_running() if self._remote else False
+        if is_running:
+            self._plot_all_observer_btn.config(
+                text="📈 Plot All Observer: ON",
+                bg=self.theme.colors.accent_green,
+                activebackground=self.theme.colors.accent_green,
             )
-            self.log("Started Plot All Observer viewer", 'SUCCESS')
+        else:
+            self._plot_all_observer_btn.config(
+                text="📈 Plot All Observer",
+                bg=self.theme.colors.accent_blue,
+                activebackground=self.theme.colors.accent_green,
+            )
+
+    def _launch_plot_all_observer_viewer(self) -> None:
+        """Launch integrated Plot-All observer viewer in a separate plotting process."""
+        try:
+            if self._remote.is_plot_all_observer_viewer_running():
+                self._remote.close_plot_all_observer_viewer()
+                self.log("Plot All Observer viewer closed", 'INFO')
+                self._sync_plot_all_observer_button_state()
+                return
+
+            started = self._remote.open_plot_all_observer_viewer(refresh_ms=150, time_window=0.0)
+            if started:
+                self.log("Started Plot All Observer viewer", 'SUCCESS')
+                self._sync_plot_all_observer_button_state()
+            else:
+                self.log("Plot All Observer viewer is unavailable", 'ERROR')
 
         except Exception as e:
             self.log(f"Failed to launch Plot All Observer viewer: {e}", 'ERROR')
@@ -1095,13 +1102,6 @@ class QCarFleetController:
         
         # Close remote controller
         self._remote.close()
-
-        # Stop external plot viewer if started by this GUI
-        if self._plot_all_process and self._plot_all_process.poll() is None:
-            try:
-                self._plot_all_process.terminate()
-            except Exception:
-                pass
         
         # Destroy window
         self.root.destroy()

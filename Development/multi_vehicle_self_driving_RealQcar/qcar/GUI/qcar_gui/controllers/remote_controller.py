@@ -529,6 +529,10 @@ class QCarRemoteController:
                 ws_data['type'] = 'telemetry'
             self._broadcast_to_websockets(ws_data)
 
+            # Feed regular telemetry to observer plot buffer.
+            if msg_type != 'scope_data' and self.scope_manager:
+                self.scope_manager.receive_observer_telemetry(car_id, data)
+
             self._handle_special_message(car_id, msg_type, data)
             
         except json.JSONDecodeError as e:
@@ -933,6 +937,25 @@ class QCarRemoteController:
         if self.scope_manager:
             return self.scope_manager.is_streaming(car_id)
         return False
+
+    def open_plot_all_observer_viewer(self, refresh_ms: int = 150, time_window: float = 20.0) -> bool:
+        """Open integrated Plot-All observer viewer backed by scope manager."""
+        if not self.scope_manager:
+            return False
+        return self.scope_manager.open_observer_viewer(refresh_ms=refresh_ms, time_window=time_window)
+
+    def close_plot_all_observer_viewer(self) -> bool:
+        """Close integrated Plot-All observer viewer if running."""
+        if not self.scope_manager:
+            return False
+        self.scope_manager.close_observer_viewer()
+        return True
+
+    def is_plot_all_observer_viewer_running(self) -> bool:
+        """Return whether integrated Plot-All observer viewer is running."""
+        if not self.scope_manager:
+            return False
+        return self.scope_manager.is_observer_viewer_running()
     
     # ========== Status and Telemetry ==========
     
