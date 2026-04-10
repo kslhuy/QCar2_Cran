@@ -118,6 +118,7 @@ class FollowingPathState(StateBase):
         self.pp_speed_profile_base = None  # Base speed profile from path_rich
         self.pp_profile_design_speed = 0.0  # desired_speed used to build base profile
         self.pp_last_v_ref = None  # For lightweight change logging
+        self._path_speed_target_filtered = None
 
         # Optional pp_map local obstacle-avoidance replanning from YOLO distances.
         self.pp_obstacle_avoidance_enabled = False
@@ -416,6 +417,7 @@ class FollowingPathState(StateBase):
         self.pp_speed_profile_base = None
         self.pp_profile_design_speed = 0.0
         self.pp_last_v_ref = None
+        self._path_speed_target_filtered = None
         self._pp_last_obstacle_replan = 0.0
         self._pp_obstacle_path_active = False
 
@@ -863,7 +865,7 @@ class FollowingPathState(StateBase):
           - obstacles:       list of [x, y, radius]
           - avoidance_active: bool
         """
-        MAX_PTS = 40  # keep bandwidth reasonable
+        MAX_PTS = 30  # keep bandwidth reasonable
 
         def _downsample(arr, max_n):
             """Downsample 1-D array to at most max_n equally-spaced points."""
@@ -927,17 +929,17 @@ class FollowingPathState(StateBase):
     ) -> Tuple[float, float]:
         """Compute control using PP_Controller + PID throttle tracking."""
         if not self.vehicle_logic.controller_manager.config.enable_steering_control:
-            return self._compute_speed_control(sensor_data["velocity"], dt), 0.0
+            return self._compute_speed_control(sensor_data["velocity"], dt, sensor_data), 0.0
 
         if self.pp_controller is None:
-            return self._compute_speed_control(sensor_data["velocity"], dt), 0.0
+            return self._compute_speed_control(sensor_data["velocity"], dt, sensor_data), 0.0
 
         if self.pp_waypoint_array is None and hasattr(
             self.vehicle_logic, "waypoint_sequence"
         ):
             self._build_pp_waypoint_array(self.vehicle_logic.waypoint_sequence)
         if self.pp_waypoint_array is None:
-            return self._compute_speed_control(sensor_data["velocity"], dt), 0.0
+            return self._compute_speed_control(sensor_data["velocity"], dt, sensor_data), 0.0
         self._maybe_replan_pp_with_obstacles(sensor_data)
         self._update_pp_runtime_speed_profile()
 
@@ -967,7 +969,7 @@ class FollowingPathState(StateBase):
             )
         except Exception as e:
             self.logger.log_error("PP control step failed", e)
-            return self._compute_speed_control(velocity, dt), 0.0
+            return self._compute_speed_control(velocity, dt, sensor_data), 0.0
 
         if speed_target is None or not np.isfinite(speed_target):
             speed_target = self.vehicle_logic.v_ref
@@ -975,18 +977,16 @@ class FollowingPathState(StateBase):
         # or when entering/leaving a hard-turn segment.
         speed_target = max(float(speed_target), 0.0)
 
-        # Record actual target speed for scope display
-        self.vehicle_logic.v_ref_actual = speed_target
-
         # dt_safe = max(float(dt), 1e-3)
         dt_safe = max(float(dt), 1e-3)
-
-        if self.speed_controller:
-            # Closed-loop tracking of PP target speed (supports braking without reversing).
-            u = self.speed_controller.update(velocity, speed_target, dt_safe)
-        else:
-            # Safe fallback if speed controller is missing.
-            u = speed_target
+        speed_target = self._condition_path_speed_target(speed_target, dt_safe)
+        u = self._compute_speed_control(
+            velocity,
+            dt_safe,
+            sensor_data,
+            target_velocity=speed_target,
+            apply_yolo_gain=True,
+        )
 
         if steering is None or not np.isfinite(steering):
             steering = 0.0
@@ -1275,7 +1275,7 @@ class FollowingPathState(StateBase):
             u, delta = self._compute_pp_control(dt, sensor_data)
         else:
             # --- Original PID + Stanley control ---
-            u = self._compute_speed_control(velocity, dt)
+            u = self._compute_speed_control(velocity, dt, sensor_data)
             yolo_data = sensor_data.get("yolo_data", None)
             if yolo_data and not yolo_data.get("is_valid", True):
                 yolo_data = None
@@ -1283,7 +1283,7 @@ class FollowingPathState(StateBase):
 
         # Apply YOLO gain to throttle for MPC / PP-map branches
         # (PID+Stanley branch already applies it inside _compute_speed_control)
-        if self._use_mpc or self._use_pp_map:
+        if self._use_mpc:
             yolo_gain = 1.0
             if (
                 hasattr(self.vehicle_logic, "yolo_manager")
@@ -1475,7 +1475,43 @@ class FollowingPathState(StateBase):
 
         return False
 
-    def _compute_speed_control(self, velocity: float, dt: float) -> float:
+    def _condition_path_speed_target(self, target_speed: float, dt: float) -> float:
+        """
+        Apply simple slew-rate limiting to the path speed target.
+
+        PP-map can change its local target quickly when the nearest waypoint,
+        lateral error, or curvature window changes. A small rate limit makes
+        the commanded reference easier to follow before it is passed to the
+        longitudinal controller.
+        """
+        target_speed = max(float(target_speed), 0.0)
+
+        if self._path_speed_target_filtered is None or dt <= 1e-6:
+            self._path_speed_target_filtered = target_speed
+            return target_speed
+
+        rise_rate = float(self.pp_map_params.get("target_speed_rise_rate", 0.8))
+        fall_rate = float(self.pp_map_params.get("target_speed_fall_rate", 1.2))
+        max_step_up = max(rise_rate, 0.0) * dt
+        max_step_down = max(fall_rate, 0.0) * dt
+        current = float(self._path_speed_target_filtered)
+
+        if target_speed > current:
+            current = min(current + max_step_up, target_speed)
+        else:
+            current = max(current - max_step_down, target_speed)
+
+        self._path_speed_target_filtered = max(current, 0.0)
+        return self._path_speed_target_filtered
+
+    def _compute_speed_control(
+        self,
+        velocity: float,
+        dt: float,
+        sensor_data: Optional[Dict[str, Any]] = None,
+        target_velocity: Optional[float] = None,
+        apply_yolo_gain: bool = True,
+    ) -> float:
         """Compute speed control command"""
         if not self.speed_controller:
             return 0.0
@@ -1488,11 +1524,35 @@ class FollowingPathState(StateBase):
             and self.vehicle_logic.yolo_manager is not None
         ):
             yolo_gain = self.vehicle_logic.yolo_manager.get_yolo_gain()
-        v_ref_adjusted = self.vehicle_logic.v_ref * yolo_gain
+        if target_velocity is None:
+            v_ref_adjusted = self.vehicle_logic.v_ref
+            if apply_yolo_gain:
+                v_ref_adjusted *= yolo_gain
+        else:
+            v_ref_adjusted = float(target_velocity)
+            if apply_yolo_gain:
+                v_ref_adjusted *= yolo_gain
         
         # Record actual target speed for scope display
         self.vehicle_logic.v_ref_actual = v_ref_adjusted
-        
+
+        follower_state = {
+            "velocity": velocity,
+            "target_velocity": v_ref_adjusted,
+        }
+        if sensor_data:
+            if "motor_tach" in sensor_data:
+                follower_state["motor_tach"] = float(sensor_data["motor_tach"])
+            if "battery_voltage" in sensor_data:
+                follower_state["battery_voltage"] = float(
+                    sensor_data["battery_voltage"]
+                )
+
+        if hasattr(self.speed_controller, "compute_throttle"):
+            return self.speed_controller.compute_throttle(
+                follower_state, leader_state=None, dt=dt
+            )
+
         return self.speed_controller.update(velocity, v_ref_adjusted, dt)
 
     def _extract_lane_data(self, yolo_data: dict) -> dict:

@@ -3,7 +3,7 @@
 # Place this file under qcar/Observer/ and load it when starting observers.
 
 relative_estimator_type: sa_acc_uio
-enable_relative: true
+enable_relative: false
 
 # Plotting configuration (optional, for future use)
 enable_plotting: false
@@ -25,6 +25,8 @@ relative:
     k1: -0.8      # Controller gain 1
     k2: 2.5       # Controller gain 2
     alpha_lmi: 0.5 # LMI decay rate
+    prefer_external_relative_measurement: true
+    measurement_max_age_s: 1.0
     
     # Manual Gains (Optional - use if CVXPY is not available)
     # K: [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]

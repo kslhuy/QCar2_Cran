@@ -2,7 +2,7 @@
 # Default parameters for the local state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-local_estimator_type: ekf # local_estimator_type: Which local estimator to use.
+local_estimator_type: robust_kalman_net # local_estimator_type: Which local estimator to use.
                         # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
 
 # Plotting configuration
@@ -29,6 +29,11 @@ local:
   common:
     v_lpf_alpha: 0.15  # LPF coefficient for motor_tach applied in VehicleObserver.
     accel_ema_alpha: 0.25  # EMA coefficient for IMU acceleration applied in VehicleObserver.
+    gps_valid_hold_mode: adaptive  # adaptive = derive freshness window from measured GPS packet interval; fixed = use gps_valid_hold_seconds below.
+    gps_valid_hold_seconds: 0.20  # Fixed fallback only; for 5 Hz GPS this should not be below the packet interval.
+    gps_valid_hold_scale: 1.15  # Adaptive hold = scale * measured GPS period.
+    gps_valid_hold_min_seconds: 0.08  # Lower clamp for adaptive/fixed hold window.
+    gps_valid_hold_max_seconds: 0.35  # Upper clamp for adaptive/fixed hold window.
 
   # ---------------------------------------------------------------------
   # EKF estimator defaults
@@ -55,38 +60,48 @@ local:
   # Robust KalmanNet estimator
   # ---------------------------------------------------------------------
   robust_kalman_net:
-    predictor_mode: nn    # Explicitly use kinematic model for prediction, leaving only the update step to use the GRU NN
+    predictor_mode: kinematic    # Explicitly use kinematic model for prediction, leaving only the update step to use the GRU NN
     use_model: true              # Create the network adapter and try to use learned inference.
     load_pretrained: true       # Set true after training and saving a checkpoint.
     model_path: models/robust_kalmannet.pt # Relative to Observer/KalmaNet/Robust/
     allow_untrained_model: false # Keep false for runtime use; random weights are not useful.
     use_fallback: false           # Use GPS-corrected kinematic fallback when no checkpoint is available.
-    enable_ekf_comparator: true  # Run the standard EKF in parallel for online comparison.
+    enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
+    comparator_use_qcar_ekf: true # Use QCarEKF inside the comparator when available.
     comparator_console_log: false # Keep console quiet during runtime.
     comparator_log_interval: 100  # If console logging is enabled, log every N updates.
     comparator_history_size: 200 # Keep the last N comparison snapshots in memory.
-    comparator_record_to_file: true # Write comparator samples to CSV for offline plotting.
-    comparator_record_interval: 1 # Record every N updates to the CSV file.
-    comparator_flush_interval: 25 # Flush the comparator CSV every N recorded rows.
+    comparator_record_to_file: true # File logging adds jitter; enable only for short debug runs.
+    comparator_record_interval: 10 # Record every N updates to the CSV file.
+    comparator_flush_interval: 200 # Flush the comparator CSV every N recorded rows.
     comparator_output_dir: logs/comparator # Relative to Observer/KalmaNet/Robust/
     comparator_file_prefix: rknet_comparison
     comparator_overwrite: false
     mask_branch_active_threshold: 0.5 # For log interpretation only; marks a branch as "active" when mean mask >= threshold.
-    comparator_use_qcar_ekf: true # Use QCarEKF inside the comparator when available.
-    sequence_length: 20          # Rolling window length for sequence inference.
+    sequence_length: 10          # Rolling window length for sequence inference.
     min_history: 5               # Minimum history before running the network.
-    dt: 0.02                     # Nominal sample time used by the model config.
+    streaming_inference: true    # Reuse hidden state and run one model step per tick instead of replaying the whole window.
+    dt: 0.02                     # Nominal sample time used by the trained model. Keep this aligned with the real inference cadence.
     velocity_lpf_alpha: 0.25     # Blend tachometer with estimated velocity.
     gps_position_gain: 0.35      # GPS correction gain for x/y.
     gps_heading_gain: 0.40       # GPS correction gain for heading.
     yaw_rate_blend: 0.20         # Blend gyro_z into the model yaw-rate state.
+    heading_filter_enabled: true # Run a small yaw-angle pre-filter using gyro_z prediction and GPS heading correction.
+    heading_filter_q_psi: 0.001  # Process noise on heading angle inside the pre-filter.
+    heading_filter_q_bias: 0.0001 # Process noise on gyro bias inside the pre-filter.
+    heading_filter_r_gps: 0.0025 # Measurement noise for GPS heading inside the pre-filter.
+    heading_output_gain: 0.0     # Backward-compatible fallback if per-mode gains below are omitted.
+    heading_output_gain_gps_valid: 0.35 # Pull model heading toward filtered heading when GPS heading is available.
+    heading_output_gain_gps_invalid: 0.12 # Keep some gyro-based heading anchoring during GPS dropout without fully overriding the network.
+    heading_output_max_correction: 0.35 # Limit one-step heading correction (rad) to avoid snaps.
     wheel_speed_scale: 1.0       # Proxy conversion from motor tach to wheel-speed channels.
-    device: auto                 # auto, cpu, or cuda
-    pred_hidden: 64
-    upd_hidden: 64
-    gain_hidden: 64
-    pred_mlp_hidden: 64
-    mask_hidden: 64
+    device: cpu                  # Tiny 1-step streaming inference is usually more stable on CPU than auto/GPU.
+    pred_hidden: 32
+    upd_hidden: 32
+    gain_hidden: 32
+    pred_mlp_hidden: 32
+    mask_hidden: 32
+    update_mask_init_bias: 2.0   # Positive bias keeps the updater mask closer to pass-through at initialization.
     use_hard_mask: false
 
 # Example override (when loading config into VehicleObserver):

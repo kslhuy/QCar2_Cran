@@ -9,6 +9,9 @@ import time
 from abc import ABC, abstractmethod
 from typing import Optional, Dict, Tuple
 import scipy.linalg
+from Observer.TrustbasedDistributedObserver.external_measurement_cache import (
+    ExternalMeasurementCache,
+)
 
 # Try importing cvxpy for LMI solving
 try:
@@ -36,7 +39,13 @@ class RelativeStateEstimatorBase(ABC):
         self.config = config or {}
         self.logger = logger
         self.state_dim = 4 # Default, e.g., [delta, delta_dot, delta_ddot, f_c]
-        
+        self.prefer_external_relative_measurement = bool(
+            self.config.get("prefer_external_relative_measurement", True)
+        )
+        self.relative_measurement_cache = ExternalMeasurementCache(
+            max_age_s=float(self.config.get("measurement_max_age_s", 1.0))
+        )
+
         # Initialize state
         self.state = np.zeros(self.state_dim)
         self.last_update_time = 0.0
@@ -45,25 +54,95 @@ class RelativeStateEstimatorBase(ABC):
         self.initialized = False
 
     @abstractmethod
-    def update(self, measurement: np.ndarray, dt: float, 
+    def update(self, measurement: Optional[np.ndarray], dt: float, 
                control_input: Optional[np.ndarray],
-               pre_vehicle_state: Optional[np.ndarray] = None,
-               host_vehicle_state: Optional[np.ndarray] = None
+               target_vehicle_state: Optional[np.ndarray] = None,
+               host_vehicle_state: Optional[np.ndarray] = None,
+               target_id: Optional[int] = None,
+               current_time_ns: Optional[int] = None,
                ) -> np.ndarray:
         """
         Update relative state estimate
         
         Args:
-            measurement: Measurement vector y(k) (e.g., radar/camera data + communication)
+            measurement: Optional direct measurement vector y(k) when provided
             dt: Time step
             control_input: Control input (e.g., acceleration)
-            pre_vehicle_state: State of preceding vehicle (if available/needed for input)
+            target_vehicle_state: State of the tracked target vehicle (if available)
             host_vehicle_state: State of host vehicle (if available/needed for input)
             
         Returns:
             Updated state estimate
         """
         pass
+
+    def set_external_relative_measurement(
+        self,
+        target_id: int,
+        distance: float,
+        relative_velocity: Optional[float] = None,
+        timestamp_ns: Optional[int] = None,
+        source: str = "external_sensor",
+        measurement_confidence: Optional[float] = None,
+    ) -> bool:
+        """Store externally measured host-target relative states (e.g. YOLO/radar)."""
+        return self.relative_measurement_cache.set(
+            target_id=target_id,
+            distance=distance,
+            relative_velocity=relative_velocity,
+            timestamp_ns=timestamp_ns,
+            source=source,
+            measurement_confidence=measurement_confidence,
+        )
+
+    def clear_external_relative_measurement(
+        self, target_id: Optional[int] = None
+    ) -> None:
+        """Clear cached external relative measurement(s)."""
+        self.relative_measurement_cache.clear(target_id)
+
+    def get_external_relative_measurement(
+        self, target_id: int, current_time_ns: int
+    ) -> Optional[Dict[str, float]]:
+        """Return fresh external relative measurement for the target, if available."""
+        return self.relative_measurement_cache.get(target_id, current_time_ns)
+
+    def _resolve_relative_measurement(
+        self,
+        measurement: Optional[np.ndarray],
+        target_id: Optional[int] = None,
+        current_time_ns: Optional[int] = None,
+    ) -> Optional[np.ndarray]:
+        """Return a normalized [distance, relative_velocity] measurement when available."""
+        y_meas = None
+
+        if (
+            self.prefer_external_relative_measurement
+            and target_id is not None
+            and current_time_ns is not None
+        ):
+            external = self.get_external_relative_measurement(target_id, current_time_ns)
+            if external is not None:
+                ext_distance = float(external.get("distance", float("nan")))
+                ext_rel_velocity = float(
+                    external.get("relative_velocity", float("nan"))
+                )
+                if np.isfinite(ext_distance) and ext_distance > 0.0:
+                    y_meas = np.array(
+                        [
+                            ext_distance,
+                            ext_rel_velocity if np.isfinite(ext_rel_velocity) else 0.0,
+                        ],
+                        dtype=float,
+                    )
+
+        if y_meas is None and measurement is not None:
+            arr = np.asarray(measurement, dtype=float).flatten()
+            if arr.size > 0 and np.isfinite(arr[0]) and arr[0] > 0.0:
+                rel_velocity = arr[1] if arr.size > 1 and np.isfinite(arr[1]) else 0.0
+                y_meas = np.array([float(arr[0]), float(rel_velocity)], dtype=float)
+
+        return y_meas
     
     @abstractmethod
     def get_state(self) -> np.ndarray:
@@ -199,18 +278,20 @@ class RelativeStateEstimatorBase(ABC):
 
 
 
-    def _compute_relative_measurement_from_v2v(self, host_state: np.ndarray, pre_state: np.ndarray) -> np.ndarray:
+    def _compute_relative_measurement_from_v2v(
+        self, host_state: np.ndarray, target_state: np.ndarray
+    ) -> np.ndarray:
         """
         Compute relative measurement (distance, relative velocity) from absolute states.
         
         Args:
             host_state: Host vehicle state [x, y, theta, v, ...]
-            pre_state: Preceding vehicle state [x, y, theta, v, ...]
+            target_state: Target vehicle state [x, y, theta, v, ...]
             
         Returns:
             np.ndarray: Derived measurement vector [delta, delta_dot]
         """
-        if host_state is None or pre_state is None:
+        if host_state is None or target_state is None:
             if self.logger:
                  self.logger.logger.warning("Cannot compute relative measurement: missing vehicle states.")
             return np.zeros(2)
@@ -219,17 +300,17 @@ class RelativeStateEstimatorBase(ABC):
         # Assuming state structure: [x, y, theta, v, a] (5 elements)
         # We need relative distance along path or Euclidean.
         
-        dx = pre_state[0] - host_state[0]
-        dy = pre_state[1] - host_state[1]
+        dx = target_state[0] - host_state[0]
+        dy = target_state[1] - host_state[1]
         
         dist = np.sqrt(dx**2 + dy**2)
         
         # Relative velocity
-        # delta_dot = v_pre - v_host
+        # delta_dot = v_target - v_host
         v_host = host_state[3]
-        v_pre = pre_state[3]
+        v_target = target_state[3]
         
-        delta_dot = v_pre - v_host
+        delta_dot = v_target - v_host
         
         return np.array([dist, delta_dot])
 
@@ -468,10 +549,12 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         # Initialize w state (4x1)
         self.w = np.zeros(4)
 
-    def update(self, measurement: np.ndarray, dt: float, 
+    def update(self, measurement: Optional[np.ndarray], dt: float, 
                control_input: Optional[np.ndarray],
-               pre_vehicle_state: Optional[np.ndarray] = None,
-               host_vehicle_state: Optional[np.ndarray] = None) -> np.ndarray:
+               target_vehicle_state: Optional[np.ndarray] = None,
+               host_vehicle_state: Optional[np.ndarray] = None,
+               target_id: Optional[int] = None,
+               current_time_ns: Optional[int] = None) -> np.ndarray:
         """
         Update the UIO observer.
         
@@ -480,7 +563,7 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
                          Typically relative distance/velocity or similar.
                          MATLAB: y(:,i) = Cd*psi(:,i) + ... -> 2 outputs.
             dt: Time step (unused if fixed Ts, but kept for interface)
-            pre_vehicle_state: Not explicitly used in update equation W(k+1) except via input?
+            target_vehicle_state: Not explicitly used in update equation W(k+1) except via input?
             host_vehicle_state: xf(2, i-1) used in MATLAB (velocity of host).
             
         MATLAB Update:
@@ -519,37 +602,39 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
            I will assume `mu` is 0 or ignored in the observer update if it's truly unknown, 
            OR the python implementation needs to accept it if it's known (e.g. communicated acceleration).
            
-           In SA-ACC, `mu` is often the preceding vehicle acceleration (via V2V). 
+           In SA-ACC, `mu` is often the target vehicle acceleration (via V2V). 
            So it might be treated as known input, and `fc` (attack) is the unknown part?
            The matrix `Wd` is for `fc`.
            E = [I Wd]. The "unknown" part being estimated/decoupled is related to `Wd` (the attack/disturbance).
-           `mu` (preceding acceleration) is treated as KNOWN (from V2V).
+           `mu` (target acceleration) is treated as KNOWN (from V2V).
            
            So arguments needed:
            - measurement (y)
            - host_velocity (u_host, xf(2))
-           - preceding_acceleration (u_pre, mu) (Comm. acc)
+           - target_acceleration (u_target, mu) (Comm. acc)
         """
         
         # Parse inputs
-        # y: 2 Dim [delta, delta_dot] measured?
-        y_k = measurement
-        
-        # Check if we should fake the measurement using V2V data
-        use_fake_meas = self.config.get('use_fake_relative_measurements', False)
-        
-        if use_fake_meas:
-            if host_vehicle_state is not None and pre_vehicle_state is not None:
-                y_k = self._compute_relative_measurement_from_v2v(host_vehicle_state, pre_vehicle_state)
-                # if self.logger:
-                #     self.logger.logger.debug(f"Using fake relative measurement: {y_k}")
-            else:
-                if self.logger:
-                    self.logger.logger.warning("use_fake_relative_measurements=True but missing states. Using raw measurement.")
+        y_k = self._resolve_relative_measurement(
+            measurement=measurement,
+            target_id=target_id,
+            current_time_ns=current_time_ns,
+        )
 
-        if y_k.shape[0] != 2:
-            # Try to grab relevant parts if larger
-            pass
+        # Check if we should synthesize the measurement from V2V data as a fallback.
+        use_fake_meas = self.config.get('use_fake_relative_measurements', False)
+        if y_k is None and use_fake_meas:
+            if host_vehicle_state is not None and target_vehicle_state is not None:
+                y_k = self._compute_relative_measurement_from_v2v(
+                    host_vehicle_state, target_vehicle_state
+                )
+            elif self.logger:
+                self.logger.logger.warning(
+                    "Relative estimator missing external measurement and V2V fallback states."
+                )
+
+        if y_k is None:
+            return self.state.copy()
 
         
         # Inputs
@@ -559,11 +644,11 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
             # Assuming state [x, y, theta, v, a]
             u_host_vel = host_vehicle_state[3]
              
-        # Preceding acceleration (mu)
-        u_pre_acc = 0.0
-        if pre_vehicle_state is not None:
+        # Target acceleration (mu)
+        u_target_acc = 0.0
+        if target_vehicle_state is not None:
             # Assuming state [x, y, theta, v, a]
-            u_pre_acc = pre_vehicle_state[4]
+            u_target_acc = target_vehicle_state[4]
              
         # 1. Estimation Step: ksi_hat = w + Qz*y
         ksi_hat = self.w + self.Qz @ y_k
@@ -576,7 +661,7 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         term_M = self.M.flatten() * u_host_vel
         
         # G = Pz*Fd. Fd is 3x1. G is 4x1.
-        term_G = self.G.flatten() * u_pre_acc
+        term_G = self.G.flatten() * u_target_acc
         
         term_Pz_delta = self.Pz_deltad.flatten()
         

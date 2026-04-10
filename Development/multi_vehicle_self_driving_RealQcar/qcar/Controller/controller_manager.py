@@ -328,13 +328,15 @@ class ControllerManager:
 
     def get_speed_controller(self):
         """
-        Get PID speed controller (for FOLLOWING_PATH state).
-        Convenience wrapper around get_longitudinal_controller('pid').
+        Get the configured path-state speed controller.
 
         Returns:
-            PIDVelocityController instance
+            Longitudinal controller instance for FOLLOWING_PATH
         """
-        return self.get_longitudinal_controller("pid")
+        ctrl_type = self._path_longitudinal_type
+        if ctrl_type not in {"pid", "qcar2_speed"}:
+            ctrl_type = "pid"
+        return self.get_longitudinal_controller(ctrl_type)
 
     # =============== Type Getters (for telemetry) ===============
 

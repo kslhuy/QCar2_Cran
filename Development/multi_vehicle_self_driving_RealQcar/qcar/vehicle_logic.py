@@ -122,7 +122,7 @@ class VehicleLogic:
                 v2v_manager=base_v2v_manager,
                 attack_config_path=attack_config_path,
                 # enabled=config.vehicle.enable_v2v_attack  # Uses fleet_config.yaml
-                enabled = True
+                enabled = False
             )
             self.vehicle_logger.logger.info("V2VAttackInjector successfully wrapped V2VManager.")
         except Exception as e:
@@ -196,6 +196,8 @@ class VehicleLogic:
         self._last_observer_time = 0.0
         self._last_control_time = 0.0
         self._last_telemetry_send = 0.0
+        self._last_command_poll_time = 0.0
+        self._last_v2v_broadcast_attempt = 0.0
 
         # V2V status cache
         self._v2v_status_cache = {}
@@ -204,6 +206,15 @@ class VehicleLogic:
         # Periodic status broadcast tracking
         self._last_status_broadcast_time = 0.0
         self._status_broadcast_rate = 1.0  # 1 Hz
+        self._command_poll_rate = min(float(self.controller_rate), 50.0)
+        self._v2v_broadcast_attempt_rate = min(
+            float(self.controller_rate),
+            max(20.0, 2.0 * float(v2v_config.local_state_frequency)),
+        )
+
+        # Low-churn periodic status cache
+        self._periodic_status_static_fields = {}
+        self._periodic_status_static_fields_dirty = True
 
         # Pre-allocate telemetry dict to save memory
         self._telemetry_state = {
@@ -220,6 +231,7 @@ class VehicleLogic:
             "state": "UNKNOWN",
             "gps_valid": False,
         }
+        self._latest_observer_state = None
 
         # Initialize Vehicle Observer for local and fleet state estimation
         # VehicleObserver is a manager class that coordinates:
@@ -284,38 +296,75 @@ class VehicleLogic:
                 self.vehicle_logger.logger.warning("V2V Attack Module not available")
                 return
 
-            from V2V.AttackModule.AttackScenarios import make_scenario
-            
-            attack_type = data.get('attack_type', 'Bogus')
-            attacker_id = int(data.get('attacker_id', self.vehicle_id))
-            
+            from V2V.AttackModule.AttackScenarios import build_attack_scenario
+
+            attack_type = str(data.get('attack_type', 'Bogus')).strip()
+            case_num = int(data.get('case_num', 1))
+            data_type = str(data.get('data_type', 'local')).strip().lower()
+
+            attacker_id_raw = data.get('attacker_id', self.vehicle_id)
+            if attacker_id_raw in (None, "", "all"):
+                requested_attacker_id = -1
+            else:
+                requested_attacker_id = int(attacker_id_raw)
+
             # Since this function runs on the target car, we only apply if we are the attacker.
-            if attacker_id != int(self.vehicle_id) and attacker_id != -1:
+            if requested_attacker_id not in (int(self.vehicle_id), -1):
                 return
-            
+
             # Parse victims properly
             victim_ids = data.get('victim_ids', [])
             if isinstance(victim_ids, str):
                 try:
                     import json
                     victim_ids = json.loads(victim_ids)
-                except:
+                except Exception:
                     victim_ids = []
-            
-            scenario = make_scenario(
-                attack_type=attack_type,
-                case_num=int(data.get('case_num', 1)),
-                attacker_id=attacker_id,
-                victim_ids=victim_ids,
-                data_type=data.get('data_type', 'local')
+
+            if not isinstance(victim_ids, list):
+                victim_ids = [victim_ids]
+
+            normalized_victim_ids = []
+            for victim_id in victim_ids:
+                if victim_id in (None, "", "all", -1):
+                    normalized_victim_ids = -1
+                    break
+                normalized_victim_ids.append(int(victim_id))
+
+            if normalized_victim_ids == []:
+                normalized_victim_ids = -1
+
+            # Manual trigger semantics: start now and stay active until the user disables it.
+            manual_t_start = (
+                self.v2v_manager.get_elapsed_time()
+                if hasattr(self.v2v_manager, 'get_elapsed_time')
+                else self.elapsed_time()
             )
-            
+            scenario_attacker_id = (
+                int(self.vehicle_id)
+                if requested_attacker_id == -1
+                else requested_attacker_id
+            )
+            scenario = build_attack_scenario(
+                attack_type=attack_type,
+                case_number=case_num,
+                attacker_id=scenario_attacker_id,
+                victim_ids=normalized_victim_ids,
+                t_start=manual_t_start,
+                t_end=float("inf"),
+                data_type=data_type,
+            )
+
             if hasattr(self.v2v_manager, 'clear_attack_scenarios'):
                 self.v2v_manager.clear_attack_scenarios()
             self.v2v_manager.add_attack_scenario(scenario)
             self.v2v_manager.enable_attacks()
-            
-            self.vehicle_logger.logger.info(f"Triggered {attack_type} attack (Case {data.get('case_num', 1)}) on victims {victim_ids}")
+
+            self.vehicle_logger.logger.info(
+                f"Triggered manual {attack_type} attack (Case {case_num}) "
+                f"starting at t={manual_t_start:.3f}s and running until disabled. "
+                f"Victims: {normalized_victim_ids}"
+            )
         except Exception as e:
             self.vehicle_logger.log_error(f"Failed to trigger V2V attack", e)
 
@@ -577,6 +626,7 @@ class VehicleLogic:
         )  # Set reference for relative timestamps
         self.loop_counter = 0
         self.telemetry_counter = 0
+        self._latest_observer_state = None
 
         # Main control loop
         target_dt = 1.0 / self.controller_rate
@@ -605,10 +655,10 @@ class VehicleLogic:
                         break
 
                 # 4. Communication Tasks (each manages own rate internally)
-                self._send_telemetry_to_ground_station()  # 10Hz internal rate-limiting
-                self._broadcast_periodic_status()  # 1Hz periodic status (V2V, Platoon, System)
-                self._process_queued_commands()  # No rate limit - process as fast as possible
-                self._broadcast_v2v_state()  # V2VManager handles internal rate-limiting
+                self._send_telemetry_to_ground_station()
+                self._broadcast_periodic_status()
+                self._process_queued_commands()
+                self._broadcast_v2v_state()
 
                 # Performance monitoring
                 loop_time = time.time() - loop_start
@@ -653,6 +703,42 @@ class VehicleLogic:
             return True
         return False
 
+    def _should_poll_commands(self, current_time: float) -> bool:
+        """Poll queued commands at a bounded rate to reduce loop overhead."""
+        if current_time - self._last_command_poll_time >= 1.0 / self._command_poll_rate:
+            self._last_command_poll_time = current_time
+            return True
+        return False
+
+    def _should_attempt_v2v_broadcast(self, current_time: float) -> bool:
+        """Attempt V2V broadcasts near the configured max cadence, not every control tick."""
+        if current_time - self._last_v2v_broadcast_attempt >= (
+            1.0 / self._v2v_broadcast_attempt_rate
+        ):
+            self._last_v2v_broadcast_attempt = current_time
+            return True
+        return False
+
+    def _get_cached_control_state(self) -> dict:
+        """Return the latest observer snapshot, falling back to the observer cache."""
+        cached_state = self._latest_observer_state
+        if cached_state is not None:
+            local_state = cached_state.get("local_state")
+            acceleration = 0.0
+            if local_state is not None and len(local_state) > 4:
+                acceleration = float(local_state[4])
+
+            return {
+                "x": float(cached_state["x"]),
+                "y": float(cached_state["y"]),
+                "theta": float(cached_state["theta"]),
+                "velocity": float(cached_state["velocity"]),
+                "acceleration": acceleration,
+                "gps_valid": bool(cached_state.get("gps_valid", False)),
+            }
+
+        return self.vehicle_observer.get_estimated_state_for_control()
+
     # ===== Sensor Data Reading Methods =====
     def _update_sensor_data(self, dt: float):
         """Update sensor data using VehicleObserver - called every loop iteration"""
@@ -682,6 +768,7 @@ class VehicleLogic:
                                     measurement_confidence=float(
                                         rel_meas.get("confidence", float("nan"))
                                     ),
+                                    timestamp_ns=rel_meas.get("timestamp_ns"),
                                 )
 
         except Exception as e:
@@ -706,19 +793,20 @@ class VehicleLogic:
             state_info = self.vehicle_observer.update_observer(
                 dt, last_steering, last_u
             )
+            self._latest_observer_state = state_info
 
             # Feed Online SysID with latest [v_x, v_y, omega, delta] sample.
-            sample = self.vehicle_observer.get_online_sysid_sample(dt=dt)
-            if sample is not None:
-                if hasattr(self, "online_sysid_zmq") and self.online_sysid_zmq:
-                    if self.online_sysid_zmq.is_collecting():
+            if hasattr(self, "online_sysid_zmq") and self.online_sysid_zmq:
+                if self.online_sysid_zmq.is_collecting():
+                    sample = self.vehicle_observer.get_online_sysid_sample(dt=dt)
+                    if sample is not None:
                         self.online_sysid_zmq.submit_sample(sample)
 
             # Feed passive calibration with [v, throttle, steering, yaw_rate, ax, ay, az].
-            cal_sample = self.vehicle_observer.get_calibration_sample()
-            if cal_sample is not None:
-                if hasattr(self, "online_calibration_zmq") and self.online_calibration_zmq:
-                    if self.online_calibration_zmq.is_collecting():
+            if hasattr(self, "online_calibration_zmq") and self.online_calibration_zmq:
+                if self.online_calibration_zmq.is_collecting():
+                    cal_sample = self.vehicle_observer.get_calibration_sample()
+                    if cal_sample is not None:
                         self.online_calibration_zmq.submit_sample(cal_sample)
 
             self._submit_robust_kalmannet_sample(time.time())
@@ -801,7 +889,7 @@ class VehicleLogic:
                 return self._handle_initialization_control(dt)
 
             # Get current state from VehicleObserver
-            sensor_data = self.vehicle_observer.get_estimated_state_for_control()
+            sensor_data = self._get_cached_control_state()
             # Prepare YOLO data
             sensor_data["yolo_data"] = self.yolo_manager.get_yolo_data()
 
@@ -812,20 +900,22 @@ class VehicleLogic:
                 # self.vehicle_logger.log_error("State machine returned invalid control commands")
                 return True  # Skip sending commands
 
+            delta = float(np.clip(delta, -0.48, 0.48))  # Keep within physical limits
 
             self._last_steering = delta
 
-            if self.vehicle_type == "Limo":
-                # Driver expects Ackermann steering angle [rad] on angular.z.
-                # Keep compatibility with potential normalized outputs.
-                delta_input = float(delta)
-                if abs(delta_input) <= 0.55:
-                    delta = delta_input
-                else:
-                    delta = max(-1.0, min(1.0, delta_input)) * 0.48869
-                delta = float(np.clip(delta, -0.48869, 0.48869))
-            else:
-                delta = max(-1.0, min(1.0, delta))
+            # if self.vehicle_type == "Limo":
+            #     # Driver expects Ackermann steering angle [rad] on angular.z.
+            #     # Keep compatibility with potential normalized outputs.
+            #     delta_input = float(delta)
+            #     if abs(delta_input) <= 0.55:
+            #         delta = delta_input
+            #     else:
+            #         delta = max(-1.0, min(1.0, delta_input)) * 0.48869
+            #     delta = float(np.clip(delta, -0.48869, 0.48869))
+            # else:
+            #     delta = max(-1.0, min(1.0, delta))
+
 
             if self.qcar is not None:
                 if self.vehicle_type == "Limo":
@@ -941,7 +1031,7 @@ class VehicleLogic:
     def _build_telemetry_data(self) -> dict:
         """Build telemetry data dictionary - pure data collection"""
         # Update pre-allocated telemetry dictionary in-place
-        state_info = self.vehicle_observer.get_estimated_state_for_control()
+        state_info = self._get_cached_control_state()
 
         self._telemetry_state["timestamp"] = time.time()
         self._telemetry_state["time"] = self.elapsed_time()
@@ -953,7 +1043,7 @@ class VehicleLogic:
         self._telemetry_state["delta"] = float(getattr(self, "_last_steering", 0.0))
         
         self._telemetry_state["state"] = self.state_machine.state.name if hasattr(self.state_machine, "state") and self.state_machine.state else "UNKNOWN"
-        self._telemetry_state["gps_valid"] = self.vehicle_observer.is_gps_valid() if hasattr(self, "vehicle_observer") and self.vehicle_observer else False
+        self._telemetry_state["gps_valid"] = bool(state_info.get("gps_valid", False))
 
         return self._telemetry_state
 
@@ -1007,19 +1097,8 @@ class VehicleLogic:
     def _get_platoon_status(self) -> dict:
         """Get platoon status from platoon_controller for telemetry"""
         try:
-            if hasattr(self, "platoon_controller") and self.platoon_controller:
-                return {
-                    "platoon_enabled": self.platoon_controller.enabled,
-                    "platoon_is_leader": self.platoon_controller.is_leader,
-                    "platoon_position": getattr(
-                        self.platoon_controller, "my_position", None
-                    ),
-                    "platoon_leader_id": self.platoon_controller.leader_car_id,
-                    "platoon_setup_complete": getattr(
-                        self.platoon_controller, "setup_complete", False
-                    ),
-                }
-            else:
+            platoon_controller = getattr(self, "platoon_controller", None)
+            if platoon_controller is None:
                 return {
                     "platoon_enabled": False,
                     "platoon_is_leader": False,
@@ -1027,6 +1106,16 @@ class VehicleLogic:
                     "platoon_leader_id": None,
                     "platoon_setup_complete": False,
                 }
+
+            return {
+                "platoon_enabled": platoon_controller.enabled,
+                "platoon_is_leader": platoon_controller.is_leader,
+                "platoon_position": getattr(platoon_controller, "my_position", None),
+                "platoon_leader_id": platoon_controller.leader_car_id,
+                "platoon_setup_complete": getattr(
+                    platoon_controller, "setup_complete", False
+                ),
+            }
         except Exception as e:
             self.vehicle_logger.logger.error(f"Error getting platoon status: {e}")
             return {
@@ -1037,6 +1126,114 @@ class VehicleLogic:
                 "platoon_setup_complete": False,
             }
 
+    def invalidate_periodic_status_cache(self) -> None:
+        """Mark low-frequency static status fields dirty for rebuild."""
+        self._periodic_status_static_fields_dirty = True
+
+    def _is_ground_station_connected(self) -> bool:
+        """Return True when telemetry can be queued to the Ground Station."""
+        client = getattr(self, "client_Ground_Station", None)
+        if client is None:
+            return False
+
+        try:
+            return bool(getattr(client, "is_connected", lambda: True)())
+        except Exception:
+            return False
+
+    def _get_observer_type_status(self) -> dict:
+        """Get observer selections for low-rate status broadcasts."""
+        vehicle_observer = getattr(self, "vehicle_observer", None)
+        if vehicle_observer is None:
+            return {
+                "local_observer_type": "unknown",
+                "fleet_observer_type": "unknown",
+            }
+
+        return {
+            "local_observer_type": getattr(
+                vehicle_observer, "local_estimator_type", "unknown"
+            ),
+            "fleet_observer_type": getattr(
+                vehicle_observer, "fleet_estimator_type", "unknown"
+            ),
+        }
+
+    def _get_controller_type_status(self) -> dict:
+        """Get active controller types for low-rate status broadcasts."""
+        controller_manager = getattr(self, "controller_manager", None)
+        if controller_manager is None:
+            return {
+                "path_long_ctrl": "unknown",
+                "path_lat_ctrl": "unknown",
+                "leader_long_ctrl": "unknown",
+                "leader_lat_ctrl": "unknown",
+            }
+
+        return {
+            "path_long_ctrl": controller_manager.get_longitudinal_type("path"),
+            "path_lat_ctrl": controller_manager.get_lateral_type("path"),
+            "leader_long_ctrl": controller_manager.get_longitudinal_type("leader"),
+            "leader_lat_ctrl": controller_manager.get_lateral_type("leader"),
+        }
+
+    def _get_cached_periodic_static_status(self) -> dict:
+        """Get cached low-churn status fields and rebuild only when invalidated."""
+        if (
+            self._periodic_status_static_fields_dirty
+            or not self._periodic_status_static_fields
+        ):
+            static_fields = {}
+            static_fields.update(self._get_observer_type_status())
+            static_fields.update(self._get_controller_type_status())
+            self._periodic_status_static_fields = static_fields
+            self._periodic_status_static_fields_dirty = False
+
+        return self._periodic_status_static_fields
+
+    def _build_v2v_status_details(self, v2v_status: dict) -> dict:
+        """Build the nested V2V payload expected by the Ground Station."""
+        is_active = bool(v2v_status.get("v2v_active", False))
+        peer_count = int(v2v_status.get("v2v_peers", 0))
+        return {
+            "status": "connected" if is_active else "disconnected",
+            "connected_peers": peer_count,
+            "fleet_size": (peer_count + 1) if is_active else 1,
+        }
+
+    def _build_periodic_status_message(self, current_time: float) -> dict:
+        """Build the periodic low-rate status payload for the Ground Station."""
+        v2v_status = self._get_v2v_status_cache()
+        status_msg = {
+            "type": "v2v_status",
+            "timestamp": current_time,
+            "car_id": self.vehicle_id,
+            "vehicle_type": self.vehicle_type,
+            "programme_type": self.programme_type,
+            "perception_active": bool(
+                getattr(getattr(self, "yolo_manager", None), "yolo_enabled", False)
+            ),
+            "node_sequence": getattr(self, "node_sequence", None),
+            "operational_status": self.get_operational_status(),
+            "online_sysid_status": self._get_online_sysid_status(),
+            "robust_kalmannet_dataset_status": self._get_robust_kalmannet_dataset_status(),
+            "data": self._build_v2v_status_details(v2v_status),
+        }
+        status_msg.update(v2v_status)
+        status_msg.update(self._get_platoon_status())
+        status_msg.update(self._get_cached_periodic_static_status())
+
+        try:
+            current_handler = self.state_machine.get_current_state_handler()
+            if current_handler and hasattr(current_handler, "get_path_visualization_data"):
+                path_viz = current_handler.get_path_visualization_data()
+                if path_viz:
+                    status_msg["path_viz"] = path_viz
+        except Exception:
+            pass
+
+        return status_msg
+
     def _broadcast_periodic_status(self):
         """Broadcast periodic status (V2V, Platoon, etc.) at low rate (1Hz)"""
         try:
@@ -1046,97 +1243,11 @@ class VehicleLogic:
             ):
                 return
 
-            # Get V2V status
-            v2v_status = self._get_v2v_status_cache()
+            if not self._is_ground_station_connected():
+                return
 
-            # Get Platoon status
-            platoon_status = self._get_platoon_status()
-
-            # # Additional system status if needed
-            # system_status = {
-            #     'cpu_usage': 0.0, # Placeholder
-            #     'memory_usage': 0.0 # Placeholder
-            # }
-
-            # Construct periodic status message
-            # Note: We send 'v2v_status' type to trigger the specific handler in GS,
-            # but we also include top-level fields merged into main state by GS remote_controller
-
-            # Determine V2V details for the handler
-            v2v_details = {
-                "status": "connected"
-                if v2v_status.get("v2v_active")
-                else "disconnected",
-                "connected_peers": v2v_status.get("v2v_peers", 0),
-                "fleet_size": v2v_status.get("v2v_peers", 0) + 1
-                if v2v_status.get("v2v_active")
-                else 1,
-            }
-
-            status_msg = {
-                "type": "v2v_status",  # Triggers V2V handler in GS
-                "timestamp": current_time,
-                "car_id": self.vehicle_id,
-                "vehicle_type": self.vehicle_type,
-                "programme_type": self.programme_type,
-                # Top-level fields (will be merged into car state by GS)
-                **v2v_status,
-                **platoon_status,
-                # Observer and Controller types (low-frequency update - only changes on user request)
-                "local_observer_type": getattr(
-                    self.vehicle_observer, "local_estimator_type", "unknown"
-                )
-                if hasattr(self, "vehicle_observer")
-                else "unknown",
-                "fleet_observer_type": getattr(
-                    self.vehicle_observer, "fleet_estimator_type", "unknown"
-                )
-                if hasattr(self, "vehicle_observer")
-                else "unknown",
-                # Use controller_manager for actual active controller types per state
-                "path_long_ctrl": self.controller_manager.get_longitudinal_type("path")
-                if hasattr(self, "controller_manager")
-                else "unknown",
-                "path_lat_ctrl": self.controller_manager.get_lateral_type("path")
-                if hasattr(self, "controller_manager")
-                else "unknown",
-                "leader_long_ctrl": self.controller_manager.get_longitudinal_type(
-                    "leader"
-                )
-                if hasattr(self, "controller_manager")
-                else "unknown",
-                "leader_lat_ctrl": self.controller_manager.get_lateral_type("leader")
-                if hasattr(self, "controller_manager")
-                else "unknown",
-                # Perception status
-                "perception_active": self.yolo_manager.yolo_enabled
-                if hasattr(self, "yolo_manager")
-                else False,
-                # Path information
-                "node_sequence": getattr(self, "node_sequence", None),
-                "operational_status": self.get_operational_status(),
-                "online_sysid_status": self._get_online_sysid_status(),
-                "robust_kalmannet_dataset_status": self._get_robust_kalmannet_dataset_status(),
-                # Payload for the handler
-                "data": v2v_details,
-            }
-
-            # Append path visualization data from current state handler
-            try:
-                current_handler = self.state_machine.get_current_state_handler()
-                if current_handler and hasattr(current_handler, "get_path_visualization_data"):
-                    path_viz = current_handler.get_path_visualization_data()
-                    if path_viz:
-                        status_msg["path_viz"] = path_viz
-            except Exception:
-                pass  # Non-critical, don't let viz data break status broadcast
-
-            if self.client_Ground_Station:
-                is_connected = getattr(
-                    self.client_Ground_Station, "is_connected", lambda: True
-                )()
-                if is_connected:
-                    self.client_Ground_Station.queue_telemetry(status_msg)
+            status_msg = self._build_periodic_status_message(current_time)
+            self.client_Ground_Station.queue_telemetry(status_msg)
 
             self._last_status_broadcast_time = current_time
 
@@ -1146,6 +1257,10 @@ class VehicleLogic:
     def _broadcast_v2v_state(self):
         """Broadcast vehicle state to V2V network - V2VManager handles rate-limiting internally"""
         try:
+            current_time = time.time()
+            if not self._should_attempt_v2v_broadcast(current_time):
+                return
+
             if not hasattr(self, "v2v_manager") or self.v2v_manager is None:
                 return
 
@@ -1188,6 +1303,10 @@ class VehicleLogic:
         """Process commands from queue (non-blocking)"""
         if self.client_Ground_Station:
             try:
+                current_time = time.time()
+                if not self._should_poll_commands(current_time):
+                    return
+
                 # Check if client has is_connected method, if not assume connected
                 is_connected = getattr(
                     self.client_Ground_Station, "is_connected", lambda: True

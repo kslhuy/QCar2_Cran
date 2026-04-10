@@ -534,6 +534,8 @@ class FollowingLeaderState(StateBase):
             "velocity": velocity,
             "acceleration": acceleration,
             "target_velocity": base_velocity,
+            # "motor_tach": float(sensor_data.get("motor_tach", velocity)),
+            # "battery_voltage": float(sensor_data.get("battery_voltage", 0.0)),
             # Turning context for dynamic lookahead
             "is_turning": is_turning,
             "turn_direction": turn_direction,

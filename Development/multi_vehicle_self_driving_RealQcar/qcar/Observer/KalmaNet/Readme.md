@@ -137,6 +137,115 @@ Notes:
 - the dataset must contain at least `sequence_length` samples
 - validation uses teacher forcing disabled, which is the realistic offline check
 
+## How the current model learns
+
+`RobustStateNet` has two logical parts:
+
+- `predictor`: produces the prior state `x_{k|k-1}`
+- `updater`: produces the corrected state `x_{k|k}`
+
+At each timestep the flow is:
+
+1. Build branch inputs from raw sensors and the current state estimate.
+2. Predict the next state before correction.
+3. Compare that prediction against the measurement vector `z_k`.
+4. Learn a Kalman-like correction and apply it.
+
+### Predictor
+
+When `predictor_mode: nn`, the predictor is learned and contains:
+
+- 3 branch LSTMs:
+  - IMU branch
+  - steering branch
+  - wheel branch
+- 1 predictor mask MLP:
+  - receives the concatenated branch features
+  - outputs a feature-wise mask to suppress unreliable branch features
+- 1 motion regressor MLP:
+  - maps masked fused features to motion terms
+  - output is `[dxE, dyE, dpsi, v_next, w_next]`
+
+Then a deterministic kinematic conversion maps that motion into the predicted state `x_{k|k-1}`.
+
+When `predictor_mode: kinematic`, the learned predictor is bypassed. In that mode:
+
+- the predictor LSTMs are not used
+- the predictor mask is not used
+- the prior state is produced by the analytical kinematic model
+- the main learned part is the updater
+
+This is the current recommended mode for this project.
+
+### Updater
+
+The updater is the learned correction block. It receives:
+
+- `dx = x_{k|k-1} - x_{k-1|k-1}`
+- innovation `dz_p = z_k - H x_{k|k-1}`
+- measurement change `dz = z_k - z_{k-1}`
+- `gps_valid`
+
+It contains:
+
+- 1 update mask MLP:
+  - gates update features before they reach the recurrent layer
+  - purpose: suppress weak or unreliable correction cues
+- 1 GRU:
+  - keeps temporal memory for the correction process
+  - purpose: learn how the correction should depend on recent history, not only the current innovation
+- 1 gain MLP:
+  - maps the GRU hidden state to a full learned gain matrix `K`
+
+The final update is Kalman-style:
+
+```text
+x_{k|k} = x_{k|k-1} + K_k (z_k - H x_{k|k-1})
+```
+
+### What LSTM, GRU, and MLP do here
+
+- `LSTM`
+  - used only in the learned predictor
+  - learns temporal patterns in each sensor branch
+- `GRU`
+  - used only in the updater
+  - learns temporal behavior of the correction step
+- `MLP`
+  - used for the predictor mask
+  - used for the motion regressor
+  - used for the update mask
+  - used for mapping the GRU hidden state to the gain matrix
+
+### Why `gps_valid` is part of the updater input
+
+The measurement vector `z = [x, y, theta, v, w]` always has the same shape, even when GPS is missing.
+
+When GPS is unavailable, the code fills the position channels with dead-reckoning so the tensor shape stays valid. That does not mean those channels should be trusted like real GPS. `gps_valid` tells the updater whether the position measurement is:
+
+- real GPS-backed data
+- or fallback pseudo-measurement
+
+This lets the updater behave closer to a standard estimator that would skip or strongly downweight GPS correction when GPS is unavailable.
+
+### Three-phase training
+
+The trainer uses three phases:
+
+1. Phase A: predictor only
+   - teacher forcing on
+   - updater frozen
+   - trains `x_pred`
+2. Phase B: updater only
+   - teacher forcing on
+   - predictor frozen
+   - trains `x_upd`
+3. Phase C: end-to-end
+   - teacher forcing off
+   - both parts train together over autoregressive rollouts
+
+If `--predictor-mode kinematic` is used, Phase A is skipped automatically because the predictor has no trainable parameters.
+
 
 ## 3. Validate the trained checkpoint
 
@@ -248,41 +357,6 @@ python .\validate_robust_kalmannet.py `
   --sequence-length 20 `
   --output validation_metrics.json
 ```
-
-
- How the 2-Phase Training Adapts
-The training script continues to use a two-phase approach (P1-TF and P2-E2E):
-
-Phase 1: Teacher Forcing (Epochs 1-50)
-What happens: The network is fed the Ground Truth state $x_{k-1}$ as the input to step $k$.
-With Kinematic Mode: The kinematic model uses the ground truth previous state to predict pure physics. The difference between this physics prediction and the next ground truth state is passed to the 3-cascaded GRU.
-Goal: This forces the $Q, \Sigma, S$ GRUs to learn how to perfectly calculate the Kalman Gain without having to worry about compounding errors from previous bad predictions.
-Phase 2: End-to-End (Epochs 51-100)
-What happens: Teacher forcing is disabled. The network uses its own past outputs $x_{k-1|k-1}$ for the next step.
-With Kinematic Mode: The Cascaded GRUs learn to stabilize the physics model over rolling horizons.
-💻 How to Run the Training
-Ensure you are in the Robust directory inside your conda environment, and simply run the script.
-
-To train the new Kinematic setup:
-
-
-
-bash'''
-
-python train_robust_kalmannet.py "C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Robust\datasets\robust_kalmannet_dataset_V0_20260401_170829.npz" --predictor-mode kinematic
-
-'''
-(Note: Replace Dataset_100ms.npz with your actual dataset file name)
-
-To train the original NN Predictor setup (it still works!):
-
-bash
-python train_robust_kalmannet.py "C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Dataset_100ms.npz"
-Useful flags:
---epochs <number>: Adjust total epochs (default 100).
---attack-prob <float>: Adjust how frequently sensor attacks are injected during training (default 0.3).
---batch-size <number>: Lower this if you run into CUDA Out-Of-Memory errors due to the 3-GRU setup (default 64).
-
 ## 6. Common mistakes
 
 - Recording data while `robust_kalman_net` is active instead of `ekf`

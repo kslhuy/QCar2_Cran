@@ -11,7 +11,9 @@ remote:
   Qcar:
     username: nvidia
     password: nvidia
-    remote_path: /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar
+    remote_path: /home/nvidia/Documents/multi_vehicle_RealCar
+    remote_path_py: /home/nvidia/Documents/multi_vehicle_RealCar
+    remote_path_ros: /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar
     # Remote QCar Configuration
   Limo:
     username: agilex
@@ -164,16 +166,16 @@ safety:
 logging:
   log_dir: "logs"
   data_log_dir: "data_logs"
-  enable_telemetry_logging: true
+  enable_telemetry_logging: false
   enable_state_logging: true
   log_level: "INFO"
   console_output: true
   # Granular logging control
-  enable_fleet_estimation_logging: true
+  enable_fleet_estimation_logging: false
   enable_local_estimation_logging: false
   enable_following_leader_logging: false
-  enable_trust_weight_logging: true
+  enable_trust_weight_logging: false
   
   # File naming strategy
-  use_timestamped_log_files: true  # true = create new timestamped file/folder, false = use single static file (append/overwrite)
+  use_timestamped_log_files: false  # true = create new timestamped file/folder, false = use single static file (append/overwrite)
 

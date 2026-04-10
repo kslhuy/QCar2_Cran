@@ -710,6 +710,8 @@ class StateBase:
             return False
 
         if success:
+            if hasattr(self.vehicle_logic, "invalidate_periodic_status_cache"):
+                self.vehicle_logic.invalidate_periodic_status_cache()
             self._on_controller_switched(category, controller_type, state_context)
         # else:
         #     self.logger.logger.error(f"Failed to switch {category} controller to {controller_type}")
@@ -1554,6 +1556,8 @@ class StateBase:
             # Swap the estimator
             vehicle_observer.set_local_estimator(new_estimator)
             vehicle_observer.local_estimator_type = observer_type
+            if hasattr(self.vehicle_logic, "invalidate_periodic_status_cache"):
+                self.vehicle_logic.invalidate_periodic_status_cache()
 
             return True
 
@@ -1612,6 +1616,8 @@ class StateBase:
             # Swap the estimator
             vehicle_observer.set_fleet_estimator(new_estimator)
             vehicle_observer.fleet_estimator_type = observer_type
+            if hasattr(self.vehicle_logic, "invalidate_periodic_status_cache"):
+                self.vehicle_logic.invalidate_periodic_status_cache()
 
             return True
 

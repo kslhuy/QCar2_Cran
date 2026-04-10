@@ -45,7 +45,7 @@ scenarios:
 
   # Case 1: Velocity Scaling (Negative) - Reverse velocity direction
   - name: "Bogus_Velocity_Scaling_Negative"
-    enabled: enable
+    enabled: false # true or enable
     attack_type: "Bogus"
     modification_type: "scaling"
     data_type: "fleet"

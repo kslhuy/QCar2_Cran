@@ -398,13 +398,13 @@ class RuntimeSwitchingControl(BaseWidget):
             ["consensus", "distributed_luenberger", "trust_consensus", "trust_kalman"],
         )
         path_long = self.config.get(
-            "path_longitudinal_controllers", ["pid", "cacc", "sa_acc"]
+            "path_longitudinal_controllers", ["pid", "qcar2_speed", "cacc", "sa_acc"]
         )
         path_lat = self.config.get(
             "path_lateral_controllers", ["pp_map", "path", "stanley", "mpc"]
         )
         leader_long = self.config.get(
-            "leader_longitudinal_controllers", ["cacc", "pid", "sa_acc"]
+            "leader_longitudinal_controllers", ["cacc", "pid", "qcar2_speed", "sa_acc"]
         )
         leader_lat = self.config.get(
             "leader_lateral_controllers",

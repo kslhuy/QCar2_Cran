@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 
 
-RAW_KEYS = ("ax", "ay", "wz", "delta", "vfl", "vfr", "vrl", "vrr")
+RAW_KEYS = ("ax", "ay", "wz", "delta", "vfl", "vfr", "vrl", "vrr", "gps_valid")
 TARGET_DIM = 5
 MEAS_DIM = 5
 
@@ -129,16 +129,40 @@ class RobustKalmanNetDatasetRecorder:
             gps_y = float(gps_data.get("y", target[1])) if gps_data else float(target[1])
             gps_theta = _wrap_angle(float(gps_data.get("theta", target[2]))) if gps_data else _wrap_angle(float(target[2]))
 
-            z = np.array(
-                [
-                    gps_x if gps_valid else float(target[0]),
-                    gps_y if gps_valid else float(target[1]),
-                    gps_theta if gps_valid else _wrap_angle(float(target[2])),
-                    float(motor_tach),
-                    w,
-                ],
-                dtype=np.float32,
-            )
+            if gps_valid:
+                # GPS available → use real GPS data
+                z = np.array(
+                    [gps_x, gps_y, gps_theta, float(motor_tach), w],
+                    dtype=np.float32,
+                )
+            else:
+                # FIX-3: GPS unavailable → use dead-reckoning from previous
+                # recorded sample so the distributional gap between training
+                # and inference is reduced.  (Previously this used clean EKF
+                # target values, which the model would never see at test time.)
+                prev_z = self._buffers["z"][-1] if self._buffers["z"] else None
+                if prev_z is not None:
+                    prev_ts = self._buffers["timestamps"][-1] if self._buffers["timestamps"] else timestamp
+                    dt_rec = max(float(timestamp) - float(prev_ts), 1e-3)
+                    prev_v = float(prev_z[3])
+                    prev_theta = float(prev_z[2])
+                    z = np.array(
+                        [
+                            float(prev_z[0]) + prev_v * np.cos(prev_theta) * dt_rec,
+                            float(prev_z[1]) + prev_v * np.sin(prev_theta) * dt_rec,
+                            _wrap_angle(prev_theta + w * dt_rec),
+                            float(motor_tach),
+                            w,
+                        ],
+                        dtype=np.float32,
+                    )
+                else:
+                    # Very first sample — no history, use target as initial seed
+                    z = np.array(
+                        [float(target[0]), float(target[1]), _wrap_angle(float(target[2])), float(motor_tach), w],
+                        dtype=np.float32,
+                    )
+
 
             target_w = float(target[4]) if target.size > 4 else w
             x_gt = np.array(
@@ -298,7 +322,20 @@ def merge_recorded_datasets(paths: Iterable[str]) -> Dict[str, Any]:
     if not datasets:
         raise ValueError("No dataset paths provided")
 
-    merged: Dict[str, Any] = {"metadata": {"source_files": [ds["path"] for ds in datasets]}}
+    merged: Dict[str, Any] = {
+        "metadata": {
+            "source_files": [ds["path"] for ds in datasets],
+            "segment_lengths": [int(np.asarray(ds["timestamps"]).shape[0]) for ds in datasets],
+            "source_segments": [
+                {
+                    "path": ds["path"],
+                    "length": int(np.asarray(ds["timestamps"]).shape[0]),
+                    "dt_mean": float(ds.get("metadata", {}).get("dt_mean", 0.02) or 0.02),
+                }
+                for ds in datasets
+            ],
+        }
+    }
     keys = [k for k in datasets[0].keys() if k not in {"metadata", "path"}]
     for key in keys:
         merged[key] = np.concatenate([np.asarray(ds[key]) for ds in datasets], axis=0)
@@ -321,23 +358,61 @@ def build_training_windows(
     sequence_length: int,
     stride: int = 1,
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    metadata = dataset.get("metadata", {}) or {}
+    segment_lengths = [int(length) for length in metadata.get("segment_lengths", []) if int(length) > 0]
+    source_segments = metadata.get("source_segments", []) or []
+
+    if not segment_lengths:
+        segment_lengths = [int(np.asarray(dataset["timestamps"]).shape[0])]
+
+    raw_windows = {key: [] for key in RAW_KEYS}
+    z_windows: List[np.ndarray] = []
+    x_gt_windows: List[np.ndarray] = []
+    dt_windows: List[np.ndarray] = []
+
+    start = 0
+    for segment_index, segment_length in enumerate(segment_lengths):
+        end = start + segment_length
+        if segment_length < sequence_length:
+            start = end
+            continue
+
+        for key in RAW_KEYS:
+            segment_raw = np.asarray(dataset[key][start:end], dtype=np.float32).reshape(-1, 1)
+            raw_windows[key].append(create_sliding_windows(segment_raw, sequence_length, stride))
+
+        segment_z = np.asarray(dataset["z"][start:end], dtype=np.float32)
+        segment_x_gt = np.asarray(dataset["x_gt"][start:end], dtype=np.float32)
+        z_windows.append(create_sliding_windows(segment_z, sequence_length, stride))
+        x_gt_windows.append(create_sliding_windows(segment_x_gt, sequence_length, stride))
+
+        timestamps = np.asarray(dataset["timestamps"][start:end], dtype=np.float64)
+        dt_array = np.zeros(segment_length, dtype=np.float32)
+        if segment_length > 1:
+            dt_array[1:] = (timestamps[1:] - timestamps[:-1]).astype(np.float32)
+            segment_meta = source_segments[segment_index] if segment_index < len(source_segments) else {}
+            mean_dt = float(segment_meta.get("dt_mean", 0.02) or 0.02)
+            dt_array[0] = mean_dt
+        else:
+            dt_array[:] = 0.02
+        dt_windows.append(create_sliding_windows(dt_array.reshape(-1, 1), sequence_length, stride))
+        start = end
+
+    if not z_windows:
+        total_samples = int(np.asarray(dataset["timestamps"]).shape[0])
+        raise ValueError(
+            f"Need at least {sequence_length} samples in one contiguous dataset segment, "
+            f"but the longest segment is shorter (total merged samples={total_samples})."
+        )
+
     raw = {
-        key: create_sliding_windows(np.asarray(dataset[key], dtype=np.float32).reshape(-1, 1), sequence_length, stride)
+        key: np.concatenate(raw_windows[key], axis=0)
         for key in RAW_KEYS
     }
-    z_seq = create_sliding_windows(np.asarray(dataset["z"], dtype=np.float32), sequence_length, stride)
-    x_gt = create_sliding_windows(np.asarray(dataset["x_gt"], dtype=np.float32), sequence_length, stride)
+    z_seq = np.concatenate(z_windows, axis=0)
+    x_gt = np.concatenate(x_gt_windows, axis=0)
     x0 = z_seq[:, 0, :].copy()
-
-    timestamps = np.asarray(dataset["timestamps"], dtype=np.float64)
-    dt_array = np.zeros_like(timestamps, dtype=np.float32)
-    if len(timestamps) > 1:
-        dt_array[1:] = (timestamps[1:] - timestamps[:-1]).astype(np.float32)
-        mean_dt = float(dataset.get("metadata", {}).get("dt_mean", 0.02) or 0.02)
-        dt_array[0] = mean_dt
-    else:
-        dt_array[:] = 0.02
-    dt_seq = create_sliding_windows(dt_array.reshape(-1, 1), sequence_length, stride)
+    dt_seq = np.concatenate(dt_windows, axis=0)
 
     return raw, z_seq, x_gt, x0, dt_seq
 

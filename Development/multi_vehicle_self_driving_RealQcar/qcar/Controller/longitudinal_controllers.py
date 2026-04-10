@@ -61,6 +61,10 @@ class PIDVelocityController(LongitudinalControllerBase):
         kp=0.1,
         ki=1.0,
         kd=0.01,
+        ff_gain=(0.1 / 0.62),
+        use_affine_feedforward=False,
+        ff_speed_slope=6.63,
+        ff_speed_intercept=-0.31,
         max_throttle=0.3,
         min_throttle=0.0,
         ei_max=1.0,
@@ -76,6 +80,7 @@ class PIDVelocityController(LongitudinalControllerBase):
             kp: Proportional gain
             ki: Integral gain
             kd: Derivative gain
+            ff_gain: Feedforward gain converting target speed to base command
             max_throttle: Maximum throttle output
             min_throttle: Minimum throttle output when v_ref > 0
             ei_max: Integral anti-windup limit
@@ -92,6 +97,14 @@ class PIDVelocityController(LongitudinalControllerBase):
             self.kp = params.get("kp", kp)
             self.ki = params.get("ki", ki)
             self.kd = params.get("kd", kd)
+            self.ff_gain = params.get("ff_gain", ff_gain)
+            self.use_affine_feedforward = params.get(
+                "use_affine_feedforward", use_affine_feedforward
+            )
+            self.ff_speed_slope = params.get("ff_speed_slope", ff_speed_slope)
+            self.ff_speed_intercept = params.get(
+                "ff_speed_intercept", ff_speed_intercept
+            )
             self.max_throttle = params.get("max_throttle", max_throttle)
             self.min_throttle = params.get("min_throttle", min_throttle)
             self.ei_max = params.get("ei_max", ei_max)
@@ -100,6 +113,10 @@ class PIDVelocityController(LongitudinalControllerBase):
             self.kp = kp
             self.ki = ki
             self.kd = kd
+            self.ff_gain = ff_gain
+            self.use_affine_feedforward = use_affine_feedforward
+            self.ff_speed_slope = ff_speed_slope
+            self.ff_speed_intercept = ff_speed_intercept
             self.max_throttle = max_throttle
             self.min_throttle = min_throttle
             self.ei_max = ei_max
@@ -108,14 +125,22 @@ class PIDVelocityController(LongitudinalControllerBase):
         # Command velocity used for Limo rate limiting
         self.cmd_v = 0.0
 
-        # Simple feedforward gain based on calibration (v_ss = K * u)
-        # Average K for QCar is ~0.62 m/s per unit throttle.
-        self.ff_gain = 0.1 / 0.62  # u_ff = v_ref * ff_gain
-
         # print(f"[PIDVelocityController] Initialized with kp={self.kp}, ki={self.ki}, kd={self.kd}, max_throttle={self.max_throttle}")
         self.ei = 0.0  # Integral error
         self.prev_e = None  # Previous error for derivative
         self.last_error = 0.0
+
+    def _compute_feedforward(self, v_ref: float) -> float:
+        """Convert desired speed into a baseline throttle command."""
+        if (
+            self.use_affine_feedforward
+            and abs(float(self.ff_speed_slope)) > 1e-9
+            and v_ref > 0.0
+        ):
+            return max(
+                0.0, (float(v_ref) - float(self.ff_speed_intercept)) / float(self.ff_speed_slope)
+            )
+        return v_ref * self.ff_gain
 
     def update(self, v: float, v_ref: float, dt: float) -> float:
         """
@@ -129,26 +154,6 @@ class PIDVelocityController(LongitudinalControllerBase):
         Returns:
             Throttle command
         """
-        # Calculate error
-        e = v_ref - v
-
-        # Integral with anti-windup
-        self.ei += dt * e
-        self.ei = np.clip(self.ei, -self.ei_max, self.ei_max)
-
-        # Calculate derivative of the error
-        if self.prev_e is None or dt < 0.001:
-            de = 0
-        else:
-            de = (e - self.prev_e) / dt
-        self.prev_e = e
-
-        # Feedforward term based on target velocity
-        u_ff = v_ref * self.ff_gain
-
-        # PID control + Feedforward
-        u = u_ff + self.kp * e + self.ki * self.ei + self.kd * de
-
         if getattr(self, "vehicle_type", "QCar") == "Limo":
             # For Limo, limit the acceleration and return a bounded velocity command
             max_acc = 1.0  # max acceleration m/s^2 for smooth velocity changes
@@ -166,6 +171,28 @@ class PIDVelocityController(LongitudinalControllerBase):
             
             self.last_error = e
             return self.cmd_v
+        
+        # Calculate error
+        e = v_ref - v
+
+        # Integral with anti-windup
+        self.ei += dt * e
+        self.ei = np.clip(self.ei, -self.ei_max, self.ei_max)
+
+        # Calculate derivative of the error
+        if self.prev_e is None or dt < 0.001:
+            de = 0
+        else:
+            de = (e - self.prev_e) / dt
+        self.prev_e = e
+
+       
+        # Feedforward term based on target velocity
+        u_ff = self._compute_feedforward(v_ref)
+
+        # PID control + Feedforward
+        u = u_ff + self.kp * e + self.ki * self.ei + self.kd * de
+
 
         # Normal QCar logic
         # Prevent reversing during forward driving
@@ -225,6 +252,204 @@ class PIDVelocityController(LongitudinalControllerBase):
         self.prev_e = None
         self.last_error = 0.0
         self.cmd_v = 0.0
+
+
+class QCar2SpeedController(LongitudinalControllerBase):
+    """
+    Incremental speed controller inspired by qcar2_hardware.cpp.
+
+    The hardware node integrates a PD correction into the outgoing PWM command
+    and compensates that correction by battery voltage. This controller keeps
+    the same structure while operating on the Python longitudinal interface.
+    """
+
+    def __init__(
+        self,
+        kp=20.0,
+        kd=0.1,
+        km=0.0047,
+        use_affine_feedforward=False,
+        ff_speed_slope=6.63,
+        ff_speed_intercept=-0.31,
+        max_throttle=0.3,
+        min_forward_throttle=0.01,
+        min_reverse_throttle=0.01,
+        nominal_battery_voltage=12.0,
+        min_battery_voltage=1.0,
+        stop_speed_threshold=1e-3,
+        config=None,
+        logger=None,
+        **kwargs,
+    ):
+        self.logger = logger
+
+        if config and hasattr(config, "get_longitudinal_params"):
+            params = config.get_longitudinal_params("qcar2_speed")
+            self.kp = params.get("kp", kp)
+            self.kd = params.get("kd", kd)
+            self.km = params.get("km", km)
+            self.use_affine_feedforward = params.get(
+                "use_affine_feedforward", use_affine_feedforward
+            )
+            self.ff_speed_slope = params.get("ff_speed_slope", ff_speed_slope)
+            self.ff_speed_intercept = params.get(
+                "ff_speed_intercept", ff_speed_intercept
+            )
+            self.max_throttle = params.get("max_throttle", max_throttle)
+            self.min_forward_throttle = params.get(
+                "min_forward_throttle", min_forward_throttle
+            )
+            self.min_reverse_throttle = params.get(
+                "min_reverse_throttle", min_reverse_throttle
+            )
+            self.nominal_battery_voltage = params.get(
+                "nominal_battery_voltage", nominal_battery_voltage
+            )
+            self.min_battery_voltage = params.get(
+                "min_battery_voltage", min_battery_voltage
+            )
+            self.stop_speed_threshold = params.get(
+                "stop_speed_threshold", stop_speed_threshold
+            )
+        else:
+            self.kp = kp
+            self.kd = kd
+            self.km = km
+            self.use_affine_feedforward = use_affine_feedforward
+            self.ff_speed_slope = ff_speed_slope
+            self.ff_speed_intercept = ff_speed_intercept
+            self.max_throttle = max_throttle
+            self.min_forward_throttle = min_forward_throttle
+            self.min_reverse_throttle = min_reverse_throttle
+            self.nominal_battery_voltage = nominal_battery_voltage
+            self.min_battery_voltage = min_battery_voltage
+            self.stop_speed_threshold = stop_speed_threshold
+
+        self.prior_speed_error = 0.0
+        self.motor_speed_cmd = 0.0
+        self.last_error = 0.0
+
+    def _compute_feedforward(self, target_speed: float) -> float:
+        """Inverse of the steady-state speed map v = a*u + b."""
+        if (
+            not self.use_affine_feedforward
+            or abs(float(self.ff_speed_slope)) <= 1e-9
+            or abs(target_speed) <= self.stop_speed_threshold
+        ):
+            return 0.0
+
+        throttle_ff = (
+            float(target_speed) - float(self.ff_speed_intercept)
+        ) / float(self.ff_speed_slope)
+        return float(np.clip(throttle_ff, -self.max_throttle, self.max_throttle))
+
+    def _effective_battery_voltage(self, follower_state: Dict[str, float]) -> float:
+        """Use measured battery voltage when available, otherwise a nominal value."""
+        battery_voltage = float(
+            follower_state.get("battery_voltage", self.nominal_battery_voltage)
+        )
+        if battery_voltage < self.min_battery_voltage:
+            return float(self.nominal_battery_voltage)
+        return battery_voltage
+
+    def _compute_incremental_command(
+        self,
+        measured_speed: float,
+        target_speed: float,
+        dt: float,
+        battery_voltage: float,
+    ) -> float:
+        """Replicate the incremental PD logic used in the ROS 2 hardware node."""
+        if abs(target_speed) <= self.stop_speed_threshold:
+            self.motor_speed_cmd = 0.0
+            self.prior_speed_error = 0.0
+            self.last_error = 0.0
+            return 0.0
+
+        base_command = self._compute_feedforward(target_speed)
+        speed_error = target_speed - measured_speed
+        self.last_error = speed_error
+
+        if dt <= 1e-6:
+            derivative = 0.0
+        else:
+            derivative = (speed_error - self.prior_speed_error) / dt
+
+        correction = (
+            (speed_error * self.kp + derivative * self.kd) * self.km / battery_voltage
+        )
+        self.motor_speed_cmd = base_command + correction
+        self.prior_speed_error = speed_error
+
+        self.motor_speed_cmd = float(
+            np.clip(self.motor_speed_cmd, -self.max_throttle, self.max_throttle)
+        )
+
+        if (
+            0.0 <= self.motor_speed_cmd < self.min_forward_throttle
+            and target_speed > 0.0
+        ):
+            self.motor_speed_cmd += self.min_forward_throttle
+        elif (
+            -self.min_reverse_throttle < self.motor_speed_cmd < 0.0
+            and target_speed < 0.0
+        ):
+            self.motor_speed_cmd -= self.min_reverse_throttle
+
+        self.motor_speed_cmd = float(
+            np.clip(self.motor_speed_cmd, -self.max_throttle, self.max_throttle)
+        )
+        return self.motor_speed_cmd
+
+    def update(
+        self,
+        v: float,
+        v_ref: float,
+        dt: float,
+        battery_voltage: Optional[float] = None,
+    ) -> float:
+        """Path-following helper matching the existing speed-controller API."""
+        follower_state = {"velocity": v}
+        if battery_voltage is not None:
+            follower_state["battery_voltage"] = battery_voltage
+        return self.compute_throttle(
+            {**follower_state, "target_velocity": v_ref},
+            leader_state=None,
+            dt=dt,
+        )
+
+    def compute_throttle(
+        self,
+        follower_state: Dict[str, float],
+        leader_state: Optional[Dict[str, float]],
+        dt: float,
+    ) -> float:
+        measured_speed = float(
+            follower_state.get("motor_tach", follower_state.get("velocity", 0.0))
+        )
+        target_speed = float(follower_state.get("target_velocity", 0.0))
+        battery_voltage = self._effective_battery_voltage(follower_state)
+        return self._compute_incremental_command(
+            measured_speed=measured_speed,
+            target_speed=target_speed,
+            dt=dt,
+            battery_voltage=battery_voltage,
+        )
+
+    def update_params(self, params: Dict[str, Any]):
+        """Update controller parameters dynamically."""
+        for param, value in params.items():
+            if hasattr(self, param):
+                setattr(self, param, value)
+
+        if self.logger:
+            self.logger.logger.info(f"[QCar2SpeedController] Updated params: {params}")
+
+    def reset(self):
+        """Reset controller state."""
+        self.prior_speed_error = 0.0
+        self.motor_speed_cmd = 0.0
+        self.last_error = 0.0
 
 
 class CACCLongitudinalController(LongitudinalControllerBase):
@@ -900,6 +1125,7 @@ class ControllerFactory:
 
     CONTROLLER_TYPES = {
         "pid": PIDVelocityController,
+        "qcar2_speed": QCar2SpeedController,
         "cacc": CACCLongitudinalController,
         "sa_acc": SA_ACCController,
         "fix": FixConstantController,
@@ -914,7 +1140,7 @@ class ControllerFactory:
         Create a longitudinal controller
 
         Args:
-            controller_type: One of 'pid', 'cacc', 'sa_acc', 'fix', 'mpc'
+            controller_type: One of 'pid', 'qcar2_speed', 'cacc', 'sa_acc', 'fix', 'mpc'
             params: Dictionary of controller-specific parameters
             logger: Logger instance
 

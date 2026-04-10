@@ -61,14 +61,35 @@ cacc:
   limo_close_gap_gain: 0.60       # Limo-only speed reduction when spacing error goes negative
 
 # PID Velocity Controller Parameters
+
+
 pid:
   kp: 0.1                   # Proportional gain (lower = softer accel response)
   ki: 0.03                  # Integral gain (lower = less surge after target jumps)
-  kd: 0.0                    # Derivative gain (set to 0.0 to prevent throttle spikes)
+  kd: 0.001                    # Derivative gain (set to 0.0 to prevent throttle spikes)
+  ff_gain: 0           # Feedforward gain: base command from target speed (u_ff = v_ref * ff_gain). Tune separately for sim vs real.
+  use_affine_feedforward: true  # Keep sim on classic feedforward unless you calibrate it
+  ff_speed_slope: 6.75
+  ff_speed_intercept: -0.05
   max_throttle: 0.24         # Maximum throttle output (limits aggressive launches)
   min_throttle: 0.0         # Minimum throttle (allows active braking in simulation)
   ei_max: 0.5                # Integral anti-windup limit
   v_ref: 0.6                # Default reference velocity (m/s)
+
+# QCar2 hardware-inspired incremental speed controller
+qcar2_speed:
+  kp: 20.0                  # Matches qcar2_hardware PD proportional gain
+  kd: 0.1                   # Matches qcar2_hardware derivative gain
+  km: 0.0047                # Motor constant used in qcar2_hardware
+  use_affine_feedforward: true  # Enable only if the sim has been calibrated with the same map
+  ff_speed_slope: 6.75
+  ff_speed_intercept: -0.05
+  max_throttle: 0.3         # Same saturation used by the hardware node
+  min_forward_throttle: 0.01  # Forward deadband compensation
+  min_reverse_throttle: 0.01  # Reverse deadband compensation
+  nominal_battery_voltage: 12.0  # Fallback when battery telemetry is unavailable
+  min_battery_voltage: 1.0       # Guard against divide-by-zero / invalid voltage
+  stop_speed_threshold: 0.001    # Command zero throttle when desired speed is near zero
 
 
 
@@ -106,41 +127,42 @@ pure_pursuit:
 
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
 pp_map:
-  sample_ds: 0.02                 # [m] path resampling spacing for rich trajectory
-  desired_speed: 0.55              # [m/s] design cruise speed used to build base speed profile
-  min_speed: 0.4                  # [m/s] lower speed floor in profile generation
-  kappa_speed_gain: 1.0           # Curvature->speed reduction gain (higher = slower in turns)
-  max_speed: 0.65                 # [m/s] upper bound of profile speed
-  hard_turn_kappa: 0.60           # [1/m] curvature threshold for "hard-turn" speed cap (maybe in u turn shape , like )
-  hard_turn_speed: 0.36           # [m/s] cap applied when |curvature| >= hard_turn_kappa (car will run at that speed , if reach hard_turn_kappa  )
-  t_clip_min: 0.5                 # [m] minimum L1 lookahead distance
-  t_clip_max: 1.0                 # [m] maximum L1 lookahead distance
-  m_l1: 0.50                      # L1 slope: lookahead contribution per m/s (L1 = q_l1 + m_l1*v)
-  q_l1: 0.2                      # [m] L1 base offset at low speed
-  speed_lookahead: 0.2            # [s] forward prediction horizon for selecting speed waypoint
-  lat_err_coeff: 0.15             # [0..1] speed downscale sensitivity to lateral error
-  acc_scaler_for_steer: 1.0       # Steering scale when accelerating (acc_now >= +1 m/s^2)
-  dec_scaler_for_steer: 1.0       # Steering scale when decelerating (acc_now <= -1 m/s^2)
-  start_scale_speed: 0.25         # [m/s] begin steering downscale above this speed  , the system artificially limits how sharply the wheels can turn. 
-                                  # If the car is going 0.85 m/s or faster, the steering angle output is cut down by up to 45% (0.45).
-  end_scale_speed: 0.85           # [m/s] full steering downscale reached at this speed
-  downscale_factor: 0.45          # Max steering reduction at/above end_scale_speed
-  speed_lookahead_for_steer: 0.18 # [s] forward prediction horizon for steer scaling speed
-  prioritize_dyn: false           # Reserved switch for dynamic-priority behavior in PP module
-  trailing_gap: 0.8               # [m] desired spacing in TRAILING mode
-  trailing_p_gain: 0.6            # P gain for trailing gap controller
-  trailing_i_gain: 0.0            # I gain for trailing gap controller
-  trailing_d_gain: 0.1            # D gain for trailing gap controller
-  blind_trailing_speed: 0.2       # [m/s] minimum speed when opponent visibility is degraded
-  obstacle_avoidance_enabled: true
-  obstacle_replan_period: 0.4    # [s] minimum time between local avoidance replans
-  obstacle_min_detect_dist: 0.15   # [m] ignore detections closer than this (too late/noisy)
-  obstacle_max_detect_dist: 1.5   # [m] far detections are ignored for local planning
-  obstacle_car_radius: 0.1        # [m] local planner obstacle radius for cars
-  obstacle_person_radius: 0.1     # [m] local planner obstacle radius for pedestrians
-  obstacle_influence: 0.80        # [m] distance around obstacle where path is pushed away
-  obstacle_clearance: 0.05        # [m] extra safety margin in addition to obstacle radius
-  car_overtake_mode: true         # false = trailing (stop behind car), true = overtake (replan around car)
+  sample_ds: 0.02                 # [m] Spacing between resampled path points. Up = fewer/coarser points. Down = denser/more detailed path.
+  desired_speed: 0.55             # [m/s] Base cruise speed used to build the map speed profile. Up = faster almost everywhere. Down = slower everywhere.
+  min_speed: 0.4                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
+  kappa_speed_gain: 1.0           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
+  max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
+  hard_turn_kappa: 0.60           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
+  hard_turn_speed: 0.36           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
+  t_clip_min: 0.5                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
+  t_clip_max: 1.0                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
+  m_l1: 0.50                      # L1 lookahead increase with speed: L1 = q_l1 + m_l1*v. Up = more preview at speed. Down = more reactive at speed.
+  q_l1: 0.2                       # [m] Base L1 lookahead at low speed. Up = smoother but slower response. Down = sharper but more oscillation risk.
+  speed_lookahead: 0.2            # [s] How far ahead the controller samples path speed. Up = slows earlier before corners. Down = reacts later.
+  lat_err_coeff: 0.15             # [0..1] How much speed is reduced when the car is off the path. Up = slows more to recover. Down = keeps speed even with error.
+  acc_scaler_for_steer: 1.0       # Steering multiplier while accelerating. Above 1.0 = stronger steering under accel. Below 1.0 = softer steering.
+  dec_scaler_for_steer: 1.0       # Steering multiplier while braking/decelerating. Above 1.0 = stronger steering under braking. Below 1.0 = softer steering.
+  start_scale_speed: 0.25         # [m/s] Speed where high-speed steering reduction starts. Up = keep full steering until faster speeds. Down = reduce steering earlier.
+  end_scale_speed: 0.85           # [m/s] Speed where the full steering reduction is reached. Up = reduction comes in more gradually. Down = full reduction happens sooner.
+  downscale_factor: 0.45          # Maximum steering reduction at/above end_scale_speed. Up = much softer steering at speed. Down = keep more steering authority.
+  speed_lookahead_for_steer: 0.18 # [s] Preview horizon used for speed-based steering reduction. Up = use farther-ahead speed. Down = use more current/near speed.
+  target_speed_rise_rate: 0.8     # [m/s^2] Rate limit on PP-map target-speed increases before the speed controller.
+  target_speed_fall_rate: 1.2     # [m/s^2] Rate limit on PP-map target-speed decreases to avoid sharp drop/recover oscillations.
+  prioritize_dyn: false           # Reserved switch. Currently not a main tuning knob in normal PP-map behavior.
+  trailing_gap: 0.8               # [m] Desired distance to the opponent in TRAILING mode. Up = stay farther back. Down = follow closer.
+  trailing_p_gain: 0.6            # Main aggressiveness of trailing gap correction. Up = faster gap correction, more surge risk. Down = calmer but slower response.
+  trailing_i_gain: 0.0            # Integral action for trailing gap. Up = removes steady bias but can oscillate. Down = safer/simpler.
+  trailing_d_gain: 0.1            # Damping using relative speed in trailing. Up = more anticipation/damping. Down = less damping, more overshoot risk.
+  blind_trailing_speed: 0.2       # [m/s] Minimum speed when the opponent is not seen clearly. Up = keeps moving more. Down = becomes more cautious.
+  obstacle_avoidance_enabled: true  # Enable local obstacle replan around detected objects.
+  obstacle_replan_period: 0.4       # [s] Minimum time between replans. Up = fewer, steadier replans. Down = more reactive, but noisier replans.
+  obstacle_min_detect_dist: 0.15    # [m] Ignore detections closer than this. Up = ignore more very-close detections. Down = react even when very near.
+  obstacle_max_detect_dist: 1.5     # [m] Ignore detections farther than this. Up = react earlier to far obstacles. Down = only react when closer.
+  obstacle_car_radius: 0.1          # [m] Assumed car obstacle size. Up = wider safety bubble. Down = tighter pass.
+  obstacle_person_radius: 0.1       # [m] Assumed pedestrian obstacle size. Up = more conservative avoidance. Down = tighter avoidance.
+  obstacle_influence: 0.80          # [m] Distance around obstacle where path gets pushed away. Up = larger detour. Down = smaller detour.
+  obstacle_clearance: 0.05          # [m] Extra safety margin added on top of obstacle radius. Up = safer/wider path. Down = tighter path.
+  car_overtake_mode: true           # true = try to go around cars. false = stay behind and trail them.
 
 # ------------------------------------------------------------------------
 # MPC Controller Parameters

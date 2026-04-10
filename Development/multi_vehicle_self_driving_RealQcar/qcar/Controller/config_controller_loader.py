@@ -94,8 +94,12 @@ class ControllerConfig:
             types.append("cacc")
         if "pid" in self.config:
             types.append("pid")
+        if "qcar2_speed" in self.config:
+            types.append("qcar2_speed")
         if "sa_acc" in self.config:
             types.append("sa_acc")
+        if "fix" in self.config:
+            types.append("fix")
         # coupled MPC may also be listed even though typically selected via lateral
         if "mpc" in self.config:
             types.append("mpc")
@@ -139,9 +143,13 @@ class ControllerConfig:
             return self._get_cacc_params()
         elif controller_type == "pid":
             return self._get_pid_params()
+        elif controller_type == "qcar2_speed":
+            return self._get_qcar2_speed_params()
 
         elif controller_type == "sa_acc":
             return self._get_sa_acc_params()
+        elif controller_type == "fix":
+            return self._get_fix_params()
         elif controller_type == "mpc":
             return self._get_mpc_params()
         else:
@@ -234,11 +242,40 @@ class ControllerConfig:
             "kp": pid_config.get("kp", 0.1),
             "ki": pid_config.get("ki", 1.0),
             "kd": pid_config.get("kd", 0.01),
+            "ff_gain": pid_config.get("ff_gain", 0.1 / 0.62),
+            "use_affine_feedforward": pid_config.get(
+                "use_affine_feedforward", False
+            ),
+            "ff_speed_slope": pid_config.get("ff_speed_slope", 6.63),
+            "ff_speed_intercept": pid_config.get("ff_speed_intercept", -0.31),
             "max_throttle": pid_config.get("max_throttle", 0.3),
             # Keep this explicit so config min_throttle affects PID behavior.
             "min_throttle": pid_config.get("min_throttle", 0.0),
             "ei_max": pid_config.get("ei_max", 1.0),
             "v_ref": pid_config.get("v_ref", 0.6),
+        }
+
+    def _get_qcar2_speed_params(self) -> Dict[str, Any]:
+        """Get qcar2_hardware-inspired speed controller parameters."""
+        hw_config = self.config.get("qcar2_speed", {})
+
+        return {
+            "kp": hw_config.get("kp", 20.0),
+            "kd": hw_config.get("kd", 0.1),
+            "km": hw_config.get("km", 0.0047),
+            "use_affine_feedforward": hw_config.get(
+                "use_affine_feedforward", False
+            ),
+            "ff_speed_slope": hw_config.get("ff_speed_slope", 6.63),
+            "ff_speed_intercept": hw_config.get("ff_speed_intercept", -0.31),
+            "max_throttle": hw_config.get("max_throttle", 0.3),
+            "min_forward_throttle": hw_config.get("min_forward_throttle", 0.01),
+            "min_reverse_throttle": hw_config.get("min_reverse_throttle", 0.01),
+            "nominal_battery_voltage": hw_config.get(
+                "nominal_battery_voltage", 12.0
+            ),
+            "min_battery_voltage": hw_config.get("min_battery_voltage", 1.0),
+            "stop_speed_threshold": hw_config.get("stop_speed_threshold", 1e-3),
         }
 
     def _get_hybrid_longitudinal_params(self) -> Dict[str, Any]:
@@ -274,6 +311,11 @@ class ControllerConfig:
             "acc_to_throttle_gain": sa_acc_config.get("acc_to_throttle_gain", 0.65),
             "max_throttle": sa_acc_config.get("max_throttle", 0.3),
         }
+
+    def _get_fix_params(self) -> Dict[str, Any]:
+        """Get fixed-throttle controller parameters."""
+        fix_config = self.config.get("fix", {})
+        return {"throttle": fix_config.get("throttle", 0.0)}
 
     # ========================================================================
     # Lateral Controller Parameter Getters
@@ -328,6 +370,12 @@ class ControllerConfig:
             "downscale_factor": pp_map_config.get("downscale_factor", 0.35),
             "speed_lookahead_for_steer": pp_map_config.get(
                 "speed_lookahead_for_steer", 0.1
+            ),
+            "target_speed_rise_rate": pp_map_config.get(
+                "target_speed_rise_rate", 0.8
+            ),
+            "target_speed_fall_rate": pp_map_config.get(
+                "target_speed_fall_rate", 1.2
             ),
             "prioritize_dyn": pp_map_config.get("prioritize_dyn", False),
             "trailing_gap": pp_map_config.get("trailing_gap", 0.8),

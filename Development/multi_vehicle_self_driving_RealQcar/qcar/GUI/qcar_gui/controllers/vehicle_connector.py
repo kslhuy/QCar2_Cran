@@ -39,7 +39,11 @@ class RemoteConfig:
 
     username: str = "nvidia"
     password: str = "nvidia"
-    remote_path: str = "/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar"
+    remote_path: str = "/home/nvidia/Documents/multi_vehicle_RealCar"
+    remote_path_py: Optional[str] = "/home/nvidia/Documents/multi_vehicle_RealCar"
+    remote_path_ros: Optional[str] = (
+        "/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar"
+    )
     timeout: int = 10
 
 
@@ -180,6 +184,24 @@ class VehicleConnector:
 
         return None
 
+    def _resolve_remote_path(
+        self,
+        remote_cfg: RemoteConfig,
+        programme_type: Optional[str] = None,
+        vehicle_type: Optional[str] = None,
+    ) -> str:
+        """Resolve the remote upload/runtime directory for the selected mode."""
+        resolved_type = self._normalize_vehicle_type(vehicle_type or "Qcar")
+        runtime_mode = self._normalize_programme_type(programme_type)
+
+        if resolved_type == "Qcar":
+            if runtime_mode == "Ros" and remote_cfg.remote_path_ros:
+                return remote_cfg.remote_path_ros
+            if runtime_mode == "Py" and remote_cfg.remote_path_py:
+                return remote_cfg.remote_path_py
+
+        return remote_cfg.remote_path
+
     def _load_fleet_remote_profiles(self) -> None:
         """Load per-vehicle-type remote SSH profiles from fleet_config.yaml."""
         if not YAML_AVAILABLE:
@@ -212,6 +234,14 @@ class VehicleConnector:
                 password=remote_cfg.get("password") or self.remote_config.password,
                 remote_path=remote_cfg.get("remote_path")
                 or self.remote_config.remote_path,
+                remote_path_py=remote_cfg.get("remote_path_py")
+                or remote_cfg.get("remote_path")
+                or self.remote_config.remote_path_py
+                or self.remote_config.remote_path,
+                remote_path_ros=remote_cfg.get("remote_path_ros")
+                or remote_cfg.get("remote_path")
+                or self.remote_config.remote_path_ros
+                or self.remote_config.remote_path,
                 timeout=self.remote_config.timeout,
             )
             profiles["Qcar"] = shared
@@ -225,6 +255,14 @@ class VehicleConnector:
                     username=value.get("username") or self.remote_config.username,
                     password=value.get("password") or self.remote_config.password,
                     remote_path=value.get("remote_path")
+                    or self.remote_config.remote_path,
+                    remote_path_py=value.get("remote_path_py")
+                    or value.get("remote_path")
+                    or self.remote_config.remote_path_py
+                    or self.remote_config.remote_path,
+                    remote_path_ros=value.get("remote_path_ros")
+                    or value.get("remote_path")
+                    or self.remote_config.remote_path_ros
                     or self.remote_config.remote_path,
                     timeout=self.remote_config.timeout,
                 )
@@ -496,7 +534,14 @@ class VehicleConnector:
             remote_cfg = self._get_remote_config(
                 car_id=car_id, vehicle_type=vehicle_type, ip=ip
             )
-            remote_path = remote_cfg.remote_path
+            resolved_type = self._normalize_vehicle_type(
+                vehicle_type or self._vehicle_types.get(car_id, "Qcar")
+            )
+            remote_path = self._resolve_remote_path(
+                remote_cfg,
+                programme_type=programme_type,
+                vehicle_type=resolved_type,
+            )
             uploaded_count = 0
 
             # Create remote directory if needed
@@ -732,7 +777,11 @@ class VehicleConnector:
             remote_cfg = self._get_remote_config(
                 car_id=car_id, vehicle_type="Qcar", ip=ip
             )
-            remote_path = remote_cfg.remote_path
+            remote_path = self._resolve_remote_path(
+                remote_cfg,
+                programme_type="Py",
+                vehicle_type="Qcar",
+            )
             port = self.gs_config.base_port
             # Auto-detect best host IP (GS IP) based on the interface used to reach the car
             host = self._get_best_host_ip(ip) if ip else self.gs_config.local_ip
@@ -1459,7 +1508,11 @@ except Exception as e:
             self._progress(
                 "Step 2/4: Running LiDAR calibration (this may take a while)..."
             )
-            remote_path = remote_cfg.remote_path
+            remote_path = self._resolve_remote_path(
+                remote_cfg,
+                programme_type="Py",
+                vehicle_type=self._vehicle_types.get(car_id, "Qcar"),
+            )
             cmd = f"cd {remote_path} && python vehicle_control.py -c True"
 
             self._log(f"Car {car_id}: Running calibration command: {cmd}", "INFO")
@@ -1552,7 +1605,11 @@ except Exception as e:
                 )
                 scp = SCPClient(ssh.get_transport())
 
-                remote_path = remote_cfg.remote_path
+                remote_path = self._resolve_remote_path(
+                    remote_cfg,
+                    programme_type="Py",
+                    vehicle_type=self._vehicle_ips.get(ip, "Qcar"),
+                )
 
                 # Remove old .mat files
                 ssh.exec_command(f"rm -f {remote_path}/*.mat")

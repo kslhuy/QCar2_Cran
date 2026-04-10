@@ -88,7 +88,11 @@ class VehicleDeploymentConfig:
     ssh_timeout: int = 10
 
     # Remote paths
-    remote_path: str = "/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar"
+    remote_path: str = "/home/nvidia/Documents/multi_vehicle_RealCar"
+    remote_path_py: Optional[str] = "/home/nvidia/Documents/multi_vehicle_RealCar"
+    remote_path_ros: Optional[str] = (
+        "/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar"
+    )
 
     # Local scripts path (relative to GUI folder)
     scripts_path: str = "../../qcar"

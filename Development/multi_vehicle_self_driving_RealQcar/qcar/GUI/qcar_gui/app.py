@@ -96,6 +96,12 @@ class QCarFleetController(DeploymentMixin, FleetCommandsMixin, VehicleCommandsMi
                 username=self.config.deployment.ssh_username,
                 password=self.config.deployment.ssh_password,
                 remote_path=self.config.deployment.remote_path,
+                remote_path_py=getattr(
+                    self.config.deployment, "remote_path_py", None
+                ),
+                remote_path_ros=getattr(
+                    self.config.deployment, "remote_path_ros", None
+                ),
                 timeout=self.config.deployment.ssh_timeout,
             ),
             ground_station_config=GroundStationConfig(
