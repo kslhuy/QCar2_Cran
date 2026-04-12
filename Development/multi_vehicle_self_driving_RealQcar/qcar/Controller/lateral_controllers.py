@@ -745,17 +745,8 @@ class FusionLateralController(LateralControllerBase):
         # Inner controllers for steering computation
         self.pure_pursuit = PurePursuitController(config=config, logger=logger)
 
-        # We need a path controller for the path_or_leader mode
-        try:
-            from .PP_Controller import PP_Controller
-
-            self.path_controller = PP_Controller(config=config, logger=logger)
-        except ImportError:
-            self.path_controller = None
-            if self.logger:
-                self.logger.warning(
-                    "[FusionLateralController] PP_Controller not available."
-                )
+        # Path steering is provided externally by the state machine
+        # via the ``path_steering`` argument to ``compute_steering``.
 
         # For tracking active mode
         self.active_sub_mode = "path"

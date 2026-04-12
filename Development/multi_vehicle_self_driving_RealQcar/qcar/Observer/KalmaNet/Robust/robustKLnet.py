@@ -7,25 +7,11 @@ from dataclasses import dataclass
 import importlib
 from pathlib import Path
 import time
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-
-try:
-    import torch
-    import torch.nn as nn
-
-    TORCH_AVAILABLE = True
-except ImportError:
-    torch = None
-    TORCH_AVAILABLE = False
-
-    class _TorchModuleFallback:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    nn = SimpleNamespace(Module=_TorchModuleFallback)
+import torch
+import torch.nn as nn
 
 
 try:
@@ -68,38 +54,27 @@ class RSNConfig:
 
     # ── Modular prediction step ──────────────────────────────────────────
     # "nn"        → RobustMotionPredictor (tri-LSTM, learnable, default)
-    # "kinematic" → KinematicPredictor   (unicycle model, no parameters)
+    # "kinematic" → KinematicPredictor   (QCar bicycle model, no parameters)
     predictor_mode: str = "kinematic"
-    # LPF alpha for velocity in the kinematic predictor
-    kin_v_lpf_alpha: float = 0.0
+    # Wheelbase used by the analytical QCar bicycle predictor.
+    kin_wheelbase: float = 0.2
 
 
 # ============================================================
 # HELPERS
 # ============================================================
 
-def _identity_no_grad(func=None):
-    if func is None:
-        def decorator(inner):
-            return inner
-        return decorator
-    return func
-
-
-no_grad = torch.no_grad if TORCH_AVAILABLE else _identity_no_grad
+no_grad = torch.no_grad
 
 
 @contextmanager
 def inference_context():
     """Use the lightest available torch inference context."""
-    if TORCH_AVAILABLE:
-        context_factory = (
-            torch.inference_mode if hasattr(torch, "inference_mode") else torch.no_grad
-        )
-        with context_factory():
-            yield
-        return
-    yield
+    context_factory = (
+        torch.inference_mode if hasattr(torch, "inference_mode") else torch.no_grad
+    )
+    with context_factory():
+        yield
 
 
 def make_H(device: torch.device, dtype=None):
@@ -109,8 +84,6 @@ def make_H(device: torch.device, dtype=None):
     Measurement z = [x, y, psi, v, w]
     Here H is identity, as in the paper's measurement vector structure.
     """
-    if not TORCH_AVAILABLE:
-        raise ImportError("torch is required to build Robust KalmanNet tensors")
     if dtype is None:
         dtype = torch.float32
     return torch.eye(5, device=device, dtype=dtype)
@@ -301,32 +274,32 @@ class RobustMotionPredictor(nn.Module):
 
 class KinematicPredictor(nn.Module):
     """
-    Parameter-free unicycle-model prediction step.
+    Parameter-free QCar bicycle-model prediction step.
 
     Accepts the exact same forward() signature as RobustMotionPredictor so that
     RobustStateNet.forward() requires zero structural changes.
 
-    Kinematic equations (local body frame → global):
-        dxE   =  v_prev * dt          (forward motion; no lateral slip)
+    Kinematic equations matched to QCarEKF.f():
+        dxE   =  motor_tach * dt
         dyE   =  0
-        dpsi  =  wz * dt             (yaw integration)
-        v_next = alpha * motor_tach + (1 - alpha) * v_prev   (LPF)
-        w_next = wz
+        dpsi  =  motor_tach * tan(delta) / L * dt
+        v_next = motor_tach
+        w_next = motor_tach * tan(delta) / L
 
     Signals are extracted from existing branch-input tensors:
-        wz         ← imu_seq[..., 4]    layout: [v, psi, ax, ay, wz]
+        delta      ← steer_seq[..., 2]  layout: [v, psi, delta]
         motor_tach ← wheel_seq[..., 2]  layout: [v, psi, vfl, vfr, vrl, vrr]
     """
 
     def __init__(self, cfg: RSNConfig):
         super().__init__()
         self.dt = cfg.dt
-        self.alpha = float(cfg.kin_v_lpf_alpha)
+        self.wheelbase = max(float(cfg.kin_wheelbase), 1e-6)
 
     def forward(
         self,
         imu_seq: torch.Tensor,       # [B, 1, 5]  [v, psi, ax, ay, wz]
-        steer_seq: torch.Tensor,     # [B, 1, 3]  [v, psi, delta]  (unused)
+        steer_seq: torch.Tensor,     # [B, 1, 3]  [v, psi, delta]
         wheel_seq: torch.Tensor,     # [B, 1, 6]  [v, psi, vfl, vfr, vrl, vrr]
         prev_state_seq: torch.Tensor,  # [B, 1, 5]  x_{k-1|k-1}
         hidden_dict: Optional[Dict] = None,
@@ -340,17 +313,17 @@ class KinematicPredictor(nn.Module):
             None     : no feature mask
         """
         # ── extract signals ──────────────────────────────────────────────
-        v_prev     = prev_state_seq[..., 3:4]   # [B, 1, 1]
-        wz         = imu_seq[..., 4:5]          # [B, 1, 1]
+        delta      = steer_seq[..., 2:3]        # [B, 1, 1]
         motor_tach = wheel_seq[..., 2:3]        # [B, 1, 1]  use vfl as representative
 
         # ── kinematic model ──────────────────────────────────────────────
-        v_next = self.alpha * motor_tach + (1.0 - self.alpha) * v_prev
-        w_next = wz
         active_dt = dt if dt is not None else self.dt
-        dxE    = v_prev * active_dt
+        yaw_rate = motor_tach * torch.tan(delta) / self.wheelbase
+        dxE    = motor_tach * active_dt
         dyE    = torch.zeros_like(dxE)
-        dpsi   = wz * active_dt
+        dpsi   = yaw_rate * active_dt
+        v_next = motor_tach
+        w_next = yaw_rate
 
         motion = torch.cat([dxE, dyE, dpsi, v_next, w_next], dim=-1)  # [B, 1, 5]
         x_pred = RobustMotionPredictor.motion_to_state(prev_state_seq, motion)
@@ -661,8 +634,8 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
     The production observer loop only provides one sample per tick, so this adapter:
     1. Keeps a rolling history window.
     2. Builds the network inputs expected by RobustStateNet.
-    3. Loads a trained checkpoint when available.
-    4. Falls back to a GPS-corrected kinematic observer when the model is not ready.
+    3. Loads a trained checkpoint.
+    4. Runs streaming or replay inference directly in the observer loop.
 
     Output state follows the current local observer contract:
         [x, y, theta, v]
@@ -684,14 +657,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self.config = dict(config)
 
         self.sequence_length = max(1, int(self.config.get("sequence_length", 20)))
-        self.min_history = min(
-            self.sequence_length,
-            max(1, int(self.config.get("min_history", 5))),
-        )
-        self.velocity_lpf_alpha = float(self.config.get("velocity_lpf_alpha", 0.25))
-        self.gps_position_gain = float(self.config.get("gps_position_gain", 0.35))
-        self.gps_heading_gain = float(self.config.get("gps_heading_gain", 0.4))
-        self.yaw_rate_blend = float(self.config.get("yaw_rate_blend", 0.2))
         self.wheel_speed_scale = float(self.config.get("wheel_speed_scale", 1.0))
         self.heading_filter_enabled = bool(
             self.config.get("heading_filter_enabled", True)
@@ -732,15 +697,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             0.0, float(self.config.get("heading_output_max_correction", np.pi))
         )
         self.streaming_inference = bool(self.config.get("streaming_inference", True))
-        # FIX-1: When True, skip velocity LPF / GPS re-correction on model output;
-        # the learned Kalman gain already handles sensor fusion.
-        self.disable_model_postprocess = bool(
-            self.config.get("disable_model_postprocess", True)
-        )
-        self.use_model = bool(self.config.get("use_model", True))
-        self.load_pretrained = bool(self.config.get("load_pretrained", False))
-        self.allow_untrained_model = bool(self.config.get("allow_untrained_model", False))
-        self.use_fallback = bool(self.config.get("use_fallback", True))
         self.enable_ekf_comparator = bool(self.config.get("enable_ekf_comparator", False))
         self.comparator_log_interval = max(
             1, int(self.config.get("comparator_log_interval", 25))
@@ -785,21 +741,17 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             dt=float(self.config.get("dt", 0.02)),
             update_mask_init_bias=float(self.config.get("update_mask_init_bias", 2.0)),
             predictor_mode=str(self.config.get("predictor_mode", "kinematic")),
-            kin_v_lpf_alpha=float(self.config.get("kin_v_lpf_alpha", 0.25)),
+            kin_wheelbase=float(self.config.get("kin_wheelbase", 0.2)),
         )
 
-        self.model = None
-        if TORCH_AVAILABLE:
-            self.model = RobustStateNet(self.model_cfg).to(self.device)
-            self.model.eval()
-            self._log_info(
-                f"Robust KalmanNet predictor_mode='{self.model_cfg.predictor_mode}'"
-                + (f" (kin_v_lpf_alpha={self.model_cfg.kin_v_lpf_alpha})"
-                   if self.model_cfg.predictor_mode == "kinematic" else "")
-            )
+        self.model = RobustStateNet(self.model_cfg).to(self.device)
+        self.model.eval()
+        self._log_info(
+            f"Robust KalmanNet predictor_mode='{self.model_cfg.predictor_mode}'"
+            + (f" (kin_wheelbase={self.model_cfg.kin_wheelbase})"
+               if self.model_cfg.predictor_mode == "kinematic" else "")
+        )
         self.model_path = self._resolve_model_path(self.config.get("model_path"))
-        self.model_ready = False
-        self.last_update_used_model = False
         self.last_model_output = None
         self.last_pred_mask = None
         self.last_pred_mask_summary = None
@@ -849,16 +801,12 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
 
     @staticmethod
     def _resolve_device(device_name: str):
-        if not TORCH_AVAILABLE:
-            return device_name
         if device_name == "auto":
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
         return torch.device(device_name)
 
     @staticmethod
     def _extract_state_dict(checkpoint: Any) -> Dict[str, torch.Tensor]:
-        if not TORCH_AVAILABLE:
-            raise ImportError("torch is required to load Robust KalmanNet checkpoints")
         if isinstance(checkpoint, dict):
             if "model_state_dict" in checkpoint and isinstance(
                 checkpoint["model_state_dict"], dict
@@ -1015,46 +963,22 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         return estimate
 
     def _initialize_model(self) -> None:
-        if not TORCH_AVAILABLE:
-            if self.use_model:
-                self._log_warning(
-                    "torch is not available; Robust KalmanNet will stay on kinematic fallback"
-                )
-            return
-
-        if not self.use_model:
-            self._log_info("Robust KalmanNet configured in fallback-only mode")
-            return
-
-        if self.load_pretrained and self.model_path is not None and self.model_path.exists():
-            try:
-                checkpoint = torch.load(self.model_path, map_location=self.device)
-                state_dict = self._extract_state_dict(checkpoint)
-                self.model.load_state_dict(state_dict, strict=False)
-                self.model.eval()
-                self.model_ready = True
-                self._log_info(
-                    f"Robust KalmanNet checkpoint loaded from {self.model_path}"
-                )
-                return
-            except Exception as exc:
-                self._log_error("Failed to load Robust KalmanNet checkpoint", exc)
-
-        if self.allow_untrained_model:
-            self.model_ready = True
-            self._log_warning(
-                "Robust KalmanNet is running with randomly initialized weights"
+        if self.model_path is None:
+            raise ValueError(
+                "Robust KalmanNet requires 'model_path' in the estimator config"
             )
-            return
+        if not self.model_path.exists():
+            raise FileNotFoundError(
+                f"Robust KalmanNet checkpoint not found: {self.model_path}"
+            )
 
-        if self.load_pretrained:
-            self._log_warning(
-                "Robust KalmanNet checkpoint not available; using kinematic fallback"
-            )
-        else:
-            self._log_info(
-                "Robust KalmanNet instantiated without pretrained weights; using fallback until a checkpoint is configured"
-            )
+        checkpoint = torch.load(self.model_path, map_location=self.device)
+        state_dict = self._extract_state_dict(checkpoint)
+        self.model.load_state_dict(state_dict, strict=False)
+        self.model.eval()
+        self._log_info(
+            f"Robust KalmanNet checkpoint loaded from {self.model_path}"
+        )
 
     def _build_ekf_comparator_config(self) -> Dict[str, Any]:
         comparator_cfg = dict(self.config.get("ekf_comparator_config", {}))
@@ -1309,7 +1233,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
 
     @staticmethod
     def _detach_hidden_state(hidden: Any) -> Any:
-        if not TORCH_AVAILABLE or hidden is None:
+        if hidden is None:
             return hidden
         if torch.is_tensor(hidden):
             return hidden.detach()
@@ -1330,7 +1254,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         measurement: np.ndarray,
         dt: float,
     ) -> np.ndarray:
-        if not TORCH_AVAILABLE or self.model is None:
+        if self.model is None:
             raise RuntimeError("Robust KalmanNet model is not available for streaming inference")
 
         if self._stream_prev_upd_state is None:
@@ -1423,7 +1347,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
 
     def _prime_stream_from_history(self) -> Optional[np.ndarray]:
         history_len = len(self.measurement_history)
-        if history_len < self.min_history:
+        if history_len == 0:
             return None
 
         raw_history = {key: list(self.raw_history[key]) for key in self.RAW_KEYS}
@@ -1453,8 +1377,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         return estimate
 
     def _build_model_inputs(self) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, torch.Tensor, torch.Tensor]:
-        if not TORCH_AVAILABLE:
-            raise ImportError("torch is required for Robust KalmanNet inference")
         history_len = len(self.measurement_history)
         if history_len == 0:
             raise ValueError("No measurement history available for Robust KalmanNet")
@@ -1528,12 +1450,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         }
 
     def _predict_with_model(self) -> Optional[np.ndarray]:
-        if (
-            not TORCH_AVAILABLE
-            or self.model is None
-            or not self.model_ready
-            or len(self.measurement_history) < self.min_history
-        ):
+        if self.model is None:
             return None
 
         latest_dt = float(self.dt_history[-1]) if self.dt_history else float(self.model_cfg.dt)
@@ -1660,57 +1577,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             "gps_valid": gps_valid,
         }
 
-    def _post_process_estimate(
-        self,
-        estimate: np.ndarray,
-        motor_tach: float,
-        gyro_z: float,
-        gps_data: Optional[Dict[str, Any]],
-    ) -> np.ndarray:
-        estimate = np.asarray(estimate, dtype=np.float64).copy()
-        estimate[2] = wrap_angle_scalar(float(estimate[2]))
-        estimate[3] = (
-            self.velocity_lpf_alpha * float(motor_tach)
-            + (1.0 - self.velocity_lpf_alpha) * float(estimate[3])
-        )
-        estimate[4] = (
-            self.yaw_rate_blend * float(gyro_z)
-            + (1.0 - self.yaw_rate_blend) * float(estimate[4])
-        )
-
-        if gps_data is not None and gps_data.get("valid", False):
-            estimate[0] = (1.0 - self.gps_position_gain) * estimate[0] + self.gps_position_gain * float(gps_data["x"])
-            estimate[1] = (1.0 - self.gps_position_gain) * estimate[1] + self.gps_position_gain * float(gps_data["y"])
-            if not self.heading_filter_enabled:
-                heading_residual = wrap_angle_scalar(
-                    float(gps_data["theta"]) - float(estimate[2])
-                )
-                estimate[2] = wrap_angle_scalar(
-                    float(estimate[2]) + self.gps_heading_gain * heading_residual
-                )
-
-        return self._apply_heading_filter_output(estimate, gps_data=gps_data)
-
-    def _fallback_update(
-        self,
-        motor_tach: float,
-        dt: float,
-        gyro_z: float,
-        gps_data: Optional[Dict[str, Any]],
-    ) -> np.ndarray:
-        x, y, theta, v, _ = self.internal_state.astype(np.float64)
-        v = self.velocity_lpf_alpha * float(motor_tach) + (1.0 - self.velocity_lpf_alpha) * v
-        theta_pred = (
-            float(self.last_filtered_heading)
-            if self.heading_filter_enabled
-            else wrap_angle_scalar(theta + float(gyro_z) * dt)
-        )
-        x_pred = x + v * np.cos(theta_pred) * dt
-        y_pred = y + v * np.sin(theta_pred) * dt
-
-        estimate = np.array([x_pred, y_pred, theta_pred, v, float(gyro_z)], dtype=np.float64)
-        return self._post_process_estimate(estimate, motor_tach, gyro_z, gps_data)
-
     def _record_comparison(
         self,
         robust_estimate: np.ndarray,
@@ -1744,7 +1610,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         delta_state = robust_state - ekf_state
         delta_state[2] = wrap_angle_scalar(float(delta_state[2]))
 
-        if self.last_update_used_model and self.last_x_pred is not None and measurement is not None:
+        if self.last_x_pred is not None and measurement is not None:
             innovation = measurement - self.last_x_pred
         else:
             innovation = np.full(5, np.nan)
@@ -1752,7 +1618,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         comparison = {
             "tick": self.update_count,
             "timestamp": time.time(),
-            "robust_source": "model" if self.last_update_used_model else "fallback",
+            "robust_source": "model",
             "robust_state": robust_state.copy(),
             "ekf_state": ekf_state.copy(),
             "delta_state": delta_state.copy(),
@@ -1843,37 +1709,19 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             )
             self._append_sample(raw_sample, measurement, dt)
 
-            estimate = None
-            self.last_update_used_model = False
-            if self.model_ready:
-                try:
-                    estimate = self._predict_with_model()
-                    if estimate is not None:
-                        # FIX-1: When disable_model_postprocess is True, the
-                        # learned Kalman gain already handles sensor fusion —
-                        # only wrap the heading angle.  Full post-processing
-                        # (velocity LPF, GPS re-correction) is reserved for
-                        # the kinematic fallback path.
-                        if self.disable_model_postprocess:
-                            estimate = np.asarray(estimate, dtype=np.float64).copy()
-                            estimate = self._apply_heading_filter_output(
-                                estimate,
-                                gps_data=gps_data,
-                            )
-                        else:
-                            estimate = self._post_process_estimate(
-                                estimate, motor_tach, gyro_z, gps_data
-                            )
-                        self.last_update_used_model = True
-                except Exception as exc:
-                    self._clear_stream_state()
-                    self._log_error("Robust KalmanNet inference failed", exc)
-                    estimate = None
+            try:
+                estimate = self._predict_with_model()
+            except Exception:
+                self._clear_stream_state()
+                raise
 
             if estimate is None:
-                if not self.use_fallback:
-                    return False
-                estimate = self._fallback_update(motor_tach, dt, gyro_z, gps_data)
+                raise RuntimeError("Robust KalmanNet did not produce an estimate")
+
+            estimate = self._apply_heading_filter_output(
+                np.asarray(estimate, dtype=np.float64),
+                gps_data=gps_data,
+            )
 
             self._record_comparison(
                 robust_estimate=estimate,
@@ -1939,7 +1787,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self.last_meas_mask = None
         self.last_K = None
         self.last_x_pred = None
-        self.last_update_used_model = False
         self.update_count = 0
         self.last_comparator_output = None
         self.last_comparison = None
@@ -2142,9 +1989,6 @@ def run_inference(model, raw, z_seq, x0):
 # ============================================================
 
 if __name__ == "__main__":
-    if not TORCH_AVAILABLE:
-        raise SystemExit("torch is required to run the Robust KalmanNet demo")
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
     cfg = RSNConfig(
         pred_hidden=64,

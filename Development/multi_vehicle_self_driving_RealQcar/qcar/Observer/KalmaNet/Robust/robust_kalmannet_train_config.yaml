@@ -40,7 +40,7 @@ training:
   sequence_length_phase_c: 30
 
   # Sliding-window step. 1 means maximum overlap.
-  stride: 2
+  stride: 1
 
   # Fraction of data reserved for validation.
   val_split: 0.2
@@ -131,10 +131,11 @@ augmentation:
 model:
   # Predictor implementation:
   # nn        = learned neural predictor
-  # kinematic = analytical motion model
+  # kinematic = analytical QCar bicycle model
   #
   # Note: if set to kinematic, Phase A is skipped automatically.
   predictor_mode: "kinematic"
+  kin_wheelbase: 0.2
 
   # Hidden sizes. Keep these aligned with
   # qcar/Observer/config_local_estimators.yaml at runtime.

@@ -2,7 +2,7 @@
 # Default parameters for the local state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-local_estimator_type: robust_kalman_net # local_estimator_type: Which local estimator to use.
+local_estimator_type: ekf # local_estimator_type: Which local estimator to use.
                         # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
 
 # Plotting configuration
@@ -60,12 +60,9 @@ local:
   # Robust KalmanNet estimator
   # ---------------------------------------------------------------------
   robust_kalman_net:
-    predictor_mode: kinematic    # Explicitly use kinematic model for prediction, leaving only the update step to use the GRU NN
-    use_model: true              # Create the network adapter and try to use learned inference.
-    load_pretrained: true       # Set true after training and saving a checkpoint.
-    model_path: models/robust_kalmannet.pt # Relative to Observer/KalmaNet/Robust/
-    allow_untrained_model: false # Keep false for runtime use; random weights are not useful.
-    use_fallback: false           # Use GPS-corrected kinematic fallback when no checkpoint is available.
+    predictor_mode: kinematic    # Explicitly use the QCar bicycle model for prediction, leaving only the update step to use the GRU NN
+    kin_wheelbase: 0.2           # Match QCarEKF wheelbase L.
+    model_path: models/robust_kalmannet.pt # Required checkpoint path, relative to Observer/KalmaNet/Robust/
     enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
     comparator_use_qcar_ekf: true # Use QCarEKF inside the comparator when available.
     comparator_console_log: false # Keep console quiet during runtime.
@@ -79,13 +76,8 @@ local:
     comparator_overwrite: false
     mask_branch_active_threshold: 0.5 # For log interpretation only; marks a branch as "active" when mean mask >= threshold.
     sequence_length: 10          # Rolling window length for sequence inference.
-    min_history: 5               # Minimum history before running the network.
     streaming_inference: true    # Reuse hidden state and run one model step per tick instead of replaying the whole window.
     dt: 0.02                     # Nominal sample time used by the trained model. Keep this aligned with the real inference cadence.
-    velocity_lpf_alpha: 0.25     # Blend tachometer with estimated velocity.
-    gps_position_gain: 0.35      # GPS correction gain for x/y.
-    gps_heading_gain: 0.40       # GPS correction gain for heading.
-    yaw_rate_blend: 0.20         # Blend gyro_z into the model yaw-rate state.
     heading_filter_enabled: true # Run a small yaw-angle pre-filter using gyro_z prediction and GPS heading correction.
     heading_filter_q_psi: 0.001  # Process noise on heading angle inside the pre-filter.
     heading_filter_q_bias: 0.0001 # Process noise on gyro bias inside the pre-filter.

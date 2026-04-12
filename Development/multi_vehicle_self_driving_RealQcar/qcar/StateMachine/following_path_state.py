@@ -1019,7 +1019,7 @@ class FollowingPathState(StateBase):
 
             # Check if enabled in config
             if not settings.enabled:
-                self.logger.logger.info("[PATH] Lane Fusion disabled in config")
+                # self.logger.logger.info("[PATH] Lane Fusion disabled in config")
                 self._lane_fusion_enabled = False
                 return
 

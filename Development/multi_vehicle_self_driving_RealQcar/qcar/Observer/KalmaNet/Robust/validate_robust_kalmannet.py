@@ -10,7 +10,7 @@ try:
 except ImportError:
     torch = None
 
-from robustKLnet import RSNConfig, RobustKalmanNetStateEstimator, RobustStateNet
+from robustKLnet import RSNConfig, RobustStateNet, wrap_angle_scalar
 from robust_kalmannet_dataset import RAW_KEYS, build_training_windows, compute_rmse, merge_recorded_datasets
 
 
@@ -25,29 +25,33 @@ def build_gps_dict(dataset: Dict[str, np.ndarray], index: int) -> Dict[str, floa
     }
 
 
-def run_baseline(dataset: Dict[str, np.ndarray]) -> np.ndarray:
-    estimator = RobustKalmanNetStateEstimator(config={"use_model": False, "use_fallback": True})
+def run_kinematic_reference(dataset: Dict[str, np.ndarray], wheelbase: float = 0.2) -> np.ndarray:
     predictions: List[np.ndarray] = []
     timestamps = np.asarray(dataset["timestamps"], dtype=np.float64)
+    state = np.zeros(5, dtype=np.float64)
+    wheelbase = max(float(wheelbase), 1e-6)
 
     for i in range(len(timestamps)):
         dt = float(timestamps[i] - timestamps[i - 1]) if i > 0 else float(dataset.get("metadata", {}).get("dt_mean", 0.02) or 0.02)
-        ok = estimator.update(
-            motor_tach=float(dataset["motor_tach"][i]),
-            steering=float(dataset["delta"][i]),
-            throttle=float(dataset["throttle"][i]),
-            dt=max(dt, 1e-3),
-            gyro_z=float(dataset["gyro_z"][i]),
-            gps_data=build_gps_dict(dataset, i),
-            acceleration=np.array([
-                float(dataset["accel_x"][i]),
-                float(dataset["accel_y"][i]),
-                float(dataset["accel_z"][i]),
-            ], dtype=np.float32),
-        )
-        if not ok:
-            raise RuntimeError(f"Baseline fallback estimator failed at sample {i}")
-        predictions.append(estimator.get_internal_state())
+        dt = max(dt, 1e-3)
+        gps_data = build_gps_dict(dataset, i)
+        motor_tach = float(dataset["motor_tach"][i])
+        steering = float(dataset["steering"][i])
+        yaw_rate = motor_tach * np.tan(steering) / wheelbase
+
+        theta_prev = float(state[2])
+        theta = wrap_angle_scalar(theta_prev + yaw_rate * dt)
+        x = float(state[0]) + motor_tach * np.cos(theta_prev) * dt
+        y = float(state[1]) + motor_tach * np.sin(theta_prev) * dt
+
+        if gps_data is not None:
+            x = float(gps_data["x"])
+            y = float(gps_data["y"])
+            theta = wrap_angle_scalar(float(gps_data["theta"]))
+
+        state = np.array([x, y, theta, motor_tach, yaw_rate], dtype=np.float64)
+        predictions.append(state.copy())
+
     return np.asarray(predictions, dtype=np.float32)
 
 
@@ -91,22 +95,23 @@ def run_model(dataset: Dict[str, np.ndarray], checkpoint_path: Path, sequence_le
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Compare baseline fallback vs learned Robust KalmanNet offline")
+    parser = argparse.ArgumentParser(description="Compare kinematic reference vs learned Robust KalmanNet offline")
     parser.add_argument("datasets", nargs="+", help="Recorded dataset .npz files")
     parser.add_argument("--checkpoint", help="Checkpoint path for learned model")
     parser.add_argument("--sequence-length", type=int, default=20)
     parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
+    parser.add_argument("--kin-wheelbase", type=float, default=0.2, help="Wheelbase L used by the QCar bicycle reference model")
     parser.add_argument("--output", default="validation_metrics.json", help="Output metrics filename relative to this script")
     args = parser.parse_args()
 
     dataset = merge_recorded_datasets(args.datasets)
     target = np.asarray(dataset["x_gt"], dtype=np.float32)
 
-    baseline_pred = run_baseline(dataset)
+    kinematic_pred = run_kinematic_reference(dataset, wheelbase=args.kin_wheelbase)
     metrics = {
         "dataset_files": args.datasets,
         "target_source": dataset.get("metadata", {}).get("target_estimator_type", "unknown"),
-        "baseline": compute_rmse(baseline_pred, target),
+        "kinematic_reference": compute_rmse(kinematic_pred, target),
     }
 
     if args.checkpoint:
@@ -126,7 +131,7 @@ def main() -> None:
     predictions_path = output_path.with_suffix(".predictions.npz")
     save_payload = {
         "target": target,
-        "baseline_pred": baseline_pred,
+        "kinematic_reference_pred": kinematic_pred,
     }
     if model_pred is not None:
         save_payload["learned_pred"] = model_pred

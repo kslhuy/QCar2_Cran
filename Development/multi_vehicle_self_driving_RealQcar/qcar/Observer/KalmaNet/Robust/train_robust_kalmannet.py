@@ -55,6 +55,7 @@ DEFAULT_CONFIG = {
     },
     "model": {
         "predictor_mode": "nn",
+        "kin_wheelbase": 0.2,
         "pred_hidden": 32,
         "upd_hidden": 32,
         "gain_hidden": 32,
@@ -226,7 +227,13 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         "--predictor-mode",
         default=str(model_cfg.get("predictor_mode", "nn")),
         choices=["nn", "kinematic"],
-        help="Prediction step: 'nn' (tri-LSTM, learnable, default) | 'kinematic' (unicycle model, no trainable parameters)",
+        help="Prediction step: 'nn' (tri-LSTM, learnable, default) | 'kinematic' (QCar bicycle model, no trainable parameters)",
+    )
+    parser.add_argument(
+        "--kin-wheelbase",
+        type=float,
+        default=float(model_cfg.get("kin_wheelbase", 0.2)),
+        help="Wheelbase L used by the analytical kinematic predictor to match QCarEKF",
     )
     parser.add_argument(
         "--pred-hidden",
@@ -520,6 +527,7 @@ def main() -> None:
     cfg = RSNConfig(
         dt=float(merged.get("metadata", {}).get("dt_mean", 0.02) or 0.02),
         predictor_mode=args.predictor_mode,
+        kin_wheelbase=args.kin_wheelbase,
         pred_hidden=args.pred_hidden,
         upd_hidden=args.upd_hidden,
         gain_hidden=args.gain_hidden,
@@ -544,7 +552,7 @@ def main() -> None:
 
     print(f"\nPredictor mode : {args.predictor_mode}")
     if args.predictor_mode == "kinematic":
-        print("  → Kinematic predictor: unicycle model (no learnable parameters in prediction step).")
+        print("  → Kinematic predictor: QCar bicycle model (no learnable parameters in prediction step).")
         print("  → Phase A (Pretrain Predictor) is automatically skipped.")
         print("  → Prediction mask supervision (lambda_mask) is automatically skipped (pred_mask=None).")
         args.phase_a_epochs = 0
