@@ -207,6 +207,7 @@ class VehicleObserver:
         # Fleet estimator will be created when V2V is activated (not at initialization)
         # This saves resources and ensures clean state when V2V starts
         self.v2v_active = False  # Track if V2V is active
+        self._v2v_time_reference: Optional[Dict[str, Any]] = None
 
         # ===== Relative State Estimator (pluggable) =====
         self.relative_estimator: Optional[RelativeStateEstimatorBase] = None
@@ -389,6 +390,129 @@ class VehicleObserver:
                 self.gps_valid_hold_max_seconds,
             )
         )
+
+    def _normalize_v2v_time_reference(
+        self, time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize shared V2V time-reference metadata."""
+        if not isinstance(time_reference, dict):
+            return None
+
+        source = str(time_reference.get("source", "local")).strip() or "local"
+        raw_reference_ns = time_reference.get(
+            "reference_time_ns", time_reference.get("epoch_time_ns")
+        )
+        try:
+            reference_time_ns = (
+                int(raw_reference_ns) if raw_reference_ns is not None else None
+            )
+        except (TypeError, ValueError):
+            reference_time_ns = None
+
+        if reference_time_ns is not None and reference_time_ns < 0:
+            reference_time_ns = None
+
+        normalized = {
+            "source": source,
+            "reference_time_ns": reference_time_ns,
+        }
+
+        for key in ("reference_vehicle_id", "leader_id"):
+            if key not in time_reference or time_reference.get(key) is None:
+                continue
+            try:
+                normalized[key] = int(time_reference[key])
+            except (TypeError, ValueError):
+                continue
+
+        return normalized
+
+    def set_v2v_time_reference(
+        self, time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Store and propagate the active shared V2V time reference."""
+        normalized = self._normalize_v2v_time_reference(time_reference)
+        with self.lock:
+            self._v2v_time_reference = normalized
+            if (
+                self.fleet_estimator is not None
+                and hasattr(self.fleet_estimator, "set_time_reference")
+            ):
+                self.fleet_estimator.set_time_reference(normalized)
+
+        if self.vehicle_logger and normalized:
+            self.vehicle_logger.logger.info(
+                "VehicleObserver: Shared V2V time reference "
+                f"source={normalized.get('source')} "
+                f"reference_time_ns={normalized.get('reference_time_ns')}"
+            )
+
+        return dict(normalized) if normalized else None
+
+    def clear_v2v_time_reference(self) -> None:
+        """Clear the active shared V2V time reference."""
+        self.set_v2v_time_reference(None)
+
+    def has_v2v_time_reference(self) -> bool:
+        """Return True when a shared V2V time reference is active."""
+        with self.lock:
+            return isinstance(self._v2v_time_reference, dict)
+
+    def get_v2v_time_reference(self) -> Optional[Dict[str, Any]]:
+        """Return a copy of the active shared V2V time reference."""
+        with self.lock:
+            if not isinstance(self._v2v_time_reference, dict):
+                return None
+            return dict(self._v2v_time_reference)
+
+    def to_v2v_reference_time_ns(self, timestamp_ns: Optional[int] = None) -> int:
+        """
+        Convert a local wall-clock timestamp into the current V2V time domain.
+
+        Without an active shared reference, this falls back to the raw local
+        wall-clock nanosecond timestamp for backward compatibility.
+        """
+        ts_ns = int(time.time_ns()) if timestamp_ns is None else int(timestamp_ns)
+        with self.lock:
+            reference_time_ns = None
+            if isinstance(self._v2v_time_reference, dict):
+                reference_time_ns = self._v2v_time_reference.get("reference_time_ns")
+
+        if reference_time_ns is None:
+            return ts_ns
+        return max(ts_ns - int(reference_time_ns), 0)
+
+    def _build_v2v_time_payload_locked(self) -> Dict[str, Any]:
+        """Return shared V2V time metadata for outgoing broadcast payloads."""
+        source = "local"
+        reference_vehicle_id: Optional[int] = None
+        leader_id: Optional[int] = None
+        if isinstance(self._v2v_time_reference, dict):
+            source = str(self._v2v_time_reference.get("source", "local"))
+            raw_reference_vehicle_id = self._v2v_time_reference.get(
+                "reference_vehicle_id"
+            )
+            raw_leader_id = self._v2v_time_reference.get("leader_id")
+            try:
+                if raw_reference_vehicle_id is not None:
+                    reference_vehicle_id = int(raw_reference_vehicle_id)
+            except (TypeError, ValueError):
+                reference_vehicle_id = None
+            try:
+                if raw_leader_id is not None:
+                    leader_id = int(raw_leader_id)
+            except (TypeError, ValueError):
+                leader_id = None
+
+        payload: Dict[str, Any] = {
+            "timestamp_ref_ns": self.to_v2v_reference_time_ns(),
+            "time_reference_source": source,
+        }
+        if reference_vehicle_id is not None:
+            payload["time_reference_vehicle_id"] = reference_vehicle_id
+        elif leader_id is not None:
+            payload["time_reference_vehicle_id"] = leader_id
+        return payload
 
     @staticmethod
     def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -1136,9 +1260,7 @@ class VehicleObserver:
             if self.fleet_estimator is None:
                 return
 
-            current_time_ns = (
-                time.time_ns()
-            )  # Use nanoseconds for consistency with V2V timestamps
+            current_time_ns = self.to_v2v_reference_time_ns()
 
             # Pass actual control inputs (steering, throttle)
             control = np.array([
@@ -1231,16 +1353,18 @@ class VehicleObserver:
             else float("nan")
         )
 
+        message_timestamp_ns = self.to_v2v_reference_time_ns(timestamp_ns)
+
         with self.lock:
             self._last_relative_distance_by_target[target_int] = (
                 float(distance),
-                float(timestamp_ns) / 1e9,
+                float(message_timestamp_ns) / 1e9,
             )
             self.sensor_data["relative_measurements_by_target"][target_int] = {
                 "distance": float(distance),
                 "relative_velocity": rel_velocity,
                 "confidence": float(measurement_confidence),
-                "timestamp_ns": int(timestamp_ns),
+                "timestamp_ns": int(message_timestamp_ns),
                 "source": str(source),
             }
 
@@ -1257,7 +1381,7 @@ class VehicleObserver:
                     relative_velocity=(
                         rel_velocity if np.isfinite(rel_velocity) else None
                     ),
-                    timestamp_ns=int(timestamp_ns),
+                    timestamp_ns=int(message_timestamp_ns),
                     source=str(source),
                     measurement_confidence=float(measurement_confidence),
                 )
@@ -1268,7 +1392,7 @@ class VehicleObserver:
                     relative_velocity=(
                         rel_velocity if np.isfinite(rel_velocity) else None
                     ),
-                    timestamp_ns=int(timestamp_ns),
+                    timestamp_ns=int(message_timestamp_ns),
                     source=str(source),
                 )
 
@@ -1907,7 +2031,7 @@ class VehicleObserver:
         Includes acceleration and control inputs for cooperative control.
         """
         with self.lock:
-            return {
+            payload = {
                 "vehicle_id": self.vehicle_id,
                 "x": float(self.local_state[0]),
                 "y": float(self.local_state[1]),
@@ -1921,6 +2045,8 @@ class VehicleObserver:
                 "gps_valid": self.gps_valid,
                 "source": "local_sensors",
             }
+            payload.update(self._build_v2v_time_payload_locked())
+            return payload
 
     def get_fleet_state_for_broadcast(self) -> dict:
         """
@@ -1949,11 +2075,13 @@ class VehicleObserver:
                     else 0.8,  # Higher confidence for own state
                 }
 
-            return {
+            payload = {
                 "sender_id": self.vehicle_id,
                 "fleet_states": fleet_data,
                 "source": "fleet_consensus",
             }
+            payload.update(self._build_v2v_time_payload_locked())
+            return payload
 
     def get_trust_report_for_broadcast(self) -> Optional[Dict[str, Any]]:
         """
@@ -2006,15 +2134,20 @@ class VehicleObserver:
                 except Exception:
                     generalized_vector = {}
 
-            return {
+            payload = {
                 "reporter_id": self.vehicle_id,
                 "trust_scores": trust_scores,
                 "generalized_trust_vector": generalized_vector,
                 "source": "trust_estimator",
             }
+            payload.update(self._build_v2v_time_payload_locked())
+            return payload
 
     def reinitialize_fleet_estimation(
-        self, new_fleet_size: int, peer_vehicle_ids: List[int]
+        self,
+        new_fleet_size: int,
+        peer_vehicle_ids: List[int],
+        time_reference: Optional[Dict[str, Any]] = None,
     ):
         """
         Reinitialize fleet estimation when V2V is activated with actual fleet information.
@@ -2023,10 +2156,15 @@ class VehicleObserver:
         Args:
             new_fleet_size: Actual number of vehicles in the fleet (including this vehicle)
             peer_vehicle_ids: List of peer vehicle IDs that will be connected
+            time_reference: Shared timing metadata for cross-vehicle V2V alignment
         """
         with self.lock:
             old_fleet_size = self.fleet_size
             self.fleet_size = new_fleet_size
+            normalized_time_reference = self._normalize_v2v_time_reference(
+                time_reference
+            )
+            self._v2v_time_reference = normalized_time_reference
 
             # Mark V2V as active - fleet observer will start updating
             self.v2v_active = True
@@ -2044,6 +2182,8 @@ class VehicleObserver:
                     config=fleet_config,
                     logger=self.vehicle_logger,
                 )
+                if hasattr(self.fleet_estimator, "set_time_reference"):
+                    self.fleet_estimator.set_time_reference(normalized_time_reference)
 
                 # Initialize only own state in fleet - others will be updated as V2V data arrives
                 if self.vehicle_id < self.fleet_size:
@@ -2081,6 +2221,7 @@ class VehicleObserver:
         Cleans up fleet estimator and resets fleet size to 1 (just this vehicle).
         """
         self.v2v_active = False
+        self._v2v_time_reference = None
         # self.fleet_size = max(self.vehicle_id + 1, 1) # Keep purely local
 
     def reset_observer(self, initial_pose: Optional[np.ndarray] = None):

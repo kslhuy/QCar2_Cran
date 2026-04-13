@@ -109,6 +109,7 @@ class V2VManager:
             'messages_received': 0,
             'messages_processed': 0
         }
+        self._time_reference: Optional[Dict[str, Any]] = None
         
         # Setup message handlers
         self._setup_message_handlers()
@@ -134,6 +135,81 @@ class V2VManager:
         self.v2v_communication.register_message_handler(
             MessageType.WARNING.value, self._handle_warning_message
         )
+
+    def _normalize_time_reference(
+        self, time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize shared V2V time-reference metadata."""
+        if not isinstance(time_reference, dict):
+            return None
+
+        source = str(time_reference.get("source", "local")).strip() or "local"
+        raw_reference_ns = time_reference.get(
+            "reference_time_ns", time_reference.get("epoch_time_ns")
+        )
+        try:
+            reference_time_ns = (
+                int(raw_reference_ns) if raw_reference_ns is not None else None
+            )
+        except (TypeError, ValueError):
+            reference_time_ns = None
+
+        if reference_time_ns is not None and reference_time_ns < 0:
+            reference_time_ns = None
+
+        normalized = {
+            "source": source,
+            "reference_time_ns": reference_time_ns,
+        }
+
+        for key in ("reference_vehicle_id", "leader_id"):
+            if key not in time_reference or time_reference.get(key) is None:
+                continue
+            try:
+                normalized[key] = int(time_reference[key])
+            except (TypeError, ValueError):
+                continue
+
+        return normalized
+
+    def _set_time_reference(
+        self, time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Persist normalized shared timing metadata for V2V activity."""
+        self._time_reference = self._normalize_time_reference(time_reference)
+        return dict(self._time_reference) if self._time_reference else None
+
+    def _to_reference_time_ns(self, timestamp_ns: int) -> int:
+        """Convert a wall-clock nanosecond timestamp into the active V2V domain."""
+        try:
+            ts_ns = int(timestamp_ns)
+        except (TypeError, ValueError):
+            return 0
+
+        reference_time_ns = None
+        if isinstance(self._time_reference, dict):
+            reference_time_ns = self._time_reference.get("reference_time_ns")
+
+        if reference_time_ns is None:
+            return ts_ns
+        return max(ts_ns - int(reference_time_ns), 0)
+
+    def _resolve_message_timestamp_ns(
+        self, data: Optional[Dict[str, Any]]
+    ) -> Optional[int]:
+        """
+        Resolve the shared-reference timestamp for incoming V2V payloads.
+
+        Local/fleet/trust comparison paths should only use `timestamp_ref_ns`.
+        """
+        if isinstance(data, dict):
+            raw_reference_ts = data.get("timestamp_ref_ns")
+            try:
+                if raw_reference_ts is not None:
+                    return max(int(raw_reference_ts), 0)
+            except (TypeError, ValueError):
+                return None
+        return None
     
     def update_broadcast(self) -> bool:
         """
@@ -357,6 +433,15 @@ class V2VManager:
             sender_id = message.sender_id
             data = message.data
             send_time_ns = message.send_time_ns
+            message_timestamp_ns = self._resolve_message_timestamp_ns(data)
+
+            if message_timestamp_ns is None:
+                if self.logger:
+                    self.logger.warning(
+                        "V2VManager: Dropping local state from vehicle "
+                        f"{sender_id} because timestamp_ref_ns is missing/invalid"
+                    )
+                return
             
             # Validate required fields for local state (acceleration and control_input are optional)
             required_fields = ['vehicle_id', 'x', 'y', 'theta', 'velocity']
@@ -407,7 +492,9 @@ class V2VManager:
                 }
 
                 # Add to received local states with send time in nanoseconds (store normalized dict)
-                self.received_local_states[sender_id].append((send_time_ns, state_dict))
+                self.received_local_states[sender_id].append(
+                    (message_timestamp_ns, state_dict)
+                )
 
                 # Log received local estimation to dedicated CSV file
                 if hasattr(self.vehicle_logger, 'log_local_estimation'):
@@ -422,7 +509,9 @@ class V2VManager:
                 # Add to VehicleObserver if available (observer expects a 5D numpy array)
                 if self.vehicle_observer:
 
-                    self.vehicle_observer.add_received_local_state(sender_id, state_dict, send_time_ns)
+                    self.vehicle_observer.add_received_local_state(
+                        sender_id, state_dict, message_timestamp_ns
+                    )
                     
                     
             # # Add normalized state to queue for other consumers
@@ -453,6 +542,15 @@ class V2VManager:
             sender_id = message.sender_id
             data = message.data
             send_time_ns = message.send_time_ns
+            message_timestamp_ns = self._resolve_message_timestamp_ns(data)
+
+            if message_timestamp_ns is None:
+                if self.logger:
+                    self.logger.warning(
+                        "V2VManager: Dropping fleet state from vehicle "
+                        f"{sender_id} because timestamp_ref_ns is missing/invalid"
+                    )
+                return
             
             # Validate required fields for fleet state 
             required_fields = ['sender_id', 'fleet_states']
@@ -483,7 +581,9 @@ class V2VManager:
             
             with self._lock:
                 # Add to received fleet states with send time in nanoseconds
-                self.received_fleet_states[sender_id].append((send_time_ns, data))
+                self.received_fleet_states[sender_id].append(
+                    (message_timestamp_ns, data)
+                )
                 
                 # Log received fleet estimation to dedicated CSV file
                 if hasattr(self.vehicle_logger, 'log_fleet_estimation'):
@@ -523,7 +623,7 @@ class V2VManager:
                     success = self.vehicle_observer.add_received_fleet_state(
                         sender_id=sender_id,
                         fleet_estimates=fleet_states,
-                        timestamp_ns=send_time_ns
+                        timestamp_ns=message_timestamp_ns
                     )
                     
                     if success and self.logger:
@@ -562,7 +662,15 @@ class V2VManager:
         try:
             sender_id = message.sender_id
             data = message.data
-            send_time_ns = message.send_time_ns
+            message_timestamp_ns = self._resolve_message_timestamp_ns(data)
+
+            if message_timestamp_ns is None:
+                if self.logger:
+                    self.logger.warning(
+                        "V2VManager: Dropping trust report from vehicle "
+                        f"{sender_id} because timestamp_ref_ns is missing/invalid"
+                    )
+                return
 
             if not isinstance(data, dict):
                 return
@@ -572,7 +680,9 @@ class V2VManager:
                 return
 
             with self._lock:
-                self.received_trust_reports[sender_id].append((send_time_ns, opinions))
+                self.received_trust_reports[sender_id].append(
+                    (message_timestamp_ns, opinions)
+                )
                 self.stats["trust_reports_received"] += 1
 
             if (
@@ -901,13 +1011,21 @@ class V2VManager:
         """Check if V2V manager is active"""
         return self.v2v_communication.is_active if self.v2v_communication else False
     
-    def activate(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
+    def activate(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Activate V2V communication"""
         try:
             if not self.v2v_communication:
                 if self.logger:
                     self.logger.error("V2VManager: No V2V communication instance available")
                 return False
+
+            if time_reference is not None:
+                self._set_time_reference(time_reference)
             
             success = self.v2v_communication.activate(peer_vehicles, peer_ips)
             
@@ -930,10 +1048,16 @@ class V2VManager:
         """Deactivate V2V communication"""
         if self.v2v_communication:
             self.v2v_communication.deactivate()
+        self._time_reference = None
     
     # ===== High-level V2V Control Methods =====
     
-    def activate_v2v(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
+    def activate_v2v(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """
         Activate V2V communication with specified peers
         This is the main entry point for V2V activation from external systems
@@ -953,14 +1077,42 @@ class V2VManager:
                 self.logger.info(f"V2VManager: Activating V2V for vehicle {self.vehicle_id}")
                 self.logger.info(f"V2VManager: Connecting to peers: {peer_vehicles}")
                 self.logger.info(f"V2VManager: Peer IPs: {peer_ips}")
+
+            normalized_time_reference = self._set_time_reference(time_reference)
+            if self.logger and normalized_time_reference:
+                self.logger.info(
+                    "V2VManager: Shared time reference "
+                    f"source={normalized_time_reference.get('source')} "
+                    f"reference_time_ns={normalized_time_reference.get('reference_time_ns')}"
+                )
             
             # Reinitialize fleet estimation via vehicle_logic
             # Calculate actual fleet size: peers + this vehicle
             actual_fleet_size = len(peer_vehicles) + 1
-            self.vehicle_observer.reinitialize_fleet_estimation(actual_fleet_size, peer_vehicles)
+            self.vehicle_observer.reinitialize_fleet_estimation(
+                actual_fleet_size,
+                peer_vehicles,
+                time_reference=normalized_time_reference,
+            )
+
+            if (
+                normalized_time_reference
+                and self.vehicle_logic
+                and hasattr(self.vehicle_logic, "vehicle_logger")
+                and hasattr(self.vehicle_logic.vehicle_logger, "set_start_time")
+            ):
+                reference_time_ns = normalized_time_reference.get("reference_time_ns")
+                if reference_time_ns is not None:
+                    self.vehicle_logic.vehicle_logger.set_start_time(
+                        float(reference_time_ns) / 1e9
+                    )
             
             # Activate the underlying V2V communication
-            success = self.activate(peer_vehicles, peer_ips)
+            success = self.activate(
+                peer_vehicles,
+                peer_ips,
+                time_reference=normalized_time_reference,
+            )
             
             if success:
                 fleet_size = len(peer_vehicles) + 1
@@ -982,6 +1134,7 @@ class V2VManager:
                         'vehicle_id': self.vehicle_id,
                         'timestamp': time.time(),
                         'fleet_size': fleet_size,
+                        'time_reference': normalized_time_reference,
                         'protocol': 'UDP-Manager'
                     })
                 
@@ -990,15 +1143,22 @@ class V2VManager:
                     self.status_callback('v2v_activated', {
                         'peer_vehicles': peer_vehicles,
                         'peer_ips': peer_ips,
-                        'fleet_size': fleet_size
+                        'fleet_size': fleet_size,
+                        'time_reference': normalized_time_reference,
                     })
             else:
+                if self.vehicle_observer is not None:
+                    self.vehicle_observer.reset_fleet_estimation()
+                self._time_reference = None
                 if self.logger:
                     self.logger.error(f"V2VManager: V2V communication activation failed")
             
             return success
             
         except Exception as e:
+            if self.vehicle_observer is not None:
+                self.vehicle_observer.reset_fleet_estimation()
+            self._time_reference = None
             if self.logger:
                 self.logger.error(f"V2VManager: V2V activation error - {e}")
             return False

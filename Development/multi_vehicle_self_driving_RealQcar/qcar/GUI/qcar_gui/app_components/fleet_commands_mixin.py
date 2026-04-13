@@ -1,3 +1,4 @@
+import time
 from tkinter import messagebox
 
 class FleetCommandsMixin:
@@ -147,6 +148,11 @@ class FleetCommandsMixin:
 
         success_count = 0
         connected_list = list(self._connected_cars)
+        shared_time_reference = {
+            "source": "ground_station",
+            "reference_time_ns": int(time.time_ns()),
+            "reference_vehicle_id": None,
+        }
 
         for car_id in connected_list:
             peers = [cid for cid in connected_list if cid != car_id]
@@ -165,6 +171,7 @@ class FleetCommandsMixin:
                 "peer_vehicles": peers,
                 "peer_ips": vehicle_ips,
                 "my_id": car_id,
+                "time_reference": dict(shared_time_reference),
             }
 
             if self._remote.send_command(car_id, command):

@@ -324,9 +324,16 @@ class V2VAttackInjector:
     # V2VManager Passthrough Methods
     # =====================================================================
     
-    def activate(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
+    def activate(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Activate V2V communication."""
-        result = self.v2v_manager.activate(peer_vehicles, peer_ips)
+        result = self.v2v_manager.activate(
+            peer_vehicles, peer_ips, time_reference=time_reference
+        )
         if result:
             # Reset start time when V2V is activated
             self.reset_start_time()
@@ -336,9 +343,16 @@ class V2VAttackInjector:
         """Deactivate V2V communication."""
         return self.v2v_manager.deactivate()
     
-    def activate_v2v(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
+    def activate_v2v(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Activate V2V (alias)."""
-        result = self.v2v_manager.activate_v2v(peer_vehicles, peer_ips)
+        result = self.v2v_manager.activate_v2v(
+            peer_vehicles, peer_ips, time_reference=time_reference
+        )
         if result:
             self.reset_start_time()
         return result

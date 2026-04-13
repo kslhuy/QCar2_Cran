@@ -40,7 +40,7 @@ cacc:
   blend_heading_deg: 20.0    # Used only when spacing_mode: 'blended'
   min_effective_spacing: 0.0 # Minimum gap fed to CACC after projectio
   acc_to_throttle_gain: 0.35  # Conversion gain from acceleration to throttle
-  max_throttle: 0.3          # Maximum throttle output
+  max_throttle: 0.2          # Maximum throttle output
   # Optional weight applied to the *difference* between leader and
   # follower acceleration. This is treated like an additional tracking
   # error term rather than a feedforward command, making the controller
