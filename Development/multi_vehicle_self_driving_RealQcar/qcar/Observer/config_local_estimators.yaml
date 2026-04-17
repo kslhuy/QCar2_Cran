@@ -60,8 +60,8 @@ local:
   # Robust KalmanNet estimator
   # ---------------------------------------------------------------------
   robust_kalman_net:
-    predictor_mode: kinematic    # Explicitly use the QCar bicycle model for prediction, leaving only the update step to use the GRU NN
-    kin_wheelbase: 0.2           # Match QCarEKF wheelbase L.
+    predictor_mode: "nn"    # Explicitly use the QCar bicycle model for prediction, leaving only the update step to use the GRU NN
+    kin_wheelbase: 0.256         # Match QCarEKF wheelbase L.
     model_path: models/robust_kalmannet.pt # Required checkpoint path, relative to Observer/KalmaNet/Robust/
     enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
     comparator_use_qcar_ekf: true # Use QCarEKF inside the comparator when available.
@@ -69,7 +69,7 @@ local:
     comparator_log_interval: 100  # If console logging is enabled, log every N updates.
     comparator_history_size: 200 # Keep the last N comparison snapshots in memory.
     comparator_record_to_file: true # File logging adds jitter; enable only for short debug runs.
-    comparator_record_interval: 10 # Record every N updates to the CSV file.
+    comparator_record_interval: 1 # Record every N updates to the CSV file.
     comparator_flush_interval: 200 # Flush the comparator CSV every N recorded rows.
     comparator_output_dir: logs/comparator # Relative to Observer/KalmaNet/Robust/
     comparator_file_prefix: rknet_comparison

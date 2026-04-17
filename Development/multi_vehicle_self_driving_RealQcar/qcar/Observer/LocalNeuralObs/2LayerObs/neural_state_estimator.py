@@ -326,6 +326,20 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         self.batch_loss_autodiff = None  # For autodiff (torch tensor)
         self.batch_count = 0
         
+        # Runtime learning policy: inference can run every step, while online
+        # adaptation is scheduled separately to limit compute cost.
+        self.inference_only = self.config.get('inference_only', False)
+        self.online_learning_enabled = (
+            self.config.get('online_learning_enabled', True) and not self.inference_only
+        )
+        self.online_update_interval = max(1, int(self.config.get('online_update_interval', 1)))
+        self.online_warmup_steps = max(0, int(self.config.get('online_warmup_steps', 0)))
+        self.online_learning_min_speed = float(self.config.get('online_learning_min_speed', 0.0))
+        self.online_learning_max_speed = float(self.config.get('online_learning_max_speed', float('inf')))
+        self.online_learning_requires_gps = self.config.get('online_learning_requires_gps', True)
+        self.online_learning_min_steering = abs(float(self.config.get('online_learning_min_steering', 0.0)))
+        self.online_learning_min_yaw_rate = abs(float(self.config.get('online_learning_min_yaw_rate', 0.0)))
+        
         # Loss tracking
         self.loss_history = []
         self.update_count = 0
@@ -1097,8 +1111,9 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 )
                 
                 # ========== PHASE 7: NEURAL NETWORK TRAINING ==========
-                # Only train when we have ground truth (GPS valid)
-                if gps_valid:
+                # Inference runs every step; online adaptation only runs when the
+                # configured runtime policy allows it.
+                if self._should_train_online(gps_valid):
                     self._train_network(nn_input, w_hat, gps_data, motor_tach,gyro_z)
                 
                 # Store current measurement data for prediction_error loss (used next step)
@@ -1216,14 +1231,16 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             NN output as numpy array (output_dim, 1)
         """
         nn_input_tensor = torch.from_numpy(nn_input).float()
+        self.model.eval()
         
-        if self.learning_mode == 'continuous_learning' and self.model_queue is not None:
-            if len(self.model_queue.models) > 0:
-                output = self.model_queue.predict(nn_input_tensor).detach().numpy()
+        with torch.no_grad():
+            if self.learning_mode == 'continuous_learning' and self.model_queue is not None:
+                if len(self.model_queue.models) > 0:
+                    output = self.model_queue.predict(nn_input_tensor).detach().numpy()
+                else:
+                    output = self.model(nn_input_tensor).detach().numpy()
             else:
                 output = self.model(nn_input_tensor).detach().numpy()
-        else:
-            output = self.model(nn_input_tensor).detach().numpy()
         
         # Apply sign flip if configured (fixes sign convention mismatch)
         # Set nn_output_sign_flip: true in config if NN learns opposite sign
@@ -1231,6 +1248,40 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             output = -output
         
         return output
+    
+    def _should_train_online(self, gps_valid: bool) -> bool:
+        """
+        Decide whether online adaptation should run on this update.
+        
+        Inference still runs every step. This gate only controls when the model
+        pays the extra cost of gradient computation and optimizer updates.
+        """
+        if self.inference_only or not self.online_learning_enabled:
+            return False
+        
+        if not gps_valid:
+            return False
+        
+        if self.update_count < self.online_warmup_steps:
+            return False
+        
+        schedule_step = self.update_count - self.online_warmup_steps
+        if schedule_step % self.online_update_interval != 0:
+            return False
+        
+        vx_abs = abs(self.state_nn_6d[self.IDX_VX])
+        if vx_abs < self.online_learning_min_speed or vx_abs > self.online_learning_max_speed:
+            return False
+        
+        steering_abs = abs(getattr(self, '_last_steering', 0.0))
+        yaw_rate_abs = abs(self.state_nn_6d[self.IDX_R])
+        if (
+            steering_abs < self.online_learning_min_steering
+            and yaw_rate_abs < self.online_learning_min_yaw_rate
+        ):
+            return False
+        
+        return True
     
     def _train_network(self, nn_input: np.ndarray, w_hat: np.ndarray,
                        gps_data: Dict, motor_tach: float,gyro_z: float):
@@ -1241,6 +1292,8 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             - 'autodiff': PyTorch automatic differentiation
             - 'analytical': Manual sensitivity propagation
         """
+        self.model.train()
+        
         # Build full measurement for loss computation
         measurement_full = np.array([
             motor_tach,
@@ -1273,6 +1326,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             )
             
             if loss is None:
+                self.model.eval()
                 return
             
             # Accumulate loss for batch training
@@ -1331,6 +1385,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 
                 self.batch_loss_autodiff = None
                 self.batch_count = 0
+                self.model.eval()
             return
         
         # ========== ANALYTICAL MODE ==========
@@ -1772,6 +1827,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             self.model.detach_hidden()
         
         self.loss_history.append(loss_pytorch.item())
+        self.model.eval()
     
     def _accumulate_batch_loss(self, nn_input: np.ndarray, dL_df: np.ndarray):
         """Accumulate loss for batch training"""
@@ -1805,6 +1861,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             
             self.batch_loss = 0.0
             self.batch_count = 0
+            self.model.eval()
     
     def _observer_step_torch(self, 
                              state: torch.Tensor,

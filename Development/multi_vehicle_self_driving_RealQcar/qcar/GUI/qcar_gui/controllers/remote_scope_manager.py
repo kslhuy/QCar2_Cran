@@ -874,14 +874,21 @@ def _create_local_layout(plt, car_id, field_names):
             lines[f] = l
     ax_ctrl.legend(fontsize=8)
 
-    # 5. Acceleration Magnitude (Bottom Right)
+    # 5. Signed Longitudinal Acceleration (Bottom Right)
     ax_acc = fig.add_subplot(gs[2, 2])
-    ax_acc.set_ylabel("|a| [m/s^2]")
+    ax_acc.set_ylabel("a [m/s^2]")
     ax_acc.set_xlabel("Time [s]")
+    ax_acc.axhline(0.0, color="k", linewidth=0.8, alpha=0.35)
     ax_acc.grid(True, alpha=0.3)
     axes["acceleration"] = ax_acc
 
-    if "accel_magnitude" in field_names:
+    if "acceleration" in field_names:
+        (l,) = ax_acc.plot(
+            [], [], color="#9467bd", linestyle="-", linewidth=1.5, label="acceleration"
+        )
+        lines["acceleration"] = l
+        ax_acc.legend(fontsize=8)
+    elif "accel_magnitude" in field_names:
         (l,) = ax_acc.plot(
             [], [], color="#9467bd", linestyle="-", linewidth=1.5, label="|a|"
         )

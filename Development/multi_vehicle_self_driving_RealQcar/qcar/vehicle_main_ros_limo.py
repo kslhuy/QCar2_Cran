@@ -723,7 +723,8 @@ class VehicleControlFullSystemQCar(Node):
 
     def _publish_pending_initial_pose_when_ready(self):
         """Publish queued /initialpose once AMCL subscriber is available."""
-        if self.pending_initial_pose_xyz_deg is None:
+        pending_pose = self.pending_initial_pose_xyz_deg
+        if pending_pose is None:
             return
 
         if len(self.get_subscriptions_info_by_topic('/initialpose')) == 0:
@@ -733,7 +734,7 @@ class VehicleControlFullSystemQCar(Node):
                 self.pending_initial_pose_wait_logged = True
             return
 
-        x, y, yaw_deg = self.pending_initial_pose_xyz_deg
+        x, y, yaw_deg = pending_pose
         self.gps_adapter.send_initial_pose(x, y, yaw_deg)
         self.get_logger().info(
             f"Published initial pose to AMCL ({self.pending_initial_pose_source}): "

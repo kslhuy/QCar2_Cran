@@ -40,7 +40,10 @@ python multi_probing.py --car 0
 
 # (In Simulator) # For spawn 2 Qcar
 cd .\Development\QCar2_multi-vehicle_control\
-python .\initCars_Studio.py     
+# Spawn 3 vehicle for platoon
+python .\initCars_Studio.py   -u
+# Spawn 1 vehicle   
+python .\initCars_Studio.py   -u -n 1  
 
 #  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      

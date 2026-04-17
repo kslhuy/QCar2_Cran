@@ -6,13 +6,103 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 
 
-RAW_KEYS = ("ax", "ay", "wz", "delta", "vfl", "vfr", "vrl", "vrr", "gps_valid")
+RAW_KEYS = (
+    "ax",
+    "ay",
+    "wz",
+    "delta",
+    "vfl",
+    "vfr",
+    "vrl",
+    "vrr",
+    "gps_valid",
+    "gps_hold_valid",
+    "gps_age_sec",
+)
 TARGET_DIM = 5
 MEAS_DIM = 5
+_GPS_AGE_CAP_SEC = 1.0e3
 
 
 def _wrap_angle(angle: float) -> float:
     return float((angle + np.pi) % (2.0 * np.pi) - np.pi)
+
+
+def _sanitize_gps_age(age_value: Any) -> float:
+    try:
+        age = float(age_value)
+    except (TypeError, ValueError):
+        return _GPS_AGE_CAP_SEC
+    if not np.isfinite(age):
+        return _GPS_AGE_CAP_SEC
+    return float(np.clip(age, 0.0, _GPS_AGE_CAP_SEC))
+
+
+def _default_series(key: str, timestamps: np.ndarray, gps_valid: Optional[np.ndarray] = None) -> np.ndarray:
+    length = int(timestamps.shape[0])
+    if key == "gps_hold_valid":
+        if gps_valid is None:
+            return np.zeros(length, dtype=np.float32)
+        return np.asarray(gps_valid, dtype=np.float32).reshape(-1)
+    if key == "gps_age_sec":
+        if length == 0:
+            return np.zeros(0, dtype=np.float32)
+        if gps_valid is None:
+            return np.full(length, _GPS_AGE_CAP_SEC, dtype=np.float32)
+        gps_valid = np.asarray(gps_valid, dtype=np.float32).reshape(-1)
+        age = np.full(length, _GPS_AGE_CAP_SEC, dtype=np.float32)
+        last_fix_time = None
+        for idx, ts in enumerate(timestamps):
+            if gps_valid[idx] > 0.5:
+                last_fix_time = float(ts)
+                age[idx] = 0.0
+            elif last_fix_time is not None:
+                age[idx] = _sanitize_gps_age(float(ts) - last_fix_time)
+        return age
+    if key == "gps_has_fix":
+        if gps_valid is None:
+            return np.zeros(length, dtype=np.float32)
+        gps_valid = np.asarray(gps_valid, dtype=np.float32).reshape(-1)
+        return np.maximum.accumulate((gps_valid > 0.5).astype(np.float32))
+    if key in {"z", "x_gt"}:
+        return np.zeros((length, MEAS_DIM), dtype=np.float32)
+    return np.zeros(length, dtype=np.float32)
+
+
+def _dataset_series(
+    dataset: Dict[str, Any],
+    key: str,
+    timestamps: np.ndarray,
+    gps_valid: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    if key in dataset:
+        return np.asarray(dataset[key], dtype=np.float32)
+    return _default_series(key, timestamps=timestamps, gps_valid=gps_valid)
+
+
+def _rebuild_measurements(dataset: Dict[str, Any], timestamps: np.ndarray) -> np.ndarray:
+    z = np.asarray(dataset["z"], dtype=np.float32).copy()
+    if z.ndim != 2 or z.shape[1] < MEAS_DIM:
+        raise ValueError(f"Expected z with shape [N, {MEAS_DIM}], got {z.shape}")
+
+    gps_valid = np.asarray(_dataset_series(dataset, "gps_valid", timestamps), dtype=np.float32).reshape(-1)
+    gps_has_fix = np.asarray(
+        _dataset_series(dataset, "gps_has_fix", timestamps, gps_valid=gps_valid),
+        dtype=np.float32,
+    ).reshape(-1)
+    gps_x = np.asarray(dataset.get("gps_x", z[:, 0]), dtype=np.float32).reshape(-1)
+    gps_y = np.asarray(dataset.get("gps_y", z[:, 1]), dtype=np.float32).reshape(-1)
+
+    last_x = None
+    last_y = None
+    for idx in range(z.shape[0]):
+        if gps_valid[idx] > 0.5:
+            last_x = float(gps_x[idx])
+            last_y = float(gps_y[idx])
+        if gps_has_fix[idx] > 0.5 and last_x is not None and last_y is not None:
+            z[idx, 0] = last_x
+            z[idx, 1] = last_y
+    return z
 
 
 class RobustKalmanNetDatasetRecorder:
@@ -64,6 +154,9 @@ class RobustKalmanNetDatasetRecorder:
             "accel_y": [],
             "accel_z": [],
             "gps_valid": [],
+            "gps_hold_valid": [],
+            "gps_age_sec": [],
+            "gps_has_fix": [],
             "gps_x": [],
             "gps_y": [],
             "gps_theta": [],
@@ -124,45 +217,47 @@ class RobustKalmanNetDatasetRecorder:
             w = float(gyro_z)
             wheel_speed = float(motor_tach) * self.wheel_speed_scale
 
-            gps_valid = bool(gps_data is not None and gps_data.get("valid", False))
-            gps_x = float(gps_data.get("x", target[0])) if gps_data else float(target[0])
-            gps_y = float(gps_data.get("y", target[1])) if gps_data else float(target[1])
-            gps_theta = _wrap_angle(float(gps_data.get("theta", target[2]))) if gps_data else _wrap_angle(float(target[2]))
-
-            if gps_valid:
-                # GPS available → use real GPS data
-                z = np.array(
-                    [gps_x, gps_y, gps_theta, float(motor_tach), w],
-                    dtype=np.float32,
+            gps_info = dict(gps_data or {})
+            gps_position_valid = bool(
+                gps_info.get("position_valid", gps_info.get("fresh", gps_info.get("valid", False)))
+            )
+            gps_hold_valid = bool(gps_info.get("hold_valid", gps_info.get("valid", gps_position_valid)))
+            gps_age_sec = _sanitize_gps_age(gps_info.get("age_sec", 0.0 if gps_position_valid else _GPS_AGE_CAP_SEC))
+            gps_has_fix = bool(
+                gps_info.get(
+                    "has_fix",
+                    gps_position_valid or bool(self._buffers["gps_has_fix"] and self._buffers["gps_has_fix"][-1] > 0.5),
                 )
-            else:
-                # FIX-3: GPS unavailable → use dead-reckoning from previous
-                # recorded sample so the distributional gap between training
-                # and inference is reduced.  (Previously this used clean EKF
-                # target values, which the model would never see at test time.)
-                prev_z = self._buffers["z"][-1] if self._buffers["z"] else None
-                if prev_z is not None:
-                    prev_ts = self._buffers["timestamps"][-1] if self._buffers["timestamps"] else timestamp
-                    dt_rec = max(float(timestamp) - float(prev_ts), 1e-3)
-                    prev_v = float(prev_z[3])
-                    prev_theta = float(prev_z[2])
-                    z = np.array(
-                        [
-                            float(prev_z[0]) + prev_v * np.cos(prev_theta) * dt_rec,
-                            float(prev_z[1]) + prev_v * np.sin(prev_theta) * dt_rec,
-                            _wrap_angle(prev_theta + w * dt_rec),
-                            float(motor_tach),
-                            w,
-                        ],
-                        dtype=np.float32,
-                    )
-                else:
-                    # Very first sample — no history, use target as initial seed
-                    z = np.array(
-                        [float(target[0]), float(target[1]), _wrap_angle(float(target[2])), float(motor_tach), w],
-                        dtype=np.float32,
-                    )
+            )
 
+            prev_z = self._buffers["z"][-1] if self._buffers["z"] else None
+            prev_ts = self._buffers["timestamps"][-1] if self._buffers["timestamps"] else timestamp
+            dt_rec = max(float(timestamp) - float(prev_ts), 1e-3)
+
+            if gps_has_fix and gps_data is not None:
+                gps_x = float(gps_info.get("x", prev_z[0] if prev_z is not None else target[0]))
+                gps_y = float(gps_info.get("y", prev_z[1] if prev_z is not None else target[1]))
+                gps_theta = _wrap_angle(float(gps_info.get("theta", prev_z[2] if prev_z is not None else target[2])))
+            elif prev_z is not None:
+                gps_x = float(prev_z[0])
+                gps_y = float(prev_z[1])
+                gps_theta = float(prev_z[2])
+            else:
+                gps_x = float(target[0])
+                gps_y = float(target[1])
+                gps_theta = _wrap_angle(float(target[2]))
+
+            if gps_position_valid:
+                heading_meas = gps_theta
+            elif prev_z is not None:
+                heading_meas = _wrap_angle(float(prev_z[2]) + w * dt_rec)
+            else:
+                heading_meas = _wrap_angle(float(target[2]))
+
+            z = np.array(
+                [gps_x, gps_y, heading_meas, float(motor_tach), w],
+                dtype=np.float32,
+            )
 
             target_w = float(target[4]) if target.size > 4 else w
             x_gt = np.array(
@@ -185,7 +280,10 @@ class RobustKalmanNetDatasetRecorder:
                 "accel_x": ax,
                 "accel_y": ay,
                 "accel_z": az,
-                "gps_valid": 1.0 if gps_valid else 0.0,
+                "gps_valid": 1.0 if gps_position_valid else 0.0,
+                "gps_hold_valid": 1.0 if gps_hold_valid else 0.0,
+                "gps_age_sec": gps_age_sec,
+                "gps_has_fix": 1.0 if gps_has_fix else 0.0,
                 "gps_x": gps_x,
                 "gps_y": gps_y,
                 "gps_theta": gps_theta,
@@ -211,24 +309,22 @@ class RobustKalmanNetDatasetRecorder:
         """Stop recording and optionally save the buffer."""
         already_stopped = not self.recording
         self.recording = False
-        
+
         if not save:
             if not already_stopped:
                 self._log_info(f"[RKNetDataset] Recording stopped for V{self.vehicle_id}")
             return None
-            
-        # If we want to save, check if we have data even if already stopped
+
         sample_count = len(self._buffers.get("timestamps", []))
         if sample_count > 0:
             return self._save_dataset()
-            
+
         return self.last_saved_path
 
     def clear(self) -> None:
         """Clear all buffered samples."""
         self._buffers = {}
         self._log_info(f"[RKNetDataset] Buffer cleared for V{self.vehicle_id}")
-
 
     def _save_dataset(self) -> Optional[str]:
         try:
@@ -267,6 +363,9 @@ class RobustKalmanNetDatasetRecorder:
                 accel_y=np.asarray(self._buffers["accel_y"], dtype=np.float32),
                 accel_z=np.asarray(self._buffers["accel_z"], dtype=np.float32),
                 gps_valid=np.asarray(self._buffers["gps_valid"], dtype=np.float32),
+                gps_hold_valid=np.asarray(self._buffers["gps_hold_valid"], dtype=np.float32),
+                gps_age_sec=np.asarray(self._buffers["gps_age_sec"], dtype=np.float32),
+                gps_has_fix=np.asarray(self._buffers["gps_has_fix"], dtype=np.float32),
                 gps_x=np.asarray(self._buffers["gps_x"], dtype=np.float32),
                 gps_y=np.asarray(self._buffers["gps_y"], dtype=np.float32),
                 gps_theta=np.asarray(self._buffers["gps_theta"], dtype=np.float32),
@@ -285,9 +384,7 @@ class RobustKalmanNetDatasetRecorder:
             json_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
             self.last_saved_path = str(npz_path)
-            self._log_info(
-                f"[RKNetDataset] Saved {sample_count} samples to {npz_path}"
-            )
+            self._log_info(f"[RKNetDataset] Saved {sample_count} samples to {npz_path}")
             return self.last_saved_path
         except Exception as exc:
             self._log_error("[RKNetDataset] Failed to save dataset", exc)
@@ -336,9 +433,22 @@ def merge_recorded_datasets(paths: Iterable[str]) -> Dict[str, Any]:
             ],
         }
     }
-    keys = [k for k in datasets[0].keys() if k not in {"metadata", "path"}]
+    keys = sorted(
+        {
+            key
+            for ds in datasets
+            for key in ds.keys()
+            if key not in {"metadata", "path"}
+        }
+    )
     for key in keys:
-        merged[key] = np.concatenate([np.asarray(ds[key]) for ds in datasets], axis=0)
+        arrays = []
+        for ds in datasets:
+            timestamps = np.asarray(ds["timestamps"], dtype=np.float64)
+            gps_valid = np.asarray(ds["gps_valid"], dtype=np.float32) if "gps_valid" in ds else None
+            arr = _dataset_series(ds, key, timestamps=timestamps, gps_valid=gps_valid)
+            arrays.append(np.asarray(arr))
+        merged[key] = np.concatenate(arrays, axis=0)
     merged["metadata"].update(datasets[0].get("metadata", {}))
     merged["metadata"]["sample_count"] = int(merged["timestamps"].shape[0])
     return merged
@@ -362,8 +472,32 @@ def build_training_windows(
     segment_lengths = [int(length) for length in metadata.get("segment_lengths", []) if int(length) > 0]
     source_segments = metadata.get("source_segments", []) or []
 
+    timestamps_all = np.asarray(dataset["timestamps"], dtype=np.float64)
     if not segment_lengths:
-        segment_lengths = [int(np.asarray(dataset["timestamps"]).shape[0])]
+        segment_lengths = [int(timestamps_all.shape[0])]
+
+    gps_valid_all = np.asarray(_dataset_series(dataset, "gps_valid", timestamps_all), dtype=np.float32).reshape(-1)
+    gps_hold_valid_all = np.asarray(
+        _dataset_series(dataset, "gps_hold_valid", timestamps_all, gps_valid=gps_valid_all),
+        dtype=np.float32,
+    ).reshape(-1)
+    gps_age_all = np.asarray(
+        _dataset_series(dataset, "gps_age_sec", timestamps_all, gps_valid=gps_valid_all),
+        dtype=np.float32,
+    ).reshape(-1)
+
+    raw_series = {
+        "gps_valid": gps_valid_all,
+        "gps_hold_valid": gps_hold_valid_all,
+        "gps_age_sec": gps_age_all,
+    }
+    for key in RAW_KEYS:
+        if key in raw_series:
+            continue
+        raw_series[key] = np.asarray(_dataset_series(dataset, key, timestamps_all), dtype=np.float32).reshape(-1)
+
+    z_all = _rebuild_measurements(dataset, timestamps_all)
+    x_gt_all = np.asarray(dataset["x_gt"], dtype=np.float32)
 
     raw_windows = {key: [] for key in RAW_KEYS}
     z_windows: List[np.ndarray] = []
@@ -378,15 +512,13 @@ def build_training_windows(
             continue
 
         for key in RAW_KEYS:
-            segment_raw = np.asarray(dataset[key][start:end], dtype=np.float32).reshape(-1, 1)
+            segment_raw = raw_series[key][start:end].reshape(-1, 1)
             raw_windows[key].append(create_sliding_windows(segment_raw, sequence_length, stride))
 
-        segment_z = np.asarray(dataset["z"][start:end], dtype=np.float32)
-        segment_x_gt = np.asarray(dataset["x_gt"][start:end], dtype=np.float32)
-        z_windows.append(create_sliding_windows(segment_z, sequence_length, stride))
-        x_gt_windows.append(create_sliding_windows(segment_x_gt, sequence_length, stride))
+        z_windows.append(create_sliding_windows(z_all[start:end], sequence_length, stride))
+        x_gt_windows.append(create_sliding_windows(x_gt_all[start:end], sequence_length, stride))
 
-        timestamps = np.asarray(dataset["timestamps"][start:end], dtype=np.float64)
+        timestamps = timestamps_all[start:end]
         dt_array = np.zeros(segment_length, dtype=np.float32)
         if segment_length > 1:
             dt_array[1:] = (timestamps[1:] - timestamps[:-1]).astype(np.float32)
@@ -399,7 +531,7 @@ def build_training_windows(
         start = end
 
     if not z_windows:
-        total_samples = int(np.asarray(dataset["timestamps"]).shape[0])
+        total_samples = int(timestamps_all.shape[0])
         raise ValueError(
             f"Need at least {sequence_length} samples in one contiguous dataset segment, "
             f"but the longest segment is shorter (total merged samples={total_samples})."

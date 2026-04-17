@@ -41,6 +41,8 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
         "heading_error",
         "velocity_error",
         "gps_valid",
+        "gps_hold_valid",
+        "gps_age_sec",
         "pred_mask_mean",
         "pred_mask_min",
         "pred_mask_max",
@@ -80,6 +82,9 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
             except (TypeError, ValueError):
                 values.append(np.nan)
         data[column] = np.asarray(values, dtype=np.float64)
+
+    if "innov_psi" in data:
+        data["innov_psi"] = np.arctan2(np.sin(data["innov_psi"]), np.cos(data["innov_psi"]))
 
     data["source"] = np.asarray([row.get("source", "") for row in rows], dtype=object)
     data["mask_selected_branch"] = np.asarray(
@@ -149,6 +154,7 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
     model_used = int(np.count_nonzero(data["source"] == "model"))
     fallback_used = int(np.count_nonzero(data["source"] == "fallback"))
     gps_valid_count = int(np.count_nonzero(data["gps_valid"] > 0.5))
+    gps_hold_valid_count = int(np.count_nonzero(data["gps_hold_valid"] > 0.5))
 
     summary: Dict[str, Any] = {
         "schema_version": 1,
@@ -163,9 +169,11 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
             "model_samples": model_used,
             "fallback_samples": fallback_used,
             "gps_valid_samples": gps_valid_count,
+            "gps_hold_valid_samples": gps_hold_valid_count,
             "model_ratio": _safe_float(model_used / total_samples) if total_samples else None,
             "fallback_ratio": _safe_float(fallback_used / total_samples) if total_samples else None,
             "gps_valid_ratio": _safe_float(gps_valid_count / total_samples) if total_samples else None,
+            "gps_hold_valid_ratio": _safe_float(gps_hold_valid_count / total_samples) if total_samples else None,
         },
         "selected_branch_counts": _value_distribution(data["mask_selected_branch"]),
         "series_metrics": {
@@ -337,7 +345,8 @@ def main() -> None:
     fallback_mask = data["source"] == "fallback"
     ax.plot(time_axis, model_mask.astype(float), label="model used", linewidth=1.2)
     ax.plot(time_axis, fallback_mask.astype(float), label="fallback used", linewidth=1.2)
-    ax.plot(time_axis, data["gps_valid"], label="gps valid", linewidth=1.2)
+    ax.plot(time_axis, data["gps_valid"], label="gps fresh", linewidth=1.2)
+    ax.plot(time_axis, data["gps_hold_valid"], label="gps hold valid", linewidth=1.2, linestyle=":")
     ax.set_title("Source / GPS Flags")
     ax.set_xlabel("time [s]")
     ax.set_ylim(-0.1, 1.1)

@@ -21,6 +21,17 @@ path_lateral_controller_type: 'pp_map'
 leader_longitudinal_controller_type: 'cacc'
 leader_lateral_controller_type: 'fusion_lateral'
 
+leader_reverse_follow:
+  enabled: false
+  trigger_velocity_threshold: -0.03
+  max_reverse_throttle: 0.08
+  max_reverse_speed: 0.12
+  min_gap: 0.20
+  max_gap: 0.90
+  max_heading_error_deg: 20.0
+  reverse_steering_gain: 0.5
+  stop_on_v2v_loss: true
+
 # Legacy fallback (used if state-specific keys are missing)
 # ============================================================================
 # LONGITUDINAL CONTROLLER CONFIGURATION
@@ -53,6 +64,7 @@ cacc:
   brake_smoothing: 0.5      # Aggressive smoothing factor applied ONLY when braking/decelerating [0-1]. Higher values prevent jerky sudden stops. Default 0.85.
   max_acc_rate: 2.0          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
   use_feedforward: true     # Add velocity feedforward for faster response
+  ff_gain: 0.16129          # CACC feedforward gain: u_ff = leader_velocity * ff_gain
   limo_max_speed: 0.6       # Limo-only speed ceiling for CACC velocity command [m/s]
   limo_max_accel: 0.25      # Limo-only positive acceleration cap [m/s^2]
   limo_max_decel: 0.25      # Limo-only braking/deceleration cap [m/s^2]
@@ -121,9 +133,9 @@ pure_pursuit:
   max_steering: 0.5         # Maximum steering angle (radians)
   adaptive_lookahead: true   # Enable adaptive lookahead based on distance
   # Turning section parameters (for corner-cutting prevention)
-  curvature_threshold: 0.15   # Lane curvature threshold for turn detection
+  curvature_threshold: 0.05   # Lane curvature threshold for turn detection
   turn_lookahead_offset: 0.2 # Lateral offset in turns (meters)
-  turn_lookahead_gain: 1.5   # Lookahead distance multiplier in turns
+  turn_lookahead_gain: 1.4   # Lookahead distance multiplier in turns
 
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
 pp_map:
@@ -192,8 +204,10 @@ mpc:
 # Stanley Controller Parameters
 stanley:
   k_e: 0.3                   # Cross-track error gain
-  k_soft: 1.0                # Softening gain to prevent division by zero
+  k_soft: 0.1                # Softening gain to prevent division by zero
   max_steering: 0.5         # Maximum steering angle (radians)
+  lookahead_distance: 0.15   # [m] Preview distance along the global path segment. Up = smoother/more anticipatory. Down = tighter/more local tracking.
+  position_lookahead_offset: 0.18  # [m] Forward offset of the vehicle point sent into Stanley. 0.2 keeps the old state behavior.
 
 # Lookahead Controller Parameters
 lookahead:
@@ -210,7 +224,7 @@ fusion_lateral:
   mode: 'leader_primary'       # 'path_primary', 'leader_primary', 'adaptive'
   path_weight: 0.2           # Weight for path reference (0-1)
   leader_weight: 0.8         # Weight for leader adjustment (0-1)
-  deviation_threshold: 0.3   # Max leader deviation before override (radians)
+  deviation_threshold: 0.25   # Max leader deviation before override (radians)
   smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother)
   max_steering: 0.5         # Maximum steering angle (radians)
 

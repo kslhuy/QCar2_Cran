@@ -103,7 +103,7 @@ trust:
 
   # Distributed trust covariance parameters (always paper-style)
   distributed_trust_fallback: 0.2
-  distributed_trust_covariance_diag: [2.0, 2.0, 2.0, 2.0, 1.0] # Sigma^2 for gamma_host (full state: x,y,theta,v,a)
+  distributed_trust_covariance_diag: [2.0, 2.0, 2.0, 2.0, 2.0] # Sigma^2 for gamma_host (full state: x,y,theta,v,a)
   distributed_local_tau2_diag: [1.5, 0.5]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
   # Relative-trust mode:
   # true  = use [distance, relative_velocity]
@@ -139,6 +139,7 @@ weight:
   # Temporal smoothing (EMA)
   eta: 0.15                       # EMA smoothing factor
   enable_smoothing: false         # Enable weight smoothing between updates
+  startup_fixed_duration_s: 5.0   # Keep fixed non-trust weights while platoon forms
   
   # Flag-driven w₀ adaptation factors
   # These multiply w₀ when an attack flag fires for the target being estimated

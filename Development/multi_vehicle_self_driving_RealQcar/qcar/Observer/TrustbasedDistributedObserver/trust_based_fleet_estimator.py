@@ -223,6 +223,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.trust_weight_logger.start(vehicle_id)
         self._init_time = time.time()
         self._time_reference: Optional[Dict[str, object]] = None
+        self._startup_reference_time_ns: Optional[int] = None
 
     # ------------------------------------------------------------------
     # Override add_received_local_state to also cache control_input
@@ -277,6 +278,21 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     def _get_log_time_s(self, current_time_ns: int) -> float:
         """Return trust-log time directly in the active V2V time domain."""
         return max(float(current_time_ns), 0.0) / 1e9
+
+    def _get_startup_elapsed_s(self, current_time_ns: int) -> float:
+        """Return elapsed observer time since the first update in this run."""
+        if self._startup_reference_time_ns is None:
+            self._startup_reference_time_ns = int(current_time_ns)
+        elapsed_ns = int(current_time_ns) - self._startup_reference_time_ns
+        return max(float(elapsed_ns), 0.0) / 1e9
+
+    def _use_startup_fixed_weights(self, current_time_ns: int) -> bool:
+        """Whether trust-based weights should be bypassed during startup."""
+        duration_s = float(getattr(self.weight_config, "startup_fixed_duration_s", 0.0))
+        return (
+            duration_s > 0.0
+            and self._get_startup_elapsed_s(current_time_ns) < duration_s
+        )
 
     # ------------------------------------------------------------------
     # External relative measurement delegation
@@ -374,6 +390,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 if self.weight_config.weight_type == "paper"
                 else trust_scores
             )
+            if self._use_startup_fixed_weights(current_time_ns):
+                weight_source_scores = {
+                    vid: 1.0 for vid in weight_source_scores.keys()
+                }
             weight_result = self.weight_module.calculate_weights(weight_source_scores)
             self.current_weight_result = weight_result
 
@@ -699,8 +719,23 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 continue
             neighbor_fleet_estimates[neighbor_id] = neighbor_fleet
 
-        # Calculate weights (paper or trust-based — unified call)
-        if self.weight_config.weight_type == "paper":
+        use_startup_fixed_weights = self._use_startup_fixed_weights(current_time_ns)
+
+        # Calculate weights (paper or trust-based - unified call)
+        if use_startup_fixed_weights:
+            startup_trust_scores = {
+                vid: 1.0
+                for vid in set(trust_scores.keys())
+                | set(neighbor_fleet_estimates.keys())
+                | {target_id}
+            }
+            target_weights = self.weight_module.calculate_weights_for_target(
+                target_id=target_id,
+                trust_scores=startup_trust_scores,
+                neighbor_fleet_estimates=neighbor_fleet_estimates,
+                direct_measurement=direct_state,
+            )
+        elif self.weight_config.weight_type == "paper":
             opinion_scores = (
                 self.generalized_trust_vector
                 if self.generalized_trust_vector
@@ -728,9 +763,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             )
 
         # === Flag-Driven w₀ Adaptation ===
-        # TODO: Should implement that in the calculation of weights also , to prevent we ignore the w_0 in the beginning
         trust_obj = self.trust_model.get_trust_score(target_id)
-        if trust_obj is not None:
+        if trust_obj is not None and not use_startup_fixed_weights:
             target_weights = self.weight_module.apply_flag_adaptation(
                 target_weights, trust_obj, self.weight_config
             )
@@ -929,6 +963,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "generalized_trust": {
                 k: float(v) for k, v in self.generalized_trust_vector.items()
             },
+            "startup_fixed_weights": int(
+                self._use_startup_fixed_weights(current_time_ns)
+            ),
             "is_turning": int(abs(control[0]) >= self.turn_steering_threshold),
             "host_steering": float(control[0]),
             "neighbors": {},
@@ -1130,6 +1167,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.self_belief_log = []
         self.rollback.reset()
         self._init_time = time.time()
+        self._startup_reference_time_ns = None
 
     def __del__(self):
         if hasattr(self, "trust_weight_logger"):

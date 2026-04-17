@@ -248,6 +248,8 @@ class VehicleObserver:
             "accel_magnitude": 0.0,
             "timestamp": 0.0,
             "gps_valid": False,
+            "gps_fresh": False,
+            "gps_has_fix": False,
             "gps_position": np.zeros(3),  # [x, y, theta]
             "gps_age": float("inf"),
             "gps_hold_window": 0.0,
@@ -1034,6 +1036,7 @@ class VehicleObserver:
 
                     # Read GPS once here (centralized GPS reading)
                     gps_valid = False
+                    gps_fresh = False
                     # Initialize with last known position to prevent zero-flickering
                     gps_position = self.sensor_data.get("gps_position", np.zeros(3))
                     sensor_timestamp = time.time()
@@ -1043,6 +1046,7 @@ class VehicleObserver:
                     if self.gps is not None:
                         try:
                             if self.gps.readGPS():
+                                gps_fresh = True
                                 if self._last_gps_sample_time > 0.0:
                                     gps_period = max(
                                         0.0,
@@ -1073,6 +1077,7 @@ class VehicleObserver:
                     if self._last_gps_sample_time > 0.0:
                         gps_age = max(0.0, sensor_timestamp - self._last_gps_sample_time)
                         gps_valid = gps_age <= gps_hold_window
+                    gps_has_fix = self._last_gps_sample_time > 0.0
 
                     self.sensor_data.update(
                         {
@@ -1088,6 +1093,8 @@ class VehicleObserver:
                             "accel_magnitude": accel_magnitude,
                             "timestamp": sensor_timestamp,
                             "gps_valid": gps_valid,
+                            "gps_fresh": gps_fresh,
+                            "gps_has_fix": gps_has_fix,
                             "gps_position": gps_position,
                             "gps_age": gps_age,
                             "gps_hold_window": gps_hold_window,
@@ -1163,9 +1170,25 @@ class VehicleObserver:
                     "VehicleObserver: local_estimator is None - observer cannot function"
                 )
 
-            # Prepare GPS data dict for estimator (if GPS is valid)
+            # Prepare GPS data dict for estimator. Robust KalmanNet benefits from
+            # receiving stale cached GPS position together with freshness/age
+            # metadata, while the classical estimators keep the older behavior.
             gps_data = None
-            if self.sensor_data.get("gps_valid", False):
+            estimator_kind = str(getattr(self, "local_estimator_type", "")).strip().lower()
+            if estimator_kind == "robust_kalman_net":
+                if self.sensor_data.get("gps_has_fix", False):
+                    gps_data = {
+                        "x": self.sensor_data["gps_position"][0],
+                        "y": self.sensor_data["gps_position"][1],
+                        "theta": self.sensor_data["gps_position"][2],
+                        "valid": bool(self.sensor_data.get("gps_valid", False)),
+                        "position_valid": bool(self.sensor_data.get("gps_fresh", False)),
+                        "hold_valid": bool(self.sensor_data.get("gps_valid", False)),
+                        "fresh": bool(self.sensor_data.get("gps_fresh", False)),
+                        "age_sec": float(self.sensor_data.get("gps_age", float("inf"))),
+                        "has_fix": True,
+                    }
+            elif self.sensor_data.get("gps_valid", False):
                 gps_data = {
                     "x": self.sensor_data["gps_position"][0],
                     "y": self.sensor_data["gps_position"][1],
@@ -1231,6 +1254,7 @@ class VehicleObserver:
                 "y": float(state[1]),
                 "theta": float(state[2]),
                 "velocity": float(state[3]),
+                "acceleration": float(self.local_state[4]),
                 "gps_valid": gps_valid,
                 "position": self.position.copy(),
                 "local_state": self.local_state.copy(),

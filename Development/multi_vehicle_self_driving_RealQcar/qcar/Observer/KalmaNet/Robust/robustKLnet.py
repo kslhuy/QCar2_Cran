@@ -359,7 +359,7 @@ class LearnedKalmanUpdate(nn.Module):
         self.constrain_gain = cfg.constrain_gain
         self.update_mask_init_bias = float(cfg.update_mask_init_bias)
 
-        self.feat_dim_upd = self.m + self.n + self.n + 1
+        self.feat_dim_upd = self.m + self.n + self.n + self.n + 2
 
         # Update mask network (outputs mask of same size as features)
         self.mask_net = nn.Sequential(
@@ -394,6 +394,8 @@ class LearnedKalmanUpdate(nn.Module):
         z_seq: torch.Tensor,
         z_prev_seq: torch.Tensor,
         gps_valid_seq: Optional[torch.Tensor] = None,
+        gps_hold_valid_seq: Optional[torch.Tensor] = None,
+        gps_age_seq: Optional[torch.Tensor] = None,
         hidden: Optional[Dict[str, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
         
@@ -418,7 +420,32 @@ class LearnedKalmanUpdate(nn.Module):
         else:
             gps_valid_seq = gps_valid_seq.to(device=device, dtype=x_pred_seq.dtype)
 
-        f_upd = torch.cat([dx, dz_p, dz, gps_valid_seq], dim=-1) # [B, T, m+n+n+1]
+        if gps_hold_valid_seq is None:
+            gps_hold_valid_seq = gps_valid_seq
+        else:
+            gps_hold_valid_seq = gps_hold_valid_seq.to(device=device, dtype=x_pred_seq.dtype)
+
+        if gps_age_seq is None:
+            gps_age_seq = torch.zeros(B, T, 1, device=device, dtype=x_pred_seq.dtype)
+        else:
+            gps_age_seq = gps_age_seq.to(device=device, dtype=x_pred_seq.dtype).clamp_min(0.0)
+
+        meas_availability_seq = torch.cat(
+            [
+                gps_valid_seq,
+                gps_valid_seq,
+                torch.ones(B, T, 3, device=device, dtype=x_pred_seq.dtype),
+            ],
+            dim=-1,
+        )
+        gps_age_feat = torch.log1p(gps_age_seq.clamp(max=10.0))
+        dz_p = dz_p * meas_availability_seq
+        dz = dz * meas_availability_seq
+
+        f_upd = torch.cat(
+            [dx, dz_p, dz, meas_availability_seq, gps_hold_valid_seq, gps_age_feat],
+            dim=-1,
+        )
 
         # 2. Generate mask
         mask_logits = self.mask_net(f_upd)
@@ -455,7 +482,7 @@ class LearnedKalmanUpdate(nn.Module):
 
         # 6. Apply additive correction
         # x_{k|k} = x_{k|k-1} + K_k @ (z_k - Hx_{k|k-1})
-        raw_innovation = wrap_state_residual(z_seq - Hx_pred)
+        raw_innovation = wrap_state_residual(z_seq - Hx_pred) * meas_availability_seq
         corr = torch.matmul(K_seq, raw_innovation.unsqueeze(-1)).squeeze(-1)
 
         x_upd = x_pred_seq + corr
@@ -494,7 +521,7 @@ class RobustStateNet(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         raw keys:
-            ax, ay, wz, delta, vfl, vfr, vrl, vrr, gps_valid
+            ax, ay, wz, delta, vfl, vfr, vrl, vrr, gps_valid, gps_hold_valid, gps_age_sec
         state_for_input = [B,T,5] containing [x,y,psi,v,w]
         Predictor inputs follow paper Eq.(2):
             IMU   = [v, psi, ax, ay, wz]
@@ -580,6 +607,8 @@ class RobustStateNet(nn.Module):
                 z_t,
                 z_prev_seq,
                 raw_t.get("gps_valid"),
+                raw_t.get("gps_hold_valid"),
+                raw_t.get("gps_age_sec"),
                 upd_hidden_local,
             )
 
@@ -643,7 +672,19 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         [x, y, theta, v, yaw_rate]
     """
 
-    RAW_KEYS = ("ax", "ay", "wz", "delta", "vfl", "vfr", "vrl", "vrr", "gps_valid")
+    RAW_KEYS = (
+        "ax",
+        "ay",
+        "wz",
+        "delta",
+        "vfl",
+        "vfr",
+        "vrl",
+        "vrr",
+        "gps_valid",
+        "gps_hold_valid",
+        "gps_age_sec",
+    )
 
     def __init__(
         self,
@@ -1048,6 +1089,8 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     "throttle",
                     "gyro_z",
                     "gps_valid",
+                    "gps_hold_valid",
+                    "gps_age_sec",
                     "gps_x",
                     "gps_y",
                     "gps_theta",
@@ -1141,7 +1184,12 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             acceleration if acceleration is not None else np.zeros(3, dtype=np.float64),
             dtype=np.float64,
         ).reshape(-1)
-        gps_valid = bool(gps_data and gps_data.get("valid", True))
+        gps_valid = bool(
+            gps_data
+            and gps_data.get("position_valid", gps_data.get("fresh", gps_data.get("valid", False)))
+        )
+        gps_hold_valid = bool(gps_data and gps_data.get("hold_valid", gps_data.get("valid", False)))
+        gps_age_sec = float(gps_data.get("age_sec", np.nan)) if gps_data else np.nan
         robust_state = comparison["robust_state"]
         ekf_state = comparison["ekf_state"]
         delta_state = comparison["delta_state"]
@@ -1158,6 +1206,8 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     "throttle": float(throttle),
                     "gyro_z": float(gyro_z),
                     "gps_valid": int(gps_valid),
+                    "gps_hold_valid": int(gps_hold_valid),
+                    "gps_age_sec": float(gps_age_sec),
                     "gps_x": float(gps_data.get("x", 0.0)) if gps_data else 0.0,
                     "gps_y": float(gps_data.get("y", 0.0)) if gps_data else 0.0,
                     "gps_theta": float(gps_data.get("theta", 0.0)) if gps_data else 0.0,
@@ -1312,6 +1362,8 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             z_t,
             z_prev_seq,
             raw_t.get("gps_valid"),
+            raw_t.get("gps_hold_valid"),
+            raw_t.get("gps_age_sec"),
             self._stream_upd_hidden,
         )
 
@@ -1521,6 +1573,26 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         gps_data: Optional[Dict[str, Any]],
         dt: float = 0.02,
     ) -> np.ndarray:
+        gps_position_valid = bool(
+            gps_data is not None
+            and gps_data.get("position_valid", gps_data.get("fresh", gps_data.get("valid", False)))
+        )
+        gps_has_fix = bool(gps_data is not None and gps_data.get("has_fix", gps_position_valid))
+        self.last_gps_valid = gps_position_valid
+        heading_meas = self._update_heading_filter(dt, gyro_z, gps_data)
+
+        if gps_has_fix:
+            meas_x = float(gps_data.get("x", self.internal_state[0]))
+            meas_y = float(gps_data.get("y", self.internal_state[1]))
+        else:
+            meas_x = float(self.internal_state[0])
+            meas_y = float(self.internal_state[1])
+
+        return np.array(
+            [meas_x, meas_y, heading_meas, float(motor_tach), float(gyro_z)],
+            dtype=np.float32,
+        )
+
         # FIX-2: When GPS is invalid, use a kinematic dead-reckoning prediction
         # for position channels instead of feeding back internal_state (which
         # creates near-zero innovation and makes the update step useless).
@@ -1564,6 +1636,28 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
     ) -> Dict[str, float]:
         accel = np.asarray(acceleration if acceleration is not None else np.zeros(3), dtype=np.float32)
         wheel_speed = float(motor_tach) * self.wheel_speed_scale
+        gps_valid = float(
+            bool(
+                gps_data is not None
+                and gps_data.get("position_valid", gps_data.get("fresh", gps_data.get("valid", False)))
+            )
+        )
+        gps_hold_valid = float(bool(gps_data is not None and gps_data.get("hold_valid", gps_data.get("valid", False))))
+        gps_age_sec = float(max(0.0, gps_data.get("age_sec", 0.0))) if gps_data is not None else 0.0
+        return {
+            "ax": float(accel[0]) if accel.size > 0 else 0.0,
+            "ay": float(accel[1]) if accel.size > 1 else 0.0,
+            "wz": float(gyro_z),
+            "delta": float(steering),
+            "vfl": wheel_speed,
+            "vfr": wheel_speed,
+            "vrl": wheel_speed,
+            "vrr": wheel_speed,
+            "gps_valid": gps_valid,
+            "gps_hold_valid": gps_hold_valid,
+            "gps_age_sec": gps_age_sec,
+        }
+
         gps_valid = float(bool(gps_data is not None and gps_data.get("valid", False)))
         return {
             "ax": float(accel[0]) if accel.size > 0 else 0.0,
@@ -1612,6 +1706,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
 
         if self.last_x_pred is not None and measurement is not None:
             innovation = measurement - self.last_x_pred
+            innovation[2] = wrap_angle_scalar(float(innovation[2]))
         else:
             innovation = np.full(5, np.nan)
 
@@ -1936,6 +2031,9 @@ def make_dummy_batch(B=4, T=20, device="cpu"):
         "vfr": torch.randn(B, T, 1, device=device) * 0.1 + 2.0,
         "vrl": torch.randn(B, T, 1, device=device) * 0.1 + 2.0,
         "vrr": torch.randn(B, T, 1, device=device) * 0.1 + 2.0,
+        "gps_valid": torch.zeros(B, T, 1, device=device),
+        "gps_hold_valid": torch.zeros(B, T, 1, device=device),
+        "gps_age_sec": torch.zeros(B, T, 1, device=device),
     }
 
     z_seq = torch.randn(B, T, 5, device=device)

@@ -59,11 +59,11 @@ PRESET_FIELDS = {
     'local_state': [
         'x', 'y', 'theta', 'velocity',
         'x_gps', 'y_gps', 'theta_gps', 'v_ref', 'v_ref_actual',
-        'accel_magnitude'
+        'acceleration'
     ],
     'local_control': [
         'velocity', 'v_ref', 'v_ref_actual', 'throttle', 'steering',
-        'accel_magnitude'
+        'acceleration'
     ],
     'local_error': [
         'x_error', 'y_error', 'theta_error', 'acceleration'
@@ -77,7 +77,7 @@ DEFAULT_FIELDS = [
     'x', 'y', 'theta', 'velocity',           # Estimated state
     'x_gps', 'y_gps', 'theta_gps', 'v_ref', 'v_ref_actual',  # Reference/GPS
     'throttle', 'steering',                   # Control
-    'accel_magnitude', 'yaw_rate'             # Dynamics
+    'acceleration', 'yaw_rate'                # Dynamics
 ]
 
 # Fleet default fields (for import compatibility — use build_fleet_fields at runtime)

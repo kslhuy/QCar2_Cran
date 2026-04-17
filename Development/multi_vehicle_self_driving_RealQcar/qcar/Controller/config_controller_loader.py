@@ -87,6 +87,25 @@ class ControllerConfig:
             self.get_lateral_controller_type(),  # legacy fallback
         )
 
+    def get_leader_reverse_follow_config(self) -> Dict[str, Any]:
+        """Get reverse-follow safety config for Following Leader state."""
+        reverse_cfg = self.config.get("leader_reverse_follow", {})
+        return {
+            "enabled": reverse_cfg.get("enabled", False),
+            "trigger_velocity_threshold": reverse_cfg.get(
+                "trigger_velocity_threshold", -0.03
+            ),
+            "max_reverse_throttle": reverse_cfg.get("max_reverse_throttle", 0.08),
+            "max_reverse_speed": reverse_cfg.get("max_reverse_speed", 0.12),
+            "min_gap": reverse_cfg.get("min_gap", 0.20),
+            "max_gap": reverse_cfg.get("max_gap", 0.90),
+            "max_heading_error_deg": reverse_cfg.get(
+                "max_heading_error_deg", 20.0
+            ),
+            "reverse_steering_gain": reverse_cfg.get("reverse_steering_gain", 0.5),
+            "stop_on_v2v_loss": reverse_cfg.get("stop_on_v2v_loss", True),
+        }
+
     def get_available_longitudinal_types(self) -> list:
         """Get list of available longitudinal controller types based on config"""
         types = []
@@ -215,6 +234,7 @@ class ControllerConfig:
             "brake_smoothing": cacc_config.get("brake_smoothing", 0.5),
             "max_acc_rate": cacc_config.get("max_acc_rate", 2.0),
             "use_feedforward": cacc_config.get("use_feedforward", False),
+            "ff_gain": cacc_config.get("ff_gain", 0.1 / 0.62),
             "leader_acceleration_weight": cacc_config.get(
                 "leader_acceleration_weight",
                 cacc_config.get("leader_acceleration_gain", 0.0),
@@ -343,6 +363,10 @@ class ControllerConfig:
             "k_e": stanley_config.get("k_e", 0.5),
             "k_soft": stanley_config.get("k_soft", 1.0),
             "max_steering": stanley_config.get("max_steering", 0.5),
+            "lookahead_distance": stanley_config.get("lookahead_distance", 0.0),
+            "position_lookahead_offset": stanley_config.get(
+                "position_lookahead_offset", 0.2
+            ),
         }
 
     def _get_pp_map_params(self) -> Dict[str, Any]:

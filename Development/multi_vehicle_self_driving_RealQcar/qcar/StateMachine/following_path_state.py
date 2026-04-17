@@ -1591,12 +1591,7 @@ class FollowingPathState(StateBase):
             return 0.0
 
         # Primary: Waypoint-based steering (global path following)
-        # Add lookahead point slightly ahead of vehicle
-        lookahead_offset = 0.2  # meters
-        p = (
-            np.array([x, y])
-            + np.array([np.cos(theta), np.sin(theta)]) * lookahead_offset
-        )
+        p = np.array([x, y])
         waypoint_steering = self.steering_controller.update(
             p, theta, max(velocity, 0.1)
         )

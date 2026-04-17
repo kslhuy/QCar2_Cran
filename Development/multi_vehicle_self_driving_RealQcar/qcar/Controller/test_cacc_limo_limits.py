@@ -41,6 +41,14 @@ def run_test():
     print("Limo cmd with aggressive leader acceleration:", cmd)
     assert cmd <= 0.7, "Limo command must stay under limo_max_speed"
 
+    leader_no_accel = dict(leader)
+    leader_no_accel["acceleration"] = 0.0
+    controller.reset()
+    cmd_no_accel = controller.compute_throttle(follower, leader_no_accel, dt)
+    assert abs(cmd - cmd_no_accel) < 1e-9, (
+        "Limo CACC must ignore leader acceleration feedforward"
+    )
+
     follower_close = dict(follower)
     follower_close["velocity"] = 0.60
     leader_close = dict(leader)

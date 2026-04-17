@@ -21,6 +21,17 @@ path_lateral_controller_type: 'pp_map'     # Lateral controller for FOLLOWING_PA
 leader_longitudinal_controller_type: 'cacc'      # Gap/speed tracking in FOLLOWING_LEADER
 leader_lateral_controller_type: 'fusion_lateral'   # Keep fusion lateral, but bias toward path tracking
 
+leader_reverse_follow:
+  enabled: false
+  trigger_velocity_threshold: -0.03
+  max_reverse_throttle: 0.08
+  max_reverse_speed: 0.12
+  min_gap: 0.20
+  max_gap: 0.90
+  max_heading_error_deg: 20.0
+  reverse_steering_gain: 0.5
+  stop_on_v2v_loss: true
+
 # Legacy fallback (used if state-specific keys are missing)
 # ============================================================================
 # LONGITUDINAL CONTROLLER CONFIGURATION
@@ -33,26 +44,27 @@ longitudinal_controller_type: 'pid'
 cacc:
   s0: 0.2                    # Minimum spacing (meters)
   h: 0.5                     # Time headway (seconds)
-  K_spacing: 0.3             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
+  K_spacing: 0.35             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
   K_velocity: 0.15           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
   spacing_mode: "path_or_projected"  # 'euclidean', 'projected', 'blended', 'path', 'path_or_projected'
   projection_heading_source: "leader" # Heading source for longitudinal projection ,  Assume the road's direction is the exact direction the "projection_heading_source" here is the leader car is currently pointing."
   blend_heading_deg: 20.0    # Used only when spacing_mode: 'blended'
   min_effective_spacing: 0.0 # Minimum gap fed to CACC after projectio
-  acc_to_throttle_gain: 0.35  # Conversion gain from acceleration to throttle
+  acc_to_throttle_gain: 0.45  # Conversion gain from acceleration to throttle
   max_throttle: 0.3          # Maximum throttle output
   # Optional weight applied to the *difference* between leader and
   # follower acceleration. This is treated like an additional tracking
   # error term rather than a feedforward command, making the controller
   # respond when the leader changes acceleration faster/slower than the
   # follower. Set to 0 (default) to ignore acceleration information.
-  leader_acceleration_weight: 1.0
+  leader_acceleration_weight: 0.5
   spacing_deadband: 0.2      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
   velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
   throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
   brake_smoothing: 0.5      # Aggressive smoothing factor applied ONLY when braking/decelerating [0-1]. Higher values prevent jerky sudden stops. Default 0.85.
   max_acc_rate: 2.0          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
-  use_feedforward: true     # Add velocity feedforward for faster response
+  use_feedforward: false    # Disable hidden positive velocity feedforward in sim; spacing loop controls closing speed
+  ff_gain: 0.1              # CACC feedforward gain: u_ff = leader_velocity * ff_gain
   limo_max_speed: 0.7       # Limo-only speed ceiling for CACC velocity command [m/s]
   limo_max_accel: 0.25      # Limo-only positive acceleration cap [m/s^2]
   limo_max_decel: 0.45      # Limo-only braking/deceleration cap [m/s^2]
@@ -116,14 +128,14 @@ lateral_controller_type: 'pp_map'  # legacy fallback
 
 # Pure Pursuit Controller Parameters
 pure_pursuit:
-  lookahead_distance: 0.25    # Base lookahead distance (meters)
-  k_steering: 0.5            # Proportional steering gain
+  lookahead_distance: 0.2    # Base lookahead distance (meters). Shorter lookahead turns in more decisively when leader tracking falls behind in corners.
+  k_steering: 0.5            # Proportional steering gain. Higher gain reduces the "lazy" steering feel when the follower lags the leader heading in a bend.
   max_steering: 0.5         # Maximum steering angle (radians)
   adaptive_lookahead: true   # Enable adaptive lookahead based on distance
   # Turning section parameters (for corner-cutting prevention)
   curvature_threshold: 0.15   # Lane curvature threshold for turn detection
-  turn_lookahead_offset: 0.2 # Lateral offset in turns (meters) , Push the target point wider in turns to prevent corner cutting
-  turn_lookahead_gain: 1.5   # Lookahead distance multiplier in turns , Extend lookahead distance even further when in a turn
+  turn_lookahead_offset: 0.05 # Lateral offset in turns (meters). Smaller offset avoids pushing the follower too far to the outside of the corner.
+  turn_lookahead_gain: 0.9   # Lookahead distance multiplier in turns. Below 1.0 makes turn tracking tighter instead of widening the arc.
 
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
 pp_map:
@@ -134,8 +146,8 @@ pp_map:
   max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
   hard_turn_kappa: 0.60           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
   hard_turn_speed: 0.36           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
-  t_clip_min: 0.5                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
-  t_clip_max: 1.0                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
+  t_clip_min: 0.4                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
+  t_clip_max: 0.9                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
   m_l1: 0.50                      # L1 lookahead increase with speed: L1 = q_l1 + m_l1*v. Up = more preview at speed. Down = more reactive at speed.
   q_l1: 0.2                       # [m] Base L1 lookahead at low speed. Up = smoother but slower response. Down = sharper but more oscillation risk.
   speed_lookahead: 0.2            # [s] How far ahead the controller samples path speed. Up = slows earlier before corners. Down = reacts later.
@@ -195,8 +207,11 @@ mpc:
 # Stanley Controller Parameters
 stanley:
   k_e: 0.2                   # Cross-track error gain
-  k_soft: 2.0                # Softening gain to prevent division by zero
+  k_soft: 0.1                # Softening gain to prevent division by zero
   max_steering: 0.5         # Maximum steering angle (radians)
+  lookahead_distance: 0.15   # [m] Preview distance along the global path segment. Up = smoother/more anticipatory. Down = tighter/more local tracking.
+  position_lookahead_offset: 0.18  # [m] Forward offset of the vehicle point sent into Stanley. 0.2 keeps the old state behavior.
+
 
 # Lookahead Controller Parameters
 lookahead:
@@ -211,10 +226,10 @@ lookahead:
 
 # Fusion Lateral Controller Parameters (combines path + leader tracking)
 fusion_lateral:
-  mode: 'leader_primary'       # 'path_primary', 'leader_primary', 'adaptive' , ''
+  mode: 'leader_primary'       # Use the map/path as the main cornering reference and let the leader act as a correction term.
   path_weight: 0.2           # Weight for path reference (0-1)
   leader_weight: 0.8         # Weight for leader adjustment (0-1)
-  deviation_threshold: 0.4   # Max leader deviation before override (radians)
+  deviation_threshold: 0.2   # Max leader deviation before override (radians)
   smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother , 0 = raw output)
   max_steering: 0.5         # Maximum steering angle (radians)
 

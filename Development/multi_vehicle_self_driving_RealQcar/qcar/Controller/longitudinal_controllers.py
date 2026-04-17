@@ -154,6 +154,8 @@ class PIDVelocityController(LongitudinalControllerBase):
         Returns:
             Throttle command
         """
+        e = v_ref - v
+
         if getattr(self, "vehicle_type", "QCar") == "Limo":
             # For Limo, limit the acceleration and return a bounded velocity command
             max_acc = 1.0  # max acceleration m/s^2 for smooth velocity changes
@@ -170,10 +172,8 @@ class PIDVelocityController(LongitudinalControllerBase):
             self.cmd_v = np.clip(self.cmd_v, 0.0, 3.0) # Absolute max speed limit for Limo increased to 3.0 to allow Gear scaling
             
             self.last_error = e
+            self.prev_e = e
             return self.cmd_v
-        
-        # Calculate error
-        e = v_ref - v
 
         # Integral with anti-windup
         self.ei += dt * e
@@ -476,6 +476,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         blend_heading_deg=20.0,
         min_effective_spacing=0.0,
         use_feedforward=False,
+        ff_gain=0.1 / 0.62,
         leader_acceleration_weight: float = 0.0,
         limo_max_speed: float = 0.8,
         limo_max_accel: float = 0.4,
@@ -506,6 +507,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             blend_heading_deg: Heading difference where blended mode becomes fully projected
             min_effective_spacing: Minimum spacing used by controller (can be <= 0 for signed spacing)
             use_feedforward: Boolean enabling velocity feedforward term (legacy)
+            ff_gain: Feedforward gain converting leader speed to base throttle
             leader_acceleration_weight: Optional weight applied to acceleration
                 difference (leader minus follower) and treated as an extra
                 velocity-error term. Use this instead of feedforward; set to 0
@@ -540,6 +542,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.brake_smoothing = params.get('brake_smoothing', brake_smoothing)
             self.max_acc_rate = params.get('max_acc_rate', max_acc_rate)
             self.use_feedforward = params.get('use_feedforward', use_feedforward)
+            self.ff_gain = float(params.get("ff_gain", ff_gain))
             self.leader_acceleration_weight = params.get(
                 'leader_acceleration_weight',
                 params.get('leader_acceleration_gain', leader_acceleration_weight),
@@ -573,6 +576,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.brake_smoothing = brake_smoothing
             self.max_acc_rate = max_acc_rate
             self.use_feedforward = use_feedforward
+            self.ff_gain = float(ff_gain)
             # take argument value when config not used
             self.leader_acceleration_weight = leader_acceleration_weight
             self.limo_max_speed = limo_max_speed
@@ -585,10 +589,6 @@ class CACCLongitudinalController(LongitudinalControllerBase):
 
         # Command velocity used for Limo rate limiting
         self.cmd_v = 0.0
-
-        # Simple feedforward gain based on calibration
-        self.ff_gain = 0.1 / 0.62  # u_ff = v_ref * ff_gain
-
 
         allowed_spacing_modes = {
             "euclidean",
@@ -620,6 +620,11 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         # Spacing error integral for steady-state accuracy
         self.spacing_integral = 0.0
         self.ki_spacing = 0.01  # Small integral gain for spacing
+        self.default_max_reverse_throttle = 0.08
+        self.default_max_reverse_speed = 0.12
+        self.reverse_spacing_deadband = max(float(self.spacing_deadband), 0.05)
+        self.reverse_velocity_deadband = max(float(self.velocity_deadband), 0.03)
+        self.reverse_throttle_smoothing = max(float(self.brake_smoothing), 0.75)
 
     def _select_reference_heading(
         self, follower_theta: float, leader_theta: float
@@ -734,25 +739,67 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             return 0.0
         return value - np.sign(value) * deadband
 
+    def _get_reverse_control_config(
+        self, follower_state: Optional[Dict[str, float]]
+    ) -> Dict[str, float]:
+        """Read reverse-follow limits supplied by FOLLOWING_LEADER state."""
+        reverse_cfg = {}
+        if isinstance(follower_state, dict):
+            reverse_cfg = follower_state.get("reverse_follow_config", {}) or {}
+
+        return {
+            "max_reverse_throttle": float(
+                reverse_cfg.get(
+                    "max_reverse_throttle", self.default_max_reverse_throttle
+                )
+            ),
+            "max_reverse_speed": float(
+                reverse_cfg.get("max_reverse_speed", self.default_max_reverse_speed)
+            ),
+            "spacing_deadband": float(
+                reverse_cfg.get(
+                    "spacing_deadband", self.reverse_spacing_deadband
+                )
+            ),
+            "velocity_deadband": float(
+                reverse_cfg.get(
+                    "velocity_deadband", self.reverse_velocity_deadband
+                )
+            ),
+            "throttle_smoothing": float(
+                reverse_cfg.get(
+                    "throttle_smoothing", self.reverse_throttle_smoothing
+                )
+            ),
+        }
+
     def _calculate_tracking_errors(self, follower_state: Dict[str, float], leader_state: Dict[str, float]) -> Tuple[float, float]:
         """Calculate spacing and velocity errors."""
         v = follower_state["velocity"]
+        reverse_active = bool(follower_state.get("reverse_follow_active", False))
+        reverse_cfg = self._get_reverse_control_config(follower_state)
         
         spacing_info = self._compute_spacing(follower_state, leader_state)
         spacing = spacing_info["spacing"]
-        spacing_target = self.s0 + self.h * v
+        spacing_target = self.s0 + self.h * (abs(v) if reverse_active else v)
         
         spacing_error = spacing - spacing_target
         velocity_error = self._compute_velocity_error(follower_state, leader_state, spacing_info)
 
-        # incorporate acceleration difference if weight configured
-        if self.leader_acceleration_weight:
+        if self.leader_acceleration_weight and self.vehicle_type != "Limo":
             leader_acc = leader_state.get("acceleration", 0.0)
             follower_acc = follower_state.get("acceleration", 0.0)
             velocity_error += self.leader_acceleration_weight * (leader_acc - follower_acc)
         
-        spacing_error = self._apply_deadband(spacing_error, self.spacing_deadband)
-        velocity_error = self._apply_deadband(velocity_error, self.velocity_deadband)
+        if reverse_active:
+            spacing_deadband = reverse_cfg["spacing_deadband"]
+            velocity_deadband = reverse_cfg["velocity_deadband"]
+        else:
+            spacing_deadband = self.spacing_deadband
+            velocity_deadband = self.velocity_deadband
+
+        spacing_error = self._apply_deadband(spacing_error, spacing_deadband)
+        velocity_error = self._apply_deadband(velocity_error, velocity_deadband)
         
         return spacing_error, velocity_error
 
@@ -790,11 +837,12 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         clearly positive.
         """
         leader_v = max(0.0, float(leader_state.get("velocity", 0.0)))
-        recovery_speed = self.limo_gap_closing_gain * max(spacing_error, 0.0)
-        speed_cap = leader_v + self.limo_leader_speed_margin + recovery_speed
 
         if spacing_error < 0.0:
-            speed_cap += self.limo_close_gap_gain * spacing_error
+            speed_cap = leader_v + self.limo_close_gap_gain * spacing_error
+        else:
+            recovery_speed = self.limo_gap_closing_gain * spacing_error
+            speed_cap = leader_v + self.limo_leader_speed_margin + recovery_speed
 
         return float(np.clip(speed_cap, 0.0, self.limo_max_speed))
 
@@ -835,8 +883,43 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         self.prev_throttle = self.cmd_v
         return float(self.cmd_v)
 
-    def _compute_qcar_throttle(self, acc_desired: float, ff_throttle: float, dt: float) -> float:
+    def _compute_qcar_throttle(
+        self,
+        acc_desired: float,
+        ff_throttle: float,
+        dt: float,
+        follower_state: Optional[Dict[str, float]] = None,
+    ) -> float:
         """Compute the throttle command for the QCar."""
+        reverse_active = bool(
+            isinstance(follower_state, dict)
+            and follower_state.get("reverse_follow_active", False)
+        )
+        if reverse_active:
+            reverse_cfg = self._get_reverse_control_config(follower_state)
+            max_reverse_throttle = max(0.0, reverse_cfg["max_reverse_throttle"])
+            max_reverse_speed = max(0.0, reverse_cfg["max_reverse_speed"])
+            throttle_raw = (acc_desired * self.acc_to_throttle_gain) + ff_throttle
+            throttle_raw = float(np.clip(throttle_raw, -max_reverse_throttle, 0.0))
+
+            current_speed_mag = abs(float(follower_state.get("velocity", 0.0)))
+            if current_speed_mag >= max_reverse_speed and throttle_raw < 0.0:
+                throttle_raw = 0.0
+
+            if throttle_raw < 0.0:
+                prev_reverse = min(float(self.prev_throttle), 0.0)
+                smoothing = float(np.clip(reverse_cfg["throttle_smoothing"], 0.0, 0.99))
+                throttle = (
+                    smoothing * prev_reverse
+                    + (1 - smoothing) * throttle_raw
+                )
+                throttle = float(np.clip(throttle, -max_reverse_throttle, 0.0))
+            else:
+                throttle = 0.0
+
+            self.prev_throttle = throttle
+            return throttle
+
         throttle_raw = (acc_desired * self.acc_to_throttle_gain) + ff_throttle
         throttle_raw = np.clip(throttle_raw, -self.max_throttle, self.max_throttle)
 
@@ -893,7 +976,9 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             else:
                 ff_throttle = 0.0
                 
-            return self._compute_qcar_throttle(acc_desired, ff_throttle, dt)
+            return self._compute_qcar_throttle(
+                acc_desired, ff_throttle, dt, follower_state=follower_state
+            )
 
     def update_params(self, params: Dict[str, Any]):
         """Update controller parameters dynamically"""

@@ -11,9 +11,10 @@
 # Recorded .npz files used to build the training windows.
 # Replace these example paths with your real datasets.
 datasets:
-  - "datasets/robust_kalmannet_dataset_V0_20260401_170829.npz"
-  - "datasets/robust_kalmannet_dataset_V0_20260405_180043.npz"
-  - "datasets/robust_kalmannet_dataset_V0_20260328_211545.npz"
+  - "datasets/robust_kalmannet_dataset_V0_20260417_094048.npz"
+  # - "datasets/robust_kalmannet_dataset_V0_20260401_170829.npz"
+  # - "datasets/robust_kalmannet_dataset_V0_20260405_180043.npz"
+  # - "datasets/robust_kalmannet_dataset_V0_20260328_211545.npz"
 
 # Base checkpoint output path, relative to this folder.
 # The trainer also writes best/final variants derived from this name.
@@ -111,7 +112,7 @@ loss:
 augmentation:
   # true  = apply synthetic attacks during training.
   # false = train on clean data only.
-  enabled: false
+  enabled: true
 
   # Probability that one sample receives attack augmentation.
   attack_prob: 0.3
@@ -134,8 +135,8 @@ model:
   # kinematic = analytical QCar bicycle model
   #
   # Note: if set to kinematic, Phase A is skipped automatically.
-  predictor_mode: "kinematic"
-  kin_wheelbase: 0.2
+  predictor_mode: "nn"
+  kin_wheelbase: 0.256
 
   # Hidden sizes. Keep these aligned with
   # qcar/Observer/config_local_estimators.yaml at runtime.

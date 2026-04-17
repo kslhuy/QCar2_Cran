@@ -38,6 +38,7 @@ class WeightConfig:
     # Trust integration
     trust_threshold: float = 0.5   # Minimum trust to be considered neighbor
     use_distance_weighting: bool = False  # Weight by distance (reserved)
+    startup_fixed_duration_s: float = 5.0  # Use fixed non-trust weights during startup
 
     # Flag-driven w₀ adaptation factors
     flag_w0_target_attack_factor: float = 1.0    # Keep w₀ full when target under attack (local is reliable)

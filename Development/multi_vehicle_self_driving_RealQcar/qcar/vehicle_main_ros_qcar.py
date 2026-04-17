@@ -31,6 +31,8 @@ from std_msgs.msg import Float32MultiArray
 from tf2_ros import Buffer, TransformListener, TransformBroadcaster
 from visualization_msgs.msg import Marker, MarkerArray
 from builtin_interfaces.msg import Duration
+from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 from scipy.spatial.transform import Rotation as R
 try:
     from ament_index_python.packages import get_package_share_directory
@@ -113,6 +115,7 @@ class VehicleControlFullSystemQCar(Node):
                 ('programme_type', 'Ros'),
                 ('v_ref', 0.6),
                 ('controller_rate', 100),
+                ('tf_pose_update_rate', 30.0),
                 ('calibrate', False),
                 ('path_number', 0),
                 ('no_steering', False),
@@ -129,7 +132,7 @@ class VehicleControlFullSystemQCar(Node):
                 ('enable_sdc_map_tf_broadcaster', True),
                 ('sdc_map_update_topic', '/sdc_map_tf_update'),
                 ('sdc_map_tf_publish_rate', 20.0),
-                ('sdc_map_x', 0.04000),
+                ('sdc_map_x', 0.03000),
                 ('sdc_map_y', -0.1000),
                 ('sdc_map_z', 0.0),
                 ('sdc_map_yaw', 1.5621),
@@ -151,6 +154,7 @@ class VehicleControlFullSystemQCar(Node):
         programme_type = self.get_parameter('programme_type').value
         v_ref = self.get_parameter('v_ref').value
         controller_rate = self.get_parameter('controller_rate').value
+        tf_pose_update_rate = self.get_parameter('tf_pose_update_rate').value
         calibrate = self.get_parameter('calibrate').value
         path_number = self.get_parameter('path_number').value
         no_steering = self.get_parameter('no_steering').value
@@ -194,6 +198,11 @@ class VehicleControlFullSystemQCar(Node):
         port = self.get_parameter('port').value
         
         self.get_logger().info(f"QCar Style - Car ID: {car_id}, v_ref: {v_ref}, rate: {controller_rate} Hz")
+        
+        # Delay LED setup briefly so the hardware parameter service has time to come up.
+        self._hardware_led_car_id = int(car_id)
+        self._hardware_led_timer = self.create_timer(
+            1.0, self._set_hardware_led_color_when_ready)
         
         # ===== INITIALIZE DATA STORAGE =====
         self.latest_imu = None
@@ -270,6 +279,17 @@ class VehicleControlFullSystemQCar(Node):
         # Subscribe to new ROS 2 YOLO Detections instead of ZMQ
         self.yolo_sub = self.create_subscription(
             Float32MultiArray, '/limo/yolo_detections', self._yolo_callback, 10
+        )
+        
+        # Subscribe to LiDAR opponent tracker
+        self.opponent_sub = self.create_subscription(
+            Float32MultiArray, '/perception/tracked_opponents',
+            self._opponent_callback, 10
+        )
+        
+        # Publish waypoints for opponent detector track filtering
+        self.waypoint_pub_for_tracker = self.create_publisher(
+            Float32MultiArray, '/qcar/waypoints_xy', 10
         )
         self.enable_external_path_subscriber = bool(enable_external_path_subscriber)
         self.external_path_topic = str(external_path_topic).strip() or '/plan_qcar'
@@ -445,7 +465,15 @@ class VehicleControlFullSystemQCar(Node):
         self._optional_path_notice_logged = False
         
         self.init_check_timer = self.create_timer(0.1, self._check_initialization)
-        self.tf_update_timer = self.create_timer(0.2, self._update_gps_from_tf)
+        self.tf_pose_update_rate = max(float(tf_pose_update_rate), 1.0)
+        self.tf_update_timer = self.create_timer(
+            1.0 / self.tf_pose_update_rate,
+            self._update_gps_from_tf,
+        )
+        self.get_logger().info(
+            "TF pose refresh for observer/GPS adapter enabled at "
+            f"{self.tf_pose_update_rate:.1f} Hz"
+        )
         
         self.get_logger().info("="*70)
         self.get_logger().info("Full Vehicle Control System Ready! (QCar Coordinate Style)")
@@ -644,6 +672,14 @@ class VehicleControlFullSystemQCar(Node):
                     )
         except Exception as e:
             self.get_logger().error(f"Failed to parse YOLO detection: {e}")
+
+    def _opponent_callback(self, msg: Float32MultiArray):
+        """Handle tracked opponent data from LiDAR-based tracker."""
+        try:
+            if hasattr(self, 'vehicle_logic') and self.vehicle_logic is not None:
+                self.vehicle_logic.update_opponent_data(list(msg.data))
+        except Exception as e:
+            self.get_logger().error(f"Opponent callback error: {e}")
             
     def _imu_callback(self, msg: Imu):
         """Update gyroscope data"""
@@ -742,13 +778,21 @@ class VehicleControlFullSystemQCar(Node):
             self.get_logger().info(
                 f"Published internal path to RViz: {point_count} waypoints on {self.internal_path_topic}"
             )
+
+        # Publish waypoints for opponent detector track filtering
+        if hasattr(self, 'waypoint_pub_for_tracker'):
+            wp_msg = Float32MultiArray()
+            wp_msg.data = [float(v) for v in x_values] + [float(v) for v in y_values]
+            self.waypoint_pub_for_tracker.publish(wp_msg)
     
     # ===== INITIALIZATION CHECK =====
 
     def _publish_pending_initial_pose_when_ready(self):
         """Publish queued /initialpose once AMCL subscriber is available."""
-        # if self.pending_initial_pose_xyz_deg is None:
-        #     return
+        pending_pose = self.pending_initial_pose_xyz_deg
+        if pending_pose is None:
+            self.pending_initial_pose_wait_logged = False
+            return
 
         if len(self.get_subscriptions_info_by_topic('/initialpose')) == 0:
             if not self.pending_initial_pose_wait_logged:
@@ -757,7 +801,7 @@ class VehicleControlFullSystemQCar(Node):
                 self.pending_initial_pose_wait_logged = True
             return
 
-        x, y, yaw_deg = self.pending_initial_pose_xyz_deg
+        x, y, yaw_deg = pending_pose
         self.gps_adapter.send_initial_pose(x, y, yaw_deg)
         self.get_logger().info(
             f"Published initial pose to AMCL ({self.pending_initial_pose_source}): "
@@ -915,7 +959,34 @@ class VehicleControlFullSystemQCar(Node):
         self.vehicle_logic._ros_mode = True
         self.vehicle_logic._ros_topics_ready = False
         self.get_logger().info("✓ ROS-specific initialization mode enabled")
+
+    def _set_hardware_led_color_when_ready(self):
+        """One-shot delayed LED setup for ROS 2 versions without timer kwargs."""
+        if getattr(self, '_hardware_led_timer', None) is not None:
+            self._hardware_led_timer.cancel()
+            self.destroy_timer(self._hardware_led_timer)
+            self._hardware_led_timer = None
+
+        self._set_hardware_led_color(self._hardware_led_car_id)
     
+    def _set_hardware_led_color(self, car_id):
+        """Set the LED strip color on the /qcar2_hardware node based on Car ID."""
+        client = self.create_client(SetParameters, '/qcar2_hardware/set_parameters')
+        
+        if not client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error('Service /qcar2_hardware/set_parameters not available, skipping LED color setup.')
+            return
+
+        req = SetParameters.Request()
+        param = Parameter()
+        param.name = 'led_color_id'
+        param.value.type = ParameterType.PARAMETER_INTEGER
+        param.value.integer_value = int(car_id) % 6  # Cycles 0-5
+        req.parameters.append(param)
+
+        self.get_logger().info(f"Requesting hardware LED color ID {param.value.integer_value} for car_id {car_id}")
+        client.call_async(req)
+
     def destroy_node(self):
         """Clean shutdown"""
         self.get_logger().info("Shutting down VehicleControlFullSystemQCar...")
