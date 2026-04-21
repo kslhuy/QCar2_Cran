@@ -264,8 +264,15 @@ class CalibrationControl(BaseWidget):
             cal_type = self._cal_type_var.get()
             self.callbacks.on_trigger_active_calibration(self.car_id, cal_type, {})
 
-    def update_status(self, zmq_status: dict) -> None:
-        if not self._status_label or not zmq_status:
+    def update_status(self, calib_status: dict) -> None:
+        if not self._status_label or not calib_status:
+            return
+
+        zmq_status = calib_status.get("zmq", {})
+        if not zmq_status:
+            self._status_label.config(
+                text="Passive Status: Offline", fg=self.theme.colors.fg_muted
+            )
             return
 
         is_running = zmq_status.get("running", False)

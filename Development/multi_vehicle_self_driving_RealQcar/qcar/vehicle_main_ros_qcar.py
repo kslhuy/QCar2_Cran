@@ -981,7 +981,7 @@ class VehicleControlFullSystemQCar(Node):
         param = Parameter()
         param.name = 'led_color_id'
         param.value.type = ParameterType.PARAMETER_INTEGER
-        param.value.integer_value = int(car_id) % 6  # Cycles 0-5
+        param.value.integer_value = (int(car_id) + 1) % 6  # Cycles 0-5
         req.parameters.append(param)
 
         self.get_logger().info(f"Requesting hardware LED color ID {param.value.integer_value} for car_id {car_id}")

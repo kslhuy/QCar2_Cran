@@ -130,8 +130,6 @@ class TrustConfig:
     # Minimum longitudinal distance limit (meters) for preceding/following cross-check
     minimum_longitudinal_distance: float = 0.1
 
-    # Offset for relative distance from camera (camera is mounted at the front, GPS at the center)
-    camera_distance_offset: float = 0.50 # Default offset to add to YOLO measurements
 
     @classmethod
     def from_dict(cls, d: dict) -> "TrustConfig":

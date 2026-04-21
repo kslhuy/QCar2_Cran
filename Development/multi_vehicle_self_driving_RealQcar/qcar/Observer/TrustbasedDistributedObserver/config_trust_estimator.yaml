@@ -186,6 +186,16 @@ vehicle:
   max_acceleration: 5.0           # Maximum acceleration m/s^2
   max_steering: 0.5               # Maximum steering angle rad
 
+  # Passive-calibrated first-order velocity lag:
+  #   v_dot = -(1/tau) * v + (velocity_gain/tau) * throttle
+  # This matches the online passive throttle_acceleration analysis output
+  # better than the no-drag acceleration-lag model below because constant
+  # throttle converges to a steady speed instead of unbounded velocity.
+  velocity_lag_model:
+    enabled: true
+    tau: 0.301                    # From online_throttle_acceleration avg_tau
+    velocity_gain: 6.598          # From online_throttle_acceleration avg_K [m/s per throttle]
+
   # Lightweight first-order acceleration lag:
   #   a_dot = -(1/tau) * a + (input_gain/tau) * u
   # Useful when you want DLE-like acceleration dynamics without the full

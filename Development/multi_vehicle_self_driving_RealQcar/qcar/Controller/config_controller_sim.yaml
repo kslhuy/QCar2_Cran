@@ -22,7 +22,7 @@ leader_longitudinal_controller_type: 'cacc'      # Gap/speed tracking in FOLLOWI
 leader_lateral_controller_type: 'fusion_lateral'   # Keep fusion lateral, but bias toward path tracking
 
 leader_reverse_follow:
-  enabled: false
+  enabled: true
   trigger_velocity_threshold: -0.03
   max_reverse_throttle: 0.08
   max_reverse_speed: 0.12
@@ -42,7 +42,7 @@ longitudinal_controller_type: 'pid'
 
 # CACC Controller Parameters
 cacc:
-  s0: 0.2                    # Minimum spacing (meters)
+  s0: 0.25                    # Minimum spacing (meters)
   h: 0.5                     # Time headway (seconds)
   K_spacing: 0.35             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
   K_velocity: 0.15           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
@@ -57,7 +57,7 @@ cacc:
   # error term rather than a feedforward command, making the controller
   # respond when the leader changes acceleration faster/slower than the
   # follower. Set to 0 (default) to ignore acceleration information.
-  leader_acceleration_weight: 0.5
+  leader_acceleration_weight: 0.8
   spacing_deadband: 0.2      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
   velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
   throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
@@ -141,7 +141,7 @@ pure_pursuit:
 pp_map:
   sample_ds: 0.02                 # [m] Spacing between resampled path points. Up = fewer/coarser points. Down = denser/more detailed path.
   desired_speed: 0.55             # [m/s] Base cruise speed used to build the map speed profile. Up = faster almost everywhere. Down = slower everywhere.
-  min_speed: 0.4                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
+  min_speed: 0.35                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
   kappa_speed_gain: 1.0           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
   max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
   hard_turn_kappa: 0.60           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
@@ -229,7 +229,7 @@ fusion_lateral:
   mode: 'leader_primary'       # Use the map/path as the main cornering reference and let the leader act as a correction term.
   path_weight: 0.2           # Weight for path reference (0-1)
   leader_weight: 0.8         # Weight for leader adjustment (0-1)
-  deviation_threshold: 0.2   # Max leader deviation before override (radians)
+  deviation_threshold: 0.25   # Max leader deviation before override (radians)
   smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother , 0 = raw output)
   max_steering: 0.5         # Maximum steering angle (radians)
 

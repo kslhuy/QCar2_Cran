@@ -62,7 +62,7 @@ cacc:
   velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
   throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
   brake_smoothing: 0.5      # Aggressive smoothing factor applied ONLY when braking/decelerating [0-1]. Higher values prevent jerky sudden stops. Default 0.85.
-  max_acc_rate: 2.0          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
+  max_acc_rate: 1.5          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
   use_feedforward: true     # Add velocity feedforward for faster response
   ff_gain: 0.16129          # CACC feedforward gain: u_ff = leader_velocity * ff_gain
   limo_max_speed: 0.6       # Limo-only speed ceiling for CACC velocity command [m/s]

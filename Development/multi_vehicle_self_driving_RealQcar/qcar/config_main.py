@@ -174,6 +174,10 @@ class ObserverConfig:
     # Update rates (Hz)
     observer_rate: int = 100
     fleet_observer_rate: int = 30
+    # Added to YOLO relative measurements before observers consume them.
+    # Keep 0.0 when YOLO already publishes camera/source-corrected distance.
+    camera_distance_offset: float = 0.0
+    yolo_relative_min_confidence: float = 0.35
 
 
 @dataclass

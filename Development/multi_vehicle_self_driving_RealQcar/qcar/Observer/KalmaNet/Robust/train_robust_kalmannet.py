@@ -52,6 +52,8 @@ DEFAULT_CONFIG = {
         "attack_prob": 0.5,
         "attack_types": ["bias", "scale", "freeze", "noise", "ramp", "zero_out"],
         "max_branches_attacked": 1,
+        "gps_attack_prob": 0.3,
+        "gps_attack_types": ["noise", "freeze", "jump", "dropout", "reacquisition"],
     },
     "model": {
         "predictor_mode": "nn",
@@ -166,6 +168,18 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         nargs="*",
         default=list(aug_cfg.get("attack_types", DEFAULT_CONFIG["augmentation"]["attack_types"])),
         help="Attack types to use during augmentation",
+    )
+    parser.add_argument(
+        "--gps-attack-prob",
+        type=float,
+        default=float(aug_cfg.get("gps_attack_prob", DEFAULT_CONFIG["augmentation"]["gps_attack_prob"])),
+        help="Independent probability of corrupting GPS x/y measurements",
+    )
+    parser.add_argument(
+        "--gps-attack-types",
+        nargs="*",
+        default=list(aug_cfg.get("gps_attack_types", DEFAULT_CONFIG["augmentation"]["gps_attack_types"])),
+        help="GPS x/y attack types: noise freeze jump dropout reacquisition",
     )
     parser.add_argument(
         "--no-augmentation",
@@ -562,13 +576,15 @@ def main() -> None:
     # Initialize attack augmenter
     augmenter = None
     if not args.no_augmentation:
-        attack_cfg = AttackConfig(
-            attack_prob=args.attack_prob,
-            enabled_attacks=args.attack_types,
-            max_branches_attacked=args.max_branches_attacked,
-        )
+        attack_cfg = AttackConfig.from_dict(config.get("augmentation", {}))
+        attack_cfg.attack_prob = args.attack_prob
+        attack_cfg.enabled_attacks = args.attack_types
+        attack_cfg.max_branches_attacked = args.max_branches_attacked
+        attack_cfg.gps_attack_prob = args.gps_attack_prob
+        attack_cfg.gps_attack_types = args.gps_attack_types
         augmenter = SensorAttackAugmenter(attack_cfg)
         print(f"Attack augmentation enabled: prob={args.attack_prob}, types={args.attack_types}")
+        print(f"GPS x/y augmentation enabled: prob={args.gps_attack_prob}, types={args.gps_attack_types}")
     else:
         print("Attack augmentation DISABLED (training on clean data only)")
 

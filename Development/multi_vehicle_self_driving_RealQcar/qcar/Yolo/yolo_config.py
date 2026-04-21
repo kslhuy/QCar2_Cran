@@ -184,6 +184,7 @@ class YoloTrackerSettings:
 @dataclass
 class YoloPostprocessSettings:
     clipping_distance_m: float = 10.0
+    distance_offset_m: float = 0.0
 
 
 @dataclass
@@ -519,6 +520,7 @@ class YoloServerConfig:
             "center_box_height_ratio": self.buffers.center_box_height_ratio,
             "bottom_ignore_px": self.buffers.bottom_ignore_px,
             "center_box_raise_px": self.buffers.center_box_raise_px,
+            "distance_offset_m": self.yolo.postprocess.distance_offset_m,
         }
 
     def to_lidar_geometry_runtime_config(self) -> Dict[str, Any]:
@@ -705,7 +707,13 @@ class YoloServerConfig:
                             "clipping_distance_m"
                         ),
                         10.0,
-                    )
+                    ),
+                    distance_offset_m=_to_float(
+                        _as_dict(yolo_raw.get("postprocess")).get(
+                            "distance_offset_m"
+                        ),
+                        0.0,
+                    ),
                 ),
             ),
             sign_filter=SignFilterSettings(

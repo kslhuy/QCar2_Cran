@@ -129,14 +129,24 @@ augmentation:
   # Maximum number of sensor branches attacked at once.
   max_branches_attacked: 1
 
+  # Independent GPS-position augmentation for the measurement vector z=[x,y,psi,v,w].
+  # These attacks teach the update mask/gain to avoid snapping to bad GPS x/y.
+  gps_attack_prob: 0.35
+  gps_attack_types: ["noise", "freeze", "jump", "dropout", "reacquisition"]
+  gps_noise_std_range: [0.03, 0.25]    # meters
+  gps_jump_range: [0.20, 1.20]         # meters
+  gps_reacq_jump_range: [0.10, 0.80]   # meters
+  gps_dropout_min_fraction: 0.20
+  gps_dropout_max_fraction: 0.80
+
 model:
   # Predictor implementation:
   # nn        = learned neural predictor
   # kinematic = analytical QCar bicycle model
   #
   # Note: if set to kinematic, Phase A is skipped automatically.
-  predictor_mode: "nn"
-  kin_wheelbase: 0.256
+  predictor_mode: "kinematic"
+  kin_wheelbase: 0.25
 
   # Hidden sizes. Keep these aligned with
   # qcar/Observer/config_local_estimators.yaml at runtime.

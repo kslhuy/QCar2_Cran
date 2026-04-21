@@ -640,12 +640,12 @@ class StateBase:
             return None
 
         elif command_type == CommandType.DISABLE_ONLINE_CALIBRATION:
-            self.logger.logger.info("[CMD] Disabling passive online calibration")
+            self.logger.logger.info("[CMD] Pausing passive online calibration")
             try:
                 if hasattr(self.vehicle_logic, "disable_online_calibration_zmq"):
                     self.vehicle_logic.disable_online_calibration_zmq()
                     self.logger.logger.info(
-                        "[CMD] Online calibration disabled successfully"
+                        "[CMD] Online calibration paused successfully"
                     )
                 else:
                     self.logger.log_warning(

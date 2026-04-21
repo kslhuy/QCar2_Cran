@@ -1,5 +1,7 @@
 # QCar Calibration
 
+
+
 This folder contains two different calibration workflows:
 
 1. Passive online calibration over ZMQ
@@ -16,6 +18,8 @@ Development/multi_vehicle_self_driving_RealQcar/qcar
 ```
 
 ## Passive Online Calibration
+
+
 
 ### What it does
 
@@ -94,78 +98,6 @@ GUI actions map to these commands:
 - clear buffer: `set_params` with category `online_calibration`, action `clear`
 - analyse: `set_params` with category `online_calibration`, action `analyse`
 
-### Equivalent low-level commands
-
-Start passive collection:
-
-```json
-{"type": "enable_online_calibration", "config": {}}
-```
-
-Stop passive collection:
-
-```json
-{"type": "disable_online_calibration"}
-```
-
-Clear the current worker buffer:
-
-```json
-{
-  "type": "set_params",
-  "category": "online_calibration",
-  "params": {
-    "action": "clear"
-  }
-}
-```
-
-Trigger throttle-to-velocity analysis:
-
-```json
-{
-  "type": "set_params",
-  "category": "online_calibration",
-  "params": {
-    "action": "analyse",
-    "calibration_type": "throttle_velocity",
-    "options": {}
-  }
-}
-```
-
-Trigger steering-to-curvature analysis:
-
-```json
-{
-  "type": "set_params",
-  "category": "online_calibration",
-  "params": {
-    "action": "analyse",
-    "calibration_type": "steering_curvature",
-    "options": {
-      "poly_degree": 3,
-      "wheelbase_nom": 0.256
-    }
-  }
-}
-```
-
-Trigger passive throttle-acceleration analysis:
-
-```json
-{
-  "type": "set_params",
-  "category": "online_calibration",
-  "params": {
-    "action": "analyse",
-    "calibration_type": "throttle_acceleration",
-    "options": {
-      "lookahead_ratio": 0.632
-    }
-  }
-}
-```
 
 ### Where the online results are saved
 

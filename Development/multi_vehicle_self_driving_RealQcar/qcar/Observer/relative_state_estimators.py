@@ -12,6 +12,9 @@ import scipy.linalg
 from Observer.TrustbasedDistributedObserver.external_measurement_cache import (
     ExternalMeasurementCache,
 )
+from Observer.Relative_obs.relative_uio_logger import (
+    RelativeUIOLogger,
+)
 
 # Try importing cvxpy for LMI solving
 try:
@@ -24,6 +27,24 @@ except ImportError:
 def wrap_to_pi(angle: float) -> float:
     """Wrap angle to [-pi, pi)"""
     return (angle + np.pi) % (2 * np.pi) - np.pi
+
+
+def _as_bool(value, default: bool = False) -> bool:
+    """Parse bool-like config values while keeping YAML strings predictable."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled", "enable"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", "disable"}:
+            return False
+    return default
+
 
 class RelativeStateEstimatorBase(ABC):
     """Base class for all relative state estimators"""
@@ -39,12 +60,18 @@ class RelativeStateEstimatorBase(ABC):
         self.config = config or {}
         self.logger = logger
         self.state_dim = 4 # Default, e.g., [delta, delta_dot, delta_ddot, f_c]
-        self.prefer_external_relative_measurement = bool(
-            self.config.get("prefer_external_relative_measurement", True)
+        self.prefer_external_relative_measurement = _as_bool(
+            self.config.get("prefer_external_relative_measurement", True), True
         )
         self.relative_measurement_cache = ExternalMeasurementCache(
             max_age_s=float(self.config.get("measurement_max_age_s", 1.0))
         )
+        self._last_measurement_info = {
+            "source": "",
+            "confidence": float("nan"),
+            "timestamp_ns": float("nan"),
+            "age_s": float("nan"),
+        }
 
         # Initialize state
         self.state = np.zeros(self.state_dim)
@@ -115,6 +142,12 @@ class RelativeStateEstimatorBase(ABC):
     ) -> Optional[np.ndarray]:
         """Return a normalized [distance, relative_velocity] measurement when available."""
         y_meas = None
+        self._last_measurement_info = {
+            "source": "",
+            "confidence": float("nan"),
+            "timestamp_ns": float("nan"),
+            "age_s": float("nan"),
+        }
 
         if (
             self.prefer_external_relative_measurement
@@ -135,12 +168,32 @@ class RelativeStateEstimatorBase(ABC):
                         ],
                         dtype=float,
                     )
+                    ts_ns = float(external.get("timestamp_ns", float("nan")))
+                    age_s = (
+                        (float(current_time_ns) - ts_ns) / 1e9
+                        if np.isfinite(ts_ns)
+                        else float("nan")
+                    )
+                    self._last_measurement_info = {
+                        "source": str(external.get("source", "external_sensor")),
+                        "confidence": float(external.get("confidence", float("nan"))),
+                        "timestamp_ns": ts_ns,
+                        "age_s": age_s,
+                    }
 
         if y_meas is None and measurement is not None:
             arr = np.asarray(measurement, dtype=float).flatten()
             if arr.size > 0 and np.isfinite(arr[0]) and arr[0] > 0.0:
                 rel_velocity = arr[1] if arr.size > 1 and np.isfinite(arr[1]) else 0.0
                 y_meas = np.array([float(arr[0]), float(rel_velocity)], dtype=float)
+                self._last_measurement_info = {
+                    "source": "direct_argument",
+                    "confidence": float("nan"),
+                    "timestamp_ns": float(current_time_ns)
+                    if current_time_ns is not None
+                    else float("nan"),
+                    "age_s": 0.0 if current_time_ns is not None else float("nan"),
+                }
 
         return y_meas
     
@@ -358,8 +411,139 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         
         # Compute Gains
         self._compute_gains()
+
+        self.relative_uio_logger = None
+        self._relative_log_start_time_ns: Optional[int] = None
+        self._init_relative_logger()
         
         self.initialized = True
+
+    def _init_relative_logger(self) -> None:
+        """Start the separate relative UIO logger when enabled in config."""
+        recording_default = self.config.get("recording_enabled", False)
+        recording_enabled = _as_bool(
+            self.config.get("enable_recording", recording_default),
+            False,
+        )
+        if not recording_enabled:
+            return
+
+        vehicle_id = self.config.get("vehicle_id", "unknown")
+        output_dir = self.config.get("recording_output_dir")
+        overwrite = _as_bool(self.config.get("recording_overwrite", True), True)
+
+        try:
+            self.relative_uio_logger = RelativeUIOLogger(output_dir=output_dir)
+            filepath = self.relative_uio_logger.start(vehicle_id, overwrite=overwrite)
+            if filepath and self.logger:
+                self.logger.logger.info(f"SA_ACC_UIO: recording to {filepath}")
+        except Exception as e:
+            self.relative_uio_logger = None
+            if self.logger:
+                self.logger.log_error("SA_ACC_UIO: relative logger init failed", e)
+
+    @staticmethod
+    def _state_or_none(state: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if state is None:
+            return None
+        try:
+            arr = np.asarray(state, dtype=float).flatten()
+        except Exception:
+            return None
+        return arr if arr.size > 0 else None
+
+    def _record_relative_uio_sample(
+        self,
+        current_time_ns: Optional[int],
+        target_id: Optional[int],
+        dt: float,
+        y_k: Optional[np.ndarray],
+        host_vehicle_state: Optional[np.ndarray],
+        target_vehicle_state: Optional[np.ndarray],
+        u_host_vel: float,
+        u_target_acc: float,
+        measurement_used: bool,
+    ) -> None:
+        """Queue a relative UIO diagnostic row without doing disk I/O."""
+        if self.relative_uio_logger is None:
+            return
+
+        timestamp_ns = int(current_time_ns) if current_time_ns is not None else int(time.time_ns())
+        if self._relative_log_start_time_ns is None:
+            self._relative_log_start_time_ns = timestamp_ns
+        time_s = (timestamp_ns - self._relative_log_start_time_ns) / 1e9
+
+        host_state = self._state_or_none(host_vehicle_state)
+        target_state = self._state_or_none(target_vehicle_state)
+
+        v2v_distance = float("nan")
+        v2v_rel_velocity = float("nan")
+        v2v_rel_acceleration = float("nan")
+        distance_error = float("nan")
+        rel_velocity_error = float("nan")
+        rel_acceleration_error = float("nan")
+        if host_state is not None and target_state is not None:
+            if host_state.size > 3 and target_state.size > 3:
+                dx = float(target_state[0] - host_state[0])
+                dy = float(target_state[1] - host_state[1])
+                v2v_distance = float(np.sqrt(dx**2 + dy**2))
+                v2v_rel_velocity = float(target_state[3] - host_state[3])
+            if host_state.size > 4 and target_state.size > 4:
+                v2v_rel_acceleration = float(target_state[4] - host_state[4])
+
+        meas_distance = float("nan")
+        meas_rel_velocity = float("nan")
+        if y_k is not None and len(y_k) > 0:
+            meas_distance = float(y_k[0])
+            if len(y_k) > 1:
+                meas_rel_velocity = float(y_k[1])
+
+        if np.isfinite(meas_distance) and np.isfinite(v2v_distance):
+            distance_error = meas_distance - v2v_distance
+        if np.isfinite(meas_rel_velocity) and np.isfinite(v2v_rel_velocity):
+            rel_velocity_error = meas_rel_velocity - v2v_rel_velocity
+        state_arr = np.asarray(self.state, dtype=float).flatten()
+        if state_arr.size > 2 and np.isfinite(state_arr[2]) and np.isfinite(v2v_rel_acceleration):
+            rel_acceleration_error = float(state_arr[2] - v2v_rel_acceleration)
+
+        info = getattr(self, "_last_measurement_info", {}) or {}
+        self.relative_uio_logger.record(
+            {
+                "time": time_s,
+                "timestamp_ns": timestamp_ns,
+                "target_id": target_id if target_id is not None else float("nan"),
+                "dt": dt,
+                "measurement_used": measurement_used,
+                "measurement_source": info.get("source", ""),
+                "measurement_confidence": info.get("confidence", float("nan")),
+                "measurement_age_s": info.get("age_s", float("nan")),
+                "measurement_distance": meas_distance,
+                "measurement_relative_velocity": meas_rel_velocity,
+                "v2v_fallback_distance": v2v_distance,
+                "v2v_fallback_relative_velocity": v2v_rel_velocity,
+                "v2v_fallback_relative_acceleration": v2v_rel_acceleration,
+                "distance_error_vs_v2v": distance_error,
+                "relative_velocity_error_vs_v2v": rel_velocity_error,
+                "relative_acceleration_error_vs_v2v": rel_acceleration_error,
+                "host_velocity_input": u_host_vel,
+                "target_acceleration_input": u_target_acc,
+                "state": self.state.copy(),
+                "w": self.w.copy() if self.w is not None else [],
+                "host_state": host_state if host_state is not None else [],
+                "target_state": target_state if target_state is not None else [],
+                "gains": {
+                    "K": self.K.copy(),
+                    "L": self.L.copy(),
+                    "N": self.N.copy(),
+                },
+            }
+        )
+
+    def stop_recording(self) -> None:
+        """Stop relative UIO diagnostics logging."""
+        if self.relative_uio_logger is not None:
+            self.relative_uio_logger.stop()
+            self.relative_uio_logger = None
         
     def _initialize_matrices(self):
         """Parameterize and discretize the system matrices"""
@@ -449,12 +633,27 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         
         # Solve LMI for K
         self.K = np.zeros((4, 2)) # Default K
+        self._fixed_L = None
+        self._gain_source = "zero"
         
-        # Check config for manual K
+        # Check config for precomputed/manual gains first. This is the
+        # preferred real-time path; CVXPY is only needed when K is omitted.
         if 'K' in self.config:
-            self.K = np.array(self.config['K'])
+            self.K = np.asarray(self.config['K'], dtype=float)
+            if self.K.shape != (4, 2):
+                raise ValueError(f"SA_ACC_UIO: configured K must be 4x2, got {self.K.shape}")
+            if 'L' in self.config:
+                self._fixed_L = np.asarray(self.config['L'], dtype=float)
+                if self._fixed_L.shape != (4, 2):
+                    raise ValueError(
+                        f"SA_ACC_UIO: configured L must be 4x2, got {self._fixed_L.shape}"
+                    )
+            self._gain_source = "config"
             if self.logger:
-                self.logger.logger.info("SA_ACC_UIO: Using manually configured gain K.")
+                if self._fixed_L is not None:
+                    self.logger.logger.info("SA_ACC_UIO: Using configured K/L gains.")
+                else:
+                    self.logger.logger.info("SA_ACC_UIO: Using configured K gain; L will be derived.")
         elif CVXPY_AVAILABLE:
             try:
                 if self.logger:
@@ -465,8 +664,7 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
                 # ksi_hat = w + Qz*y. ksi_hat is 4x1. So w is 4x1. Az is 4x4.
                 
                 # Variables
-                P = cp.Variable((nx, nx), PSD=True) # Symmetric Positive Semi-Definite
-                Z = cp.Variable((2, nx)) # Z = X' in MATLAB code? 
+                P = cp.Variable((nx, nx), symmetric=True)
                 # MATLAB: Z = sdpvar(p, nx); p=2. 
                 # But MATLAB LMI uses Xs'. Let's follow MATLAB exactly.
                 # K = inv(Ps)*Xs' -> K = P_inv * Z.T -> So Z must be (nx, p)?
@@ -476,7 +674,7 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
                 # So Z in my code (to match python shape conventions usually Z is K*P)
                 # Let's stick to MATLAB variable shapes to avoid confusion.
                 Z_mat = cp.Variable((2, nx)) # 2x4
-                S = cp.Variable((2, 2), PSD=True)
+                S = cp.Variable((2, 2), symmetric=True)
                 
                 # Terms
                 # sup_LMI = [(D_w'*Z - xi_z'*P); D_z'*P];
@@ -513,21 +711,65 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
                 row3 = cp.hstack([block13.T, sup_LMI.T, -P])
                 
                 LMI_mat = cp.vstack([row1, row2, row3])
-                
-                constraints = [LMI_mat <= 0, P >= 0, S >= 0] # P>=0, S>=0 redundancy usually fine
-                
-                prob = cp.Problem(cp.Minimize(0), constraints)
+                LMI_mat = 0.5 * (LMI_mat + LMI_mat.T)
+
+                # CVXPY uses <=/>= as element-wise inequalities. These are
+                # semidefinite constraints, and P must be bounded away from
+                # zero because the LMI is homogeneous; otherwise P=0 is a
+                # feasible singular solution and K cannot be recovered.
+                p_floor = max(float(self.config.get("lmi_p_floor", 1.0)), np.finfo(float).eps)
+                s_floor = max(float(self.config.get("lmi_s_floor", 1e-6)), np.finfo(float).eps)
+                cond_limit = max(float(self.config.get("lmi_condition_limit", 1e12)), 1.0)
+                constraints = [
+                    LMI_mat << 0,
+                    P >> p_floor * np.eye(nx),
+                    S >> s_floor * np.eye(2),
+                ]
+
+                prob = cp.Problem(cp.Minimize(cp.trace(P) + cp.trace(S)), constraints)
                 prob.solve()
                 
-                if prob.status == cp.OPTIMAL:
+                if prob.status in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
                     P_val = P.value
                     Z_val = Z_mat.value
-                    
-                    # Compute K = inv(P) * Z'
-                    # Regularize P inverse if needed
-                    self.K = np.linalg.solve(P_val, Z_val.T) # 4x2
+
+                    if P_val is None or Z_val is None:
+                        raise ValueError("LMI solver returned no value for P or Z")
+                    if not (np.all(np.isfinite(P_val)) and np.all(np.isfinite(Z_val))):
+                        raise ValueError("LMI solver returned non-finite P or Z")
+
+                    P_val = 0.5 * (P_val + P_val.T)
+                    eig_min = float(np.min(np.linalg.eigvalsh(P_val)))
+
+                    # Compute K = inv(P) * Z'. Use SVD least-squares only as
+                    # a defensive fallback for inaccurate solver outputs.
+                    gain_method = "solve"
+                    p_cond = float(np.linalg.cond(P_val))
+                    if eig_min <= 0 or not np.isfinite(p_cond):
+                        gain_method = "least_squares"
+                        if self.logger:
+                            self.logger.log_warning(
+                                "SA_ACC_UIO: LMI returned a rank-deficient P "
+                                f"(min_eig={eig_min:.3e}); using least-squares gain recovery."
+                            )
+                        self.K = np.linalg.lstsq(P_val, Z_val.T, rcond=None)[0] # 4x2
+                    elif p_cond > cond_limit:
+                        gain_method = "least_squares"
+                        if self.logger:
+                            self.logger.log_warning(
+                                "SA_ACC_UIO: LMI P is ill-conditioned "
+                                f"(cond={p_cond:.3e}); using least-squares gain recovery."
+                            )
+                        self.K = np.linalg.lstsq(P_val, Z_val.T, rcond=None)[0] # 4x2
+                    else:
+                        self.K = np.linalg.solve(P_val, Z_val.T) # 4x2
+                    self._gain_source = "cvxpy"
                     if self.logger:
-                        self.logger.logger.info("SA_ACC_UIO: LMI solved successfully. K computed.")
+                        self.logger.logger.info(
+                            "SA_ACC_UIO: LMI solved successfully. "
+                            f"K computed. status={prob.status}, min_eig(P)={eig_min:.3e}, "
+                            f"cond(P)={p_cond:.3e}, method={gain_method}"
+                        )
                 else:
                     if self.logger:
                         self.logger.log_warning(f"SA_ACC_UIO: LMI solver failed. Status: {prob.status}")
@@ -544,7 +786,10 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         self.N = self.Az - self.K @ self.Ce
         
         # L = K + N * Qz
-        self.L = self.K + self.N @ self.Qz
+        if self._fixed_L is not None:
+            self.L = self._fixed_L.copy()
+        else:
+            self.L = self.K + self.N @ self.Qz
         
         # Initialize w state (4x1)
         self.w = np.zeros(4)
@@ -621,35 +866,55 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
             current_time_ns=current_time_ns,
         )
 
+        # Inputs
+        # Host velocity (xf(2))
+        u_host_vel = 0.0
+        if host_vehicle_state is not None and len(host_vehicle_state) > 3:
+            # Assuming state [x, y, theta, v, a]
+            u_host_vel = float(host_vehicle_state[3])
+
+        # Target acceleration (mu)
+        u_target_acc = 0.0
+        if target_vehicle_state is not None and len(target_vehicle_state) > 4:
+            # Assuming state [x, y, theta, v, a]
+            u_target_acc = float(target_vehicle_state[4])
+
         # Check if we should synthesize the measurement from V2V data as a fallback.
-        use_fake_meas = self.config.get('use_fake_relative_measurements', False)
+        use_fake_meas = _as_bool(
+            self.config.get("use_fake_relative_measurements", False), False
+        )
         if y_k is None and use_fake_meas:
             if host_vehicle_state is not None and target_vehicle_state is not None:
                 y_k = self._compute_relative_measurement_from_v2v(
                     host_vehicle_state, target_vehicle_state
                 )
+                self._last_measurement_info = {
+                    "source": "v2v_state_fallback",
+                    "confidence": float("nan"),
+                    "timestamp_ns": float(current_time_ns)
+                    if current_time_ns is not None
+                    else float("nan"),
+                    "age_s": 0.0 if current_time_ns is not None else float("nan"),
+                }
             elif self.logger:
                 self.logger.logger.warning(
                     "Relative estimator missing external measurement and V2V fallback states."
                 )
 
         if y_k is None:
+            self._record_relative_uio_sample(
+                current_time_ns=current_time_ns,
+                target_id=target_id,
+                dt=dt,
+                y_k=None,
+                host_vehicle_state=host_vehicle_state,
+                target_vehicle_state=target_vehicle_state,
+                u_host_vel=u_host_vel,
+                u_target_acc=u_target_acc,
+                measurement_used=False,
+            )
             return self.state.copy()
 
-        
-        # Inputs
-        # Host velocity (xf(2))
-        u_host_vel = 0.0
-        if host_vehicle_state is not None:
-            # Assuming state [x, y, theta, v, a]
-            u_host_vel = host_vehicle_state[3]
-             
-        # Target acceleration (mu)
-        u_target_acc = 0.0
-        if target_vehicle_state is not None:
-            # Assuming state [x, y, theta, v, a]
-            u_target_acc = target_vehicle_state[4]
-             
         # 1. Estimation Step: ksi_hat = w + Qz*y
         ksi_hat = self.w + self.Qz @ y_k
         
@@ -671,6 +936,18 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         # Store state
         self.state = ksi_hat
         self.last_update_time = time.time()
+
+        self._record_relative_uio_sample(
+            current_time_ns=current_time_ns,
+            target_id=target_id,
+            dt=dt,
+            y_k=y_k,
+            host_vehicle_state=host_vehicle_state,
+            target_vehicle_state=target_vehicle_state,
+            u_host_vel=u_host_vel,
+            u_target_acc=u_target_acc,
+            measurement_used=True,
+        )
         
         return ksi_hat
 
@@ -680,6 +957,7 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
     def reset(self):
         self.w = np.zeros(4)
         self.state = np.zeros(4)
+        self._relative_log_start_time_ns = None
 
 class RelativeEstimatorFactory:
     """Factory for relative state estimators"""

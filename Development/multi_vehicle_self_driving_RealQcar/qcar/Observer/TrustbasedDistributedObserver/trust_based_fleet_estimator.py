@@ -19,7 +19,7 @@ Features:
 
 import numpy as np
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 
 # Import base class and utilities from fleet_state_estimators
@@ -193,6 +193,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         # ---- Motor model for dynamics prediction ----
         vehicle_config = self.config.get("vehicle", {})
+        velocity_lag_cfg = vehicle_config.get("velocity_lag_model", {})
+        self.velocity_lag_enabled = bool(velocity_lag_cfg.get("enabled", False))
+        self.velocity_lag_tau = max(float(velocity_lag_cfg.get("tau", 0.301)), 1e-6)
+        self.velocity_lag_gain = float(velocity_lag_cfg.get("velocity_gain", 6.598))
         accel_lag_cfg = vehicle_config.get("accel_lag_model", {})
         self.accel_lag_enabled = bool(accel_lag_cfg.get("enabled", False))
         self.accel_lag_tau = max(float(accel_lag_cfg.get("tau", 0.318)), 1e-6)
@@ -206,6 +210,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self._received_control_inputs: Dict[int, Dict[str, float]] = {}
 
         if self.logger:
+            self.logger.logger.info(
+                f"Velocity lag model {'ENABLED' if self.velocity_lag_enabled else 'DISABLED'}"
+                f" (tau={self.velocity_lag_tau}, K={self.velocity_lag_gain})"
+            )
             self.logger.logger.info(
                 f"Acceleration lag model {'ENABLED' if self.accel_lag_enabled else 'DISABLED'}"
                 f" (tau={self.accel_lag_tau}, gain={self.accel_lag_gain})"
@@ -224,6 +232,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self._init_time = time.time()
         self._time_reference: Optional[Dict[str, object]] = None
         self._startup_reference_time_ns: Optional[int] = None
+        self._v2v_attack_status: Dict[str, Any] = {}
+        self._v2v_attack_scenarios: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------
     # Override add_received_local_state to also cache control_input
@@ -293,6 +303,265 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             duration_s > 0.0
             and self._get_startup_elapsed_s(current_time_ns) < duration_s
         )
+
+    # ------------------------------------------------------------------
+    # V2V attack metadata for trust-log ground truth
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _enum_value(value: Any) -> Any:
+        return getattr(value, "value", value)
+
+    @staticmethod
+    def _float_or_none(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _list_or_empty(cls, value: Any) -> List[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+        return [value]
+
+    def _normalize_attack_scenario(
+        self,
+        raw_scenario: Any,
+        clock_s: Optional[float],
+        enabled: bool,
+        manual_disable_time: Optional[float],
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize injected-attack scenario metadata for CSV logging."""
+        if isinstance(raw_scenario, dict):
+            getter = raw_scenario.get
+        else:
+            getter = lambda key, default=None: getattr(raw_scenario, key, default)
+
+        t_start = self._float_or_none(getter("t_start", getter("start_s")))
+        t_end = self._float_or_none(getter("t_end", getter("end_s")))
+        if t_start is None:
+            return None
+        if t_end is None:
+            t_end = float("inf")
+
+        if manual_disable_time is not None and (
+            not np.isfinite(t_end) or t_end > manual_disable_time
+        ):
+            t_end = max(float(manual_disable_time), t_start)
+
+        fields = [str(v) for v in self._list_or_empty(getter("target_fields", []))]
+        victims = []
+        for victim in self._list_or_empty(getter("victim_ids", [])):
+            try:
+                victims.append(int(victim))
+            except (TypeError, ValueError):
+                continue
+
+        attacker_id = getter("attacker_id")
+        try:
+            attacker_id = int(attacker_id)
+        except (TypeError, ValueError):
+            attacker_id = None
+
+        name = str(getter("name", getter("scenario_name", "")) or "")
+        attack_type = str(self._enum_value(getter("type", getter("attack_type", ""))) or "")
+        modification = str(
+            self._enum_value(getter("modification", getter("modification_type", ""))) or ""
+        )
+        data_type = str(self._enum_value(getter("data_type", "")) or "").lower()
+
+        interval_active = False
+        if clock_s is not None:
+            interval_active = bool(t_start <= clock_s <= t_end)
+        active = bool(getter("active", False) or interval_active) and bool(enabled)
+
+        return {
+            "name": name,
+            "type": attack_type,
+            "modification": modification,
+            "data_type": data_type,
+            "target_fields": fields,
+            "t_start": float(t_start),
+            "t_end": float(t_end),
+            "attacker_id": attacker_id,
+            "victim_ids": victims,
+            "active": active,
+        }
+
+    @staticmethod
+    def _attack_scenario_key(scenario: Dict[str, Any]) -> str:
+        fields = ",".join(str(v) for v in scenario.get("target_fields", []))
+        return (
+            f"{scenario.get('name', '')}|{scenario.get('attacker_id')}|"
+            f"{scenario.get('t_start')}|{scenario.get('data_type')}|"
+            f"{scenario.get('type')}|{fields}"
+        )
+
+    def set_v2v_attack_status(self, status: Optional[Dict[str, Any]]) -> None:
+        """
+        Store V2V attack metadata supplied by VehicleLogic.
+
+        This is GUI-command ground truth for the trust CSV. The trust model's
+        detection flag remains separate as flag_attack_<vehicle_id>.
+        """
+        if not isinstance(status, dict):
+            return
+
+        clock_s = self._float_or_none(status.get("elapsed_time"))
+        if clock_s is None:
+            clock_s = self._float_or_none(status.get("current_time"))
+
+        manual_disable_time = self._float_or_none(status.get("manual_disable_time"))
+        enabled = bool(status.get("enabled", True))
+        attack_active = bool(status.get("attack_active", False)) and enabled
+
+        raw_scenarios: List[Any] = []
+        for key in (
+            "all_scenario_details",
+            "scenario_details",
+            "configured_scenarios",
+            "active_scenario_details",
+        ):
+            raw_value = status.get(key)
+            if isinstance(raw_value, list):
+                raw_scenarios.extend(raw_value)
+
+        for raw_scenario in raw_scenarios:
+            scenario = self._normalize_attack_scenario(
+                raw_scenario=raw_scenario,
+                clock_s=clock_s,
+                enabled=enabled,
+                manual_disable_time=manual_disable_time,
+            )
+            if scenario is None:
+                continue
+            scenario_key = self._attack_scenario_key(scenario)
+            existing = self._v2v_attack_scenarios.get(scenario_key)
+            if existing is not None and not enabled:
+                existing_end = float(existing.get("t_end", float("inf")))
+                scenario_end = float(scenario.get("t_end", float("inf")))
+                if np.isfinite(existing_end) and (
+                    not np.isfinite(scenario_end) or scenario_end > existing_end
+                ):
+                    scenario["t_end"] = existing_end
+            self._v2v_attack_scenarios[scenario_key] = scenario
+
+        if not raw_scenarios and not attack_active:
+            close_time = manual_disable_time if manual_disable_time is not None else clock_s
+            if close_time is not None:
+                for scenario in self._v2v_attack_scenarios.values():
+                    if scenario.get("active", False) or not np.isfinite(
+                        float(scenario.get("t_end", float("inf")))
+                    ):
+                        scenario["t_end"] = max(float(close_time), scenario["t_start"])
+                    scenario["active"] = False
+
+        self._v2v_attack_status = {
+            "enabled": enabled,
+            "attack_active": attack_active,
+            "elapsed_time": clock_s,
+        }
+
+    @staticmethod
+    def _unique_values(scenarios: List[Dict[str, Any]], key: str) -> List[str]:
+        values: List[str] = []
+        for scenario in scenarios:
+            value = scenario.get(key)
+            if value is None or value == "":
+                continue
+            value = str(value)
+            if value not in values:
+                values.append(value)
+        return values
+
+    @staticmethod
+    def _scenario_targets_vehicle(scenario: Dict[str, Any], vehicle_id: int) -> bool:
+        data_type = str(scenario.get("data_type", "")).lower()
+        attacker_id = scenario.get("attacker_id")
+        victims = scenario.get("victim_ids", [])
+
+        local_target = data_type in ("local", "both") and attacker_id == vehicle_id
+        fleet_target = data_type in ("fleet", "both") and (
+            -1 in victims or vehicle_id in victims
+        )
+        return bool(local_target or fleet_target)
+
+    @staticmethod
+    def _scenario_is_active_at_clock(
+        scenario: Dict[str, Any], clock_s: Optional[float], enabled: bool
+    ) -> bool:
+        if not enabled or clock_s is None:
+            return False
+        return bool(scenario["t_start"] <= clock_s <= scenario["t_end"])
+
+    def _get_v2v_attack_log_data(self, current_time_ns: int) -> Dict[str, Any]:
+        """Build flattened V2V attack metadata for TrustWeightLogger."""
+        clock_s = self._float_or_none(self._v2v_attack_status.get("elapsed_time"))
+        if clock_s is None:
+            clock_s = self._get_log_time_s(current_time_ns)
+
+        enabled = bool(self._v2v_attack_status.get("enabled", False))
+        scenarios = list(self._v2v_attack_scenarios.values())
+        active_scenarios = [
+            s for s in scenarios if self._scenario_is_active_at_clock(s, clock_s, enabled)
+        ]
+        display_scenarios = active_scenarios if active_scenarios else scenarios
+
+        by_vehicle: Dict[int, Dict[str, Any]] = {}
+        for vehicle_id in range(self.fleet_size):
+            vehicle_scenarios = [
+                s for s in scenarios if self._scenario_targets_vehicle(s, vehicle_id)
+            ]
+            if not vehicle_scenarios:
+                continue
+            active_for_vehicle = [
+                s
+                for s in vehicle_scenarios
+                if self._scenario_is_active_at_clock(s, clock_s, enabled)
+            ]
+            by_vehicle[vehicle_id] = {
+                "active": bool(active_for_vehicle),
+                "types": self._unique_values(vehicle_scenarios, "type"),
+                "names": self._unique_values(vehicle_scenarios, "name"),
+                "data_types": self._unique_values(vehicle_scenarios, "data_type"),
+                "modifications": self._unique_values(vehicle_scenarios, "modification"),
+                "fields": sorted(
+                    {
+                        str(field)
+                        for scenario in vehicle_scenarios
+                        for field in scenario.get("target_fields", [])
+                    }
+                ),
+                "start_s": min(float(s["t_start"]) for s in vehicle_scenarios),
+                "end_s": max(float(s["t_end"]) for s in vehicle_scenarios),
+                "attacker_id": vehicle_scenarios[0].get("attacker_id"),
+            }
+
+        return {
+            "enabled": enabled,
+            "active": bool(active_scenarios),
+            "clock_s": float(clock_s),
+            "scenario_count": len(scenarios),
+            "active_count": len(active_scenarios),
+            "types": self._unique_values(display_scenarios, "type"),
+            "names": self._unique_values(display_scenarios, "name"),
+            "data_types": self._unique_values(display_scenarios, "data_type"),
+            "start_s": (
+                min(float(s["t_start"]) for s in display_scenarios)
+                if display_scenarios
+                else float("nan")
+            ),
+            "end_s": (
+                max(float(s["t_end"]) for s in display_scenarios)
+                if display_scenarios
+                else float("nan")
+            ),
+            "by_vehicle": by_vehicle,
+        }
 
     # ------------------------------------------------------------------
     # External relative measurement delegation
@@ -829,7 +1098,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         dt: float,
         target_id: int = -1,
     ) -> np.ndarray:
-        """Predict next state using bicycle kinematics + first-order lag motor model."""
+        """Predict next state using bicycle kinematics + configured longitudinal model."""
         x, y, theta, v = state[:4]
         a = state[4] if len(state) > 4 else 0.0
 
@@ -844,8 +1113,16 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         y_new = y + v * np.sin(theta) * dt
         theta_new = theta + (v * np.tan(steering) / L) * dt
 
-        # Velocity / acceleration prediction
-        if self.accel_lag_enabled and dt > 0:
+        # Velocity / acceleration prediction. Prefer the passive-calibrated
+        # velocity lag when enabled because it has a bounded steady-state speed.
+        if self.velocity_lag_enabled and dt > 0:
+            v_dot = (
+                -(1.0 / self.velocity_lag_tau) * v
+                + (self.velocity_lag_gain / self.velocity_lag_tau) * throttle
+            )
+            v_new = v + v_dot * dt
+            a_new = v_dot
+        elif self.accel_lag_enabled and dt > 0:
             a_new = a + dt * (
                 -(1.0 / self.accel_lag_tau) * a
                 + (self.accel_lag_gain / self.accel_lag_tau) * throttle
@@ -969,6 +1246,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "is_turning": int(abs(control[0]) >= self.turn_steering_threshold),
             "host_steering": float(control[0]),
             "neighbors": {},
+            "v2v_attack": self._get_v2v_attack_log_data(current_time_ns),
         }
 
         for vehicle_id, trust_score in trust_scores.items():
@@ -1168,6 +1446,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.rollback.reset()
         self._init_time = time.time()
         self._startup_reference_time_ns = None
+        self._v2v_attack_status = {}
+        self._v2v_attack_scenarios = {}
 
     def __del__(self):
         if hasattr(self, "trust_weight_logger"):

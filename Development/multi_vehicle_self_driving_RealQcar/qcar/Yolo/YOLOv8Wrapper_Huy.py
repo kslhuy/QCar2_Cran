@@ -48,6 +48,8 @@ class DetectionBuffers:
     bottom_ignore_px: int = 0
     # Move center box upward by this many pixels.
     center_box_raise_px: int = 0
+    # Positive values are subtracted from raw/fused distances before publishing.
+    distance_offset_m: float = 0.0
 
     @classmethod
     def from_config(
@@ -64,6 +66,7 @@ class DetectionBuffers:
         center_h = float(np.clip(cfg.get("center_box_height_ratio", 0.60), 0.05, 1.0))
         bottom_ignore_px = int(max(0, cfg.get("bottom_ignore_px", 0)))
         center_box_raise_px = int(max(0, cfg.get("center_box_raise_px", 0)))
+        distance_offset_m = float(cfg.get("distance_offset_m", 0.0))
         return cls(
             image_width=int(image_width),
             image_height=int(image_height),
@@ -73,6 +76,7 @@ class DetectionBuffers:
             center_box_height_ratio=center_h,
             bottom_ignore_px=bottom_ignore_px,
             center_box_raise_px=center_box_raise_px,
+            distance_offset_m=distance_offset_m,
         )
 
     def reset(self):
@@ -160,6 +164,16 @@ class DetectionBuffers:
         cy = (bbox[1] + bbox[3]) / 2.0
         return cy >= (self.image_height - self.bottom_ignore_px)
 
+    def _correct_distance(self, distance) -> float:
+        """Apply configured distance offset while preserving invalid zero values."""
+        try:
+            dist = float(np.asarray(distance).reshape(-1)[0])
+        except Exception:
+            return 0.0
+        if not np.isfinite(dist) or dist <= 0.0:
+            return 0.0
+        return float(max(0.01, dist - float(self.distance_offset_m)))
+
     def fill_from_results(self, results: list, bounding_boxes=None):
         """Fill buffers from YOLO detection results.
 
@@ -198,6 +212,12 @@ class DetectionBuffers:
         for idx, det in enumerate(results):
             name = det.name
             name_l = str(name).lower()
+            corrected_dist = self._correct_distance(getattr(det, "distance", 0.0))
+            if corrected_dist > 0.0:
+                try:
+                    det.distance = corrected_dist
+                except Exception:
+                    pass
             bbox = (
                 bounding_boxes[idx]
                 if bounding_boxes is not None and idx < len(bounding_boxes)
@@ -229,7 +249,7 @@ class DetectionBuffers:
                 if self._is_in_bottom_ignore_strip(bbox):
                     continue
                 counts["car"] += 1
-                dist = det.distance
+                dist = corrected_dist
                 # Keep closest detection
                 if counts["car"] == 1 or dist < self.car[1]:
                     self.car[1] = dist
@@ -239,13 +259,13 @@ class DetectionBuffers:
                 if not self._is_sign_on_allowed_side(det, bbox):
                     continue
                 counts["stop_sign"] += 1
-                dist = det.distance
+                dist = corrected_dist
                 if counts["stop_sign"] == 1 or dist < self.stop_sign[1]:
                     self.stop_sign[1] = dist
                     self.stop_sign[2] = offset
             elif "red" in name_l:
                 counts["traffic"] += 1
-                dist = det.distance
+                dist = corrected_dist
                 if counts["traffic"] == 1 or dist < self.traffic[1]:
                     self.traffic[1] = dist
                     self.traffic[2] = offset
@@ -254,13 +274,13 @@ class DetectionBuffers:
                 if not self._is_sign_on_allowed_side(det, bbox):
                     continue
                 counts["yield"] += 1
-                dist = det.distance
+                dist = corrected_dist
                 if counts["yield"] == 1 or dist < self.yield_sign[1]:
                     self.yield_sign[1] = dist
                     self.yield_sign[2] = offset
             elif "person" in name_l:
                 counts["person"] += 1
-                dist = det.distance
+                dist = corrected_dist
                 if counts["person"] == 1 or dist < self.person[1]:
                     self.person[1] = dist
                     self.person[2] = offset
@@ -271,9 +291,8 @@ class DetectionBuffers:
             if bbox is not None and self._is_in_center_box(bbox):
                 is_sign = any(kw in name_l for kw in sign_keywords)
                 if not is_sign:
-                    try:
-                        dist = float(det.distance)
-                    except (TypeError, ValueError):
+                    dist = corrected_dist
+                    if dist <= 0.0:
                         dist = 100.0
                     if dist < closest_obstacle_dist:
                         closest_obstacle_dist = dist

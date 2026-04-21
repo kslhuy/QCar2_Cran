@@ -1577,54 +1577,31 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             gps_data is not None
             and gps_data.get("position_valid", gps_data.get("fresh", gps_data.get("valid", False)))
         )
-        gps_has_fix = bool(gps_data is not None and gps_data.get("has_fix", gps_position_valid))
         self.last_gps_valid = gps_position_valid
         heading_meas = self._update_heading_filter(dt, gyro_z, gps_data)
 
-        if gps_has_fix:
+        if gps_position_valid:
             meas_x = float(gps_data.get("x", self.internal_state[0]))
             meas_y = float(gps_data.get("y", self.internal_state[1]))
         else:
-            meas_x = float(self.internal_state[0])
-            meas_y = float(self.internal_state[1])
+            # GPS unavailable/stale: dead-reckon the position channel instead of
+            # feeding back the previous estimate unchanged. The updater still
+            # masks x/y corrections when gps_valid=0, but this keeps z history
+            # physically plausible for temporal features and logging.
+            x, y, theta, v, _ = self.internal_state.astype(np.float64)
+            theta_ref = heading_meas if self.heading_filter_enabled else theta
+            try:
+                motor_v = float(motor_tach)
+            except (TypeError, ValueError):
+                motor_v = float(v)
+            v_ref = motor_v if np.isfinite(motor_v) else float(v)
+            meas_x = x + v_ref * np.cos(theta_ref) * float(dt)
+            meas_y = y + v_ref * np.sin(theta_ref) * float(dt)
 
         return np.array(
             [meas_x, meas_y, heading_meas, float(motor_tach), float(gyro_z)],
             dtype=np.float32,
         )
-
-        # FIX-2: When GPS is invalid, use a kinematic dead-reckoning prediction
-        # for position channels instead of feeding back internal_state (which
-        # creates near-zero innovation and makes the update step useless).
-        gps_valid = bool(gps_data is not None and gps_data.get("valid", False))
-        self.last_gps_valid = gps_valid
-        heading_meas = self._update_heading_filter(dt, gyro_z, gps_data)
-
-        if gps_valid:
-            # GPS available → use GPS measurements directly
-            measurement = np.array([
-                float(gps_data.get("x", self.internal_state[0])),
-                float(gps_data.get("y", self.internal_state[1])),
-                heading_meas,
-                float(motor_tach),
-                float(gyro_z),
-            ], dtype=np.float32)
-        else:
-            # GPS unavailable → kinematic dead-reckoning prediction for position
-            # so that the innovation (z - Hx_pred) is NOT trivially zero.
-            x, y, theta, v, _ = self.internal_state.astype(np.float64)
-            theta_ref = heading_meas if self.heading_filter_enabled else theta
-            x_dr = x + v * np.cos(theta_ref) * dt
-            y_dr = y + v * np.sin(theta_ref) * dt
-            measurement = np.array([
-                x_dr,
-                y_dr,
-                heading_meas,
-                float(motor_tach),
-                float(gyro_z),
-            ], dtype=np.float32)
-
-        return measurement
 
     def _raw_sample_from_inputs(
         self,

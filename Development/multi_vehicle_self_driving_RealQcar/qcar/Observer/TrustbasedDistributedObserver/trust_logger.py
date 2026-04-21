@@ -57,6 +57,14 @@ class TrustWeightLogger:
         return normalized
 
     @staticmethod
+    def _to_csv_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, (list, tuple, set)):
+            return "|".join(str(v) for v in value)
+        return str(value)
+
+    @staticmethod
     def _nan_stats(values: Iterable[float]) -> Dict[str, float]:
         clean = [float(v) for v in values if isinstance(v, (int, float)) and not math.isnan(float(v))]
         if not clean:
@@ -92,6 +100,16 @@ class TrustWeightLogger:
             "yolo_rel_meas_used_global_count",
             "is_turning",
             "host_steering",
+            "v2v_attack_enabled",
+            "v2v_attack_active",
+            "v2v_attack_clock_s",
+            "v2v_attack_scenario_count",
+            "v2v_attack_active_count",
+            "v2v_attack_types",
+            "v2v_attack_names",
+            "v2v_attack_data_types",
+            "v2v_attack_start_s",
+            "v2v_attack_end_s",
         ]
 
         for i in range(max_vehicles):
@@ -141,6 +159,15 @@ class TrustWeightLogger:
                     f"flag_attack_{i}",
                     f"flag_local_{i}",
                     f"flag_global_{i}",
+                    f"inject_attack_active_{i}",
+                    f"inject_attack_type_{i}",
+                    f"inject_attack_name_{i}",
+                    f"inject_attack_data_type_{i}",
+                    f"inject_attack_modification_{i}",
+                    f"inject_attack_fields_{i}",
+                    f"inject_attack_start_{i}",
+                    f"inject_attack_end_{i}",
+                    f"inject_attack_attacker_{i}",
                 ]
             )
             for k in range(max_vehicles):
@@ -188,6 +215,10 @@ class TrustWeightLogger:
         estimation_conf = self._normalize_vehicle_dict(data.get("estimation_confidence", {}))
         prediction_mode = self._normalize_vehicle_dict(data.get("prediction_mode", {}))
         fleet_estimates = self._normalize_vehicle_dict(data.get("fleet_estimates", {}))
+        v2v_attack = data.get("v2v_attack", {})
+        if not isinstance(v2v_attack, dict):
+            v2v_attack = {}
+        attack_by_vehicle = self._normalize_vehicle_dict(v2v_attack.get("by_vehicle", {}))
 
         row = {
             "time": float(t),
@@ -214,6 +245,28 @@ class TrustWeightLogger:
             "yolo_rel_meas_used_global_count": 0,
             "is_turning": int(data.get("is_turning", 0)),
             "host_steering": self._to_float_or_nan(data.get("host_steering", nan_val)),
+            "v2v_attack_enabled": int(bool(v2v_attack.get("enabled", False))),
+            "v2v_attack_active": int(bool(v2v_attack.get("active", False))),
+            "v2v_attack_clock_s": self._to_float_or_nan(
+                v2v_attack.get("clock_s", nan_val)
+            ),
+            "v2v_attack_scenario_count": int(
+                v2v_attack.get("scenario_count", 0) or 0
+            ),
+            "v2v_attack_active_count": int(
+                v2v_attack.get("active_count", 0) or 0
+            ),
+            "v2v_attack_types": self._to_csv_text(v2v_attack.get("types")),
+            "v2v_attack_names": self._to_csv_text(v2v_attack.get("names")),
+            "v2v_attack_data_types": self._to_csv_text(
+                v2v_attack.get("data_types")
+            ),
+            "v2v_attack_start_s": self._to_float_or_nan(
+                v2v_attack.get("start_s", nan_val)
+            ),
+            "v2v_attack_end_s": self._to_float_or_nan(
+                v2v_attack.get("end_s", nan_val)
+            ),
         }
 
         active_vehicle_count = 0
@@ -278,8 +331,48 @@ class TrustWeightLogger:
             row[f"flag_attack_{i}"] = 0
             row[f"flag_local_{i}"] = 0
             row[f"flag_global_{i}"] = 0
+            row[f"inject_attack_active_{i}"] = 0
+            row[f"inject_attack_type_{i}"] = ""
+            row[f"inject_attack_name_{i}"] = ""
+            row[f"inject_attack_data_type_{i}"] = ""
+            row[f"inject_attack_modification_{i}"] = ""
+            row[f"inject_attack_fields_{i}"] = ""
+            row[f"inject_attack_start_{i}"] = nan_val
+            row[f"inject_attack_end_{i}"] = nan_val
+            row[f"inject_attack_attacker_{i}"] = nan_val
 
             present = False
+
+            if i in attack_by_vehicle:
+                attack_data = attack_by_vehicle[i]
+                if isinstance(attack_data, dict):
+                    row[f"inject_attack_active_{i}"] = int(
+                        bool(attack_data.get("active", False))
+                    )
+                    row[f"inject_attack_type_{i}"] = self._to_csv_text(
+                        attack_data.get("types")
+                    )
+                    row[f"inject_attack_name_{i}"] = self._to_csv_text(
+                        attack_data.get("names")
+                    )
+                    row[f"inject_attack_data_type_{i}"] = self._to_csv_text(
+                        attack_data.get("data_types")
+                    )
+                    row[f"inject_attack_modification_{i}"] = self._to_csv_text(
+                        attack_data.get("modifications")
+                    )
+                    row[f"inject_attack_fields_{i}"] = self._to_csv_text(
+                        attack_data.get("fields")
+                    )
+                    row[f"inject_attack_start_{i}"] = self._to_float_or_nan(
+                        attack_data.get("start_s", nan_val)
+                    )
+                    row[f"inject_attack_end_{i}"] = self._to_float_or_nan(
+                        attack_data.get("end_s", nan_val)
+                    )
+                    row[f"inject_attack_attacker_{i}"] = self._to_float_or_nan(
+                        attack_data.get("attacker_id", nan_val)
+                    )
 
             if i in direct_trust:
                 trust_val = self._to_float_or_nan(direct_trust[i])

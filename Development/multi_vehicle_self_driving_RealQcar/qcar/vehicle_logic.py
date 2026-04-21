@@ -201,6 +201,7 @@ class VehicleLogic:
         # V2V status cache
         self._v2v_status_cache = {}
         self._v2v_status_cache_time = 0.0
+        self._latest_gui_attack_status = None
 
         # Periodic status broadcast tracking
         self._last_status_broadcast_time = 0.0
@@ -323,10 +324,139 @@ class VehicleLogic:
 
     # ===== Attack V2V sim Module  =====
 
+    def _get_v2v_log_time_s(self) -> float:
+        """Return the shared V2V-reference time used by trust CSV logs."""
+        try:
+            if hasattr(self, "vehicle_observer") and self.vehicle_observer is not None:
+                if hasattr(self.vehicle_observer, "to_v2v_reference_time_ns"):
+                    return max(
+                        float(self.vehicle_observer.to_v2v_reference_time_ns()), 0.0
+                    ) / 1e9
+        except Exception:
+            pass
+
+        if hasattr(self, "v2v_manager") and hasattr(self.v2v_manager, "get_elapsed_time"):
+            return float(self.v2v_manager.get_elapsed_time())
+        return self.elapsed_time()
+
+    def _sync_v2v_attack_status_to_observer(self, attack_status: dict = None):
+        """Forward GUI/config V2V attack metadata into the trust-fleet CSV logger."""
+        try:
+            if not hasattr(self, "vehicle_observer") or self.vehicle_observer is None:
+                return
+
+            shared_clock_s = self._get_v2v_log_time_s()
+            status = attack_status
+            if (
+                isinstance(status, dict)
+                and (
+                    status.get("all_scenario_details")
+                    or status.get("active_scenario_details")
+                )
+            ):
+                self._latest_gui_attack_status = status.copy()
+            if status is None:
+                if self._latest_gui_attack_status is not None:
+                    status = dict(self._latest_gui_attack_status)
+                    status["elapsed_time"] = shared_clock_s
+                    status["current_time"] = shared_clock_s
+                elif hasattr(self, "v2v_manager") and hasattr(
+                    self.v2v_manager, "get_attack_status"
+                ):
+                    status = self.v2v_manager.get_attack_status()
+                else:
+                    status = None
+
+            if (
+                isinstance(status, dict)
+                and self._latest_gui_attack_status is not None
+                and not status.get("attack_active", False)
+                and not status.get("all_scenario_details")
+                and not status.get("active_scenario_details")
+            ):
+                merged_status = dict(self._latest_gui_attack_status)
+                if "manual_disable_time" in status:
+                    merged_status.update(status)
+                else:
+                    merged_status["elapsed_time"] = shared_clock_s
+                    merged_status["current_time"] = shared_clock_s
+                status = merged_status
+                if "manual_disable_time" in status:
+                    self._latest_gui_attack_status = status.copy()
+
+            if isinstance(status, dict) and "manual_disable_time" not in status:
+                status = status.copy()
+                status["elapsed_time"] = shared_clock_s
+                status["current_time"] = shared_clock_s
+
+            if status is None:
+                return
+
+            fleet_estimator = None
+            if hasattr(self.vehicle_observer, "get_fleet_estimator"):
+                fleet_estimator = self.vehicle_observer.get_fleet_estimator()
+
+            if fleet_estimator is None or not hasattr(
+                fleet_estimator, "set_v2v_attack_status"
+            ):
+                return
+
+            fleet_estimator.set_v2v_attack_status(status)
+        except Exception as e:
+            if getattr(self, "loop_counter", 0) % 100 == 0:
+                self.vehicle_logger.log_warning(
+                    f"Failed to sync V2V attack status to trust logger: {e}"
+                )
+
+    @staticmethod
+    def _attack_enum_value(value):
+        return getattr(value, "value", value)
+
+    def _build_gui_attack_status(
+        self,
+        scenario,
+        clock_s: float,
+        log_start_s: float = None,
+        log_end_s: float = None,
+        enabled: bool = True,
+        active: bool = True,
+    ) -> dict:
+        """Build trust-log metadata from a GUI-triggered scenario."""
+        start_s = float(clock_s if log_start_s is None else log_start_s)
+        end_s = (
+            float(getattr(scenario, "t_end", float("inf")))
+            if log_end_s is None
+            else float(log_end_s)
+        )
+        return {
+            "enabled": bool(enabled),
+            "attack_active": bool(active),
+            "elapsed_time": float(clock_s),
+            "all_scenario_details": [
+                {
+                    "name": getattr(scenario, "scenario_name", ""),
+                    "type": self._attack_enum_value(getattr(scenario, "attack_type", "")),
+                    "modification": self._attack_enum_value(
+                        getattr(scenario, "modification_type", "")
+                    ),
+                    "data_type": self._attack_enum_value(
+                        getattr(scenario, "data_type", "")
+                    ),
+                    "target_fields": list(getattr(scenario, "target_fields", [])),
+                    "t_start": start_s,
+                    "t_end": end_s,
+                    "attacker_id": int(getattr(scenario, "attacker_id", -1)),
+                    "victim_ids": list(getattr(scenario, "victim_ids", [])),
+                    "active": bool(active),
+                }
+            ],
+        }
+
     def enable_attack_module(self):
         """Enable V2V attack injection if available."""
         if hasattr(self.v2v_manager, "enable_attacks"):
             self.v2v_manager.enable_attacks()
+            self._sync_v2v_attack_status_to_observer()
             self.vehicle_logger.logger.info("V2V Attack Module ENABLED.")
         else:
             self.vehicle_logger.logger.warning("V2V Attack Module is not available.")
@@ -334,6 +464,24 @@ class VehicleLogic:
     def disable_attack_module(self):
         """Disable V2V attack injection if available."""
         if hasattr(self.v2v_manager, "disable_attacks"):
+            disable_time = self._get_v2v_log_time_s()
+            status = (
+                dict(self._latest_gui_attack_status)
+                if self._latest_gui_attack_status is not None
+                else (
+                    self.v2v_manager.get_attack_status()
+                    if hasattr(self.v2v_manager, "get_attack_status")
+                    else {}
+                )
+            )
+            if isinstance(status, dict):
+                status = status.copy()
+                status["enabled"] = False
+                status["attack_active"] = False
+                status["elapsed_time"] = disable_time
+                status["current_time"] = disable_time
+                status["manual_disable_time"] = disable_time
+                self._sync_v2v_attack_status_to_observer(status)
             self.v2v_manager.disable_attacks()
             self.vehicle_logger.logger.info("V2V Attack Module DISABLED.")
         else:
@@ -358,10 +506,6 @@ class VehicleLogic:
             else:
                 requested_attacker_id = int(attacker_id_raw)
 
-            # Since this function runs on the target car, we only apply if we are the attacker.
-            if requested_attacker_id not in (int(self.vehicle_id), -1):
-                return
-
             # Parse victims properly
             victim_ids = data.get('victim_ids', [])
             if isinstance(victim_ids, str):
@@ -385,11 +529,14 @@ class VehicleLogic:
                 normalized_victim_ids = -1
 
             # Manual trigger semantics: start now and stay active until the user disables it.
-            manual_t_start = (
+            # The injector still uses its local elapsed clock, while logs use the
+            # shared V2V-reference clock so CSVs compare across vehicles.
+            injector_t_start = (
                 self.v2v_manager.get_elapsed_time()
                 if hasattr(self.v2v_manager, 'get_elapsed_time')
                 else self.elapsed_time()
             )
+            log_t_start = self._get_v2v_log_time_s()
             scenario_attacker_id = (
                 int(self.vehicle_id)
                 if requested_attacker_id == -1
@@ -400,19 +547,32 @@ class VehicleLogic:
                 case_number=case_num,
                 attacker_id=scenario_attacker_id,
                 victim_ids=normalized_victim_ids,
-                t_start=manual_t_start,
+                t_start=injector_t_start,
                 t_end=float("inf"),
                 data_type=data_type,
             )
+
+            self._sync_v2v_attack_status_to_observer(
+                self._build_gui_attack_status(
+                    scenario,
+                    clock_s=log_t_start,
+                    log_start_s=log_t_start,
+                )
+            )
+
+            # This function can run on every car; only the attacker injects data.
+            if requested_attacker_id not in (int(self.vehicle_id), -1):
+                return
 
             if hasattr(self.v2v_manager, 'clear_attack_scenarios'):
                 self.v2v_manager.clear_attack_scenarios()
             self.v2v_manager.add_attack_scenario(scenario)
             self.v2v_manager.enable_attacks()
+            self._sync_v2v_attack_status_to_observer()
 
             self.vehicle_logger.logger.info(
                 f"Triggered manual {attack_type} attack (Case {case_num}) "
-                f"starting at t={manual_t_start:.3f}s and running until disabled. "
+                f"starting at V2V t={log_t_start:.3f}s and running until disabled. "
                 f"Victims: {normalized_victim_ids}"
             )
         except Exception as e:
@@ -422,6 +582,24 @@ class VehicleLogic:
         """Disable all V2V attacks"""
         try:
             if hasattr(self, 'v2v_manager') and hasattr(self.v2v_manager, 'disable_attacks'):
+                disable_time = self._get_v2v_log_time_s()
+                status = (
+                    dict(self._latest_gui_attack_status)
+                    if self._latest_gui_attack_status is not None
+                    else (
+                        self.v2v_manager.get_attack_status()
+                        if hasattr(self.v2v_manager, 'get_attack_status')
+                        else {}
+                    )
+                )
+                if isinstance(status, dict):
+                    status = status.copy()
+                    status["enabled"] = False
+                    status["attack_active"] = False
+                    status["elapsed_time"] = disable_time
+                    status["current_time"] = disable_time
+                    status["manual_disable_time"] = disable_time
+                    self._sync_v2v_attack_status_to_observer(status)
                 self.v2v_manager.disable_attacks()
                 if hasattr(self.v2v_manager, 'clear_attack_scenarios'):
                     self.v2v_manager.clear_attack_scenarios()
@@ -432,6 +610,24 @@ class VehicleLogic:
     def disable_attack_module(self):
         """Disable V2V attack injection if available."""
         if hasattr(self.v2v_manager, "disable_attacks"):
+            disable_time = self._get_v2v_log_time_s()
+            status = (
+                dict(self._latest_gui_attack_status)
+                if self._latest_gui_attack_status is not None
+                else (
+                    self.v2v_manager.get_attack_status()
+                    if hasattr(self.v2v_manager, "get_attack_status")
+                    else {}
+                )
+            )
+            if isinstance(status, dict):
+                status = status.copy()
+                status["enabled"] = False
+                status["attack_active"] = False
+                status["elapsed_time"] = disable_time
+                status["current_time"] = disable_time
+                status["manual_disable_time"] = disable_time
+                self._sync_v2v_attack_status_to_observer(status)
             self.v2v_manager.disable_attacks()
             self.vehicle_logger.logger.info("V2V Attack Module DISABLED.")
         else:
@@ -553,7 +749,26 @@ class VehicleLogic:
         return True
 
     def disable_online_calibration_zmq(self) -> None:
-        """Disable and close Online Calibration ZMQ transport."""
+        """
+        Pause passive calibration collection while keeping ZMQ transport alive.
+
+        The GUI button is labelled "Pause" and users need to run Analyse after
+        pausing. Closing the client here would drop the worker connection and
+        make analyse/clear/status commands unavailable.
+        """
+        if self.online_calibration_zmq is not None:
+            try:
+                self.online_calibration_zmq.stop_collection()
+            except Exception as e:
+                self.vehicle_logger.log_error(
+                    "Failed to pause Online Calibration ZMQ collection", e
+                )
+            self.vehicle_logger.logger.info(
+                "[OnlineCal] Passive calibration data collection PAUSED"
+            )
+
+    def close_online_calibration_zmq(self) -> None:
+        """Close Online Calibration ZMQ transport."""
         if self.online_calibration_zmq is not None:
             try:
                 self.online_calibration_zmq.stop()
@@ -563,7 +778,7 @@ class VehicleLogic:
                 )
             self.online_calibration_zmq = None
             self.vehicle_logger.logger.info(
-                "[OnlineCal] Passive calibration data collection DISABLED"
+                "[OnlineCal] Passive calibration ZMQ transport CLOSED"
             )
 
     def _get_online_calibration_status(self) -> dict:
@@ -843,6 +1058,8 @@ class VehicleLogic:
             # Get last steering command for EKF
             last_steering = getattr(self, "_last_steering", 0.0)
             last_u = getattr(self, "_last_u", 0.0)
+
+            self._sync_v2v_attack_status_to_observer()
 
             # Update observer (internally handles local and fleet timing)
             state_info = self.vehicle_observer.update_observer(
@@ -1279,6 +1496,7 @@ class VehicleLogic:
             "node_sequence": getattr(self, "node_sequence", None),
             "operational_status": self.get_operational_status(),
             "online_sysid_status": self._get_online_sysid_status(),
+            "online_calibration_status": self._get_online_calibration_status(),
             "robust_kalmannet_dataset_status": self._get_robust_kalmannet_dataset_status(),
             "data": self._build_v2v_status_details(v2v_status),
         }
@@ -1548,6 +1766,15 @@ class VehicleLogic:
             except Exception as e:
                 self.vehicle_logger.logger.error(
                     f"Online SysID ZMQ shutdown error: {e}"
+                )
+
+        # Stop Online Calibration ZMQ transport
+        if hasattr(self, "online_calibration_zmq") and self.online_calibration_zmq:
+            try:
+                self.online_calibration_zmq.stop()
+            except Exception as e:
+                self.vehicle_logger.logger.error(
+                    f"Online Calibration ZMQ shutdown error: {e}"
                 )
 
         if hasattr(self, "robust_kalmannet_dataset") and self.robust_kalmannet_dataset:

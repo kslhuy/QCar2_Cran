@@ -145,6 +145,9 @@ def main() -> int:
     poller.register(control_sub, zmq.POLLIN)
 
     last_heartbeat = 0.0
+    samples_rx_total = 0
+    last_sample_log_total = 0
+    last_sample_log_time = 0.0
     running = True
 
     try:
@@ -170,7 +173,24 @@ def main() -> int:
                         )
                         if sample.size == OnlineCalibrationService.SAMPLE_SIZE:
                             ts = float(msg.get("timestamp", time.time()))
-                            service.submit_sample(sample, timestamp=ts)
+                            if service.submit_sample(sample, timestamp=ts):
+                                samples_rx_total += 1
+                                now = time.time()
+                                if (
+                                    samples_rx_total == 1
+                                    or samples_rx_total - last_sample_log_total >= 1000
+                                    or now - last_sample_log_time >= 10.0
+                                ):
+                                    status = service.get_status()
+                                    print(
+                                        "[OnlineCal-Worker] Receiving samples | "
+                                        f"accepted_total={samples_rx_total}, "
+                                        f"buffered={status.get('buffered_samples', 0)}, "
+                                        f"collecting={status.get('collecting', False)}",
+                                        flush=True,
+                                    )
+                                    last_sample_log_total = samples_rx_total
+                                    last_sample_log_time = now
 
             # --- Process commands ---
             if control_sub in events and events[control_sub] == zmq.POLLIN:
@@ -195,10 +215,28 @@ def main() -> int:
 
                     if action == "start":
                         service.start_collection()
+                        status = service.get_status()
+                        print(
+                            "[OnlineCal-Worker] GUI command: Collect -> "
+                            f"collecting=True, buffered={status.get('buffered_samples', 0)}",
+                            flush=True,
+                        )
                     elif action == "stop":
                         service.stop_collection()
+                        status = service.get_status()
+                        print(
+                            "[OnlineCal-Worker] GUI command: Pause -> "
+                            f"collecting=False, buffered={status.get('buffered_samples', 0)}",
+                            flush=True,
+                        )
                     elif action == "clear":
+                        before = service.get_status().get("buffered_samples", 0)
                         service.clear_buffer()
+                        print(
+                            "[OnlineCal-Worker] GUI command: Clear -> "
+                            f"buffered {before} -> 0",
+                            flush=True,
+                        )
                     elif action in ("analyse", "analyze", "trigger_analyse"):
                         cal_type = str(
                             cmd.get("calibration_type", "throttle_velocity")
@@ -208,13 +246,35 @@ def main() -> int:
                             cal_type,
                             options if isinstance(options, dict) else {},
                         )
+                        status = service.get_status()
+                        print(
+                            "[OnlineCal-Worker] GUI command: Analyse -> "
+                            f"type={cal_type}, queued={ok}, "
+                            f"buffered={status.get('buffered_samples', 0)}, "
+                            f"message={message}",
+                            flush=True,
+                        )
                     elif action in ("status", "get_status"):
-                        pass  # just publish status below
+                        status = service.get_status()
+                        print(
+                            "[OnlineCal-Worker] GUI command: Status -> "
+                            f"collecting={status.get('collecting', False)}, "
+                            f"buffered={status.get('buffered_samples', 0)}",
+                            flush=True,
+                        )
                     elif action in ("shutdown", "exit"):
+                        print(
+                            "[OnlineCal-Worker] GUI command: Shutdown",
+                            flush=True,
+                        )
                         running = False
                     else:
                         ok = False
                         message = f"unknown action '{action}'"
+                        print(
+                            f"[OnlineCal-Worker] Unknown GUI command: {action}",
+                            flush=True,
+                        )
 
                     publish_status(
                         status_pub,

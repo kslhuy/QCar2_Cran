@@ -41,6 +41,8 @@ yolo:
     name: botsort.yaml
   postprocess:
     clipping_distance_m: 10.0
+    # Positive values are subtracted from published YOLO distances.
+    distance_offset_m: 0.20
 
 sign_filter:
   invert_lr: false

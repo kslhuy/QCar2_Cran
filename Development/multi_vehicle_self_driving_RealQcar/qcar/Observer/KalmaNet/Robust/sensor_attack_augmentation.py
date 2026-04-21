@@ -48,6 +48,14 @@ MEAS_GNSS_INDICES = [0, 1, 2]
 MEAS_VELOCITY_INDEX = 3
 MEAS_YAWRATE_INDEX = 4
 
+GPS_POSITION_ATTACK_TYPES = [
+    "noise",
+    "freeze",
+    "jump",
+    "dropout",
+    "reacquisition",
+]
+
 
 # ============================================================
 # CONFIG
@@ -70,6 +78,11 @@ class AttackConfig:
     # Probability of also attacking the measurement z
     meas_attack_prob: float = 0.3
 
+    # Independent probability of corrupting GPS x/y measurement channels.
+    # These attacks target the update step's position correction behavior.
+    gps_attack_prob: float = 0.3
+    gps_attack_types: List[str] = field(default_factory=lambda: list(GPS_POSITION_ATTACK_TYPES))
+
     # Which attack types to use (uniform random selection among enabled)
     enabled_attacks: List[str] = field(default_factory=lambda: [
         "bias", "scale", "freeze", "noise", "ramp", "zero_out",
@@ -80,6 +93,11 @@ class AttackConfig:
     scale_range: Tuple[float, float] = (0.1, 5.0)    # multiplicative factor
     noise_std_range: Tuple[float, float] = (0.5, 2.0) # noise standard deviation
     ramp_rate_range: Tuple[float, float] = (0.02, 0.2) # ramp per timestep
+    gps_noise_std_range: Tuple[float, float] = (0.03, 0.25) # meters
+    gps_jump_range: Tuple[float, float] = (0.20, 1.20)      # meters
+    gps_reacq_jump_range: Tuple[float, float] = (0.10, 0.80) # meters
+    gps_dropout_min_fraction: float = 0.20
+    gps_dropout_max_fraction: float = 0.80
 
     # Maximum number of branches to attack simultaneously (1 = single-branch)
     max_branches_attacked: int = 1
@@ -188,11 +206,21 @@ class SensorAttackAugmenter:
         self._validate_config()
 
     def _validate_config(self) -> None:
+        if not self.config.enabled_attacks:
+            raise ValueError("At least one branch attack type must be enabled")
         for name in self.config.enabled_attacks:
             if name not in ATTACK_FNS:
                 raise ValueError(
                     f"Unknown attack type '{name}'. "
                     f"Available: {list(ATTACK_FNS.keys())}"
+                )
+        if not self.config.gps_attack_types:
+            raise ValueError("At least one GPS position attack type must be enabled")
+        for name in self.config.gps_attack_types:
+            if name not in GPS_POSITION_ATTACK_TYPES:
+                raise ValueError(
+                    f"Unknown GPS attack type '{name}'. "
+                    f"Available: {GPS_POSITION_ATTACK_TYPES}"
                 )
 
     def _pick_attack_fn(self):
@@ -200,6 +228,10 @@ class SensorAttackAugmenter:
         idx = int(torch.randint(len(self.config.enabled_attacks), (1,)).item())
         name = self.config.enabled_attacks[idx]
         return name, ATTACK_FNS[name]
+
+    def _pick_gps_attack_name(self) -> str:
+        idx = int(torch.randint(len(self.config.gps_attack_types), (1,)).item())
+        return str(self.config.gps_attack_types[idx])
 
     def _should_attack(self) -> bool:
         return torch.rand(1).item() < self.config.attack_prob
@@ -222,6 +254,141 @@ class SensorAttackAugmenter:
             candidates = [candidates[i] for i in perm[: self.config.max_branches_attacked]]
 
         return candidates
+
+    def _random_window(
+        self,
+        T: int,
+        min_fraction: Optional[float] = None,
+        max_fraction: Optional[float] = None,
+    ) -> Tuple[int, int]:
+        """Pick a contiguous time window [start, end) inside one sequence."""
+        if T <= 1:
+            return 0, max(T, 1)
+
+        lo_frac = self.config.gps_dropout_min_fraction if min_fraction is None else min_fraction
+        hi_frac = self.config.gps_dropout_max_fraction if max_fraction is None else max_fraction
+        lo_frac = float(np.clip(lo_frac, 0.0, 1.0))
+        hi_frac = float(np.clip(max(hi_frac, lo_frac), 0.0, 1.0))
+        min_len = max(1, int(round(T * lo_frac)))
+        max_len = max(min_len, int(round(T * hi_frac)))
+        max_len = min(max_len, T)
+        length = min_len
+        if max_len > min_len:
+            length = int(torch.randint(min_len, max_len + 1, (1,)).item())
+        max_start = max(0, T - length)
+        start = 0
+        if max_start > 0:
+            start = int(torch.randint(0, max_start + 1, (1,)).item())
+        return start, start + length
+
+    @staticmethod
+    def _sample_xy_offset(
+        magnitude_range: Tuple[float, float],
+        device,
+        dtype,
+    ) -> "torch.Tensor":
+        lo, hi = magnitude_range
+        magnitude = float(lo) + (float(hi) - float(lo)) * torch.rand((), device=device, dtype=dtype)
+        angle = 2.0 * np.pi * torch.rand((), device=device, dtype=dtype)
+        return torch.stack([torch.cos(angle), torch.sin(angle)]) * magnitude
+
+    @staticmethod
+    def _fill_raw_window(
+        raw_out: Dict[str, "torch.Tensor"],
+        key: str,
+        batch_index: int,
+        start: int,
+        end: int,
+        value: float,
+    ) -> None:
+        if key in raw_out and end > start:
+            raw_out[key][batch_index, start:end, :].fill_(float(value))
+
+    @staticmethod
+    def _set_gps_age_ramp(
+        raw_out: Dict[str, "torch.Tensor"],
+        batch_index: int,
+        start: int,
+        end: int,
+    ) -> None:
+        if "gps_age_sec" not in raw_out or end <= start:
+            return
+        target = raw_out["gps_age_sec"][batch_index, start:end, :]
+        ramp = torch.arange(
+            end - start,
+            device=target.device,
+            dtype=target.dtype,
+        ).view(-1, 1)
+        target.copy_(ramp * 0.02)
+
+    def _apply_gps_position_attack(
+        self,
+        raw_out: Dict[str, "torch.Tensor"],
+        z_out: "torch.Tensor",
+        meas_attack_labels: "torch.Tensor",
+        batch_index: int,
+    ) -> None:
+        """Corrupt GPS x/y measurements and matching validity side channels."""
+        T = int(z_out.shape[1])
+        if T <= 0:
+            return
+
+        attack_name = self._pick_gps_attack_name()
+        xy = z_out[batch_index, :, 0:2]
+        device = z_out.device
+        dtype = z_out.dtype
+
+        if attack_name == "noise":
+            lo, hi = self.config.gps_noise_std_range
+            std = float(lo) + (float(hi) - float(lo)) * torch.rand((), device=device, dtype=dtype)
+            xy.add_(torch.randn_like(xy) * std)
+            mark_start, mark_end = 0, T
+
+        elif attack_name == "freeze":
+            start, end = self._random_window(T)
+            source_idx = max(0, start - 1)
+            source_xy = xy[source_idx : source_idx + 1, :].clone()
+            xy[start:end, :] = source_xy.expand(end - start, 2)
+            mark_start, mark_end = start, end
+
+        elif attack_name == "jump":
+            start, end = self._random_window(T)
+            offset = self._sample_xy_offset(self.config.gps_jump_range, device, dtype)
+            xy[start:end, :].add_(offset.view(1, 2))
+            mark_start, mark_end = start, end
+
+        elif attack_name == "dropout":
+            start, end = self._random_window(T)
+            source_idx = max(0, start - 1)
+            source_xy = xy[source_idx : source_idx + 1, :].clone()
+            xy[start:end, :] = source_xy.expand(end - start, 2)
+            self._fill_raw_window(raw_out, "gps_valid", batch_index, start, end, 0.0)
+            self._fill_raw_window(raw_out, "gps_hold_valid", batch_index, start, end, 1.0)
+            self._set_gps_age_ramp(raw_out, batch_index, start, end)
+            mark_start, mark_end = start, end
+
+        elif attack_name == "reacquisition":
+            start, end = self._random_window(T, min_fraction=0.25, max_fraction=0.70)
+            reacq_idx = max(start, end - 1)
+            source_idx = max(0, start - 1)
+            if reacq_idx > start:
+                source_xy = xy[source_idx : source_idx + 1, :].clone()
+                xy[start:reacq_idx, :] = source_xy.expand(reacq_idx - start, 2)
+                self._fill_raw_window(raw_out, "gps_valid", batch_index, start, reacq_idx, 0.0)
+                self._fill_raw_window(raw_out, "gps_hold_valid", batch_index, start, reacq_idx, 1.0)
+                self._set_gps_age_ramp(raw_out, batch_index, start, reacq_idx)
+            offset = self._sample_xy_offset(self.config.gps_reacq_jump_range, device, dtype)
+            xy[reacq_idx:end, :].add_(offset.view(1, 2))
+            self._fill_raw_window(raw_out, "gps_valid", batch_index, reacq_idx, end, 1.0)
+            self._fill_raw_window(raw_out, "gps_hold_valid", batch_index, reacq_idx, end, 1.0)
+            self._fill_raw_window(raw_out, "gps_age_sec", batch_index, reacq_idx, end, 0.0)
+            mark_start, mark_end = start, end
+
+        else:
+            raise ValueError(f"Unsupported GPS attack type: {attack_name}")
+
+        if mark_end > mark_start:
+            meas_attack_labels[batch_index, 0:2] = 1.0
 
     def augment_batch(
         self,
@@ -263,41 +430,44 @@ class SensorAttackAugmenter:
         meas_attack_labels = torch.zeros(B, 5, device=device)
 
         for b in range(B):
-            if not self._should_attack():
-                continue  # This sample stays clean
+            branches: List[str] = []
 
-            branches = self._pick_branches_to_attack()
-            attack_name, attack_fn = self._pick_attack_fn()
+            if self._should_attack():
+                branches = self._pick_branches_to_attack()
+                attack_name, attack_fn = self._pick_attack_fn()
 
-            for branch_name in branches:
-                branch_idx = BRANCH_INDEX[branch_name]
-                attack_labels[b, branch_idx] = 1.0
+                for branch_name in branches:
+                    branch_idx = BRANCH_INDEX[branch_name]
+                    attack_labels[b, branch_idx] = 1.0
 
-                # Attack all keys belonging to this branch
-                for key in BRANCH_KEYS[branch_name]:
-                    raw_out[key][b] = attack_fn(
-                        raw_out[key][b].unsqueeze(0), self.config
-                    ).squeeze(0)
+                    # Attack all keys belonging to this branch
+                    for key in BRANCH_KEYS[branch_name]:
+                        raw_out[key][b] = attack_fn(
+                            raw_out[key][b].unsqueeze(0), self.config
+                        ).squeeze(0)
 
-            # Optionally also attack the measurement z
-            if torch.rand(1).item() < self.config.meas_attack_prob:
-                if "imu" in branches:
-                    # Attack yaw rate in measurement
-                    z_out[b, :, MEAS_YAWRATE_INDEX] = attack_fn(
-                        z_out[b, :, MEAS_YAWRATE_INDEX:MEAS_YAWRATE_INDEX + 1].unsqueeze(0),
-                        self.config,
-                    ).squeeze(0).squeeze(-1)
-                    # Mark yaw rate (4) and psi (2) as attacked in measurement
-                    meas_attack_labels[b, MEAS_YAWRATE_INDEX] = 1.0
-                    meas_attack_labels[b, 2] = 1.0  # psi is derived from IMU
-                if "wheel" in branches:
-                    # Attack velocity in measurement
-                    z_out[b, :, MEAS_VELOCITY_INDEX] = attack_fn(
-                        z_out[b, :, MEAS_VELOCITY_INDEX:MEAS_VELOCITY_INDEX + 1].unsqueeze(0),
-                        self.config,
-                    ).squeeze(0).squeeze(-1)
-                    # Mark velocity (3) as attacked in measurement
-                    meas_attack_labels[b, MEAS_VELOCITY_INDEX] = 1.0
+                # Optionally also attack the measurement z
+                if torch.rand(1).item() < self.config.meas_attack_prob:
+                    if "imu" in branches:
+                        # Attack yaw rate in measurement
+                        z_out[b, :, MEAS_YAWRATE_INDEX] = attack_fn(
+                            z_out[b, :, MEAS_YAWRATE_INDEX:MEAS_YAWRATE_INDEX + 1].unsqueeze(0),
+                            self.config,
+                        ).squeeze(0).squeeze(-1)
+                        # Mark yaw rate (4) and psi (2) as attacked in measurement
+                        meas_attack_labels[b, MEAS_YAWRATE_INDEX] = 1.0
+                        meas_attack_labels[b, 2] = 1.0  # psi is derived from IMU
+                    if "wheel" in branches:
+                        # Attack velocity in measurement
+                        z_out[b, :, MEAS_VELOCITY_INDEX] = attack_fn(
+                            z_out[b, :, MEAS_VELOCITY_INDEX:MEAS_VELOCITY_INDEX + 1].unsqueeze(0),
+                            self.config,
+                        ).squeeze(0).squeeze(-1)
+                        # Mark velocity (3) as attacked in measurement
+                        meas_attack_labels[b, MEAS_VELOCITY_INDEX] = 1.0
+
+            if torch.rand(1).item() < self.config.gps_attack_prob:
+                self._apply_gps_position_attack(raw_out, z_out, meas_attack_labels, b)
 
         return raw_out, z_out, attack_labels, meas_attack_labels
 

@@ -60,8 +60,8 @@ local:
   # Robust KalmanNet estimator
   # ---------------------------------------------------------------------
   robust_kalman_net:
-    predictor_mode: "nn"    # Explicitly use the QCar bicycle model for prediction, leaving only the update step to use the GRU NN
-    kin_wheelbase: 0.256         # Match QCarEKF wheelbase L.
+    predictor_mode: "kinematic"    #  kinematic , nn Explicitly use the QCar bicycle model for prediction, leaving only the update step to use the GRU NN
+    kin_wheelbase: 0.25         # Match QCarEKF wheelbase L.
     model_path: models/robust_kalmannet.pt # Required checkpoint path, relative to Observer/KalmaNet/Robust/
     enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
     comparator_use_qcar_ekf: true # Use QCarEKF inside the comparator when available.

@@ -16,6 +16,7 @@ import glob
 import re
 import math
 import csv
+import time
 from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
@@ -23,6 +24,7 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 import argparse
 
+# python plot_trust_data.py --file ".\trust_weight_log_V1.csv" --relative-file "..\Relative_obs\relative_uio_log_V1.csv"
 
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
@@ -144,6 +146,22 @@ def _yolo_usage_mask(rows: List[dict], vid: int) -> np.ndarray:
     if not np.any(np.isfinite(yolo_flag)):
         return np.zeros(len(rows), dtype=bool)
     return np.isfinite(yolo_flag) & (yolo_flag >= 0.5)
+
+
+def _find_relative_uio_log(directory: str, host_id: int) -> str:
+    """Return the matching relative UIO log for a host vehicle, if present."""
+    if host_id < 0:
+        return ""
+    candidate_dirs = [
+        directory,
+        os.path.abspath(os.path.join(directory, "..", "Relative_obs")),
+    ]
+    matches = []
+    for candidate_dir in candidate_dirs:
+        pattern = os.path.join(candidate_dir, f"relative_uio_log_V{host_id}*.csv")
+        matches.extend(glob.glob(pattern))
+    matches = sorted(set(matches), key=os.path.getmtime)
+    return matches[-1] if matches else ""
 
 # ──────────────────────────────────────────────────────────────────────
 # Figure builders
@@ -522,6 +540,169 @@ def _fig_estimation(times, rows, active, host_id):
     return fig
 
 
+def _fig_relative_uio(filepath: str, host_id: int):
+    """
+    Figure 6 - Relative UIO diagnostics from relative_uio_log_V*.csv.
+    """
+    columns, rows = _load_csv(filepath)
+    if "time" not in columns or not rows:
+        print(f"Relative UIO log has no plottable samples: {filepath}")
+        return None
+
+    times = _col_to_array(rows, "time")
+    target_ids = _col_to_array(rows, "target_id")
+    finite_targets = target_ids[np.isfinite(target_ids)]
+    target_label = (
+        f"V{int(finite_targets[-1])}" if finite_targets.size > 0 else "unknown target"
+    )
+
+    fig = plt.figure(figsize=(18, 18))
+    fig.suptitle(
+        f"Relative UIO Diagnostics  (Host V{host_id}, Target {target_label})",
+        fontsize=13,
+        fontweight="bold",
+    )
+    gs = gridspec.GridSpec(5, 2, figure=fig, hspace=0.35, wspace=0.25)
+
+    # Kinematic state estimates
+    ax = fig.add_subplot(gs[0, 0])
+    n = 0
+    for col, label in [
+        ("delta_hat", "delta_hat"),
+        ("delta_dot_hat", "delta_dot_hat"),
+        ("delta_ddot_hat", "delta_ddot_hat"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "UIO Kinematic State Estimates")
+    _style(ax, "UIO Kinematic State Estimates", "Estimate")
+
+    # Distance estimate against measurements and V2V fallback
+    ax = fig.add_subplot(gs[0, 1])
+    n = 0
+    for col, label, style in [
+        ("delta_hat", "UIO distance estimate", "-"),
+        ("measurement_distance", "Measured distance", "--"),
+        ("v2v_fallback_distance", "V2V-derived distance", ":"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "Relative Distance")
+    _style(ax, "Relative Distance", "Distance [m]")
+
+    # Relative velocity estimate against measurements and V2V fallback
+    ax = fig.add_subplot(gs[1, 0])
+    n = 0
+    for col, label, style in [
+        ("delta_dot_hat", "UIO relative velocity", "-"),
+        ("measurement_relative_velocity", "Measured relative velocity", "--"),
+        ("v2v_fallback_relative_velocity", "V2V-derived relative velocity", ":"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "Relative Velocity")
+    _style(ax, "Relative Velocity", "Velocity [m/s]")
+
+    # Relative acceleration estimate against V2V-derived acceleration
+    ax = fig.add_subplot(gs[1, 1])
+    rel_acc_v2v = _col_to_array(rows, "v2v_fallback_relative_acceleration")
+    if not np.any(np.isfinite(rel_acc_v2v)):
+        target_acc = _col_to_array(rows, "target_state_4")
+        host_acc = _col_to_array(rows, "host_state_4")
+        if np.any(np.isfinite(target_acc)) and np.any(np.isfinite(host_acc)):
+            rel_acc_v2v = target_acc - host_acc
+
+    n = 0
+    for arr, label, style in [
+        (_col_to_array(rows, "delta_ddot_hat"), "UIO relative acceleration delta_ddot_hat", "-"),
+        (rel_acc_v2v, "V2V-derived relative acceleration", ":"),
+        (_col_to_array(rows, "target_acceleration_input"), "Target acceleration input", "--"),
+    ]:
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label)
+            n += 1
+    if n > 0:
+        ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
+    if n == 0:
+        _no_data(ax, "Relative Acceleration")
+    _style(ax, "Relative Acceleration Estimate", "Acceleration [m/s^2]")
+
+    # Measurement / estimate errors against V2V-derived fallback
+    ax = fig.add_subplot(gs[2, 0])
+    n = 0
+    rel_acc_error = _col_to_array(rows, "relative_acceleration_error_vs_v2v")
+    if not np.any(np.isfinite(rel_acc_error)):
+        delta_ddot = _col_to_array(rows, "delta_ddot_hat")
+        if np.any(np.isfinite(delta_ddot)) and np.any(np.isfinite(rel_acc_v2v)):
+            rel_acc_error = delta_ddot - rel_acc_v2v
+
+    for arr, label in [
+        (_col_to_array(rows, "distance_error_vs_v2v"), "Distance error"),
+        (_col_to_array(rows, "relative_velocity_error_vs_v2v"), "Relative velocity error"),
+        (rel_acc_error, "Relative acceleration error"),
+    ]:
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, label=label)
+            n += 1
+    if n > 0:
+        ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
+    if n == 0:
+        _no_data(ax, "Measurement Error vs V2V")
+    _style(ax, "Measurement Error vs V2V", "Error", xlabel="Time [s]")
+
+    # Measurement availability/quality
+    ax = fig.add_subplot(gs[2, 1])
+    n = 0
+    for col, label, style in [
+        ("measurement_used", "Measurement used", "-"),
+        ("measurement_confidence", "Measurement confidence", "--"),
+        ("measurement_age_s", "Measurement age [s]", ":"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "Measurement Usage")
+    _style(ax, "Measurement Usage / Quality", "Value", xlabel="Time [s]")
+
+    # Inputs used by the observer
+    ax = fig.add_subplot(gs[3, 0])
+    n = 0
+    for col, label in [
+        ("host_velocity_input", "Host velocity input"),
+        ("target_acceleration_input", "Target acceleration input"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, label=label)
+            n += 1
+    if n == 0:
+        _no_data(ax, "UIO Inputs")
+    _style(ax, "UIO Inputs", "Input", xlabel="Time [s]")
+
+    # Unknown input / cyber-disturbance estimate separated from kinematics
+    ax = fig.add_subplot(gs[3:5, 1])
+    arr = _col_to_array(rows, "f_c_hat")
+    if np.any(np.isfinite(arr)):
+        ax.plot(times, arr, label="d_c_hat / f_c_hat", color="tab:red", lw=1.4)
+        ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
+    else:
+        _no_data(ax, "Unknown Input Estimate")
+    _style(ax, "Unknown Input Estimate d_c_hat / f_c_hat", "Estimate", xlabel="Time [s]")
+
+    return fig
+
+
 def _fig_impact_histograms(rows, active, focus, host_id):
     """
     Figure 4 - Impact Overview Histograms
@@ -742,6 +923,442 @@ def _print_static_metrics(rows, active):
     print("="*80 + "\n")
 
 
+def _relative_time_axis(times: np.ndarray) -> np.ndarray:
+    """Return a monotonic relative-time axis suitable for playback."""
+    n = len(times)
+    if n == 0:
+        return np.array([], dtype=float)
+
+    raw = np.asarray(times, dtype=float)
+    finite = np.isfinite(raw)
+    if np.count_nonzero(finite) < 2:
+        return np.arange(n, dtype=float)
+
+    sample_index = np.arange(n, dtype=float)
+    filled = raw.copy()
+    filled[~finite] = np.interp(sample_index[~finite],
+                                sample_index[finite], raw[finite])
+
+    diffs = np.diff(filled)
+    positive_diffs = diffs[np.isfinite(diffs) & (diffs > 0.0)]
+    median_dt = float(np.median(positive_diffs)) if positive_diffs.size else 1.0
+    if median_dt <= 0.0 or not math.isfinite(median_dt):
+        median_dt = 1.0
+
+    if np.any(diffs < -1e-9):
+        filled = sample_index * median_dt
+    else:
+        filled = np.maximum.accumulate(filled)
+
+    return filled - filled[0]
+
+
+def _finite_limits(arrays, default=(0.0, 1.0), pad_fraction=0.08):
+    vals = []
+    for arr in arrays:
+        if arr is None:
+            continue
+        arr = np.asarray(arr, dtype=float).ravel()
+        vals.append(arr[np.isfinite(arr)])
+    vals = [v for v in vals if v.size]
+    if not vals:
+        return default
+
+    joined = np.concatenate(vals)
+    ymin = float(np.min(joined))
+    ymax = float(np.max(joined))
+    if math.isclose(ymin, ymax):
+        pad = max(abs(ymin) * pad_fraction, 0.1)
+    else:
+        pad = (ymax - ymin) * pad_fraction
+    return ymin - pad, ymax + pad
+
+
+def _set_axis_y_limits(ax, arrays, bounded_unit=False):
+    if bounded_unit:
+        ax.set_ylim(-0.05, 1.05)
+    else:
+        ax.set_ylim(*_finite_limits(arrays))
+
+
+def _format_live_value(value) -> str:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "nan"
+    if not math.isfinite(value):
+        return "nan"
+    return f"{value:.3f}"
+
+
+def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
+                            rows: List[dict], columns: List[str],
+                            active: List[int], focus: int, host_id: int,
+                            speed: float = 1.0, window_s: float = 30.0,
+                            interval_ms: int = 50,
+                            start_time: float = None,
+                            loop: bool = True,
+                            max_points: int = 1200):
+    """
+    Replays a trust log as a live dashboard.
+
+    Keyboard controls:
+      Space: pause/resume
+      Left/Right: seek 5 seconds
+      Home/End: jump to start/end
+      +/-: change playback speed
+    """
+    if len(rows) == 0:
+        print("No rows to play back.")
+        return None
+
+    speed = max(float(speed), 1e-6)
+    interval_ms = max(int(interval_ms), 10)
+    window_s = float(window_s)
+    max_points = max(int(max_points), 0)
+
+    t_rel = _relative_time_axis(times)
+    if t_rel.size == 0:
+        print("No valid time samples to play back.")
+        return None
+
+    duration = float(t_rel[-1])
+    if start_time is None:
+        start_t = 0.0
+    else:
+        start_t = min(max(float(start_time), 0.0), duration)
+
+    def arr(col):
+        return _col_to_array(rows, col) if col in columns else np.full(len(rows), np.nan)
+
+    arrays = {}
+    base_cols = [
+        "w0", "w_self", "total_neighbor_weight", "trusted_neighbor_count",
+        "active_vehicle_count", "is_turning", "v2v_attack_active",
+        "v2v_attack_active_count",
+    ]
+    for col in base_cols:
+        arrays[col] = arr(col)
+
+    per_vehicle_prefixes = [
+        "trust", "gtrust", "local_trust", "global_trust",
+        "w_neighbor", "pred_mode", "est_x", "est_y",
+        "v_score", "d_score", "a_score", "h_score", "b_score",
+        "q_factor", "gamma_host", "gamma_local_peer", "gamma_self",
+        "flag_attack", "flag_local", "flag_global",
+        "rel_meas_used_global", "yolo_rel_meas_used_global",
+    ]
+    for vid in active:
+        for prefix in per_vehicle_prefixes:
+            col = f"{prefix}_{vid}"
+            arrays[col] = arr(col)
+
+    fig = plt.figure(figsize=(18, 10.5))
+    fig.suptitle(
+        f"Realtime Trust Log Playback - {os.path.basename(file_to_plot)} "
+        f"(Host V{host_id}, Focus V{focus})",
+        fontsize=14,
+        fontweight="bold",
+    )
+    gs = gridspec.GridSpec(
+        3, 3, figure=fig, hspace=0.42, wspace=0.30,
+        height_ratios=[1.0, 1.0, 0.78],
+    )
+
+    ax_trust = fig.add_subplot(gs[0, 0])
+    ax_weights = fig.add_subplot(gs[0, 1])
+    ax_components = fig.add_subplot(gs[0, 2])
+    ax_gamma = fig.add_subplot(gs[1, 0])
+    ax_final = fig.add_subplot(gs[1, 1])
+    ax_xy = fig.add_subplot(gs[1, 2])
+    ax_flags = fig.add_subplot(gs[2, 0:2])
+    ax_status = fig.add_subplot(gs[2, 2])
+    ax_status.axis("off")
+
+    time_lines = []
+    xy_lines = []
+    colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
+    if not colors:
+        colors = ["C0", "C1", "C2", "C3", "C4", "C5"]
+
+    def add_time_line(ax, col, label, *, color=None, ls="-", lw=1.4,
+                      alpha=1.0, drawstyle="default", marker=None):
+        data = arrays.get(col)
+        if data is None or not np.any(np.isfinite(data)):
+            return None
+        line, = ax.plot([], [], label=label, color=color, ls=ls, lw=lw,
+                        alpha=alpha, drawstyle=drawstyle, marker=marker,
+                        markersize=3)
+        time_lines.append((line, data))
+        return line
+
+    # Trust scores for all active vehicles.
+    for i, vid in enumerate(active):
+        color = colors[i % len(colors)]
+        add_time_line(ax_trust, f"trust_{vid}", f"trust V{vid}",
+                      color=color, lw=1.5)
+        add_time_line(ax_trust, f"gtrust_{vid}", f"gtrust V{vid}",
+                      color=color, ls="--", alpha=0.75, lw=1.2)
+    ax_trust.axhline(0.5, color="r", ls=":", lw=0.9, alpha=0.7)
+    _style(ax_trust, "Direct and Generalized Trust", "Trust [0,1]",
+           legend=True)
+    _set_axis_y_limits(ax_trust,
+                       [arrays.get(f"trust_{v}") for v in active] +
+                       [arrays.get(f"gtrust_{v}") for v in active],
+                       bounded_unit=True)
+
+    # Weights.
+    add_time_line(ax_weights, "w0", "w0", color="k", ls="-.")
+    add_time_line(ax_weights, "w_self", "w_self", color="tab:blue", ls="--")
+    add_time_line(ax_weights, "total_neighbor_weight", "neighbor total",
+                  color="tab:orange")
+    for i, vid in enumerate(active):
+        add_time_line(ax_weights, f"w_neighbor_{vid}", f"w V{vid}",
+                      color=colors[i % len(colors)], alpha=0.8, lw=1.1)
+    _style(ax_weights, "Consensus Weights", "Weight", legend=True)
+    _set_axis_y_limits(
+        ax_weights,
+        [arrays.get("w0"), arrays.get("w_self"),
+         arrays.get("total_neighbor_weight")] +
+        [arrays.get(f"w_neighbor_{v}") for v in active],
+    )
+
+    # Focus trust components.
+    component_cols = [
+        (f"v_score_{focus}", "velocity"),
+        (f"d_score_{focus}", "distance"),
+        (f"a_score_{focus}", "acceleration"),
+        (f"h_score_{focus}", "heading"),
+        (f"b_score_{focus}", "beacon"),
+        (f"q_factor_{focus}", "quality"),
+    ]
+    for i, (col, label) in enumerate(component_cols):
+        add_time_line(ax_components, col, label, color=colors[i % len(colors)])
+    _style(ax_components, f"Component Scores Local Trust V{focus}", "Score [0,1]",
+           legend=True)
+    _set_axis_y_limits(ax_components,
+                       [arrays.get(col) for col, _ in component_cols],
+                       bounded_unit=True)
+
+    # Focus global trust factors.
+    gamma_cols = [
+        (f"gamma_host_{focus}", "gamma_host"),
+        (f"gamma_local_peer_{focus}", "gamma_local_peer"),
+        (f"gamma_self_{focus}", "gamma_self"),
+    ]
+    for i, (col, label) in enumerate(gamma_cols):
+        add_time_line(ax_gamma, col, label, color=colors[i % len(colors)])
+    _style(ax_gamma, f"Component Scores Global Trust V{focus}", "Value [0,1]",
+           legend=True)
+    _set_axis_y_limits(ax_gamma, [arrays.get(col) for col, _ in gamma_cols],
+                       bounded_unit=True)
+
+    # Final local/global trust scores for the focus vehicle.
+    final_cols = [
+        (f"local_trust_{focus}", "local trust", "-"),
+        (f"global_trust_{focus}", "global trust", "--"),
+    ]
+    for i, (col, label, ls) in enumerate(final_cols):
+        add_time_line(ax_final, col, label, color=colors[i % len(colors)], ls=ls)
+    _style(ax_final, f"Final Trust Score Local and Global V{focus}",
+           "Trust [0,1]", legend=True)
+    _set_axis_y_limits(ax_final, [arrays.get(col) for col, _, _ in final_cols],
+                       bounded_unit=True)
+
+    # Estimated XY trajectories.
+    for i, vid in enumerate(active):
+        x = arrays.get(f"est_x_{vid}")
+        y = arrays.get(f"est_y_{vid}")
+        if x is None or y is None or not (np.any(np.isfinite(x)) and np.any(np.isfinite(y))):
+            continue
+        color = colors[i % len(colors)]
+        traj_line, = ax_xy.plot([], [], label=f"V{vid}", color=color, lw=1.4)
+        marker_line, = ax_xy.plot([], [], marker="o", color=color,
+                                  linestyle="None", markersize=5)
+        xy_lines.append((traj_line, marker_line, x, y))
+    _style(ax_xy, "Estimated XY Trajectory", "Y [m]", xlabel="X [m]",
+           legend=True)
+    all_x = [arrays.get(f"est_x_{v}") for v in active]
+    all_y = [arrays.get(f"est_y_{v}") for v in active]
+    ax_xy.set_xlim(*_finite_limits(all_x, default=(-1.0, 1.0)))
+    ax_xy.set_ylim(*_finite_limits(all_y, default=(-1.0, 1.0)))
+    ax_xy.set_aspect("auto")
+
+    # Flags and activity.
+    flag_cols = [
+        (f"flag_attack_{focus}", "target attack", 0.0),
+        (f"flag_local_{focus}", "local bad", 0.15),
+        (f"flag_global_{focus}", "global bad", 0.30),
+        (f"rel_meas_used_global_{focus}", "rel used", 0.45),
+        (f"yolo_rel_meas_used_global_{focus}", "YOLO used", 0.60),
+        (f"pred_mode_{focus}", "prediction", 0.75),
+        ("is_turning", "turning", 0.90),
+        ("v2v_attack_active", "V2V attack", 1.05),
+    ]
+    for i, (col, label, offset) in enumerate(flag_cols):
+        data = arrays.get(col)
+        if data is None or not np.any(np.isfinite(data)):
+            continue
+        shifted = np.where(np.isfinite(data), data, 0.0) * 0.10 + offset
+        arrays[f"__flag_{col}"] = shifted
+        add_time_line(ax_flags, f"__flag_{col}", label,
+                      color=colors[i % len(colors)], lw=1.5,
+                      drawstyle="steps-post")
+    ax_flags.set_ylim(-0.05, 1.20)
+    ax_flags.set_yticks([item[2] + 0.05 for item in flag_cols])
+    ax_flags.set_yticklabels([item[1] for item in flag_cols], fontsize=8)
+    _style(ax_flags, f"Flags V{focus}", "", xlabel="Time [s]", legend=False)
+
+    ax_status.set_title("Playback Status", fontsize=10, fontweight="bold")
+    status_left_text = ax_status.text(
+        0.02, 0.92, "", va="top", ha="left",
+        family="monospace", fontsize=9.5, transform=ax_status.transAxes,
+    )
+    status_right_text = ax_status.text(
+        0.54, 0.92, "", va="top", ha="left",
+        family="monospace", fontsize=9.5, transform=ax_status.transAxes,
+    )
+    ax_status.text(
+        0.02, 0.02,
+        "Space pause | Left/Right seek | Home/End jump | +/- speed",
+        va="bottom",
+        ha="left",
+        fontsize=8.5,
+        color="#555",
+        transform=ax_status.transAxes,
+    )
+
+    time_axes = [
+        ax_trust, ax_weights, ax_components, ax_gamma,
+        ax_final, ax_flags,
+    ]
+    for ax in time_axes:
+        ax.set_xlim(0.0, max(1.0, min(duration, window_s if window_s > 0 else duration)))
+
+    state = {
+        "paused": False,
+        "wall_start": time.perf_counter(),
+        "sim_start": start_t,
+        "current_t": start_t,
+        "speed": speed,
+    }
+
+    def seek(target_t):
+        target_t = min(max(float(target_t), 0.0), duration)
+        state["current_t"] = target_t
+        state["sim_start"] = target_t
+        state["wall_start"] = time.perf_counter()
+        update_frame(target_t)
+        fig.canvas.draw_idle()
+
+    def update_frame(current_t):
+        idx = int(np.searchsorted(t_rel, current_t, side="right") - 1)
+        idx = max(0, min(idx, len(rows) - 1))
+
+        if window_s > 0:
+            left_t = max(0.0, current_t - window_s)
+            right_t = max(window_s, current_t)
+            right_t = min(max(right_t, 1.0), max(duration, 1.0))
+        else:
+            left_t = 0.0
+            right_t = max(duration, 1.0)
+
+        start_idx = int(np.searchsorted(t_rel, left_t, side="left"))
+        end_idx = idx + 1
+        visible_count = max(end_idx - start_idx, 1)
+        point_step = 1
+        if max_points > 0 and visible_count > max_points:
+            point_step = int(math.ceil(visible_count / max_points))
+        plot_slice = slice(start_idx, end_idx, point_step)
+        x_time = t_rel[plot_slice]
+
+        for line, data in time_lines:
+            line.set_data(x_time, data[plot_slice])
+
+        for traj_line, marker_line, x, y in xy_lines:
+            traj_line.set_data(x[plot_slice], y[plot_slice])
+            if np.isfinite(x[idx]) and np.isfinite(y[idx]):
+                marker_line.set_data([x[idx]], [y[idx]])
+            else:
+                marker_line.set_data([], [])
+
+        for ax in time_axes:
+            ax.set_xlim(left_t, right_t)
+
+        left_lines = [
+            f"time    {t_rel[idx]:7.2f} / {duration:7.2f}s",
+            f"sample  {idx + 1:7d} / {len(rows):7d}",
+            f"speed   {state['speed']:7.2f}x",
+            f"state   {'PAUSED' if state['paused'] else 'PLAYING'}",
+            f"window  {max(window_s, 0.0):7.2f}s",
+        ]
+        right_lines = [
+            f"focus V{focus}",
+            f"local  {_format_live_value(arrays.get(f'local_trust_{focus}', [np.nan])[idx])}",
+            f"global {_format_live_value(arrays.get(f'global_trust_{focus}', [np.nan])[idx])}",
+            f"direct {_format_live_value(arrays.get(f'trust_{focus}', [np.nan])[idx])}",
+            f"weight {_format_live_value(arrays.get(f'w_neighbor_{focus}', [np.nan])[idx])}",
+            f"active {int(arrays['active_vehicle_count'][idx]) if np.isfinite(arrays['active_vehicle_count'][idx]) else 0}",
+            f"trusted {int(arrays['trusted_neighbor_count'][idx]) if np.isfinite(arrays['trusted_neighbor_count'][idx]) else 0}",
+        ]
+        status_left_text.set_text("\n".join(left_lines))
+        status_right_text.set_text("\n".join(right_lines))
+
+    def on_timer():
+        if state["paused"]:
+            return True
+
+        elapsed = time.perf_counter() - state["wall_start"]
+        current_t = state["sim_start"] + elapsed * state["speed"]
+        if current_t >= duration:
+            if loop and duration > 0.0:
+                current_t = 0.0
+                state["sim_start"] = 0.0
+                state["wall_start"] = time.perf_counter()
+            else:
+                current_t = duration
+                state["paused"] = True
+
+        state["current_t"] = current_t
+        update_frame(current_t)
+        fig.canvas.draw_idle()
+        return True
+
+    def on_key(event):
+        if event.key in (" ", "space"):
+            state["paused"] = not state["paused"]
+            state["sim_start"] = state["current_t"]
+            state["wall_start"] = time.perf_counter()
+            update_frame(state["current_t"])
+            fig.canvas.draw_idle()
+        elif event.key == "right":
+            seek(state["current_t"] + 5.0)
+        elif event.key == "left":
+            seek(state["current_t"] - 5.0)
+        elif event.key == "home":
+            seek(0.0)
+        elif event.key == "end":
+            seek(duration)
+        elif event.key in ("+", "="):
+            state["speed"] = min(state["speed"] * 1.25, 100.0)
+            state["sim_start"] = state["current_t"]
+            state["wall_start"] = time.perf_counter()
+        elif event.key in ("-", "_"):
+            state["speed"] = max(state["speed"] / 1.25, 0.01)
+            state["sim_start"] = state["current_t"]
+            state["wall_start"] = time.perf_counter()
+
+    fig.canvas.mpl_connect("key_press_event", on_key)
+    update_frame(start_t)
+
+    timer = fig.canvas.new_timer(interval=interval_ms)
+    timer.add_callback(on_timer)
+    timer.start()
+    fig._trust_playback_timer = timer
+
+    return fig
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plot trust/weight logs."
@@ -751,6 +1368,24 @@ def main():
                         help="generate figures for every candidate focus vehicle")
     parser.add_argument("--focus", type=int,
                         help="vehicle ID to use as focus (overrides interactive choice)")
+    parser.add_argument("--relative-file",
+                        help="path to a relative_uio_log_V*.csv file to plot")
+    parser.add_argument("--skip-relative", action="store_true",
+                        help="do not auto-load matching relative UIO log")
+    parser.add_argument("--playback", action="store_true",
+                        help="replay the selected CSV as a realtime dashboard")
+    parser.add_argument("--speed", type=float, default=1.0,
+                        help="playback speed multiplier for --playback (default: 1.0)")
+    parser.add_argument("--window", type=float, default=30.0,
+                        help="scrolling time window in seconds for --playback; use 0 for full history")
+    parser.add_argument("--playback-interval", type=int, default=30ack,
+                        help="dashboard refresh interval in milliseconds for --playback")
+    parser.add_argument("--max-points", type=int, default=1200,
+                        help="maximum visible points per line during playback; use 0 to disable downsampling")
+    parser.add_argument("--start-time", type=float,
+                        help="start playback at this elapsed log time in seconds")
+    parser.add_argument("--no-loop", action="store_true",
+                        help="stop at the end of playback instead of looping")
     args = parser.parse_args()
 
     directory = os.path.dirname(os.path.abspath(__file__))
@@ -804,6 +1439,36 @@ def main():
     print(f"Candidate focus vehicles: {focus_candidates}")
     print(f"Total samples: {len(rows)}\n")
 
+    if args.playback:
+        if args.focus is not None and args.focus in focus_candidates:
+            playback_focus = args.focus
+        elif args.focus is not None and args.focus in active:
+            playback_focus = args.focus
+        else:
+            playback_focus = focus_candidates[0]
+
+        print(
+            f"Starting realtime playback with focus vehicle V{playback_focus} "
+            f"at {args.speed:g}x speed."
+        )
+        _run_playback_dashboard(
+            file_to_plot=file_to_plot,
+            times=times,
+            rows=rows,
+            columns=columns,
+            active=active,
+            focus=playback_focus,
+            host_id=host_id,
+            speed=args.speed,
+            window_s=args.window,
+            interval_ms=args.playback_interval,
+            start_time=args.start_time,
+            loop=not args.no_loop,
+            max_points=args.max_points,
+        )
+        plt.show()
+        return
+
     # Print analytic summary
     _print_static_metrics(rows, active)
 
@@ -839,6 +1504,14 @@ def main():
         _fig_estimation(times, rows, active, host_id)
         _fig_impact_histograms(rows, active, focus, host_id)
         _fig_v2v_details(times, rows, active, focus, host_id)
+
+    if not args.skip_relative:
+        relative_file = args.relative_file or _find_relative_uio_log(directory, host_id)
+        if relative_file and os.path.isfile(relative_file):
+            print(f"Plotting relative UIO diagnostics: {os.path.basename(relative_file)}")
+            _fig_relative_uio(relative_file, host_id)
+        elif args.relative_file:
+            print(f"Specified relative UIO file does not exist: {args.relative_file}")
 
     plt.show()
 

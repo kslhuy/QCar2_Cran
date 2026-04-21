@@ -149,6 +149,9 @@ class OnlineCalibrationZMQClient:
     def clear_buffer(self) -> bool:
         return self.send_command("clear")
 
+    def request_status(self) -> bool:
+        return self.send_command("status")
+
     def trigger_analyse(
         self,
         calibration_type: str = "throttle_velocity",

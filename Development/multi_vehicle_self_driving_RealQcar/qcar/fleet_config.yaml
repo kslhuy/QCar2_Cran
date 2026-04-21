@@ -46,6 +46,11 @@ vehicle_geometry:
 # Vehicle Configurations
 # Each vehicle can have individual settings
 # vehicle_type can be: "Qcar" or "Limo"
+observer:
+  # Added to YOLO relative measurements before relative/fleet estimators consume them.
+  # Keep this at 0.0 when YOLO distance is already corrected at the source.
+  camera_distance_offset: 0.0
+
 vehicles:
   - car_id: 0
     ip: 192.168.2.137

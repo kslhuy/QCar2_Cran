@@ -637,23 +637,35 @@ class AttackModule:
             'total_scenarios': len(self.scenarios),
             'elapsed_time': self.attack_elapsed_time,
             'current_scenario_names': [s.scenario_name for s in self.current_scenarios],
+            'active_scenario_details': self.get_active_scenario_details(),
+            'all_scenario_details': self.get_scenario_details(),
             'statistics': self.stats.copy(),
+        }
+
+    def _scenario_to_detail(self, scenario: AttackScenario) -> Dict:
+        """Return plot/log friendly metadata for a scenario."""
+        return {
+            'name': scenario.scenario_name,
+            'type': scenario.attack_type.value,
+            'modification': scenario.modification_type.value,
+            'data_type': scenario.data_type.value,
+            'target_fields': list(scenario.target_fields),
+            't_start': float(scenario.t_start),
+            't_end': float(scenario.t_end),
+            'attacker_id': int(scenario.attacker_id),
+            'victim_ids': list(scenario.victim_ids),
+            'active': bool(scenario in self.current_scenarios),
+            'progress': scenario.get_attack_progress(self.current_time),
+            'attacks_applied': scenario._attack_count,
         }
     
     def get_active_scenario_details(self) -> List[Dict]:
         """Get details of currently active scenarios."""
-        return [
-            {
-                'name': s.scenario_name,
-                'type': s.attack_type.value,
-                'modification': s.modification_type.value,
-                'data_type': s.data_type.value,
-                'target_fields': s.target_fields,
-                'progress': s.get_attack_progress(self.current_time),
-                'attacks_applied': s._attack_count,
-            }
-            for s in self.current_scenarios
-        ]
+        return [self._scenario_to_detail(s) for s in self.current_scenarios]
+
+    def get_scenario_details(self) -> List[Dict]:
+        """Get details for all configured scenarios."""
+        return [self._scenario_to_detail(s) for s in self.scenarios]
     
     def is_attack_active(self) -> bool:
         """Check if any attack is currently active."""
