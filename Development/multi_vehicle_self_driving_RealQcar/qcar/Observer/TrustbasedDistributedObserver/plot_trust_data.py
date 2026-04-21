@@ -1053,7 +1053,7 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
             col = f"{prefix}_{vid}"
             arrays[col] = arr(col)
 
-    fig = plt.figure(figsize=(18, 10.5))
+    fig = plt.figure(figsize=(18, 10.8))
     fig.suptitle(
         f"Realtime Trust Log Playback - {os.path.basename(file_to_plot)} "
         f"(Host V{host_id}, Focus V{focus})",
@@ -1061,35 +1061,42 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
         fontweight="bold",
     )
     gs = gridspec.GridSpec(
-        3, 3, figure=fig, hspace=0.42, wspace=0.30,
-        height_ratios=[1.0, 1.0, 0.78],
+        3, 3, figure=fig, hspace=0.45, wspace=0.32,
+        height_ratios=[1.0, 1.0, 0.82],
     )
 
     ax_trust = fig.add_subplot(gs[0, 0])
     ax_weights = fig.add_subplot(gs[0, 1])
-    ax_components = fig.add_subplot(gs[0, 2])
-    ax_gamma = fig.add_subplot(gs[1, 0])
-    ax_final = fig.add_subplot(gs[1, 1])
+    ax_final = fig.add_subplot(gs[0, 2])
+    ax_components = fig.add_subplot(gs[1, 0])
+    ax_gamma = fig.add_subplot(gs[1, 1])
     ax_xy = fig.add_subplot(gs[1, 2])
     ax_flags = fig.add_subplot(gs[2, 0:2])
     ax_status = fig.add_subplot(gs[2, 2])
     ax_status.axis("off")
 
     time_lines = []
+    current_markers = []
     xy_lines = []
     colors = plt.rcParams["axes.prop_cycle"].by_key().get("color", [])
     if not colors:
         colors = ["C0", "C1", "C2", "C3", "C4", "C5"]
 
     def add_time_line(ax, col, label, *, color=None, ls="-", lw=1.4,
-                      alpha=1.0, drawstyle="default", marker=None):
+                      alpha=1.0, drawstyle="default", marker=None,
+                      smooth=True, current_marker=True):
         data = arrays.get(col)
         if data is None or not np.any(np.isfinite(data)):
             return None
         line, = ax.plot([], [], label=label, color=color, ls=ls, lw=lw,
                         alpha=alpha, drawstyle=drawstyle, marker=marker,
                         markersize=3)
-        time_lines.append((line, data))
+        time_lines.append((line, data, smooth))
+        if current_marker:
+            current_line, = ax.plot([], [], marker="o", color=line.get_color(),
+                                    linestyle="None", markersize=4,
+                                    alpha=min(alpha + 0.15, 1.0))
+            current_markers.append((current_line, data, smooth))
         return line
 
     # Trust scores for all active vehicles.
@@ -1203,27 +1210,35 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
         arrays[f"__flag_{col}"] = shifted
         add_time_line(ax_flags, f"__flag_{col}", label,
                       color=colors[i % len(colors)], lw=1.5,
-                      drawstyle="steps-post")
+                      drawstyle="steps-post", smooth=False,
+                      current_marker=False)
     ax_flags.set_ylim(-0.05, 1.20)
     ax_flags.set_yticks([item[2] + 0.05 for item in flag_cols])
     ax_flags.set_yticklabels([item[1] for item in flag_cols], fontsize=8)
     _style(ax_flags, f"Flags V{focus}", "", xlabel="Time [s]", legend=False)
 
-    ax_status.set_title("Playback Status", fontsize=10, fontweight="bold")
+    ax_status.text(
+        0.04, 0.96, "Playback Status", va="top", ha="left",
+        fontsize=10, fontweight="bold", transform=ax_status.transAxes,
+    )
     status_left_text = ax_status.text(
-        0.02, 0.92, "", va="top", ha="left",
-        family="monospace", fontsize=9.5, transform=ax_status.transAxes,
+        0.04, 0.74, "", va="top", ha="left",
+        family="monospace", fontsize=9.0, transform=ax_status.transAxes,
+    )
+    status_mid_text = ax_status.text(
+        0.53, 0.74, "", va="top", ha="left",
+        family="monospace", fontsize=9.0, transform=ax_status.transAxes,
     )
     status_right_text = ax_status.text(
-        0.54, 0.92, "", va="top", ha="left",
-        family="monospace", fontsize=9.5, transform=ax_status.transAxes,
+        0.04, 0.30, "", va="top", ha="left",
+        family="monospace", fontsize=9.0, transform=ax_status.transAxes,
     )
     ax_status.text(
-        0.02, 0.02,
-        "Space pause | Left/Right seek | Home/End jump | +/- speed",
-        va="bottom",
+        0.04, 0.06,
+        "Space pause  |  Left/Right seek  |  Home/End jump  |  +/- speed",
+        va="center",
         ha="left",
-        fontsize=8.5,
+        fontsize=8.2,
         color="#555",
         transform=ax_status.transAxes,
     )
@@ -1232,8 +1247,12 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
         ax_trust, ax_weights, ax_components, ax_gamma,
         ax_final, ax_flags,
     ]
+    playhead_lines = []
     for ax in time_axes:
         ax.set_xlim(0.0, max(1.0, min(duration, window_s if window_s > 0 else duration)))
+        playhead_lines.append(
+            ax.axvline(0.0, color="k", lw=0.9, alpha=0.55, ls=":")
+        )
 
     state = {
         "paused": False,
@@ -1250,6 +1269,38 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
         state["wall_start"] = time.perf_counter()
         update_frame(target_t)
         fig.canvas.draw_idle()
+
+    def interp_sample(data, idx, current_t):
+        data = np.asarray(data, dtype=float)
+        if idx >= len(data):
+            return float("nan")
+        if idx >= len(data) - 1 or current_t <= t_rel[idx]:
+            return data[idx]
+        y0 = data[idx]
+        y1 = data[idx + 1]
+        if not (np.isfinite(y0) and np.isfinite(y1)):
+            return y0 if np.isfinite(y0) else y1
+        dt = t_rel[idx + 1] - t_rel[idx]
+        if dt <= 0.0:
+            return y0
+        alpha = (current_t - t_rel[idx]) / dt
+        alpha = min(max(alpha, 0.0), 1.0)
+        return y0 + alpha * (y1 - y0)
+
+    def visible_series(data, plot_slice, idx, current_t, smooth):
+        x_plot = t_rel[plot_slice]
+        y_plot = data[plot_slice]
+        if not smooth or idx >= len(data) - 1 or current_t <= t_rel[idx]:
+            return x_plot, y_plot
+
+        y_current = interp_sample(data, idx, current_t)
+        if not np.isfinite(y_current):
+            return x_plot, y_plot
+        if x_plot.size and math.isclose(float(x_plot[-1]), current_t):
+            y_plot = y_plot.copy()
+            y_plot[-1] = y_current
+            return x_plot, y_plot
+        return np.append(x_plot, current_t), np.append(y_plot, y_current)
 
     def update_frame(current_t):
         idx = int(np.searchsorted(t_rel, current_t, side="right") - 1)
@@ -1270,38 +1321,58 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
         if max_points > 0 and visible_count > max_points:
             point_step = int(math.ceil(visible_count / max_points))
         plot_slice = slice(start_idx, end_idx, point_step)
-        x_time = t_rel[plot_slice]
 
-        for line, data in time_lines:
-            line.set_data(x_time, data[plot_slice])
+        for line, data, smooth in time_lines:
+            x_time, y_time = visible_series(data, plot_slice, idx, current_t, smooth)
+            line.set_data(x_time, y_time)
+
+        for marker_line, data, smooth in current_markers:
+            y_current = interp_sample(data, idx, current_t) if smooth else data[idx]
+            if np.isfinite(y_current):
+                marker_line.set_data([current_t], [y_current])
+            else:
+                marker_line.set_data([], [])
 
         for traj_line, marker_line, x, y in xy_lines:
-            traj_line.set_data(x[plot_slice], y[plot_slice])
-            if np.isfinite(x[idx]) and np.isfinite(y[idx]):
-                marker_line.set_data([x[idx]], [y[idx]])
+            x_traj, y_traj = x[plot_slice], y[plot_slice]
+            x_current = interp_sample(x, idx, current_t)
+            y_current = interp_sample(y, idx, current_t)
+            if idx < len(x) - 1 and current_t > t_rel[idx]:
+                if np.isfinite(x_current) and np.isfinite(y_current):
+                    x_traj = np.append(x_traj, x_current)
+                    y_traj = np.append(y_traj, y_current)
+            traj_line.set_data(x_traj, y_traj)
+            if np.isfinite(x_current) and np.isfinite(y_current):
+                marker_line.set_data([x_current], [y_current])
             else:
                 marker_line.set_data([], [])
 
         for ax in time_axes:
             ax.set_xlim(left_t, right_t)
+        for playhead_line in playhead_lines:
+            playhead_line.set_xdata([current_t, current_t])
 
         left_lines = [
-            f"time    {t_rel[idx]:7.2f} / {duration:7.2f}s",
+            f"time    {current_t:7.2f} / {duration:7.2f}s",
             f"sample  {idx + 1:7d} / {len(rows):7d}",
             f"speed   {state['speed']:7.2f}x",
             f"state   {'PAUSED' if state['paused'] else 'PLAYING'}",
             f"window  {max(window_s, 0.0):7.2f}s",
         ]
-        right_lines = [
+        mid_lines = [
             f"focus V{focus}",
-            f"local  {_format_live_value(arrays.get(f'local_trust_{focus}', [np.nan])[idx])}",
-            f"global {_format_live_value(arrays.get(f'global_trust_{focus}', [np.nan])[idx])}",
-            f"direct {_format_live_value(arrays.get(f'trust_{focus}', [np.nan])[idx])}",
-            f"weight {_format_live_value(arrays.get(f'w_neighbor_{focus}', [np.nan])[idx])}",
+            f"local  {_format_live_value(interp_sample(arrays.get(f'local_trust_{focus}', [np.nan]), idx, current_t))}",
+            f"global {_format_live_value(interp_sample(arrays.get(f'global_trust_{focus}', [np.nan]), idx, current_t))}",
+            f"direct {_format_live_value(interp_sample(arrays.get(f'trust_{focus}', [np.nan]), idx, current_t))}",
+            f"weight {_format_live_value(interp_sample(arrays.get(f'w_neighbor_{focus}', [np.nan]), idx, current_t))}",
+        ]
+        right_lines = [
             f"active {int(arrays['active_vehicle_count'][idx]) if np.isfinite(arrays['active_vehicle_count'][idx]) else 0}",
             f"trusted {int(arrays['trusted_neighbor_count'][idx]) if np.isfinite(arrays['trusted_neighbor_count'][idx]) else 0}",
+            f"attack {int(arrays['v2v_attack_active'][idx]) if np.isfinite(arrays['v2v_attack_active'][idx]) else 0}",
         ]
         status_left_text.set_text("\n".join(left_lines))
+        status_mid_text.set_text("\n".join(mid_lines))
         status_right_text.set_text("\n".join(right_lines))
 
     def on_timer():
@@ -1378,7 +1449,7 @@ def main():
                         help="playback speed multiplier for --playback (default: 1.0)")
     parser.add_argument("--window", type=float, default=30.0,
                         help="scrolling time window in seconds for --playback; use 0 for full history")
-    parser.add_argument("--playback-interval", type=int, default=30ack,
+    parser.add_argument("--playback-interval", type=int, default=30,
                         help="dashboard refresh interval in milliseconds for --playback")
     parser.add_argument("--max-points", type=int, default=1200,
                         help="maximum visible points per line during playback; use 0 to disable downsampling")

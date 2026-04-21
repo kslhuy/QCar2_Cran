@@ -69,6 +69,11 @@ class PIDVelocityController(LongitudinalControllerBase):
         min_throttle=0.0,
         ei_max=1.0,
         v_ref=0.5,
+        limo_max_accel=1.0,
+        limo_max_decel=1.0,
+        limo_max_speed=3.0,
+        limo_stop_speed_threshold=0.05,
+        limo_stop_command_threshold=0.1,
         config=None,
         logger=None,
         **kwargs,
@@ -109,6 +114,15 @@ class PIDVelocityController(LongitudinalControllerBase):
             self.min_throttle = params.get("min_throttle", min_throttle)
             self.ei_max = params.get("ei_max", ei_max)
             self.vehicle_type = kwargs.get("vehicle_type", params.get("vehicle_type", "QCar"))
+            self.limo_max_accel = params.get("limo_max_accel", limo_max_accel)
+            self.limo_max_decel = params.get("limo_max_decel", limo_max_decel)
+            self.limo_max_speed = params.get("limo_max_speed", limo_max_speed)
+            self.limo_stop_speed_threshold = params.get(
+                "limo_stop_speed_threshold", limo_stop_speed_threshold
+            )
+            self.limo_stop_command_threshold = params.get(
+                "limo_stop_command_threshold", limo_stop_command_threshold
+            )
         else:
             self.kp = kp
             self.ki = ki
@@ -121,6 +135,11 @@ class PIDVelocityController(LongitudinalControllerBase):
             self.min_throttle = min_throttle
             self.ei_max = ei_max
             self.vehicle_type = kwargs.get("vehicle_type", "QCar")
+            self.limo_max_accel = limo_max_accel
+            self.limo_max_decel = limo_max_decel
+            self.limo_max_speed = limo_max_speed
+            self.limo_stop_speed_threshold = limo_stop_speed_threshold
+            self.limo_stop_command_threshold = limo_stop_command_threshold
 
         # Command velocity used for Limo rate limiting
         self.cmd_v = 0.0
@@ -158,18 +177,23 @@ class PIDVelocityController(LongitudinalControllerBase):
 
         if getattr(self, "vehicle_type", "QCar") == "Limo":
             # For Limo, limit the acceleration and return a bounded velocity command
-            max_acc = 1.0  # max acceleration m/s^2 for smooth velocity changes
-            dv = max_acc * dt
             if v_ref > self.cmd_v:
-                self.cmd_v = min(self.cmd_v + dv, v_ref)
+                max_acc = max(float(self.limo_max_accel), 0.0)
+                self.cmd_v = min(self.cmd_v + max_acc * dt, v_ref)
             else:
-                self.cmd_v = max(self.cmd_v - dv, v_ref)
+                max_decel = max(float(self.limo_max_decel), 0.0)
+                self.cmd_v = max(self.cmd_v - max_decel * dt, v_ref)
                 
             # If stopping completely, ensure v_cmd drops to 0 smoothly
-            if v_ref < 0.05 and self.cmd_v < 0.1:
+            if (
+                v_ref < float(self.limo_stop_speed_threshold)
+                and self.cmd_v < float(self.limo_stop_command_threshold)
+            ):
                 self.cmd_v = 0.0
                 
-            self.cmd_v = np.clip(self.cmd_v, 0.0, 3.0) # Absolute max speed limit for Limo increased to 3.0 to allow Gear scaling
+            self.cmd_v = np.clip(
+                self.cmd_v, 0.0, max(float(self.limo_max_speed), 0.0)
+            )
             
             self.last_error = e
             self.prev_e = e

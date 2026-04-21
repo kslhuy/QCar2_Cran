@@ -79,7 +79,7 @@ class VehicleControlFullSystemQCar(Node):
                 ('car_id', 3),
                 ('vehicle_type', 'Limo'),
                 ('programme_type', 'Ros'),
-                ('v_ref', 0.6),
+                ('v_ref', 0.38),
                 ('controller_rate', 100),
                 ('calibrate', False),
                 ('path_number', 0),

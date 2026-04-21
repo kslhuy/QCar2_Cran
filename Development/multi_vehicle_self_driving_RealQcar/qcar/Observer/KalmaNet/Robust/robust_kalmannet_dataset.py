@@ -76,6 +76,8 @@ def _dataset_series(
     gps_valid: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     if key in dataset:
+        if key == "timestamps":
+            return np.asarray(dataset[key], dtype=np.float64)
         return np.asarray(dataset[key], dtype=np.float32)
     return _default_series(key, timestamps=timestamps, gps_valid=gps_valid)
 

@@ -273,6 +273,15 @@ class ControllerConfig:
             "min_throttle": pid_config.get("min_throttle", 0.0),
             "ei_max": pid_config.get("ei_max", 1.0),
             "v_ref": pid_config.get("v_ref", 0.6),
+            "limo_max_accel": pid_config.get("limo_max_accel", 1.0),
+            "limo_max_decel": pid_config.get("limo_max_decel", 1.0),
+            "limo_max_speed": pid_config.get("limo_max_speed", 3.0),
+            "limo_stop_speed_threshold": pid_config.get(
+                "limo_stop_speed_threshold", 0.05
+            ),
+            "limo_stop_command_threshold": pid_config.get(
+                "limo_stop_command_threshold", 0.1
+            ),
         }
 
     def _get_qcar2_speed_params(self) -> Dict[str, Any]:

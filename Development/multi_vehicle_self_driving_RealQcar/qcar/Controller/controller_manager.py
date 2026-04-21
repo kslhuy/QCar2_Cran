@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import os
 import yaml
 
-from .config_controller_loader import get_controller_config
+from .config_controller_loader import ControllerConfig, get_controller_config
 from Controller.longitudinal_controllers import ControllerFactory
 
 
@@ -76,9 +76,11 @@ class ControllerManager:
             logger: Logger instance
             vehicle_type: Type of the vehicle (e.g., 'QCar' or 'Limo')
         """
-        self.config = config if config else get_controller_config()
         self.logger = logger
         self.vehicle_type = vehicle_type
+        self.config = config if config else self._load_default_config_for_vehicle(
+            vehicle_type
+        )
         self.vehicle_geometry = self._normalize_vehicle_geometry(vehicle_geometry)
         if (
             self.vehicle_geometry
@@ -106,6 +108,18 @@ class ControllerManager:
                 f"path[long={self._path_longitudinal_type}, lat={self._path_lateral_type}], "
                 f"leader[long={self._leader_longitudinal_type}, lat={self._leader_lateral_type}]"
             )
+
+    @staticmethod
+    def _load_default_config_for_vehicle(vehicle_type: str):
+        """Load the vehicle-specific controller YAML when one exists."""
+        vehicle_type_normalized = str(vehicle_type).strip().lower()
+        if vehicle_type_normalized == "limo":
+            config_dir = os.path.dirname(os.path.abspath(__file__))
+            limo_config_path = os.path.join(config_dir, "config_controller_limo.yaml")
+            if os.path.exists(limo_config_path):
+                return ControllerConfig(limo_config_path)
+
+        return get_controller_config()
 
     @staticmethod
     def _normalize_vehicle_geometry(vehicle_geometry) -> Dict[str, float]:

@@ -1,0 +1,26 @@
+{
+  "dataset_files": [
+    "Development\\multi_vehicle_self_driving_RealQcar\\qcar\\Observer\\KalmaNet\\Robust\\datasets\\robust_kalmannet_dataset_V0_20260417_094048.npz"
+  ],
+  "target_source": "ekf",
+  "kinematic_reference": {
+    "rmse": [
+      1.5061177015304565,
+      1.6799571514129639,
+      0.05047042295336723,
+      0.0,
+      0.5942670702934265
+    ],
+    "rmse_mean": 0.7661624550819397
+  },
+  "learned": {
+    "rmse": [
+      1.2896831035614014,
+      1.407116174697876,
+      0.26571163535118103,
+      0.017753547057509422,
+      0.058222707360982895
+    ],
+    "rmse_mean": 0.6076974272727966
+  }
+}
