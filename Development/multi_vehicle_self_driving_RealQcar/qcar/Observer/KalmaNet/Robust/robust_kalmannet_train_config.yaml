@@ -74,6 +74,13 @@ training:
   # true  = validate on early time segment, train on later segment.
   reverse_split: false
 
+  # Curriculum learning: fraction of Phase B epochs that train on clean
+  # data before augmentation is introduced.
+  # 0.0 = augmentation from epoch 1 (no warmup).
+  # 0.5 = first 50% of Phase B is clean, then attack prob ramps to target.
+  # 1.0 = entire Phase B is clean (augmentation only in Phase C).
+  aug_warmup_fraction: 0.5
+
 loss:
   # Weight for predictor mask supervision loss.
   # Encourages the prediction-side mask to suppress attacked sensor branches.
@@ -112,7 +119,7 @@ loss:
 augmentation:
   # true  = apply synthetic attacks during training.
   # false = train on clean data only.
-  enabled: true
+  enabled: false
 
   # Probability that one sample receives attack augmentation.
   attack_prob: 0.3
@@ -147,6 +154,17 @@ model:
   # Note: if set to kinematic, Phase A is skipped automatically.
   predictor_mode: "kinematic"
   kin_wheelbase: 0.25
+  # Longitudinal velocity prediction used by the analytical kinematic predictor.
+  # tachometer        = legacy behavior, v_next = motor_tach, so z_v innovation is near zero.
+  # imu_acceleration  = v_next = v_prev + ax * dt.
+  # velocity_lag      = v_dot = (-v + velocity_gain * throttle) / tau.
+  # velocity_command  = throttle slot is treated as desired velocity.
+  # simple_acceleration = throttle slot is treated as acceleration.
+  kin_velocity_model: "velocity_lag"
+  kin_velocity_tau: 0.301
+  kin_velocity_gain: 6.598
+  kin_max_velocity: 2.0
+  kin_max_acceleration: 2.0
 
   # Hidden sizes. Keep these aligned with
   # qcar/Observer/config_local_estimators.yaml at runtime.

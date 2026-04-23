@@ -5,20 +5,12 @@
 local_estimator_type: ekf # local_estimator_type: Which local estimator to use.
                         # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
 
-# Plotting configuration
-enable_plotting: false # enable_plotting: Controls real-time visualization.
-                        # true: Opens Matplotlib/MultiScope windows to show real-time plots of state, error, etc.
-                        # false: No windows are opened.
 enable_recording: false # enable_recording: Controls data logging to CSV.
                         # true: Logs data to scope_recordings/ (e.g., local_V0_120000.csv).
                         # false: No data is logged to these files.
 recording_overwrite: true # recording_overwrite:
                         # true: Overwrites the file (e.g., locl_V0.csv)
                         # false: Creates a new timestamped file every run (e.g., local_V0_123456.csv)
-plotting:
-  fps: 30 # fps: Refresh rate for the plots.
-  time_window: 20.0 # time_window: How much history (in seconds) to show on the moving plots.
-  save_only: true # save_only: If enable_plotting is true and this is true, it runs in "headless" mode (no window, but still processes the scope logic, useful if you wanted to save video frames or verify logic without GUI).
 
 
 # Local estimator defaults
@@ -39,7 +31,55 @@ local:
   # EKF estimator defaults
   # ---------------------------------------------------------------------
   ekf:
-    use_qcar_ekf: true  # Whether to use QCarEKF (if available)
+    use_qcar_ekf: false  # Whether to use QCarEKF (if available)
+    wheelbase: 0.25       # Fallback default; VehicleObserver overrides from fleet_config.vehicle_geometry when available.
+    gyro_heading_blend: 0.25 # 0=bicycle yaw only, 1=gyro yaw only. QCarEKF-like fallback uses both.
+    max_steering_angle: 0.5  # Rad; clips pathological steering before tan(delta).
+    max_velocity: 2.0
+    max_acceleration: 2.0
+    # Fallback EKF longitudinal prediction model.
+    # Options:
+    # - tachometer: preserve old behavior; use motor_tach for pose, IMU ax for velocity prediction.
+    # - imu_acceleration: use IMU ax for velocity and pose prediction.
+    # - velocity_lag: QCar-style throttle -> bounded first-order speed response.
+    # - velocity_command: Limo-style throttle slot is desired velocity.
+    # - acceleration_lag: first-order throttle -> acceleration response.
+    # - simple_acceleration: treat throttle directly as acceleration.
+    # - motor_model: use TrustbasedDistributedObserver AccelDragMotorModel.
+    longitudinal_model: velocity_lag
+    use_tachometer_update: true # Set false to let the throttle/acceleration model own velocity prediction.
+    velocity_lag_model:
+      tau: 0.3080146700336507
+      velocity_gain: 6.688240209183141
+      # Small real-QCar throttle deadband/friction offset from steady-state fit.
+      # Model uses v_ss = velocity_gain * sign(u) * max(abs(u)-deadband, 0).
+      throttle_deadband: 0.0066
+    acceleration_fusion:
+      enabled: true
+      # Online runtime fusion:
+      #   a_model = (velocity_gain * throttle - v) / tau
+      #   residual = motor_tach - v_pred
+      # Small residual => trust the control model. Large residual => blend in
+      # tach-derived acceleration more strongly. IMU remains diagnostic by default.
+      tach_derivative_alpha: 0.20
+      output_alpha: 0.35
+      residual_low_mps: 0.04
+      residual_high_mps: 0.20
+      model_weight_high: 0.90
+      model_weight_low: 0.60
+      imu_weight: 0.0
+      imu_residual_gate_mps2: 1.5
+    velocity_command_tau: 0.301
+    accel_lag_model:
+      tau: 0.318
+      input_gain: 1.0
+    motor_model:
+      enabled: false
+      tau: 0.318
+      k_th: 4.5795
+      k_br: 4.5772
+      c_v: 5.0
+      c_fric: 2.0
 
   # ---------------------------------------------------------------------
   # Luenberger estimator defaults
@@ -61,7 +101,12 @@ local:
   # ---------------------------------------------------------------------
   robust_kalman_net:
     predictor_mode: "kinematic"    #  kinematic , nn Explicitly use the QCar bicycle model for prediction, leaving only the update step to use the GRU NN
-    kin_wheelbase: 0.25         # Match QCarEKF wheelbase L.
+    kin_wheelbase: 0.2          # Fallback default; VehicleObserver overrides from fleet_config.vehicle_geometry when available.
+    kin_velocity_model: "velocity_lag" # Predict v_next from previous v and throttle so the v measurement has innovation.
+    kin_velocity_tau: 0.301
+    kin_velocity_gain: 6.598
+    kin_max_velocity: 2.0
+    kin_max_acceleration: 2.0
     model_path: models/robust_kalmannet.pt # Required checkpoint path, relative to Observer/KalmaNet/Robust/
     enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
     comparator_use_qcar_ekf: true # Use QCarEKF inside the comparator when available.

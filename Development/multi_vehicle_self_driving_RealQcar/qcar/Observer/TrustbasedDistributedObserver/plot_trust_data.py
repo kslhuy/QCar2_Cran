@@ -16,6 +16,7 @@ import glob
 import re
 import math
 import csv
+import json
 import time
 from typing import Dict, List, Tuple
 
@@ -63,6 +64,7 @@ def _extract_vehicle_ids(columns: List[str]) -> List[int]:
     ids = set()
     prefixes = {
         "vehicle_present", "trust", "gtrust", "w_neighbor",
+        "w0_final", "w_self_final", "w_neighbor_sum_final",
         "est_conf", "pred_mode", "est_x", "est_v",
         "v_score", "d_score", "a_score", "h_score",
         "b_score", "q_factor", "local_trust", "global_trust",
@@ -82,7 +84,8 @@ def _active_vehicles(rows: List[dict], columns: List[str],
     active = []
     for vid in vehicle_ids:
         for prefix in ("vehicle_present", "trust", "gtrust",
-                       "w_neighbor", "est_conf", "est_x"):
+                       "w_neighbor", "w0_final", "w_self_final",
+                       "w_neighbor_sum_final", "est_conf", "est_x"):
             col = f"{prefix}_{vid}"
             if col not in columns:
                 continue
@@ -94,6 +97,10 @@ def _active_vehicles(rows: List[dict], columns: List[str],
                 active.append(vid)
                 break
     return active
+
+
+def _has_finite_column(rows: List[dict], col: str) -> bool:
+    return np.any(np.isfinite(_col_to_array(rows, col)))
 
 
 def _plot_series(ax, times, rows, prefix, vids, label_fmt="Vehicle {}",
@@ -138,6 +145,241 @@ def _add_turn_sections(ax, times, rows):
         import matplotlib.transforms as mtransforms
         trans = mtransforms.blended_transform_factory(ax.transData, ax.transAxes)
         ax.fill_between(times, 0, 1, where=(is_turning >= 1), color='gold', alpha=0.25, transform=trans, label='Turn Section')
+
+
+def _safe_float(value, default=float("nan")) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _last_nonempty_value(rows: List[dict], col: str) -> str:
+    for row in reversed(rows):
+        value = row.get(col, "")
+        if value not in ("", None):
+            return value
+    return ""
+
+
+def _json_list_or_empty(raw) -> List[dict]:
+    if raw in ("", None):
+        return []
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict)]
+
+
+def _finite_time_bounds(times: np.ndarray) -> Tuple[float, float]:
+    finite_times = np.asarray(times, dtype=float)
+    finite_times = finite_times[np.isfinite(finite_times)]
+    if finite_times.size == 0:
+        return 0.0, 1.0
+    t0 = float(np.min(finite_times))
+    t1 = float(np.max(finite_times))
+    if not math.isfinite(t1) or t1 <= t0:
+        t1 = t0 + 1.0
+    return t0, t1
+
+
+def _clamped_interval(start, end, t_min: float, t_max: float) -> Tuple[float, float]:
+    start_f = _safe_float(start)
+    end_f = _safe_float(end)
+    if not math.isfinite(start_f):
+        start_f = t_min
+    if not math.isfinite(end_f):
+        end_f = t_max
+    start_f = min(max(start_f, t_min), t_max)
+    end_f = min(max(end_f, start_f), t_max)
+    if end_f <= start_f:
+        end_f = min(max(start_f + 1e-3, t_min), max(t_max, start_f + 1e-3))
+    return start_f, end_f
+
+
+def _attack_target_label(interval: dict) -> str:
+    data_type = str(interval.get("data_type", "") or "attack").lower()
+    attacker = interval.get("attacker_id", "")
+    victims = interval.get("victim_ids", [])
+    if not isinstance(victims, list):
+        victims = [victims]
+    if data_type == "local":
+        return f"local V{attacker}"
+    if data_type == "fleet":
+        victim_text = "all" if -1 in victims else ",".join(f"V{v}" for v in victims)
+        return f"fleet {victim_text}"
+    if data_type == "both":
+        victim_text = "all" if -1 in victims else ",".join(f"V{v}" for v in victims)
+        return f"both V{attacker}->{victim_text}"
+    return data_type
+
+
+def _attack_display_label(interval: dict) -> str:
+    parts = [
+        str(interval.get("type", "") or "attack"),
+        str(interval.get("modification", "") or ""),
+        str(interval.get("data_type", "") or ""),
+    ]
+    fields = interval.get("target_fields", [])
+    if isinstance(fields, list):
+        fields = [str(f) for f in fields if str(f)]
+        if fields:
+            parts.append("/".join(fields))
+    return " ".join(part for part in parts if part).strip()
+
+
+def _extract_attack_intervals(rows: List[dict], columns: List[str],
+                              active: List[int], times: np.ndarray) -> List[dict]:
+    t_min, t_max = _finite_time_bounds(times)
+    intervals: List[dict] = []
+
+    raw_json = _last_nonempty_value(rows, "v2v_attack_intervals")
+    for item in _json_list_or_empty(raw_json):
+        start_s, end_s = _clamped_interval(
+            item.get("start_s"), item.get("end_s"), t_min, t_max
+        )
+        interval = dict(item)
+        interval["start_s"] = start_s
+        interval["end_s"] = end_s
+        interval["target_label"] = _attack_target_label(interval)
+        interval["display_label"] = _attack_display_label(interval)
+        intervals.append(interval)
+
+    if intervals:
+        return intervals
+
+    seen = set()
+    for vid in active:
+        if f"inject_attack_start_{vid}" not in columns:
+            continue
+        for row in rows:
+            start_f = _safe_float(row.get(f"inject_attack_start_{vid}", ""))
+            if not math.isfinite(start_f):
+                continue
+            end_f = _safe_float(row.get(f"inject_attack_end_{vid}", ""))
+            start_s, end_s = _clamped_interval(start_f, end_f, t_min, t_max)
+            fields = str(row.get(f"inject_attack_fields_{vid}", "")).split("|")
+            interval = {
+                "name": row.get(f"inject_attack_name_{vid}", ""),
+                "type": row.get(f"inject_attack_type_{vid}", ""),
+                "modification": row.get(f"inject_attack_modification_{vid}", ""),
+                "data_type": row.get(f"inject_attack_data_type_{vid}", ""),
+                "target_fields": [f for f in fields if f],
+                "start_s": start_s,
+                "end_s": end_s,
+                "attacker_id": row.get(f"inject_attack_attacker_{vid}", ""),
+                "victim_ids": [vid],
+                "target_label": f"V{vid}",
+            }
+            interval["display_label"] = _attack_display_label(interval)
+            key = (
+                interval["target_label"],
+                interval["type"],
+                interval["modification"],
+                interval["data_type"],
+                round(start_s, 6),
+                round(end_s, 6),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            intervals.append(interval)
+
+    if intervals:
+        return intervals
+
+    if "v2v_attack_start_s" in columns:
+        for row in rows:
+            start_f = _safe_float(row.get("v2v_attack_start_s", ""))
+            if not math.isfinite(start_f):
+                continue
+            end_f = _safe_float(row.get("v2v_attack_end_s", ""))
+            start_s, end_s = _clamped_interval(start_f, end_f, t_min, t_max)
+            interval = {
+                "type": row.get("v2v_attack_types", ""),
+                "modification": "",
+                "data_type": row.get("v2v_attack_data_types", ""),
+                "target_fields": [],
+                "start_s": start_s,
+                "end_s": end_s,
+                "attacker_id": "",
+                "victim_ids": [],
+                "target_label": "attack",
+            }
+            interval["display_label"] = _attack_display_label(interval)
+            key = (
+                interval["type"],
+                interval["data_type"],
+                round(start_s, 6),
+                round(end_s, 6),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            intervals.append(interval)
+
+    return intervals
+
+
+def _mask_to_time_spans(times: np.ndarray, mask: np.ndarray) -> List[Tuple[float, float]]:
+    times = np.asarray(times, dtype=float)
+    mask = np.asarray(mask, dtype=bool)
+    valid = np.isfinite(times)
+    if times.size == 0 or mask.size != times.size or not np.any(valid & mask):
+        return []
+
+    valid_times = times[valid]
+    positive_diffs = np.diff(valid_times)
+    positive_diffs = positive_diffs[positive_diffs > 0.0]
+    fallback_dt = float(np.median(positive_diffs)) if positive_diffs.size else 1e-3
+    spans: List[Tuple[float, float]] = []
+    start_idx = None
+    for idx, is_on in enumerate(mask):
+        if is_on and start_idx is None:
+            start_idx = idx
+        if start_idx is not None and (not is_on or idx == len(mask) - 1):
+            end_idx = idx if is_on and idx == len(mask) - 1 else idx - 1
+            start_t = times[start_idx]
+            end_t = times[end_idx]
+            if not (math.isfinite(start_t) and math.isfinite(end_t)):
+                start_idx = None
+                continue
+            if end_t <= start_t:
+                end_t = start_t + fallback_dt
+            spans.append((float(start_t), float(end_t)))
+            start_idx = None
+    return spans
+
+
+def _extract_attack_events(rows: List[dict], columns: List[str],
+                           times: np.ndarray) -> List[dict]:
+    raw_json = _last_nonempty_value(rows, "v2v_attack_events")
+    events = _json_list_or_empty(raw_json)
+    if events:
+        return [
+            {"event": str(e.get("event", "")), "time_s": _safe_float(e.get("time_s"))}
+            for e in events
+            if math.isfinite(_safe_float(e.get("time_s")))
+        ]
+
+    if "v2v_attack_enabled" not in columns:
+        return []
+    enabled = _col_to_array(rows, "v2v_attack_enabled")
+    enabled_mask = np.isfinite(enabled) & (enabled >= 0.5)
+    events = []
+    prev = False
+    for t, is_enabled in zip(times, enabled_mask):
+        if not math.isfinite(float(t)):
+            continue
+        if is_enabled and not prev:
+            events.append({"event": "enable", "time_s": float(t)})
+        elif prev and not is_enabled:
+            events.append({"event": "disable", "time_s": float(t)})
+        prev = bool(is_enabled)
+    return events
 
 
 def _yolo_usage_mask(rows: List[dict], vid: int) -> np.ndarray:
@@ -368,42 +610,80 @@ def _fig_trust(times, rows, active, focus, host_id):
     return fig
 
 
-def _fig_weights(times, rows, active, host_id):
+def _fig_weights(times, rows, active, focus, host_id):
     """
     Figure 2 – Weight Calculation
     Layout (2 rows × 2 cols):
       [0,0] w0, w_self over time             [0,1] Per-neighbor weights
       [1,0] Mean trust metrics                [1,1] Trusted neighbor count
     """
+    has_final = (
+        _has_finite_column(rows, f"w0_final_{focus}")
+        or _has_finite_column(rows, f"w_self_final_{focus}")
+        or _has_finite_column(rows, f"w_neighbor_sum_final_{focus}")
+        or any(
+            _has_finite_column(rows, f"w_neighbor_from_v{src}_to_{focus}")
+            for src in active
+        )
+    )
+
     fig = plt.figure(figsize=(16, 7))
-    fig.suptitle(f"Weight Calculation  (Host V{host_id})", fontsize=13,
-                 fontweight="bold")
+    final_note = "final per-target" if has_final else "legacy summary"
+    fig.suptitle(
+        f"Weight Calculation ({final_note})  (Host V{host_id}, Focus V{focus})",
+        fontsize=13,
+        fontweight="bold",
+    )
     gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.25)
 
-    # (0,0) w0, w_self
+    # (0,0) Direct/self/final neighbor budget for the focused target.
     ax = fig.add_subplot(gs[0, 0])
     n = 0
-    for col, lbl, ls in [("w0", "w0 (direct)", "-."),
-                          ("w_self", "w_self", "--")]:
+    if has_final:
+        main_weight_cols = [
+            (f"w0_final_{focus}", f"w0 final -> V{focus}", "-.", "tab:blue"),
+            (f"w_self_final_{focus}", f"w_self final -> V{focus}", "--", "k"),
+            (
+                f"w_neighbor_sum_final_{focus}",
+                f"neighbor sum final -> V{focus}",
+                "-",
+                "tab:orange",
+            ),
+        ]
+    else:
+        main_weight_cols = [
+            ("w0", "w0 summary", "-.", "tab:blue"),
+            ("w_self", "w_self summary", "--", "k"),
+            ("total_neighbor_weight", "neighbor total summary", "-", "tab:orange"),
+        ]
+
+    for col, lbl, ls, color in main_weight_cols:
         arr = _col_to_array(rows, col)
         if np.any(np.isfinite(arr)):
-            ax.plot(times, arr, ls, lw=1.5, label=lbl, color="k" if col == "w_self" else "tab:blue")
+            ax.plot(times, arr, ls, lw=1.5, label=lbl, color=color)
             n += 1
-    total_arr = _col_to_array(rows, "total_neighbor_weight")
-    if np.any(np.isfinite(total_arr)):
-        ax.plot(times, total_arr, "-", lw=1.2, label="total_neighbor_w",
-                color="tab:orange")
-        n += 1
     if n == 0:
-        _no_data(ax, "Fixed Weights")
-    _style(ax, "Fixed Weights (w0, w_self)", "Weight")
+        _no_data(ax, f"Final Weights for V{focus}")
+    _style(ax, f"Final Target Weights V{focus}", "Weight")
 
-    # (0,1) Per-neighbor weights
+    # (0,1) Source neighbor weights actually used for estimating the focus target.
     ax = fig.add_subplot(gs[0, 1])
-    if _plot_series(ax, times, rows, "w_neighbor", active,
-                    label_fmt="w_neighbor V{}") == 0:
-        _no_data(ax, "Per-Neighbor Weights")
-    _style(ax, "Per-Neighbor Weights", "Weight")
+    n = 0
+    if has_final:
+        for src in active:
+            col = f"w_neighbor_from_v{src}_to_{focus}"
+            arr = _col_to_array(rows, col)
+            if np.any(np.isfinite(arr)):
+                ax.plot(times, arr, lw=1.25, label=f"V{src} -> V{focus}")
+                n += 1
+    else:
+        n = _plot_series(
+            ax, times, rows, "w_neighbor", active,
+            label_fmt="summary w_neighbor V{}",
+        )
+    if n == 0:
+        _no_data(ax, f"Final Neighbor Source Weights to V{focus}")
+    _style(ax, f"Final Neighbor Source Weights to V{focus}", "Weight")
 
     # (1,0) Mean trust metrics
     ax = fig.add_subplot(gs[1, 0])
@@ -422,18 +702,22 @@ def _fig_weights(times, rows, active, host_id):
         _no_data(ax, "Trust Summary Metrics")
     _style(ax, "Trust Summary Metrics", "Value", xlabel="Time [s]")
 
-    # (1,1) Trusted neighbor count
+    # (1,1) Counts plus old summary total for compatibility checking.
     ax = fig.add_subplot(gs[1, 1])
     n = 0
     for col, lbl in [("trusted_neighbor_count", "Trusted Neighbors"),
-                      ("active_vehicle_count", "Active Vehicles")]:
+                      ("active_vehicle_count", "Active Vehicles"),
+                      ("total_neighbor_weight", "Legacy Neighbor Total")]:
         arr = _col_to_array(rows, col)
         if np.any(np.isfinite(arr)):
-            ax.step(times, arr, where="post", label=lbl)
+            if col in ("trusted_neighbor_count", "active_vehicle_count"):
+                ax.step(times, arr, where="post", label=lbl)
+            else:
+                ax.plot(times, arr, label=lbl, lw=1.1, alpha=0.8)
             n += 1
     if n == 0:
-        _no_data(ax, "Neighbor Counts")
-    _style(ax, "Neighbor / Active Vehicle Counts", "Count",
+        _no_data(ax, "Counts / Legacy Summary")
+    _style(ax, "Counts / Legacy Summary", "Count or Weight",
            xlabel="Time [s]")
 
     return fig
@@ -862,6 +1146,141 @@ def _fig_v2v_details(times, rows, active, focus, host_id):
     return fig
 
 
+def _fig_attack_timeline(times, rows, columns, active, host_id):
+    """
+    Figure 6 - Attack Timeline
+    Shows attack-module enable/disable moments and configured attack intervals.
+    """
+    intervals = _extract_attack_intervals(rows, columns, active, times)
+    events = _extract_attack_events(rows, columns, times)
+    t_min, t_max = _finite_time_bounds(times)
+
+    lanes = ["module enabled", "attack active"]
+    for interval in intervals:
+        label = interval.get("target_label", "attack")
+        if label not in lanes:
+            lanes.append(label)
+
+    fig_height = min(max(5.5, 1.0 + 0.55 * len(lanes)), 12.0)
+    fig = plt.figure(figsize=(16, fig_height))
+    fig.suptitle(f"V2V Attack Timeline (Host V{host_id})",
+                 fontsize=13, fontweight="bold")
+    gs = gridspec.GridSpec(2, 1, figure=fig, height_ratios=[3.0, 1.2],
+                           hspace=0.32)
+
+    ax = fig.add_subplot(gs[0, 0])
+    lane_y = {label: idx for idx, label in enumerate(lanes)}
+    bar_h = 0.72
+
+    if "v2v_attack_enabled" in columns:
+        enabled = _col_to_array(rows, "v2v_attack_enabled")
+        for start_s, end_s in _mask_to_time_spans(
+            times, np.isfinite(enabled) & (enabled >= 0.5)
+        ):
+            ax.broken_barh(
+                [(start_s, end_s - start_s)],
+                (lane_y["module enabled"] - bar_h / 2, bar_h),
+                facecolors="tab:green",
+                alpha=0.22,
+                edgecolors="tab:green",
+                label="module enabled",
+            )
+
+    if "v2v_attack_active" in columns:
+        active_arr = _col_to_array(rows, "v2v_attack_active")
+        for start_s, end_s in _mask_to_time_spans(
+            times, np.isfinite(active_arr) & (active_arr >= 0.5)
+        ):
+            ax.broken_barh(
+                [(start_s, end_s - start_s)],
+                (lane_y["attack active"] - bar_h / 2, bar_h),
+                facecolors="tab:red",
+                alpha=0.25,
+                edgecolors="tab:red",
+                label="attack active",
+            )
+
+    cmap = plt.get_cmap("tab10")
+    type_colors: Dict[str, object] = {}
+    for interval in intervals:
+        target_label = interval.get("target_label", "attack")
+        y = lane_y[target_label]
+        start_s = float(interval["start_s"])
+        end_s = float(interval["end_s"])
+        attack_type = str(interval.get("type", "") or "attack")
+        if attack_type not in type_colors:
+            type_colors[attack_type] = cmap(len(type_colors) % 10)
+        color = type_colors[attack_type]
+        ax.broken_barh(
+            [(start_s, end_s - start_s)],
+            (y - bar_h / 2, bar_h),
+            facecolors=color,
+            alpha=0.55,
+            edgecolors=color,
+            linewidth=1.0,
+            label=attack_type,
+        )
+        label = interval.get("display_label", attack_type)
+        if end_s > start_s:
+            ax.text(
+                start_s + 0.5 * (end_s - start_s),
+                y,
+                label,
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="black",
+                clip_on=True,
+            )
+
+    for event in events:
+        event_name = str(event.get("event", "")).lower()
+        event_time = _safe_float(event.get("time_s"))
+        if not math.isfinite(event_time):
+            continue
+        color = "tab:green" if event_name == "enable" else "tab:red"
+        ax.axvline(event_time, color=color, linestyle="--", linewidth=1.1,
+                   alpha=0.9)
+        ax.text(
+            event_time,
+            len(lanes) - 0.35,
+            event_name,
+            rotation=90,
+            ha="right",
+            va="top",
+            color=color,
+            fontsize=8,
+        )
+
+    if not intervals and not events:
+        _no_data(ax, "Attack Timeline")
+    ax.set_yticks(list(lane_y.values()))
+    ax.set_yticklabels(lanes, fontsize=8)
+    ax.set_xlim(t_min, t_max)
+    _style(ax, "Attack Intervals and Enable/Disable Events",
+           "", xlabel="Time [s]")
+
+    ax2 = fig.add_subplot(gs[1, 0], sharex=ax)
+    plotted = 0
+    for col, label, color in [
+        ("v2v_attack_enabled", "module enabled", "tab:green"),
+        ("v2v_attack_active", "attack active", "tab:red"),
+        ("v2v_attack_active_count", "active scenario count", "tab:purple"),
+    ]:
+        if col not in columns:
+            continue
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax2.step(times, arr, where="post", label=label, color=color)
+            plotted += 1
+    if plotted == 0:
+        _no_data(ax2, "Attack Status Signals")
+    _style(ax2, "Attack Status Signals", "Value", xlabel="Time [s]")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig
+
+
 def _print_static_metrics(rows, active):
     """
     Print an analytic summary of the trust logging run to the console.
@@ -1053,6 +1472,24 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
             col = f"{prefix}_{vid}"
             arrays[col] = arr(col)
 
+    final_focus_cols = [
+        f"w0_final_{focus}",
+        f"w_self_final_{focus}",
+        f"w_neighbor_sum_final_{focus}",
+    ]
+    for col in final_focus_cols:
+        arrays[col] = arr(col)
+    for src in active:
+        col = f"w_neighbor_from_v{src}_to_{focus}"
+        arrays[col] = arr(col)
+    has_final_focus_weights = any(
+        np.any(np.isfinite(arrays.get(col, np.array([np.nan]))))
+        for col in final_focus_cols
+    ) or any(
+        np.any(np.isfinite(arrays.get(f"w_neighbor_from_v{src}_to_{focus}", np.array([np.nan]))))
+        for src in active
+    )
+
     fig = plt.figure(figsize=(18, 10.8))
     fig.suptitle(
         f"Realtime Trust Log Playback - {os.path.basename(file_to_plot)} "
@@ -1114,21 +1551,45 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
                        [arrays.get(f"gtrust_{v}") for v in active],
                        bounded_unit=True)
 
-    # Weights.
-    add_time_line(ax_weights, "w0", "w0", color="k", ls="-.")
-    add_time_line(ax_weights, "w_self", "w_self", color="tab:blue", ls="--")
-    add_time_line(ax_weights, "total_neighbor_weight", "neighbor total",
-                  color="tab:orange")
-    for i, vid in enumerate(active):
-        add_time_line(ax_weights, f"w_neighbor_{vid}", f"w V{vid}",
-                      color=colors[i % len(colors)], alpha=0.8, lw=1.1)
-    _style(ax_weights, "Consensus Weights", "Weight", legend=True)
-    _set_axis_y_limits(
-        ax_weights,
-        [arrays.get("w0"), arrays.get("w_self"),
-         arrays.get("total_neighbor_weight")] +
-        [arrays.get(f"w_neighbor_{v}") for v in active],
-    )
+    # Weights. Prefer final per-target weights when the CSV has them.
+    if has_final_focus_weights:
+        add_time_line(ax_weights, f"w0_final_{focus}", f"w0 -> V{focus}",
+                      color="tab:blue", ls="-.")
+        add_time_line(ax_weights, f"w_self_final_{focus}",
+                      f"w_self -> V{focus}", color="k", ls="--")
+        add_time_line(ax_weights, f"w_neighbor_sum_final_{focus}",
+                      f"neighbor sum -> V{focus}", color="tab:orange")
+        for i, src in enumerate(active):
+            add_time_line(
+                ax_weights,
+                f"w_neighbor_from_v{src}_to_{focus}",
+                f"V{src} -> V{focus}",
+                color=colors[i % len(colors)],
+                alpha=0.8,
+                lw=1.1,
+            )
+        weight_limit_arrays = [
+            arrays.get(f"w0_final_{focus}"),
+            arrays.get(f"w_self_final_{focus}"),
+            arrays.get(f"w_neighbor_sum_final_{focus}"),
+        ] + [arrays.get(f"w_neighbor_from_v{src}_to_{focus}") for src in active]
+        weight_title = f"Final Weights for Target V{focus}"
+    else:
+        add_time_line(ax_weights, "w0", "w0 summary", color="k", ls="-.")
+        add_time_line(ax_weights, "w_self", "w_self summary",
+                      color="tab:blue", ls="--")
+        add_time_line(ax_weights, "total_neighbor_weight",
+                      "neighbor total summary", color="tab:orange")
+        for i, vid in enumerate(active):
+            add_time_line(ax_weights, f"w_neighbor_{vid}", f"summary w V{vid}",
+                          color=colors[i % len(colors)], alpha=0.8, lw=1.1)
+        weight_limit_arrays = [
+            arrays.get("w0"), arrays.get("w_self"),
+            arrays.get("total_neighbor_weight"),
+        ] + [arrays.get(f"w_neighbor_{v}") for v in active]
+        weight_title = "Consensus Weights (Legacy Summary)"
+    _style(ax_weights, weight_title, "Weight", legend=True)
+    _set_axis_y_limits(ax_weights, weight_limit_arrays)
 
     # Focus trust components.
     component_cols = [
@@ -1359,12 +1820,18 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
             f"state   {'PAUSED' if state['paused'] else 'PLAYING'}",
             f"window  {max(window_s, 0.0):7.2f}s",
         ]
+        live_weight_col = (
+            f"w_neighbor_sum_final_{focus}"
+            if has_final_focus_weights
+            else f"w_neighbor_{focus}"
+        )
+        live_weight_label = "w_sum" if has_final_focus_weights else "weight"
         mid_lines = [
             f"focus V{focus}",
             f"local  {_format_live_value(interp_sample(arrays.get(f'local_trust_{focus}', [np.nan]), idx, current_t))}",
             f"global {_format_live_value(interp_sample(arrays.get(f'global_trust_{focus}', [np.nan]), idx, current_t))}",
             f"direct {_format_live_value(interp_sample(arrays.get(f'trust_{focus}', [np.nan]), idx, current_t))}",
-            f"weight {_format_live_value(interp_sample(arrays.get(f'w_neighbor_{focus}', [np.nan]), idx, current_t))}",
+            f"{live_weight_label:7s}{_format_live_value(interp_sample(arrays.get(live_weight_col, [np.nan]), idx, current_t))}",
         ]
         right_lines = [
             f"active {int(arrays['active_vehicle_count'][idx]) if np.isfinite(arrays['active_vehicle_count'][idx]) else 0}",
@@ -1571,10 +2038,13 @@ def main():
     for focus in focuses:
         print(f"Plotting figures with focus vehicle: V{focus} ...")
         _fig_trust(times, rows, active, focus, host_id)
-        _fig_weights(times, rows, active, host_id)
+        _fig_weights(times, rows, active, focus, host_id)
         _fig_estimation(times, rows, active, host_id)
         _fig_impact_histograms(rows, active, focus, host_id)
         _fig_v2v_details(times, rows, active, focus, host_id)
+
+    print("Plotting V2V attack timeline ...")
+    _fig_attack_timeline(times, rows, columns, active, host_id)
 
     if not args.skip_relative:
         relative_file = args.relative_file or _find_relative_uio_log(directory, host_id)

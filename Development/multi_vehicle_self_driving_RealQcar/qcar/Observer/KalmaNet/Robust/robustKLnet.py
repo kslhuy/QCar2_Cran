@@ -58,6 +58,14 @@ class RSNConfig:
     predictor_mode: str = "kinematic"
     # Wheelbase used by the analytical QCar bicycle predictor.
     kin_wheelbase: float = 0.2
+    # Longitudinal model used by the analytical kinematic predictor.
+    # "tachometer" keeps the original behavior: v_next = motor_tach.
+    # Other modes create a true velocity innovation against z[..., v].
+    kin_velocity_model: str = "tachometer"
+    kin_velocity_tau: float = 0.301
+    kin_velocity_gain: float = 6.598
+    kin_max_velocity: float = 2.0
+    kin_max_acceleration: float = 2.0
 
 
 # ============================================================
@@ -217,6 +225,7 @@ class RobustMotionPredictor(nn.Module):
         prev_state_seq: torch.Tensor,
         hidden_dict: Optional[Dict] = None,
         dt: Optional[torch.Tensor] = None,
+        control_seq: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict, torch.Tensor]:
         """
         returns:
@@ -279,12 +288,15 @@ class KinematicPredictor(nn.Module):
     Accepts the exact same forward() signature as RobustMotionPredictor so that
     RobustStateNet.forward() requires zero structural changes.
 
-    Kinematic equations matched to QCarEKF.f():
-        dxE   =  motor_tach * dt
+    Default kinematic equations match QCarEKF.f():
+        dxE   =  v_pose * dt
         dyE   =  0
-        dpsi  =  motor_tach * tan(delta) / L * dt
-        v_next = motor_tach
-        w_next = motor_tach * tan(delta) / L
+        dpsi  =  v_pose * tan(delta) / L * dt
+        w_next = v_pose * tan(delta) / L
+
+    With kin_velocity_model="tachometer", v_pose and v_next both copy
+    motor_tach. Other kin_velocity_model values predict v_next from previous
+    state plus IMU/control inputs, creating velocity innovation in the update.
 
     Signals are extracted from existing branch-input tensors:
         delta      ← steer_seq[..., 2]  layout: [v, psi, delta]
@@ -295,6 +307,48 @@ class KinematicPredictor(nn.Module):
         super().__init__()
         self.dt = cfg.dt
         self.wheelbase = max(float(cfg.kin_wheelbase), 1e-6)
+        self.velocity_model = str(cfg.kin_velocity_model).strip().lower()
+        self.velocity_tau = max(float(cfg.kin_velocity_tau), 1e-6)
+        self.velocity_gain = float(cfg.kin_velocity_gain)
+        self.max_velocity = max(float(cfg.kin_max_velocity), 1e-6)
+        self.max_acceleration = max(float(cfg.kin_max_acceleration), 1e-6)
+
+    def _predict_velocity(
+        self,
+        prev_state_seq: torch.Tensor,
+        imu_seq: torch.Tensor,
+        motor_tach: torch.Tensor,
+        control_seq: Optional[torch.Tensor],
+        dt: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        prev_v = prev_state_seq[..., 3:4]
+        ax = imu_seq[..., 2:3]
+        throttle = control_seq if control_seq is not None else torch.zeros_like(prev_v)
+
+        model = self.velocity_model
+        if model == "imu_acceleration":
+            a_pred = ax
+            v_next = prev_v + a_pred * dt
+        elif model == "velocity_lag":
+            a_pred = (-prev_v + self.velocity_gain * throttle) / self.velocity_tau
+            v_next = prev_v + a_pred * dt
+        elif model == "velocity_command":
+            a_pred = (throttle - prev_v) / self.velocity_tau
+            v_next = prev_v + a_pred * dt
+        elif model == "simple_acceleration":
+            a_pred = throttle
+            v_next = prev_v + a_pred * dt
+        else:
+            a_pred = torch.clamp(
+                (motor_tach - prev_v) / torch.clamp(dt, min=1e-6),
+                -self.max_acceleration,
+                self.max_acceleration,
+            )
+            v_next = motor_tach
+
+        a_pred = torch.clamp(a_pred, -self.max_acceleration, self.max_acceleration)
+        v_next = torch.clamp(v_next, -self.max_velocity, self.max_velocity)
+        return v_next, a_pred
 
     def forward(
         self,
@@ -304,6 +358,7 @@ class KinematicPredictor(nn.Module):
         prev_state_seq: torch.Tensor,  # [B, 1, 5]  x_{k-1|k-1}
         hidden_dict: Optional[Dict] = None,
         dt: Optional[torch.Tensor] = None,
+        control_seq: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict, None]:
         """
         Returns:
@@ -318,11 +373,26 @@ class KinematicPredictor(nn.Module):
 
         # ── kinematic model ──────────────────────────────────────────────
         active_dt = dt if dt is not None else self.dt
-        yaw_rate = motor_tach * torch.tan(delta) / self.wheelbase
-        dxE    = motor_tach * active_dt
+        if not torch.is_tensor(active_dt):
+            active_dt = torch.as_tensor(
+                active_dt,
+                device=prev_state_seq.device,
+                dtype=prev_state_seq.dtype,
+            )
+
+        v_next, _ = self._predict_velocity(
+            prev_state_seq=prev_state_seq,
+            imu_seq=imu_seq,
+            motor_tach=motor_tach,
+            control_seq=control_seq,
+            dt=active_dt,
+        )
+        v_pose = motor_tach if self.velocity_model == "tachometer" else v_next
+
+        yaw_rate = v_pose * torch.tan(delta) / self.wheelbase
+        dxE    = v_pose * active_dt
         dyE    = torch.zeros_like(dxE)
         dpsi   = yaw_rate * active_dt
-        v_next = motor_tach
         w_next = yaw_rate
 
         motion = torch.cat([dxE, dyE, dpsi, v_next, w_next], dim=-1)  # [B, 1, 5]
@@ -521,7 +591,8 @@ class RobustStateNet(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         raw keys:
-            ax, ay, wz, delta, vfl, vfr, vrl, vrr, gps_valid, gps_hold_valid, gps_age_sec
+            ax, ay, wz, delta, vfl, vfr, vrl, vrr, throttle,
+            gps_valid, gps_hold_valid, gps_age_sec
         state_for_input = [B,T,5] containing [x,y,psi,v,w]
         Predictor inputs follow paper Eq.(2):
             IMU   = [v, psi, ax, ay, wz]
@@ -584,6 +655,7 @@ class RobustStateNet(nn.Module):
 
             prev_state_seq = x_prev_upd.unsqueeze(1)
             dt_t = dt_seq[:, t : t + 1, :] if dt_seq is not None else None
+            control_t = raw_t.get("throttle")
             x_pred_t, motion_t, pred_hidden_local, mask_t = self.predictor(
                 imu_t,
                 steer_t,
@@ -591,6 +663,7 @@ class RobustStateNet(nn.Module):
                 prev_state_seq,
                 pred_hidden_local,
                 dt=dt_t,
+                control_seq=control_t,
             )
             z_t = z_seq[:, t : t + 1, :]
 
@@ -681,6 +754,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         "vfr",
         "vrl",
         "vrr",
+        "throttle",
         "gps_valid",
         "gps_hold_valid",
         "gps_age_sec",
@@ -783,13 +857,19 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             update_mask_init_bias=float(self.config.get("update_mask_init_bias", 2.0)),
             predictor_mode=str(self.config.get("predictor_mode", "kinematic")),
             kin_wheelbase=float(self.config.get("kin_wheelbase", 0.2)),
+            kin_velocity_model=str(self.config.get("kin_velocity_model", "tachometer")),
+            kin_velocity_tau=float(self.config.get("kin_velocity_tau", 0.301)),
+            kin_velocity_gain=float(self.config.get("kin_velocity_gain", 6.598)),
+            kin_max_velocity=float(self.config.get("kin_max_velocity", self.config.get("max_velocity", 2.0))),
+            kin_max_acceleration=float(self.config.get("kin_max_acceleration", self.config.get("max_acceleration", 2.0))),
         )
 
         self.model = RobustStateNet(self.model_cfg).to(self.device)
         self.model.eval()
         self._log_info(
             f"Robust KalmanNet predictor_mode='{self.model_cfg.predictor_mode}'"
-            + (f" (kin_wheelbase={self.model_cfg.kin_wheelbase})"
+            + (f" (kin_wheelbase={self.model_cfg.kin_wheelbase}, "
+               f"kin_velocity_model={self.model_cfg.kin_velocity_model})"
                if self.model_cfg.predictor_mode == "kinematic" else "")
         )
         self.model_path = self._resolve_model_path(self.config.get("model_path"))
@@ -1353,6 +1433,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             prev_state_seq,
             self._stream_pred_hidden,
             dt=dt_t,
+            control_seq=raw_t.get("throttle"),
         )
         x_upd_t, K_t, upd_hidden, meas_mask_t, _ = self.model.updater(
             x_pred_t,
@@ -1608,6 +1689,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         motor_tach: float,
         steering: float,
         gyro_z: float,
+        throttle: float,
         acceleration: Optional[np.ndarray],
         gps_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, float]:
@@ -1630,22 +1712,10 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             "vfr": wheel_speed,
             "vrl": wheel_speed,
             "vrr": wheel_speed,
+            "throttle": float(throttle),
             "gps_valid": gps_valid,
             "gps_hold_valid": gps_hold_valid,
             "gps_age_sec": gps_age_sec,
-        }
-
-        gps_valid = float(bool(gps_data is not None and gps_data.get("valid", False)))
-        return {
-            "ax": float(accel[0]) if accel.size > 0 else 0.0,
-            "ay": float(accel[1]) if accel.size > 1 else 0.0,
-            "wz": float(gyro_z),
-            "delta": float(steering),
-            "vfl": wheel_speed,
-            "vfr": wheel_speed,
-            "vrl": wheel_speed,
-            "vrr": wheel_speed,
-            "gps_valid": gps_valid,
         }
 
     def _record_comparison(
@@ -1776,6 +1846,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                 motor_tach,
                 steering,
                 gyro_z,
+                throttle,
                 acceleration,
                 gps_data,
             )
@@ -2008,6 +2079,7 @@ def make_dummy_batch(B=4, T=20, device="cpu"):
         "vfr": torch.randn(B, T, 1, device=device) * 0.1 + 2.0,
         "vrl": torch.randn(B, T, 1, device=device) * 0.1 + 2.0,
         "vrr": torch.randn(B, T, 1, device=device) * 0.1 + 2.0,
+        "throttle": torch.randn(B, T, 1, device=device) * 0.05,
         "gps_valid": torch.zeros(B, T, 1, device=device),
         "gps_hold_valid": torch.zeros(B, T, 1, device=device),
         "gps_age_sec": torch.zeros(B, T, 1, device=device),

@@ -15,6 +15,7 @@ RAW_KEYS = (
     "vfr",
     "vrl",
     "vrr",
+    "throttle",
     "gps_valid",
     "gps_hold_valid",
     "gps_age_sec",

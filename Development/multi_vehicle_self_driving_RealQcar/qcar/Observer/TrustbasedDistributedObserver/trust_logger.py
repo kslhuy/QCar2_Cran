@@ -108,6 +108,12 @@ class TrustWeightLogger:
             "v2v_attack_types",
             "v2v_attack_names",
             "v2v_attack_data_types",
+            "v2v_attack_enable_time_s",
+            "v2v_attack_disable_time_s",
+            "v2v_attack_last_event",
+            "v2v_attack_last_event_time_s",
+            "v2v_attack_events",
+            "v2v_attack_intervals",
             "v2v_attack_start_s",
             "v2v_attack_end_s",
         ]
@@ -149,6 +155,9 @@ class TrustWeightLogger:
                     f"b_score_{i}",
                     f"q_factor_{i}",
                     f"w_neighbor_{i}",
+                    f"w0_final_{i}",
+                    f"w_self_final_{i}",
+                    f"w_neighbor_sum_final_{i}",
                     f"est_conf_{i}",
                     f"pred_mode_{i}",
                     f"est_x_{i}",
@@ -176,6 +185,7 @@ class TrustWeightLogger:
                         f"g_dist_v{k}_{i}",
                         f"g_idx_v{k}_{i}",
                         f"g_val_v{k}_{i}",
+                        f"w_neighbor_from_v{k}_to_{i}",
                     ]
                 )
         return columns
@@ -212,6 +222,9 @@ class TrustWeightLogger:
         neighbors = self._normalize_vehicle_dict(data.get("neighbors", {}))
         direct_trust = self._normalize_vehicle_dict(data.get("direct_trust", {}))
         generalized_trust = self._normalize_vehicle_dict(data.get("generalized_trust", {}))
+        final_target_weights = self._normalize_vehicle_dict(
+            data.get("final_target_weights", {})
+        )
         estimation_conf = self._normalize_vehicle_dict(data.get("estimation_confidence", {}))
         prediction_mode = self._normalize_vehicle_dict(data.get("prediction_mode", {}))
         fleet_estimates = self._normalize_vehicle_dict(data.get("fleet_estimates", {}))
@@ -260,6 +273,22 @@ class TrustWeightLogger:
             "v2v_attack_names": self._to_csv_text(v2v_attack.get("names")),
             "v2v_attack_data_types": self._to_csv_text(
                 v2v_attack.get("data_types")
+            ),
+            "v2v_attack_enable_time_s": self._to_float_or_nan(
+                v2v_attack.get("enable_time_s", nan_val)
+            ),
+            "v2v_attack_disable_time_s": self._to_float_or_nan(
+                v2v_attack.get("disable_time_s", nan_val)
+            ),
+            "v2v_attack_last_event": self._to_csv_text(
+                v2v_attack.get("last_event")
+            ),
+            "v2v_attack_last_event_time_s": self._to_float_or_nan(
+                v2v_attack.get("last_event_time_s", nan_val)
+            ),
+            "v2v_attack_events": self._to_csv_text(v2v_attack.get("events")),
+            "v2v_attack_intervals": self._to_csv_text(
+                v2v_attack.get("intervals")
             ),
             "v2v_attack_start_s": self._to_float_or_nan(
                 v2v_attack.get("start_s", nan_val)
@@ -314,6 +343,7 @@ class TrustWeightLogger:
                 row[f"g_dist_v{k}_{i}"] = nan_val
                 row[f"g_idx_v{k}_{i}"] = nan_val
                 row[f"g_val_v{k}_{i}"] = nan_val
+                row[f"w_neighbor_from_v{k}_to_{i}"] = nan_val
             row[f"v_score_{i}"] = nan_val
             row[f"d_score_{i}"] = nan_val
             row[f"a_score_{i}"] = nan_val
@@ -321,6 +351,9 @@ class TrustWeightLogger:
             row[f"b_score_{i}"] = nan_val
             row[f"q_factor_{i}"] = nan_val
             row[f"w_neighbor_{i}"] = nan_val
+            row[f"w0_final_{i}"] = nan_val
+            row[f"w_self_final_{i}"] = nan_val
+            row[f"w_neighbor_sum_final_{i}"] = nan_val
             row[f"est_conf_{i}"] = nan_val
             row[f"pred_mode_{i}"] = nan_val
             row[f"est_x_{i}"] = nan_val
@@ -526,6 +559,29 @@ class TrustWeightLogger:
                 row["yolo_rel_meas_used_global_count"] += int(
                     row[f"yolo_rel_meas_used_global_{i}"]
                 )
+
+            if i in final_target_weights:
+                weight_data = final_target_weights[i]
+                if isinstance(weight_data, dict):
+                    row[f"w0_final_{i}"] = self._to_float_or_nan(
+                        weight_data.get("w0", nan_val)
+                    )
+                    row[f"w_self_final_{i}"] = self._to_float_or_nan(
+                        weight_data.get("w_self", nan_val)
+                    )
+                    source_weights = self._normalize_vehicle_dict(
+                        weight_data.get("neighbors", {})
+                    )
+                    source_weight_values: List[float] = []
+                    for k in range(self.max_vehicles):
+                        source_weight = self._to_float_or_nan(
+                            source_weights.get(k, nan_val)
+                        )
+                        row[f"w_neighbor_from_v{k}_to_{i}"] = source_weight
+                        if not math.isnan(source_weight):
+                            source_weight_values.append(source_weight)
+                    row[f"w_neighbor_sum_final_{i}"] = float(sum(source_weight_values))
+                    present = True
 
             if i in estimation_conf:
                 conf_val = self._to_float_or_nan(estimation_conf[i])

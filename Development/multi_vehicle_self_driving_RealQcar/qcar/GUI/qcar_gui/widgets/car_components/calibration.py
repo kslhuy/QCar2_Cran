@@ -209,6 +209,15 @@ class CalibrationControl(BaseWidget):
             pady=2,
         ).pack(side="left", expand=True, fill="x", padx=1)
 
+        ThemedButton(
+            row2,
+            text="Disconnect",
+            button_type="secondary",
+            command=self._disconnect_passive,
+            padx=5,
+            pady=2,
+        ).pack(side="left", expand=True, fill="x", padx=1)
+
         # Row 3: Active Controls
         row3 = tk.Frame(content, bg=c.bg_medium)
         row3.pack(fill="x")
@@ -258,6 +267,10 @@ class CalibrationControl(BaseWidget):
     def _clear_passive(self):
         if self.callbacks.on_clear_online_calibration:
             self.callbacks.on_clear_online_calibration(self.car_id)
+
+    def _disconnect_passive(self):
+        if self.callbacks.on_disconnect_online_calibration:
+            self.callbacks.on_disconnect_online_calibration(self.car_id)
 
     def _trigger_active(self):
         if self.callbacks.on_trigger_active_calibration:
@@ -447,5 +460,4 @@ class RobustDatasetControl(BaseWidget):
             self._buttons["stop"].set_enabled(False)
             self._buttons["save"].set_enabled(False)
             self._buttons["discard"].set_enabled(False)
-
 

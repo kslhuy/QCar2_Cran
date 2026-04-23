@@ -14,12 +14,6 @@ enable_recording: true
 recording_overwrite: true
 # recording_output_dir: null  # defaults to TrustbasedDistributedObserver/
 
-# Plotting configuration (optional, for future use)
-enable_plotting: false
-plotting:
-  fps: 30
-  time_window: 20.0
-
 # Relative estimator defaults
 relative:
   # ---------------------------------------------------------------------

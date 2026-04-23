@@ -348,10 +348,14 @@ class V2VAttackInjector:
         peer_vehicles: List[int],
         peer_ips: List[str],
         time_reference: Optional[Dict[str, Any]] = None,
+        vehicle_manifest: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """Activate V2V (alias)."""
         result = self.v2v_manager.activate_v2v(
-            peer_vehicles, peer_ips, time_reference=time_reference
+            peer_vehicles,
+            peer_ips,
+            time_reference=time_reference,
+            vehicle_manifest=vehicle_manifest,
         )
         if result:
             self.reset_start_time()

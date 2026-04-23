@@ -38,6 +38,7 @@ DEFAULT_CONFIG = {
         "seed": 7,
         "device": "auto",
         "reverse_split": False,
+        "aug_warmup_fraction": 0.5,
     },
     "loss": {
         "lambda_mask": 0.1,
@@ -58,6 +59,11 @@ DEFAULT_CONFIG = {
     "model": {
         "predictor_mode": "nn",
         "kin_wheelbase": 0.2,
+        "kin_velocity_model": "tachometer",
+        "kin_velocity_tau": 0.301,
+        "kin_velocity_gain": 6.598,
+        "kin_max_velocity": 2.0,
+        "kin_max_acceleration": 2.0,
         "pred_hidden": 32,
         "upd_hidden": 32,
         "gain_hidden": 32,
@@ -238,6 +244,12 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         help="Use first portion for validation and remaining for training",
     )
     parser.add_argument(
+        "--aug-warmup-fraction",
+        type=float,
+        default=float(train_cfg.get("aug_warmup_fraction", 0.5)),
+        help="Fraction of Phase B epochs that train on clean data before augmentation ramps in (0.0=no warmup, 1.0=entire phase is clean)",
+    )
+    parser.add_argument(
         "--predictor-mode",
         default=str(model_cfg.get("predictor_mode", "nn")),
         choices=["nn", "kinematic"],
@@ -248,6 +260,36 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         type=float,
         default=float(model_cfg.get("kin_wheelbase", 0.2)),
         help="Wheelbase L used by the analytical kinematic predictor to match QCarEKF",
+    )
+    parser.add_argument(
+        "--kin-velocity-model",
+        default=str(model_cfg.get("kin_velocity_model", "tachometer")),
+        choices=["tachometer", "imu_acceleration", "velocity_lag", "velocity_command", "simple_acceleration"],
+        help="Longitudinal model for kinematic predictor velocity; non-tachometer modes create velocity innovation",
+    )
+    parser.add_argument(
+        "--kin-velocity-tau",
+        type=float,
+        default=float(model_cfg.get("kin_velocity_tau", 0.301)),
+        help="Time constant for velocity_lag/velocity_command kinematic predictor modes",
+    )
+    parser.add_argument(
+        "--kin-velocity-gain",
+        type=float,
+        default=float(model_cfg.get("kin_velocity_gain", 6.598)),
+        help="Throttle-to-speed gain for velocity_lag kinematic predictor mode",
+    )
+    parser.add_argument(
+        "--kin-max-velocity",
+        type=float,
+        default=float(model_cfg.get("kin_max_velocity", 2.0)),
+        help="Velocity clamp for kinematic predictor longitudinal models",
+    )
+    parser.add_argument(
+        "--kin-max-acceleration",
+        type=float,
+        default=float(model_cfg.get("kin_max_acceleration", 2.0)),
+        help="Acceleration clamp for kinematic predictor longitudinal models",
     )
     parser.add_argument(
         "--pred-hidden",
@@ -383,12 +425,27 @@ def make_dataloader(dataset, batch_size: int, shuffle: bool, collate_fn, num_wor
 def summarize_batch_metrics(batch_metrics: List[Dict[str, float]]) -> Dict[str, float]:
     if not batch_metrics:
         return {}
-    keys = sorted({key for item in batch_metrics for key in item.keys()})
+    numeric_keys = sorted(
+        {key for item in batch_metrics for key in item.keys() if key != "has_attack"}
+    )
+    # Split into clean / attacked batches
+    clean = [m for m in batch_metrics if not m.get("has_attack", False)]
+    attacked = [m for m in batch_metrics if m.get("has_attack", False)]
+
     summary: Dict[str, float] = {}
-    for key in keys:
+    for key in numeric_keys:
         values = [float(item[key]) for item in batch_metrics if key in item]
         if values:
-            summary[key] = float(np.mean(values))
+            summary[key] = float(np.median(values))
+            summary[f"{key}_mean"] = float(np.mean(values))
+        clean_vals = [float(item[key]) for item in clean if key in item]
+        if clean_vals:
+            summary[f"{key}_clean"] = float(np.median(clean_vals))
+        atk_vals = [float(item[key]) for item in attacked if key in item]
+        if atk_vals:
+            summary[f"{key}_attacked"] = float(np.median(atk_vals))
+    summary["n_clean"] = float(len(clean))
+    summary["n_attacked"] = float(len(attacked))
     return summary
 
 
@@ -542,6 +599,11 @@ def main() -> None:
         dt=float(merged.get("metadata", {}).get("dt_mean", 0.02) or 0.02),
         predictor_mode=args.predictor_mode,
         kin_wheelbase=args.kin_wheelbase,
+        kin_velocity_model=args.kin_velocity_model,
+        kin_velocity_tau=args.kin_velocity_tau,
+        kin_velocity_gain=args.kin_velocity_gain,
+        kin_max_velocity=args.kin_max_velocity,
+        kin_max_acceleration=args.kin_max_acceleration,
         pred_hidden=args.pred_hidden,
         upd_hidden=args.upd_hidden,
         gain_hidden=args.gain_hidden,
@@ -551,6 +613,7 @@ def main() -> None:
     )
     model = RobustStateNet(cfg).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    scheduler = None  # created at each phase start
     state_weights = torch.tensor(args.state_weights, device=device, dtype=torch.float32)
 
     print(f"Resolved device : {device}")
@@ -634,8 +697,14 @@ def main() -> None:
             set_module_trainable(model.updater, True)
 
             if epoch == args.phase_a_epochs + 1:
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=max(args.phase_b_epochs, 1), eta_min=1e-6
+                )
+                warmup_ep = int(args.phase_b_epochs * args.aug_warmup_fraction)
                 print(f"\n{'='*60}")
                 print(f"Phase B started: Predictor frozen, Updater training")
+                if augmenter is not None and warmup_ep > 0:
+                    print(f"  Curriculum: {warmup_ep} clean epochs, then augmentation ramps to target")
                 print(f"{'='*60}\n")
 
         else:
@@ -689,20 +758,43 @@ def main() -> None:
                             pin_memory=pin_memory,
                         )
 
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=max(args.phase_c_epochs, 1), eta_min=1e-6
+                )
                 print(f"\n{'='*60}")
                 print(f"Phase C started: End-to-end, TF OFF, lr={lr_phase_e2e:.2e}")
                 print(f"{'='*60}\n")
+
+        # ── Curriculum: determine effective augmenter for this epoch ──────
+        curr_augmenter = None
+        if augmenter is not None:
+            if phase == 2:  # Phase B: warmup then ramp
+                phase_epoch = epoch - args.phase_a_epochs
+                warmup_epochs = int(args.phase_b_epochs * args.aug_warmup_fraction)
+                if phase_epoch <= warmup_epochs:
+                    curr_augmenter = None  # clean warmup
+                else:
+                    ramp_total = max(args.phase_b_epochs - warmup_epochs, 1)
+                    ramp_progress = min((phase_epoch - warmup_epochs) / ramp_total, 1.0)
+                    augmenter.config.attack_prob = args.attack_prob * ramp_progress
+                    augmenter.config.gps_attack_prob = args.gps_attack_prob * ramp_progress
+                    curr_augmenter = augmenter
+            else:
+                # Phase A or C: full augmentation
+                augmenter.config.attack_prob = args.attack_prob
+                augmenter.config.gps_attack_prob = args.gps_attack_prob
+                curr_augmenter = augmenter
 
         model.train()
         train_batch_metrics = []
         train_start = time.perf_counter()
         for batch in train_loader:
-            # Apply attack augmentation
+            # Apply attack augmentation (curriculum-aware)
             attack_labels = None
             meas_attack_labels = None
             raw_b, z_seq_b, x_gt_b, x0_b, dt_seq_b = batch
-            if augmenter is not None:
-                raw_b, z_seq_b, attack_labels, meas_attack_labels = augmenter.augment_batch(raw_b, z_seq_b)
+            if curr_augmenter is not None:
+                raw_b, z_seq_b, attack_labels, meas_attack_labels = curr_augmenter.augment_batch(raw_b, z_seq_b)
             raw_b, z_seq_b, x_gt_b, x0_b, dt_seq_b = move_batch_to_device(
                 (raw_b, z_seq_b, x_gt_b, x0_b, dt_seq_b), device
             )
@@ -734,16 +826,24 @@ def main() -> None:
                 K=out.get("K"),
                 lambda_gain=args.lambda_gain,
             )
-            loss.backward()
+            # Clamp loss to prevent extreme attack batches from corrupting
+            # Adam's momentum/variance estimates
+            loss_clamped = loss.clamp(max=100.0)
+            loss_clamped.backward()
             # FIX-4: gradient clipping for training stability
             if args.grad_clip > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=args.grad_clip)
             optimizer.step()
+            has_attack = bool(
+                (attack_labels is not None and attack_labels.sum().item() > 0)
+                or (meas_attack_labels is not None and meas_attack_labels.sum().item() > 0)
+            )
             batch_metric = {
-                "total": float(loss.item()),
+                "total": float(loss.item()),  # log unclamped for monitoring
                 "state": float(lambda_upd * logs["loss_upd"] + lambda_pred * logs["loss_pred"]),
                 "loss_upd": float(logs["loss_upd"]),
                 "loss_pred": float(logs["loss_pred"]),
+                "has_attack": has_attack,
             }
             for key in ("loss_mask", "loss_meas_mask", "loss_gain"):
                 if key in logs:
@@ -754,6 +854,9 @@ def main() -> None:
 
         train_metrics = summarize_batch_metrics(train_batch_metrics)
         train_loss = train_metrics.get("total", float("nan"))
+        train_loss_clean = train_metrics.get("total_clean", float("nan"))
+        if scheduler is not None:
+            scheduler.step()
         val_loss = float("nan")
         val_metrics: Dict[str, float] = {}
         val_seconds = 0.0
@@ -778,11 +881,15 @@ def main() -> None:
             torch.cuda.synchronize(device)
         epoch_seconds = time.perf_counter() - epoch_start
         steps_per_sec = len(train_loader) / epoch_seconds if epoch_seconds > 0 else float("nan")
+        n_clean = int(train_metrics.get("n_clean", 0))
+        n_attacked = int(train_metrics.get("n_attacked", 0))
         history.append(
             {
                 "epoch": epoch,
                 "phase": phase,
                 "train_loss": train_loss,
+                "train_loss_clean": train_loss_clean,
+                "train_loss_mean": train_metrics.get("total_mean", float("nan")),
                 "train_state_loss": train_metrics.get("state", float("nan")),
                 "val_loss": val_loss,
                 "val_state_loss": val_metrics.get("state", float("nan")),
@@ -790,14 +897,17 @@ def main() -> None:
                 "val_seconds": val_seconds,
                 "epoch_seconds": epoch_seconds,
                 "steps_per_sec": steps_per_sec,
+                "n_clean": n_clean,
+                "n_attacked": n_attacked,
             }
         )
+        clean_str = f", clean={train_loss_clean:.6f}" if not np.isnan(train_loss_clean) else ""
         print(
             f"[{phase_label}] Epoch {epoch:03d} | "
-            f"train={train_loss:.6f} (state={train_metrics.get('state', float('nan')):.6f}) | "
+            f"train={train_loss:.6f}{clean_str} (state={train_metrics.get('state', float('nan')):.6f}) | "
             f"val={val_loss:.6f} (state={val_metrics.get('state', float('nan')):.6f}) | "
             f"time={epoch_seconds:.2f}s (train={train_seconds:.2f}s, val={val_seconds:.2f}s) | "
-            f"{steps_per_sec:.2f} steps/s"
+            f"{steps_per_sec:.2f} steps/s | batches clean/atk={n_clean}/{n_attacked}"
         )
         if device.type == "cuda":
             mem_alloc_mb = torch.cuda.memory_allocated(device) / (1024 ** 2)

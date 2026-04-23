@@ -62,6 +62,7 @@ class CarPanelCallbacks:
     on_set_robust_kalmannet_dataset: Callable[[int, str, dict], None] = None
     on_start_online_calibration: Callable[[int], None] = None
     on_stop_online_calibration: Callable[[int], None] = None
+    on_disconnect_online_calibration: Callable[[int], None] = None
     on_trigger_online_analysis: Callable[[int, str, dict], None] = None
     on_clear_online_calibration: Callable[[int], None] = None
     on_trigger_active_calibration: Callable[[int, str, dict], None] = None

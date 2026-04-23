@@ -322,6 +322,9 @@ class InitializingState(StateBase):
             if not self.vehicle_logic.is_physical_qcar:
                 waypoints = waypoints * 0.975
                 self.logger.logger.info("Scaled virtual waypoints by 0.975")
+            if self.vehicle_logic.vehicle_type == "Limo":
+                waypoints = waypoints * 1.06
+                self.logger.logger.info("Scaled Limo waypoints by 1.06")
 
             self.vehicle_logic.waypoint_sequence = waypoints
             self.logger.logger.info(

@@ -11,6 +11,15 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict, Tuple
 from hal.content.qcar_functions import QCarEKF
 
+try:
+    from Observer.TrustbasedDistributedObserver.motor_model import (
+        AccelDragMotorModel,
+        MotorModelConfig,
+    )
+except Exception:
+    AccelDragMotorModel = None
+    MotorModelConfig = None
+
 
 def wrap_to_pi(angle: float) -> float:
     """Wrap angle to [-pi, pi)"""
@@ -110,6 +119,134 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         self.ekf = None
         self.ekf_initialized = False
 
+        wheelbase = config.get("wheelbase", config.get("kin_wheelbase", 0.2))
+        try:
+            self.wheelbase = float(wheelbase)
+        except (TypeError, ValueError):
+            self.wheelbase = 0.2
+        if not np.isfinite(self.wheelbase) or self.wheelbase <= 0.0:
+            self.wheelbase = 0.2
+
+        max_steering_angle = config.get("max_steering_angle", 0.5)
+        try:
+            self.max_steering_angle = float(max_steering_angle)
+        except (TypeError, ValueError):
+            self.max_steering_angle = 0.5
+        if not np.isfinite(self.max_steering_angle) or self.max_steering_angle <= 0.0:
+            self.max_steering_angle = 0.5
+
+        gyro_heading_blend = config.get("gyro_heading_blend", 0.25)
+        try:
+            gyro_heading_blend = float(gyro_heading_blend)
+        except (TypeError, ValueError):
+            gyro_heading_blend = 0.25
+        self.gyro_heading_blend = float(np.clip(gyro_heading_blend, 0.0, 1.0))
+
+        self.longitudinal_model = str(
+            config.get("longitudinal_model", "tachometer")
+        ).strip().lower()
+        valid_longitudinal_models = {
+            "tachometer",
+            "imu_acceleration",
+            "velocity_lag",
+            "velocity_command",
+            "acceleration_lag",
+            "simple_acceleration",
+            "motor_model",
+        }
+        if self.longitudinal_model not in valid_longitudinal_models:
+            self.longitudinal_model = "tachometer"
+        self.use_tachometer_update = bool(config.get("use_tachometer_update", True))
+        velocity_lag_cfg = config.get("velocity_lag_model", {})
+        accel_lag_cfg = config.get("accel_lag_model", {})
+        if not isinstance(velocity_lag_cfg, dict):
+            velocity_lag_cfg = {}
+        if not isinstance(accel_lag_cfg, dict):
+            accel_lag_cfg = {}
+
+        self.max_velocity = float(config.get("max_velocity", 2.0))
+        self.max_acceleration = float(config.get("max_acceleration", 2.0))
+        self.velocity_lag_tau = max(
+            float(config.get("velocity_lag_tau", velocity_lag_cfg.get("tau", 0.301))),
+            1e-6,
+        )
+        self.velocity_gain = float(
+            config.get("velocity_gain", velocity_lag_cfg.get("velocity_gain", 6.598))
+        )
+        self.velocity_lag_deadband = max(
+            float(
+                config.get(
+                    "velocity_lag_deadband",
+                    velocity_lag_cfg.get("throttle_deadband", 0.0),
+                )
+            ),
+            0.0,
+        )
+        self.velocity_command_tau = max(
+            float(config.get("velocity_command_tau", self.velocity_lag_tau)), 1e-6
+        )
+        self.accel_lag_tau = max(
+            float(config.get("accel_lag_tau", accel_lag_cfg.get("tau", 0.318))), 1e-6
+        )
+        self.accel_lag_gain = float(
+            config.get("accel_lag_gain", accel_lag_cfg.get("input_gain", 1.0))
+        )
+        self.longitudinal_accel_state = 0.0
+        self.motor_accel_state = 0.0
+        accel_fusion_cfg = config.get("acceleration_fusion", {})
+        if not isinstance(accel_fusion_cfg, dict):
+            accel_fusion_cfg = {}
+        self.acceleration_fusion_enabled = bool(
+            accel_fusion_cfg.get("enabled", True)
+        )
+        self.tach_accel_alpha = float(
+            np.clip(accel_fusion_cfg.get("tach_derivative_alpha", 0.20), 0.0, 1.0)
+        )
+        self.accel_output_alpha = float(
+            np.clip(accel_fusion_cfg.get("output_alpha", 0.35), 0.0, 1.0)
+        )
+        self.residual_low_mps = max(
+            float(accel_fusion_cfg.get("residual_low_mps", 0.04)), 0.0
+        )
+        self.residual_high_mps = max(
+            float(accel_fusion_cfg.get("residual_high_mps", 0.20)),
+            self.residual_low_mps + 1e-6,
+        )
+        self.model_weight_high = float(
+            np.clip(accel_fusion_cfg.get("model_weight_high", 0.90), 0.0, 1.0)
+        )
+        self.model_weight_low = float(
+            np.clip(accel_fusion_cfg.get("model_weight_low", 0.60), 0.0, 1.0)
+        )
+        self.imu_weight = float(
+            np.clip(accel_fusion_cfg.get("imu_weight", 0.0), 0.0, 1.0)
+        )
+        self.imu_residual_gate_mps2 = max(
+            float(accel_fusion_cfg.get("imu_residual_gate_mps2", 1.5)), 0.0
+        )
+        self.acceleration_estimate = 0.0
+        self.tach_accel_lpf = 0.0
+        self._prev_motor_tach_for_accel = None
+        self.accel_model_weight = self.model_weight_high
+        self.velocity_residual = 0.0
+        self.acceleration_diagnostics = {
+            "a_model": 0.0,
+            "a_tach": 0.0,
+            "a_imu": 0.0,
+            "velocity_residual": 0.0,
+            "model_weight": self.accel_model_weight,
+        }
+        self.motor_model_enabled = False
+        self.motor_model = None
+        if self.longitudinal_model == "motor_model" and MotorModelConfig is not None:
+            motor_cfg = config.get("motor_model", {})
+            if not isinstance(motor_cfg, dict):
+                motor_cfg = {}
+            motor_model_config = MotorModelConfig.from_dict(motor_cfg)
+            self.motor_model_enabled = bool(motor_model_config.enabled)
+            if self.motor_model_enabled:
+                self.motor_model = AccelDragMotorModel(motor_model_config)
+
         # # Low-pass filter coefficient for velocity (0 < alpha <= 1)
         # # Lower value = smoother but more delay. 1.0 = no filtering.
         # self.v_lpf_alpha = config.get("v_lpf_alpha", 0.15)
@@ -130,10 +267,14 @@ class EKFStateEstimator(LocalStateEstimatorBase):
                 initial_pose = np.array([0.0, 0.0, 0.0])
 
             self.ekf = QCarEKF(x_0=initial_pose)
+            if hasattr(self.ekf, "L"):
+                self.ekf.L = self.wheelbase
             self.ekf_initialized = True
 
             if self.logger:
-                self.logger.logger.info("QCarEKF initialized successfully")
+                self.logger.logger.info(
+                    f"QCarEKF initialized successfully (wheelbase={self.wheelbase:.3f} m)"
+                )
 
         except Exception as e:
             if self.logger:
@@ -156,10 +297,12 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         """Update EKF with sensor data"""
         try:
             if self.use_qcar_ekf and self.ekf_initialized:
-                return self._update_qcar_ekf(motor_tach, steering, dt, gyro_z, gps_data)
+                return self._update_qcar_ekf(
+                    motor_tach, steering, throttle, dt, gyro_z, gps_data, acceleration
+                )
             else:
                 return self._update_fallback_ekf(
-                    motor_tach, steering, dt, gyro_z, gps_data, acceleration
+                    motor_tach, steering, throttle, dt, gyro_z, gps_data, acceleration
                 )
         except Exception as e:
             if self.logger:
@@ -170,12 +313,23 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         self,
         motor_tach: float,
         steering: float,
+        throttle: float,
         dt: float,
         gyro_z: float,
         gps_data: Optional[Dict],
+        acceleration: Optional[np.ndarray],
     ) -> bool:
         """Update using QCarEKF"""
         try:
+            prev_v = float(self.state[3])
+            ax = acceleration[0] if acceleration is not None else 0.0
+            v_pred, a_model, _ = self._predict_longitudinal(
+                v=prev_v,
+                motor_tach=motor_tach,
+                throttle=throttle,
+                ax=ax,
+                dt=dt,
+            )
             # GPS data is now passed from VehicleObserver (centralized sensor reading)
             y_gps = None
             gps_valid = False
@@ -199,6 +353,13 @@ class EKFStateEstimator(LocalStateEstimatorBase):
 
             # Update internal state
             self.state = np.array([x, y, theta, motor_tach])
+            a_tach = self._update_tach_acceleration(motor_tach, dt)
+            self._fuse_acceleration(
+                a_model=a_model,
+                a_tach=a_tach,
+                a_imu=float(ax),
+                velocity_residual=float(motor_tach) - float(v_pred),
+            )
             self.last_update_time = time.time()
 
             return True
@@ -208,16 +369,180 @@ class EKFStateEstimator(LocalStateEstimatorBase):
                 self.logger.log_error("QCarEKF update error", e)
             return False
 
+    def _update_tach_acceleration(self, motor_tach: float, dt: float) -> float:
+        """Causal low-pass derivative of motor tachometer velocity."""
+        motor_tach = float(motor_tach)
+        if dt <= 0.0 or self._prev_motor_tach_for_accel is None:
+            self._prev_motor_tach_for_accel = motor_tach
+            return float(self.tach_accel_lpf)
+
+        raw_accel = (motor_tach - self._prev_motor_tach_for_accel) / dt
+        self._prev_motor_tach_for_accel = motor_tach
+        raw_accel = float(
+            np.clip(raw_accel, -self.max_acceleration, self.max_acceleration)
+        )
+
+        alpha = self.tach_accel_alpha
+        self.tach_accel_lpf = (
+            alpha * raw_accel + (1.0 - alpha) * self.tach_accel_lpf
+        )
+        return float(self.tach_accel_lpf)
+
+    def _effective_velocity_lag_throttle(self, throttle: float) -> float:
+        """Apply calibrated throttle deadband before velocity-lag prediction."""
+        u = float(throttle)
+        deadband = float(self.velocity_lag_deadband)
+        if deadband <= 0.0:
+            return u
+        mag = max(abs(u) - deadband, 0.0)
+        return float(np.sign(u) * mag)
+
+    def _model_weight_from_residual(self, residual_abs: float) -> float:
+        """Map velocity prediction residual to model trust weight."""
+        if residual_abs <= self.residual_low_mps:
+            return self.model_weight_high
+        if residual_abs >= self.residual_high_mps:
+            return self.model_weight_low
+        ratio = (residual_abs - self.residual_low_mps) / (
+            self.residual_high_mps - self.residual_low_mps
+        )
+        return float(
+            self.model_weight_high
+            + ratio * (self.model_weight_low - self.model_weight_high)
+        )
+
+    def _fuse_acceleration(
+        self,
+        a_model: float,
+        a_tach: float,
+        a_imu: float,
+        velocity_residual: float,
+    ) -> float:
+        """
+        Fuse acceleration from calibrated input model and tach derivative.
+
+        IMU acceleration is intentionally low-trust by default. It can add a
+        small correction only when it agrees with the model/tach estimate.
+        """
+        if not self.acceleration_fusion_enabled:
+            self.acceleration_estimate = float(
+                np.clip(a_model, -self.max_acceleration, self.max_acceleration)
+            )
+            return self.acceleration_estimate
+
+        model_weight = self._model_weight_from_residual(abs(float(velocity_residual)))
+        tach_weight = 1.0 - model_weight
+        fused = model_weight * float(a_model) + tach_weight * float(a_tach)
+
+        if self.imu_weight > 0.0 and np.isfinite(a_imu):
+            if abs(float(a_imu) - fused) <= self.imu_residual_gate_mps2:
+                fused = (
+                    (1.0 - self.imu_weight) * fused
+                    + self.imu_weight * float(a_imu)
+                )
+
+        fused = float(np.clip(fused, -self.max_acceleration, self.max_acceleration))
+        alpha = self.accel_output_alpha
+        self.acceleration_estimate = float(
+            alpha * fused + (1.0 - alpha) * self.acceleration_estimate
+        )
+        self.accel_model_weight = float(model_weight)
+        self.velocity_residual = float(velocity_residual)
+        self.acceleration_diagnostics = {
+            "a_model": float(a_model),
+            "a_tach": float(a_tach),
+            "a_imu": float(a_imu) if np.isfinite(a_imu) else float("nan"),
+            "velocity_residual": float(velocity_residual),
+            "model_weight": float(model_weight),
+        }
+        return self.acceleration_estimate
+
+    def _predict_longitudinal(
+        self,
+        v: float,
+        motor_tach: float,
+        throttle: float,
+        ax: float,
+        dt: float,
+    ) -> Tuple[float, float, float]:
+        """
+        Predict longitudinal velocity/acceleration.
+
+        Returns:
+            (v_pred, a_pred, v_pose), where v_pose is the velocity used by
+            the bicycle pose prediction before the tachometer correction step.
+        """
+        model = self.longitudinal_model
+        if dt <= 0.0:
+            return float(v), 0.0, float(motor_tach)
+
+        if model == "tachometer":
+            a_pred = float(ax)
+            v_pred = float(v) + a_pred * dt
+            v_pose = float(motor_tach)
+        elif model == "imu_acceleration":
+            a_pred = float(ax)
+            v_pred = float(v) + a_pred * dt
+            v_pose = v_pred
+        elif model == "velocity_lag":
+            u_eff = self._effective_velocity_lag_throttle(throttle)
+            a_pred = (
+                -(1.0 / self.velocity_lag_tau) * float(v)
+                + (self.velocity_gain / self.velocity_lag_tau) * u_eff
+            )
+            v_pred = float(v) + a_pred * dt
+            v_pose = v_pred
+        elif model == "velocity_command":
+            a_pred = (float(throttle) - float(v)) / self.velocity_command_tau
+            v_pred = float(v) + a_pred * dt
+            v_pose = v_pred
+        elif model == "acceleration_lag":
+            self.longitudinal_accel_state += dt * (
+                -(1.0 / self.accel_lag_tau) * self.longitudinal_accel_state
+                + (self.accel_lag_gain / self.accel_lag_tau) * float(throttle)
+            )
+            a_pred = self.longitudinal_accel_state
+            v_pred = float(v) + a_pred * dt
+            v_pose = v_pred
+        elif (
+            model == "motor_model"
+            and self.motor_model_enabled
+            and self.motor_model is not None
+        ):
+            v_pred, a_pred, self.motor_accel_state = self.motor_model.predict(
+                throttle=float(throttle),
+                v=float(v),
+                motor_accel=self.motor_accel_state,
+                dt=dt,
+            )
+            v_pose = v_pred
+        elif model == "simple_acceleration":
+            a_pred = float(throttle)
+            v_pred = float(v) + a_pred * dt
+            v_pose = v_pred
+        else:
+            a_pred = float(ax)
+            v_pred = float(v) + a_pred * dt
+            v_pose = float(motor_tach)
+
+        max_v = max(float(self.max_velocity), 1e-6)
+        max_a = max(float(self.max_acceleration), 1e-6)
+        v_pred = float(np.clip(v_pred, -max_v, max_v))
+        v_pose = float(np.clip(v_pose, -max_v, max_v))
+        a_pred = float(np.clip(a_pred, -max_a, max_a))
+        return v_pred, a_pred, v_pose
+
     def _update_fallback_ekf(
         self,
         motor_tach: float,
         steering: float,
+        throttle: float,
         dt: float,
         gyro_z: float,
         gps_data: Optional[Dict],
         acceleration: Optional[np.ndarray] = None,
     ) -> bool:
-        """Update using 4D Kinematic Sensor Fusion EKF implementation"""
+        """Update using 4D bicycle-model sensor fusion EKF implementation."""
         try:
             # Prediction step
             x, y, theta, v = self.state
@@ -226,19 +551,42 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             # Assuming acceleration is [ax, ay, az]
             ax = acceleration[0] if acceleration is not None else 0.0
 
-            # Kinematic Prediction using IMU acceleration and gyro
-            v_pred = v + ax * dt
-            theta_pred = theta + gyro_z * dt
-            x_pred = x + v * np.cos(theta) * dt
-            y_pred = y + v * np.sin(theta) * dt
+            v_pred, a_model, v_pose = self._predict_longitudinal(
+                v=v,
+                motor_tach=motor_tach,
+                throttle=throttle,
+                ax=ax,
+                dt=dt,
+            )
+            a_tach = self._update_tach_acceleration(motor_tach, dt)
+            self._fuse_acceleration(
+                a_model=a_model,
+                a_tach=a_tach,
+                a_imu=float(ax),
+                velocity_residual=float(motor_tach) - float(v_pred),
+            )
+            steering = float(
+                np.clip(steering, -self.max_steering_angle, self.max_steering_angle)
+            )
+            bicycle_yaw_rate = v_pose * np.tan(steering) / self.wheelbase
+            heading_rate = (
+                (1.0 - self.gyro_heading_blend) * bicycle_yaw_rate
+                + self.gyro_heading_blend * float(gyro_z)
+            )
+
+            # QCar-like bicycle prediction for pose; velocity can come from
+            # tachometer, IMU acceleration, or a throttle-based model.
+            theta_pred = theta + heading_rate * dt
+            x_pred = x + v_pose * np.cos(theta) * dt
+            y_pred = y + v_pose * np.sin(theta) * dt
 
             state_pred = np.array([x_pred, y_pred, theta_pred, v_pred])
 
             # Jacobian of motion model (F = df/dx)
             F = np.array(
                 [
-                    [1, 0, -v * np.sin(theta) * dt, np.cos(theta) * dt],
-                    [0, 1, v * np.cos(theta) * dt, np.sin(theta) * dt],
+                    [1, 0, -v_pose * np.sin(theta) * dt, 0],
+                    [0, 1, v_pose * np.cos(theta) * dt, 0],
                     [0, 0, 1, 0],
                     [0, 0, 0, 1],
                 ]
@@ -247,11 +595,11 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             # Predict covariance
             P_pred = F @ self.P @ F.T + self.Q
 
-            # Update step
-            # We always have tachometer measurement, but GPS is optional
+            # Update step: GPS and tachometer corrections are optional so the
+            # fallback can run as either sensor fusion or pure model prediction.
             has_gps = gps_data is not None and gps_data.get("valid", False)
 
-            if has_gps:
+            if has_gps and self.use_tachometer_update:
                 # Measurement: [x, y, theta, v]
                 z = np.array(
                     [
@@ -263,11 +611,34 @@ class EKFStateEstimator(LocalStateEstimatorBase):
                 )
                 H = np.eye(self.state_dim)
                 R_meas = self.R
-            else:
+            elif has_gps:
+                # Measurement: [x, y, theta]
+                z = np.array(
+                    [
+                        gps_data.get("x", x_pred),
+                        gps_data.get("y", y_pred),
+                        gps_data.get("theta", theta_pred),
+                    ]
+                )
+                H = np.array(
+                    [
+                        [1, 0, 0, 0],
+                        [0, 1, 0, 0],
+                        [0, 0, 1, 0],
+                    ]
+                )
+                R_meas = self.R[:3, :3]
+            elif self.use_tachometer_update:
                 # Measurement: [v] only
                 z = np.array([motor_tach])
                 H = np.array([[0, 0, 0, 1]])
                 R_meas = np.array([[self.R[3, 3]]])  # Only velocity measurement noise
+            else:
+                self.state = state_pred
+                self.state[2] = wrap_to_pi(self.state[2])
+                self.P = P_pred
+                self.last_update_time = time.time()
+                return True
 
             y_res = z - H @ state_pred
 
@@ -293,8 +664,10 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             return False
 
     def get_state(self) -> np.ndarray:
-        """Get current state estimate as numpy array [x, y, theta, v]"""
-        return self.state.copy()
+        """Get current state estimate as numpy array [x, y, theta, v, a]."""
+        return np.concatenate(
+            [self.state.copy(), np.array([self.acceleration_estimate], dtype=float)]
+        )
 
     def reset(self, initial_pose: Optional[np.ndarray] = None):
         """Reset EKF state"""
@@ -305,6 +678,13 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             self.state = np.zeros(self.state_dim)
 
         self.P = np.eye(self.state_dim) * 0.1
+        self.longitudinal_accel_state = 0.0
+        self.motor_accel_state = 0.0
+        self.acceleration_estimate = 0.0
+        self.tach_accel_lpf = 0.0
+        self._prev_motor_tach_for_accel = None
+        self.accel_model_weight = self.model_weight_high
+        self.velocity_residual = 0.0
 
         # Reinitialize QCarEKF if used
         if self.use_qcar_ekf:

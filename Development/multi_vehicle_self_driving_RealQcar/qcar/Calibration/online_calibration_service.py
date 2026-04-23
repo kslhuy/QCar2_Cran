@@ -83,6 +83,184 @@ def _save_csv(
 # =========================================================================
 
 
+def _rmse(a: np.ndarray, b: np.ndarray) -> float:
+    mask = np.isfinite(a) & np.isfinite(b)
+    if not np.any(mask):
+        return float("nan")
+    return float(np.sqrt(np.mean((a[mask] - b[mask]) ** 2)))
+
+
+def _ema_signal(values: np.ndarray, alpha: float = 0.2) -> np.ndarray:
+    """Small causal smoother used only for passive model fitting."""
+    values = np.asarray(values, dtype=float).reshape(-1)
+    if values.size == 0:
+        return values
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    out = np.empty_like(values, dtype=float)
+    out[0] = values[0]
+    for i in range(1, values.size):
+        out[i] = alpha * values[i] + (1.0 - alpha) * out[i - 1]
+    return out
+
+
+def _constant_command_segments(
+    command: np.ndarray,
+    quant_step: float,
+    min_samples: int,
+    zero_deadband: float = 0.0,
+) -> List[Tuple[int, int, float]]:
+    """
+    Split a command trace into contiguous constant-command regions.
+
+    Passive data often revisits the same throttle level many times. Grouping all
+    samples by value mixes transients and steady-state data, so analyses should
+    work on dwell segments first and aggregate those segment summaries.
+    """
+    cmd = np.asarray(command, dtype=float).reshape(-1)
+    if cmd.size == 0:
+        return []
+
+    q = np.round(cmd / quant_step) * quant_step
+    segments: List[Tuple[int, int, float]] = []
+    start = 0
+
+    for i in range(1, q.size):
+        if abs(q[i] - q[start]) > 0.5 * quant_step:
+            if i - start >= min_samples and abs(q[start]) > zero_deadband:
+                segments.append((start, i, float(q[start])))
+            start = i
+
+    if q.size - start >= min_samples and abs(q[start]) > zero_deadband:
+        segments.append((start, q.size, float(q[start])))
+
+    return segments
+
+
+def _velocity_lag_prediction(
+    throttles: np.ndarray,
+    v0: float,
+    sample_dt: float,
+    tau: float,
+    velocity_gain: float,
+    throttle_deadband: float = 0.0,
+) -> np.ndarray:
+    pred = np.zeros_like(throttles, dtype=float)
+    if pred.size == 0:
+        return pred
+    pred[0] = float(v0)
+    tau = max(float(tau), 1e-9)
+    deadband = max(float(throttle_deadband), 0.0)
+    if deadband > 0.0:
+        throttles_eff = np.sign(throttles) * np.maximum(
+            np.abs(throttles) - deadband, 0.0
+        )
+    else:
+        throttles_eff = throttles
+    for i in range(1, pred.size):
+        u = float(throttles_eff[i - 1])
+        pred[i] = pred[i - 1] + sample_dt * (
+            -(1.0 / tau) * pred[i - 1]
+            + (float(velocity_gain) / tau) * u
+        )
+    return pred
+
+
+def _observer_model_summary(
+    tau: float,
+    velocity_gain: float,
+    input_gain: float,
+    velocity_rmse: float,
+    accel_rmse: float = float("nan"),
+    throttle_deadband: float = 0.0,
+) -> Dict[str, Any]:
+    """Observer-ready representation for config_local_estimators.yaml."""
+    accel_formula = (
+        "u_eff = sign(throttle) * max(abs(throttle) - throttle_deadband, 0); "
+        "a_hat = (velocity_gain * u_eff - velocity) / tau"
+    )
+    return {
+        "model_name": "deadband_compensated_velocity_lag",
+        "model_type": "first_order_throttle_to_velocity",
+        "math": {
+            "effective_input": (
+                "u_eff = sign(u) * max(abs(u) - u_dead, 0)"
+            ),
+            "velocity_dynamics": "v_dot = (K_v * u_eff - v) / tau",
+            "acceleration_output": "a_model = (K_v * u_eff - v) / tau",
+            "discrete_prediction": "v[k+1] = v[k] + dt * a_model[k]",
+            "residual": "r_v = motor_tach - v_pred",
+            "fusion": (
+                "a_hat = w_model(r_v) * a_model + "
+                "(1 - w_model(r_v)) * a_tach_lpf"
+            ),
+        },
+        "recommended_longitudinal_model": "velocity_lag",
+        "velocity_lag_model": {
+            "tau": float(tau),
+            "velocity_gain": float(velocity_gain),
+            "throttle_deadband": float(throttle_deadband),
+            "acceleration_formula": accel_formula,
+        },
+        "accel_lag_model": {
+            "tau": float(tau),
+            "input_gain": float(input_gain),
+            "note": (
+                "This no-drag acceleration-lag model is useful for comparison, "
+                "but velocity_lag is recommended for the local observer because "
+                "constant throttle converges to a steady speed."
+            ),
+        },
+        "quality": {
+            "velocity_rmse_mps": float(velocity_rmse),
+            "acceleration_rmse_mps2": float(accel_rmse),
+        },
+        "copy_to": {
+            "local_observer_config": (
+                "Observer/config_local_estimators.yaml -> local.ekf"
+            ),
+            "trust_fleet_config": (
+                "Observer/TrustbasedDistributedObserver/config_trust_estimator.yaml "
+                "-> vehicle.velocity_lag_model"
+            ),
+        },
+        "config_patch": {
+            "local": {
+                "ekf": {
+                    "longitudinal_model": "velocity_lag",
+                    "use_tachometer_update": True,
+                    "velocity_lag_model": {
+                        "tau": float(tau),
+                        "velocity_gain": float(velocity_gain),
+                        "throttle_deadband": float(throttle_deadband),
+                    },
+                    "acceleration_fusion": {
+                        "enabled": True,
+                        "tach_derivative_alpha": 0.20,
+                        "output_alpha": 0.35,
+                        "residual_low_mps": 0.04,
+                        "residual_high_mps": 0.20,
+                        "model_weight_high": 0.90,
+                        "model_weight_low": 0.60,
+                        "imu_weight": 0.0,
+                        "imu_residual_gate_mps2": 1.5,
+                    },
+                }
+            },
+            "trust_based_distributed_observer": {
+                "vehicle": {
+                    "longitudinal_model": "velocity_lag",
+                    "velocity_lag_model": {
+                        "enabled": True,
+                        "tau": float(tau),
+                        "velocity_gain": float(velocity_gain),
+                        "throttle_deadband": float(throttle_deadband),
+                    },
+                }
+            }
+        },
+    }
+
+
 def _analyse_throttle_velocity(
     samples: np.ndarray,
     poly_degree: int = 3,
@@ -98,53 +276,91 @@ def _analyse_throttle_velocity(
     if samples.shape[0] < 10:
         return {"error": "not enough samples", "n_samples": int(samples.shape[0])}
 
-    velocities = samples[:, 0]
-    throttles = samples[:, 1]
-
-    # Quantise throttle to nearest 0.01 to group
-    throttle_quant = np.round(throttles, 2)
-    unique_levels = np.unique(throttle_quant)
-
-    # Filter out zero/near-zero throttle
-    unique_levels = unique_levels[np.abs(unique_levels) > 0.005]
-    if len(unique_levels) < 2:
-        return {"error": "need at least 2 throttle levels", "levels_found": 0}
-
     min_dwell_samples = max(5, int(min_dwell_s / sample_dt))
+    velocities = np.asarray(samples[:, 0], dtype=float)
+    throttles = np.asarray(samples[:, 1], dtype=float)
+    segments = _constant_command_segments(
+        throttles,
+        quant_step=0.01,
+        min_samples=min_dwell_samples,
+        zero_deadband=0.005,
+    )
 
-    level_means = []
-    level_stds = []
-    valid_levels = []
+    if len(segments) < 2:
+        return {
+            "error": "need at least 2 throttle dwell segments",
+            "segments_found": len(segments),
+        }
 
-    for level in unique_levels:
-        mask = np.abs(throttle_quant - level) < 0.005
-        v_at_level = velocities[mask]
-        if len(v_at_level) < min_dwell_samples:
-            continue
-        # Use last 60% as steady-state (skip transient)
+    by_level: Dict[float, List[Dict[str, float]]] = {}
+    segment_summaries: List[Dict[str, float]] = []
+
+    for start, end, level in segments:
+        v_at_level = velocities[start:end]
         steady_start = int(len(v_at_level) * 0.4)
         v_steady = v_at_level[steady_start:]
         if len(v_steady) < 3:
             continue
+        summary = {
+            "start_index": int(start),
+            "end_index": int(end),
+            "duration_s": float((end - start) * sample_dt),
+            "throttle": float(level),
+            "velocity_mean": float(np.mean(v_steady)),
+            "velocity_std": float(np.std(v_steady)),
+            "n_samples": int(end - start),
+        }
+        segment_summaries.append(summary)
+        by_level.setdefault(float(level), []).append(summary)
+
+    valid_levels = []
+    level_means = []
+    level_stds = []
+    level_counts = []
+
+    for level in sorted(by_level.keys()):
+        rows = by_level[level]
+        weights = np.asarray([max(r["n_samples"], 1) for r in rows], dtype=float)
+        means = np.asarray([r["velocity_mean"] for r in rows], dtype=float)
+        stds = np.asarray([r["velocity_std"] for r in rows], dtype=float)
         valid_levels.append(float(level))
-        level_means.append(float(np.mean(v_steady)))
-        level_stds.append(float(np.std(v_steady)))
+        level_means.append(float(np.average(means, weights=weights)))
+        level_stds.append(float(np.average(stds, weights=weights)))
+        level_counts.append(int(len(rows)))
 
     if len(valid_levels) < 2:
-        return {"error": "not enough valid throttle levels after filtering"}
+        return {"error": "not enough valid throttle levels after segment filtering"}
 
     t_arr = np.array(valid_levels)
     v_arr = np.array(level_means)
     degree = min(poly_degree, len(t_arr) - 1)
     coeffs = np.polyfit(t_arr, v_arr, degree)
+    linear_coeffs = np.polyfit(t_arr, v_arr, 1)
+    v_poly = np.polyval(coeffs, t_arr)
+    v_linear = np.polyval(linear_coeffs, t_arr)
 
     return {
         "calibration_type": "throttle_velocity",
         "poly_degree": int(degree),
         "poly_coefficients": [float(c) for c in coeffs],
+        "linear_fit": {
+            "slope_mps_per_throttle": float(linear_coeffs[0]),
+            "intercept_mps": float(linear_coeffs[1]),
+            "rmse_mps": _rmse(v_arr, v_linear),
+        },
+        "quality": {
+            "poly_rmse_mps": _rmse(v_arr, v_poly),
+            "n_segments_used": int(len(segment_summaries)),
+            "note": (
+                "Passive fit is based on contiguous throttle dwell segments; "
+                "large non-monotonicity or high std means the run was not steady enough."
+            ),
+        },
         "throttle_values": valid_levels,
         "velocity_means": level_means,
         "velocity_stds": level_stds,
+        "segments_per_level": level_counts,
+        "segment_summaries": segment_summaries,
         "n_total_samples": int(samples.shape[0]),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -260,26 +476,22 @@ def _analyse_throttle_acceleration(
     if samples.shape[0] < 20:
         return {"error": "not enough samples"}
 
-    velocities = samples[:, 0]
-    throttles = samples[:, 1]
-    n = len(throttles)
+    velocities = np.asarray(samples[:, 0], dtype=float)
+    throttles = np.asarray(samples[:, 1], dtype=float)
+    accel_x = np.asarray(samples[:, 4], dtype=float)
+    velocities_smooth = _ema_signal(velocities, alpha=0.2)
 
-    # Detect transitions: find points where throttle changes significantly
-    throttle_quant = np.round(throttles, 2)
-    transitions = []
     min_step_samples = max(5, int(min_step_duration_s / sample_dt))
 
-    # Segment by constant throttle regions
-    segments = []
-    seg_start = 0
-    for i in range(1, n):
-        if abs(throttle_quant[i] - throttle_quant[seg_start]) > 0.005:
-            if i - seg_start >= min_step_samples:
-                segments.append((seg_start, i, float(throttle_quant[seg_start])))
-            seg_start = i
-    # Last segment
-    if n - seg_start >= min_step_samples:
-        segments.append((seg_start, n, float(throttle_quant[seg_start])))
+    # Segment by constant throttle regions. Include zero-throttle segments so
+    # coast/stop transitions can be modeled, but down-weight them later for the
+    # observer's nominal small-step gain.
+    segments = _constant_command_segments(
+        throttles,
+        quant_step=0.01,
+        min_samples=min_step_samples,
+        zero_deadband=-1.0,
+    )
 
     # Find consecutive segments with different throttle levels
     step_models = []
@@ -292,40 +504,66 @@ def _analyse_throttle_acceleration(
 
         # v0 = mean of last 30% of pre-step segment
         pre_slice = velocities[s1_start:s1_end]
+        pre_slice_smooth = velocities_smooth[s1_start:s1_end]
         v0_region = pre_slice[int(len(pre_slice) * 0.7):]
         v0 = float(np.mean(v0_region)) if len(v0_region) > 0 else 0.0
+        v0_fit_region = pre_slice_smooth[int(len(pre_slice_smooth) * 0.7):]
+        v0_fit = float(np.mean(v0_fit_region)) if len(v0_fit_region) > 0 else v0
 
         # vss = mean of last 30% of step segment
         step_slice = velocities[s2_start:s2_end]
+        step_slice_smooth = velocities_smooth[s2_start:s2_end]
         vss_region = step_slice[int(len(step_slice) * 0.7):]
         vss = float(np.mean(vss_region)) if len(vss_region) > 0 else 0.0
+        vss_fit_region = step_slice_smooth[int(len(step_slice_smooth) * 0.7):]
+        vss_fit = float(np.mean(vss_fit_region)) if len(vss_fit_region) > 0 else vss
 
         delta_v = vss - v0
+        delta_v_fit = vss_fit - v0_fit
         delta_u = u_to - u_from
 
         if abs(delta_v) < 1e-4:
             continue
 
-        # Estimate tau via 63.2% crossing
-        target_v = v0 + 0.632 * delta_v
+        # Estimate tau via 63.2% crossing on the smoothed response.
+        target_v = v0_fit + 0.632 * delta_v_fit
         step_times = np.arange(len(step_slice)) * sample_dt
 
         tau = None
-        direction = 1.0 if delta_v > 0 else -1.0
-        for j in range(len(step_slice) - 1):
+        fit_method = "t63_crossing"
+        direction = 1.0 if delta_v_fit > 0 else -1.0
+        for j in range(len(step_slice_smooth) - 1):
             if direction > 0:
-                if step_slice[j] <= target_v <= step_slice[j + 1]:
-                    frac = (target_v - step_slice[j]) / (step_slice[j + 1] - step_slice[j] + 1e-12)
+                if step_slice_smooth[j] <= target_v <= step_slice_smooth[j + 1]:
+                    frac = (
+                        (target_v - step_slice_smooth[j])
+                        / (step_slice_smooth[j + 1] - step_slice_smooth[j] + 1e-12)
+                    )
                     tau = step_times[j] + frac * sample_dt
                     break
             else:
-                if step_slice[j] >= target_v >= step_slice[j + 1]:
-                    frac = (target_v - step_slice[j]) / (step_slice[j + 1] - step_slice[j] - 1e-12)
+                if step_slice_smooth[j] >= target_v >= step_slice_smooth[j + 1]:
+                    frac = (
+                        (target_v - step_slice_smooth[j])
+                        / (step_slice_smooth[j + 1] - step_slice_smooth[j] - 1e-12)
+                    )
                     tau = step_times[j] + frac * sample_dt
                     break
 
+        # If enough of the response is usable, log fit is less sensitive to one
+        # noisy crossing. Keep t63 as fallback because passive data can be short.
+        denom = v0_fit - vss_fit
+        ratio = (step_slice_smooth - vss_fit) / (denom + 1e-12)
+        mask = np.isfinite(ratio) & (ratio > 0.05) & (ratio < 0.95)
+        if np.count_nonzero(mask) >= 5:
+            slope, _ = np.polyfit(step_times[mask], np.log(ratio[mask]), 1)
+            if slope < -1e-8:
+                tau = float(-1.0 / slope)
+                fit_method = "log_fit"
+
         if tau is None or tau <= 0:
             tau = float(step_times[-1] * 0.5) if len(step_times) > 0 else float("nan")
+            fit_method = "fallback_half_segment"
 
         K_local = delta_v / delta_u if abs(delta_u) > 1e-6 else float("nan")
         a0 = delta_v / tau if tau > 1e-4 else float("nan")
@@ -338,6 +576,18 @@ def _analyse_throttle_acceleration(
         else:
             lead_time = t63 = t90 = t95 = float("nan")
 
+        # Per-step fit quality using the identified velocity-lag response.
+        v_step_pred = _velocity_lag_prediction(
+            throttles=np.full_like(step_slice, u_to, dtype=float),
+            v0=v0,
+            sample_dt=sample_dt,
+            tau=tau,
+            velocity_gain=K_local,
+        )
+        ax_step = accel_x[s2_start:s2_end]
+        a_step_model = (K_local * u_to - step_slice) / max(tau, 1e-9)
+        a_step_from_v = np.gradient(step_slice_smooth, sample_dt)
+
         step_models.append({
             "u_from": u_from,
             "u_to": u_to,
@@ -348,23 +598,97 @@ def _analyse_throttle_acceleration(
             "tau_s": float(tau),
             "K_local": float(K_local),
             "a0_mps2": float(a0),
+            "input_gain_mps2_per_throttle": (
+                float(K_local / tau) if tau > 1e-9 else float("nan")
+            ),
+            "velocity_rmse_mps": _rmse(step_slice, v_step_pred),
+            "accel_model_vs_dvdt_rmse_mps2": _rmse(a_step_from_v, a_step_model),
+            "accel_model_vs_imu_rmse_mps2": _rmse(ax_step, a_step_model),
             "t63_s": t63,
             "t90_s": t90,
             "t95_s": t95,
             "lead_time_s": lead_time,
+            "fit_method": fit_method,
         })
 
     if not step_models:
         return {"error": "no valid throttle transitions detected"}
 
-    avg_tau = float(np.nanmean([m["tau_s"] for m in step_models]))
-    avg_K = float(np.nanmean([m["K_local"] for m in step_models]))
+    tau_values = np.asarray([m["tau_s"] for m in step_models], dtype=float)
+    k_values = np.asarray([m["K_local"] for m in step_models], dtype=float)
+    gain_values = np.asarray(
+        [m["input_gain_mps2_per_throttle"] for m in step_models], dtype=float
+    )
+    delta_u_values = np.asarray([abs(m["delta_u"]) for m in step_models], dtype=float)
+
+    finite = np.isfinite(tau_values) & np.isfinite(k_values) & (tau_values > 0.0)
+    small_step = finite & (delta_u_values >= 0.015) & (delta_u_values <= 0.09)
+    robust_mask = small_step if np.count_nonzero(small_step) >= 3 else finite
+
+    avg_tau = float(np.nanmean(tau_values[finite]))
+    avg_K = float(np.nanmean(k_values[finite]))
+    robust_tau = float(np.nanmedian(tau_values[robust_mask]))
+    robust_K = float(np.nanmedian(k_values[robust_mask]))
+    robust_input_gain = float(np.nanmedian(gain_values[robust_mask]))
+
+    # Estimate a small symmetric throttle deadband from steady endpoints:
+    # v_ss ~= K * sign(u) * max(abs(u)-u_dead, 0).
+    deadband_candidates = []
+    for step in step_models:
+        try:
+            u_to = float(step["u_to"])
+            vss = float(step["vss"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if abs(u_to) < 0.04 or not np.isfinite(vss):
+            continue
+        candidate = abs(u_to) - abs(vss) / max(abs(robust_K), 1e-9)
+        if 0.0 <= candidate <= 0.03:
+            deadband_candidates.append(candidate)
+    throttle_deadband = (
+        float(np.nanmedian(deadband_candidates)) if deadband_candidates else 0.0
+    )
+
+    v_pred = _velocity_lag_prediction(
+        throttles=throttles,
+        v0=float(velocities[0]),
+        sample_dt=sample_dt,
+        tau=robust_tau,
+        velocity_gain=robust_K,
+        throttle_deadband=throttle_deadband,
+    )
+    throttles_eff = np.sign(throttles) * np.maximum(
+        np.abs(throttles) - throttle_deadband, 0.0
+    )
+    a_model = (robust_K * throttles_eff - velocities) / max(robust_tau, 1e-9)
+    a_from_v = np.gradient(velocities_smooth, sample_dt)
+    velocity_rmse = _rmse(velocities, v_pred)
+    accel_rmse = _rmse(a_from_v, a_model)
 
     return {
         "calibration_type": "throttle_acceleration",
         "model_type": "first_order_lag",
         "avg_tau": avg_tau,
         "avg_K": avg_K,
+        "robust_tau": robust_tau,
+        "robust_K": robust_K,
+        "robust_input_gain_mps2_per_throttle": robust_input_gain,
+        "velocity_lag_throttle_deadband": throttle_deadband,
+        "observer_model": _observer_model_summary(
+            tau=robust_tau,
+            velocity_gain=robust_K,
+            input_gain=robust_input_gain,
+            velocity_rmse=velocity_rmse,
+            accel_rmse=accel_rmse,
+            throttle_deadband=throttle_deadband,
+        ),
+        "quality": {
+            "velocity_lag_rmse_mps": velocity_rmse,
+            "accel_model_vs_dvdt_rmse_mps2": accel_rmse,
+            "accel_model_vs_imu_rmse_mps2": _rmse(accel_x, a_model),
+            "n_segments_detected": int(len(segments)),
+            "n_small_steps_for_robust_fit": int(np.count_nonzero(robust_mask)),
+        },
         "lookahead_ratio": lookahead_ratio,
         "step_models": step_models,
         "n_transitions": len(step_models),
@@ -674,12 +998,35 @@ class OnlineCalibrationService:
                 ts = time.strftime("%Y%m%d_%H%M%S")
                 _save_yaml(result, f"{calibration_type}_{ts}.yaml", rdir)
                 _save_yaml(result, f"{calibration_type}_latest.yaml", rdir)
+                if isinstance(result.get("observer_model"), dict):
+                    observer_model = {
+                        "source_calibration": calibration_type,
+                        "timestamp": result.get("timestamp", ""),
+                        "observer_model": result["observer_model"],
+                    }
+                    _save_yaml(
+                        observer_model,
+                        f"{calibration_type}_observer_model_{ts}.yaml",
+                        rdir,
+                    )
+                    _save_yaml(
+                        observer_model,
+                        f"{calibration_type}_observer_model_latest.yaml",
+                        rdir,
+                    )
 
                 # Also save raw buffer as CSV
                 rows = []
                 cols = ["v", "throttle", "steering", "yaw_rate", "ax", "ay", "az"]
-                for row in data:
-                    rows.append({c: float(row[i]) for i, c in enumerate(cols)})
+                for sample_idx, row in enumerate(data):
+                    sample_row = {
+                        "sample_index": int(sample_idx),
+                        "time_s": float(sample_idx * self.sample_dt),
+                    }
+                    sample_row.update(
+                        {c: float(row[i]) for i, c in enumerate(cols)}
+                    )
+                    rows.append(sample_row)
                 _save_csv(rows, f"raw_samples_{ts}.csv", rdir)
 
                 self._log_info(

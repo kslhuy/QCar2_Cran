@@ -110,24 +110,24 @@ pure_pursuit:
 
 pp_map:
   sample_ds: 0.02
-  desired_speed: 0.38
-  min_speed: 0.18
-  kappa_speed_gain: 1.6
-  max_speed: 0.45
-  hard_turn_kappa: 0.50
-  hard_turn_speed: 0.20
-  t_clip_min: 0.35
-  t_clip_max: 0.75
-  m_l1: 0.35
-  q_l1: 0.15
-  speed_lookahead: 0.25
-  lat_err_coeff: 0.45
-  acc_scaler_for_steer: 1.05
-  dec_scaler_for_steer: 1.10
+  desired_speed: 0.5
+  min_speed: 0.3
+  kappa_speed_gain: 1.0
+  max_speed: 1.0
+  hard_turn_kappa: 0.7
+  hard_turn_speed: 0.3
+  t_clip_min: 0.5
+  t_clip_max: 1.0
+  m_l1: 0.5
+  q_l1: 0.2
+  speed_lookahead: 0.28
+  lat_err_coeff: 0.25
+  acc_scaler_for_steer: 1.0
+  dec_scaler_for_steer: 1.0
   start_scale_speed: 0.20
   end_scale_speed: 0.55
-  downscale_factor: 0.25
-  speed_lookahead_for_steer: 0.12
+  downscale_factor: 0.35
+  speed_lookahead_for_steer: 0.18
   target_speed_rise_rate: 0.35
   target_speed_fall_rate: 0.60
   prioritize_dyn: false
@@ -136,7 +136,7 @@ pp_map:
   trailing_i_gain: 0.0
   trailing_d_gain: 0.1
   blind_trailing_speed: 0.15
-  obstacle_avoidance_enabled: true
+  obstacle_avoidance_enabled: false
   obstacle_replan_period: 0.4
   obstacle_min_detect_dist: 0.15
   obstacle_max_detect_dist: 1.5
@@ -144,7 +144,7 @@ pp_map:
   obstacle_person_radius: 0.12
   obstacle_influence: 0.80
   obstacle_clearance: 0.06
-  car_overtake_mode: true
+  car_overtake_mode: false
 
 mpc:
   horizon: 10
@@ -193,6 +193,6 @@ fusion_lateral:
 # Effective geometry used by PP-map and MPC. Tune wheelbase from tracking logs:
 # increase it if Limo cuts wide/understeers; decrease it if it oscillates.
 vehicle:
-  wheelbase: 0.33
-  l_r: 0.165
-  l_f: 0.165
+  wheelbase: 0.19
+  l_r: 0.1
+  l_f: 0.1

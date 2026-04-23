@@ -1057,6 +1057,7 @@ class V2VManager:
         peer_vehicles: List[int],
         peer_ips: List[str],
         time_reference: Optional[Dict[str, Any]] = None,
+        vehicle_manifest: Optional[Dict[Any, Any]] = None,
     ) -> bool:
         """
         Activate V2V communication with specified peers
@@ -1093,6 +1094,7 @@ class V2VManager:
                 actual_fleet_size,
                 peer_vehicles,
                 time_reference=normalized_time_reference,
+                vehicle_manifest=vehicle_manifest,
             )
 
             if (
@@ -1135,6 +1137,7 @@ class V2VManager:
                         'timestamp': time.time(),
                         'fleet_size': fleet_size,
                         'time_reference': normalized_time_reference,
+                        'vehicle_manifest': vehicle_manifest,
                         'protocol': 'UDP-Manager'
                     })
                 
@@ -1145,6 +1148,7 @@ class V2VManager:
                         'peer_ips': peer_ips,
                         'fleet_size': fleet_size,
                         'time_reference': normalized_time_reference,
+                        'vehicle_manifest': vehicle_manifest,
                     })
             else:
                 if self.vehicle_observer is not None:

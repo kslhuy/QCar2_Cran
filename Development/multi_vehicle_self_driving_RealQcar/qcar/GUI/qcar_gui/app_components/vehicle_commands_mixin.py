@@ -589,6 +589,26 @@ class VehicleCommandsMixin:
             self._commands_failed_gui += 1
             self.log(f"Car {car_id}: Failed to stop passive calibration", "ERROR")
 
+    def _disconnect_online_calibration(self, car_id: int) -> None:
+        """Disconnect passive online calibration transport."""
+        command = {
+            "type": "set_params",
+            "category": "online_calibration",
+            "params": {"action": "disconnect"},
+        }
+        if self._remote.send_command(car_id, command):
+            self._commands_sent_gui += 1
+            self.log(
+                f"Car {car_id}: Disconnected passive calibration transport",
+                "INFO",
+            )
+        else:
+            self._commands_failed_gui += 1
+            self.log(
+                f"Car {car_id}: Failed to disconnect passive calibration",
+                "ERROR",
+            )
+
     def _trigger_online_analysis(
         self, car_id: int, calibration_type: str, options: dict
     ) -> None:

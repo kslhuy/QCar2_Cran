@@ -103,7 +103,12 @@ trust:
 
   # Distributed trust covariance parameters (always paper-style)
   distributed_trust_fallback: 0.2
-  distributed_trust_covariance_diag: [2.0, 2.0, 2.0, 2.0, 2.0] # Sigma^2 for gamma_host (full state: x,y,theta,v,a)
+  distributed_trust_covariance_diag: [2.0, 2.0, 3.0, 2.0, 6.0] # Sigma^2 for gamma_host (x,y,theta,v,a)
+  # Robust global trust settings. Acceleration is model-derived in the real
+  # fleet, so keep it diagnostic but prevent it from dominating gamma_host.
+  distributed_trust_state_indices: [0, 1, 2, 3, 4]
+  distributed_trust_contribution_caps: [4.0, 4.0, 3.0, 2.0, 0.2]
+  distributed_trust_accel_weight: 0.1
   distributed_local_tau2_diag: [1.5, 0.5]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
   # Relative-trust mode:
   # true  = use [distance, relative_velocity]
@@ -181,20 +186,36 @@ observer:
 # Vehicle Dynamics Parameters (for prediction models)
 # =====================================================================
 vehicle:
+  vehicle_type: Qcar
   wheelbase: 0.256                # QCar wheelbase in meters
   max_velocity: 2.0               # Maximum velocity m/s
-  max_acceleration: 5.0           # Maximum acceleration m/s^2
+  max_acceleration: 2.0           # Match real-QCar longitudinal limit used elsewhere
   max_steering: 0.5               # Maximum steering angle rad
+  control_timeout_s: 1.0          # After this, predict targets with constant velocity
+  allow_host_control_fallback: false
+  # Options:
+  # - velocity_lag: QCar-style throttle -> bounded first-order speed response
+  # - velocity_command: Limo-style Twist.linear.x command -> desired velocity
+  # - acceleration_lag, motor_model, simple_acceleration, constant_velocity
+  longitudinal_model: velocity_lag
 
-  # Passive-calibrated first-order velocity lag:
-  #   v_dot = -(1/tau) * v + (velocity_gain/tau) * throttle
+  # Passive-calibrated first-order velocity lag from online_throttle_acceleration.
+  # Model type: deadband-compensated first-order throttle -> velocity.
+  # Math:
+  #   u_eff = sign(throttle) * max(abs(throttle) - throttle_deadband, 0)
+  #   a_model = v_dot = (velocity_gain * u_eff - v) / tau
+  #   v[k+1] = v[k] + dt * a_model[k]
   # This matches the online passive throttle_acceleration analysis output
   # better than the no-drag acceleration-lag model below because constant
   # throttle converges to a steady speed instead of unbounded velocity.
+  # Copy values from:
+  #   Calibration/results/online_throttle_acceleration/
+  #   throttle_acceleration_observer_model_latest.yaml
   velocity_lag_model:
     enabled: true
-    tau: 0.301                    # From online_throttle_acceleration avg_tau
-    velocity_gain: 6.598          # From online_throttle_acceleration avg_K [m/s per throttle]
+    tau: 0.3012426165416015       # Time constant [s] from robust online fit
+    velocity_gain: 6.598279737103969 # Steady speed gain [m/s per throttle]
+    throttle_deadband: 0.00477     # Small real-QCar throttle/friction deadband
 
   # Lightweight first-order acceleration lag:
   #   a_dot = -(1/tau) * a + (input_gain/tau) * u
@@ -233,8 +254,8 @@ vehicle:
   #   feedforward contributions
   accel_lag_model:
     enabled: false
-    tau: 0.318
-    input_gain: 1.0               # Maps broadcast throttle to acceleration dynamics
+    tau: 0.301
+    input_gain: 20.0               # Maps broadcast throttle to acceleration dynamics
 
   # First-order lag motor model (AccelDragMotorModel)
   # Replaces the naive "v += throttle * dt" in _predict_dynamics().
@@ -253,6 +274,22 @@ vehicle:
     # k_br: 6.57
     # c_v: 5.0
     # c_fric: 2.0
+
+# Optional per-target model overrides. The estimator uses these when predicting
+# each target vehicle; absent IDs inherit the default `vehicle` model above.
+vehicle_models:
+  # Example for a Limo target:
+  # 3:
+  #   vehicle_type: Limo
+  #   wheelbase: 0.2
+  #   max_velocity: 1.2
+  #   max_acceleration: 1.0
+  #   longitudinal_model: velocity_command
+  #   velocity_command_tau: 0.35
+
+timestamp_alignment:
+  enabled: true
+  max_extrapolation_s: 0.5
 
 # =====================================================================
 # Logging and Debugging

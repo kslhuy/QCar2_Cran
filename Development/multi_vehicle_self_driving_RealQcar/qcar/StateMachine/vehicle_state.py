@@ -35,7 +35,7 @@ class VehicleState(Enum):
 class Gear(Enum):
     """Vehicle transmission gears"""
 
-    DRIVE_1 = 0.1  # Low speed / Safe mode
+    DRIVE_1 = 0.14  # Low speed / Safe mode
     DRIVE_2 = 0.2  # Medium speed
     DRIVE_3 = 0.3  # High speed / Full power
     DRIVE_4 = 0.4  # Highest speed / Maximum power

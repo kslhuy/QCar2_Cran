@@ -238,11 +238,15 @@ class StateBase:
             peer_vehicles = data.get("peer_vehicles", [])
             peer_ips = data.get("peer_ips", [])
             time_reference = data.get("time_reference")
+            vehicle_manifest = data.get("vehicle_manifest")
 
             if peer_vehicles and peer_ips:
                 if hasattr(self.vehicle_logic, "v2v_manager"):
                     success = self.vehicle_logic.v2v_manager.activate_v2v(
-                        peer_vehicles, peer_ips, time_reference=time_reference
+                        peer_vehicles,
+                        peer_ips,
+                        time_reference=time_reference,
+                        vehicle_manifest=vehicle_manifest,
                     )
                     if success and self.logger:
                         self.logger.logger.info(
@@ -854,17 +858,40 @@ class StateBase:
     def _handle_online_calibration_params(self, params: Dict[str, Any]) -> bool:
         """
         Handle SET_PARAMS category='online_calibration'.
-        action: 'analyse', 'clear', 'status'
+        action: 'analyse', 'clear', 'status', 'disconnect'
         calibration_type: 'throttle_velocity', 'steering_curvature', etc.
         """
         action = str(params.get("action", "status")).strip().lower()
-        client = getattr(self.vehicle_logic, "online_calibration_zmq", None)
 
+        import time
+        if action in ("disconnect", "close", "close_transport"):
+            client = getattr(self.vehicle_logic, "online_calibration_zmq", None)
+            if client is not None:
+                try:
+                    client.stop_collection()
+                except Exception as e:
+                    self.logger.log_error(
+                        "[CMD] Failed to pause online calibration before disconnect",
+                        e,
+                    )
+
+            if hasattr(self.vehicle_logic, "close_online_calibration_zmq"):
+                self.vehicle_logic.close_online_calibration_zmq()
+                self.logger.logger.info(
+                    "[CMD] ZMQ Online Calibration transport disconnected"
+                )
+                return True
+
+            self.logger.log_warning(
+                "[CMD] vehicle_logic does not expose close_online_calibration_zmq"
+            )
+            return False
+
+        client = getattr(self.vehicle_logic, "online_calibration_zmq", None)
         if client is None:
             self.logger.log_warning("[CMD] Online calibration client not available")
             return False
 
-        import time
         if action in ("analyse", "trigger_analyse", "analyze"):
             calibration_type = params.get("calibration_type")
             if calibration_type:
@@ -899,7 +926,7 @@ class StateBase:
 
         self.logger.log_warning(
             f"[CMD] Unknown online_calibration action '{action}'. "
-            "Valid: analyse, status, clear"
+            "Valid: analyse, status, clear, disconnect"
         )
         return False
 

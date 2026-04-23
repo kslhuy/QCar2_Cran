@@ -335,6 +335,7 @@ class QCarFleetController(DeploymentMixin, FleetCommandsMixin, VehicleCommandsMi
             on_set_robust_kalmannet_dataset=self._set_robust_kalmannet_dataset,
             on_start_online_calibration=self._start_online_calibration,
             on_stop_online_calibration=self._stop_online_calibration,
+            on_disconnect_online_calibration=self._disconnect_online_calibration,
             on_trigger_online_analysis=self._trigger_online_analysis,
             on_clear_online_calibration=self._clear_online_calibration,
             on_trigger_active_calibration=self._trigger_active_calibration,

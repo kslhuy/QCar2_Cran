@@ -53,6 +53,19 @@ class TrustConfig:
     theta_similarity_gain: float = 2.5
     theta_turn_gain: float = 2.0
     theta_contribution_cap: float = 3.0
+    # Global Mahalanobis robustness. State order is [x, y, theta, v, a].
+    # Acceleration is often model-derived and vehicle-type dependent, so it is
+    # downweighted and capped by default instead of being allowed to dominate
+    # gamma_host.
+    distributed_trust_state_indices: Tuple[int, ...] = (0, 1, 2, 3, 4)
+    distributed_trust_contribution_caps: Tuple[float, ...] = (
+        4.0,
+        4.0,
+        3.0,
+        2.0,
+        0.2,
+    )
+    distributed_trust_accel_weight: float = 0.05
 
     # Dirichlet parameters
     num_trust_levels: int = 5
@@ -1670,13 +1683,52 @@ class TriPTrustModel:
 
     def _mahalanobis_distance(self, x1: np.ndarray, x2: np.ndarray, yaw_rate: float = 0.0) -> float:
         """Compute Mahalanobis distance with adaptive theta robustness."""
-        diff, inv_diag = self._prepare_mahalanobis_terms(x1, x2, yaw_rate=yaw_rate)
-        return float(np.dot(diff * inv_diag, diff))
+        total_dist, _ = self._mahalanobis_components(x1, x2, yaw_rate=yaw_rate)
+        return float(total_dist)
 
     def _mahalanobis_components(self, x1: np.ndarray, x2: np.ndarray, yaw_rate: float = 0.0) -> Tuple[float, np.ndarray]:
-        """Compute Mahalanobis distance and return element-wise contributions."""
+        """
+        Compute robust Mahalanobis distance and return element-wise contributions.
+
+        Contributions are returned in the canonical five-state order even when
+        some dimensions are disabled. Disabled dimensions are logged as zero so
+        the impact fields remain interpretable.
+        """
         diff, inv_diag = self._prepare_mahalanobis_terms(x1, x2, yaw_rate=yaw_rate)
-        contributions = (diff * diff) * inv_diag
+        contributions = np.zeros_like(diff, dtype=float)
+
+        raw_indices = getattr(self.config, "distributed_trust_state_indices", ())
+        try:
+            active_indices = [int(idx) for idx in raw_indices]
+        except TypeError:
+            active_indices = list(range(diff.size))
+        if not active_indices:
+            active_indices = list(range(diff.size))
+
+        active_indices = [
+            idx for idx in active_indices if 0 <= int(idx) < int(diff.size)
+        ]
+        for idx in active_indices:
+            contributions[idx] = (diff[idx] * diff[idx]) * inv_diag[idx]
+
+        if contributions.size > 4:
+            accel_weight = float(
+                np.clip(getattr(self.config, "distributed_trust_accel_weight", 1.0), 0.0, 1.0)
+            )
+            contributions[4] *= accel_weight
+
+        caps = np.asarray(
+            getattr(self.config, "distributed_trust_contribution_caps", ()),
+            dtype=float,
+        ).flatten()
+        if caps.size > 0:
+            if caps.size < contributions.size:
+                caps = np.pad(caps, (0, contributions.size - caps.size), mode="edge")
+            caps = caps[: contributions.size]
+            for idx, cap in enumerate(caps):
+                if np.isfinite(cap) and cap >= 0.0:
+                    contributions[idx] = min(float(contributions[idx]), float(cap))
+
         if contributions.size > 2:
             cap = float(self.config.theta_contribution_cap)
             if cap > 0.0:

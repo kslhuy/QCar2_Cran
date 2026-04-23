@@ -119,6 +119,7 @@ class VehicleConnector:
         self._remote_profiles: Dict[str, RemoteConfig] = {}
         self._vehicle_types: Dict[int, str] = {}
         self._vehicle_ips: Dict[str, str] = {}
+        self._vehicle_geometry_by_type: Dict[str, Dict[str, float]] = {}
         self._load_fleet_remote_profiles()
 
     def _log(self, message: str, level: str = "INFO") -> None:
@@ -204,6 +205,8 @@ class VehicleConnector:
 
     def _load_fleet_remote_profiles(self) -> None:
         """Load per-vehicle-type remote SSH profiles from fleet_config.yaml."""
+        self._vehicle_geometry_by_type = {}
+
         if not YAML_AVAILABLE:
             return
 
@@ -226,6 +229,21 @@ class VehicleConnector:
 
         remote_cfg = cfg.get("remote", {}) or {}
         legacy_keys = ("username", "password", "remote_path")
+        geometry_cfg = cfg.get("vehicle_geometry", {}) or {}
+
+        if isinstance(geometry_cfg, dict):
+            for raw_type, raw_geometry in geometry_cfg.items():
+                vehicle_type = self._normalize_vehicle_type(raw_type)
+                if not isinstance(raw_geometry, dict):
+                    continue
+                normalized_geometry = {}
+                for key, value in raw_geometry.items():
+                    try:
+                        normalized_geometry[str(key)] = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                if normalized_geometry:
+                    self._vehicle_geometry_by_type[vehicle_type] = normalized_geometry
 
         profiles: Dict[str, RemoteConfig] = {}
         if all(k in remote_cfg for k in legacy_keys):
@@ -1646,3 +1664,13 @@ except Exception as e:
     ) -> Optional[str]:
         """Get the tracked vehicle type for a specific car."""
         return self._vehicle_types.get(car_id, fallback)
+
+    def get_vehicle_geometry(
+        self, vehicle_type: str, fallback: Optional[Dict[str, float]] = None
+    ) -> Dict[str, float]:
+        """Get geometry defaults for a vehicle type from fleet_config.yaml."""
+        normalized_type = self._normalize_vehicle_type(vehicle_type or "Qcar")
+        geometry = self._vehicle_geometry_by_type.get(normalized_type)
+        if geometry:
+            return dict(geometry)
+        return dict(fallback or {})
