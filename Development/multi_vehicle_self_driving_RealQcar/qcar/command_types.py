@@ -35,6 +35,8 @@ class CommandType(Enum):
     DISABLE_V2V = "disable_v2v"
     TRIGGER_ATTACK = "trigger_attack"
     DISABLE_ATTACK = "disable_attack"
+    START_LOCAL_SENSOR_ATTACK = "start_local_sensor_attack"
+    STOP_LOCAL_SENSOR_ATTACK = "stop_local_sensor_attack"
 
     # Perception commands
     ACTIVATE_PERCEPTION = "activate_perception"

@@ -1,0 +1,42 @@
+{
+  "vehicle_id": 0,
+  "created_at": 1777132182.5756872,
+  "dataset_name": "robust_kalmannet_dataset",
+  "target_estimator_type": "ekf",
+  "strict_target_type": true,
+  "wheel_speed_scale": 1.0,
+  "raw_keys": [
+    "ax",
+    "ay",
+    "wz",
+    "delta",
+    "vfl",
+    "vfr",
+    "vrl",
+    "vrr",
+    "throttle",
+    "gps_valid",
+    "theta_valid",
+    "gps_hold_valid",
+    "gps_age_sec"
+  ],
+  "state_layout": [
+    "x",
+    "y",
+    "theta",
+    "v",
+    "w"
+  ],
+  "measurement_layout": [
+    "x",
+    "y",
+    "theta",
+    "v",
+    "w"
+  ],
+  "sample_count": 2108,
+  "saved_at": 1777132207.431767,
+  "duration_sec": 22.70941948890686,
+  "dt_mean": 0.010778082339300835,
+  "npz_path": "C:\\Users\\Quang Huy Nugyen\\Desktop\\PHD_paper\\Simulation\\QCAR\\QCar2_Cran\\Development\\multi_vehicle_self_driving_RealQcar\\qcar\\Observer\\KalmaNet\\Robust\\datasets\\robust_kalmannet_dataset_V0_20260425_175007.npz"
+}

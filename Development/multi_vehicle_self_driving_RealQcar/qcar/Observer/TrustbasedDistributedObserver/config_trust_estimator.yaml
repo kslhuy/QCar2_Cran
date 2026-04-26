@@ -8,6 +8,16 @@
 # Options: 'trust_consensus', 'trust_kalman'
 fleet_estimator_type: trust_consensus
 
+# Calibration-derived longitudinal model source.
+# VehicleObserverSimple resolves this using:
+# - `config.vehicle.vehicle_type`
+# - `config.vehicle.is_physical_qcar`
+# so QCar hardware, QCar simulation, and Limo can each use different files.
+observer_model_source:
+  qcar_real: ../extra_configs/throttle_acceleration_observer_model_real.yaml
+  qcar_sim: ../extra_configs/throttle_acceleration_observer_model_sim.yaml
+  limo: ../extra_configs/throttle_acceleration_observer_model_limo.yaml
+
 # =====================================================================
 # Global Fleet Settings (inherited from base estimators)
 # =====================================================================
@@ -193,87 +203,10 @@ vehicle:
   max_steering: 0.5               # Maximum steering angle rad
   control_timeout_s: 1.0          # After this, predict targets with constant velocity
   allow_host_control_fallback: false
-  # Options:
-  # - velocity_lag: QCar-style throttle -> bounded first-order speed response
-  # - velocity_command: Limo-style Twist.linear.x command -> desired velocity
-  # - acceleration_lag, motor_model, simple_acceleration, constant_velocity
-  longitudinal_model: velocity_lag
-
-  # Passive-calibrated first-order velocity lag from online_throttle_acceleration.
-  # Model type: deadband-compensated first-order throttle -> velocity.
-  # Math:
-  #   u_eff = sign(throttle) * max(abs(throttle) - throttle_deadband, 0)
-  #   a_model = v_dot = (velocity_gain * u_eff - v) / tau
-  #   v[k+1] = v[k] + dt * a_model[k]
-  # This matches the online passive throttle_acceleration analysis output
-  # better than the no-drag acceleration-lag model below because constant
-  # throttle converges to a steady speed instead of unbounded velocity.
-  # Copy values from:
-  #   Calibration/results/online_throttle_acceleration/
-  #   throttle_acceleration_observer_model_latest.yaml
-  velocity_lag_model:
-    enabled: true
-    tau: 0.3012426165416015       # Time constant [s] from robust online fit
-    velocity_gain: 6.598279737103969 # Steady speed gain [m/s per throttle]
-    throttle_deadband: 0.00477     # Small real-QCar throttle/friction deadband
-
-  # Lightweight first-order acceleration lag:
-  #   a_dot = -(1/tau) * a + (input_gain/tau) * u
-  # Useful when you want DLE-like acceleration dynamics without the full
-  # relative-state observer.
-  #
-  # IMPORTANT: here u is the TARGET VEHICLE'S broadcast longitudinal command,
-  # not a relative-state control reconstructed from platoon gains.
-  #
-  # In the current stack, the CACC controller first computes:
-  #   acc_desired = K * [spacing_error, velocity_error] + integral
-  # and then converts it into the final QCar throttle:
-  #   throttle = acc_to_throttle_gain * acc_desired + ff_throttle
-  #
-  # So this observer model uses the final broadcast throttle command as input.
-  # That means the prediction is only meaningful when each vehicle shares its
-  # own control_input over V2V.
-  #
-  # For this repo, local-state V2V messages already include:
-  #   control_input.steering
-  #   control_input.throttle
-  # and TrustBasedFleetEstimator caches those per sender.
-  #
-  # If target throttle is missing, the estimator currently falls back to the
-  # host control input. That fallback is only a placeholder and is usually NOT
-  # physically correct for other vehicles.
-  #
-  # Therefore:
-  # - enable this mode only if V2V control_input is available/reliable
-  # - disable it if other vehicles do not broadcast throttle
-  # - if you want a cleaner model, broadcast acc_desired explicitly instead
-  #
-  # Note on controller feedforward:
-  # - QCar CACC can optionally add ff_throttle based on leader velocity
-  # - so the transmitted throttle may already contain both feedback and
-  #   feedforward contributions
-  accel_lag_model:
-    enabled: false
-    tau: 0.301
-    input_gain: 20.0               # Maps broadcast throttle to acceleration dynamics
-
-  # First-order lag motor model (AccelDragMotorModel)
-  # Replaces the naive "v += throttle * dt" in _predict_dynamics().
-  # Parameters from Calibration/results/06_throttle_acceleration_model_calibration/
-  motor_model:
-    enabled: false                # Set true once calibrated params are validated
-    # QLabs (simulation) calibrated values:
-    tau: 0.318                    # Motor time constant [s]
-    k_th: 4.5795                  # Forward throttle gain [m/s^2 per throttle]
-    k_br: 4.5772                  # Brake gain [m/s^2 per throttle]
-    c_v: 5.0                      # Velocity-proportional drag [1/s]
-    c_fric: 2.0                   # Coulomb friction [m/s^2]
-    # For real QCar hardware, use these instead (from motor_model_id.yaml):
-    # tau: 1.82
-    # k_th: 6.57
-    # k_br: 6.57
-    # c_v: 5.0
-    # c_fric: 2.0
+  # Longitudinal-model defaults come from `observer_model_source` above.
+  # The referenced calibration file injects:
+  # - longitudinal_model
+  # - velocity_lag_model / velocity_lag_lookup_model / accel_lag_model
 
 # Optional per-target model overrides. The estimator uses these when predicting
 # each target vehicle; absent IDs inherit the default `vehicle` model above.

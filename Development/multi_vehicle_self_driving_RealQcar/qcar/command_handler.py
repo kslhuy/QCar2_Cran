@@ -204,6 +204,8 @@ class CommandHandler:
             CommandType.DISABLE_V2V,
             CommandType.TRIGGER_ATTACK,
             CommandType.DISABLE_ATTACK,
+            CommandType.START_LOCAL_SENSOR_ATTACK,
+            CommandType.STOP_LOCAL_SENSOR_ATTACK,
             CommandType.ACTIVATE_PERCEPTION,
             CommandType.DISABLE_PERCEPTION,
             CommandType.SET_PARAMS,

@@ -6,8 +6,10 @@ path-following and runs offline analysis on demand:
   - throttle_velocity   : polyfit  v_ss = f(throttle)
   - steering_curvature  : Ackermann  κ = f(steering)
   - throttle_acceleration : first-order tau estimation
+  - coupled_kinematic : learned coupled bicycle-like motion model
 
-Sample format: 7-element [v, throttle, steering, yaw_rate, ax, ay, az]
+Sample format:
+  [v, throttle, steering, yaw_rate, ax, ay, az, x, y, theta, a_ref, v_raw]
 
 Architecture mirrors OnlineSysIDService (On_Track_SysID).
 """
@@ -47,6 +49,45 @@ for _p in [_CAL_DIR, _QCAR_DIR]:
 # Results directory
 # ---------------------------------------------------------------------------
 RESULTS_BASE = os.path.join(_CAL_DIR, "results")
+
+
+CALIBRATION_SAMPLE_COLUMNS = (
+    "v",
+    "throttle",
+    "steering",
+    "yaw_rate",
+    "ax",
+    "ay",
+    "az",
+    "x",
+    "y",
+    "theta",
+    "a_ref",
+    "v_raw",
+)
+CALIBRATION_SAMPLE_INDEX = {
+    name: idx for idx, name in enumerate(CALIBRATION_SAMPLE_COLUMNS)
+}
+
+COUPLED_ACCEL_FEATURES = (
+    "bias",
+    "throttle",
+    "abs_throttle",
+    "velocity",
+    "abs_velocity",
+    "steering",
+    "steering_sq",
+    "throttle_abs_steering",
+    "velocity_steering_sq",
+)
+COUPLED_YAW_FEATURES = (
+    "bias",
+    "steering",
+    "tan_steering",
+    "velocity_steering",
+    "velocity_tan_steering",
+    "throttle_steering",
+)
 
 
 def _results_dir(calibration_type: str) -> str:
@@ -101,6 +142,277 @@ def _ema_signal(values: np.ndarray, alpha: float = 0.2) -> np.ndarray:
     for i in range(1, values.size):
         out[i] = alpha * values[i] + (1.0 - alpha) * out[i - 1]
     return out
+
+
+def _zero_phase_window_smooth(
+    values: np.ndarray,
+    window_samples: int,
+    passes: int = 2,
+) -> np.ndarray:
+    """
+    Offline zero-phase smoother using symmetric FIR convolution.
+
+    Repeated symmetric moving-average passes approximate a Gaussian-like
+    low-pass response while keeping the filtered signal centered in time.
+    """
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if arr.size == 0:
+        return arr
+
+    window = int(max(1, window_samples))
+    if window <= 1:
+        return arr.copy()
+    if window % 2 == 0:
+        window += 1
+
+    kernel = np.ones(window, dtype=float) / float(window)
+    out = arr.copy()
+    pad = window // 2
+    passes = max(1, int(passes))
+    for _ in range(passes):
+        padded = np.pad(out, (pad, pad), mode="edge")
+        out = np.convolve(padded, kernel, mode="valid")
+    return out
+
+
+def _window_samples(duration_s: float, sample_dt: float, minimum: int = 3) -> int:
+    if sample_dt <= 0.0:
+        return int(max(minimum, 3))
+    n = int(round(float(duration_s) / float(sample_dt)))
+    n = max(int(minimum), n)
+    if n % 2 == 0:
+        n += 1
+    return n
+
+
+def _wrap_to_pi(values: np.ndarray) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    return (arr + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _wrapped_rmse(a: np.ndarray, b: np.ndarray) -> float:
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    mask = np.isfinite(a) & np.isfinite(b)
+    if not np.any(mask):
+        return float("nan")
+    err = _wrap_to_pi(a[mask] - b[mask])
+    return float(np.sqrt(np.mean(err ** 2)))
+
+
+def _sample_column(
+    samples: np.ndarray, name: str, default: float = float("nan")
+) -> np.ndarray:
+    idx = CALIBRATION_SAMPLE_INDEX.get(str(name))
+    if idx is None or samples.shape[1] <= idx:
+        return np.full(samples.shape[0], float(default), dtype=float)
+    return np.asarray(samples[:, idx], dtype=float)
+
+
+def _coupled_feature_matrix(
+    velocity: np.ndarray,
+    throttle: np.ndarray,
+    steering: np.ndarray,
+    feature_names: Tuple[str, ...],
+) -> np.ndarray:
+    v = np.asarray(velocity, dtype=float).reshape(-1)
+    u = np.asarray(throttle, dtype=float).reshape(-1)
+    delta = np.asarray(steering, dtype=float).reshape(-1)
+    delta_clip = np.clip(delta, -0.7, 0.7)
+    tan_delta = np.tan(delta_clip)
+
+    feature_map = {
+        "bias": np.ones_like(v),
+        "throttle": u,
+        "abs_throttle": np.abs(u),
+        "velocity": v,
+        "abs_velocity": np.abs(v),
+        "steering": delta,
+        "abs_steering": np.abs(delta),
+        "steering_sq": delta * delta,
+        "tan_steering": tan_delta,
+        "velocity_steering": v * delta,
+        "velocity_tan_steering": v * tan_delta,
+        "throttle_steering": u * delta,
+        "throttle_abs_steering": u * np.abs(delta),
+        "velocity_steering_sq": v * delta * delta,
+    }
+    cols = []
+    for name in feature_names:
+        cols.append(np.asarray(feature_map.get(name, np.zeros_like(v)), dtype=float))
+    return np.column_stack(cols) if cols else np.zeros((v.size, 0), dtype=float)
+
+
+def _linear_fit_with_metrics(
+    design: np.ndarray,
+    target: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    design = np.asarray(design, dtype=float)
+    target = np.asarray(target, dtype=float).reshape(-1)
+    if design.ndim != 2 or design.shape[0] != target.size:
+        raise ValueError("design matrix and target have incompatible shapes")
+
+    mask = np.all(np.isfinite(design), axis=1) & np.isfinite(target)
+    n_valid = int(np.count_nonzero(mask))
+    n_features = int(design.shape[1])
+    if n_valid < max(n_features + 2, 8):
+        raise ValueError(
+            f"not enough valid samples for linear fit ({n_valid} for {n_features} features)"
+        )
+
+    coeffs, *_ = np.linalg.lstsq(design[mask], target[mask], rcond=None)
+    pred = np.full(target.shape, np.nan, dtype=float)
+    pred[mask] = design[mask] @ coeffs
+
+    target_valid = target[mask]
+    pred_valid = pred[mask]
+    rmse = _rmse(target_valid, pred_valid)
+    centered = target_valid - float(np.mean(target_valid))
+    denom = float(np.sum(centered ** 2))
+    if denom > 1e-12:
+        r2 = 1.0 - float(np.sum((target_valid - pred_valid) ** 2)) / denom
+    else:
+        r2 = float("nan")
+
+    metrics = {
+        "n_valid_samples": float(n_valid),
+        "rmse": float(rmse),
+        "r2": float(r2),
+    }
+    return coeffs.astype(float), pred, metrics
+
+
+def _simulate_coupled_kinematic(
+    throttle: np.ndarray,
+    steering: np.ndarray,
+    sample_dt: float,
+    x0: float,
+    y0: float,
+    theta0: float,
+    v0: float,
+    accel_coeffs: np.ndarray,
+    yaw_coeffs: np.ndarray,
+    accel_features: Tuple[str, ...],
+    yaw_features: Tuple[str, ...],
+    max_velocity: float,
+    max_acceleration: float,
+    max_yaw_rate: float,
+) -> Dict[str, np.ndarray]:
+    throttle = np.asarray(throttle, dtype=float).reshape(-1)
+    steering = np.asarray(steering, dtype=float).reshape(-1)
+    n = throttle.size
+
+    x = np.zeros(n, dtype=float)
+    y = np.zeros(n, dtype=float)
+    theta = np.zeros(n, dtype=float)
+    v = np.zeros(n, dtype=float)
+    a = np.zeros(n, dtype=float)
+    yaw = np.zeros(n, dtype=float)
+    if n == 0:
+        return {"x": x, "y": y, "theta": theta, "v": v, "a": a, "yaw_rate": yaw}
+
+    x[0] = float(x0)
+    y[0] = float(y0)
+    theta[0] = float(theta0)
+    v[0] = float(np.clip(v0, -max_velocity, max_velocity))
+
+    accel_coeffs = np.asarray(accel_coeffs, dtype=float).reshape(-1)
+    yaw_coeffs = np.asarray(yaw_coeffs, dtype=float).reshape(-1)
+
+    for i in range(1, n):
+        prev_v = float(v[i - 1])
+        prev_theta = float(theta[i - 1])
+        u = float(throttle[i - 1])
+        delta = float(steering[i - 1])
+
+        acc_feat = _coupled_feature_matrix(
+            np.asarray([prev_v], dtype=float),
+            np.asarray([u], dtype=float),
+            np.asarray([delta], dtype=float),
+            accel_features,
+        )[0]
+        yaw_feat = _coupled_feature_matrix(
+            np.asarray([prev_v], dtype=float),
+            np.asarray([u], dtype=float),
+            np.asarray([delta], dtype=float),
+            yaw_features,
+        )[0]
+
+        a_pred = float(np.clip(acc_feat @ accel_coeffs, -max_acceleration, max_acceleration))
+        yaw_pred = float(np.clip(yaw_feat @ yaw_coeffs, -max_yaw_rate, max_yaw_rate))
+        v_next = float(np.clip(prev_v + sample_dt * a_pred, -max_velocity, max_velocity))
+        v_mid = 0.5 * (prev_v + v_next)
+        theta_mid = prev_theta + 0.5 * sample_dt * yaw_pred
+
+        x[i] = x[i - 1] + sample_dt * v_mid * np.cos(theta_mid)
+        y[i] = y[i - 1] + sample_dt * v_mid * np.sin(theta_mid)
+        theta[i] = prev_theta + sample_dt * yaw_pred
+        v[i] = v_next
+        a[i] = a_pred
+        yaw[i] = yaw_pred
+
+    return {"x": x, "y": y, "theta": theta, "v": v, "a": a, "yaw_rate": yaw}
+
+
+def _coupled_kinematic_observer_model(
+    coupled_model: Dict[str, Any],
+    source_yaml: str,
+    raw_csv: str,
+) -> Dict[str, Any]:
+    model_cfg = {
+        "enabled": True,
+        "acceleration_features": list(coupled_model["acceleration_features"]),
+        "acceleration_coefficients": [
+            float(v) for v in coupled_model["acceleration_coefficients"]
+        ],
+        "yaw_rate_features": list(coupled_model["yaw_rate_features"]),
+        "yaw_rate_coefficients": [
+            float(v) for v in coupled_model["yaw_rate_coefficients"]
+        ],
+        "reference_filters": dict(coupled_model["reference_filters"]),
+        "limits": dict(coupled_model["limits"]),
+        "quality": dict(coupled_model["quality"]),
+    }
+    return {
+        "source_calibration": "coupled_kinematic",
+        "source_yaml": str(source_yaml),
+        "source_raw_csv": str(raw_csv),
+        "observer_model": {
+            "model_name": "learned_coupled_kinematic",
+            "model_type": "coupled_kinematic_bicycle",
+            "math": {
+                "acceleration": "a_hat = phi_a(v, throttle, steering) dot beta_a",
+                "yaw_rate": "w_hat = phi_w(v, throttle, steering) dot beta_w",
+                "velocity": "v[k+1] = v[k] + dt * a_hat[k]",
+                "heading": "theta[k+1] = theta[k] + dt * w_hat[k]",
+                "position": (
+                    "x/y use midpoint velocity and heading integration from the "
+                    "learned acceleration and yaw-rate model"
+                ),
+            },
+            "recommended_longitudinal_model": "coupled_kinematic",
+            "coupled_kinematic_model": model_cfg,
+            "quality": dict(coupled_model["quality"]),
+            "config_patch": {
+                "local": {
+                    "ekf": {
+                        "longitudinal_model": "coupled_kinematic",
+                        "coupled_kinematic_model": model_cfg,
+                    },
+                    "robust_kalman_net": {
+                        "longitudinal_model": "coupled_kinematic",
+                        "coupled_kinematic_model": model_cfg,
+                    },
+                },
+                "trust_based_distributed_observer": {
+                    "vehicle": {
+                        "longitudinal_model": "coupled_kinematic",
+                        "coupled_kinematic_model": model_cfg,
+                    }
+                },
+            },
+        },
+    }
 
 
 def _constant_command_segments(
@@ -165,6 +477,154 @@ def _velocity_lag_prediction(
     return pred
 
 
+def _build_velocity_lag_lookup_model(
+    segments: List[Tuple[int, int, float]],
+    velocities: np.ndarray,
+    sample_dt: float,
+    tail_fraction: float = 0.30,
+) -> Dict[str, Any]:
+    """Aggregate segment steady states into a piecewise-linear throttle map."""
+    if not segments:
+        return {}
+
+    steady_by_throttle: Dict[float, List[float]] = {}
+    counts_by_throttle: Dict[float, int] = {}
+    min_tail_samples = max(3, int(0.20 / max(float(sample_dt), 1e-9)))
+    tail_fraction = float(np.clip(tail_fraction, 0.05, 0.50))
+
+    for start, end, throttle in segments:
+        seg_len = end - start
+        if seg_len <= 0:
+            continue
+        tail_start = start + int((1.0 - tail_fraction) * seg_len)
+        tail_start = min(max(tail_start, start), max(end - 1, start))
+        tail = np.asarray(velocities[tail_start:end], dtype=float)
+        if tail.size < min_tail_samples:
+            continue
+        key = float(round(throttle, 4))
+        steady_by_throttle.setdefault(key, []).append(float(np.mean(tail)))
+        counts_by_throttle[key] = counts_by_throttle.get(key, 0) + 1
+
+    if len(steady_by_throttle) < 3:
+        return {}
+
+    throttle_breakpoints = np.asarray(sorted(steady_by_throttle.keys()), dtype=float)
+    steady_state_velocity = np.asarray(
+        [
+            float(np.median(steady_by_throttle[float(u)]))
+            for u in throttle_breakpoints
+        ],
+        dtype=float,
+    )
+    counts = np.asarray(
+        [int(counts_by_throttle[float(u)]) for u in throttle_breakpoints], dtype=int
+    )
+
+    if throttle_breakpoints.size == 0:
+        return {}
+
+    zero_idx = int(np.argmin(np.abs(throttle_breakpoints)))
+    if abs(float(throttle_breakpoints[zero_idx])) <= 0.5 * 0.01:
+        steady_state_velocity[zero_idx] = 0.0
+    steady_state_velocity = np.maximum.accumulate(steady_state_velocity)
+
+    return {
+        "enabled": True,
+        "model_name": "piecewise_linear_velocity_lag_lookup",
+        "model_type": "first_order_throttle_to_velocity_lookup",
+        "interpolation": "linear",
+        "tail_fraction": tail_fraction,
+        "throttle_breakpoints": [float(v) for v in throttle_breakpoints],
+        "steady_state_velocity_breakpoints": [
+            float(v) for v in steady_state_velocity
+        ],
+        "segments_per_breakpoint": [int(v) for v in counts],
+    }
+
+
+def _velocity_lag_lookup_prediction(
+    throttles: np.ndarray,
+    v0: float,
+    sample_dt: float,
+    tau: float,
+    throttle_breakpoints: np.ndarray,
+    steady_state_velocity_breakpoints: np.ndarray,
+) -> np.ndarray:
+    pred = np.zeros_like(throttles, dtype=float)
+    if pred.size == 0:
+        return pred
+    pred[0] = float(v0)
+    tau = max(float(tau), 1e-9)
+    throttle_breakpoints = np.asarray(throttle_breakpoints, dtype=float).reshape(-1)
+    steady_state_velocity_breakpoints = np.asarray(
+        steady_state_velocity_breakpoints, dtype=float
+    ).reshape(-1)
+    if (
+        throttle_breakpoints.size < 2
+        or throttle_breakpoints.size != steady_state_velocity_breakpoints.size
+    ):
+        return pred
+    for i in range(1, pred.size):
+        v_ss = float(
+            np.interp(
+                float(throttles[i - 1]),
+                throttle_breakpoints,
+                steady_state_velocity_breakpoints,
+            )
+        )
+        pred[i] = pred[i - 1] + sample_dt * ((v_ss - pred[i - 1]) / tau)
+    return pred
+
+
+def _optimize_velocity_lag_lookup_tau(
+    velocities: np.ndarray,
+    throttles: np.ndarray,
+    sample_dt: float,
+    tau_values: np.ndarray,
+    throttle_breakpoints: np.ndarray,
+    steady_state_velocity_breakpoints: np.ndarray,
+) -> Tuple[float, float]:
+    finite_tau = np.asarray(tau_values, dtype=float)
+    finite_tau = finite_tau[np.isfinite(finite_tau) & (finite_tau > 0.0)]
+    if finite_tau.size == 0:
+        return float("nan"), float("nan")
+
+    tau_med = float(np.nanmedian(finite_tau))
+    tau_lo = float(np.nanpercentile(finite_tau, 15))
+    tau_hi = float(np.nanpercentile(finite_tau, 85))
+    if not np.isfinite(tau_lo) or tau_lo <= 0.0:
+        tau_lo = max(0.5 * tau_med, 0.05)
+    if not np.isfinite(tau_hi) or tau_hi <= tau_lo:
+        tau_hi = max(1.5 * tau_med, tau_lo + 0.05)
+
+    tau_grid = np.unique(
+        np.concatenate(
+            [
+                np.linspace(tau_lo, tau_hi, 41, dtype=float),
+                np.asarray([tau_med], dtype=float),
+            ]
+        )
+    )
+
+    best_tau = tau_med
+    best_rmse = float("inf")
+    for tau in tau_grid:
+        pred = _velocity_lag_lookup_prediction(
+            throttles=throttles,
+            v0=float(velocities[0]),
+            sample_dt=sample_dt,
+            tau=float(tau),
+            throttle_breakpoints=throttle_breakpoints,
+            steady_state_velocity_breakpoints=steady_state_velocity_breakpoints,
+        )
+        rmse = _rmse(velocities, pred)
+        if np.isfinite(rmse) and rmse < best_rmse:
+            best_rmse = float(rmse)
+            best_tau = float(tau)
+
+    return float(best_tau), float(best_rmse)
+
+
 def _observer_model_summary(
     tau: float,
     velocity_gain: float,
@@ -172,12 +632,69 @@ def _observer_model_summary(
     velocity_rmse: float,
     accel_rmse: float = float("nan"),
     throttle_deadband: float = 0.0,
+    lookup_model: Optional[Dict[str, Any]] = None,
+    lookup_velocity_rmse: float = float("nan"),
+    lookup_accel_rmse: float = float("nan"),
+    recommended_longitudinal_model: str = "velocity_lag",
 ) -> Dict[str, Any]:
     """Observer-ready representation for config_local_estimators.yaml."""
     accel_formula = (
         "u_eff = sign(throttle) * max(abs(throttle) - throttle_deadband, 0); "
         "a_hat = (velocity_gain * u_eff - velocity) / tau"
     )
+    lookup_model = lookup_model if isinstance(lookup_model, dict) else {}
+    config_patch = {
+        "local": {
+            "ekf": {
+                "longitudinal_model": str(recommended_longitudinal_model),
+                "use_tachometer_update": True,
+                "velocity_lag_model": {
+                    "tau": float(tau),
+                    "velocity_gain": float(velocity_gain),
+                    "throttle_deadband": float(throttle_deadband),
+                },
+                "acceleration_fusion": {
+                    "enabled": True,
+                    "tach_derivative_alpha": 0.20,
+                    "output_alpha": 0.35,
+                    "residual_low_mps": 0.04,
+                    "residual_high_mps": 0.20,
+                    "model_weight_high": 0.90,
+                    "model_weight_low": 0.60,
+                    "imu_weight": 0.0,
+                    "imu_residual_gate_mps2": 1.5,
+                },
+            }
+        },
+        "trust_based_distributed_observer": {
+            "vehicle": {
+                "longitudinal_model": str(recommended_longitudinal_model),
+                "velocity_lag_model": {
+                    "enabled": True,
+                    "tau": float(tau),
+                    "velocity_gain": float(velocity_gain),
+                    "throttle_deadband": float(throttle_deadband),
+                },
+            }
+        }
+    }
+    if lookup_model:
+        lookup_cfg = {
+            "enabled": True,
+            "tau": float(lookup_model.get("tau", tau)),
+            "interpolation": str(lookup_model.get("interpolation", "linear")),
+            "throttle_breakpoints": [
+                float(v) for v in lookup_model.get("throttle_breakpoints", [])
+            ],
+            "steady_state_velocity_breakpoints": [
+                float(v)
+                for v in lookup_model.get("steady_state_velocity_breakpoints", [])
+            ],
+        }
+        config_patch["local"]["ekf"]["velocity_lag_lookup_model"] = lookup_cfg
+        config_patch["trust_based_distributed_observer"]["vehicle"][
+            "velocity_lag_lookup_model"
+        ] = lookup_cfg
     return {
         "model_name": "deadband_compensated_velocity_lag",
         "model_type": "first_order_throttle_to_velocity",
@@ -194,13 +711,14 @@ def _observer_model_summary(
                 "(1 - w_model(r_v)) * a_tach_lpf"
             ),
         },
-        "recommended_longitudinal_model": "velocity_lag",
+        "recommended_longitudinal_model": str(recommended_longitudinal_model),
         "velocity_lag_model": {
             "tau": float(tau),
             "velocity_gain": float(velocity_gain),
             "throttle_deadband": float(throttle_deadband),
             "acceleration_formula": accel_formula,
         },
+        "velocity_lag_lookup_model": lookup_model,
         "accel_lag_model": {
             "tau": float(tau),
             "input_gain": float(input_gain),
@@ -213,6 +731,8 @@ def _observer_model_summary(
         "quality": {
             "velocity_rmse_mps": float(velocity_rmse),
             "acceleration_rmse_mps2": float(accel_rmse),
+            "velocity_lookup_rmse_mps": float(lookup_velocity_rmse),
+            "acceleration_lookup_rmse_mps2": float(lookup_accel_rmse),
         },
         "copy_to": {
             "local_observer_config": (
@@ -220,44 +740,10 @@ def _observer_model_summary(
             ),
             "trust_fleet_config": (
                 "Observer/TrustbasedDistributedObserver/config_trust_estimator.yaml "
-                "-> vehicle.velocity_lag_model"
+                "-> vehicle.velocity_lag_model or vehicle.velocity_lag_lookup_model"
             ),
         },
-        "config_patch": {
-            "local": {
-                "ekf": {
-                    "longitudinal_model": "velocity_lag",
-                    "use_tachometer_update": True,
-                    "velocity_lag_model": {
-                        "tau": float(tau),
-                        "velocity_gain": float(velocity_gain),
-                        "throttle_deadband": float(throttle_deadband),
-                    },
-                    "acceleration_fusion": {
-                        "enabled": True,
-                        "tach_derivative_alpha": 0.20,
-                        "output_alpha": 0.35,
-                        "residual_low_mps": 0.04,
-                        "residual_high_mps": 0.20,
-                        "model_weight_high": 0.90,
-                        "model_weight_low": 0.60,
-                        "imu_weight": 0.0,
-                        "imu_residual_gate_mps2": 1.5,
-                    },
-                }
-            },
-            "trust_based_distributed_observer": {
-                "vehicle": {
-                    "longitudinal_model": "velocity_lag",
-                    "velocity_lag_model": {
-                        "enabled": True,
-                        "tau": float(tau),
-                        "velocity_gain": float(velocity_gain),
-                        "throttle_deadband": float(throttle_deadband),
-                    },
-                }
-            }
-        },
+        "config_patch": config_patch,
     }
 
 
@@ -440,8 +926,8 @@ def _analyse_steering_curvature(
     # Ackermann wheelbase: L = |δ| / |κ|
     L_estimates = []
     for s, k in zip(steer_cmds, curvatures):
-        if abs(k) > 1e-3 and abs(s) > 0.01:
-            L_est = abs(s) / abs(k)
+        if abs(k) > 1e-4 and abs(s) > 0.01:
+            L_est = abs(np.tan(s) / k)
             if 0.05 < L_est < 1.0:
                 L_estimates.append(L_est)
 
@@ -453,6 +939,7 @@ def _analyse_steering_curvature(
         "poly_coefficients": [float(c) for c in coeffs],
         "effective_wheelbase": round(L_eff, 5),
         "wheelbase_nominal": wheelbase_nom,
+        "ackermann_model": "kappa = tan(delta_eff) / L_eff",
         "steering_values": steer_cmds,
         "curvature_values": curvatures,
         "velocity_means": vel_means,
@@ -664,6 +1151,59 @@ def _analyse_throttle_acceleration(
     a_from_v = np.gradient(velocities_smooth, sample_dt)
     velocity_rmse = _rmse(velocities, v_pred)
     accel_rmse = _rmse(a_from_v, a_model)
+    lookup_model = _build_velocity_lag_lookup_model(
+        segments=segments,
+        velocities=velocities,
+        sample_dt=sample_dt,
+    )
+    lookup_tau = float("nan")
+    lookup_v_pred = np.zeros_like(velocities, dtype=float)
+    lookup_a_model = np.zeros_like(velocities, dtype=float)
+    lookup_velocity_rmse = float("nan")
+    lookup_accel_rmse = float("nan")
+    recommended_longitudinal_model = "velocity_lag"
+    if lookup_model:
+        throttle_breakpoints = np.asarray(
+            lookup_model.get("throttle_breakpoints", []), dtype=float
+        )
+        steady_state_velocity_breakpoints = np.asarray(
+            lookup_model.get("steady_state_velocity_breakpoints", []), dtype=float
+        )
+        lookup_tau, lookup_velocity_rmse = _optimize_velocity_lag_lookup_tau(
+            velocities=velocities,
+            throttles=throttles,
+            sample_dt=sample_dt,
+            tau_values=tau_values[finite],
+            throttle_breakpoints=throttle_breakpoints,
+            steady_state_velocity_breakpoints=steady_state_velocity_breakpoints,
+        )
+        if np.isfinite(lookup_tau) and lookup_tau > 0.0:
+            lookup_v_pred = _velocity_lag_lookup_prediction(
+                throttles=throttles,
+                v0=float(velocities[0]),
+                sample_dt=sample_dt,
+                tau=lookup_tau,
+                throttle_breakpoints=throttle_breakpoints,
+                steady_state_velocity_breakpoints=steady_state_velocity_breakpoints,
+            )
+            lookup_v_ss = np.interp(
+                throttles,
+                throttle_breakpoints,
+                steady_state_velocity_breakpoints,
+            )
+            lookup_a_model = (lookup_v_ss - velocities) / max(lookup_tau, 1e-9)
+            lookup_accel_rmse = _rmse(a_from_v, lookup_a_model)
+            lookup_model["tau"] = float(lookup_tau)
+            lookup_model["velocity_rmse_mps"] = float(lookup_velocity_rmse)
+            lookup_model["acceleration_rmse_mps2"] = float(lookup_accel_rmse)
+            if (
+                np.isfinite(lookup_velocity_rmse)
+                and (
+                    not np.isfinite(velocity_rmse)
+                    or lookup_velocity_rmse < 0.95 * velocity_rmse
+                )
+            ):
+                recommended_longitudinal_model = "velocity_lag_lookup"
 
     return {
         "calibration_type": "throttle_acceleration",
@@ -674,6 +1214,8 @@ def _analyse_throttle_acceleration(
         "robust_K": robust_K,
         "robust_input_gain_mps2_per_throttle": robust_input_gain,
         "velocity_lag_throttle_deadband": throttle_deadband,
+        "recommended_longitudinal_model": recommended_longitudinal_model,
+        "velocity_lag_lookup_model": lookup_model,
         "observer_model": _observer_model_summary(
             tau=robust_tau,
             velocity_gain=robust_K,
@@ -681,17 +1223,225 @@ def _analyse_throttle_acceleration(
             velocity_rmse=velocity_rmse,
             accel_rmse=accel_rmse,
             throttle_deadband=throttle_deadband,
+            lookup_model=lookup_model,
+            lookup_velocity_rmse=lookup_velocity_rmse,
+            lookup_accel_rmse=lookup_accel_rmse,
+            recommended_longitudinal_model=recommended_longitudinal_model,
         ),
         "quality": {
             "velocity_lag_rmse_mps": velocity_rmse,
             "accel_model_vs_dvdt_rmse_mps2": accel_rmse,
             "accel_model_vs_imu_rmse_mps2": _rmse(accel_x, a_model),
+            "velocity_lag_lookup_rmse_mps": float(lookup_velocity_rmse),
+            "accel_lookup_vs_dvdt_rmse_mps2": float(lookup_accel_rmse),
             "n_segments_detected": int(len(segments)),
             "n_small_steps_for_robust_fit": int(np.count_nonzero(robust_mask)),
         },
         "lookahead_ratio": lookahead_ratio,
         "step_models": step_models,
         "n_transitions": len(step_models),
+        "n_total_samples": int(samples.shape[0]),
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _analyse_coupled_kinematic(
+    samples: np.ndarray,
+    sample_dt: float = 0.02,
+    velocity_filter_window_s: float = 0.18,
+    acceleration_filter_window_s: float = 0.14,
+    yaw_rate_filter_window_s: float = 0.16,
+    pose_filter_window_s: float = 0.30,
+    max_velocity: float = 3.0,
+    max_acceleration: float = 4.0,
+    max_yaw_rate: float = 8.0,
+) -> Dict[str, Any]:
+    """
+    Fit a data-driven coupled kinematic model using filtered online references.
+
+    Expected sample columns:
+      [v, throttle, steering, yaw_rate, ax, ay, az, x, y, theta, a_ref, v_raw]
+    """
+    if samples.shape[0] < 40:
+        return {"error": "not enough samples"}
+    if samples.shape[1] < len(CALIBRATION_SAMPLE_COLUMNS):
+        return {
+            "error": (
+                "sample stream does not contain pose/reference channels; "
+                "restart the vehicle-side client with the updated calibration sample format"
+            )
+        }
+
+    velocity_ref_meas = _sample_column(samples, "v")
+    velocity_raw = _sample_column(samples, "v_raw", default=float("nan"))
+    throttle = _sample_column(samples, "throttle")
+    steering = _sample_column(samples, "steering")
+    yaw_rate = _sample_column(samples, "yaw_rate")
+    accel_x = _sample_column(samples, "ax")
+    x_meas = _sample_column(samples, "x")
+    y_meas = _sample_column(samples, "y")
+    theta_meas = _sample_column(samples, "theta")
+    accel_ref_meas = _sample_column(samples, "a_ref", default=0.0)
+
+    use_velocity_raw = bool(
+        np.any(np.isfinite(velocity_raw)) and np.nanstd(velocity_raw) > 1e-6
+    )
+    velocity_source = velocity_raw if use_velocity_raw else velocity_ref_meas
+
+    v_window = _window_samples(velocity_filter_window_s, sample_dt, minimum=5)
+    a_window = _window_samples(acceleration_filter_window_s, sample_dt, minimum=5)
+    yaw_window = _window_samples(yaw_rate_filter_window_s, sample_dt, minimum=5)
+    pose_window = _window_samples(pose_filter_window_s, sample_dt, minimum=7)
+
+    velocity_ref = _zero_phase_window_smooth(velocity_source, window_samples=v_window)
+    yaw_rate_ref = _zero_phase_window_smooth(yaw_rate, window_samples=yaw_window)
+    x_ref = _zero_phase_window_smooth(x_meas, window_samples=pose_window)
+    y_ref = _zero_phase_window_smooth(y_meas, window_samples=pose_window)
+    theta_ref = _zero_phase_window_smooth(
+        np.unwrap(theta_meas),
+        window_samples=pose_window,
+    )
+    accel_from_velocity = np.gradient(velocity_ref, sample_dt)
+    accel_from_velocity = _zero_phase_window_smooth(
+        accel_from_velocity,
+        window_samples=a_window,
+    )
+    accel_state_ref = _zero_phase_window_smooth(
+        accel_ref_meas,
+        window_samples=a_window,
+    )
+    accel_imu_ref = _zero_phase_window_smooth(
+        accel_x,
+        window_samples=a_window,
+    )
+
+    accel_state_energy = float(np.nanmedian(np.abs(accel_state_ref)))
+    velocity_ref_label = "raw tach velocity" if use_velocity_raw else "estimator velocity"
+    if np.isfinite(accel_state_energy) and accel_state_energy > 1e-3:
+        acceleration_ref = 0.35 * accel_state_ref + 0.65 * accel_from_velocity
+        acceleration_reference_name = (
+            f"0.65 * d/dt(filtered {velocity_ref_label}) + 0.35 * filtered observer acceleration"
+        )
+    else:
+        acceleration_ref = accel_from_velocity
+        acceleration_reference_name = f"d/dt(filtered {velocity_ref_label})"
+
+    accel_design = _coupled_feature_matrix(
+        velocity_ref,
+        throttle,
+        steering,
+        COUPLED_ACCEL_FEATURES,
+    )
+    yaw_design = _coupled_feature_matrix(
+        velocity_ref,
+        throttle,
+        steering,
+        COUPLED_YAW_FEATURES,
+    )
+
+    try:
+        accel_coeffs, _accel_fit, accel_fit_metrics = _linear_fit_with_metrics(
+            accel_design,
+            acceleration_ref,
+        )
+        yaw_coeffs, _yaw_fit, yaw_fit_metrics = _linear_fit_with_metrics(
+            yaw_design,
+            yaw_rate_ref,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+    sim = _simulate_coupled_kinematic(
+        throttle=throttle,
+        steering=steering,
+        sample_dt=sample_dt,
+        x0=float(x_ref[0]),
+        y0=float(y_ref[0]),
+        theta0=float(theta_ref[0]),
+        v0=float(velocity_ref[0]),
+        accel_coeffs=accel_coeffs,
+        yaw_coeffs=yaw_coeffs,
+        accel_features=COUPLED_ACCEL_FEATURES,
+        yaw_features=COUPLED_YAW_FEATURES,
+        max_velocity=max_velocity,
+        max_acceleration=max_acceleration,
+        max_yaw_rate=max_yaw_rate,
+    )
+
+    quality = {
+        "velocity_rmse_mps": _rmse(velocity_ref, sim["v"]),
+        "acceleration_rmse_mps2": _rmse(acceleration_ref, sim["a"]),
+        "yaw_rate_rmse_radps": _rmse(yaw_rate_ref, sim["yaw_rate"]),
+        "theta_rmse_rad": _wrapped_rmse(theta_ref, sim["theta"]),
+        "x_rmse_m": _rmse(x_ref, sim["x"]),
+        "y_rmse_m": _rmse(y_ref, sim["y"]),
+        "acceleration_fit_rmse_mps2": float(accel_fit_metrics["rmse"]),
+        "acceleration_fit_r2": float(accel_fit_metrics["r2"]),
+        "yaw_fit_rmse_radps": float(yaw_fit_metrics["rmse"]),
+        "yaw_fit_r2": float(yaw_fit_metrics["r2"]),
+        "accel_ref_vs_imu_rmse_mps2": _rmse(acceleration_ref, accel_imu_ref),
+        "n_total_samples": int(samples.shape[0]),
+    }
+    reference_filters = {
+        "velocity_source": "v_raw" if use_velocity_raw else "v",
+        "velocity_filter": "offline_zero_phase_boxcar_x2",
+        "velocity_filter_window_samples": int(v_window),
+        "acceleration_filter": "offline_zero_phase_boxcar_x2",
+        "acceleration_filter_window_samples": int(a_window),
+        "yaw_rate_filter": "offline_zero_phase_boxcar_x2",
+        "yaw_rate_filter_window_samples": int(yaw_window),
+        "pose_filter": "offline_zero_phase_boxcar_x2",
+        "pose_filter_window_samples": int(pose_window),
+        "acceleration_reference": acceleration_reference_name,
+    }
+    coupled_model = {
+        "enabled": True,
+        "acceleration_features": list(COUPLED_ACCEL_FEATURES),
+        "acceleration_coefficients": [float(v) for v in accel_coeffs],
+        "yaw_rate_features": list(COUPLED_YAW_FEATURES),
+        "yaw_rate_coefficients": [float(v) for v in yaw_coeffs],
+        "reference_filters": reference_filters,
+        "limits": {
+            "max_velocity": float(max_velocity),
+            "max_acceleration": float(max_acceleration),
+            "max_yaw_rate": float(max_yaw_rate),
+        },
+        "quality": dict(quality),
+    }
+    observer_model = _coupled_kinematic_observer_model(
+        coupled_model=coupled_model,
+        source_yaml="",
+        raw_csv="",
+    )["observer_model"]
+
+    return {
+        "calibration_type": "coupled_kinematic",
+        "model_type": "coupled_kinematic_bicycle",
+        "recommended_longitudinal_model": "coupled_kinematic",
+        "reference_filters": reference_filters,
+        "reference_statistics": {
+            "velocity_mean_mps": float(np.nanmean(velocity_ref)),
+            "velocity_std_mps": float(np.nanstd(velocity_ref)),
+            "velocity_raw_mean_mps": float(np.nanmean(velocity_source)),
+            "velocity_raw_std_mps": float(np.nanstd(velocity_source)),
+            "steering_std_rad": float(np.nanstd(steering)),
+            "throttle_std": float(np.nanstd(throttle)),
+        },
+        "acceleration_model": {
+            "feature_names": list(COUPLED_ACCEL_FEATURES),
+            "coefficients": [float(v) for v in accel_coeffs],
+            "fit_rmse_mps2": float(accel_fit_metrics["rmse"]),
+            "fit_r2": float(accel_fit_metrics["r2"]),
+        },
+        "yaw_rate_model": {
+            "feature_names": list(COUPLED_YAW_FEATURES),
+            "coefficients": [float(v) for v in yaw_coeffs],
+            "fit_rmse_radps": float(yaw_fit_metrics["rmse"]),
+            "fit_r2": float(yaw_fit_metrics["r2"]),
+        },
+        "simulated_quality": quality,
+        "coupled_kinematic_model": coupled_model,
+        "observer_model": observer_model,
         "n_total_samples": int(samples.shape[0]),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -716,7 +1466,7 @@ class OnlineCalibrationService:
     - get_status()
     """
 
-    SAMPLE_SIZE = 7  # [v, throttle, steering, yaw_rate, ax, ay, az]
+    SAMPLE_SIZE = len(CALIBRATION_SAMPLE_COLUMNS)
 
     def __init__(
         self,
@@ -989,6 +1739,26 @@ class OnlineCalibrationService:
                     sample_dt=self.sample_dt,
                     lookahead_ratio=options.get("lookahead_ratio", 0.632),
                 )
+            elif calibration_type == "coupled_kinematic":
+                result = _analyse_coupled_kinematic(
+                    data,
+                    sample_dt=self.sample_dt,
+                    velocity_filter_window_s=float(
+                        options.get("velocity_filter_window_s", 0.18)
+                    ),
+                    acceleration_filter_window_s=float(
+                        options.get("acceleration_filter_window_s", 0.14)
+                    ),
+                    yaw_rate_filter_window_s=float(
+                        options.get("yaw_rate_filter_window_s", 0.16)
+                    ),
+                    pose_filter_window_s=float(
+                        options.get("pose_filter_window_s", 0.30)
+                    ),
+                    max_velocity=float(options.get("max_velocity", 3.0)),
+                    max_acceleration=float(options.get("max_acceleration", 4.0)),
+                    max_yaw_rate=float(options.get("max_yaw_rate", 8.0)),
+                )
             else:
                 result = {"error": f"Unknown calibration type: {calibration_type}"}
 
@@ -996,6 +1766,15 @@ class OnlineCalibrationService:
             if "error" not in result:
                 rdir = _results_dir(calibration_type)
                 ts = time.strftime("%Y%m%d_%H%M%S")
+                latest_yaml_path = os.path.join(rdir, f"{calibration_type}_latest.yaml")
+                raw_csv_path = os.path.join(rdir, f"raw_samples_{ts}.csv")
+                if calibration_type == "coupled_kinematic":
+                    result = dict(result)
+                    result["observer_model"] = _coupled_kinematic_observer_model(
+                        coupled_model=result["coupled_kinematic_model"],
+                        source_yaml=latest_yaml_path,
+                        raw_csv=raw_csv_path,
+                    )["observer_model"]
                 _save_yaml(result, f"{calibration_type}_{ts}.yaml", rdir)
                 _save_yaml(result, f"{calibration_type}_latest.yaml", rdir)
                 if isinstance(result.get("observer_model"), dict):
@@ -1017,7 +1796,7 @@ class OnlineCalibrationService:
 
                 # Also save raw buffer as CSV
                 rows = []
-                cols = ["v", "throttle", "steering", "yaw_rate", "ax", "ay", "az"]
+                cols = list(CALIBRATION_SAMPLE_COLUMNS)
                 for sample_idx, row in enumerate(data):
                     sample_row = {
                         "sample_index": int(sample_idx),

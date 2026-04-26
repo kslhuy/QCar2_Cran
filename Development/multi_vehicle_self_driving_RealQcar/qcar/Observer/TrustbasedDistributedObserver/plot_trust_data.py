@@ -25,6 +25,15 @@ import matplotlib.gridspec as gridspec
 import numpy as np
 import argparse
 
+ATTACK_VALUE_FIELDS = [
+    ("x", "Injected X", "x [m]"),
+    ("y", "Injected Y", "y [m]"),
+    ("theta", "Injected Heading", "theta [rad]"),
+    ("velocity", "Injected Velocity", "v [m/s]"),
+    ("acceleration", "Injected Acceleration", "a [m/s^2]"),
+    ("confidence", "Injected Confidence", "confidence"),
+]
+
 # python plot_trust_data.py --file ".\trust_weight_log_V1.csv" --relative-file "..\Relative_obs\relative_uio_log_V1.csv"
 
 # ──────────────────────────────────────────────────────────────────────
@@ -229,6 +238,75 @@ def _attack_display_label(interval: dict) -> str:
         if fields:
             parts.append("/".join(fields))
     return " ".join(part for part in parts if part).strip()
+
+
+def _attack_value_column(field: str, kind: str, vehicle_id: int) -> str:
+    return f"inject_attack_{kind}_{field}_{vehicle_id}"
+
+
+def _attack_field_has_data(rows: List[dict], columns: List[str],
+                           active: List[int], field: str) -> bool:
+    for vid in active:
+        for kind in ("original", "modified", "delta"):
+            col = _attack_value_column(field, kind, vid)
+            if col in columns and _has_finite_column(rows, col):
+                return True
+    return False
+
+
+def _plot_attack_value_panel(ax, times, rows, columns, active,
+                             field: str, title: str, ylabel: str):
+    plotted = 0
+    cmap = plt.get_cmap("tab10")
+    for idx, vid in enumerate(active):
+        modified_col = _attack_value_column(field, "modified", vid)
+        original_col = _attack_value_column(field, "original", vid)
+        delta_col = _attack_value_column(field, "delta", vid)
+        if modified_col not in columns and original_col not in columns:
+            continue
+
+        modified = _col_to_array(rows, modified_col)
+        original = _col_to_array(rows, original_col)
+        delta = _col_to_array(rows, delta_col)
+        if not (
+            np.any(np.isfinite(modified))
+            or np.any(np.isfinite(original))
+            or np.any(np.isfinite(delta))
+        ):
+            continue
+
+        color = cmap(idx % 10)
+        if np.any(np.isfinite(original)):
+            ax.plot(
+                times,
+                original,
+                linestyle="--",
+                linewidth=1.1,
+                alpha=0.65,
+                color=color,
+                label=f"V{vid} original",
+            )
+        if np.any(np.isfinite(modified)):
+            ax.plot(
+                times,
+                modified,
+                linewidth=1.8,
+                color=color,
+                label=f"V{vid} injected",
+            )
+        elif np.any(np.isfinite(delta)):
+            ax.plot(
+                times,
+                delta,
+                linewidth=1.6,
+                color=color,
+                label=f"V{vid} delta",
+            )
+        plotted += 1
+
+    if plotted == 0:
+        _no_data(ax, title)
+    _style(ax, title, ylabel, xlabel="Time [s]")
 
 
 def _extract_attack_intervals(rows: List[dict], columns: List[str],
@@ -627,14 +705,14 @@ def _fig_weights(times, rows, active, focus, host_id):
         )
     )
 
-    fig = plt.figure(figsize=(16, 7))
+    fig = plt.figure(figsize=(19, 8))
     final_note = "final per-target" if has_final else "legacy summary"
     fig.suptitle(
         f"Weight Calculation ({final_note})  (Host V{host_id}, Focus V{focus})",
         fontsize=13,
         fontweight="bold",
     )
-    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.25)
+    gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.35, wspace=0.28)
 
     # (0,0) Direct/self/final neighbor budget for the focused target.
     ax = fig.add_subplot(gs[0, 0])
@@ -685,8 +763,31 @@ def _fig_weights(times, rows, active, focus, host_id):
         _no_data(ax, f"Final Neighbor Source Weights to V{focus}")
     _style(ax, f"Final Neighbor Source Weights to V{focus}", "Weight")
 
-    # (1,0) Mean trust metrics
+    # (0,2) Legacy summary weights for comparison.
+    ax = fig.add_subplot(gs[0, 2])
+    n = 0
+    for col, lbl, ls, color in [
+        ("w0", "w0 summary", "-.", "tab:blue"),
+        ("w_self", "w_self summary", "--", "k"),
+        ("total_neighbor_weight", "neighbor total summary", "-", "tab:orange"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, ls, lw=1.4, label=lbl, color=color)
+            n += 1
+    if n == 0:
+        _no_data(ax, "Legacy Summary Weights")
+    _style(ax, "Legacy Summary Weights", "Weight")
+
+    # (1,0) Legacy per-neighbor weights for comparison.
     ax = fig.add_subplot(gs[1, 0])
+    if _plot_series(ax, times, rows, "w_neighbor", active,
+                    label_fmt="summary w_neighbor V{}") == 0:
+        _no_data(ax, "Legacy Per-Neighbor Weights")
+    _style(ax, "Legacy Per-Neighbor Weights", "Weight", xlabel="Time [s]")
+
+    # (1,1) Mean trust metrics
+    ax = fig.add_subplot(gs[1, 1])
     n = 0
     for col, lbl in [("mean_direct_trust", "Mean Direct Trust"),
                       ("mean_generalized_trust", "Mean Generalized Trust"),
@@ -702,8 +803,8 @@ def _fig_weights(times, rows, active, focus, host_id):
         _no_data(ax, "Trust Summary Metrics")
     _style(ax, "Trust Summary Metrics", "Value", xlabel="Time [s]")
 
-    # (1,1) Counts plus old summary total for compatibility checking.
-    ax = fig.add_subplot(gs[1, 1])
+    # (1,2) Counts plus old summary total for compatibility checking.
+    ax = fig.add_subplot(gs[1, 2])
     n = 0
     for col, lbl in [("trusted_neighbor_count", "Trusted Neighbors"),
                       ("active_vehicle_count", "Active Vehicles"),
@@ -1149,7 +1250,8 @@ def _fig_v2v_details(times, rows, active, focus, host_id):
 def _fig_attack_timeline(times, rows, columns, active, host_id):
     """
     Figure 6 - Attack Timeline
-    Shows attack-module enable/disable moments and configured attack intervals.
+    Shows attack-module enable/disable moments, configured attack intervals,
+    and the actual injected values recorded in the trust CSV.
     """
     intervals = _extract_attack_intervals(rows, columns, active, times)
     events = _extract_attack_events(rows, columns, times)
@@ -1161,14 +1263,31 @@ def _fig_attack_timeline(times, rows, columns, active, host_id):
         if label not in lanes:
             lanes.append(label)
 
-    fig_height = min(max(5.5, 1.0 + 0.55 * len(lanes)), 12.0)
+    attack_value_fields = [
+        field_info
+        for field_info in ATTACK_VALUE_FIELDS
+        if _attack_field_has_data(rows, columns, active, field_info[0])
+    ]
+    value_rows = int(math.ceil(len(attack_value_fields) / 2.0))
+
+    fig_height = min(
+        max(5.5 + 2.4 * value_rows, 1.8 + 0.55 * len(lanes) + 2.4 * value_rows),
+        18.0,
+    )
     fig = plt.figure(figsize=(16, fig_height))
     fig.suptitle(f"V2V Attack Timeline (Host V{host_id})",
                  fontsize=13, fontweight="bold")
-    gs = gridspec.GridSpec(2, 1, figure=fig, height_ratios=[3.0, 1.2],
-                           hspace=0.32)
+    height_ratios = [max(3.0, 0.45 * len(lanes)), 1.25] + ([1.6] * value_rows)
+    gs = gridspec.GridSpec(
+        2 + value_rows,
+        2,
+        figure=fig,
+        height_ratios=height_ratios,
+        hspace=0.35,
+        wspace=0.22,
+    )
 
-    ax = fig.add_subplot(gs[0, 0])
+    ax = fig.add_subplot(gs[0, :])
     lane_y = {label: idx for idx, label in enumerate(lanes)}
     bar_h = 0.72
 
@@ -1260,7 +1379,7 @@ def _fig_attack_timeline(times, rows, columns, active, host_id):
     _style(ax, "Attack Intervals and Enable/Disable Events",
            "", xlabel="Time [s]")
 
-    ax2 = fig.add_subplot(gs[1, 0], sharex=ax)
+    ax2 = fig.add_subplot(gs[1, :], sharex=ax)
     plotted = 0
     for col, label, color in [
         ("v2v_attack_enabled", "module enabled", "tab:green"),
@@ -1276,6 +1395,21 @@ def _fig_attack_timeline(times, rows, columns, active, host_id):
     if plotted == 0:
         _no_data(ax2, "Attack Status Signals")
     _style(ax2, "Attack Status Signals", "Value", xlabel="Time [s]")
+
+    for idx, (field, title, ylabel) in enumerate(attack_value_fields):
+        row_idx = 2 + idx // 2
+        col_idx = idx % 2
+        value_ax = fig.add_subplot(gs[row_idx, col_idx], sharex=ax)
+        _plot_attack_value_panel(
+            value_ax,
+            times,
+            rows,
+            columns,
+            active,
+            field=field,
+            title=title,
+            ylabel=ylabel,
+        )
 
     fig.tight_layout(rect=[0, 0, 1, 0.95])
     return fig
@@ -2010,29 +2144,31 @@ def main():
     # Print analytic summary
     _print_static_metrics(rows, active)
 
-    # Choose focus vehicles according to command-line flags or interactive input
-    if args.all:
-        focuses = focus_candidates
-    elif args.focus is not None:
-        if args.focus in focus_candidates:
-            focuses = [args.focus]
-        else:
-            print(f"Requested focus V{args.focus} not in candidate list; using {focus_candidates[0]}")
-            focuses = [focus_candidates[0]]
-    else:
-        # interactive prompt if no CLI preference provided
-        focus_selection = input(
-            "Enter a focus vehicle ID from the list above, or type 'all' to generate a separate set of figures for every candidate (default = first): "
-        ).strip().lower()
+    focuses = focus_candidates
 
-        if focus_selection == "all":
-            focuses = focus_candidates
-        else:
-            try:
-                fid = int(focus_selection)
-                focuses = [fid] if fid in focus_candidates else [focus_candidates[0]]
-            except ValueError:
-                focuses = [focus_candidates[0]]
+    # # Choose focus vehicles according to command-line flags or interactive input
+    # if args.all:
+    #     focuses = focus_candidates
+    # elif args.focus is not None:
+    #     if args.focus in focus_candidates:
+    #         focuses = [args.focus]
+    #     else:
+    #         print(f"Requested focus V{args.focus} not in candidate list; using {focus_candidates[0]}")
+    #         focuses = [focus_candidates[0]]
+    # else:
+    #     # interactive prompt if no CLI preference provided
+    #     focus_selection = input(
+    #         "Enter a focus vehicle ID from the list above, or type 'all' to generate a separate set of figures for every candidate (default = first): "
+    #     ).strip().lower()
+
+    #     if focus_selection == "all":
+    #         focuses = focus_candidates
+    #     else:
+    #         try:
+    #             fid = int(focus_selection)
+    #             focuses = [fid] if fid in focus_candidates else [focus_candidates[0]]
+    #         except ValueError:
+    #             focuses = [focus_candidates[0]]
 
     # Build the figures (multiple sets if necessary)
     for focus in focuses:

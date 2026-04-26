@@ -480,6 +480,7 @@ class CalibratingState(StateBase):
                 "poly_degree": int(degree),
                 "poly_coefficients": [float(c) for c in coeffs],
                 "effective_wheelbase": effective_wheelbase,
+                "ackermann_model": "kappa = tan(delta_eff) / L_eff",
                 "steering_values": [float(s) for s in steerings],
                 "curvature_values": [float(k) for k in curvatures],
                 "velocity_values": [float(v) for v in velocities],

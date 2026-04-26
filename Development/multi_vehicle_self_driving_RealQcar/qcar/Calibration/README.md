@@ -29,14 +29,22 @@ external ZMQ worker.
 Sample format:
 
 ```text
-[v, throttle, steering, yaw_rate, ax, ay, az]
+[v, throttle, steering, yaw_rate, ax, ay, az, x, y, theta, a_ref, v_raw]
 ```
+
+Notes:
+
+- `v` is the observer / estimator velocity reference.
+- `v_raw` is the raw motor-tach velocity saved for offline identification.
+- `a_ref` is the observer acceleration reference saved for comparison or blended
+  offline targets.
 
 Supported passive analyses in `online_calibration_service.py`:
 
 - `throttle_velocity`
 - `steering_curvature`
 - `throttle_acceleration`
+- `coupled_kinematic`
 
 Important: the online `throttle_acceleration` analysis is still the lightweight
 passive step detector implemented in `online_calibration_service.py`. It is not
@@ -112,6 +120,7 @@ Examples:
 - `Calibration/results/online_throttle_velocity/`
 - `Calibration/results/online_steering_curvature/`
 - `Calibration/results/online_throttle_acceleration/`
+- `Calibration/results/online_coupled_kinematic/`
 
 Each run typically saves:
 
@@ -137,6 +146,15 @@ Each run typically saves:
 - Produces a simple first-order step summary from buffered samples.
 - Good for quick inspection, but not the preferred path if you need the
   controller-facing `acc_to_throttle_gain`.
+
+`coupled_kinematic`
+
+- Best when the passive drive log covers both straight and turning motion.
+- Uses filtered online references for `v`, `a`, `yaw_rate`, `x`, `y`, and `theta`.
+- Fits a coupled motion model where acceleration and yaw rate both depend on
+  velocity, throttle, and steering.
+- Exports an observer-model YAML that can patch the local EKF / Robust
+  KalmanNet analytical predictor.
 
 ## Offline Acceleration-Lag Calibration: `05_throttle_acceleration_calibration.py`
 

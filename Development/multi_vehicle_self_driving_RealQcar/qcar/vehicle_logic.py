@@ -66,6 +66,7 @@ class VehicleLogic:
         self.vehicle_type = config.vehicle.vehicle_type
         self.programme_type = config.vehicle.programme_type
         self.is_physical_qcar = IS_PHYSICAL_QCAR
+        setattr(config.vehicle, "is_physical_qcar", bool(self.is_physical_qcar))
 
 
         # self.Is_Limo_Car = config.network.car_id
@@ -230,6 +231,13 @@ class VehicleLogic:
             "delta": 0.0,
             "state": "UNKNOWN",
             "gps_valid": False,
+            "local_sensor_attack_supported": False,
+            "local_sensor_attack_enabled": False,
+            "local_sensor_attack_active": False,
+            "local_sensor_attack_branch_types": "",
+            "local_sensor_attack_gps_type": "",
+            "local_sensor_attack_remaining_steps": 0,
+            "local_sensor_attack_intensity": 0.0,
         }
         self._latest_observer_state = None
 
@@ -346,6 +354,11 @@ class VehicleLogic:
                 return
 
             shared_clock_s = self._get_v2v_log_time_s()
+            runtime_status = None
+            if hasattr(self, "v2v_manager") and hasattr(
+                self.v2v_manager, "get_attack_status"
+            ):
+                runtime_status = self.v2v_manager.get_attack_status()
             status = attack_status
             if (
                 isinstance(status, dict)
@@ -360,12 +373,42 @@ class VehicleLogic:
                     status = dict(self._latest_gui_attack_status)
                     status["elapsed_time"] = shared_clock_s
                     status["current_time"] = shared_clock_s
-                elif hasattr(self, "v2v_manager") and hasattr(
-                    self.v2v_manager, "get_attack_status"
-                ):
-                    status = self.v2v_manager.get_attack_status()
+                elif isinstance(runtime_status, dict):
+                    status = dict(runtime_status)
                 else:
                     status = None
+
+            if isinstance(status, dict) and isinstance(runtime_status, dict):
+                runtime_snapshot = runtime_status.get("attack_value_snapshot", {})
+                runtime_has_live_data = bool(
+                    (
+                        isinstance(runtime_snapshot, dict)
+                        and runtime_snapshot.get("by_vehicle")
+                    )
+                    or runtime_status.get("active_scenario_details")
+                    or runtime_status.get("all_scenario_details")
+                    or runtime_status.get("active_scenarios")
+                    or runtime_status.get("total_scenarios")
+                )
+                merged_runtime_keys = (
+                    "attack_value_snapshot",
+                    "active_scenario_details",
+                    "all_scenario_details",
+                    "current_scenario_names",
+                    "statistics",
+                    "injector_stats",
+                    "attack_module_present",
+                    "active_scenarios",
+                    "total_scenarios",
+                )
+                for key in merged_runtime_keys:
+                    runtime_value = runtime_status.get(key)
+                    if runtime_value in (None, "", [], {}):
+                        continue
+                    status[key] = runtime_value
+                for key in ("enabled", "attack_active"):
+                    if runtime_has_live_data and key in runtime_status:
+                        status[key] = runtime_status[key]
 
             if (
                 isinstance(status, dict)
@@ -606,6 +649,95 @@ class VehicleLogic:
                 self.vehicle_logger.logger.info("Disabled all V2V attacks via Ground Station command")
         except Exception as e:
             self.vehicle_logger.log_error("Failed to disable V2V attack", e)
+
+    def _get_local_sensor_attack_status(self) -> dict:
+        """Get dynamic local sensor attack status from the active local estimator."""
+        default_status = {
+            "local_sensor_attack_supported": False,
+            "local_sensor_attack_enabled": False,
+            "local_sensor_attack_active": False,
+            "local_sensor_attack_branch_types": "",
+            "local_sensor_attack_gps_type": "",
+            "local_sensor_attack_remaining_steps": 0,
+            "local_sensor_attack_intensity": 0.0,
+        }
+        vehicle_observer = getattr(self, "vehicle_observer", None)
+        if vehicle_observer is None or not hasattr(
+            vehicle_observer, "get_local_sensor_attack_status"
+        ):
+            return default_status
+
+        try:
+            status = vehicle_observer.get_local_sensor_attack_status()
+        except Exception as e:
+            self.vehicle_logger.log_warning(
+                f"Failed to get local sensor attack status: {e}"
+            )
+            return default_status
+
+        if not isinstance(status, dict):
+            return default_status
+
+        merged_status = default_status.copy()
+        merged_status.update(status)
+        return merged_status
+
+    def start_local_sensor_attack(self, config: Optional[dict] = None) -> bool:
+        """Enable runtime RKNet local sensor attack injection for this vehicle."""
+        vehicle_observer = getattr(self, "vehicle_observer", None)
+        if vehicle_observer is None:
+            self.vehicle_logger.logger.warning(
+                "Local sensor attack ignored: vehicle observer is not initialized"
+            )
+            return False
+
+        estimator = vehicle_observer.get_local_estimator()
+        estimator_type = str(
+            getattr(vehicle_observer, "local_estimator_type", "")
+        ).strip()
+        if estimator_type != "robust_kalman_net" or not hasattr(
+            estimator, "start_sensor_attack"
+        ):
+            self.vehicle_logger.logger.warning(
+                "Local sensor attack ignored: active local observer is not robust_kalman_net"
+            )
+            return False
+
+        attack_config = config if isinstance(config, dict) else {}
+        success = bool(estimator.start_sensor_attack(attack_config))
+        if success:
+            self.vehicle_logger.logger.info(
+                f"Local sensor attack enabled for vehicle {self.vehicle_id}"
+            )
+        return success
+
+    def stop_local_sensor_attack(self) -> bool:
+        """Disable runtime RKNet local sensor attack injection for this vehicle."""
+        vehicle_observer = getattr(self, "vehicle_observer", None)
+        if vehicle_observer is None:
+            self.vehicle_logger.logger.warning(
+                "Local sensor attack stop ignored: vehicle observer is not initialized"
+            )
+            return False
+
+        estimator = vehicle_observer.get_local_estimator()
+        estimator_type = str(
+            getattr(vehicle_observer, "local_estimator_type", "")
+        ).strip()
+        if estimator_type != "robust_kalman_net" or not hasattr(
+            estimator, "stop_sensor_attack"
+        ):
+            self.vehicle_logger.logger.warning(
+                "Local sensor attack stop ignored: active local observer is not robust_kalman_net"
+            )
+            return False
+
+        success = bool(estimator.stop_sensor_attack())
+        if success:
+            self.vehicle_logger.logger.info(
+                f"Local sensor attack disabled for vehicle {self.vehicle_id}"
+            )
+        return success
 
     def disable_attack_module(self):
         """Disable V2V attack injection if available."""
@@ -1074,7 +1206,7 @@ class VehicleLogic:
                     if sample is not None:
                         self.online_sysid_zmq.submit_sample(sample)
 
-            # Feed passive calibration with [v, throttle, steering, yaw_rate, ax, ay, az].
+            # Feed passive calibration with filtered motion/control references.
             if hasattr(self, "online_calibration_zmq") and self.online_calibration_zmq:
                 if self.online_calibration_zmq.is_collecting():
                     cal_sample = self.vehicle_observer.get_calibration_sample()
@@ -1321,6 +1453,7 @@ class VehicleLogic:
         
         self._telemetry_state["state"] = self.state_machine.state.name if hasattr(self.state_machine, "state") and self.state_machine.state else "UNKNOWN"
         self._telemetry_state["gps_valid"] = bool(state_info.get("gps_valid", False))
+        self._telemetry_state.update(self._get_local_sensor_attack_status())
 
         # Include opponent tracking data in telemetry
         self._telemetry_state["opponents"] = self.opponent_data
@@ -1503,6 +1636,7 @@ class VehicleLogic:
         status_msg.update(v2v_status)
         status_msg.update(self._get_platoon_status())
         status_msg.update(self._get_cached_periodic_static_status())
+        status_msg.update(self._get_local_sensor_attack_status())
 
         try:
             current_handler = self.state_machine.get_current_state_handler()

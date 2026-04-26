@@ -182,6 +182,8 @@ class AttackModule:
         'vel': 'velocity',
         'confidence': 'confidence',
     }
+
+    SNAPSHOT_FIELDS = ('x', 'y', 'theta', 'velocity', 'acceleration', 'confidence')
     
     def __init__(self, vehicle_id: int, logger: Optional[logging.Logger] = None,
                  dt: float = 0.01, log_interval: float = 1.0):
@@ -208,6 +210,7 @@ class AttackModule:
         self.attack_start_time: Optional[float] = None
         self.attack_elapsed_time: float = 0.0
         self.current_time: float = 0.0
+        self.last_attack_snapshot: Dict[str, Any] = {'clock_s': 0.0, 'by_vehicle': {}}
         
         # Statistics
         self.stats = {
@@ -250,6 +253,7 @@ class AttackModule:
         self.scenarios.clear()
         self.current_scenarios.clear()
         self.attack_active = False
+        self._clear_attack_snapshot()
         if self.logger:
             self.logger.info("All attack scenarios cleared")
     
@@ -285,8 +289,10 @@ class AttackModule:
             if self.logger:
                 self.logger.warning(f"🟢 ATTACK ENDED at t={current_time:.3f}s")
             self.attack_elapsed_time = 0.0
+            self._clear_attack_snapshot()
         elif self.attack_active:
             self.attack_elapsed_time = current_time - self.attack_start_time
+            self._clear_attack_snapshot()
     
     def should_attack_local_data(self) -> bool:
         """Check if any active scenario should attack local state data."""
@@ -347,7 +353,9 @@ class AttackModule:
             modified_state = self._apply_modification_to_dict(
                 modified_state, scenario, self.LOCAL_STATE_FIELDS, is_fleet=False
             )
-        
+
+        self._record_local_attack_snapshot(local_state, modified_state, attacker_scenarios)
+
         # Log attack (throttled)
         self._log_local_attack(local_state, modified_state, attacker_scenarios)
         
@@ -409,6 +417,15 @@ class AttackModule:
                             modified_vehicle_state, scenario, 
                             self.FLEET_STATE_FIELDS, is_fleet=True
                         )
+
+                self._record_fleet_attack_snapshot(
+                    vid=vid,
+                    original_state=vehicle_state,
+                    modified_state=modified_vehicle_state,
+                    scenarios=[
+                        scenario for scenario in attacker_scenarios if scenario.is_victim(vid)
+                    ],
+                )
                 
                 modified_fleet_states[vehicle_id] = modified_vehicle_state
             
@@ -472,6 +489,137 @@ class AttackModule:
         scenario._attack_count += 1
         
         return modified
+
+    def _clear_attack_snapshot(self) -> None:
+        """Clear the latest per-vehicle attack value snapshot."""
+        self.last_attack_snapshot = {
+            'clock_s': float(self.current_time),
+            'by_vehicle': {},
+        }
+
+    @staticmethod
+    def _unique_snapshot_values(scenarios: List[AttackScenario], attr: str) -> List[str]:
+        values: List[str] = []
+        for scenario in scenarios:
+            raw_value = getattr(scenario, attr, "")
+            value = getattr(raw_value, "value", raw_value)
+            value = str(value or "")
+            if value and value not in values:
+                values.append(value)
+        return values
+
+    def _build_value_snapshot(
+        self,
+        original_state: Dict,
+        modified_state: Dict,
+        field_mapping: Dict,
+        scenarios: List[AttackScenario],
+    ) -> Dict[str, Dict[str, float]]:
+        """Build original/modified/delta values for all targeted numeric fields."""
+        value_snapshot: Dict[str, Dict[str, float]] = {}
+        targeted_fields = {
+            field_mapping.get(target_field, str(target_field).lower())
+            for scenario in scenarios
+            for target_field in scenario.target_fields
+        }
+
+        for normalized_field in targeted_fields:
+            if normalized_field not in self.SNAPSHOT_FIELDS:
+                continue
+            original_value = original_state.get(normalized_field)
+            modified_value = modified_state.get(normalized_field)
+            if not isinstance(original_value, (int, float)):
+                continue
+            if not isinstance(modified_value, (int, float)):
+                continue
+            value_snapshot[normalized_field] = {
+                'original': float(original_value),
+                'modified': float(modified_value),
+                'delta': float(modified_value - original_value),
+            }
+        return value_snapshot
+
+    def _merge_attack_snapshot_entry(
+        self,
+        vehicle_id: int,
+        scenarios: List[AttackScenario],
+        value_snapshot: Dict[str, Dict[str, float]],
+    ) -> None:
+        """Merge the latest attack values for one attacked vehicle."""
+        if not scenarios or not value_snapshot:
+            return
+
+        by_vehicle = self.last_attack_snapshot.setdefault('by_vehicle', {})
+        existing = by_vehicle.get(vehicle_id, {})
+        existing_values = existing.get('values', {})
+        existing_values.update(value_snapshot)
+
+        fields = sorted(set(existing.get('fields', [])) | set(value_snapshot.keys()))
+        existing_types = list(existing.get('types', []))
+        existing_names = list(existing.get('names', []))
+        existing_modifications = list(existing.get('modifications', []))
+        existing_data_types = list(existing.get('data_types', []))
+
+        for value in self._unique_snapshot_values(scenarios, 'attack_type'):
+            if value not in existing_types:
+                existing_types.append(value)
+        for value in self._unique_snapshot_values(scenarios, 'scenario_name'):
+            if value not in existing_names:
+                existing_names.append(value)
+        for value in self._unique_snapshot_values(scenarios, 'modification_type'):
+            if value not in existing_modifications:
+                existing_modifications.append(value)
+        for value in self._unique_snapshot_values(scenarios, 'data_type'):
+            if value not in existing_data_types:
+                existing_data_types.append(value)
+
+        by_vehicle[vehicle_id] = {
+            'active': True,
+            'attacker_id': int(scenarios[0].attacker_id),
+            'types': existing_types,
+            'names': existing_names,
+            'modifications': existing_modifications,
+            'data_types': existing_data_types,
+            'fields': fields,
+            'values': existing_values,
+        }
+
+    def _record_local_attack_snapshot(
+        self,
+        original_state: Dict,
+        modified_state: Dict,
+        scenarios: List[AttackScenario],
+    ) -> None:
+        """Record the last injected local-state values for logging/plotting."""
+        if not scenarios:
+            return
+        self.last_attack_snapshot['clock_s'] = float(self.current_time)
+        value_snapshot = self._build_value_snapshot(
+            original_state,
+            modified_state,
+            self.LOCAL_STATE_FIELDS,
+            scenarios,
+        )
+        self._merge_attack_snapshot_entry(self.vehicle_id, scenarios, value_snapshot)
+
+    def _record_fleet_attack_snapshot(
+        self,
+        vid: int,
+        original_state: Dict,
+        modified_state: Dict,
+        scenarios: List[AttackScenario],
+    ) -> None:
+        """Record the last injected fleet-state values for one targeted vehicle."""
+        if not scenarios:
+            return
+        self.last_attack_snapshot['clock_s'] = float(self.current_time)
+        value_snapshot = self._build_value_snapshot(
+            original_state,
+            modified_state,
+            self.FLEET_STATE_FIELDS,
+            scenarios,
+        )
+        self._merge_attack_snapshot_entry(int(vid), scenarios, value_snapshot)
     
     def _apply_modification(self, original_value: float, scenario: AttackScenario,
                            attack_time: float) -> float:
@@ -639,6 +787,7 @@ class AttackModule:
             'current_scenario_names': [s.scenario_name for s in self.current_scenarios],
             'active_scenario_details': self.get_active_scenario_details(),
             'all_scenario_details': self.get_scenario_details(),
+            'attack_value_snapshot': self.last_attack_snapshot.copy(),
             'statistics': self.stats.copy(),
         }
 

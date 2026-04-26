@@ -141,7 +141,7 @@ pure_pursuit:
 pp_map:
   sample_ds: 0.02                 # [m] Spacing between resampled path points. Up = fewer/coarser points. Down = denser/more detailed path.
   desired_speed: 0.55             # [m/s] Base cruise speed used to build the map speed profile. Up = faster almost everywhere. Down = slower everywhere.
-  min_speed: 0.35                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
+  min_speed: 0.4                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
   kappa_speed_gain: 1.0           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
   max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
   hard_turn_kappa: 0.60           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.

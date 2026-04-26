@@ -477,6 +477,39 @@ class StateBase:
                 )
             return None
 
+        elif command_type == CommandType.START_LOCAL_SENSOR_ATTACK:
+            attack_config = data.get("config", data)
+            self.logger.logger.info("[CMD] Starting local sensor attack")
+            try:
+                success = self.vehicle_logic.start_local_sensor_attack(attack_config)
+                if success:
+                    self.logger.logger.info(
+                        "[CMD] Local sensor attack enabled successfully"
+                    )
+                else:
+                    self.logger.logger.warning(
+                        "[CMD] Local sensor attack request was ignored"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error starting local sensor attack", e)
+            return None
+
+        elif command_type == CommandType.STOP_LOCAL_SENSOR_ATTACK:
+            self.logger.logger.info("[CMD] Stopping local sensor attack")
+            try:
+                success = self.vehicle_logic.stop_local_sensor_attack()
+                if success:
+                    self.logger.logger.info(
+                        "[CMD] Local sensor attack disabled successfully"
+                    )
+                else:
+                    self.logger.logger.warning(
+                        "[CMD] Local sensor attack stop request was ignored"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error stopping local sensor attack", e)
+            return None
+
         elif command_type == CommandType.SET_FLEET_OBSERVER:
             observer_type = data.get("observer_type")
             if observer_type:

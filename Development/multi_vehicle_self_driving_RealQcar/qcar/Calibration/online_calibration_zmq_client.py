@@ -32,7 +32,7 @@ STATUS_RCVHWM = 64
 class OnlineCalibrationZMQClient:
     """Vehicle-side ZMQ transport for external calibration worker."""
 
-    SAMPLE_SIZE = 7  # [v, throttle, steering, yaw_rate, ax, ay, az]
+    SAMPLE_SIZE = 12  # [v, throttle, steering, yaw_rate, ax, ay, az, x, y, theta, a_ref, v_raw]
 
     def __init__(
         self,

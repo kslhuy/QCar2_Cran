@@ -8,17 +8,8 @@ Easy to switch between different estimators (EKF, UKF, Luenberger, etc.).
 import numpy as np
 import time
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Tuple
+from typing import Any, Optional, Dict, Tuple
 from hal.content.qcar_functions import QCarEKF
-
-try:
-    from Observer.TrustbasedDistributedObserver.motor_model import (
-        AccelDragMotorModel,
-        MotorModelConfig,
-    )
-except Exception:
-    AccelDragMotorModel = None
-    MotorModelConfig = None
 
 
 def wrap_to_pi(angle: float) -> float:
@@ -118,6 +109,8 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         self.use_qcar_ekf = use_qcar_ekf
         self.ekf = None
         self.ekf_initialized = False
+        self.last_gain_matrix = None
+        self.last_gain_measurement_labels = ()
 
         wheelbase = config.get("wheelbase", config.get("kin_wheelbase", 0.2))
         try:
@@ -149,20 +142,27 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             "tachometer",
             "imu_acceleration",
             "velocity_lag",
+            "velocity_lag_lookup",
             "velocity_command",
             "acceleration_lag",
             "simple_acceleration",
-            "motor_model",
+            "coupled_kinematic",
         }
         if self.longitudinal_model not in valid_longitudinal_models:
             self.longitudinal_model = "tachometer"
         self.use_tachometer_update = bool(config.get("use_tachometer_update", True))
         velocity_lag_cfg = config.get("velocity_lag_model", {})
+        velocity_lag_lookup_cfg = config.get("velocity_lag_lookup_model", {})
         accel_lag_cfg = config.get("accel_lag_model", {})
+        coupled_kinematic_cfg = config.get("coupled_kinematic_model", {})
         if not isinstance(velocity_lag_cfg, dict):
             velocity_lag_cfg = {}
+        if not isinstance(velocity_lag_lookup_cfg, dict):
+            velocity_lag_lookup_cfg = {}
         if not isinstance(accel_lag_cfg, dict):
             accel_lag_cfg = {}
+        if not isinstance(coupled_kinematic_cfg, dict):
+            coupled_kinematic_cfg = {}
 
         self.max_velocity = float(config.get("max_velocity", 2.0))
         self.max_acceleration = float(config.get("max_acceleration", 2.0))
@@ -182,6 +182,30 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             ),
             0.0,
         )
+        self.velocity_lag_lookup_tau = max(
+            float(
+                velocity_lag_lookup_cfg.get(
+                    "tau",
+                    config.get("velocity_lag_lookup_tau", self.velocity_lag_tau),
+                )
+            ),
+            1e-6,
+        )
+        self.velocity_lag_lookup_throttle_breakpoints = np.asarray(
+            velocity_lag_lookup_cfg.get("throttle_breakpoints", []),
+            dtype=float,
+        ).reshape(-1)
+        self.velocity_lag_lookup_velocity_breakpoints = np.asarray(
+            velocity_lag_lookup_cfg.get("steady_state_velocity_breakpoints", []),
+            dtype=float,
+        ).reshape(-1)
+        self.velocity_lag_lookup_enabled = bool(
+            velocity_lag_lookup_cfg.get("enabled", True)
+        ) and (
+            self.velocity_lag_lookup_throttle_breakpoints.size >= 2
+            and self.velocity_lag_lookup_throttle_breakpoints.size
+            == self.velocity_lag_lookup_velocity_breakpoints.size
+        )
         self.velocity_command_tau = max(
             float(config.get("velocity_command_tau", self.velocity_lag_tau)), 1e-6
         )
@@ -191,6 +215,61 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         self.accel_lag_gain = float(
             config.get("accel_lag_gain", accel_lag_cfg.get("input_gain", 1.0))
         )
+        self.coupled_kinematic_enabled = bool(
+            coupled_kinematic_cfg.get("enabled", False)
+        )
+        self.coupled_kinematic_accel_features = tuple(
+            coupled_kinematic_cfg.get(
+                "acceleration_features",
+                [
+                    "bias",
+                    "throttle",
+                    "abs_throttle",
+                    "velocity",
+                    "abs_velocity",
+                    "steering",
+                    "steering_sq",
+                    "throttle_abs_steering",
+                    "velocity_steering_sq",
+                ],
+            )
+        )
+        self.coupled_kinematic_yaw_features = tuple(
+            coupled_kinematic_cfg.get(
+                "yaw_rate_features",
+                [
+                    "bias",
+                    "steering",
+                    "tan_steering",
+                    "velocity_steering",
+                    "velocity_tan_steering",
+                    "throttle_steering",
+                ],
+            )
+        )
+        self.coupled_kinematic_accel_coeffs = np.asarray(
+            coupled_kinematic_cfg.get("acceleration_coefficients", []),
+            dtype=float,
+        ).reshape(-1)
+        self.coupled_kinematic_yaw_coeffs = np.asarray(
+            coupled_kinematic_cfg.get("yaw_rate_coefficients", []),
+            dtype=float,
+        ).reshape(-1)
+        self.coupled_kinematic_max_yaw_rate = max(
+            float(
+                coupled_kinematic_cfg.get(
+                    "limits", {}
+                ).get("max_yaw_rate", config.get("max_yaw_rate", 8.0))
+            ),
+            1e-6,
+        )
+        if (
+            self.coupled_kinematic_accel_coeffs.size
+            != len(self.coupled_kinematic_accel_features)
+            or self.coupled_kinematic_yaw_coeffs.size
+            != len(self.coupled_kinematic_yaw_features)
+        ):
+            self.coupled_kinematic_enabled = False
         self.longitudinal_accel_state = 0.0
         self.motor_accel_state = 0.0
         accel_fusion_cfg = config.get("acceleration_fusion", {})
@@ -236,16 +315,6 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             "velocity_residual": 0.0,
             "model_weight": self.accel_model_weight,
         }
-        self.motor_model_enabled = False
-        self.motor_model = None
-        if self.longitudinal_model == "motor_model" and MotorModelConfig is not None:
-            motor_cfg = config.get("motor_model", {})
-            if not isinstance(motor_cfg, dict):
-                motor_cfg = {}
-            motor_model_config = MotorModelConfig.from_dict(motor_cfg)
-            self.motor_model_enabled = bool(motor_model_config.enabled)
-            if self.motor_model_enabled:
-                self.motor_model = AccelDragMotorModel(motor_model_config)
 
         # # Low-pass filter coefficient for velocity (0 < alpha <= 1)
         # # Lower value = smoother but more delay. 1.0 = no filtering.
@@ -259,6 +328,49 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         # Initialize QCarEKF if available
         if self.use_qcar_ekf:
             self._initialize_qcar_ekf(initial_pose)
+
+    @staticmethod
+    def _coerce_gain_matrix(gain: Any) -> Optional[np.ndarray]:
+        """Convert best-effort EKF gain objects to a numeric 2D array."""
+        if gain is None:
+            return None
+        if hasattr(gain, "detach"):
+            gain = gain.detach()
+        if hasattr(gain, "cpu"):
+            gain = gain.cpu()
+        if hasattr(gain, "numpy"):
+            gain = gain.numpy()
+        matrix = np.asarray(gain, dtype=float)
+        if matrix.size == 0:
+            return None
+        if matrix.ndim == 1:
+            matrix = matrix.reshape(-1, 1)
+        elif matrix.ndim != 2:
+            return None
+        return matrix.copy()
+
+    def _set_last_gain(
+        self,
+        gain: Optional[np.ndarray],
+        measurement_labels: Tuple[str, ...] = (),
+    ) -> None:
+        matrix = self._coerce_gain_matrix(gain)
+        self.last_gain_matrix = matrix
+        self.last_gain_measurement_labels = tuple(str(label) for label in measurement_labels)
+
+    def _capture_qcar_gain(
+        self, measurement_labels: Tuple[str, ...] = ()
+    ) -> None:
+        if self.ekf is None:
+            self._set_last_gain(None, measurement_labels)
+            return
+
+        for attr_name in ("K", "kalman_gain", "last_K", "last_gain", "gain"):
+            if hasattr(self.ekf, attr_name):
+                self._set_last_gain(getattr(self.ekf, attr_name), measurement_labels)
+                return
+
+        self._set_last_gain(None, measurement_labels)
 
     def _initialize_qcar_ekf(self, initial_pose: Optional[np.ndarray]):
         """Initialize QCarEKF"""
@@ -321,6 +433,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
     ) -> bool:
         """Update using QCarEKF"""
         try:
+            self._set_last_gain(None)
             prev_v = float(self.state[3])
             ax = acceleration[0] if acceleration is not None else 0.0
             v_pred, a_model, _ = self._predict_longitudinal(
@@ -341,6 +454,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
 
             # Update EKF - correct signature: update([motor_tach, steering], dt, y_gps, gyro_z)
             self.ekf.update([motor_tach, steering], dt, y_gps, gyro_z)
+            self._capture_qcar_gain(("x", "y", "theta") if gps_valid else ())
 
             # Get state from EKF (x_hat is a column vector)
             x = self.ekf.x_hat[0, 0]
@@ -396,6 +510,19 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             return u
         mag = max(abs(u) - deadband, 0.0)
         return float(np.sign(u) * mag)
+
+    def _velocity_lag_lookup_target(self, throttle: float) -> float:
+        """Interpolate steady-state velocity from a calibrated throttle map."""
+        if not self.velocity_lag_lookup_enabled:
+            u_eff = self._effective_velocity_lag_throttle(throttle)
+            return float(self.velocity_gain * u_eff)
+        return float(
+            np.interp(
+                float(throttle),
+                self.velocity_lag_lookup_throttle_breakpoints,
+                self.velocity_lag_lookup_velocity_breakpoints,
+            )
+        )
 
     def _model_weight_from_residual(self, residual_abs: float) -> float:
         """Map velocity prediction residual to model trust weight."""
@@ -457,11 +584,94 @@ class EKFStateEstimator(LocalStateEstimatorBase):
         }
         return self.acceleration_estimate
 
+    def _coupled_kinematic_feature_value(
+        self,
+        name: str,
+        velocity: float,
+        throttle: float,
+        steering: float,
+    ) -> float:
+        delta = float(
+            np.clip(steering, -self.max_steering_angle, self.max_steering_angle)
+        )
+        tan_delta = float(np.tan(np.clip(delta, -0.7, 0.7)))
+        feature_map = {
+            "bias": 1.0,
+            "throttle": float(throttle),
+            "abs_throttle": abs(float(throttle)),
+            "velocity": float(velocity),
+            "abs_velocity": abs(float(velocity)),
+            "steering": delta,
+            "abs_steering": abs(delta),
+            "steering_sq": delta * delta,
+            "tan_steering": tan_delta,
+            "velocity_steering": float(velocity) * delta,
+            "velocity_tan_steering": float(velocity) * tan_delta,
+            "throttle_steering": float(throttle) * delta,
+            "throttle_abs_steering": float(throttle) * abs(delta),
+            "velocity_steering_sq": float(velocity) * delta * delta,
+        }
+        return float(feature_map.get(str(name), 0.0))
+
+    def _coupled_kinematic_feature_vector(
+        self,
+        feature_names: Tuple[str, ...],
+        velocity: float,
+        throttle: float,
+        steering: float,
+    ) -> np.ndarray:
+        return np.asarray(
+            [
+                self._coupled_kinematic_feature_value(
+                    name,
+                    velocity=velocity,
+                    throttle=throttle,
+                    steering=steering,
+                )
+                for name in feature_names
+            ],
+            dtype=float,
+        )
+
+    def _predict_coupled_kinematic(
+        self,
+        v: float,
+        throttle: float,
+        steering: float,
+        dt: float,
+    ) -> Tuple[float, float, float, float]:
+        accel_feat = self._coupled_kinematic_feature_vector(
+            self.coupled_kinematic_accel_features,
+            velocity=v,
+            throttle=throttle,
+            steering=steering,
+        )
+        yaw_feat = self._coupled_kinematic_feature_vector(
+            self.coupled_kinematic_yaw_features,
+            velocity=v,
+            throttle=throttle,
+            steering=steering,
+        )
+        a_pred = float(accel_feat @ self.coupled_kinematic_accel_coeffs)
+        yaw_pred = float(yaw_feat @ self.coupled_kinematic_yaw_coeffs)
+        a_pred = float(np.clip(a_pred, -self.max_acceleration, self.max_acceleration))
+        yaw_pred = float(
+            np.clip(
+                yaw_pred,
+                -self.coupled_kinematic_max_yaw_rate,
+                self.coupled_kinematic_max_yaw_rate,
+            )
+        )
+        v_next = float(np.clip(v + dt * a_pred, -self.max_velocity, self.max_velocity))
+        v_pose = 0.5 * (float(v) + v_next)
+        return v_next, a_pred, float(v_pose), yaw_pred
+
     def _predict_longitudinal(
         self,
         v: float,
         motor_tach: float,
         throttle: float,
+        steering: float,
         ax: float,
         dt: float,
     ) -> Tuple[float, float, float]:
@@ -492,6 +702,11 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             )
             v_pred = float(v) + a_pred * dt
             v_pose = v_pred
+        elif model == "velocity_lag_lookup":
+            v_target = self._velocity_lag_lookup_target(throttle)
+            a_pred = (v_target - float(v)) / self.velocity_lag_lookup_tau
+            v_pred = float(v) + a_pred * dt
+            v_pose = v_pred
         elif model == "velocity_command":
             a_pred = (float(throttle) - float(v)) / self.velocity_command_tau
             v_pred = float(v) + a_pred * dt
@@ -504,22 +719,17 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             a_pred = self.longitudinal_accel_state
             v_pred = float(v) + a_pred * dt
             v_pose = v_pred
-        elif (
-            model == "motor_model"
-            and self.motor_model_enabled
-            and self.motor_model is not None
-        ):
-            v_pred, a_pred, self.motor_accel_state = self.motor_model.predict(
-                throttle=float(throttle),
-                v=float(v),
-                motor_accel=self.motor_accel_state,
-                dt=dt,
-            )
-            v_pose = v_pred
         elif model == "simple_acceleration":
             a_pred = float(throttle)
             v_pred = float(v) + a_pred * dt
             v_pose = v_pred
+        elif model == "coupled_kinematic" and self.coupled_kinematic_enabled:
+            v_pred, a_pred, v_pose, _yaw_pred = self._predict_coupled_kinematic(
+                v=float(v),
+                throttle=float(throttle),
+                steering=float(steering),
+                dt=dt,
+            )
         else:
             a_pred = float(ax)
             v_pred = float(v) + a_pred * dt
@@ -544,6 +754,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
     ) -> bool:
         """Update using 4D bicycle-model sensor fusion EKF implementation."""
         try:
+            self._set_last_gain(None)
             # Prediction step
             x, y, theta, v = self.state
 
@@ -555,9 +766,11 @@ class EKFStateEstimator(LocalStateEstimatorBase):
                 v=v,
                 motor_tach=motor_tach,
                 throttle=throttle,
+                steering=steering,
                 ax=ax,
                 dt=dt,
             )
+            model = self.longitudinal_model
             a_tach = self._update_tach_acceleration(motor_tach, dt)
             self._fuse_acceleration(
                 a_model=a_model,
@@ -569,16 +782,27 @@ class EKFStateEstimator(LocalStateEstimatorBase):
                 np.clip(steering, -self.max_steering_angle, self.max_steering_angle)
             )
             bicycle_yaw_rate = v_pose * np.tan(steering) / self.wheelbase
+            if model == "coupled_kinematic" and self.coupled_kinematic_enabled:
+                _v_pred_ck, _a_pred_ck, v_pose, yaw_rate_model = self._predict_coupled_kinematic(
+                    v=float(v),
+                    throttle=float(throttle),
+                    steering=float(steering),
+                    dt=dt,
+                )
+            else:
+                yaw_rate_model = bicycle_yaw_rate
+            # Blend bicycle model yaw rate with gyro measurement for better responsiveness
             heading_rate = (
-                (1.0 - self.gyro_heading_blend) * bicycle_yaw_rate
+                (1.0 - self.gyro_heading_blend) * yaw_rate_model
                 + self.gyro_heading_blend * float(gyro_z)
             )
 
             # QCar-like bicycle prediction for pose; velocity can come from
             # tachometer, IMU acceleration, or a throttle-based model.
             theta_pred = theta + heading_rate * dt
-            x_pred = x + v_pose * np.cos(theta) * dt
-            y_pred = y + v_pose * np.sin(theta) * dt
+            theta_mid = theta + 0.5 * heading_rate * dt
+            x_pred = x + v_pose * np.cos(theta_mid) * dt
+            y_pred = y + v_pose * np.sin(theta_mid) * dt
 
             state_pred = np.array([x_pred, y_pred, theta_pred, v_pred])
 
@@ -634,6 +858,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
                 H = np.array([[0, 0, 0, 1]])
                 R_meas = np.array([[self.R[3, 3]]])  # Only velocity measurement noise
             else:
+                self._set_last_gain(None)
                 self.state = state_pred
                 self.state[2] = wrap_to_pi(self.state[2])
                 self.P = P_pred
@@ -648,6 +873,13 @@ class EKFStateEstimator(LocalStateEstimatorBase):
 
             S = H @ P_pred @ H.T + R_meas
             K = P_pred @ H.T @ np.linalg.inv(S)
+            if has_gps and self.use_tachometer_update:
+                measurement_labels = ("x", "y", "theta", "v")
+            elif has_gps:
+                measurement_labels = ("x", "y", "theta")
+            else:
+                measurement_labels = ("v",)
+            self._set_last_gain(K, measurement_labels)
 
             self.state = state_pred + K @ y_res
             # Wrap heading state
@@ -669,6 +901,14 @@ class EKFStateEstimator(LocalStateEstimatorBase):
             [self.state.copy(), np.array([self.acceleration_estimate], dtype=float)]
         )
 
+    def get_last_gain_matrix(self) -> Optional[np.ndarray]:
+        if self.last_gain_matrix is None:
+            return None
+        return self.last_gain_matrix.copy()
+
+    def get_last_gain_measurement_labels(self) -> Tuple[str, ...]:
+        return tuple(self.last_gain_measurement_labels)
+
     def reset(self, initial_pose: Optional[np.ndarray] = None):
         """Reset EKF state"""
         if initial_pose is not None:
@@ -679,12 +919,13 @@ class EKFStateEstimator(LocalStateEstimatorBase):
 
         self.P = np.eye(self.state_dim) * 0.1
         self.longitudinal_accel_state = 0.0
-        self.motor_accel_state = 0.0
         self.acceleration_estimate = 0.0
         self.tach_accel_lpf = 0.0
         self._prev_motor_tach_for_accel = None
         self.accel_model_weight = self.model_weight_high
         self.velocity_residual = 0.0
+        self.last_gain_matrix = None
+        self.last_gain_measurement_labels = ()
 
         # Reinitialize QCarEKF if used
         if self.use_qcar_ekf:

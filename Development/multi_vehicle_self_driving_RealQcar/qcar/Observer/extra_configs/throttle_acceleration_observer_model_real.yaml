@@ -1,0 +1,125 @@
+source_calibration: throttle_acceleration
+source_yaml: C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Calibration\results\online_throttle_acceleration\calibration\67823\throttle_acceleration_latest.yaml
+source_raw_csv: C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Calibration\results\online_throttle_acceleration\calibration\67823\raw_samples_20260423_175410.csv
+observer_model:
+  model_name: deadband_compensated_velocity_lag
+  model_type: first_order_throttle_to_velocity
+  math:
+    effective_input: u_eff = sign(u) * max(abs(u) - u_dead, 0)
+    velocity_dynamics: v_dot = (K_v * u_eff - v) / tau
+    acceleration_output: a_model = (K_v * u_eff - v) / tau
+    discrete_prediction: v[k+1] = v[k] + dt * a_model[k]
+    residual: r_v = motor_tach - v_pred
+    fusion: a_hat = w_model(r_v) * a_model + (1 - w_model(r_v)) * a_tach_lpf
+  recommended_longitudinal_model: velocity_lag_lookup
+  velocity_lag_model:
+    tau: 0.37741247594526545
+    velocity_gain: 5.986576533753644
+    throttle_deadband: 0.029863178651273692
+  velocity_lag_lookup_model: &id001
+    enabled: true
+    tau: 0.5299313107604939
+    interpolation: linear
+    throttle_breakpoints:
+    - -0.18
+    - -0.17
+    - -0.16
+    - -0.15
+    - -0.14
+    - -0.13
+    - -0.12
+    - -0.11
+    - -0.1
+    - -0.09
+    - 0.0
+    - 0.06
+    - 0.07
+    - 0.08
+    - 0.09
+    - 0.1
+    - 0.11
+    - 0.12
+    - 0.13
+    - 0.14
+    - 0.15
+    - 0.16
+    - 0.17
+    - 0.18
+    - 0.19
+    - 0.2
+    - 0.21
+    - 0.22
+    - 0.23
+    steady_state_velocity_breakpoints:
+    - -0.8386947554779483
+    - -0.7859571166470058
+    - -0.6903975288073222
+    - -0.6521025172301701
+    - -0.5871999728423294
+    - -0.5250484317541122
+    - -0.47091759770524266
+    - -0.4139970095456693
+    - -0.350308371740475
+    - -0.2772581290315699
+    - 0.0
+    - 0.05196213846882949
+    - 0.12286216919792109
+    - 0.1764321035558456
+    - 0.23926509366087292
+    - 0.29596406291119565
+    - 0.3787068814404771
+    - 0.4566459559620707
+    - 0.5066002270730209
+    - 0.5653672093608184
+    - 0.6383278357982636
+    - 0.6931378710965277
+    - 0.763356565467773
+    - 0.8209220613609994
+    - 0.8966118719241793
+    - 0.9622353294962331
+    - 1.0586140871047973
+    - 1.1274658890281404
+    - 1.1274658890281404
+  accel_lag_model:
+    tau: 0.37741247594526545
+    input_gain: 12.235972228837703
+    note: Comparison-only no-drag acceleration lag; use velocity_lag_lookup_model
+      when available, else velocity_lag_model, for observer prediction.
+  quality:
+    velocity_rmse_mps: 0.09086405759229452
+    acceleration_rmse_mps2: 0.1146628444395279
+    velocity_lookup_rmse_mps: 0.0378734976542453
+    acceleration_lookup_rmse_mps2: 0.15130482954748092
+  copy_to:
+    local_observer_config: Observer/config_local_estimators.yaml -> local.ekf
+    trust_fleet_config: Observer/TrustbasedDistributedObserver/config_trust_estimator.yaml
+      -> vehicle.velocity_lag_model or vehicle.velocity_lag_lookup_model
+  config_patch:
+    local:
+      ekf:
+        longitudinal_model: velocity_lag_lookup
+        use_tachometer_update: true
+        velocity_lag_model:
+          tau: 0.37741247594526545
+          velocity_gain: 5.986576533753644
+          throttle_deadband: 0.029863178651273692
+        velocity_lag_lookup_model: *id001
+        acceleration_fusion:
+          enabled: true
+          tach_derivative_alpha: 0.2
+          output_alpha: 0.35
+          residual_low_mps: 0.04
+          residual_high_mps: 0.2
+          model_weight_high: 0.9
+          model_weight_low: 0.6
+          imu_weight: 0.0
+          imu_residual_gate_mps2: 1.5
+    trust_based_distributed_observer:
+      vehicle:
+        longitudinal_model: velocity_lag_lookup
+        velocity_lag_model:
+          enabled: true
+          tau: 0.37741247594526545
+          velocity_gain: 5.986576533753644
+          throttle_deadband: 0.029863178651273692
+        velocity_lag_lookup_model: *id001

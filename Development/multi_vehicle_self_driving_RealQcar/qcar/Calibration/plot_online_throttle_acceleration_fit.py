@@ -4,7 +4,7 @@
 # CMD examples:
 # python .\plot_online_throttle_acceleration_fit.py --metrics-only --export-observer-model
 # python .\plot_online_throttle_acceleration_fit.py --show
-
+# python .\plot_online_throttle_acceleration_fit.py --results-dir results\online_throttle_acceleration\calibration\61 --show
 from __future__ import annotations
 
 import argparse
@@ -56,6 +56,120 @@ def _load_raw_csv(path: Path) -> Dict[str, np.ndarray]:
     return {
         key: np.asarray([row.get(key, float("nan")) for row in rows], dtype=float)
         for key in keys
+    }
+
+
+def _constant_command_segments(
+    command: np.ndarray,
+    quant_step: float,
+    min_samples: int,
+) -> List[Tuple[int, int, float]]:
+    command = np.asarray(command, dtype=float).reshape(-1)
+    if command.size == 0:
+        return []
+    q = np.round(command / quant_step) * quant_step
+    segments: List[Tuple[int, int, float]] = []
+    start = 0
+    for i in range(1, q.size):
+        if abs(q[i] - q[start]) > 0.5 * quant_step:
+            if i - start >= min_samples:
+                segments.append((start, i, float(q[start])))
+            start = i
+    if q.size - start >= min_samples:
+        segments.append((start, q.size, float(q[start])))
+    return segments
+
+
+def _build_velocity_lag_lookup_model_from_raw(
+    velocity: np.ndarray,
+    throttle: np.ndarray,
+    sample_dt: float,
+    model: Dict,
+) -> Optional[Dict[str, object]]:
+    segments = _constant_command_segments(
+        throttle,
+        quant_step=0.01,
+        min_samples=max(5, int(0.5 / max(float(sample_dt), 1e-9))),
+    )
+    if not segments:
+        return None
+
+    steady_by_throttle: Dict[float, List[float]] = {}
+    for start, end, u in segments:
+        seg_len = end - start
+        if seg_len <= 0:
+            continue
+        tail_start = start + int(0.7 * seg_len)
+        tail = np.asarray(velocity[tail_start:end], dtype=float)
+        if tail.size < max(3, int(0.20 / max(float(sample_dt), 1e-9))):
+            continue
+        key = float(round(u, 4))
+        steady_by_throttle.setdefault(key, []).append(float(np.mean(tail)))
+
+    if len(steady_by_throttle) < 3:
+        return None
+
+    throttle_breakpoints = np.asarray(sorted(steady_by_throttle.keys()), dtype=float)
+    steady_state_velocity_breakpoints = np.asarray(
+        [
+            float(np.median(steady_by_throttle[float(u)]))
+            for u in throttle_breakpoints
+        ],
+        dtype=float,
+    )
+    zero_idx = int(np.argmin(np.abs(throttle_breakpoints)))
+    if abs(float(throttle_breakpoints[zero_idx])) <= 0.005:
+        steady_state_velocity_breakpoints[zero_idx] = 0.0
+    steady_state_velocity_breakpoints = np.maximum.accumulate(
+        steady_state_velocity_breakpoints
+    )
+
+    tau_candidates = []
+    for step in model.get("step_models", []):
+        try:
+            tau = float(step["tau_s"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if np.isfinite(tau) and tau > 0.0:
+            tau_candidates.append(tau)
+    if not tau_candidates:
+        tau_candidates = [float(model.get("robust_tau", model.get("avg_tau", 0.3)))]
+
+    tau_values = np.asarray(tau_candidates, dtype=float)
+    tau_med = float(np.nanmedian(tau_values))
+    tau_lo = float(np.nanpercentile(tau_values, 15))
+    tau_hi = float(np.nanpercentile(tau_values, 85))
+    if not np.isfinite(tau_lo) or tau_lo <= 0.0:
+        tau_lo = max(0.5 * tau_med, 0.05)
+    if not np.isfinite(tau_hi) or tau_hi <= tau_lo:
+        tau_hi = max(1.5 * tau_med, tau_lo + 0.05)
+    tau_grid = np.unique(
+        np.concatenate(
+            [np.linspace(tau_lo, tau_hi, 41, dtype=float), np.asarray([tau_med])]
+        )
+    )
+    best_tau = tau_med
+    best_rmse = float("inf")
+    for tau in tau_grid:
+        pred = _simulate_velocity_lag_lookup(
+            throttle=throttle,
+            v0=float(velocity[0]),
+            dt=float(sample_dt),
+            lookup_model={
+                "tau": float(tau),
+                "throttle_breakpoints": throttle_breakpoints,
+                "steady_state_velocity_breakpoints": steady_state_velocity_breakpoints,
+            },
+        )
+        err = _rmse(velocity, pred)
+        if np.isfinite(err) and err < best_rmse:
+            best_rmse = float(err)
+            best_tau = float(tau)
+
+    return {
+        "tau": float(best_tau),
+        "throttle_breakpoints": throttle_breakpoints,
+        "steady_state_velocity_breakpoints": steady_state_velocity_breakpoints,
     }
 
 
@@ -122,6 +236,59 @@ def _observer_velocity_lag_params(model: Dict) -> Tuple[float, float, float, flo
     return tau, k_velocity, input_gain, max(deadband, 0.0)
 
 
+def _observer_velocity_lag_lookup_model(model: Dict) -> Optional[Dict[str, object]]:
+    observer_model = model.get("observer_model", {})
+    lookup = {}
+    if isinstance(observer_model, dict):
+        raw_lookup = observer_model.get("velocity_lag_lookup_model", {})
+        if isinstance(raw_lookup, dict):
+            lookup = raw_lookup
+    if not lookup:
+        raw_lookup = model.get("velocity_lag_lookup_model", {})
+        if isinstance(raw_lookup, dict):
+            lookup = raw_lookup
+    if not lookup:
+        return None
+
+    try:
+        throttle_breakpoints = np.asarray(
+            lookup["throttle_breakpoints"], dtype=float
+        ).reshape(-1)
+        steady_state_velocity_breakpoints = np.asarray(
+            lookup["steady_state_velocity_breakpoints"], dtype=float
+        ).reshape(-1)
+        tau = float(lookup["tau"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    if (
+        throttle_breakpoints.size < 2
+        or throttle_breakpoints.size != steady_state_velocity_breakpoints.size
+        or not np.all(np.isfinite(throttle_breakpoints))
+        or not np.all(np.isfinite(steady_state_velocity_breakpoints))
+        or not np.isfinite(tau)
+        or tau <= 0.0
+    ):
+        return None
+
+    return {
+        "tau": float(tau),
+        "throttle_breakpoints": throttle_breakpoints,
+        "steady_state_velocity_breakpoints": steady_state_velocity_breakpoints,
+    }
+
+
+def _lookup_target_velocity(
+    throttle: np.ndarray,
+    lookup_model: Dict[str, np.ndarray],
+) -> np.ndarray:
+    return np.interp(
+        np.asarray(throttle, dtype=float),
+        np.asarray(lookup_model["throttle_breakpoints"], dtype=float),
+        np.asarray(lookup_model["steady_state_velocity_breakpoints"], dtype=float),
+    )
+
+
 def _apply_throttle_deadband(throttle: np.ndarray, deadband: float) -> np.ndarray:
     throttle = np.asarray(throttle, dtype=float)
     deadband = max(float(deadband), 0.0)
@@ -147,6 +314,23 @@ def _simulate_velocity_lag(
         pred[i] = pred[i - 1] + dt * (
             -(1.0 / tau) * pred[i - 1] + (k_velocity / tau) * u
         )
+    return pred
+
+
+def _simulate_velocity_lag_lookup(
+    throttle: np.ndarray,
+    v0: float,
+    dt: float,
+    lookup_model: Dict[str, object],
+) -> np.ndarray:
+    pred = np.zeros_like(throttle, dtype=float)
+    if pred.size == 0:
+        return pred
+    pred[0] = v0
+    tau = max(float(lookup_model["tau"]), 1e-9)
+    target = _lookup_target_velocity(throttle, lookup_model)
+    for i in range(1, len(throttle)):
+        pred[i] = pred[i - 1] + dt * ((float(target[i - 1]) - pred[i - 1]) / tau)
     return pred
 
 
@@ -233,6 +417,18 @@ def _simulate_accel_lag(
         )
         v_pred[i] = v_pred[i - 1] + a_pred[i] * dt
     return v_pred, a_pred
+
+
+def _model_target_velocity_from_throttle(
+    throttle: np.ndarray,
+    k_velocity: float,
+    throttle_deadband: float,
+    lookup_model: Optional[Dict[str, np.ndarray]] = None,
+) -> np.ndarray:
+    if lookup_model is not None:
+        return _lookup_target_velocity(throttle, lookup_model)
+    throttle_eff = _apply_throttle_deadband(throttle, throttle_deadband)
+    return float(k_velocity) * throttle_eff
 
 
 def _rmse(a: np.ndarray, b: np.ndarray) -> float:
@@ -360,13 +556,29 @@ def _svg_panel(
     lines = [
         f'<section><h3>{title}</h3>',
         f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
-        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#ffffff"/>',
-        f'<line x1="{pad}" y1="{height-pad}" x2="{width-pad}" y2="{height-pad}" stroke="#999"/>',
-        f'<line x1="{pad}" y1="{pad}" x2="{pad}" y2="{height-pad}" stroke="#999"/>',
+        f'<rect x="0" y="0" width="{width}" height="{height}" fill="#fcfcf8"/>',
     ]
+    for frac in (0.2, 0.4, 0.6, 0.8):
+        x = pad + frac * (width - 2 * pad)
+        y = height - pad - frac * (height - 2 * pad)
+        lines.append(
+            f'<line x1="{x:.1f}" y1="{pad}" x2="{x:.1f}" y2="{height-pad}" '
+            'stroke="#e5e7eb" stroke-dasharray="4 4"/>'
+        )
+        lines.append(
+            f'<line x1="{pad}" y1="{y:.1f}" x2="{width-pad}" y2="{y:.1f}" '
+            'stroke="#e5e7eb" stroke-dasharray="4 4"/>'
+        )
+    lines.extend(
+        [
+            f'<line x1="{pad}" y1="{height-pad}" x2="{width-pad}" y2="{height-pad}" stroke="#64748b" stroke-width="1.2"/>',
+            f'<line x1="{pad}" y1="{pad}" x2="{pad}" y2="{height-pad}" stroke="#64748b" stroke-width="1.2"/>',
+        ]
+    )
     if y_zero is not None:
         lines.append(
-            f'<line x1="{pad}" y1="{y_zero:.1f}" x2="{width-pad}" y2="{y_zero:.1f}" stroke="#ddd"/>'
+            f'<line x1="{pad}" y1="{y_zero:.1f}" x2="{width-pad}" y2="{y_zero:.1f}" '
+            'stroke="#94a3b8" stroke-width="1.1"/>'
         )
 
     lines.append(
@@ -415,21 +627,27 @@ def _write_html_diagnostics_plot(
     title: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    notes_html = """
+    <div class="note">
+      <strong>Reading guide.</strong>
+      The blue velocity model is the observer candidate. The red no-drag acceleration-lag curve is only a comparison model and is not the recommended steady-speed model for a real QCar.
+    </div>
+    """
     panels = [
         _svg_panel(
             "Velocity Fit",
             t,
             [
-                ("measured v", velocity, "#111111"),
-                ("filtered v", velocity_filtered, "#777777"),
-                ("velocity-lag model", velocity_model, "#1f77b4"),
+                ("measured v", velocity, "#111827"),
+                ("filtered v", velocity_filtered, "#6b7280"),
+                ("velocity model", velocity_model, "#0f766e"),
             ],
             "m/s",
         ),
         _svg_panel(
             "Throttle Command",
             t,
-            [("throttle", throttle, "#7f3c8d")],
+            [("throttle", throttle, "#7c3aed")],
             "u",
             y_range=(
                 float(np.nanmin(throttle)) - 0.02,
@@ -440,11 +658,11 @@ def _write_html_diagnostics_plot(
             "Acceleration Comparison",
             t,
             [
-                ("offline filtered dv/dt ref", acc_ref, "#2ca02c"),
-                ("raw dv/dt", acc_raw_dvdt, "#bbbbbb"),
-                ("raw IMU ax", ax, "#555555"),
-                ("model a", fusion["a_model"], "#1f77b4"),
-                ("fused a", fusion["a_fused"], "#d62728"),
+                ("offline filtered dv/dt ref", acc_ref, "#166534"),
+                ("raw dv/dt", acc_raw_dvdt, "#cbd5e1"),
+                ("raw IMU ax", ax, "#c2410c"),
+                ("model a", fusion["a_model"], "#1d4ed8"),
+                ("fused a", fusion["a_fused"], "#dc2626"),
             ],
             "m/s^2",
         ),
@@ -452,8 +670,8 @@ def _write_html_diagnostics_plot(
             "Residual And Model Weight",
             t,
             [
-                ("velocity residual", fusion["velocity_residual"], "#ff7f0e"),
-                ("model weight", fusion["model_weight"], "#1f77b4"),
+                ("velocity residual", fusion["velocity_residual"], "#ea580c"),
+                ("model weight", fusion["model_weight"], "#2563eb"),
             ],
             "mixed",
             y_range=(
@@ -465,9 +683,9 @@ def _write_html_diagnostics_plot(
             "Acceleration Error vs Offline Reference",
             t,
             [
-                ("model error", fusion["a_model"] - acc_ref, "#1f77b4"),
-                ("tach lpf error", fusion["a_tach"] - acc_ref, "#17becf"),
-                ("fused error", fusion["a_fused"] - acc_ref, "#d62728"),
+                ("model error", fusion["a_model"] - acc_ref, "#0f766e"),
+                ("tach lpf error", fusion["a_tach"] - acc_ref, "#0284c7"),
+                ("fused error", fusion["a_fused"] - acc_ref, "#dc2626"),
             ],
             "m/s^2",
         ),
@@ -478,16 +696,19 @@ def _write_html_diagnostics_plot(
   <meta charset="utf-8">
   <title>{title}</title>
   <style>
-    body {{ font-family: Segoe UI, Arial, sans-serif; margin: 22px; color: #222; }}
-    h1 {{ font-size: 20px; }}
-    h3 {{ margin: 22px 0 6px; font-size: 15px; }}
-    section {{ max-width: 1220px; }}
-    svg {{ border: 1px solid #ddd; background: #fff; }}
+    body {{ font-family: Segoe UI, Arial, sans-serif; margin: 22px; color: #1f2937; background: #f7f7f4; }}
+    h1 {{ font-size: 20px; margin-bottom: 10px; }}
+    h3 {{ margin: 0 0 6px; font-size: 15px; }}
+    .note {{ max-width: 1180px; margin: 0 0 18px; padding: 12px 14px; background: #fff7ed; border-left: 4px solid #ea580c; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr)); gap: 18px; align-items: start; }}
+    section {{ max-width: 1220px; background: white; padding: 12px; border: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06); }}
+    svg {{ width: 100%; height: auto; background: #fff; }}
   </style>
 </head>
 <body>
   <h1>{title}</h1>
-  {''.join(panels)}
+  {notes_html}
+  <div class="grid">{''.join(panels)}</div>
 </body>
 </html>
 """
@@ -504,7 +725,28 @@ def _write_observer_model_yaml(
     accel_rmse: float,
     source_yaml: Path,
     raw_csv: Path,
+    lookup_model: Optional[Dict[str, np.ndarray]] = None,
+    lookup_velocity_rmse: float = float("nan"),
+    lookup_accel_rmse: float = float("nan"),
+    recommended_longitudinal_model: str = "velocity_lag",
 ) -> None:
+    lookup_model = lookup_model if isinstance(lookup_model, dict) else None
+    lookup_cfg = None
+    if lookup_model is not None:
+        lookup_cfg = {
+            "enabled": True,
+            "tau": float(lookup_model["tau"]),
+            "interpolation": "linear",
+            "throttle_breakpoints": [
+                float(v) for v in np.asarray(lookup_model["throttle_breakpoints"], dtype=float)
+            ],
+            "steady_state_velocity_breakpoints": [
+                float(v)
+                for v in np.asarray(
+                    lookup_model["steady_state_velocity_breakpoints"], dtype=float
+                )
+            ],
+        }
     payload = {
         "source_calibration": "throttle_acceleration",
         "source_yaml": str(source_yaml),
@@ -525,23 +767,27 @@ def _write_observer_model_yaml(
                     "(1 - w_model(r_v)) * a_tach_lpf"
                 ),
             },
-            "recommended_longitudinal_model": "velocity_lag",
+            "recommended_longitudinal_model": str(recommended_longitudinal_model),
             "velocity_lag_model": {
                 "tau": float(tau),
                 "velocity_gain": float(k_velocity),
                 "throttle_deadband": float(throttle_deadband),
             },
+            "velocity_lag_lookup_model": lookup_cfg,
             "accel_lag_model": {
                 "tau": float(tau),
                 "input_gain": float(input_gain),
                 "note": (
                     "Comparison-only no-drag acceleration lag; use "
-                    "velocity_lag_model for observer prediction."
+                    "velocity_lag_lookup_model when available, else "
+                    "velocity_lag_model, for observer prediction."
                 ),
             },
             "quality": {
                 "velocity_rmse_mps": float(velocity_rmse),
                 "acceleration_rmse_mps2": float(accel_rmse),
+                "velocity_lookup_rmse_mps": float(lookup_velocity_rmse),
+                "acceleration_lookup_rmse_mps2": float(lookup_accel_rmse),
             },
             "copy_to": {
                 "local_observer_config": (
@@ -549,19 +795,21 @@ def _write_observer_model_yaml(
                 ),
                 "trust_fleet_config": (
                     "Observer/TrustbasedDistributedObserver/"
-                    "config_trust_estimator.yaml -> vehicle.velocity_lag_model"
+                    "config_trust_estimator.yaml -> vehicle.velocity_lag_model "
+                    "or vehicle.velocity_lag_lookup_model"
                 ),
             },
             "config_patch": {
                 "local": {
                     "ekf": {
-                        "longitudinal_model": "velocity_lag",
+                        "longitudinal_model": str(recommended_longitudinal_model),
                         "use_tachometer_update": True,
                         "velocity_lag_model": {
                             "tau": float(tau),
                             "velocity_gain": float(k_velocity),
                             "throttle_deadband": float(throttle_deadband),
                         },
+                        "velocity_lag_lookup_model": lookup_cfg,
                         "acceleration_fusion": {
                             "enabled": True,
                             "tach_derivative_alpha": 0.20,
@@ -577,13 +825,14 @@ def _write_observer_model_yaml(
                 },
                 "trust_based_distributed_observer": {
                     "vehicle": {
-                        "longitudinal_model": "velocity_lag",
+                        "longitudinal_model": str(recommended_longitudinal_model),
                         "velocity_lag_model": {
                             "enabled": True,
                             "tau": float(tau),
                             "velocity_gain": float(k_velocity),
                             "throttle_deadband": float(throttle_deadband),
                         },
+                        "velocity_lag_lookup_model": lookup_cfg,
                     }
                 },
             },
@@ -626,6 +875,7 @@ def _simulate_runtime_fusion(
     model_weight_low: float,
     imu_weight: float,
     imu_gate: float,
+    lookup_model: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
     n = len(measured_v)
     a_model = np.zeros(n)
@@ -637,11 +887,15 @@ def _simulate_runtime_fusion(
     v_pred[0] = measured_v[0]
     v_hat = float(measured_v[0])
     tau = max(float(tau), 1e-9)
-    throttle_eff = _apply_throttle_deadband(throttle, throttle_deadband)
+    v_target = _model_target_velocity_from_throttle(
+        throttle=throttle,
+        k_velocity=k_velocity,
+        throttle_deadband=throttle_deadband,
+        lookup_model=lookup_model,
+    )
 
     for i in range(1, n):
-        u = float(throttle_eff[i - 1])
-        a_model[i] = (k_velocity * u - v_hat) / tau
+        a_model[i] = (float(v_target[i - 1]) - v_hat) / tau
         a_model[i] = float(np.clip(a_model[i], -max_accel, max_accel))
         v_pred[i] = v_hat + a_model[i] * dt
         residual[i] = float(measured_v[i] - v_pred[i])
@@ -816,6 +1070,19 @@ def main() -> int:
     t = np.arange(len(v), dtype=float) * dt
 
     tau, k_velocity, observer_input_gain, model_deadband = _observer_velocity_lag_params(model)
+    lookup_model = _observer_velocity_lag_lookup_model(model)
+    if lookup_model is None:
+        lookup_model = _build_velocity_lag_lookup_model_from_raw(
+            velocity=v,
+            throttle=throttle,
+            sample_dt=dt,
+            model=model,
+        )
+    recommended_model = str(
+        model.get("recommended_longitudinal_model")
+        or model.get("observer_model", {}).get("recommended_longitudinal_model")
+        or "velocity_lag"
+    ).strip().lower()
     throttle_deadband = (
         max(float(args.throttle_deadband), 0.0)
         if args.throttle_deadband is not None
@@ -834,6 +1101,16 @@ def main() -> int:
         tau=tau,
         k_velocity=k_velocity,
         throttle_deadband=throttle_deadband,
+    )
+    v_velocity_lag_lookup = (
+        _simulate_velocity_lag_lookup(
+            throttle=throttle,
+            v0=float(v[0]),
+            dt=dt,
+            lookup_model=lookup_model,
+        )
+        if lookup_model is not None
+        else None
     )
     a0 = float(ax[0]) if np.isfinite(ax[0]) else 0.0
     v_accel_lag, a_accel_lag = _simulate_accel_lag(
@@ -854,12 +1131,39 @@ def main() -> int:
     )
     acc_from_v_raw = np.gradient(v, dt)
     acc_ref = np.gradient(v_ref_smooth, dt)
+    rmse_velocity_lag = _rmse(v, v_velocity_lag)
+    rmse_velocity_lag_lookup = (
+        _rmse(v, v_velocity_lag_lookup)
+        if v_velocity_lag_lookup is not None
+        else float("nan")
+    )
+    use_lookup_model = bool(
+        lookup_model is not None
+        and (
+            recommended_model == "velocity_lag_lookup"
+            or (
+                np.isfinite(rmse_velocity_lag_lookup)
+                and rmse_velocity_lag_lookup < rmse_velocity_lag
+            )
+        )
+    )
+    selected_velocity_model = (
+        v_velocity_lag_lookup if use_lookup_model else v_velocity_lag
+    )
+    selected_tau = (
+        float(lookup_model["tau"])
+        if use_lookup_model and lookup_model is not None
+        else tau
+    )
+    selected_model_name = (
+        "velocity_lag_lookup" if use_lookup_model else "velocity_lag"
+    )
     fusion = _simulate_runtime_fusion(
         throttle=throttle,
         measured_v=v,
         ax=ax,
         dt=dt,
-        tau=tau,
+        tau=selected_tau,
         k_velocity=k_velocity,
         throttle_deadband=throttle_deadband,
         max_accel=args.max_accel,
@@ -871,12 +1175,15 @@ def main() -> int:
         model_weight_low=args.model_weight_low,
         imu_weight=args.imu_weight,
         imu_gate=args.imu_gate,
+        lookup_model=lookup_model if use_lookup_model else None,
     )
-    rmse_velocity_lag = _rmse(v, v_velocity_lag)
     rmse_accel_lag = _rmse(v, v_accel_lag)
     rmse_model_acc = _rmse(acc_ref, fusion["a_model"])
     rmse_fused_acc = _rmse(acc_ref, fusion["a_fused"])
     rmse_tach_acc = _rmse(acc_ref, fusion["a_tach"])
+    rmse_selected_velocity = (
+        rmse_velocity_lag_lookup if use_lookup_model else rmse_velocity_lag
+    )
     v_span = max(float(np.nanmax(v) - np.nanmin(v)), 1e-6)
     accel_lag_span = float(np.nanmax(v_accel_lag) - np.nanmin(v_accel_lag))
 
@@ -903,6 +1210,10 @@ def main() -> int:
             accel_rmse=rmse_fused_acc,
             source_yaml=yaml_path,
             raw_csv=raw_path,
+            lookup_model=lookup_model,
+            lookup_velocity_rmse=rmse_velocity_lag_lookup,
+            lookup_accel_rmse=rmse_model_acc if use_lookup_model else float("nan"),
+            recommended_longitudinal_model=selected_model_name,
         )
 
     def _print_metrics(saved_plot: bool) -> None:
@@ -913,7 +1224,16 @@ def main() -> int:
         print(f"[plot] Diagnostics CSV: {diagnostics_csv_path}")
         if args.export_observer_model:
             print(f"[plot] Observer model YAML: {observer_model_path}")
-        print(f"[plot] velocity-lag RMSE: {rmse_velocity_lag:.4f} m/s")
+        print(f"[plot] linear velocity-lag RMSE: {rmse_velocity_lag:.4f} m/s")
+        if np.isfinite(rmse_velocity_lag_lookup):
+            print(
+                "[plot] lookup velocity-lag RMSE: "
+                f"{rmse_velocity_lag_lookup:.4f} m/s"
+            )
+        print(
+            "[plot] selected longitudinal model: "
+            f"{selected_model_name}, RMSE={rmse_selected_velocity:.4f} m/s"
+        )
         print(f"[plot] accel-lag RMSE: {rmse_accel_lag:.4f} m/s")
         print(f"[plot] offline reference filter: {filter_label}")
         print(f"[plot] model acceleration RMSE: {rmse_model_acc:.4f} m/s^2")
@@ -925,10 +1245,21 @@ def main() -> int:
                 "this no-drag acceleration model does not settle to a steady speed."
             )
         print(
-            "[plot] recommended observer velocity_lag_model: "
-            f"tau={tau:.4f}, velocity_gain={k_velocity:.4f}, "
-            f"throttle_deadband={throttle_deadband:.4f}"
+            "[plot] recommended observer model: "
+            f"{selected_model_name}"
         )
+        if use_lookup_model and lookup_model is not None:
+            print(
+                "[plot] lookup tau and breakpoints: "
+                f"tau={selected_tau:.4f}, "
+                f"n={len(lookup_model['throttle_breakpoints'])}"
+            )
+        else:
+            print(
+                "[plot] linear velocity-lag params: "
+                f"tau={tau:.4f}, velocity_gain={k_velocity:.4f}, "
+                f"throttle_deadband={throttle_deadband:.4f}"
+            )
 
     if args.metrics_only:
         _print_metrics(saved_plot=False)
@@ -946,7 +1277,7 @@ def main() -> int:
             t=t,
             velocity=v,
             velocity_filtered=v_ref_smooth,
-            velocity_model=v_velocity_lag,
+            velocity_model=selected_velocity_model,
             throttle=throttle,
             ax=ax,
             acc_ref=acc_ref,
@@ -959,161 +1290,213 @@ def main() -> int:
         print(f"[plot] matplotlib unavailable; skipped PNG generation: {exc}")
         return 0
 
-    fig, axes = plt.subplots(6, 1, figsize=(14, 14), sharex=True)
+    palette = {
+        "ink": "#111827",
+        "muted": "#6b7280",
+        "teal": "#0f766e",
+        "cyan": "#0891b2",
+        "green": "#166534",
+        "red": "#dc2626",
+        "orange": "#ea580c",
+        "burnt": "#c2410c",
+        "violet": "#7c3aed",
+        "blue": "#2563eb",
+        "royal": "#1d4ed8",
+        "slate": "#475569",
+        "light": "#cbd5e1",
+    }
+
+    def _style_axis(ax, title: str, ylabel: str) -> None:
+        ax.set_title(title, fontsize=11, fontweight="bold", loc="left")
+        ax.set_ylabel(ylabel)
+        ax.set_facecolor("#fcfcf8")
+        ax.grid(True, which="major", color="#d6d3d1", alpha=0.65, linewidth=0.8)
+        ax.grid(True, which="minor", color="#e7e5e4", alpha=0.55, linewidth=0.5)
+        ax.minorticks_on()
+        for spine in ax.spines.values():
+            spine.set_color("#a8a29e")
+
+    fig, grid = plt.subplots(3, 2, figsize=(16, 10.5), sharex="col")
+    ax_vel, ax_thr = grid[0, 0], grid[0, 1]
+    ax_acc, ax_res = grid[1, 0], grid[1, 1]
+    ax_err, ax_tau = grid[2, 0], grid[2, 1]
     fig.suptitle(
-        "Online Throttle Acceleration Calibration: Fit, Residuals, Fusion",
-        fontsize=13,
+        "Online Throttle Acceleration Calibration",
+        fontsize=15,
         fontweight="bold",
     )
+    fig.text(
+        0.5,
+        0.965,
+        "Velocity fit, acceleration comparison, residual fusion, and transition-wise tau spread",
+        ha="center",
+        va="top",
+        fontsize=10,
+        color=palette["muted"],
+    )
 
-    axes[0].plot(t, v, color="black", linewidth=1.2, label="Measured velocity")
-    axes[0].plot(
+    ax_vel.plot(t, v, color=palette["ink"], linewidth=1.4, label="Measured velocity")
+    ax_vel.plot(
         t,
         v_ref_smooth,
-        color="0.55",
+        color=palette["muted"],
         linewidth=1.0,
         alpha=0.9,
         label=f"Filtered velocity for offline ref ({filter_label})",
     )
-    axes[0].plot(
+    ax_vel.plot(
         t,
-        v_velocity_lag,
-        color="tab:blue",
-        linewidth=1.4,
+        selected_velocity_model,
+        color=palette["teal"],
+        linewidth=1.8,
         label=(
-            f"Observer velocity lag: tau={tau:.3f}s, K={k_velocity:.3f}, "
-            f"RMSE={rmse_velocity_lag:.3f} m/s"
+            "Observer "
+            + (
+                f"lookup velocity lag: tau={selected_tau:.3f}s, "
+                if use_lookup_model
+                else f"velocity lag: tau={tau:.3f}s, K={k_velocity:.3f}, "
+            )
+            + f"RMSE={rmse_selected_velocity:.3f} m/s"
         ),
     )
+    if v_velocity_lag_lookup is not None and use_lookup_model:
+        ax_vel.plot(
+            t,
+            v_velocity_lag,
+            color=palette["cyan"],
+            linewidth=0.9,
+            alpha=0.8,
+            label=f"Linear velocity lag fallback, RMSE={rmse_velocity_lag:.3f} m/s",
+        )
     accel_lag_label = (
-        f"No-drag accel lag comparison: tau={tau:.3f}s, "
+        f"Comparison only: no-drag accel-lag, tau={selected_tau:.3f}s, "
         f"input_gain={input_gain:.2f}, RMSE={rmse_accel_lag:.3f} m/s"
     )
     if accel_lag_span > 3.0 * v_span:
-        ax0_right = axes[0].twinx()
+        ax0_right = ax_vel.twinx()
         ax0_right.plot(
             t,
             v_accel_lag,
-            color="tab:red",
-            linewidth=0.9,
-            alpha=0.75,
+            color=palette["red"],
+            linewidth=1.1,
+            alpha=0.72,
             label=accel_lag_label + " (right axis)",
         )
-        ax0_right.set_ylabel("Accel-lag velocity [m/s]", color="tab:red")
-        ax0_right.tick_params(axis="y", labelcolor="tab:red")
-        lines, labels = axes[0].get_legend_handles_labels()
+        ax0_right.set_ylabel("No-drag comparison velocity [m/s]", color=palette["red"])
+        ax0_right.tick_params(axis="y", labelcolor=palette["red"])
+        lines, labels = ax_vel.get_legend_handles_labels()
         lines2, labels2 = ax0_right.get_legend_handles_labels()
-        axes[0].legend(lines + lines2, labels + labels2, loc="best", fontsize=8)
+        ax_vel.legend(lines + lines2, labels + labels2, loc="upper left", fontsize=8)
     else:
-        axes[0].plot(
+        ax_vel.plot(
             t,
             v_accel_lag,
-            color="tab:red",
-            linewidth=1.0,
+            color=palette["red"],
+            linewidth=1.1,
             alpha=0.85,
             label=accel_lag_label,
         )
-        axes[0].legend(loc="best", fontsize=8)
-    axes[0].set_ylabel("Velocity [m/s]")
-    axes[0].grid(True, alpha=0.3)
+        ax_vel.legend(loc="upper left", fontsize=8)
+    _style_axis(ax_vel, "Velocity Fit", "Velocity [m/s]")
 
-    axes[1].plot(t, throttle, color="tab:purple", linewidth=1.0)
-    axes[1].set_ylabel("Throttle")
-    axes[1].grid(True, alpha=0.3)
+    ax_thr.plot(t, throttle, color=palette["violet"], linewidth=1.2)
+    ax_thr.axhline(0.0, color=palette["muted"], linewidth=0.8, alpha=0.8)
+    _style_axis(ax_thr, "Throttle Command", "Throttle")
 
-    axes[2].plot(
-        t,
-        acc_from_v_raw,
-        color="0.75",
-        linewidth=0.8,
-        alpha=0.65,
-        label="Raw dv/dt from measured v",
-    )
-    axes[2].plot(
-        t,
-        acc_ref,
-        color="tab:green",
-        linewidth=1.2,
-        label=f"Offline reference d(filtered v)/dt ({filter_label})",
-    )
-    axes[2].plot(
+
+    ax_acc.plot(
         t,
         ax,
-        color="0.35",
-        linewidth=0.8,
-        alpha=0.65,
+        color=palette["burnt"],
+        linewidth=1.05,
+        alpha=0.75,
+        linestyle="--",
         label="Raw ax column",
     )
-    axes[2].plot(
+    ax_acc.plot(
+        t,
+        acc_from_v_raw,
+        color=palette["light"],
+        linewidth=0.9,
+        alpha=0.85,
+        linestyle="--",
+        label="Raw dv/dt from measured v",
+    )
+    ax_acc.plot(
+        t,
+        acc_ref,
+        color=palette["green"],
+        linewidth=1.4,
+        label=f"Offline reference d(filtered v)/dt ({filter_label})",
+    )
+
+    ax_acc.plot(
         t,
         fusion["a_model"],
-        color="tab:blue",
-        linewidth=1.1,
-        label=f"Model a=(K*u-v)/tau, RMSE={rmse_model_acc:.3f}",
+        color=palette["royal"],
+        linewidth=1.6,
+        label=f"Model acceleration, RMSE={rmse_model_acc:.3f}",
     )
-    axes[2].plot(
+    ax_acc.plot(
         t,
         fusion["a_fused"],
-        color="tab:red",
-        linewidth=1.2,
+        color=palette["red"],
+        linewidth=1.4,
         label=f"Runtime fused acceleration, RMSE={rmse_fused_acc:.3f}",
     )
-    axes[2].set_ylabel("Acceleration [m/s^2]")
-    axes[2].grid(True, alpha=0.3)
-    axes[2].legend(loc="best", fontsize=8)
+    _style_axis(ax_acc, "Acceleration Comparison", "Acceleration [m/s^2]")
+    ax_acc.legend(loc="upper left", fontsize=8)
 
-    axes[3].plot(
+    ax_res.plot(
         t,
         fusion["velocity_residual"],
-        color="tab:orange",
-        linewidth=0.9,
+        color=palette["orange"],
+        linewidth=1.1,
         label="Velocity residual: motorTach - v_pred",
     )
-    axes[3].axhline(args.residual_low, color="0.45", linestyle="--", linewidth=0.8)
-    axes[3].axhline(-args.residual_low, color="0.45", linestyle="--", linewidth=0.8)
-    axes[3].axhline(args.residual_high, color="0.25", linestyle=":", linewidth=0.8)
-    axes[3].axhline(-args.residual_high, color="0.25", linestyle=":", linewidth=0.8)
-    axes_weight = axes[3].twinx()
+    ax_res.axhline(args.residual_low, color=palette["muted"], linestyle="--", linewidth=0.9)
+    ax_res.axhline(-args.residual_low, color=palette["muted"], linestyle="--", linewidth=0.9)
+    ax_res.axhline(args.residual_high, color=palette["ink"], linestyle=":", linewidth=0.9)
+    ax_res.axhline(-args.residual_high, color=palette["ink"], linestyle=":", linewidth=0.9)
+    axes_weight = ax_res.twinx()
     axes_weight.plot(
         t,
         fusion["model_weight"],
-        color="tab:blue",
-        linewidth=0.9,
+        color=palette["blue"],
+        linewidth=1.1,
         alpha=0.8,
         label="Model trust weight",
     )
-    axes[3].set_ylabel("Residual [m/s]")
+    _style_axis(ax_res, "Residual And Model Weight", "Residual [m/s]")
     axes_weight.set_ylabel("Model weight")
-    axes[3].grid(True, alpha=0.3)
-    lines, labels = axes[3].get_legend_handles_labels()
+    lines, labels = ax_res.get_legend_handles_labels()
     lines2, labels2 = axes_weight.get_legend_handles_labels()
-    axes[3].legend(lines + lines2, labels + labels2, loc="best", fontsize=8)
+    ax_res.legend(lines + lines2, labels + labels2, loc="upper left", fontsize=8)
 
-    axes[4].plot(
+    ax_err.plot(
         t,
         fusion["a_model"] - acc_ref,
-        color="tab:blue",
-        linewidth=0.8,
+        color=palette["teal"],
+        linewidth=1.0,
         label=f"Model error vs ref, RMSE={rmse_model_acc:.3f}",
     )
-    axes[4].plot(
+    ax_err.plot(
         t,
         fusion["a_tach"] - acc_ref,
-        color="tab:cyan",
-        linewidth=0.8,
+        color=palette["cyan"],
+        linewidth=1.0,
         label=f"Tach derivative error vs ref, RMSE={rmse_tach_acc:.3f}",
     )
-    axes[4].plot(
+    ax_err.plot(
         t,
         fusion["a_fused"] - acc_ref,
-        color="tab:red",
-        linewidth=0.9,
+        color=palette["red"],
+        linewidth=1.1,
         label=f"Fused error vs ref, RMSE={rmse_fused_acc:.3f}",
     )
-    axes[4].axhline(0.0, color="black", linewidth=0.6)
-    axes[4].set_ylabel("Accel error [m/s^2]")
-    axes[4].grid(True, alpha=0.3)
-    axes[4].legend(loc="best", fontsize=8)
+    ax_err.axhline(0.0, color=palette["ink"], linewidth=0.8)
+    _style_axis(ax_err, "Acceleration Error", "Accel error [m/s^2]")
+    ax_err.legend(loc="upper left", fontsize=8)
 
     step_taus = []
     step_gains = []
@@ -1132,46 +1515,70 @@ def main() -> int:
 
     if step_taus:
         idx = np.arange(len(step_taus))
-        axes_gain = axes[5].twinx()
-        axes[5].scatter(
+        axes_gain = ax_tau.twinx()
+        scatter = ax_tau.scatter(
             idx,
             step_taus,
             c=step_du,
             cmap="viridis",
-            s=30,
-            label="tau per detected transition",
+            s=40,
+            edgecolors="#ffffff",
+            linewidths=0.4,
+            label="Tau per detected transition",
         )
         axes_gain.plot(
             idx,
             step_gains,
-            color="tab:orange",
-            linewidth=1.0,
+            color=palette["orange"],
+            linewidth=1.1,
             marker=".",
-            label="K_local / tau_s",
+            label="Derived input_gain = K_local / tau_s",
         )
-        axes[5].axhline(tau, color="tab:blue", linestyle="--", linewidth=1.0)
+        ax_tau.axhline(
+            selected_tau,
+            color=palette["teal"],
+            linestyle="--",
+            linewidth=1.2,
+            label=f"Selected tau = {selected_tau:.3f}s",
+        )
         axes_gain.axhline(
-            input_gain, color="tab:red", linestyle="--", linewidth=1.0
+            input_gain, color=palette["red"], linestyle="--", linewidth=1.0
         )
-        axes[5].set_ylabel("Tau [s]")
+        _style_axis(ax_tau, "Transition-Wise Tau Spread", "Tau [s]")
         axes_gain.set_ylabel("Derived input_gain [m/s^2/throttle]")
-        axes[5].set_xlabel("Detected transition index")
-        axes[5].grid(True, alpha=0.3)
-        lines, labels = axes[5].get_legend_handles_labels()
+        ax_tau.set_xlabel("Detected transition index")
+        cbar = fig.colorbar(scatter, ax=ax_tau, pad=0.01)
+        cbar.set_label("|Δu| of transition")
+        ax_tau.text(
+            0.01,
+            0.97,
+            "Tau is estimated separately for each detected throttle step.\n"
+            "Spread means the real car is not one perfect first-order system.",
+            transform=ax_tau.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8,
+            color=palette["muted"],
+            bbox=dict(facecolor="#fff7ed", edgecolor="#fed7aa", boxstyle="round,pad=0.3"),
+        )
+        lines, labels = ax_tau.get_legend_handles_labels()
         lines2, labels2 = axes_gain.get_legend_handles_labels()
-        axes[5].legend(lines + lines2, labels + labels2, loc="best", fontsize=8)
+        ax_tau.legend(lines + lines2, labels + labels2, loc="upper right", fontsize=8)
     else:
-        axes[5].text(0.02, 0.5, "No step model entries found", transform=axes[5].transAxes)
-        axes[5].set_xlabel("Time [s]")
+        ax_tau.text(0.02, 0.5, "No step model entries found", transform=ax_tau.transAxes)
+        ax_tau.set_xlabel("Detected transition index")
+        _style_axis(ax_tau, "Transition-Wise Tau Spread", "Tau [s]")
 
-    axes[2].set_ylim(
+    ax_acc.set_ylim(
         max(np.nanpercentile(acc_from_v_raw, 1), -8.0),
         min(np.nanpercentile(acc_from_v_raw, 99), 8.0),
     )
-    axes[0].set_xlim(t[0], t[-1])
-    axes[-1].set_xlabel("Time [s]")
+    ax_vel.set_xlim(t[0], t[-1])
+    ax_err.set_xlabel("Time [s]")
+    ax_tau.set_xlabel("Detected transition index")
+    ax_res.set_xlabel("Time [s]")
 
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.tight_layout(rect=(0, 0, 1, 0.955))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=160)
 

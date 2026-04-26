@@ -22,29 +22,52 @@ output: "models/robust_kalmannet.pt"
 
 training:
   # Phase A: predictor-only training. Updater is frozen.
-  phase_a_epochs: 30
+  phase_a_epochs: 10
 
   # Phase B: updater-only training. Predictor is frozen.
-  phase_b_epochs: 30
+  phase_b_epochs: 15
 
   # Phase C: end-to-end fine tuning of the full model.
-  phase_c_epochs: 30
+  phase_c_epochs: 5
 
   # Mini-batch size.
   batch_size: 64
 
+  # Source of training measurement z:
+  # rebuilt = use offline reconstruction logic from robust_kalmannet_dataset.py
+  # raw     = use the z saved directly in the recorded dataset file
+  measurement_source: "rebuilt"
+
+  # When measurement_source=rebuild, choose how theta is reconstructed
+  # when GPS heading/position is unavailable.
+  # qcar_ekf   = exact local replica of the Quanser QCarEKF heading path
+  # gyro_filter = legacy gyro-integrated heading filter
+  # kinematic   = bicycle-model yaw prediction using v*tan(delta)/L
+  heading_rebuild_mode: "qcar_ekf"
+
+  # How z[x,y] behaves while GPS position is invalid when
+  # measurement_source=rebuilt.
+  # freeze      = hold last valid GPS position
+  # dead_reckon = propagate z[x,y] with heading and wheel speed
+  gps_dropout_xy_mode: "freeze"
+
   # Sliding-window length for Phases A/B.
-  sequence_length: 20
+  sequence_length: 25
 
   # Optional longer sequence for Phase C.
   # Helps reduce autoregressive drift mismatch.
-  sequence_length_phase_c: 30
+  sequence_length_phase_c: 100
+  
 
   # Sliding-window step. 1 means maximum overlap.
   stride: 1
 
   # Fraction of data reserved for validation.
   val_split: 0.2
+  val_split_mode: middle
+  attacked_validation_enabled: true
+  attacked_validation_weight: 1.5
+  attacked_validation_seed: 1007
 
   # Initial learning rate.
   lr: 1.0e-4
@@ -79,16 +102,25 @@ training:
   # 0.0 = augmentation from epoch 1 (no warmup).
   # 0.5 = first 50% of Phase B is clean, then attack prob ramps to target.
   # 1.0 = entire Phase B is clean (augmentation only in Phase C).
-  aug_warmup_fraction: 0.5
+  aug_warmup_fraction: 0.1
+
+  # Minimum validation improvement required to reset early stopping.
+  early_stop_min_delta: 0.0
+
+  # Per-phase early stopping patience.
+  # 0 disables early stopping for that phase.
+  early_stop_phase_a_patience: 0
+  early_stop_phase_b_patience: 10
+  early_stop_phase_c_patience: 7
 
 loss:
   # Weight for predictor mask supervision loss.
   # Encourages the prediction-side mask to suppress attacked sensor branches.
-  lambda_mask: 1.0
+  lambda_mask: 0.5
 
   # Weight for measurement mask supervision loss.
   # Encourages the update-side mask to suppress corrupted measurement channels.
-  lambda_meas_mask: 0.2
+  lambda_meas_mask: 0.5
 
   # Weight of prediction-state loss in Phase C.
   # Higher = care more about x_pred quality.
@@ -104,25 +136,30 @@ loss:
   # Current setting means:
   # x   -> 1.0
   # y   -> 1.0
-  # psi -> 6.0   (heading error is penalized 6x more)
+  # psi -> 2.0   (heading error is emphasized, but no longer dominates)
   # v   -> 1.0
   # w   -> 1.0
   #
   # Increase a value if that state matters more.
   # Decrease a value if that state is noisy or dominates training too much.
-  state_weights: [1.0, 1.0, 6.0, 1.0, 1.0]
+  state_weights: [1.0, 1.0, 2.5, 1.2, 1.0]
 
   # Weight for Kalman gain magnitude regularization.
   # Penalizes large gains to encourage conservative corrections.
-  lambda_gain: 0.001
+  lambda_gain: 0.003
 
 augmentation:
   # true  = apply synthetic attacks during training.
   # false = train on clean data only.
-  enabled: false
+  enabled: true
 
   # Probability that one sample receives attack augmentation.
-  attack_prob: 0.3
+  attack_prob: 0.35
+  branch_attack_probs:
+    imu: 0.45
+    steer: 0.20
+    wheel: 0.35
+  meas_attack_prob: 0.7
 
   # Available synthetic attack types:
   # bias     = add constant offset
@@ -134,17 +171,17 @@ augmentation:
   attack_types: ["bias", "scale", "freeze", "noise", "ramp", "zero_out"]
 
   # Maximum number of sensor branches attacked at once.
-  max_branches_attacked: 1
+  max_branches_attacked: 2
 
   # Independent GPS-position augmentation for the measurement vector z=[x,y,psi,v,w].
   # These attacks teach the update mask/gain to avoid snapping to bad GPS x/y.
-  gps_attack_prob: 0.35
+  gps_attack_prob: 0.45
   gps_attack_types: ["noise", "freeze", "jump", "dropout", "reacquisition"]
-  gps_noise_std_range: [0.03, 0.25]    # meters
-  gps_jump_range: [0.20, 1.20]         # meters
-  gps_reacq_jump_range: [0.10, 0.80]   # meters
-  gps_dropout_min_fraction: 0.20
-  gps_dropout_max_fraction: 0.80
+  gps_noise_std_range: [0.05, 0.35]    # meters
+  gps_jump_range: [0.30, 1.50]         # meters
+  gps_reacq_jump_range: [0.20, 1.00]   # meters
+  gps_dropout_min_fraction: 0.25
+  gps_dropout_max_fraction: 0.85
 
 model:
   # Predictor implementation:
@@ -153,7 +190,7 @@ model:
   #
   # Note: if set to kinematic, Phase A is skipped automatically.
   predictor_mode: "kinematic"
-  kin_wheelbase: 0.25
+  kin_wheelbase: 0.2
   # Longitudinal velocity prediction used by the analytical kinematic predictor.
   # tachometer        = legacy behavior, v_next = motor_tach, so z_v innovation is near zero.
   # imu_acceleration  = v_next = v_prev + ax * dt.
@@ -173,4 +210,5 @@ model:
   gain_hidden: 32
   pred_mlp_hidden: 32
   mask_hidden: 32
-  update_mask_init_bias: 0.5
+  gain_tanh_scale: 1.2
+  update_mask_init_bias: 0.0

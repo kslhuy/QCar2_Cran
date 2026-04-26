@@ -469,14 +469,24 @@ def fit_ackermann(steer_cmds: np.ndarray, curvatures: np.ndarray) -> dict:
     For small angles: curvature ≈ delta_eff / L_eff
     → L_eff = delta_eff / curvature  (median over nonzero levels)
     """
-    valid = np.abs(curvatures) > 1e-3
+    steer_cmds = np.asarray(steer_cmds, dtype=float)
+    curvatures = np.asarray(curvatures, dtype=float)
+    valid = (np.abs(curvatures) > 1e-4) & (np.abs(steer_cmds) > 0.01)
     if valid.sum() < 2:
         return {
             "L_eff_m": args.wheelbase_nom,
             "note": "Not enough data for Ackermann fit",
         }
 
-    L_estimates = np.abs(steer_cmds[valid]) / np.abs(curvatures[valid])
+    tan_delta = np.tan(steer_cmds[valid])
+    finite = np.isfinite(tan_delta)
+    L_estimates = np.abs(tan_delta[finite]) / np.abs(curvatures[valid][finite])
+    L_estimates = L_estimates[(L_estimates > 0.05) & (L_estimates < 1.0)]
+    if L_estimates.size == 0:
+        return {
+            "L_eff_m": args.wheelbase_nom,
+            "note": "Not enough valid exact Ackermann points after filtering",
+        }
     L_eff = float(np.median(L_estimates))
     return {
         "L_eff_m": round(L_eff, 5),

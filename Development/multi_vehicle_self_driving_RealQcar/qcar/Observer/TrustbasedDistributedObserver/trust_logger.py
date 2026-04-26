@@ -15,6 +15,8 @@ from typing import Dict, Any, Iterable, List
 
 
 class TrustWeightLogger:
+    ATTACK_VALUE_FIELDS = ("x", "y", "theta", "velocity", "acceleration", "confidence")
+
     def __init__(self, output_dir: str = None, max_vehicles: int = 5):
         if output_dir is None:
             output_dir = os.path.dirname(os.path.abspath(__file__))
@@ -179,6 +181,14 @@ class TrustWeightLogger:
                     f"inject_attack_attacker_{i}",
                 ]
             )
+            for field in self.ATTACK_VALUE_FIELDS:
+                columns.extend(
+                    [
+                        f"inject_attack_original_{field}_{i}",
+                        f"inject_attack_modified_{field}_{i}",
+                        f"inject_attack_delta_{field}_{i}",
+                    ]
+                )
             for k in range(max_vehicles):
                 columns.extend(
                     [
@@ -373,6 +383,10 @@ class TrustWeightLogger:
             row[f"inject_attack_start_{i}"] = nan_val
             row[f"inject_attack_end_{i}"] = nan_val
             row[f"inject_attack_attacker_{i}"] = nan_val
+            for field in self.ATTACK_VALUE_FIELDS:
+                row[f"inject_attack_original_{field}_{i}"] = nan_val
+                row[f"inject_attack_modified_{field}_{i}"] = nan_val
+                row[f"inject_attack_delta_{field}_{i}"] = nan_val
 
             present = False
 
@@ -406,6 +420,21 @@ class TrustWeightLogger:
                     row[f"inject_attack_attacker_{i}"] = self._to_float_or_nan(
                         attack_data.get("attacker_id", nan_val)
                     )
+                    values = attack_data.get("values", {})
+                    if isinstance(values, dict):
+                        for field in self.ATTACK_VALUE_FIELDS:
+                            field_values = values.get(field, {})
+                            if not isinstance(field_values, dict):
+                                continue
+                            row[f"inject_attack_original_{field}_{i}"] = (
+                                self._to_float_or_nan(field_values.get("original", nan_val))
+                            )
+                            row[f"inject_attack_modified_{field}_{i}"] = (
+                                self._to_float_or_nan(field_values.get("modified", nan_val))
+                            )
+                            row[f"inject_attack_delta_{field}_{i}"] = (
+                                self._to_float_or_nan(field_values.get("delta", nan_val))
+                            )
 
             if i in direct_trust:
                 trust_val = self._to_float_or_nan(direct_trust[i])

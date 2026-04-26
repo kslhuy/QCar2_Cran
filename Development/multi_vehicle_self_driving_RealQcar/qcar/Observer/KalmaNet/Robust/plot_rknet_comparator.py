@@ -3,7 +3,7 @@ import csv
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,6 +12,7 @@ import numpy as np
 
 DEFAULT_LOG_DIR = Path(__file__).resolve().parent / "logs" / "comparator"
 DEFAULT_EXPORT_DIR = Path(__file__).resolve().parent / "logs" / "plots"
+DEFAULT_RECOVERY_WINDOW_SECONDS = 2.0
 
 
 def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
@@ -25,6 +26,11 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
     numeric_columns = [
         "timestamp",
         "tick",
+        "dt",
+        "motor_tach",
+        "steering",
+        "throttle",
+        "gyro_z",
         "robust_x",
         "robust_y",
         "robust_theta",
@@ -33,6 +39,10 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
         "ekf_y",
         "ekf_theta",
         "ekf_v",
+        "ref_x",
+        "ref_y",
+        "ref_theta",
+        "ref_v",
         "delta_x",
         "delta_y",
         "delta_theta",
@@ -40,9 +50,38 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
         "position_error_norm",
         "heading_error",
         "velocity_error",
+        "robust_ref_dx",
+        "robust_ref_dy",
+        "robust_ref_dtheta",
+        "robust_ref_dv",
+        "robust_ref_position_error_norm",
+        "robust_ref_heading_error",
+        "robust_ref_velocity_error",
+        "ekf_ref_dx",
+        "ekf_ref_dy",
+        "ekf_ref_dtheta",
+        "ekf_ref_dv",
+        "ekf_ref_position_error_norm",
+        "ekf_ref_heading_error",
+        "ekf_ref_velocity_error",
         "gps_valid",
         "gps_hold_valid",
         "gps_age_sec",
+        "sensor_failure_active",
+        "sensor_failure_remaining_steps",
+        "sensor_failure_intensity",
+        "sensor_failure_imu_intensity",
+        "sensor_failure_steer_intensity",
+        "sensor_failure_wheel_intensity",
+        "sensor_failure_gps_intensity",
+        "sensor_failure_gps_xy_intensity",
+        "sensor_failure_gps_valid_flip",
+        "gps_x",
+        "gps_y",
+        "gps_theta",
+        "accel_x",
+        "accel_y",
+        "accel_z",
         "pred_mask_mean",
         "pred_mask_min",
         "pred_mask_max",
@@ -64,6 +103,11 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
         "K_psi_psi",
         "K_v_v",
         "K_w_w",
+        "ekf_K_norm",
+        "ekf_K_x_x",
+        "ekf_K_y_y",
+        "ekf_K_psi_psi",
+        "ekf_K_v_v",
         "innov_x",
         "innov_y",
         "innov_psi",
@@ -89,6 +133,15 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
     data["source"] = np.asarray([row.get("source", "") for row in rows], dtype=object)
     data["mask_selected_branch"] = np.asarray(
         [row.get("mask_selected_branch", "") for row in rows], dtype=object
+    )
+    data["sensor_failure_branches"] = np.asarray(
+        [row.get("sensor_failure_branches", "") for row in rows], dtype=object
+    )
+    data["sensor_failure_branch_types"] = np.asarray(
+        [row.get("sensor_failure_branch_types", "") for row in rows], dtype=object
+    )
+    data["sensor_failure_gps_type"] = np.asarray(
+        [row.get("sensor_failure_gps_type", "") for row in rows], dtype=object
     )
     return data
 
@@ -141,6 +194,78 @@ def _series_stats(values: np.ndarray, *, absolute: bool = False) -> Dict[str, Op
     }
 
 
+def _series_peak(
+    values: np.ndarray,
+    time_axis: np.ndarray,
+    *,
+    absolute: bool = False,
+) -> Dict[str, Optional[float]]:
+    series = np.abs(values) if absolute else values
+    finite_mask = np.isfinite(series) & np.isfinite(time_axis)
+    if not np.any(finite_mask):
+        return {"time_seconds": None, "value": None}
+
+    finite_series = series[finite_mask]
+    finite_time = time_axis[finite_mask]
+    peak_index = int(np.argmax(finite_series))
+    return {
+        "time_seconds": _safe_float(finite_time[peak_index]),
+        "value": _safe_float(finite_series[peak_index]),
+    }
+
+
+def _masked_series_stats(
+    values: np.ndarray,
+    mask: np.ndarray,
+    *,
+    absolute: bool = False,
+) -> Dict[str, Optional[float]]:
+    if values.size == 0:
+        return _series_stats(values, absolute=absolute)
+    mask_bool = np.asarray(mask, dtype=bool)
+    if mask_bool.shape != values.shape:
+        mask_bool = np.broadcast_to(mask_bool, values.shape)
+    masked = np.where(mask_bool, values, np.nan)
+    return _series_stats(masked, absolute=absolute)
+
+
+def _build_phase_masks(
+    data: Dict[str, np.ndarray],
+    time_axis: np.ndarray,
+    recovery_window_seconds: float = DEFAULT_RECOVERY_WINDOW_SECONDS,
+) -> Dict[str, np.ndarray]:
+    sample_count = int(time_axis.size)
+    attack_mask = np.asarray(
+        data.get("sensor_failure_active", np.zeros(sample_count, dtype=np.float64)) > 0.5,
+        dtype=bool,
+    )
+    recovery_mask = np.zeros(sample_count, dtype=bool)
+    if sample_count == 0:
+        return {
+            "clean": recovery_mask.copy(),
+            "attack": attack_mask,
+            "recovery": recovery_mask,
+        }
+
+    window_seconds = max(float(recovery_window_seconds), 0.0)
+    if window_seconds > 0.0:
+        attack_segments = _extract_attack_segments(data, time_axis)
+        for segment in attack_segments:
+            end_time = segment.get("end_time_seconds")
+            if end_time is None:
+                continue
+            recovery_mask |= (time_axis > float(end_time)) & (
+                time_axis <= float(end_time) + window_seconds
+            )
+    recovery_mask &= ~attack_mask
+    clean_mask = ~(attack_mask | recovery_mask)
+    return {
+        "clean": clean_mask,
+        "attack": attack_mask,
+        "recovery": recovery_mask,
+    }
+
+
 def _value_distribution(values: np.ndarray) -> Dict[str, int]:
     distribution: Dict[str, int] = {}
     for raw in values:
@@ -149,15 +274,128 @@ def _value_distribution(values: np.ndarray) -> Dict[str, int]:
     return dict(sorted(distribution.items()))
 
 
+def _clean_label(value: Any) -> str:
+    label = str(value).strip()
+    if not label or label.lower() in {"nan", "none"}:
+        return ""
+    return label
+
+
+def _attack_type_label(branch_types: Any, gps_type: Any) -> str:
+    labels: List[str] = []
+    branch_label = _clean_label(branch_types)
+    gps_label = _clean_label(gps_type)
+    if branch_label:
+        labels.append(branch_label)
+    if gps_label:
+        labels.append(f"gps:{gps_label}")
+    return " + ".join(labels) if labels else "none"
+
+
+def _extract_attack_segments(
+    data: Dict[str, np.ndarray],
+    time_axis: np.ndarray,
+) -> List[Dict[str, Any]]:
+    active = np.asarray(data.get("sensor_failure_active", np.zeros_like(time_axis)) > 0.5)
+    if active.size == 0:
+        return []
+
+    segments: List[Dict[str, Any]] = []
+    start_idx: Optional[int] = None
+    for idx, is_active in enumerate(active):
+        if is_active and start_idx is None:
+            start_idx = idx
+        elif not is_active and start_idx is not None:
+            segments.append(_build_attack_segment(data, time_axis, start_idx, idx - 1))
+            start_idx = None
+    if start_idx is not None:
+        segments.append(_build_attack_segment(data, time_axis, start_idx, active.size - 1))
+    return segments
+
+
+def _build_attack_segment(
+    data: Dict[str, np.ndarray],
+    time_axis: np.ndarray,
+    start_idx: int,
+    end_idx: int,
+) -> Dict[str, Any]:
+    sl = slice(start_idx, end_idx + 1)
+    segment_intensity = np.asarray(data.get("sensor_failure_intensity", np.full_like(time_axis, np.nan))[sl])
+    peak_idx_local = 0
+    if np.any(np.isfinite(segment_intensity)):
+        peak_idx_local = int(np.nanargmax(segment_intensity))
+    peak_idx = start_idx + peak_idx_local
+
+    labels = [
+        _attack_type_label(branch_type, gps_type)
+        for branch_type, gps_type in zip(
+            data.get("sensor_failure_branch_types", np.asarray([], dtype=object))[sl],
+            data.get("sensor_failure_gps_type", np.asarray([], dtype=object))[sl],
+        )
+    ]
+    label_distribution: Dict[str, int] = {}
+    for label in labels:
+        clean = _clean_label(label)
+        if not clean or clean == "none":
+            continue
+        label_distribution[clean] = label_distribution.get(clean, 0) + 1
+    dominant_label = max(label_distribution, key=label_distribution.get) if label_distribution else "none"
+
+    return {
+        "start_index": int(start_idx),
+        "end_index": int(end_idx),
+        "start_time_seconds": _safe_float(time_axis[start_idx]),
+        "end_time_seconds": _safe_float(time_axis[end_idx]),
+        "duration_seconds": _safe_float(time_axis[end_idx] - time_axis[start_idx]),
+        "peak_time_seconds": _safe_float(time_axis[peak_idx]),
+        "peak_intensity": _safe_float(segment_intensity[peak_idx_local]) if segment_intensity.size else None,
+        "dominant_type": dominant_label,
+        "branch_types": _clean_label(data.get("sensor_failure_branch_types", np.asarray([], dtype=object))[peak_idx]),
+        "gps_type": _clean_label(data.get("sensor_failure_gps_type", np.asarray([], dtype=object))[peak_idx]),
+        "peak_remaining_steps": _safe_float(
+            data.get("sensor_failure_remaining_steps", np.full_like(time_axis, np.nan))[peak_idx]
+        ),
+    }
+
+
 def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.ndarray) -> Dict[str, Any]:
     total_samples = int(len(time_axis))
+    recovery_window_seconds = DEFAULT_RECOVERY_WINDOW_SECONDS
+    reference_available = bool(np.any(np.isfinite(data.get("ref_x", np.asarray([], dtype=np.float64)))))
     model_used = int(np.count_nonzero(data["source"] == "model"))
     fallback_used = int(np.count_nonzero(data["source"] == "fallback"))
     gps_valid_count = int(np.count_nonzero(data["gps_valid"] > 0.5))
     gps_hold_valid_count = int(np.count_nonzero(data["gps_hold_valid"] > 0.5))
+    attack_active_count = int(np.count_nonzero(data.get("sensor_failure_active", np.zeros(total_samples)) > 0.5))
+    mask_imu_active_count = int(np.count_nonzero(data["mask_imu_active"] > 0.5))
+    mask_steer_active_count = int(np.count_nonzero(data["mask_steer_active"] > 0.5))
+    mask_wheel_active_count = int(np.count_nonzero(data["mask_wheel_active"] > 0.5))
+    attack_type_labels = np.asarray(
+        [
+            _attack_type_label(branch_types, gps_type)
+            for branch_types, gps_type in zip(
+                data.get("sensor_failure_branch_types", np.asarray([], dtype=object)),
+                data.get("sensor_failure_gps_type", np.asarray([], dtype=object)),
+            )
+        ],
+        dtype=object,
+    )
+    attack_segments = _extract_attack_segments(data, time_axis)
+    phase_masks = _build_phase_masks(
+        data,
+        time_axis,
+        recovery_window_seconds=recovery_window_seconds,
+    )
+    gain_errors = {
+        "K_norm_error": data["K_norm"] - data["ekf_K_norm"],
+        "K_x_x_error": data["K_x_x"] - data["ekf_K_x_x"],
+        "K_y_y_error": data["K_y_y"] - data["ekf_K_y_y"],
+        "K_psi_psi_error": data["K_psi_psi"] - data["ekf_K_psi_psi"],
+        "K_v_v_error": data["K_v_v"] - data["ekf_K_v_v"],
+    }
 
     summary: Dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 4,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_csv": str(filepath),
         "log_name": filepath.name,
@@ -170,35 +408,214 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
             "fallback_samples": fallback_used,
             "gps_valid_samples": gps_valid_count,
             "gps_hold_valid_samples": gps_hold_valid_count,
+            "attack_active_samples": attack_active_count,
+            "mask_imu_active_samples": mask_imu_active_count,
+            "mask_steer_active_samples": mask_steer_active_count,
+            "mask_wheel_active_samples": mask_wheel_active_count,
+            "reference_available_samples": int(
+                np.count_nonzero(np.isfinite(data.get("ref_x", np.full(total_samples, np.nan))))
+            ),
             "model_ratio": _safe_float(model_used / total_samples) if total_samples else None,
             "fallback_ratio": _safe_float(fallback_used / total_samples) if total_samples else None,
             "gps_valid_ratio": _safe_float(gps_valid_count / total_samples) if total_samples else None,
             "gps_hold_valid_ratio": _safe_float(gps_hold_valid_count / total_samples) if total_samples else None,
+            "attack_active_ratio": _safe_float(attack_active_count / total_samples) if total_samples else None,
+            "mask_imu_active_ratio": _safe_float(mask_imu_active_count / total_samples)
+            if total_samples
+            else None,
+            "mask_steer_active_ratio": _safe_float(mask_steer_active_count / total_samples)
+            if total_samples
+            else None,
+            "mask_wheel_active_ratio": _safe_float(mask_wheel_active_count / total_samples)
+            if total_samples
+            else None,
         },
         "selected_branch_counts": _value_distribution(data["mask_selected_branch"]),
+        "reference_summary": {
+            "available": reference_available,
+            "mode": "clean_reference_ekf",
+        },
+        "phase_summary": {
+            "recovery_window_seconds": recovery_window_seconds,
+            "clean_samples": int(np.count_nonzero(phase_masks["clean"])),
+            "attack_samples": int(np.count_nonzero(phase_masks["attack"])),
+            "recovery_samples": int(np.count_nonzero(phase_masks["recovery"])),
+            "clean_ratio": _safe_float(np.mean(phase_masks["clean"])) if total_samples else None,
+            "attack_ratio": _safe_float(np.mean(phase_masks["attack"])) if total_samples else None,
+            "recovery_ratio": _safe_float(np.mean(phase_masks["recovery"])) if total_samples else None,
+        },
+        "attack_summary": {
+            "attack_type_counts": _value_distribution(attack_type_labels[attack_type_labels != "none"])
+            if attack_type_labels.size
+            else {},
+            "attack_segment_count": int(len(attack_segments)),
+            "segments": attack_segments,
+        },
+        "phase_metrics": {
+            "clean": {
+                "robust_ref_position_error_norm": _masked_series_stats(
+                    data["robust_ref_position_error_norm"], phase_masks["clean"]
+                ),
+                "robust_ref_heading_error_abs": _masked_series_stats(
+                    data["robust_ref_heading_error"], phase_masks["clean"], absolute=True
+                ),
+                "robust_ref_velocity_error_abs": _masked_series_stats(
+                    data["robust_ref_velocity_error"], phase_masks["clean"], absolute=True
+                ),
+                "ekf_ref_position_error_norm": _masked_series_stats(
+                    data["ekf_ref_position_error_norm"], phase_masks["clean"]
+                ),
+                "ekf_ref_heading_error_abs": _masked_series_stats(
+                    data["ekf_ref_heading_error"], phase_masks["clean"], absolute=True
+                ),
+                "ekf_ref_velocity_error_abs": _masked_series_stats(
+                    data["ekf_ref_velocity_error"], phase_masks["clean"], absolute=True
+                ),
+            },
+            "attack": {
+                "robust_ref_position_error_norm": _masked_series_stats(
+                    data["robust_ref_position_error_norm"], phase_masks["attack"]
+                ),
+                "robust_ref_heading_error_abs": _masked_series_stats(
+                    data["robust_ref_heading_error"], phase_masks["attack"], absolute=True
+                ),
+                "robust_ref_velocity_error_abs": _masked_series_stats(
+                    data["robust_ref_velocity_error"], phase_masks["attack"], absolute=True
+                ),
+                "ekf_ref_position_error_norm": _masked_series_stats(
+                    data["ekf_ref_position_error_norm"], phase_masks["attack"]
+                ),
+                "ekf_ref_heading_error_abs": _masked_series_stats(
+                    data["ekf_ref_heading_error"], phase_masks["attack"], absolute=True
+                ),
+                "ekf_ref_velocity_error_abs": _masked_series_stats(
+                    data["ekf_ref_velocity_error"], phase_masks["attack"], absolute=True
+                ),
+            },
+            "recovery": {
+                "robust_ref_position_error_norm": _masked_series_stats(
+                    data["robust_ref_position_error_norm"], phase_masks["recovery"]
+                ),
+                "robust_ref_heading_error_abs": _masked_series_stats(
+                    data["robust_ref_heading_error"], phase_masks["recovery"], absolute=True
+                ),
+                "robust_ref_velocity_error_abs": _masked_series_stats(
+                    data["robust_ref_velocity_error"], phase_masks["recovery"], absolute=True
+                ),
+                "ekf_ref_position_error_norm": _masked_series_stats(
+                    data["ekf_ref_position_error_norm"], phase_masks["recovery"]
+                ),
+                "ekf_ref_heading_error_abs": _masked_series_stats(
+                    data["ekf_ref_heading_error"], phase_masks["recovery"], absolute=True
+                ),
+                "ekf_ref_velocity_error_abs": _masked_series_stats(
+                    data["ekf_ref_velocity_error"], phase_masks["recovery"], absolute=True
+                ),
+            },
+        },
         "series_metrics": {
             "position_error_norm": _series_stats(data["position_error_norm"]),
             "heading_error_signed": _series_stats(data["heading_error"]),
             "heading_error_abs": _series_stats(data["heading_error"], absolute=True),
             "velocity_error_signed": _series_stats(data["velocity_error"]),
             "velocity_error_abs": _series_stats(data["velocity_error"], absolute=True),
+            "robust_ref_position_error_norm": _series_stats(data["robust_ref_position_error_norm"]),
+            "robust_ref_heading_error_signed": _series_stats(data["robust_ref_heading_error"]),
+            "robust_ref_heading_error_abs": _series_stats(data["robust_ref_heading_error"], absolute=True),
+            "robust_ref_velocity_error_signed": _series_stats(data["robust_ref_velocity_error"]),
+            "robust_ref_velocity_error_abs": _series_stats(data["robust_ref_velocity_error"], absolute=True),
+            "ekf_ref_position_error_norm": _series_stats(data["ekf_ref_position_error_norm"]),
+            "ekf_ref_heading_error_signed": _series_stats(data["ekf_ref_heading_error"]),
+            "ekf_ref_heading_error_abs": _series_stats(data["ekf_ref_heading_error"], absolute=True),
+            "ekf_ref_velocity_error_signed": _series_stats(data["ekf_ref_velocity_error"]),
+            "ekf_ref_velocity_error_abs": _series_stats(data["ekf_ref_velocity_error"], absolute=True),
             "delta_x": _series_stats(data["delta_x"]),
             "delta_y": _series_stats(data["delta_y"]),
             "delta_theta": _series_stats(data["delta_theta"]),
             "delta_v": _series_stats(data["delta_v"]),
+            "robust_ref_dx": _series_stats(data["robust_ref_dx"]),
+            "robust_ref_dy": _series_stats(data["robust_ref_dy"]),
+            "robust_ref_dtheta": _series_stats(data["robust_ref_dtheta"]),
+            "robust_ref_dv": _series_stats(data["robust_ref_dv"]),
+            "ekf_ref_dx": _series_stats(data["ekf_ref_dx"]),
+            "ekf_ref_dy": _series_stats(data["ekf_ref_dy"]),
+            "ekf_ref_dtheta": _series_stats(data["ekf_ref_dtheta"]),
+            "ekf_ref_dv": _series_stats(data["ekf_ref_dv"]),
             "innov_x": _series_stats(data["innov_x"]),
             "innov_y": _series_stats(data["innov_y"]),
             "innov_psi": _series_stats(data["innov_psi"]),
             "innov_v": _series_stats(data["innov_v"]),
+            "innov_w": _series_stats(data["innov_w"]),
             "K_norm": _series_stats(data["K_norm"]),
             "K_x_x": _series_stats(data["K_x_x"]),
             "K_y_y": _series_stats(data["K_y_y"]),
             "K_psi_psi": _series_stats(data["K_psi_psi"]),
             "K_v_v": _series_stats(data["K_v_v"]),
+            "K_w_w": _series_stats(data["K_w_w"]),
+            "ekf_K_norm": _series_stats(data["ekf_K_norm"]),
+            "ekf_K_x_x": _series_stats(data["ekf_K_x_x"]),
+            "ekf_K_y_y": _series_stats(data["ekf_K_y_y"]),
+            "ekf_K_psi_psi": _series_stats(data["ekf_K_psi_psi"]),
+            "ekf_K_v_v": _series_stats(data["ekf_K_v_v"]),
+            "K_norm_error": _series_stats(gain_errors["K_norm_error"]),
+            "K_x_x_error": _series_stats(gain_errors["K_x_x_error"]),
+            "K_y_y_error": _series_stats(gain_errors["K_y_y_error"]),
+            "K_psi_psi_error": _series_stats(gain_errors["K_psi_psi_error"]),
+            "K_v_v_error": _series_stats(gain_errors["K_v_v_error"]),
+            "steering": _series_stats(data["steering"]),
+            "throttle": _series_stats(data["throttle"]),
             "mask_selected_score": _series_stats(data["mask_selected_score"]),
+            "pred_mask_mean": _series_stats(data["pred_mask_mean"]),
+            "pred_mask_min": _series_stats(data["pred_mask_min"]),
+            "pred_mask_max": _series_stats(data["pred_mask_max"]),
             "mask_imu_mean": _series_stats(data["mask_imu_mean"]),
             "mask_steer_mean": _series_stats(data["mask_steer_mean"]),
             "mask_wheel_mean": _series_stats(data["mask_wheel_mean"]),
+            "mask_imu_active": _series_stats(data["mask_imu_active"]),
+            "mask_steer_active": _series_stats(data["mask_steer_active"]),
+            "mask_wheel_active": _series_stats(data["mask_wheel_active"]),
+            "meas_mask_x": _series_stats(data["meas_mask_x"]),
+            "meas_mask_y": _series_stats(data["meas_mask_y"]),
+            "meas_mask_psi": _series_stats(data["meas_mask_psi"]),
+            "meas_mask_v": _series_stats(data["meas_mask_v"]),
+            "meas_mask_w": _series_stats(data["meas_mask_w"]),
+            "gps_age_sec": _series_stats(data["gps_age_sec"]),
+            "sensor_failure_intensity": _series_stats(data["sensor_failure_intensity"]),
+            "sensor_failure_imu_intensity": _series_stats(data["sensor_failure_imu_intensity"]),
+            "sensor_failure_steer_intensity": _series_stats(data["sensor_failure_steer_intensity"]),
+            "sensor_failure_wheel_intensity": _series_stats(data["sensor_failure_wheel_intensity"]),
+            "sensor_failure_gps_intensity": _series_stats(data["sensor_failure_gps_intensity"]),
+        },
+        "highlights": {
+            "max_position_error_norm": _series_peak(data["position_error_norm"], time_axis),
+            "max_abs_heading_error": _series_peak(data["heading_error"], time_axis, absolute=True),
+            "max_abs_velocity_error": _series_peak(data["velocity_error"], time_axis, absolute=True),
+            "max_robust_ref_position_error_norm": _series_peak(
+                data["robust_ref_position_error_norm"], time_axis
+            ),
+            "max_abs_robust_ref_heading_error": _series_peak(
+                data["robust_ref_heading_error"], time_axis, absolute=True
+            ),
+            "max_abs_robust_ref_velocity_error": _series_peak(
+                data["robust_ref_velocity_error"], time_axis, absolute=True
+            ),
+            "max_ekf_ref_position_error_norm": _series_peak(
+                data["ekf_ref_position_error_norm"], time_axis
+            ),
+            "max_abs_ekf_ref_heading_error": _series_peak(
+                data["ekf_ref_heading_error"], time_axis, absolute=True
+            ),
+            "max_abs_ekf_ref_velocity_error": _series_peak(
+                data["ekf_ref_velocity_error"], time_axis, absolute=True
+            ),
+            "max_abs_K_norm_error": _series_peak(gain_errors["K_norm_error"], time_axis, absolute=True),
+            "max_abs_K_x_x_error": _series_peak(gain_errors["K_x_x_error"], time_axis, absolute=True),
+            "max_abs_K_y_y_error": _series_peak(gain_errors["K_y_y_error"], time_axis, absolute=True),
+            "max_abs_K_psi_psi_error": _series_peak(
+                gain_errors["K_psi_psi_error"], time_axis, absolute=True
+            ),
+            "max_abs_K_v_v_error": _series_peak(gain_errors["K_v_v_error"], time_axis, absolute=True),
+            "max_attack_intensity": _series_peak(data["sensor_failure_intensity"], time_axis),
         },
         "trajectory_summary": {
             "robust_start_xy": [
@@ -217,21 +634,199 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
                 _safe_float(data["ekf_x"][-1]) if total_samples else None,
                 _safe_float(data["ekf_y"][-1]) if total_samples else None,
             ],
+            "reference_start_xy": [
+                _safe_float(data["ref_x"][0]) if total_samples else None,
+                _safe_float(data["ref_y"][0]) if total_samples else None,
+            ],
+            "reference_end_xy": [
+                _safe_float(data["ref_x"][-1]) if total_samples else None,
+                _safe_float(data["ref_y"][-1]) if total_samples else None,
+            ],
         },
         "data_quality": {
             "finite_position_error_samples": _finite_count(data["position_error_norm"]),
             "finite_heading_error_samples": _finite_count(data["heading_error"]),
             "finite_velocity_error_samples": _finite_count(data["velocity_error"]),
+            "finite_reference_x_samples": _finite_count(data["ref_x"]),
+            "finite_robust_ref_position_error_samples": _finite_count(
+                data["robust_ref_position_error_norm"]
+            ),
+            "finite_ekf_ref_position_error_samples": _finite_count(
+                data["ekf_ref_position_error_norm"]
+            ),
             "finite_mask_score_samples": _finite_count(data["mask_selected_score"]),
         },
     }
     return summary
 
 
+def _add_attack_spans(ax: plt.Axes, attack_segments: List[Dict[str, Any]]) -> None:
+    if not attack_segments:
+        return
+    colors = [
+        "tab:red",
+        "tab:orange",
+        "tab:purple",
+        "tab:brown",
+        "tab:pink",
+        "tab:gray",
+    ]
+    for idx, segment in enumerate(attack_segments):
+        start = segment.get("start_time_seconds")
+        end = segment.get("end_time_seconds")
+        if start is None or end is None:
+            continue
+        ax.axvspan(
+            float(start),
+            float(end),
+            color=colors[idx % len(colors)],
+            alpha=0.08,
+            linewidth=0.0,
+        )
+
+
+def _plot_attack_figure(
+    filepath: Path,
+    data: Dict[str, np.ndarray],
+    time_axis: np.ndarray,
+) -> plt.Figure:
+    fig, axes = plt.subplots(3, 1, figsize=(13, 9), sharex=True)
+    fig.suptitle(f"RKNet Comparator (3/3): Attack Timeline {filepath.name}", fontsize=14)
+
+    attack_segments = _extract_attack_segments(data, time_axis)
+    has_attack_metadata = (
+        np.any(np.isfinite(data.get("sensor_failure_intensity", np.asarray([], dtype=np.float64))))
+        or np.any(data.get("sensor_failure_active", np.asarray([], dtype=np.float64)) > 0.5)
+        or any(_clean_label(v) for v in data.get("sensor_failure_branch_types", np.asarray([], dtype=object)))
+        or any(_clean_label(v) for v in data.get("sensor_failure_gps_type", np.asarray([], dtype=object)))
+    )
+
+    if not has_attack_metadata:
+        for ax in axes:
+            ax.text(
+                0.5,
+                0.5,
+                "No attack metadata in this comparator CSV",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=12,
+            )
+            ax.set_axis_off()
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
+        return fig
+
+    ax = axes[0]
+    ax.plot(
+        time_axis,
+        data["sensor_failure_active"],
+        label="attack active",
+        linewidth=1.2,
+        color="black",
+    )
+    ax.plot(
+        time_axis,
+        data["sensor_failure_intensity"],
+        label="overall intensity",
+        linewidth=1.6,
+        color="tab:red",
+    )
+    ax.set_title("Attack Activity and Overall Intensity")
+    ax.set_ylabel("active / intensity")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, loc="upper right")
+    ax_twin = ax.twinx()
+    ax_twin.plot(
+        time_axis,
+        data["sensor_failure_remaining_steps"],
+        label="remaining steps",
+        linewidth=1.1,
+        color="tab:blue",
+        linestyle="--",
+        alpha=0.8,
+    )
+    ax_twin.set_ylabel("remaining steps")
+    lines_1, labels_1 = ax.get_legend_handles_labels()
+    lines_2, labels_2 = ax_twin.get_legend_handles_labels()
+    ax.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper left", fontsize=8)
+    _add_attack_spans(ax, attack_segments)
+
+    ax = axes[1]
+    ax.plot(time_axis, data["sensor_failure_imu_intensity"], label="imu intensity", linewidth=1.3)
+    ax.plot(time_axis, data["sensor_failure_steer_intensity"], label="steer intensity", linewidth=1.3)
+    ax.plot(time_axis, data["sensor_failure_wheel_intensity"], label="wheel intensity", linewidth=1.3)
+    ax.plot(time_axis, data["sensor_failure_gps_xy_intensity"], label="gps xy intensity", linewidth=1.3)
+    ax.plot(
+        time_axis,
+        data["sensor_failure_gps_valid_flip"],
+        label="gps valid flip",
+        linewidth=1.1,
+        linestyle=":",
+        color="tab:gray",
+    )
+    ax.set_title("Per-Channel Attack Intensity")
+    ax.set_ylabel("intensity")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, ncol=3, loc="upper right")
+    _add_attack_spans(ax, attack_segments)
+
+    ax = axes[2]
+    type_code_map: Dict[str, float] = {}
+    type_codes = np.full(time_axis.shape, np.nan, dtype=np.float64)
+    for idx, (branch_types, gps_type, active) in enumerate(
+        zip(
+            data["sensor_failure_branch_types"],
+            data["sensor_failure_gps_type"],
+            data["sensor_failure_active"],
+        )
+    ):
+        if not np.isfinite(active) or active <= 0.5:
+            continue
+        label = _attack_type_label(branch_types, gps_type)
+        if label == "none":
+            label = "active"
+        if label not in type_code_map:
+            type_code_map[label] = float(len(type_code_map))
+        type_codes[idx] = type_code_map[label]
+    ax.plot(time_axis, type_codes, linewidth=1.4, color="tab:purple")
+    ax.set_title("Attack Type Timeline")
+    ax.set_xlabel("time [s]")
+    ax.set_ylabel("type id")
+    if type_code_map:
+        ordered = sorted(type_code_map.items(), key=lambda item: item[1])
+        ax.set_yticks([item[1] for item in ordered])
+        ax.set_yticklabels([item[0] for item in ordered], fontsize=8)
+    ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
+    for segment in attack_segments:
+        label = str(segment.get("dominant_type", "none"))
+        start = segment.get("start_time_seconds")
+        end = segment.get("end_time_seconds")
+        peak = segment.get("peak_intensity")
+        if start is None or end is None:
+            continue
+        center = 0.5 * (float(start) + float(end))
+        text = label
+        if peak is not None:
+            text = f"{label}\npeak={float(peak):.3f}"
+        ax.text(
+            center,
+            0.98,
+            text,
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="top",
+            fontsize=7,
+            bbox={"boxstyle": "round,pad=0.2", "facecolor": "white", "alpha": 0.6, "edgecolor": "none"},
+        )
+
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    return fig
+
+
 def _export_artifacts(
     filepath: Path,
-    fig1: plt.Figure,
-    fig2: plt.Figure,
+    figures: Dict[str, plt.Figure],
     summary: Dict[str, Any],
     output_dir: Optional[str],
 ) -> Dict[str, str]:
@@ -241,27 +836,19 @@ def _export_artifacts(
     export_dir.mkdir(parents=True, exist_ok=True)
 
     base_name = filepath.stem
-    fig1_path = export_dir / f"{base_name}_figure1.png"
-    fig2_path = export_dir / f"{base_name}_figure2.png"
     json_path = export_dir / f"{base_name}_summary.json"
-
-    fig1.savefig(fig1_path, dpi=180, bbox_inches="tight")
-    fig2.savefig(fig2_path, dpi=180, bbox_inches="tight")
-
-    summary["artifacts"] = {
-        "figure_1_png": str(fig1_path),
-        "figure_2_png": str(fig2_path),
-        "summary_json": str(json_path),
-    }
+    artifacts: Dict[str, str] = {}
+    for fig_key, figure in figures.items():
+        figure_path = export_dir / f"{base_name}_{fig_key}.png"
+        figure.savefig(figure_path, dpi=180, bbox_inches="tight")
+        artifacts[f"{fig_key}_png"] = str(figure_path)
+    artifacts["summary_json"] = str(json_path)
+    summary["artifacts"] = dict(artifacts)
 
     with json_path.open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, indent=2)
 
-    return {
-        "figure_1_png": str(fig1_path),
-        "figure_2_png": str(fig2_path),
-        "summary_json": str(json_path),
-    }
+    return artifacts
 
 
 def main() -> None:
@@ -286,22 +873,54 @@ def main() -> None:
     filepath = _resolve_input_file(args.file)
     data = _load_csv_rows(filepath)
     time_axis = data["timestamp"] - data["timestamp"][0]
+    reference_available = bool(np.any(np.isfinite(data.get("ref_x", np.asarray([], dtype=np.float64)))))
+    attack_segments = _extract_attack_segments(data, time_axis)
+    gain_errors = {
+        "K_x_x": data["K_x_x"] - data["ekf_K_x_x"],
+        "K_y_y": data["K_y_y"] - data["ekf_K_y_y"],
+        "K_psi_psi": data["K_psi_psi"] - data["ekf_K_psi_psi"],
+        "K_v_v": data["K_v_v"] - data["ekf_K_v_v"],
+        "K_norm": data["K_norm"] - data["ekf_K_norm"],
+    }
 
-    fig1, axes1 = plt.subplots(3, 2, figsize=(12, 8))
+    fig1, axes1 = plt.subplots(4, 2, figsize=(13, 11))
     fig1.suptitle(f"RKNet Comparator (1/2): {filepath.name}", fontsize=14)
 
-    # Figure 1, Row 0: Kalman Gain Diagonals and Mask Decision Summary
+    # Figure 1, Row 0: Kalman Gain Diagonals side by side
     ax = axes1[0, 0]
-    ax.plot(time_axis, data["K_x_x"], label="K(x,x) -> X", linewidth=1.2)
-    ax.plot(time_axis, data["K_y_y"], label="K(y,y) -> Y", linewidth=1.2)
-    ax.plot(time_axis, data["K_psi_psi"], label="K(psi,psi) -> Head", linewidth=1.2)
-    ax.plot(time_axis, data["K_v_v"], label="K(v,v) -> V", linewidth=1.2)
-    ax.set_title("Kalman Gain (K) Diagonals")
+    ax.plot(time_axis, data["K_x_x"], label="RKNet K(x,x)", linewidth=1.2)
+    ax.plot(time_axis, data["K_y_y"], label="RKNet K(y,y)", linewidth=1.2)
+    ax.plot(time_axis, data["K_psi_psi"], label="RKNet K(psi,psi)", linewidth=1.2)
+    ax.plot(time_axis, data["K_v_v"], label="RKNet K(v,v)", linewidth=1.2)
+    ax.set_title("RKNet Gain Diagonals")
     ax.set_xlabel("time [s]")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
 
     ax = axes1[0, 1]
+    ax.plot(time_axis, data["ekf_K_x_x"], label="EKF K(x,x)", linewidth=1.2)
+    ax.plot(time_axis, data["ekf_K_y_y"], label="EKF K(y,y)", linewidth=1.2)
+    ax.plot(time_axis, data["ekf_K_psi_psi"], label="EKF K(psi,psi)", linewidth=1.2)
+    ax.plot(time_axis, data["ekf_K_v_v"], label="EKF K(v,v)", linewidth=1.2)
+    ax.set_title("EKF Gain Diagonals")
+    ax.set_xlabel("time [s]")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    # Figure 1, Row 1: Gain Error and Mask Decision Summary
+    ax = axes1[1, 0]
+    ax.plot(time_axis, gain_errors["K_x_x"], label="K(x,x) error", linewidth=1.2)
+    ax.plot(time_axis, gain_errors["K_y_y"], label="K(y,y) error", linewidth=1.2)
+    ax.plot(time_axis, gain_errors["K_psi_psi"], label="K(psi,psi) error", linewidth=1.2)
+    ax.plot(time_axis, gain_errors["K_v_v"], label="K(v,v) error", linewidth=1.2)
+    ax.plot(time_axis, gain_errors["K_norm"], label="K norm error", linewidth=1.2, linestyle="--")
+    ax.axhline(0.0, color="black", linewidth=0.8, linestyle=":", alpha=0.7)
+    ax.set_title("Gain Error (RKNet - EKF)")
+    ax.set_xlabel("time [s]")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+
+    ax = axes1[1, 1]
     branch_to_id = {"imu": 0.0, "steer": 1.0, "wheel": 2.0}
     selected_ids = np.asarray(
         [branch_to_id.get(name, np.nan) for name in data["mask_selected_branch"]],
@@ -329,8 +948,8 @@ def main() -> None:
     lines_2, labels_2 = ax1_twin.get_legend_handles_labels()
     ax.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper right", fontsize=8)
 
-    # Figure 1, Row 1: State Differences and Source/GPS Flags
-    ax = axes1[1, 0]
+    # Figure 1, Row 2: State Differences and Source/GPS Flags
+    ax = axes1[2, 0]
     ax.plot(time_axis, data["delta_x"], label="dx")
     ax.plot(time_axis, data["delta_y"], label="dy")
     ax.plot(time_axis, data["delta_theta"], label="dtheta")
@@ -340,7 +959,7 @@ def main() -> None:
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
 
-    ax = axes1[1, 1]
+    ax = axes1[2, 1]
     model_mask = data["source"] == "model"
     fallback_mask = data["source"] == "fallback"
     ax.plot(time_axis, model_mask.astype(float), label="model used", linewidth=1.2)
@@ -353,8 +972,8 @@ def main() -> None:
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
 
-    # Figure 1, Row 2: Measurement Update Masks and Innovations
-    ax = axes1[2, 0]
+    # Figure 1, Row 3: Measurement Update Masks and Innovations
+    ax = axes1[3, 0]
     ax.plot(time_axis, data["meas_mask_x"], label="mask x (GPS)", linewidth=1.2)
     ax.plot(time_axis, data["meas_mask_y"], label="mask y (GPS)", linewidth=1.2)
     ax.plot(time_axis, data["meas_mask_psi"], label="mask psi (IMU)", linewidth=1.2)
@@ -365,7 +984,7 @@ def main() -> None:
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
 
-    ax = axes1[2, 1]
+    ax = axes1[3, 1]
     ax.plot(time_axis, data["innov_x"], label="innov x", linewidth=1.2)
     ax.plot(time_axis, data["innov_y"], label="innov y", linewidth=1.2)
     ax.plot(time_axis, data["innov_psi"], label="innov psi", linewidth=1.2)
@@ -375,10 +994,10 @@ def main() -> None:
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
 
-    fig1.tight_layout()
+    fig1.tight_layout(rect=[0, 0, 1, 0.97])
 
     # --------------- FIGURE 2 ---------------
-    fig2, axes2 = plt.subplots(3, 2, figsize=(12, 8))
+    fig2, axes2 = plt.subplots(4, 2, figsize=(12, 10))
     fig2.suptitle(f"RKNet Comparator (2/2): {filepath.name}", fontsize=14)
 
     # Figure 2, Row 0: Trajectory and Errors
@@ -386,6 +1005,8 @@ def main() -> None:
     ax.plot(data["robust_x"], data["robust_y"], label="Robust (Update)", linewidth=1.8)
     ax.plot(data["pred_x"], data["pred_y"], label="Robust (Pred)", linewidth=1.2, linestyle=":")
     ax.plot(data["ekf_x"], data["ekf_y"], label="EKF", linewidth=1.4, linestyle="--")
+    if reference_available:
+        ax.plot(data["ref_x"], data["ref_y"], label="Clean Ref EKF", linewidth=1.4, linestyle="-.", color="black")
     ax.set_title("XY Trajectory")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
@@ -393,19 +1014,49 @@ def main() -> None:
     ax.legend(fontsize=8)
 
     ax = axes2[0, 1]
-    ax.plot(time_axis, data["position_error_norm"], label="Position error norm")
-    ax.plot(time_axis, np.abs(data["heading_error"]), label="|Heading error|")
-    ax.plot(time_axis, np.abs(data["velocity_error"]), label="|Velocity error|")
-    ax.set_title("Absolute Errors")
+    ax.plot(time_axis, data["position_error_norm"], label="|Robust - EKF| pos", linewidth=1.2, linestyle="--")
+    if reference_available:
+        ax.plot(
+            time_axis,
+            data["robust_ref_position_error_norm"],
+            label="|Robust - Clean Ref| pos",
+            linewidth=1.6,
+        )
+        ax.plot(
+            time_axis,
+            data["ekf_ref_position_error_norm"],
+            label="|EKF - Clean Ref| pos",
+            linewidth=1.2,
+            linestyle=":",
+        )
+    ax.plot(time_axis, np.abs(data["heading_error"]), label="|Robust - EKF| heading", alpha=0.45)
+    if reference_available:
+        ax.plot(
+            time_axis,
+            np.abs(data["robust_ref_heading_error"]),
+            label="|Robust - Clean Ref| heading",
+            alpha=0.75,
+        )
+        ax.plot(
+            time_axis,
+            np.abs(data["ekf_ref_heading_error"]),
+            label="|EKF - Clean Ref| heading",
+            alpha=0.55,
+            linestyle=":",
+        )
+    ax.set_title("Absolute Errors / Clean Reference Deviation")
     ax.set_xlabel("time [s]")
     ax.set_ylabel("Error")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
+    _add_attack_spans(ax, attack_segments)
 
     # Figure 2, Row 1: States (X, Y) over time
     ax = axes2[1, 0]
     ax.plot(time_axis, data["robust_x"], label="Robust X")
     ax.plot(time_axis, data["ekf_x"], label="EKF X", linestyle="--")
+    if reference_available:
+        ax.plot(time_axis, data["ref_x"], label="Clean Ref X", linestyle="-.", color="black")
     ax.set_title("X Position over Time")
     ax.set_xlabel("time [s]")
     ax.set_ylabel("x [m]")
@@ -415,6 +1066,8 @@ def main() -> None:
     ax = axes2[1, 1]
     ax.plot(time_axis, data["robust_y"], label="Robust Y")
     ax.plot(time_axis, data["ekf_y"], label="EKF Y", linestyle="--")
+    if reference_available:
+        ax.plot(time_axis, data["ref_y"], label="Clean Ref Y", linestyle="-.", color="black")
     ax.set_title("Y Position over Time")
     ax.set_xlabel("time [s]")
     ax.set_ylabel("y [m]")
@@ -425,6 +1078,8 @@ def main() -> None:
     ax = axes2[2, 0]
     ax.plot(time_axis, data["robust_theta"], label="Robust Theta")
     ax.plot(time_axis, data["ekf_theta"], label="EKF Theta", linestyle="--")
+    if reference_available:
+        ax.plot(time_axis, data["ref_theta"], label="Clean Ref Theta", linestyle="-.", color="black")
     ax.set_title("Heading (Theta) over Time")
     ax.set_xlabel("time [s]")
     ax.set_ylabel("theta [rad]")
@@ -434,18 +1089,50 @@ def main() -> None:
     ax = axes2[2, 1]
     ax.plot(time_axis, data["robust_v"], label="Robust V")
     ax.plot(time_axis, data["ekf_v"], label="EKF V", linestyle="--")
+    if reference_available:
+        ax.plot(time_axis, data["ref_v"], label="Clean Ref V", linestyle="-.", color="black")
     ax.set_title("Velocity over Time")
     ax.set_xlabel("time [s]")
     ax.set_ylabel("v [m/s]")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
 
-    fig2.tight_layout()
-    summary = _compute_summary(filepath, data, time_axis)
-    artifacts = _export_artifacts(filepath, fig1, fig2, summary, args.output_dir)
+    # Figure 2, Row 3: Control inputs
+    ax = axes2[3, 0]
+    ax.plot(time_axis, data["steering"], label="Steering", color="tab:orange")
+    ax.set_title("Steering Angle over Time")
+    ax.set_xlabel("time [s]")
+    ax.set_ylabel("steering [rad]")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+    _add_attack_spans(ax, attack_segments)
 
-    print(f"Saved figure 1: {artifacts['figure_1_png']}")
-    print(f"Saved figure 2: {artifacts['figure_2_png']}")
+    ax = axes2[3, 1]
+    ax.plot(time_axis, data["throttle"], label="Throttle", color="tab:green")
+    ax.set_title("Throttle over Time")
+    ax.set_xlabel("time [s]")
+    ax.set_ylabel("throttle")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8)
+    _add_attack_spans(ax, attack_segments)
+
+    fig2.tight_layout(rect=[0, 0, 1, 0.97])
+    fig3 = _plot_attack_figure(filepath, data, time_axis)
+    summary = _compute_summary(filepath, data, time_axis)
+    artifacts = _export_artifacts(
+        filepath,
+        {
+            "figure1": fig1,
+            "figure2": fig2,
+            "attacks": fig3,
+        },
+        summary,
+        args.output_dir,
+    )
+
+    print(f"Saved figure 1: {artifacts['figure1_png']}")
+    print(f"Saved figure 2: {artifacts['figure2_png']}")
+    print(f"Saved attack figure: {artifacts['attacks_png']}")
     print(f"Saved summary: {artifacts['summary_json']}")
 
     if not args.no_show:
@@ -453,6 +1140,7 @@ def main() -> None:
     else:
         plt.close(fig1)
         plt.close(fig2)
+        plt.close(fig3)
 
 
 if __name__ == "__main__":
