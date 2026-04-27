@@ -98,6 +98,14 @@ class TrustWeightLogger:
             "platoon_conf_min",
             "platoon_conf_max",
             "prediction_mode_count",
+            "rollback_enabled",
+            "rollback_triggered",
+            "rollback_total",
+            "rollback_active_count",
+            "rollback_active_vehicles",
+            "rollback_newly_flagged_count",
+            "rollback_newly_flagged",
+            "rollback_event_time_s",
             "rel_meas_used_global_count",
             "yolo_rel_meas_used_global_count",
             "is_turning",
@@ -241,7 +249,21 @@ class TrustWeightLogger:
         v2v_attack = data.get("v2v_attack", {})
         if not isinstance(v2v_attack, dict):
             v2v_attack = {}
+        rollback = data.get("rollback", {})
+        if not isinstance(rollback, dict):
+            rollback = {}
         attack_by_vehicle = self._normalize_vehicle_dict(v2v_attack.get("by_vehicle", {}))
+        rollback_active = rollback.get("active_malicious", [])
+        rollback_newly_flagged = rollback.get("newly_flagged", [])
+        rollback_event_time_ns = rollback.get("event_time_ns")
+        try:
+            rollback_event_time_s = (
+                float(rollback_event_time_ns) / 1e9
+                if rollback_event_time_ns is not None
+                else nan_val
+            )
+        except (TypeError, ValueError):
+            rollback_event_time_s = nan_val
 
         row = {
             "time": float(t),
@@ -264,6 +286,18 @@ class TrustWeightLogger:
             "platoon_conf_min": nan_val,
             "platoon_conf_max": nan_val,
             "prediction_mode_count": 0,
+            "rollback_enabled": int(bool(rollback.get("enabled", False))),
+            "rollback_triggered": int(bool(rollback.get("triggered", False))),
+            "rollback_total": int(rollback.get("total_rollbacks", 0) or 0),
+            "rollback_active_count": len(rollback_active)
+            if isinstance(rollback_active, (list, tuple, set))
+            else 0,
+            "rollback_active_vehicles": self._to_csv_text(rollback_active),
+            "rollback_newly_flagged_count": len(rollback_newly_flagged)
+            if isinstance(rollback_newly_flagged, (list, tuple, set))
+            else 0,
+            "rollback_newly_flagged": self._to_csv_text(rollback_newly_flagged),
+            "rollback_event_time_s": rollback_event_time_s,
             "rel_meas_used_global_count": 0,
             "yolo_rel_meas_used_global_count": 0,
             "is_turning": int(data.get("is_turning", 0)),

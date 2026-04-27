@@ -63,25 +63,6 @@ class RSNConfig:
     gain_tanh_scale: float = 2.0
     dt: float = 0.02
     update_mask_init_bias: float = 2.0
-    use_meas_mask_in_update: bool = False
-    meas_mask_gate_threshold: float = 0.65
-    meas_mask_gate_power: float = 1.0
-    use_residual_anomaly_gate: bool = False
-    innovation_gate_thresholds: Tuple[float, float, float, float, float] = (
-        0.50,
-        0.50,
-        0.25,
-        0.50,
-        0.80,
-    )
-    measurement_jump_gate_thresholds: Tuple[float, float, float, float, float] = (
-        0.70,
-        0.70,
-        0.35,
-        0.60,
-        1.20,
-    )
-    residual_gate_softness: float = 0.25
 
     # ── Modular prediction step ──────────────────────────────────────────
     # "nn"        → RobustMotionPredictor (tri-LSTM, learnable, default)
@@ -796,14 +777,6 @@ class LearnedKalmanUpdate(nn.Module):
         self.constrain_gain = cfg.constrain_gain
         self.gain_tanh_scale = float(cfg.gain_tanh_scale)
         self.update_mask_init_bias = float(cfg.update_mask_init_bias)
-        self.use_meas_mask_in_update = bool(cfg.use_meas_mask_in_update)
-        self.meas_mask_gate_threshold = float(cfg.meas_mask_gate_threshold)
-        self.meas_mask_gate_power = max(1e-6, float(cfg.meas_mask_gate_power))
-        self.use_residual_anomaly_gate = bool(cfg.use_residual_anomaly_gate)
-        self.innovation_gate_thresholds = tuple(float(v) for v in cfg.innovation_gate_thresholds)
-        self.measurement_jump_gate_thresholds = tuple(float(v) for v in cfg.measurement_jump_gate_thresholds)
-        self.residual_gate_softness = max(1e-6, float(cfg.residual_gate_softness))
-
         self.feat_dim_upd = self.m + self.n + self.n + self.n + 2
 
         # Update mask network (outputs mask of same size as features)
@@ -829,37 +802,6 @@ class LearnedKalmanUpdate(nn.Module):
             nn.ReLU(),
             nn.Linear(cfg.gain_hidden, self.m * self.n)
         )
-
-    def _threshold_tensor(
-        self,
-        thresholds: Tuple[float, ...],
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        if len(thresholds) != self.n:
-            raise ValueError(
-                f"Expected {self.n} residual gate thresholds, got {len(thresholds)}"
-            )
-        return torch.tensor(thresholds, device=device, dtype=dtype).view(1, 1, self.n)
-
-    def _soft_abs_gate(
-        self,
-        residual: torch.Tensor,
-        thresholds: Tuple[float, ...],
-    ) -> torch.Tensor:
-        threshold = self._threshold_tensor(thresholds, residual.device, residual.dtype)
-        threshold = threshold.clamp_min(1e-6)
-        softness = (threshold * self.residual_gate_softness).clamp_min(1e-6)
-        return torch.sigmoid((threshold - residual.abs()) / softness)
-
-    def _sharpen_meas_mask(self, meas_mask: torch.Tensor) -> torch.Tensor:
-        gate = meas_mask.clamp(0.0, 1.0)
-        threshold = min(max(self.meas_mask_gate_threshold, 0.0), 0.999)
-        if threshold > 0.0:
-            gate = ((gate - threshold) / (1.0 - threshold)).clamp(0.0, 1.0)
-        if abs(self.meas_mask_gate_power - 1.0) > 1e-6:
-            gate = gate.pow(self.meas_mask_gate_power)
-        return gate
 
     def forward(
         self,
@@ -940,8 +882,7 @@ class LearnedKalmanUpdate(nn.Module):
         # 3. Apply mask to features before GRU
         f_upd_masked = f_upd * m_upd
 
-        # Keep the learned measurement mask logits for supervised training.
-        # The returned meas_mask is the effective runtime gate used below.
+        # Return the learned measurement mask for diagnostics/supervision.
         learned_meas_mask = m_upd[..., self.m : self.m + self.n]
         # Also return raw logits (pre-sigmoid) for numerically stable BCE loss
         meas_mask_logits_out = mask_logits[..., self.m : self.m + self.n]
@@ -964,23 +905,8 @@ class LearnedKalmanUpdate(nn.Module):
 
         # 6. Apply additive correction
         # x_{k|k} = x_{k|k-1} + K_k @ (z_k - Hx_{k|k-1})
-        raw_innovation = wrap_state_residual(z_seq - Hx_pred)
-        effective_meas_gate = meas_availability_seq
-        if self.use_meas_mask_in_update:
-            effective_meas_gate = effective_meas_gate * self._sharpen_meas_mask(learned_meas_mask)
-        if self.use_residual_anomaly_gate:
-            innovation_gate = self._soft_abs_gate(
-                raw_innovation,
-                self.innovation_gate_thresholds,
-            )
-            jump_gate = self._soft_abs_gate(
-                wrap_state_residual(z_seq - z_prev_seq),
-                self.measurement_jump_gate_thresholds,
-            )
-            effective_meas_gate = effective_meas_gate * torch.minimum(innovation_gate, jump_gate)
-
-        K_eff = K_seq * effective_meas_gate.unsqueeze(-2)
-        corr = torch.matmul(K_eff, raw_innovation.unsqueeze(-1)).squeeze(-1)
+        raw_innovation = wrap_state_residual(z_seq - Hx_pred) * meas_availability_seq
+        corr = torch.matmul(K_seq, raw_innovation.unsqueeze(-1)).squeeze(-1)
 
         x_upd = x_pred_seq + corr
 
@@ -992,7 +918,7 @@ class LearnedKalmanUpdate(nn.Module):
 
         hidden_out = {"gru": h_k_next}
 
-        return x_upd, K_eff, hidden_out, effective_meas_gate, meas_mask_logits_out
+        return x_upd, K_seq, hidden_out, learned_meas_mask, meas_mask_logits_out
 
 
 
@@ -1323,30 +1249,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             gain_tanh_scale=float(self.config.get("gain_tanh_scale", 2.0)),
             dt=float(self.config.get("dt", 0.02)),
             update_mask_init_bias=float(self.config.get("update_mask_init_bias", 2.0)),
-            use_meas_mask_in_update=bool(
-                self.config.get(
-                    "use_meas_mask_in_update",
-                    RSNConfig.use_meas_mask_in_update,
-                )
-            ),
-            meas_mask_gate_threshold=float(self.config.get("meas_mask_gate_threshold", 0.65)),
-            meas_mask_gate_power=float(self.config.get("meas_mask_gate_power", 1.0)),
-            use_residual_anomaly_gate=bool(self.config.get("use_residual_anomaly_gate", False)),
-            innovation_gate_thresholds=tuple(
-                float(v)
-                for v in self.config.get(
-                    "innovation_gate_thresholds",
-                    RSNConfig.innovation_gate_thresholds,
-                )
-            ),
-            measurement_jump_gate_thresholds=tuple(
-                float(v)
-                for v in self.config.get(
-                    "measurement_jump_gate_thresholds",
-                    RSNConfig.measurement_jump_gate_thresholds,
-                )
-            ),
-            residual_gate_softness=float(self.config.get("residual_gate_softness", 0.25)),
             predictor_mode=str(self.config.get("predictor_mode", "kinematic")),
             kin_wheelbase=float(self.config.get("kin_wheelbase", 0.2)),
             longitudinal_model=str(self.config.get("longitudinal_model", "")),
@@ -3122,6 +3024,7 @@ def weighted_state_mse(
 def meas_mask_supervision_loss(
     meas_mask_logits: torch.Tensor,
     meas_attack_labels: torch.Tensor,
+    attacked_weight: float = 3.0,
 ) -> torch.Tensor:
     """
     Supervised loss encouraging the measurement mask to suppress
@@ -3134,19 +3037,33 @@ def meas_mask_supervision_loss(
     Args:
         meas_mask_logits: [B, T, 5] — raw logits (pre-sigmoid) for the
                           per-channel mask on measurements
-        meas_attack_labels: [B, 5] — 1 if that measurement channel was attacked
+        meas_attack_labels: [B, T, 5] or legacy [B, 5] — 1 if that
+                          measurement channel was attacked
 
     Returns:
         Scalar loss
     """
-    # Target: 1 for clean channels, 0 for attacked channels
-    target = (1.0 - meas_attack_labels).unsqueeze(1).expand_as(meas_mask_logits)
-    loss = torch.nn.functional.binary_cross_entropy_with_logits(
+    if meas_attack_labels.dim() == 2:
+        labels = meas_attack_labels.unsqueeze(1).expand_as(meas_mask_logits)
+    elif meas_attack_labels.dim() == 3:
+        labels = meas_attack_labels.expand_as(meas_mask_logits)
+    else:
+        raise ValueError(
+            f"Expected meas_attack_labels with shape [B, 5] or [B, T, 5], "
+            f"got {tuple(meas_attack_labels.shape)}"
+        )
+
+    # Target: 1 for clean channels, 0 for attacked channels. Attacked
+    # timesteps are rarer, so weight them higher to avoid all-pass masks.
+    target = 1.0 - labels
+    element_loss = torch.nn.functional.binary_cross_entropy_with_logits(
         meas_mask_logits,
         target,
-        reduction="mean",
+        reduction="none",
     )
-    return loss
+    attack_weight = max(float(attacked_weight), 1.0)
+    weights = torch.where(labels > 0.5, attack_weight, 1.0)
+    return (element_loss * weights).sum() / weights.sum().clamp_min(1.0)
 
 
 def robuststatenet_loss(
@@ -3198,6 +3115,18 @@ def robuststatenet_loss(
         loss_meas = meas_mask_supervision_loss(meas_mask_logits, meas_attack_labels)
         total = total + lambda_meas_mask * loss_meas
         logs["loss_meas_mask"] = loss_meas.item()
+        if meas_mask is not None:
+            labels = (
+                meas_attack_labels.unsqueeze(1).expand_as(meas_mask)
+                if meas_attack_labels.dim() == 2
+                else meas_attack_labels.expand_as(meas_mask)
+            )
+            attacked = labels > 0.5
+            clean = ~attacked
+            if attacked.any():
+                logs["meas_mask_attacked_mean"] = meas_mask.detach()[attacked].mean().item()
+            if clean.any():
+                logs["meas_mask_clean_mean"] = meas_mask.detach()[clean].mean().item()
 
     # FIX-E: Gain regularization — penalize large Kalman gains to encourage
     # conservative corrections and prevent GPS snap at test time.

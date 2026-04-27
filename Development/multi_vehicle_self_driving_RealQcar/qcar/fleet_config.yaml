@@ -62,7 +62,7 @@ vehicles:
     calibrate: false       # Start in calibration mode
     path_number: 0         # Path selection (0, 1, 2, etc.)
     left_hand_traffic: false
-    initial_v_ref: 0.6    # Initial velocity reference (m/s)
+    initial_v_ref: 0.4    # Initial velocity reference (m/s)
     description: "Leader vehicle with probing"
     
   - car_id: 1
@@ -73,9 +73,9 @@ vehicles:
     enable_v2v_attack: false # Set true to inject attacks from this car
     probing: true         # Enable probing for follower
     calibrate: false
-    path_number: 1         # Different path from leader
+    path_number: 0         # Different path from leader
     left_hand_traffic: false
-    initial_v_ref: 0.6
+    initial_v_ref: 0.4
     description: "Follower vehicle"
   
   - car_id: 2
@@ -87,7 +87,7 @@ vehicles:
     calibrate: false
     path_number: 0         # Same path as leader
     left_hand_traffic: false
-    initial_v_ref: 0.6
+    initial_v_ref: 0.4
     description: "Follower vehicle"
 
 # Path Definitions

@@ -460,6 +460,93 @@ def _extract_attack_events(rows: List[dict], columns: List[str],
     return events
 
 
+def _parse_vehicle_id_list(raw) -> List[int]:
+    if raw in ("", None):
+        return []
+    if isinstance(raw, (list, tuple, set)):
+        values = list(raw)
+    else:
+        values = str(raw).replace(",", "|").split("|")
+
+    parsed: List[int] = []
+    for value in values:
+        text = str(value).strip()
+        if not text:
+            continue
+        try:
+            parsed.append(int(text))
+        except (TypeError, ValueError):
+            continue
+    return sorted(set(parsed))
+
+
+def _extract_rollback_events(rows: List[dict], columns: List[str],
+                             times: np.ndarray) -> List[dict]:
+    if "rollback_triggered" not in columns:
+        return []
+
+    events: List[dict] = []
+    seen = set()
+    for idx, row in enumerate(rows):
+        triggered = _safe_float(row.get("rollback_triggered", 0.0), 0.0)
+        if not math.isfinite(triggered) or triggered < 0.5:
+            continue
+
+        event_time = _safe_float(row.get("rollback_event_time_s", ""))
+        if not math.isfinite(event_time):
+            event_time = _safe_float(times[idx] if idx < len(times) else float("nan"))
+        if not math.isfinite(event_time):
+            continue
+
+        total_rollbacks = int(_safe_float(row.get("rollback_total", 0.0), 0.0))
+        active_vehicles = _parse_vehicle_id_list(row.get("rollback_active_vehicles", ""))
+        newly_flagged = _parse_vehicle_id_list(row.get("rollback_newly_flagged", ""))
+        key = (
+            round(float(event_time), 6),
+            total_rollbacks,
+            tuple(active_vehicles),
+            tuple(newly_flagged),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append(
+            {
+                "time_s": float(event_time),
+                "total_rollbacks": total_rollbacks,
+                "active_count": len(active_vehicles),
+                "active_vehicles": active_vehicles,
+                "newly_flagged_count": len(newly_flagged),
+                "newly_flagged": newly_flagged,
+            }
+        )
+    return events
+
+
+def _extract_rollback_vehicle_masks(rows: List[dict], columns: List[str]) -> Dict[int, np.ndarray]:
+    if "rollback_active_vehicles" not in columns:
+        return {}
+
+    tracked_ids = set()
+    active_lists: List[List[int]] = []
+    for row in rows:
+        active_ids = _parse_vehicle_id_list(row.get("rollback_active_vehicles", ""))
+        newly_flagged = _parse_vehicle_id_list(row.get("rollback_newly_flagged", ""))
+        tracked_ids.update(active_ids)
+        tracked_ids.update(newly_flagged)
+        active_lists.append(active_ids)
+
+    if not tracked_ids:
+        return {}
+
+    masks: Dict[int, np.ndarray] = {}
+    for vehicle_id in sorted(tracked_ids):
+        masks[vehicle_id] = np.array(
+            [vehicle_id in active_ids for active_ids in active_lists], dtype=bool
+        )
+    return masks
+
+
 def _yolo_usage_mask(rows: List[dict], vid: int) -> np.ndarray:
     """Return boolean mask where YOLO relative measurement was used for global trust."""
     yolo_flag = _col_to_array(rows, f"yolo_rel_meas_used_global_{vid}")
@@ -1415,6 +1502,194 @@ def _fig_attack_timeline(times, rows, columns, active, host_id):
     return fig
 
 
+def _fig_rollback_timeline(times, rows, columns, active, host_id):
+    """
+    Figure 7 - Rollback Timeline
+    Shows rollback enable state, active malicious vehicles, rollback trigger events,
+    and compact event metadata derived from the trust CSV.
+    """
+    rollback_cols = {
+        "rollback_enabled",
+        "rollback_triggered",
+        "rollback_total",
+        "rollback_active_count",
+        "rollback_active_vehicles",
+        "rollback_newly_flagged_count",
+        "rollback_newly_flagged",
+        "rollback_event_time_s",
+    }
+    if not (rollback_cols & set(columns)):
+        return None
+
+    events = _extract_rollback_events(rows, columns, times)
+    vehicle_masks = _extract_rollback_vehicle_masks(rows, columns)
+    t_min, t_max = _finite_time_bounds(times)
+
+    lanes = ["rollback enabled"]
+    for vehicle_id in sorted(vehicle_masks):
+        lanes.append(f"malicious V{vehicle_id}")
+
+    fig = plt.figure(figsize=(16, 9))
+    fig.suptitle(f"Rollback Timeline (Host V{host_id})",
+                 fontsize=13, fontweight="bold")
+    gs = gridspec.GridSpec(
+        3, 2, figure=fig,
+        height_ratios=[max(2.8, 0.5 * len(lanes)), 2.0, 2.4],
+        hspace=0.35, wspace=0.24,
+    )
+
+    ax_timeline = fig.add_subplot(gs[0, :])
+    lane_y = {label: idx for idx, label in enumerate(lanes)}
+    bar_h = 0.72
+    timeline_plotted = False
+
+    if "rollback_enabled" in columns:
+        enabled = _col_to_array(rows, "rollback_enabled")
+        for start_s, end_s in _mask_to_time_spans(
+            times, np.isfinite(enabled) & (enabled >= 0.5)
+        ):
+            ax_timeline.broken_barh(
+                [(start_s, end_s - start_s)],
+                (lane_y["rollback enabled"] - bar_h / 2, bar_h),
+                facecolors="tab:blue",
+                alpha=0.22,
+                edgecolors="tab:blue",
+                label="rollback enabled",
+            )
+            timeline_plotted = True
+
+    cmap = plt.get_cmap("tab10")
+    for idx, (vehicle_id, mask) in enumerate(sorted(vehicle_masks.items())):
+        label = f"malicious V{vehicle_id}"
+        for start_s, end_s in _mask_to_time_spans(times, mask):
+            color = cmap(idx % 10)
+            ax_timeline.broken_barh(
+                [(start_s, end_s - start_s)],
+                (lane_y[label] - bar_h / 2, bar_h),
+                facecolors=color,
+                alpha=0.45,
+                edgecolors=color,
+                label=label,
+            )
+            timeline_plotted = True
+
+    for event_idx, event in enumerate(events, start=1):
+        event_time = float(event["time_s"])
+        newly_flagged = event.get("newly_flagged", [])
+        active_vehicles = event.get("active_vehicles", [])
+        label = (
+            f"RB#{event_idx}"
+            if not newly_flagged
+            else f"RB#{event_idx}: +{','.join(f'V{vid}' for vid in newly_flagged)}"
+        )
+        ax_timeline.axvline(
+            event_time, color="tab:red", linestyle="--", linewidth=1.2, alpha=0.95
+        )
+        ax_timeline.scatter(
+            [event_time],
+            [lane_y["rollback enabled"]],
+            color="tab:red",
+            s=34,
+            zorder=4,
+        )
+        ax_timeline.text(
+            event_time,
+            len(lanes) - 0.25,
+            label,
+            rotation=90,
+            ha="right",
+            va="top",
+            color="tab:red",
+            fontsize=8,
+        )
+        for vehicle_id in active_vehicles:
+            lane_label = f"malicious V{vehicle_id}"
+            if lane_label in lane_y:
+                ax_timeline.scatter(
+                    [event_time],
+                    [lane_y[lane_label]],
+                    color="tab:red",
+                    s=20,
+                    zorder=4,
+                )
+        timeline_plotted = True
+
+    if not timeline_plotted:
+        _no_data(ax_timeline, "Rollback Timeline")
+    ax_timeline.set_yticks(list(lane_y.values()))
+    ax_timeline.set_yticklabels(lanes, fontsize=8)
+    ax_timeline.set_xlim(t_min, t_max)
+    _style(ax_timeline, "Rollback State and Trigger Events", "",
+           xlabel="Time [s]")
+
+    ax_signals = fig.add_subplot(gs[1, :], sharex=ax_timeline)
+    plotted = 0
+    for col, label, color in [
+        ("rollback_triggered", "rollback trigger", "tab:red"),
+        ("rollback_total", "total rollbacks", "tab:orange"),
+        ("rollback_active_count", "active malicious count", "tab:purple"),
+        ("rollback_newly_flagged_count", "newly flagged count", "tab:green"),
+    ]:
+        if col not in columns:
+            continue
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax_signals.step(times, arr, where="post", label=label, color=color)
+            plotted += 1
+    if plotted == 0:
+        _no_data(ax_signals, "Rollback Signals")
+    _style(ax_signals, "Rollback Signals", "Value", xlabel="Time [s]")
+
+    ax_meta = fig.add_subplot(gs[2, :])
+    ax_meta.axis("off")
+
+    unique_flagged = sorted({
+        vehicle_id
+        for event in events
+        for vehicle_id in event.get("active_vehicles", []) + event.get("newly_flagged", [])
+    })
+    total_rollbacks = int(events[-1]["total_rollbacks"]) if events else 0
+    max_active = 0
+    if "rollback_active_count" in columns:
+        active_counts = _col_to_array(rows, "rollback_active_count")
+        finite_active = active_counts[np.isfinite(active_counts)]
+        if finite_active.size:
+            max_active = int(np.max(finite_active))
+
+    meta_lines = [
+        f"total rollbacks      : {total_rollbacks}",
+        f"rollback events      : {len(events)}",
+        f"unique flagged       : {', '.join(f'V{vid}' for vid in unique_flagged) if unique_flagged else 'none'}",
+        f"max active malicious : {max_active}",
+    ]
+
+    if events:
+        meta_lines.append("")
+        meta_lines.append("events:")
+        for event_idx, event in enumerate(events, start=1):
+            newly_flagged = event.get("newly_flagged", [])
+            active_vehicles = event.get("active_vehicles", [])
+            meta_lines.append(
+                f"  RB#{event_idx} @ {event['time_s']:.2f}s"
+                f" | newly={','.join(f'V{vid}' for vid in newly_flagged) if newly_flagged else 'none'}"
+                f" | active={','.join(f'V{vid}' for vid in active_vehicles) if active_vehicles else 'none'}"
+            )
+    else:
+        meta_lines.append("")
+        meta_lines.append("events: none")
+
+    ax_meta.text(
+        0.02, 0.98, "\n".join(meta_lines),
+        va="top", ha="left",
+        family="monospace", fontsize=9.2,
+        transform=ax_meta.transAxes,
+    )
+    ax_meta.set_title("Rollback Metadata", fontsize=10, fontweight="bold")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    return fig
+
+
 def _print_static_metrics(rows, active):
     """
     Print an analytic summary of the trust logging run to the console.
@@ -1474,6 +1749,43 @@ def _print_static_metrics(rows, active):
         print(f"V{vid:<9} | {target_atks:<12} | {local_bads:<15} | {global_bads:<16} | {elem_str}")
 
     print("="*80 + "\n")
+
+    rollback_available = any(
+        key in rows[0]
+        for key in (
+            "rollback_triggered",
+            "rollback_total",
+            "rollback_active_count",
+        )
+    ) if rows else False
+    if rollback_available:
+        rollback_events = _extract_rollback_events(
+            rows,
+            list(rows[0].keys()),
+            _col_to_array(rows, "time"),
+        )
+        active_counts = _col_to_array(rows, "rollback_active_count")
+        max_active = 0
+        if np.any(np.isfinite(active_counts)):
+            max_active = int(np.nanmax(active_counts))
+        unique_flagged = sorted({
+            vehicle_id
+            for event in rollback_events
+            for vehicle_id in event.get("active_vehicles", []) + event.get("newly_flagged", [])
+        })
+
+        print(f"{'ROLLBACK SUMMARY':^80}")
+        print("-" * 80)
+        print(f"Total rollback events : {len(rollback_events)}")
+        print(f"Unique flagged IDs    : {', '.join(f'V{vid}' for vid in unique_flagged) if unique_flagged else 'None'}")
+        print(f"Max active malicious  : {max_active}")
+        for idx, event in enumerate(rollback_events, start=1):
+            newly = ", ".join(f"V{vid}" for vid in event.get("newly_flagged", [])) or "None"
+            active_ids = ", ".join(f"V{vid}" for vid in event.get("active_vehicles", [])) or "None"
+            print(
+                f"  RB#{idx} @ {event['time_s']:.2f}s | newly flagged: {newly} | active after rollback: {active_ids}"
+            )
+        print("=" * 80 + "\n")
 
 
 def _relative_time_axis(times: np.ndarray) -> np.ndarray:
@@ -2181,6 +2493,9 @@ def main():
 
     print("Plotting V2V attack timeline ...")
     _fig_attack_timeline(times, rows, columns, active, host_id)
+    rollback_fig = _fig_rollback_timeline(times, rows, columns, active, host_id)
+    if rollback_fig is not None:
+        print("Plotting rollback timeline ...")
 
     if not args.skip_relative:
         relative_file = args.relative_file or _find_relative_uio_log(directory, host_id)

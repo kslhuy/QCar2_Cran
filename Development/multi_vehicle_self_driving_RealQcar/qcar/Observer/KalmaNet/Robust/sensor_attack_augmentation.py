@@ -388,7 +388,7 @@ class SensorAttackAugmenter:
             raise ValueError(f"Unsupported GPS attack type: {attack_name}")
 
         if mark_end > mark_start:
-            meas_attack_labels[batch_index, 0:2] = 1.0
+            meas_attack_labels[batch_index, mark_start:mark_end, 0:2] = 1.0
 
     def augment_batch(
         self,
@@ -409,8 +409,8 @@ class SensorAttackAugmenter:
             attack_labels: [B, 3] binary tensor.
                            Column 0 = IMU attacked, 1 = Steer, 2 = Wheel.
                            Use for optional supervised prediction mask loss.
-            meas_attack_labels: [B, 5] binary tensor.
-                           Per-channel measurement attack indicator.
+            meas_attack_labels: [B, T, 5] binary tensor.
+                           Per-timestep, per-channel measurement attack indicator.
                            [x, y, psi, v, w] — 1 if that channel was corrupted.
                            Use for optional supervised measurement mask loss.
         """
@@ -426,8 +426,9 @@ class SensorAttackAugmenter:
 
         # attack_labels[b, branch_idx] = 1 if that branch was attacked
         attack_labels = torch.zeros(B, len(BRANCH_NAMES), device=device)
-        # meas_attack_labels[b, channel] = 1 if that z channel was corrupted
-        meas_attack_labels = torch.zeros(B, 5, device=device)
+        T = z_seq.shape[1]
+        # meas_attack_labels[b, t, channel] = 1 if z[t, channel] was corrupted
+        meas_attack_labels = torch.zeros(B, T, 5, device=device, dtype=z_seq.dtype)
 
         for b in range(B):
             branches: List[str] = []
@@ -455,8 +456,8 @@ class SensorAttackAugmenter:
                             self.config,
                         ).squeeze(0).squeeze(-1)
                         # Mark yaw rate (4) and psi (2) as attacked in measurement
-                        meas_attack_labels[b, MEAS_YAWRATE_INDEX] = 1.0
-                        meas_attack_labels[b, 2] = 1.0  # psi is derived from IMU
+                        meas_attack_labels[b, :, MEAS_YAWRATE_INDEX] = 1.0
+                        meas_attack_labels[b, :, 2] = 1.0  # psi is derived from IMU
                     if "wheel" in branches:
                         # Attack velocity in measurement
                         z_out[b, :, MEAS_VELOCITY_INDEX] = attack_fn(
@@ -464,7 +465,7 @@ class SensorAttackAugmenter:
                             self.config,
                         ).squeeze(0).squeeze(-1)
                         # Mark velocity (3) as attacked in measurement
-                        meas_attack_labels[b, MEAS_VELOCITY_INDEX] = 1.0
+                        meas_attack_labels[b, :, MEAS_VELOCITY_INDEX] = 1.0
 
             if torch.rand(1).item() < self.config.gps_attack_prob:
                 self._apply_gps_position_attack(raw_out, z_out, meas_attack_labels, b)

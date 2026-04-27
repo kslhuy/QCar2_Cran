@@ -1886,19 +1886,20 @@ class TriPTrustModel:
         """
         threshold = float(np.clip(self.config.trust_threshold, 0.0, 1.0))
 
-        # Flag: Target may be under attack
-        # High local trust but low cross-validation
+        # Flag: Target/channel attack suspected
+        # Both local evidence and fleet cross-validation are poor
         trust.flag_target_attack = (
-            trust.local_trust_sample > threshold and trust.global_trust_sample < threshold
+            trust.local_trust_sample < threshold and trust.global_trust_sample < threshold
         )
 
         # Flag: Global estimate needs verification
-        # Low local trust but high cross-validation
+        # Local evidence looks good, but fleet/global cross-validation is poor
         trust.flag_global_est_check = (
-            trust.local_trust_sample < threshold and trust.global_trust_sample > threshold
+            trust.local_trust_sample >= threshold and trust.global_trust_sample < threshold
         )
 
-        # Flag: Local measurements unreliable
+        # Flag: Local estimate/check needs verification
+        # Local evidence is poor, regardless of the global score
         trust.flag_local_est_check = trust.local_trust_sample < threshold
 
     def _update_history(self, target_id: int, score: float):

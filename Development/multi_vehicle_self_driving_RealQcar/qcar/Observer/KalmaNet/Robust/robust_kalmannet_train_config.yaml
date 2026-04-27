@@ -12,6 +12,7 @@
 # Replace these example paths with your real datasets.
 datasets:
   - "datasets/robust_kalmannet_dataset_V0_20260417_094048.npz"
+  - "datasets/robust_kalmannet_dataset_V0_20260427_162806.npz"
   # - "datasets/robust_kalmannet_dataset_V0_20260401_170829.npz"
   # - "datasets/robust_kalmannet_dataset_V0_20260405_180043.npz"
   # - "datasets/robust_kalmannet_dataset_V0_20260328_211545.npz"
@@ -31,7 +32,7 @@ training:
   phase_c_epochs: 5
 
   # Mini-batch size.
-  batch_size: 64
+  batch_size: 128
 
   # Source of training measurement z:
   # rebuilt = use offline reconstruction logic from robust_kalmannet_dataset.py
@@ -52,11 +53,11 @@ training:
   gps_dropout_xy_mode: "freeze"
 
   # Sliding-window length for Phases A/B.
-  sequence_length: 25
+  sequence_length: 20
 
   # Optional longer sequence for Phase C.
   # Helps reduce autoregressive drift mismatch.
-  sequence_length_phase_c: 100
+  sequence_length_phase_c: 50
   
 
   # Sliding-window step. 1 means maximum overlap.
@@ -64,7 +65,7 @@ training:
 
   # Fraction of data reserved for validation.
   val_split: 0.2
-  val_split_mode: middle
+  val_split_mode: tail # Options: middle, tail, head
   attacked_validation_enabled: true
   attacked_validation_weight: 1.5
   attacked_validation_seed: 1007
@@ -81,11 +82,11 @@ training:
 
   # Number of background DataLoader workers.
   # 0 = load batches in the main process.
-  num_workers: 2
+  num_workers: 0
 
   # Use pinned host memory to speed up CPU -> GPU copies.
   # Only has an effect when training on CUDA.
-  pin_memory: true
+  pin_memory: false
 
   # Random seed for reproducibility.
   seed: 7
@@ -102,7 +103,7 @@ training:
   # 0.0 = augmentation from epoch 1 (no warmup).
   # 0.5 = first 50% of Phase B is clean, then attack prob ramps to target.
   # 1.0 = entire Phase B is clean (augmentation only in Phase C).
-  aug_warmup_fraction: 0.1
+  aug_warmup_fraction: 0.2
 
   # Minimum validation improvement required to reset early stopping.
   early_stop_min_delta: 0.0
@@ -110,8 +111,8 @@ training:
   # Per-phase early stopping patience.
   # 0 disables early stopping for that phase.
   early_stop_phase_a_patience: 0
-  early_stop_phase_b_patience: 10
-  early_stop_phase_c_patience: 7
+  early_stop_phase_b_patience: 8
+  early_stop_phase_c_patience: 3
 
 loss:
   # Weight for predictor mask supervision loss.
@@ -124,11 +125,11 @@ loss:
 
   # Weight of prediction-state loss in Phase C.
   # Higher = care more about x_pred quality.
-  lambda_pred: 0.2
+  lambda_pred: 0.15
 
   # Weight of update-state loss in Phase C.
   # Higher = care more about final corrected state x_upd.
-  lambda_upd: 0.8
+  lambda_upd: 0.85
 
   # Per-state weights inside the state MSE:
   # [x, y, psi, v, w]

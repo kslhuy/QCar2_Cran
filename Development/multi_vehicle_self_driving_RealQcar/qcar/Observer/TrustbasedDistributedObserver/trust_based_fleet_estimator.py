@@ -20,7 +20,7 @@ Features:
 import json
 import numpy as np
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 
 # Import base class and utilities from fleet_state_estimators
@@ -171,6 +171,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             enabled=bool(self.config.get("rollback_enabled", False)),
             window_size=int(self.config.get("rollback_window_size", 15)),
             trust_threshold=self.trust_config.trust_threshold,
+            predict_fn=self._predict_dynamics,
+            constraints_fn=self._apply_state_constraints,
+            logger=logger,
         )
 
         # Statistics
@@ -314,6 +317,17 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             duration_s > 0.0
             and self._get_startup_elapsed_s(current_time_ns) < duration_s
         )
+
+    def _get_current_malicious_vehicle_ids(
+        self, trust_scores: Dict[int, float]
+    ) -> Set[int]:
+        """Return currently untrusted external vehicles using the active trust threshold."""
+        threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+        return {
+            int(vehicle_id)
+            for vehicle_id, trust_val in trust_scores.items()
+            if int(vehicle_id) != self.vehicle_id and float(trust_val) < threshold
+        }
 
     # ------------------------------------------------------------------
     # V2V attack metadata for trust-log ground truth
@@ -1058,6 +1072,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     target_ctrl = self._get_target_control(
                         target_id, control, current_time_ns=current_time_ns
                     )
+                    components["prediction"] = {
+                        "dt": float(dt),
+                        "control": None
+                        if target_ctrl is None
+                        else np.asarray(target_ctrl, dtype=float).copy(),
+                    }
 
                     consensus_est = normal_est.copy()
                     normal_est = self._apply_state_constraints(
@@ -1087,10 +1107,16 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     components = {
                         "direct": {"source": -1, "delta": (normal_est - current_est)},
                         "neighbors": {},
+                        "prediction": {"dt": float(dt), "control": None},
                         "dynamics_delta": np.zeros(self.state_dim),
                     }
                     target_ctrl = self._get_target_control(
                         target_id, control, current_time_ns=current_time_ns
+                    )
+                    components["prediction"]["control"] = (
+                        None
+                        if target_ctrl is None
+                        else np.asarray(target_ctrl, dtype=float).copy()
                     )
                     predicted_only_est = self._apply_state_constraints(
                         self._predict_dynamics(
@@ -1120,15 +1146,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 self.self_belief = 1.0
             self.self_belief_log.append(self.self_belief)
 
-            # 5.1 Log trust/weight/estimation state
-            self._log_update(
-                trust_scores, weight_result, control,
-                target_confidence, target_prediction_mode,
-                current_time_ns=current_time_ns,
-                target_components=step_targets,
-            )
-
-            # 6. Contamination rollback
+            # 5.1 Contamination rollback
             if self.rollback.enabled:
                 self.rollback.record(
                     current_time_ns=current_time_ns,
@@ -1141,7 +1159,19 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     fleet_states=self.fleet_states,
                 )
 
-            # 7. Cleanup old data
+            # 5.2 Log trust/weight/estimation state after rollback has settled
+            self._log_update(
+                trust_scores,
+                weight_result,
+                control,
+                target_confidence,
+                target_prediction_mode,
+                current_time_ns=current_time_ns,
+                target_components=step_targets,
+                rollback_status=self.rollback.get_status(),
+            )
+
+            # 6. Cleanup old data
             self._cleanup_old_data(current_time_ns)
 
             return self.fleet_states.copy()
@@ -1405,21 +1435,25 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         """Update estimate for a target vehicle and return replayable contribution terms."""
         current_est = self.fleet_states[:, target_id].copy()
         total_correction = np.zeros(self.state_dim)
+        current_malicious_ids = self._get_current_malicious_vehicle_ids(trust_scores)
 
         components = {
-            "direct": {"source": target_id, "delta": np.zeros(self.state_dim)},
+            "direct": {"source": target_id, "weight": 0.0, "state": None},
             "neighbors": {},
+            "prediction": {"dt": float(dt), "control": None},
             "dynamics_delta": np.zeros(self.state_dim),
             "weights": {"w0": 0.0, "w_self": 1.0, "neighbors": {}},
         }
 
         # Get direct measurement from target
-        direct_state = self._get_latest_received_state(target_id, current_time_ns)
+        direct_state = None
+        if target_id not in current_malicious_ids:
+            direct_state = self._get_latest_received_state(target_id, current_time_ns)
 
         # Cache available neighbor fleet snapshots containing this target
         neighbor_fleet_estimates: Dict[int, Dict] = {}
         for neighbor_id in self.received_fleet_states.keys():
-            if neighbor_id == self.vehicle_id:
+            if neighbor_id == self.vehicle_id or neighbor_id in current_malicious_ids:
                 continue
             fleet_entry = self._get_latest_fleet_data_with_timestamp(
                 neighbor_id, current_time_ns
@@ -1436,6 +1470,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         use_startup_fixed_weights = self._use_startup_fixed_weights(current_time_ns)
 
+        target_trust_obj = self.trust_model.get_trust_score(target_id)
+
         # Calculate weights (paper or trust-based - unified call)
         if use_startup_fixed_weights:
             startup_trust_scores = {
@@ -1449,6 +1485,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 trust_scores=startup_trust_scores,
                 neighbor_fleet_estimates=neighbor_fleet_estimates,
                 direct_measurement=direct_state,
+                target_trust_obj=None,
             )
         elif self.weight_config.weight_type == "paper":
             opinion_scores = (
@@ -1456,7 +1493,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 if self.generalized_trust_vector
                 else trust_scores
             )
-            target_trust_obj = self.trust_model.get_trust_score(target_id)
             target_local_trust = (
                 target_trust_obj.local_trust_sample
                 if target_trust_obj is not None
@@ -1475,15 +1511,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 trust_scores=trust_scores,
                 neighbor_fleet_estimates=neighbor_fleet_estimates,
                 direct_measurement=direct_state,
+                target_trust_obj=target_trust_obj,
             )
 
         # === Flag-Driven w₀ Adaptation ===
-        trust_obj = self.trust_model.get_trust_score(target_id)
-        if trust_obj is not None and not use_startup_fixed_weights:
-            target_weights = self.weight_module.apply_flag_adaptation(
-                target_weights, trust_obj, self.weight_config
-            )
-
         components["weights"] = {
             "w0": float(target_weights.get("w0", 0.0)),
             "w_self": float(target_weights.get("w_self", 0.0)),
@@ -1497,7 +1528,11 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         if direct_state is not None and target_weights["w0"] > 0:
             direct_delta = target_weights["w0"] * (direct_state - current_est)
             total_correction += direct_delta
-            components["direct"] = {"source": target_id, "delta": direct_delta}
+            components["direct"] = {
+                "source": target_id,
+                "weight": float(target_weights["w0"]),
+                "state": np.asarray(direct_state, dtype=float).copy(),
+            }
 
         # === Neighbor Consensus Correction ===
         for neighbor_id, neighbor_fleet in neighbor_fleet_estimates.items():
@@ -1516,7 +1551,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             )
             neighbor_delta = w_neighbor * (neigh_est - current_est)
             total_correction += neighbor_delta
-            components["neighbors"][neighbor_id] = neighbor_delta
+            components["neighbors"][neighbor_id] = {
+                "weight": float(w_neighbor),
+                "state": neigh_est.copy(),
+            }
 
         # === Apply Consensus Correction ===
         # Dynamics propagation f(x̂_corrected, u, dt) is applied in update()
@@ -1747,6 +1785,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         target_prediction_mode: Dict[int, bool],
         current_time_ns: int,
         target_components: Optional[Dict[int, Dict]] = None,
+        rollback_status: Optional[Dict[str, object]] = None,
     ) -> None:
         """Build and emit per-step trust/weight log data."""
         target_components = target_components or {}
@@ -1782,6 +1821,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "neighbors": {},
             "final_target_weights": final_target_weights,
             "v2v_attack": self._get_v2v_attack_log_data(current_time_ns),
+            "rollback": rollback_status or self.rollback.get_status(),
         }
 
         for vehicle_id, trust_score in trust_scores.items():

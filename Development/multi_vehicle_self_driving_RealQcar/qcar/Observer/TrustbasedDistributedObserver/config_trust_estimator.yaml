@@ -139,13 +139,13 @@ weight:
   # Weight calculation type
   # Options: 'equal', 'trust_based', 'graph_based'
   # - 'equal': All neighbors get equal weight (simple consensus)
-  # - 'trust_based': Trust-proportional weights with fixed w0 and w_self
+  # - 'trust_based': Per-target trust-aware normalization of direct/self/neighbor channels
   # - 'graph_based': Graph topology-based weights (matches old implementation)
   weight_type: trust_based
   
-  # Fixed weight allocations (for trust_based mode)
-  w0_fixed: 0.3                   # Weight for direct measurement (target's own broadcast)
-  w_self_base: 0.2                # Base weight for self (persistence of own estimate)
+  # Base gains for trust_based mode before per-target normalization
+  w0_fixed: 0.3                   # Nominal maximum gain for the target's own direct broadcast
+  w_self_base: 0.2                # Base gain for self/prediction persistence
   
   # Neighbor weight constraints
   w_cap: 0.4                      # Maximum weight per neighbor (influence cap - 40%)
@@ -161,6 +161,12 @@ weight:
   flag_w0_target_attack_factor: 1.0     # Keep w₀ full when target under attack (local is reliable)
   flag_w0_global_est_check_factor: 0.3  # Reduce w₀ when local sensors are faulty
   flag_w0_local_est_check_factor: 0.5   # Reduce w₀ when local measurements unreliable
+
+  # Semantics-aligned overrides for trust-based target weighting.
+  # YAML parsers typically honor the last duplicate key in a mapping.
+  flag_w0_target_attack_factor: 0.25
+  flag_w0_global_est_check_factor: 1.25
+  flag_w0_local_est_check_factor: 0.5
 
   # Advanced options
   use_distance_weighting: false   # Weight by physical distance (experimental)

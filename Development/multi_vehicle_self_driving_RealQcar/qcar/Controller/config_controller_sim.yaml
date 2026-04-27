@@ -141,13 +141,13 @@ pure_pursuit:
 pp_map:
   sample_ds: 0.02                 # [m] Spacing between resampled path points. Up = fewer/coarser points. Down = denser/more detailed path.
   desired_speed: 0.55             # [m/s] Base cruise speed used to build the map speed profile. Up = faster almost everywhere. Down = slower everywhere.
-  min_speed: 0.4                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
+  min_speed: 0.45                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
   kappa_speed_gain: 1.0           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
   max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
   hard_turn_kappa: 0.60           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
-  hard_turn_speed: 0.36           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
-  t_clip_min: 0.4                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
-  t_clip_max: 0.9                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
+  hard_turn_speed: 0.4           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
+  t_clip_min: 0.45                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
+  t_clip_max: 1.0                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
   m_l1: 0.50                      # L1 lookahead increase with speed: L1 = q_l1 + m_l1*v. Up = more preview at speed. Down = more reactive at speed.
   q_l1: 0.2                       # [m] Base L1 lookahead at low speed. Up = smoother but slower response. Down = sharper but more oscillation risk.
   speed_lookahead: 0.2            # [s] How far ahead the controller samples path speed. Up = slows earlier before corners. Down = reacts later.
@@ -166,7 +166,7 @@ pp_map:
   trailing_i_gain: 0.0            # Integral action for trailing gap. Up = removes steady bias but can oscillate. Down = safer/simpler.
   trailing_d_gain: 0.1            # Damping using relative speed in trailing. Up = more anticipation/damping. Down = less damping, more overshoot risk.
   blind_trailing_speed: 0.2       # [m/s] Minimum speed when the opponent is not seen clearly. Up = keeps moving more. Down = becomes more cautious.
-  obstacle_avoidance_enabled: true  # Enable local obstacle replan around detected objects.
+  obstacle_avoidance_enabled: false  # Enable local obstacle replan around detected objects.
   obstacle_replan_period: 0.4       # [s] Minimum time between replans. Up = fewer, steadier replans. Down = more reactive, but noisier replans.
   obstacle_min_detect_dist: 0.15    # [m] Ignore detections closer than this. Up = ignore more very-close detections. Down = react even when very near.
   obstacle_max_detect_dist: 1.5     # [m] Ignore detections farther than this. Up = react earlier to far obstacles. Down = only react when closer.
@@ -174,7 +174,7 @@ pp_map:
   obstacle_person_radius: 0.1       # [m] Assumed pedestrian obstacle size. Up = more conservative avoidance. Down = tighter avoidance.
   obstacle_influence: 0.80          # [m] Distance around obstacle where path gets pushed away. Up = larger detour. Down = smaller detour.
   obstacle_clearance: 0.05          # [m] Extra safety margin added on top of obstacle radius. Up = safer/wider path. Down = tighter path.
-  car_overtake_mode: true           # true = try to go around cars. false = stay behind and trail them.
+  car_overtake_mode: false           # true = try to go around cars. false = stay behind and trail them.
 
 # ------------------------------------------------------------------------
 # MPC Controller Parameters

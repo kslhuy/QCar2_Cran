@@ -714,9 +714,9 @@ def evaluate(
                 batch_size_current, device=device, dtype=torch.bool
             )
             if attack_labels is not None:
-                sample_attack_mask |= attack_labels.sum(dim=1) > 0
+                sample_attack_mask |= attack_labels.reshape(attack_labels.shape[0], -1).sum(dim=1) > 0
             if meas_attack_labels is not None:
-                sample_attack_mask |= meas_attack_labels.sum(dim=1) > 0
+                sample_attack_mask |= meas_attack_labels.reshape(meas_attack_labels.shape[0], -1).sum(dim=1) > 0
             attacked_sample_count = int(sample_attack_mask.sum().item())
             clean_sample_count = int(batch_size_current - attacked_sample_count)
             batch_metric = {
@@ -751,8 +751,11 @@ def save_checkpoint(
     merged,
     history,
     best_val: float,
+    best_val_selection: float,
     output_path: Path,
     checkpoint_type: str,
+    monitor_metric: str,
+    monitor_value: float,
     epoch: int,
     phase: int,
 ) -> None:
@@ -768,7 +771,10 @@ def save_checkpoint(
             "history": history,
             "metadata": merged.get("metadata", {}),
             "best_val_loss": best_val,
+            "best_val_selection_loss": best_val_selection,
             "checkpoint_type": checkpoint_type,
+            "monitor_metric": monitor_metric,
+            "monitor_value": monitor_value,
             "epoch": epoch,
             "phase": phase,
         },
@@ -987,8 +993,10 @@ def main() -> None:
         )
 
     best_val = float("inf")
+    best_val_selection = float("inf")
     history = []
     output_path = script_dir / args.output
+    robust_output_path = output_path.with_name(f"{output_path.stem}.best_robust{output_path.suffix}")
     phase_c_final_path = output_path.with_name(f"{output_path.stem}.phase_c_final{output_path.suffix}")
     final_path = output_path.with_name(f"{output_path.stem}.final{output_path.suffix}")
     resume_checkpoint_path = resolve_checkpoint_path(args.resume_checkpoint, script_dir)
@@ -1014,6 +1022,9 @@ def main() -> None:
                     ) from exc
             history = list(checkpoint.get("history", []))
             best_val = float(checkpoint.get("best_val_loss", float("inf")))
+            best_val_selection = float(
+                checkpoint.get("best_val_selection_loss", float("inf"))
+            )
             resumed_epoch = int(checkpoint.get("epoch", 0))
             resumed_phase = int(checkpoint.get("phase", 0))
             start_epoch = resumed_epoch + 1
@@ -1034,7 +1045,12 @@ def main() -> None:
                     None,
                 )
                 if phase_entry is not None:
-                    phase_best_val[resumed_phase] = float(phase_entry.get("val_loss", float("inf")))
+                    phase_best_val[resumed_phase] = float(
+                        phase_entry.get(
+                            "val_selection_loss",
+                            phase_entry.get("val_loss", float("inf")),
+                        )
+                    )
                 phase_best_epoch[resumed_phase] = resumed_epoch
                 phase_best_model_state[resumed_phase] = copy.deepcopy(model.state_dict())
                 phase_best_optimizer_state[resumed_phase] = copy.deepcopy(optimizer.state_dict())
@@ -1246,9 +1262,9 @@ def main() -> None:
                 batch_size_current, device=device, dtype=torch.bool
             )
             if attack_labels is not None:
-                sample_attack_mask |= attack_labels.sum(dim=1) > 0
+                sample_attack_mask |= attack_labels.reshape(attack_labels.shape[0], -1).sum(dim=1) > 0
             if meas_attack_labels is not None:
-                sample_attack_mask |= meas_attack_labels.sum(dim=1) > 0
+                sample_attack_mask |= meas_attack_labels.reshape(meas_attack_labels.shape[0], -1).sum(dim=1) > 0
             attacked_sample_count = int(sample_attack_mask.sum().item())
             clean_sample_count = int(batch_size_current - attacked_sample_count)
 
@@ -1299,7 +1315,13 @@ def main() -> None:
                 "n_attacked_samples": float(attacked_sample_count),
                 "n_clean_samples": float(clean_sample_count),
             }
-            for key in ("loss_mask", "loss_meas_mask", "loss_gain"):
+            for key in (
+                "loss_mask",
+                "loss_meas_mask",
+                "loss_gain",
+                "meas_mask_attacked_mean",
+                "meas_mask_clean_mean",
+            ):
                 if key in logs:
                     batch_metric[key] = float(logs[key])
             train_batch_metrics.append(batch_metric)
@@ -1449,12 +1471,37 @@ def main() -> None:
                 merged=merged,
                 history=history,
                 best_val=best_val,
+                best_val_selection=best_val_selection,
                 output_path=output_path,
-                checkpoint_type="best_overall",
+                checkpoint_type="best_clean",
+                monitor_metric="val_loss",
+                monitor_value=val_loss,
                 epoch=epoch,
                 phase=phase,
             )
-            print(f"Saved best checkpoint to {output_path}")
+            print(f"Saved best clean checkpoint to {output_path}")
+
+        if val_selection_loss < best_val_selection:
+            best_val_selection = val_selection_loss
+            save_checkpoint(
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                cfg=cfg,
+                args=args,
+                training_config=config,
+                merged=merged,
+                history=history,
+                best_val=best_val,
+                best_val_selection=best_val_selection,
+                output_path=robust_output_path,
+                checkpoint_type="best_robust",
+                monitor_metric="val_selection_loss",
+                monitor_value=val_selection_loss,
+                epoch=epoch,
+                phase=phase,
+            )
+            print(f"Saved best robust checkpoint to {robust_output_path}")
 
         patience = phase_patience[phase]
         if patience > 0 and phase_bad_epochs[phase] >= patience:
@@ -1507,8 +1554,11 @@ def main() -> None:
         merged=merged,
         history=history,
         best_val=best_val,
+        best_val_selection=best_val_selection,
         output_path=final_checkpoint_path,
         checkpoint_type=final_checkpoint_type,
+        monitor_metric="val_selection_loss",
+        monitor_value=best_val_selection,
         epoch=final_epoch_for_checkpoint,
         phase=final_phase_for_checkpoint,
     )

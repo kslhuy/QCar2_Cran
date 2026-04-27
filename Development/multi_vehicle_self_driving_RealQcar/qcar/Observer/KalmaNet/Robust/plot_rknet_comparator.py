@@ -1051,51 +1051,124 @@ def main() -> None:
     ax.legend(fontsize=8)
     _add_attack_spans(ax, attack_segments)
 
-    # Figure 2, Row 1: States (X, Y) over time
+    # Figure 2, Row 1: Absolute state errors to clean EKF reference
     ax = axes2[1, 0]
-    ax.plot(time_axis, data["robust_x"], label="Robust X")
-    ax.plot(time_axis, data["ekf_x"], label="EKF X", linestyle="--")
     if reference_available:
-        ax.plot(time_axis, data["ref_x"], label="Clean Ref X", linestyle="-.", color="black")
-    ax.set_title("X Position over Time")
+        ax.plot(time_axis, np.abs(data["robust_ref_dx"]), label="|Robust - Clean Ref| x", linewidth=1.6)
+        ax.plot(
+            time_axis,
+            np.abs(data["ekf_ref_dx"]),
+            label="|EKF - Clean Ref| x",
+            linewidth=1.3,
+            linestyle="--",
+        )
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No clean EKF reference available",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=10,
+        )
+    ax.set_title("Absolute X Error to Clean EKF")
     ax.set_xlabel("time [s]")
-    ax.set_ylabel("x [m]")
+    ax.set_ylabel("|error_x| [m]")
     ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=8)
+    if reference_available:
+        ax.legend(fontsize=8)
+    _add_attack_spans(ax, attack_segments)
 
     ax = axes2[1, 1]
-    ax.plot(time_axis, data["robust_y"], label="Robust Y")
-    ax.plot(time_axis, data["ekf_y"], label="EKF Y", linestyle="--")
     if reference_available:
-        ax.plot(time_axis, data["ref_y"], label="Clean Ref Y", linestyle="-.", color="black")
-    ax.set_title("Y Position over Time")
+        ax.plot(time_axis, np.abs(data["robust_ref_dy"]), label="|Robust - Clean Ref| y", linewidth=1.6)
+        ax.plot(
+            time_axis,
+            np.abs(data["ekf_ref_dy"]),
+            label="|EKF - Clean Ref| y",
+            linewidth=1.3,
+            linestyle="--",
+        )
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No clean EKF reference available",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=10,
+        )
+    ax.set_title("Absolute Y Error to Clean EKF")
     ax.set_xlabel("time [s]")
-    ax.set_ylabel("y [m]")
+    ax.set_ylabel("|error_y| [m]")
     ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=8)
+    if reference_available:
+        ax.legend(fontsize=8)
+    _add_attack_spans(ax, attack_segments)
 
-    # Figure 2, Row 2: States (Theta, V) over time
+    # Figure 2, Row 2: Absolute state errors to clean EKF reference
     ax = axes2[2, 0]
-    ax.plot(time_axis, data["robust_theta"], label="Robust Theta")
-    ax.plot(time_axis, data["ekf_theta"], label="EKF Theta", linestyle="--")
     if reference_available:
-        ax.plot(time_axis, data["ref_theta"], label="Clean Ref Theta", linestyle="-.", color="black")
-    ax.set_title("Heading (Theta) over Time")
+        ax.plot(
+            time_axis,
+            np.abs(data["robust_ref_dtheta"]),
+            label="|Robust - Clean Ref| theta",
+            linewidth=1.6,
+        )
+        ax.plot(
+            time_axis,
+            np.abs(data["ekf_ref_dtheta"]),
+            label="|EKF - Clean Ref| theta",
+            linewidth=1.3,
+            linestyle="--",
+        )
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No clean EKF reference available",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=10,
+        )
+    ax.set_title("Absolute Heading Error to Clean EKF")
     ax.set_xlabel("time [s]")
-    ax.set_ylabel("theta [rad]")
+    ax.set_ylabel("|error_theta| [rad]")
     ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=8)
+    if reference_available:
+        ax.legend(fontsize=8)
+    _add_attack_spans(ax, attack_segments)
 
     ax = axes2[2, 1]
-    ax.plot(time_axis, data["robust_v"], label="Robust V")
-    ax.plot(time_axis, data["ekf_v"], label="EKF V", linestyle="--")
     if reference_available:
-        ax.plot(time_axis, data["ref_v"], label="Clean Ref V", linestyle="-.", color="black")
-    ax.set_title("Velocity over Time")
+        ax.plot(time_axis, np.abs(data["robust_ref_dv"]), label="|Robust - Clean Ref| v", linewidth=1.6)
+        ax.plot(
+            time_axis,
+            np.abs(data["ekf_ref_dv"]),
+            label="|EKF - Clean Ref| v",
+            linewidth=1.3,
+            linestyle="--",
+        )
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "No clean EKF reference available",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+            fontsize=10,
+        )
+    ax.set_title("Absolute Velocity Error to Clean EKF")
     ax.set_xlabel("time [s]")
-    ax.set_ylabel("v [m/s]")
+    ax.set_ylabel("|error_v| [m/s]")
     ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=8)
+    if reference_available:
+        ax.legend(fontsize=8)
+    _add_attack_spans(ax, attack_segments)
 
     # Figure 2, Row 3: Control inputs
     ax = axes2[3, 0]

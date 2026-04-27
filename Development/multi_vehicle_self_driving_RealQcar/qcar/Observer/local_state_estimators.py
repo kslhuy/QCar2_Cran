@@ -440,6 +440,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
                 v=prev_v,
                 motor_tach=motor_tach,
                 throttle=throttle,
+                steering=steering,
                 ax=ax,
                 dt=dt,
             )

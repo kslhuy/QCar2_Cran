@@ -2,7 +2,7 @@
 # Default parameters for the local state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-local_estimator_type: robust_kalman_net # local_estimator_type: Which local estimator to use.
+local_estimator_type: ekf # local_estimator_type: Which local estimator to use.
                         # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
 
 enable_recording: false # enable_recording: Controls data logging to CSV.
@@ -43,7 +43,7 @@ local:
   ekf:
     use_qcar_ekf: false  # Whether to use QCarEKF (if available)
     wheelbase: 0.2       # Fallback default; VehicleObserver overrides from fleet_config.vehicle_geometry when available.
-    gyro_heading_blend: 0.5 # 0=bicycle yaw only ( model ), 1=gyro yaw only. QCarEKF-like fallback uses both.
+    gyro_heading_blend: 0.3 # 0=bicycle yaw only ( model ), 1=gyro yaw only. QCarEKF-like fallback uses both.
     max_steering_angle: 0.5  # Rad; clips pathological steering before tan(delta).
     max_velocity: 2.0
     max_acceleration: 2.0
@@ -80,7 +80,7 @@ local:
     kin_velocity_model: "velocity_lag" # Legacy fallback only when no calibration-backed longitudinal model is injected.
     kin_max_velocity: 2.0
     kin_max_acceleration: 2.0
-    model_path: models/robust_kalmannet.pt # Required checkpoint path, relative to Observer/KalmaNet/Robust/
+    model_path: models/robust_kalmannet.best_robust.pt # Required checkpoint path, relative to Observer/KalmaNet/Robust/
     enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
     enable_clean_reference_comparator: true # Evaluation-only pseudo-ground-truth: run a second EKF on clean pre-attack inputs for error analysis.
     publish_clean_reference_output: true # Publish the clean-reference EKF state as the observer output for evaluation/control.
@@ -117,13 +117,6 @@ local:
     mask_hidden: 32
     update_mask_init_bias: 0.0   # Neutral start so the updater can learn stronger rejection when needed.
     use_hard_mask: false
-    use_meas_mask_in_update: true # Apply the learned measurement mask directly to the final correction, not only to GRU features.
-    meas_mask_gate_threshold: 0.65 # Below this learned mask value, the effective correction gate is forced toward zero.
-    meas_mask_gate_power: 1.0      # Increase above 1.0 to make partially trusted channels more conservative.
-    use_residual_anomaly_gate: true # Runtime safety gate for large innovation or measurement jumps during attacks.
-    innovation_gate_thresholds: [0.50, 0.50, 0.25, 0.50, 0.80] # [x, y, psi, v, w] thresholds for z-Hx_pred.
-    measurement_jump_gate_thresholds: [0.70, 0.70, 0.35, 0.60, 1.20] # [x, y, psi, v, w] thresholds for z-z_prev.
-    residual_gate_softness: 0.25   # Fraction of each threshold used as the sigmoid transition width.
     # sensor_failure_simulation parameters control the online injection of synthetic sensor faults/attacks during evaluation. These are disabled by default to avoid unintended consequences during normal runs, but can be enabled to stress-test the estimator's robustness in a more realistic setting than offline test sets.
     sensor_failure_simulation:
       enabled: false            # true = inject online sensor failures/attacks during evaluation.
