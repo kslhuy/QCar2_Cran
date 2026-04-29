@@ -46,7 +46,7 @@ leader_sensor_acc:
   distance_smoothing: 0.6     # Low-pass filter on YOLO distance. Higher = smoother but slower
 
 leader_longitudinal_state_source:
-  mode: 'fleet_estimator'          # 'direct_v2v' or 'fleet_estimator' for CACC / leader longitudinal control
+  mode: 'direct_v2v_clean' # 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'
   fallback_to_v2v: true       # If fleet estimate is unavailable, keep current direct V2V behavior
 
 # Legacy fallback (used if state-specific keys are missing)

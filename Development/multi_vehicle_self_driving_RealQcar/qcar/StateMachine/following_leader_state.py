@@ -114,6 +114,7 @@ class FollowingLeaderState(StateBase):
         self._init_controllers()
         self._load_reverse_follow_config()
         self._load_sensor_acc_config()
+        self._load_leader_state_source_config()
 
         return True
 
@@ -224,6 +225,28 @@ class FollowingLeaderState(StateBase):
                 f"[FOLLOW] Failed to initialize sensor ACC helper: {exc}"
             )
             self.sensor_acc_controller = None
+
+    def _load_leader_state_source_config(self):
+        """Load leader-state source selection for controller inputs."""
+        source_cfg = {
+            "mode": "direct_v2v_attacked",
+            "fallback_to_v2v": True,
+        }
+
+        controller_manager = getattr(self.vehicle_logic, "controller_manager", None)
+        controller_config = getattr(controller_manager, "config", None)
+        if controller_config and hasattr(
+            controller_config, "get_leader_longitudinal_state_source_config"
+        ):
+            source_cfg.update(
+                controller_config.get_leader_longitudinal_state_source_config()
+            )
+
+        self.leader_state_source_config = source_cfg
+        self.logger.logger.info(
+            "[FOLLOW] Leader state source: "
+            f"{source_cfg.get('mode', 'direct_v2v_attacked')}"
+        )
 
     @staticmethod
     def _wrap_to_pi(angle: float) -> float:
@@ -671,7 +694,7 @@ class FollowingLeaderState(StateBase):
         return float(along_track_gap) <= stop_target + 0.02
 
     def _get_v2v_leader_data(self) -> Optional[Dict[str, Any]]:
-        """Get leader data from V2V"""
+        """Get leader data for control from the configured source."""
         if not hasattr(self.vehicle_logic, "platoon_controller"):
             return None
 
@@ -684,11 +707,23 @@ class FollowingLeaderState(StateBase):
             # TODO : Consider transitioning back to FOLLOWING_PATH state
             return None
 
-        # TODO: Should have the choice to use data direct from v2v_manager or Estimated by Observer
-        v2v_data = (
-            self.vehicle_logic.platoon_controller.get_direct_leader_data_from_v2v(
-                self.vehicle_logic.v2v_manager, self.vehicle_logic.vehicle_id
-            )
+        source_mode = str(
+            self.leader_state_source_config.get("mode", "direct_v2v_attacked")
+        ).strip().lower()
+        if source_mode == "fleet_estimator":
+            leader_data = self._get_leader_data_from_fleet_estimator()
+            if leader_data is not None:
+                return leader_data
+
+            if not bool(self.leader_state_source_config.get("fallback_to_v2v", True)):
+                return None
+            source_mode = "direct_v2v_attacked"
+
+        v2v_channel = "clean" if source_mode == "direct_v2v_clean" else "attacked"
+        v2v_data = self.vehicle_logic.platoon_controller.get_direct_leader_data_from_v2v(
+            self.vehicle_logic.v2v_manager,
+            self.vehicle_logic.vehicle_id,
+            channel=v2v_channel,
         )
 
         # Log V2V data status occasionally for debugging
@@ -697,11 +732,55 @@ class FollowingLeaderState(StateBase):
             and self.vehicle_logic.loop_counter % 1000 == 0
         ):
             if v2v_data is not None:
-                self.logger.logger.debug(f"[FOLLOW] V2V Leader data available")
+                self.logger.logger.debug(
+                    f"[FOLLOW] Leader data available from {source_mode}"
+                )
             else:
-                self.logger.logger.debug(f"[FOLLOW] No V2V leader data received")
+                self.logger.logger.debug(
+                    f"[FOLLOW] No leader data received from {source_mode}"
+                )
 
         return v2v_data
+
+    def _get_leader_data_from_fleet_estimator(self) -> Optional[Dict[str, Any]]:
+        """Get direct leader state from the fleet estimator output."""
+        observer = getattr(self.vehicle_logic, "vehicle_observer", None)
+        platoon_controller = getattr(self.vehicle_logic, "platoon_controller", None)
+        if observer is None or platoon_controller is None:
+            return None
+
+        if not hasattr(platoon_controller, "get_direct_leader_vehicle_id"):
+            return None
+
+        leader_vehicle_id = platoon_controller.get_direct_leader_vehicle_id()
+        if leader_vehicle_id is None:
+            return None
+
+        if not hasattr(observer, "get_vehicle_state"):
+            return None
+
+        leader_state = observer.get_vehicle_state(leader_vehicle_id)
+        if leader_state is None or len(leader_state) < 4:
+            return None
+
+        acceleration = float(leader_state[4]) if len(leader_state) > 4 else 0.0
+        data = {
+            "x": float(leader_state[0]),
+            "y": float(leader_state[1]),
+            "theta": float(leader_state[2]),
+            "velocity": float(leader_state[3]),
+            "acceleration": acceleration,
+            "source": "fleet_estimator",
+        }
+
+        if (
+            hasattr(self.vehicle_logic, "loop_counter")
+            and self.vehicle_logic.loop_counter % 1000 == 0
+        ):
+            self.logger.logger.debug(
+                f"[FOLLOW] Using fleet estimator leader state from vehicle {leader_vehicle_id}"
+            )
+        return data
 
     def _normalize_waypoint_sequence(self, waypoint_sequence) -> Optional[np.ndarray]:
         """Normalize waypoint sequence to shape [N, 2]."""

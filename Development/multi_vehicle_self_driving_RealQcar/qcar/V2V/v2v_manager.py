@@ -5,6 +5,7 @@ broadcasting logic, message routing, and high-level control operations
 """
 import time
 import threading
+import copy
 from typing import Dict, List, Optional, Callable, Any
 from queue import Queue, Empty
 from collections import defaultdict, deque
@@ -81,9 +82,24 @@ class V2VManager:
         # self.intent_queue = Queue(maxsize=self.config.max_queue_size)
         # self.warning_queue = Queue(maxsize=self.config.max_queue_size)
         
-        # Received data storage with timestamps
-        self.received_local_states = defaultdict(lambda: deque(maxlen=50))  # vehicle_id -> deque of (timestamp, data)
-        self.received_fleet_states = defaultdict(lambda: deque(maxlen=20))  # vehicle_id -> deque of (timestamp, data)
+        # Received data storage with timestamps.
+        # Backward-compatible public aliases (`received_local_states`,
+        # `received_fleet_states`) continue to expose the attacked / control-path
+        # channel that the trust observer evaluates.
+        self.received_local_states_attacked = defaultdict(
+            lambda: deque(maxlen=50)
+        )  # vehicle_id -> deque of (timestamp, data)
+        self.received_local_states_clean = defaultdict(
+            lambda: deque(maxlen=50)
+        )  # vehicle_id -> deque of (timestamp, data)
+        self.received_fleet_states_attacked = defaultdict(
+            lambda: deque(maxlen=20)
+        )  # vehicle_id -> deque of (timestamp, data)
+        self.received_fleet_states_clean = defaultdict(
+            lambda: deque(maxlen=20)
+        )  # vehicle_id -> deque of (timestamp, data)
+        self.received_local_states = self.received_local_states_attacked
+        self.received_fleet_states = self.received_fleet_states_attacked
         self.received_trust_reports = defaultdict(lambda: deque(maxlen=20))  # vehicle_id -> deque of (timestamp, opinions)
         self.received_intents = defaultdict(lambda: deque(maxlen=10))
         self.received_warnings = defaultdict(lambda: deque(maxlen=10))
@@ -210,6 +226,92 @@ class V2VManager:
             except (TypeError, ValueError):
                 return None
         return None
+
+    @staticmethod
+    def _normalize_v2v_channel(channel: Optional[str]) -> str:
+        """Normalize dual-channel V2V selectors."""
+        normalized = str(channel or "attacked").strip().lower()
+        if normalized not in {"attacked", "clean"}:
+            return "attacked"
+        return normalized
+
+    def _get_local_state_store(self, channel: str):
+        """Return the requested local-state history store."""
+        normalized = self._normalize_v2v_channel(channel)
+        if normalized == "clean":
+            return self.received_local_states_clean
+        return self.received_local_states_attacked
+
+    def _get_fleet_state_store(self, channel: str):
+        """Return the requested fleet-state history store."""
+        normalized = self._normalize_v2v_channel(channel)
+        if normalized == "clean":
+            return self.received_fleet_states_clean
+        return self.received_fleet_states_attacked
+
+    def _build_dual_channel_payload(
+        self,
+        clean_payload: Optional[Dict[str, Any]],
+        attacked_payload: Optional[Dict[str, Any]],
+        selected_channel: str = "attacked",
+    ) -> Dict[str, Any]:
+        """
+        Wrap a V2V payload with clean/attacked channels while preserving the
+        selected channel at the top level for legacy consumers.
+        """
+        clean_dict = copy.deepcopy(clean_payload) if isinstance(clean_payload, dict) else {}
+        attacked_dict = (
+            copy.deepcopy(attacked_payload)
+            if isinstance(attacked_payload, dict)
+            else copy.deepcopy(clean_dict)
+        )
+        normalized_channel = self._normalize_v2v_channel(selected_channel)
+        primary_dict = attacked_dict if normalized_channel == "attacked" else clean_dict
+        payload = copy.deepcopy(primary_dict)
+        payload["v2v_channels"] = {
+            "clean": clean_dict,
+            "attacked": attacked_dict,
+        }
+        payload["v2v_selected_channel"] = normalized_channel
+        payload["v2v_attack_active"] = bool(clean_dict != attacked_dict)
+        return payload
+
+    def _extract_dual_channel_payloads(
+        self,
+        data: Optional[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract clean/attacked payload variants from a received V2V message.
+
+        Legacy messages without `v2v_channels` are mirrored into both channels.
+        """
+        if not isinstance(data, dict):
+            return {"clean": {}, "attacked": {}}
+
+        raw_channels = data.get("v2v_channels")
+        if not isinstance(raw_channels, dict):
+            payload = copy.deepcopy(data)
+            payload.pop("v2v_channels", None)
+            return {
+                "clean": copy.deepcopy(payload),
+                "attacked": copy.deepcopy(payload),
+            }
+
+        clean_payload = raw_channels.get("clean")
+        attacked_payload = raw_channels.get("attacked")
+
+        if not isinstance(clean_payload, dict):
+            clean_payload = copy.deepcopy(data)
+        if not isinstance(attacked_payload, dict):
+            attacked_payload = copy.deepcopy(data)
+
+        clean_payload = copy.deepcopy(clean_payload)
+        attacked_payload = copy.deepcopy(attacked_payload)
+
+        for payload in (clean_payload, attacked_payload):
+            payload.pop("v2v_channels", None)
+
+        return {"clean": clean_payload, "attacked": attacked_payload}
     
     def update_broadcast(self) -> bool:
         """
@@ -255,6 +357,11 @@ class V2VManager:
                 return False
             
             local_state = self.vehicle_observer.get_local_state_for_broadcast()
+            dual_channel_payload = self._build_dual_channel_payload(
+                clean_payload=local_state,
+                attacked_payload=local_state,
+                selected_channel="attacked",
+            )
             
             # # Periodically log what we're broadcasting
             # if self.stats['local_broadcasts'] % 100 == 0 and self.logger:  # Every 100 broadcasts (every 5 seconds at 20Hz)
@@ -263,7 +370,7 @@ class V2VManager:
             
             success = self.v2v_communication.send_message(
                 message_type="local_state",
-                data=local_state
+                data=dual_channel_payload
             )
             
             if success:
@@ -444,8 +551,14 @@ class V2VManager:
                 return
             
             # Validate required fields for local state (acceleration and control_input are optional)
+            channel_payloads = self._extract_dual_channel_payloads(data)
+            attacked_payload = channel_payloads["attacked"]
+            clean_payload = channel_payloads["clean"]
+
             required_fields = ['vehicle_id', 'x', 'y', 'theta', 'velocity']
-            missing_fields = [field for field in required_fields if field not in data]
+            missing_fields = [
+                field for field in required_fields if field not in attacked_payload
+            ]
             
             if missing_fields:
                 if self.logger:
@@ -478,22 +591,31 @@ class V2VManager:
                 
                 # Build a normalized state dict and reuse it for storage, queue, and logging
                 state_dict = {
-                    # 'vehicle_id': data.get('vehicle_id', sender_id),
-                    'x': data.get('x', 0.0),
-                    'y': data.get('y', 0.0),
-                    'theta': data.get('theta', 0.0),
-                    'v': data.get('velocity', data.get('v', 0.0)),
-                    'velocity': data.get('velocity', data.get('v', 0.0)),
-                    'confidence': data.get('confidence', 1.0),
-                    'acceleration': data.get('acceleration', 0.0),
-                    'control_input': data.get('control_input', {}) or {},
-                    # 'source': data.get('source', 'local_sensors'),
-                    # 'timestamp': data.get('timestamp', time.time())
+                    'x': attacked_payload.get('x', 0.0),
+                    'y': attacked_payload.get('y', 0.0),
+                    'theta': attacked_payload.get('theta', 0.0),
+                    'v': attacked_payload.get('velocity', attacked_payload.get('v', 0.0)),
+                    'velocity': attacked_payload.get('velocity', attacked_payload.get('v', 0.0)),
+                    'confidence': attacked_payload.get('confidence', 1.0),
+                    'acceleration': attacked_payload.get('acceleration', 0.0),
+                    'control_input': attacked_payload.get('control_input', {}) or {},
+                }
+                clean_state_dict = {
+                    'x': clean_payload.get('x', 0.0),
+                    'y': clean_payload.get('y', 0.0),
+                    'theta': clean_payload.get('theta', 0.0),
+                    'v': clean_payload.get('velocity', clean_payload.get('v', 0.0)),
+                    'velocity': clean_payload.get('velocity', clean_payload.get('v', 0.0)),
+                    'confidence': clean_payload.get('confidence', 1.0),
+                    'acceleration': clean_payload.get('acceleration', 0.0),
+                    'control_input': clean_payload.get('control_input', {}) or {},
                 }
 
-                # Add to received local states with send time in nanoseconds (store normalized dict)
-                self.received_local_states[sender_id].append(
+                self.received_local_states_attacked[sender_id].append(
                     (message_timestamp_ns, state_dict)
+                )
+                self.received_local_states_clean[sender_id].append(
+                    (message_timestamp_ns, clean_state_dict)
                 )
 
                 # Log received local estimation to dedicated CSV file
@@ -501,7 +623,7 @@ class V2VManager:
                     self.vehicle_logger.log_local_estimation(
                         sender_id=sender_id,
                         state=state_dict,
-                        source=data.get('source', 'local_sensors'),
+                        source=attacked_payload.get('source', 'local_sensors'),
                         seq_id=message.seq_id,
                         send_time_ns=send_time_ns
                     )
@@ -552,9 +674,15 @@ class V2VManager:
                     )
                 return
             
-            # Validate required fields for fleet state 
+            channel_payloads = self._extract_dual_channel_payloads(data)
+            attacked_payload = channel_payloads["attacked"]
+            clean_payload = channel_payloads["clean"]
+
+            # Validate required fields for fleet state
             required_fields = ['sender_id', 'fleet_states']
-            missing_fields = [field for field in required_fields if field not in data]
+            missing_fields = [
+                field for field in required_fields if field not in attacked_payload
+            ]
             
             if missing_fields:
                 if self.logger:
@@ -562,11 +690,14 @@ class V2VManager:
                 return
             
             # Validate fleet states structure
-            fleet_states = data.get('fleet_states', {})
+            fleet_states = attacked_payload.get('fleet_states', {})
+            clean_fleet_states = clean_payload.get('fleet_states', {})
             if not isinstance(fleet_states, dict):
                 if self.logger:
                     self.logger.warning(f"V2VManager: Invalid fleet_states format from vehicle {sender_id}")
                 return
+            if not isinstance(clean_fleet_states, dict):
+                clean_fleet_states = {}
             
             # # Validate individual vehicle states in fleet data
             # valid_fleet_count = 0
@@ -581,8 +712,11 @@ class V2VManager:
             
             with self._lock:
                 # Add to received fleet states with send time in nanoseconds
-                self.received_fleet_states[sender_id].append(
-                    (message_timestamp_ns, data)
+                self.received_fleet_states_attacked[sender_id].append(
+                    (message_timestamp_ns, attacked_payload)
+                )
+                self.received_fleet_states_clean[sender_id].append(
+                    (message_timestamp_ns, clean_payload)
                 )
                 
                 # Log received fleet estimation to dedicated CSV file
@@ -591,7 +725,7 @@ class V2VManager:
                         self.vehicle_logger.log_fleet_estimation(
                             sender_id=sender_id,
                             fleet_states=fleet_states,
-                            source=data.get('source', 'unknown'),
+                            source=attacked_payload.get('source', 'unknown'),
                             seq_id=message.seq_id,
                             send_time_ns=send_time_ns
                         )
@@ -836,25 +970,33 @@ class V2VManager:
                 break
         return messages
     
-    def get_latest_local_state_raw(self, vehicle_id: int) -> Optional[dict]:
+    def get_latest_local_state_raw(
+        self, vehicle_id: int, channel: str = "attacked"
+    ) -> Optional[dict]:
         """Get latest local state from a specific vehicle"""
         with self._lock:
-            if vehicle_id in self.received_local_states:
-                states = self.received_local_states[vehicle_id]
+            store = self._get_local_state_store(channel)
+            if vehicle_id in store:
+                states = store[vehicle_id]
                 if states:
                     return states[-1][1]  # Return data part of (timestamp, data)
         return None
     
-    def get_latest_fleet_state_raw(self, vehicle_id: int) -> Optional[dict]:
+    def get_latest_fleet_state_raw(
+        self, vehicle_id: int, channel: str = "attacked"
+    ) -> Optional[dict]:
         """Get latest fleet state from a specific vehicle"""
         with self._lock:
-            if vehicle_id in self.received_fleet_states:
-                states = self.received_fleet_states[vehicle_id]
+            store = self._get_fleet_state_store(channel)
+            if vehicle_id in store:
+                states = store[vehicle_id]
                 if states:
                     return states[-1][1]  # Return data part of (timestamp, data)
         return None
     
-    def get_direct_leader_data(self, current_vehicle_position: int) -> Optional[dict]:
+    def get_direct_leader_data(
+        self, current_vehicle_position: int, channel: str = "attacked"
+    ) -> Optional[dict]:
         """Get direct leader's local state data for the given vehicle position in platoon
         
         Args:
@@ -885,7 +1027,9 @@ class V2VManager:
                     self.logger.debug(f"V2VManager: No position mapping found, using position {leader_position} as vehicle_id")
             
             # Get leader data using the leader's vehicle_id
-            leader_state = self.get_latest_local_state_raw(leader_vehicle_id)
+            leader_state = self.get_latest_local_state_raw(
+                leader_vehicle_id, channel=channel
+            )
             
             if leader_state:
                 if self.logger:
@@ -907,7 +1051,7 @@ class V2VManager:
                 self.logger.warning(f"V2VManager: Error getting direct leader data: {e}")
             return None
     
-    def get_my_direct_leader_data(self) -> Optional[dict]:
+    def get_my_direct_leader_data(self, channel: str = "attacked") -> Optional[dict]:
         """Get direct leader's local state data for this vehicle's position
         
         Returns:
@@ -915,7 +1059,7 @@ class V2VManager:
         """
         # Note: This requires vehicle_logic reference to get vehicle_position
         # For now, use vehicle_id as position (can be improved when vehicle_logic is properly referenced)
-        return self.get_direct_leader_data(self.vehicle_id)
+        return self.get_direct_leader_data(self.vehicle_id, channel=channel)
     
     def cleanup_old_data(self):
         """Clean up old received data"""
@@ -924,24 +1068,32 @@ class V2VManager:
         
         with self._lock:
             # Clean up old local states
-            for vehicle_id in list(self.received_local_states.keys()):
-                states = self.received_local_states[vehicle_id]
-                # Remove states older than timeout
-                while states and current_time - states[0][0] > timeout:
-                    states.popleft()
-                
-                # Remove empty entries
-                if not states:
-                    del self.received_local_states[vehicle_id]
+            for store in (
+                self.received_local_states_attacked,
+                self.received_local_states_clean,
+            ):
+                for vehicle_id in list(store.keys()):
+                    states = store[vehicle_id]
+                    # Remove states older than timeout
+                    while states and current_time - states[0][0] > timeout:
+                        states.popleft()
+
+                    # Remove empty entries
+                    if not states:
+                        del store[vehicle_id]
             
             # Clean up old fleet states
-            for vehicle_id in list(self.received_fleet_states.keys()):
-                states = self.received_fleet_states[vehicle_id]
-                while states and current_time - states[0][0] > timeout:
-                    states.popleft()
-                
-                if not states:
-                    del self.received_fleet_states[vehicle_id]
+            for store in (
+                self.received_fleet_states_attacked,
+                self.received_fleet_states_clean,
+            ):
+                for vehicle_id in list(store.keys()):
+                    states = store[vehicle_id]
+                    while states and current_time - states[0][0] > timeout:
+                        states.popleft()
+
+                    if not states:
+                        del store[vehicle_id]
     
     def send_intent(self, intention: str, parameters: dict) -> bool:
         """Send driving intent to other vehicles"""

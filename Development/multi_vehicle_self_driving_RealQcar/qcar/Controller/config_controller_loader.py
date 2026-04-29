@@ -126,9 +126,20 @@ class ControllerConfig:
     def get_leader_longitudinal_state_source_config(self) -> Dict[str, Any]:
         """Get leader-state source selection for FOLLOWING_LEADER longitudinal control."""
         source_cfg = self.config.get("leader_longitudinal_state_source", {})
-        mode = str(source_cfg.get("mode", "direct_v2v")).strip().lower()
-        if mode not in {"direct_v2v", "fleet_estimator"}:
-            mode = "direct_v2v"
+        mode = str(source_cfg.get("mode", "direct_v2v_attacked")).strip().lower()
+        legacy_mode_map = {
+            "direct_v2v": "direct_v2v_attacked",
+            "v2v": "direct_v2v_attacked",
+            "clean_v2v": "direct_v2v_clean",
+            "attacked_v2v": "direct_v2v_attacked",
+        }
+        mode = legacy_mode_map.get(mode, mode)
+        if mode not in {
+            "direct_v2v_attacked",
+            "direct_v2v_clean",
+            "fleet_estimator",
+        }:
+            mode = "direct_v2v_attacked"
 
         return {
             "mode": mode,
