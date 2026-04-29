@@ -26,8 +26,8 @@ RAW_KEYS = (
     "gps_hold_valid",
     "gps_age_sec",
 )
-TARGET_DIM = 5
-MEAS_DIM = 5
+TARGET_DIM = 4
+MEAS_DIM = 4
 _GPS_AGE_CAP_SEC = 1.0e3
 _HEADING_FILTER_Q_PSI = 1.0e-4
 _HEADING_FILTER_Q_BIAS = 1.0e-3
@@ -162,7 +162,13 @@ def _rebuild_heading_measurements_gyro_filter(dataset: Dict[str, Any], timestamp
     z = np.asarray(dataset["z"], dtype=np.float32)
     gps_valid = np.asarray(_dataset_series(dataset, "gps_valid", timestamps), dtype=np.float32).reshape(-1)
     gps_theta = np.asarray(dataset.get("gps_theta", z[:, 2]), dtype=np.float32).reshape(-1)
-    gyro_z = np.asarray(dataset.get("gyro_z", dataset.get("wz", z[:, 4])), dtype=np.float32).reshape(-1)
+    gyro_z = np.asarray(
+        dataset.get(
+            "gyro_z",
+            dataset.get("wz", np.zeros(sample_count, dtype=np.float32)),
+        ),
+        dtype=np.float32,
+    ).reshape(-1)
     x_gt = np.asarray(dataset.get("x_gt", z), dtype=np.float32)
 
     if gps_valid[0] > 0.5:
@@ -299,7 +305,13 @@ def _rebuild_heading_measurements_qcar_ekf(
     gps_y = np.asarray(dataset.get("gps_y", z[:, 1]), dtype=np.float32).reshape(-1)
     gps_theta = np.asarray(dataset.get("gps_theta", z[:, 2]), dtype=np.float32).reshape(-1)
     motor_tach = np.asarray(dataset.get("motor_tach", z[:, 3]), dtype=np.float32).reshape(-1)
-    gyro_z = np.asarray(dataset.get("gyro_z", dataset.get("wz", z[:, 4])), dtype=np.float32).reshape(-1)
+    gyro_z = np.asarray(
+        dataset.get(
+            "gyro_z",
+            dataset.get("wz", np.zeros(sample_count, dtype=np.float32)),
+        ),
+        dtype=np.float32,
+    ).reshape(-1)
     delta = np.asarray(
         dataset.get("delta", dataset.get("steering", np.zeros(sample_count, dtype=np.float32))),
         dtype=np.float32,
@@ -410,6 +422,13 @@ def _dataset_series(
     return _default_series(key, timestamps=timestamps, gps_valid=gps_valid)
 
 
+def _as_state_matrix(array: np.ndarray, dim: int, name: str) -> np.ndarray:
+    arr = np.asarray(array, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < dim:
+        raise ValueError(f"Expected {name} with shape [N, >={dim}], got {arr.shape}")
+    return arr[:, :dim].copy()
+
+
 def _rebuild_measurements(
     dataset: Dict[str, Any],
     timestamps: np.ndarray,
@@ -418,9 +437,10 @@ def _rebuild_measurements(
     gps_dropout_xy_mode: str = "freeze",
 ) -> np.ndarray:
     gps_dropout_xy_mode = _normalize_gps_dropout_xy_mode(gps_dropout_xy_mode)
-    z = np.asarray(dataset["z"], dtype=np.float32).copy()
-    if z.ndim != 2 or z.shape[1] < MEAS_DIM:
-        raise ValueError(f"Expected z with shape [N, {MEAS_DIM}], got {z.shape}")
+    z_full = np.asarray(dataset["z"], dtype=np.float32)
+    if z_full.ndim != 2 or z_full.shape[1] < MEAS_DIM:
+        raise ValueError(f"Expected z with shape [N, >={MEAS_DIM}], got {z_full.shape}")
+    z = z_full[:, :MEAS_DIM].copy()
 
     gps_valid = np.asarray(_dataset_series(dataset, "gps_valid", timestamps), dtype=np.float32).reshape(-1)
     gps_has_fix = np.asarray(
@@ -554,8 +574,8 @@ class RobustKalmanNetDatasetRecorder:
             "wheel_speed_scale": self.wheel_speed_scale,
             "gps_dropout_xy_mode": self.gps_dropout_xy_mode,
             "raw_keys": list(RAW_KEYS),
-            "state_layout": ["x", "y", "theta", "v", "w"],
-            "measurement_layout": ["x", "y", "theta", "v", "w"],
+            "state_layout": ["x", "y", "theta", "v"],
+            "measurement_layout": ["x", "y", "theta", "v"],
         }
         self._log_info(
             f"[RKNetDataset] Recording started for V{self.vehicle_id} using target '{self.target_estimator_type}'"
@@ -660,18 +680,16 @@ class RobustKalmanNetDatasetRecorder:
                 # training so the model sees the same distribution online.
 
             z = np.array(
-                [gps_x, gps_y, heading_meas, float(motor_tach), w],
+                [gps_x, gps_y, heading_meas, float(motor_tach)],
                 dtype=np.float32,
             )
 
-            target_w = float(target[4]) if target.size > 4 else w
             x_gt = np.array(
                 [
                     float(target[0]),
                     float(target[1]),
                     _wrap_angle(float(target[2])),
                     float(target[3]),
-                    target_w,
                 ],
                 dtype=np.float32,
             )
@@ -921,11 +939,12 @@ def build_training_windows(
         raw_series[key] = np.asarray(_dataset_series(dataset, key, timestamps_all), dtype=np.float32).reshape(-1)
 
     if measurement_source_norm == "raw":
-        z_all = np.asarray(_dataset_series(dataset, "z", timestamps_all), dtype=np.float32)
-        if z_all.ndim != 2 or z_all.shape[1] != MEAS_DIM:
+        z_raw = np.asarray(_dataset_series(dataset, "z", timestamps_all), dtype=np.float32)
+        if z_raw.ndim != 2 or z_raw.shape[1] < MEAS_DIM:
             raise ValueError(
-                f"Expected raw dataset z with shape [N, {MEAS_DIM}], got {z_all.shape}"
+                f"Expected raw dataset z with shape [N, >={MEAS_DIM}], got {z_raw.shape}"
             )
+        z_all = z_raw[:, :MEAS_DIM].copy()
     else:
         z_all = _rebuild_measurements(
             dataset,
@@ -934,7 +953,7 @@ def build_training_windows(
             heading_kinematic_config=heading_kinematic_config,
             gps_dropout_xy_mode=gps_dropout_xy_mode,
         )
-    x_gt_all = np.asarray(dataset["x_gt"], dtype=np.float32)
+    x_gt_all = _as_state_matrix(dataset["x_gt"], TARGET_DIM, "x_gt")
 
     raw_windows = {key: [] for key in RAW_KEYS}
     z_windows: List[np.ndarray] = []

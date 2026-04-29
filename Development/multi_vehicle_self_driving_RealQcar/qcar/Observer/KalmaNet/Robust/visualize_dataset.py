@@ -14,8 +14,8 @@ python .\visualize_dataset.py .\datasets\your_dataset.json
 """
 
 
-STATE_LABELS = ("x", "y", "theta", "v", "w")
-STATE_UNITS = ("m", "m", "rad", "m/s", "rad/s")
+STATE_LABELS = ("x", "y", "theta", "v")
+STATE_UNITS = ("m", "m", "rad", "m/s")
 GPS_INVALID_SHADE_COLOR = "#ffb347"
 GYRO_COLOR = "#005f73"
 MOTOR_TACH_COLOR = "#d00000"
@@ -78,6 +78,20 @@ def _load_array(data, key, default):
     return np.asarray(data[key])
 
 
+def _load_state_matrix(data, key, sample_count):
+    arr = _load_array(
+        data,
+        key,
+        np.zeros((sample_count, len(STATE_LABELS)), dtype=np.float32),
+    )
+    arr = np.asarray(arr, dtype=np.float32).reshape(sample_count, -1)
+    if arr.shape[1] < len(STATE_LABELS):
+        padded = np.zeros((sample_count, len(STATE_LABELS)), dtype=np.float32)
+        padded[:, : arr.shape[1]] = arr
+        return padded
+    return arr[:, : len(STATE_LABELS)].copy()
+
+
 def _normalize_heading_rebuild_modes(modes):
     if modes is None:
         return list(SUPPORTED_HEADING_REBUILD_MODES)
@@ -125,7 +139,10 @@ def _add_invalid_gps_shading(ax, t_rel, gps_valid):
 
 
 def _state_delta(lhs, rhs):
-    delta = np.asarray(lhs, dtype=np.float32) - np.asarray(rhs, dtype=np.float32)
+    lhs_arr = np.asarray(lhs, dtype=np.float32)
+    rhs_arr = np.asarray(rhs, dtype=np.float32)
+    dim = min(lhs_arr.shape[-1], rhs_arr.shape[-1], len(STATE_LABELS))
+    delta = lhs_arr[..., :dim] - rhs_arr[..., :dim]
     if delta.ndim == 2 and delta.shape[1] > 2:
         delta[:, 2] = _wrap_angle_array(delta[:, 2])
     return delta
@@ -143,8 +160,16 @@ def _state_metric_summary(delta):
     }
 
 
+def _format_metric_vector(values):
+    return ", ".join(
+        f"{STATE_LABELS[idx]}={float(values[idx]):.4f}"
+        for idx in range(min(len(values), len(STATE_LABELS)))
+    )
+
+
 def _plot_states(fig, t_rel, x_gt, z_variants, gps_valid):
-    axes = fig.subplots(5, 1, sharex=True)
+    dim = min(x_gt.shape[1], len(STATE_LABELS))
+    axes = np.atleast_1d(fig.subplots(dim, 1, sharex=True))
     for idx, axis in enumerate(axes):
         axis.plot(t_rel, x_gt[:, idx], label="x_gt", color="tab:red", linewidth=1.2)
         for variant_name, variant_values in z_variants.items():
@@ -215,7 +240,8 @@ def _plot_sensor_channels(fig, t_rel, steering, throttle, gps_valid, gps_x, gps_
 
 
 def _plot_measurement_error(fig, t_rel, x_gt, z_variants, gps_valid):
-    axes = fig.subplots(5, 1, sharex=True)
+    dim = min(x_gt.shape[1], len(STATE_LABELS))
+    axes = np.atleast_1d(fig.subplots(dim, 1, sharex=True))
 
     for idx, axis in enumerate(axes):
         for variant_name, variant_values in z_variants.items():
@@ -242,8 +268,9 @@ def _plot_measurement_error(fig, t_rel, x_gt, z_variants, gps_valid):
 
 
 def _plot_rebuild_delta(fig, t_rel, z_variants, gps_valid):
-    axes = fig.subplots(5, 1, sharex=True)
     z_saved = z_variants["raw_saved"]
+    dim = min(z_saved.shape[1], len(STATE_LABELS))
+    axes = np.atleast_1d(fig.subplots(dim, 1, sharex=True))
 
     for idx, axis in enumerate(axes):
         for variant_name, variant_values in z_variants.items():
@@ -322,27 +349,15 @@ def _print_variant_delta_stats(name, delta):
     print(f"{name:<18}: {int(np.count_nonzero(changed_mask))}/{delta.shape[0]} samples changed")
     print(
         "  max |delta|      : "
-        f"x={float(metrics['max_abs'][0]):.4f}, "
-        f"y={float(metrics['max_abs'][1]):.4f}, "
-        f"theta={float(metrics['max_abs'][2]):.4f}, "
-        f"v={float(metrics['max_abs'][3]):.4f}, "
-        f"w={float(metrics['max_abs'][4]):.4f}"
+        f"{_format_metric_vector(metrics['max_abs'])}"
     )
     print(
         "  RMS delta        : "
-        f"x={float(metrics['rms'][0]):.4f}, "
-        f"y={float(metrics['rms'][1]):.4f}, "
-        f"theta={float(metrics['rms'][2]):.4f}, "
-        f"v={float(metrics['rms'][3]):.4f}, "
-        f"w={float(metrics['rms'][4]):.4f}"
+        f"{_format_metric_vector(metrics['rms'])}"
     )
     print(
         "  mean |delta|     : "
-        f"x={float(metrics['mean_abs'][0]):.4f}, "
-        f"y={float(metrics['mean_abs'][1]):.4f}, "
-        f"theta={float(metrics['mean_abs'][2]):.4f}, "
-        f"v={float(metrics['mean_abs'][3]):.4f}, "
-        f"w={float(metrics['mean_abs'][4]):.4f}"
+        f"{_format_metric_vector(metrics['mean_abs'])}"
     )
 
 
@@ -352,27 +367,15 @@ def _print_variant_error_stats(name, estimate, x_gt):
     print(f"{name:<18}: error vs x_gt")
     print(
         "  max |error|      : "
-        f"x={float(metrics['max_abs'][0]):.4f}, "
-        f"y={float(metrics['max_abs'][1]):.4f}, "
-        f"theta={float(metrics['max_abs'][2]):.4f}, "
-        f"v={float(metrics['max_abs'][3]):.4f}, "
-        f"w={float(metrics['max_abs'][4]):.4f}"
+        f"{_format_metric_vector(metrics['max_abs'])}"
     )
     print(
         "  RMS error        : "
-        f"x={float(metrics['rms'][0]):.4f}, "
-        f"y={float(metrics['rms'][1]):.4f}, "
-        f"theta={float(metrics['rms'][2]):.4f}, "
-        f"v={float(metrics['rms'][3]):.4f}, "
-        f"w={float(metrics['rms'][4]):.4f}"
+        f"{_format_metric_vector(metrics['rms'])}"
     )
     print(
         "  mean |error|     : "
-        f"x={float(metrics['mean_abs'][0]):.4f}, "
-        f"y={float(metrics['mean_abs'][1]):.4f}, "
-        f"theta={float(metrics['mean_abs'][2]):.4f}, "
-        f"v={float(metrics['mean_abs'][3]):.4f}, "
-        f"w={float(metrics['mean_abs'][4]):.4f}"
+        f"{_format_metric_vector(metrics['mean_abs'])}"
     )
 
 
@@ -405,8 +408,8 @@ def visualize_npz(file_path, heading_kinematic_config=None, heading_rebuild_mode
     t_rel = timestamps - timestamps[0]
     dataset_arrays = {key: np.asarray(data[key]) for key in data.files if key != "metadata_json"}
 
-    x_gt = _load_array(data, "x_gt", np.zeros((sample_count, 5), dtype=np.float32)).reshape(sample_count, 5)
-    z_saved = _load_array(data, "z", np.zeros((sample_count, 5), dtype=np.float32)).reshape(sample_count, 5)
+    x_gt = _load_state_matrix(data, "x_gt", sample_count)
+    z_saved = _load_state_matrix(data, "z", sample_count)
     selected_rebuild_modes = _normalize_heading_rebuild_modes(heading_rebuild_modes)
     z_variants = {"raw_saved": z_saved}
     for rebuild_mode in selected_rebuild_modes:
@@ -415,7 +418,7 @@ def visualize_npz(file_path, heading_kinematic_config=None, heading_rebuild_mode
             timestamps,
             heading_rebuild_mode=rebuild_mode,
             heading_kinematic_config=heading_kinematic_config,
-        ).reshape(sample_count, 5)
+        ).reshape(sample_count, -1)[:, : len(STATE_LABELS)]
     steering = _load_array(data, "steering", np.zeros(sample_count, dtype=np.float32))
     throttle = _load_array(data, "throttle", np.zeros(sample_count, dtype=np.float32))
     gps_valid = _load_array(data, "gps_valid", np.zeros(sample_count, dtype=np.float32))

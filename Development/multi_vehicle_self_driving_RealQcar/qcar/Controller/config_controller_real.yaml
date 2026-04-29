@@ -32,6 +32,23 @@ leader_reverse_follow:
   reverse_steering_gain: 0.5
   stop_on_v2v_loss: true
 
+leader_sensor_acc:
+  enabled: true
+  blend_alpha: 0.75           # 1.0 = pure V2V/CACC, 0.0 = pure local sensor ACC
+  desired_distance: 0.33      # [m] Preferred stand-off distance from YOLO car_dist
+  time_headway: 0.0           # [s] Extra dynamic spacing = desired_distance + time_headway * ego_speed
+  distance_gain: 1.0          # [m/s per m] Converts gap error into local ACC target-speed correction
+  min_target_velocity: 0.0    # [m/s] Lower clamp for the local ACC target speed
+  max_target_velocity: 0.6    # [m/s] Upper clamp for the local ACC target speed
+  stop_distance: 0.18         # [m] Force local ACC target speed to zero inside this gap
+  max_distance: 1.5           # [m] Ignore YOLO car-distance measurements beyond this range
+  max_offset: 0.70            # Ignore detections that are too far from the image center
+  distance_smoothing: 0.7     # Low-pass filter on YOLO distance. Higher = smoother but slower
+
+leader_longitudinal_state_source:
+  mode: 'fleet_estimator'          # 'direct_v2v' or 'fleet_estimator' for CACC / leader longitudinal control
+  fallback_to_v2v: true       # If fleet estimate is unavailable, keep current direct V2V behavior
+
 # Legacy fallback (used if state-specific keys are missing)
 # ============================================================================
 # LONGITUDINAL CONTROLLER CONFIGURATION
@@ -39,6 +56,16 @@ leader_reverse_follow:
 
 # Controller type options: 'cacc', 'pi', 'hybrid'
 longitudinal_controller_type: 'cacc'
+
+command_smoothing:
+  longitudinal:
+    alpha: 0.1
+    rise_rate: 0.9
+    fall_rate: 1.0
+  lateral:
+    alpha: 0.01
+    rise_rate: 1.0
+    fall_rate: 1.0
 
 # CACC Controller Parameters
 cacc:
@@ -58,11 +85,14 @@ cacc:
   # respond when the leader changes acceleration faster/slower than the
   # follower. Set to 0 (default) to ignore acceleration information.
   leader_acceleration_weight: 1.0
+  target_velocity_weight: 0.8   # Extra straight-road catch-up toward v_ref when the gap is open. Up = reaches cruise speed faster. Down = follows the leader more conservatively.
+  target_velocity_gap_window: 0.12  # [m] Extra gap needed before the cruise-speed bias becomes strong. Up = waits for a larger safe gap. Down = starts accelerating sooner.
+  target_velocity_turn_scale: 0.30  # Scale applied to that cruise-speed bias in turns. Up = more push remains in corners. Down = corners stay more conservative.
   spacing_deadband: 0.15      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
   velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
   throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
-  brake_smoothing: 0.5      # Aggressive smoothing factor applied ONLY when braking/decelerating [0-1]. Higher values prevent jerky sudden stops. Default 0.85.
-  max_acc_rate: 1.5          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
+  brake_smoothing: 0.6      # Braking/deceleration smoothing [0-1]. 1.0 holds too much previous throttle; 0.8 still smooths but lets the command drop toward zero.
+  max_acc_rate: 1.3          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
   use_feedforward: true     # Add velocity feedforward for faster response
   ff_gain: 0.16129          # CACC feedforward gain: u_ff = leader_velocity * ff_gain
   limo_max_speed: 0.6       # Limo-only speed ceiling for CACC velocity command [m/s]
@@ -136,6 +166,10 @@ pure_pursuit:
   curvature_threshold: 0.05   # Lane curvature threshold for turn detection
   turn_lookahead_offset: 0.2 # Lateral offset in turns (meters)
   turn_lookahead_gain: 1.4   # Lookahead distance multiplier in turns
+  turn_preview_cap: 0.04     # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
+  heading_alignment_gain: 0.0   # 0.0 = old lateral behavior. Increase only if first heading capture is too slow.
+  heading_alignment_window_deg: 45.0  # Heading-error range over which the extra alignment term ramps in.
+  heading_preview_cap: 0.0      # 0.0 = no extra forward preview from heading mismatch. Increase cautiously; too high causes corner cutting.
 
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
 pp_map:

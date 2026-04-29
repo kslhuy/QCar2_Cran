@@ -14,7 +14,7 @@ server:
   probing: false
   show_image: true
   show_lane_debug: false
-  show_obstacle_box: true
+  show_obstacle_box: false
 
 ports:
   data_port_base: 18660

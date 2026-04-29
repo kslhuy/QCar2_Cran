@@ -1,18 +1,17 @@
 # Robust KalmaNet offline training config
 #
 # State order used by the training loss:
-# [x, y, psi, v, w]
+# [x, y, psi, v]
 # x   : global x position
 # y   : global y position
 # psi : heading / yaw angle
 # v   : speed
-# w   : yaw rate
 
 # Recorded .npz files used to build the training windows.
 # Replace these example paths with your real datasets.
 datasets:
-  - "datasets/robust_kalmannet_dataset_V0_20260417_094048.npz"
   - "datasets/robust_kalmannet_dataset_V0_20260427_162806.npz"
+  - "datasets/robust_kalmannet_dataset_V0_20260417_094048.npz"
   # - "datasets/robust_kalmannet_dataset_V0_20260401_170829.npz"
   # - "datasets/robust_kalmannet_dataset_V0_20260405_180043.npz"
   # - "datasets/robust_kalmannet_dataset_V0_20260328_211545.npz"
@@ -132,35 +131,34 @@ loss:
   lambda_upd: 0.85
 
   # Per-state weights inside the state MSE:
-  # [x, y, psi, v, w]
+  # [x, y, psi, v]
   #
   # Current setting means:
   # x   -> 1.0
   # y   -> 1.0
   # psi -> 2.0   (heading error is emphasized, but no longer dominates)
   # v   -> 1.0
-  # w   -> 1.0
   #
   # Increase a value if that state matters more.
   # Decrease a value if that state is noisy or dominates training too much.
-  state_weights: [1.0, 1.0, 2.5, 1.2, 1.0]
+  state_weights: [1.0, 1.0, 2.5, 1.2]
 
   # Weight for Kalman gain magnitude regularization.
   # Penalizes large gains to encourage conservative corrections.
   lambda_gain: 0.003
 
+  # Weight for timestep-to-timestep Kalman gain smoothness.
+  # Helps reduce noisy update behavior in clean operation.
+  lambda_gain_smooth: 0.001
+
+  # Weight for timestep-to-timestep measurement-mask smoothness.
+  # Helps avoid flickering masks across adjacent frames.
+  lambda_meas_mask_smooth: 0.01
+
 augmentation:
   # true  = apply synthetic attacks during training.
   # false = train on clean data only.
   enabled: true
-
-  # Probability that one sample receives attack augmentation.
-  attack_prob: 0.35
-  branch_attack_probs:
-    imu: 0.45
-    steer: 0.20
-    wheel: 0.35
-  meas_attack_prob: 0.7
 
   # Available synthetic attack types:
   # bias     = add constant offset
@@ -171,10 +169,28 @@ augmentation:
   # zero_out = set signal to zero
   attack_types: ["bias", "scale", "freeze", "noise", "ramp", "zero_out"]
 
+  # Single control for the augmentation curriculum:
+  # measurement_only = attack updater measurements/GPS only
+  # mixed            = use both raw-branch and measurement attacks
+  attack_mode: measurement_only
+
+  # Probability that one sample receives raw-branch augmentation in mixed mode.
+  attack_prob: 0.35
+  branch_attack_probs:
+    imu: 0.45
+    steer: 0.20
+    wheel: 0.35
+  # When a raw branch is attacked in mixed mode, optionally mirror that corruption
+  # into the derived measurement channels.
+  meas_attack_prob: 0.7
+
+  # Independent probability of directly attacking updater measurement channels [psi, v].
+  direct_meas_attack_prob: 0.35
+
   # Maximum number of sensor branches attacked at once.
   max_branches_attacked: 2
 
-  # Independent GPS-position augmentation for the measurement vector z=[x,y,psi,v,w].
+  # Independent GPS-position augmentation for the measurement vector z=[x,y,psi,v].
   # These attacks teach the update mask/gain to avoid snapping to bad GPS x/y.
   gps_attack_prob: 0.45
   gps_attack_types: ["noise", "freeze", "jump", "dropout", "reacquisition"]
@@ -213,3 +229,9 @@ model:
   mask_hidden: 32
   gain_tanh_scale: 1.2
   update_mask_init_bias: 0.0
+  apply_meas_mask_to_innovation: true
+
+  # Normalize updater feature groups before the measurement-mask MLP and GRU.
+  # This follows the original KalmanNet idea of normalized gain features and
+  # usually reduces gain jitter / noisy output.
+  normalize_updater_features: true

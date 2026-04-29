@@ -28,7 +28,7 @@ def build_gps_dict(dataset: Dict[str, np.ndarray], index: int) -> Dict[str, floa
 def run_kinematic_reference(dataset: Dict[str, np.ndarray], wheelbase: float = 0.2) -> np.ndarray:
     predictions: List[np.ndarray] = []
     timestamps = np.asarray(dataset["timestamps"], dtype=np.float64)
-    state = np.zeros(5, dtype=np.float64)
+    state = np.zeros(4, dtype=np.float64)
     wheelbase = max(float(wheelbase), 1e-6)
 
     for i in range(len(timestamps)):
@@ -49,7 +49,7 @@ def run_kinematic_reference(dataset: Dict[str, np.ndarray], wheelbase: float = 0
             y = float(gps_data["y"])
             theta = wrap_angle_scalar(float(gps_data["theta"]))
 
-        state = np.array([x, y, theta, motor_tach, yaw_rate], dtype=np.float64)
+        state = np.array([x, y, theta, motor_tach], dtype=np.float64)
         predictions.append(state.copy())
 
     return np.asarray(predictions, dtype=np.float32)
@@ -105,7 +105,7 @@ def main() -> None:
     args = parser.parse_args()
 
     dataset = merge_recorded_datasets(args.datasets)
-    target = np.asarray(dataset["x_gt"], dtype=np.float32)
+    target = np.asarray(dataset["x_gt"], dtype=np.float32)[:, :4]
 
     kinematic_pred = run_kinematic_reference(dataset, wheelbase=args.kin_wheelbase)
     metrics = {

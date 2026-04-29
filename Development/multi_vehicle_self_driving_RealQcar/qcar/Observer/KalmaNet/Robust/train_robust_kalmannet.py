@@ -60,13 +60,17 @@ DEFAULT_CONFIG = {
         "lambda_pred": 0.2,
         "lambda_upd": 0.8,
         "lambda_gain": 0.01,
-        "state_weights": [1.0, 1.0, 2.0, 1.0, 1.0],
+        "lambda_gain_smooth": 1e-3,
+        "lambda_meas_mask_smooth": 1e-2,
+        "state_weights": [1.0, 1.0, 2.0, 1.0],
     },
     "augmentation": {
         "enabled": True,
+        "attack_mode": "measurement_only",
         "attack_prob": 0.5,
         "attack_types": ["bias", "scale", "freeze", "noise", "ramp", "zero_out"],
         "max_branches_attacked": 1,
+        "direct_meas_attack_prob": 0.35,
         "gps_attack_prob": 0.3,
         "gps_attack_types": ["noise", "freeze", "jump", "dropout", "reacquisition"],
     },
@@ -85,10 +89,18 @@ DEFAULT_CONFIG = {
         "mask_hidden": 32,
         "gain_tanh_scale": 2.0,
         "update_mask_init_bias": 2.0,
+        "apply_meas_mask_to_innovation": True,
+        "normalize_updater_features": True,
     },
 }
 
 WINDOWS_MULTIPROCESS_DATASET_BYTES_LIMIT = 256 * 1024 * 1024
+ATTACK_MODE_MEASUREMENT_ONLY = "measurement_only"
+ATTACK_MODE_MIXED = "mixed"
+VALID_ATTACK_MODES = {
+    ATTACK_MODE_MEASUREMENT_ONLY,
+    ATTACK_MODE_MIXED,
+}
 
 
 def _deep_update(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -101,6 +113,33 @@ def _deep_update(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, An
     return base
 
 
+def _normalize_attack_mode(aug_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize legacy measurement_focus_only into a single attack_mode setting."""
+    normalized = dict(aug_cfg or {})
+    attack_mode = normalized.get("attack_mode")
+
+    if attack_mode is None:
+        focus_only = normalized.get("measurement_focus_only")
+        attack_mode = (
+            ATTACK_MODE_MEASUREMENT_ONLY
+            if bool(True if focus_only is None else focus_only)
+            else ATTACK_MODE_MIXED
+        )
+
+    attack_mode = str(attack_mode).strip().lower()
+    if attack_mode not in VALID_ATTACK_MODES:
+        raise SystemExit(
+            f"Unsupported augmentation.attack_mode '{attack_mode}'. "
+            f"Expected one of: {sorted(VALID_ATTACK_MODES)}"
+        )
+
+    normalized["attack_mode"] = attack_mode
+    normalized["measurement_focus_only"] = (
+        attack_mode == ATTACK_MODE_MEASUREMENT_ONLY
+    )
+    return normalized
+
+
 def load_training_config(config_path: Path) -> Dict[str, Any]:
     """Load YAML training config and merge it with defaults."""
     config = json.loads(json.dumps(DEFAULT_CONFIG))
@@ -110,7 +149,9 @@ def load_training_config(config_path: Path) -> Dict[str, Any]:
     loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     if not isinstance(loaded, dict):
         raise SystemExit(f"Training config must be a YAML mapping: {config_path}")
-    return _deep_update(config, loaded)
+    config = _deep_update(config, loaded)
+    config["augmentation"] = _normalize_attack_mode(config.get("augmentation", {}))
+    return config
 
 
 def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse.ArgumentParser:
@@ -234,6 +275,32 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         help="GPS x/y attack types: noise freeze jump dropout reacquisition",
     )
     parser.add_argument(
+        "--direct-meas-attack-prob",
+        type=float,
+        default=float(aug_cfg.get("direct_meas_attack_prob", 0.35)),
+        help="Independent probability of directly corrupting updater measurement channels [psi, v]",
+    )
+    parser.add_argument(
+        "--attack-mode",
+        default=str(aug_cfg.get("attack_mode", ATTACK_MODE_MEASUREMENT_ONLY)),
+        choices=sorted(VALID_ATTACK_MODES),
+        help="Attack curriculum: measurement_only skips raw branch attacks, mixed uses both raw branch and measurement attacks",
+    )
+    parser.add_argument(
+        "--measurement-focus-only",
+        dest="attack_mode",
+        action="store_const",
+        const=ATTACK_MODE_MEASUREMENT_ONLY,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--mixed-attack-training",
+        dest="attack_mode",
+        action="store_const",
+        const=ATTACK_MODE_MIXED,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--no-augmentation",
         action="store_true",
         default=not bool(aug_cfg.get("enabled", True)),
@@ -266,16 +333,28 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
     parser.add_argument(
         "--state-weights",
         type=float,
-        nargs=5,
+        nargs=4,
         default=list(loss_cfg.get("state_weights", DEFAULT_CONFIG["loss"]["state_weights"])),
-        metavar=("WX", "WY", "WTH", "WV", "WA"),
-        help="Per-state loss weights [x, y, theta, v, a]",
+        metavar=("WX", "WY", "WTH", "WV"),
+        help="Per-state loss weights [x, y, theta, v]",
     )
     parser.add_argument(
         "--lambda-gain",
         type=float,
         default=float(loss_cfg.get("lambda_gain", 0.01)),
         help="Weight for Kalman gain magnitude regularization",
+    )
+    parser.add_argument(
+        "--lambda-gain-smooth",
+        type=float,
+        default=float(loss_cfg.get("lambda_gain_smooth", 1e-3)),
+        help="Weight for timestep-to-timestep Kalman gain smoothness regularization",
+    )
+    parser.add_argument(
+        "--lambda-meas-mask-smooth",
+        type=float,
+        default=float(loss_cfg.get("lambda_meas_mask_smooth", 1e-2)),
+        help="Weight for timestep-to-timestep measurement mask smoothness regularization",
     )
     parser.add_argument(
         "--max-branches-attacked",
@@ -402,6 +481,31 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         type=float,
         default=float(model_cfg.get("update_mask_init_bias", 2.0)),
         help="Initial bias for the updater mask output layer; positive values keep corrections less attenuated at startup",
+    )
+    parser.add_argument(
+        "--apply-meas-mask-to-innovation",
+        dest="apply_meas_mask_to_innovation",
+        action="store_true",
+        default=bool(model_cfg.get("apply_meas_mask_to_innovation", True)),
+        help="Directly gate the innovation with the learned measurement mask before applying the Kalman correction",
+    )
+    parser.add_argument(
+        "--no-apply-meas-mask-to-innovation",
+        dest="apply_meas_mask_to_innovation",
+        action="store_false",
+        help="Keep the learned measurement mask indirect-only for the correction path",
+    )
+    parser.add_argument(
+        "--normalize-updater-features",
+        action="store_true",
+        default=bool(model_cfg.get("normalize_updater_features", True)),
+        help="L2-normalize updater feature groups before the mask/GRU to reduce gain jitter",
+    )
+    parser.add_argument(
+        "--no-normalize-updater-features",
+        dest="normalize_updater_features",
+        action="store_false",
+        help="Disable updater feature normalization",
     )
     parser.add_argument(
         "--grad-clip",
@@ -657,8 +761,10 @@ def evaluate(
     lambda_upd: float,
     lambda_pred: float,
     lambda_gain: float = 0.0,
+    lambda_gain_smooth: float = 0.0,
     lambda_mask: float = 0.0,
     lambda_meas_mask: float = 0.0,
+    lambda_meas_mask_smooth: float = 0.0,
     augmenter: Optional[SensorAttackAugmenter] = None,
     eval_seed: Optional[int] = None,
 ) -> Tuple[float, Dict[str, float]]:
@@ -706,6 +812,8 @@ def evaluate(
                 lambda_meas_mask=lambda_meas_mask,
                 K=out.get("K"),
                 lambda_gain=lambda_gain,
+                lambda_gain_smooth=lambda_gain_smooth,
+                lambda_meas_mask_smooth=lambda_meas_mask_smooth,
             )
             loss_upd = weighted_state_mse(out["x_upd"], x_gt, state_weights)
             loss_pred = weighted_state_mse(out["x_pred"], x_gt, state_weights)
@@ -914,6 +1022,8 @@ def main() -> None:
         mask_hidden=args.mask_hidden,
         gain_tanh_scale=args.gain_tanh_scale,
         update_mask_init_bias=args.update_mask_init_bias,
+        apply_meas_mask_to_innovation=args.apply_meas_mask_to_innovation,
+        normalize_updater_features=args.normalize_updater_features,
     )
     model = RobustStateNet(cfg).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -963,16 +1073,33 @@ def main() -> None:
     phase_bounds = get_phase_bounds(args)
 
     # Initialize attack augmenter
+    attack_mode = str(args.attack_mode).strip().lower()
+    measurement_only = attack_mode == ATTACK_MODE_MEASUREMENT_ONLY
+
     augmenter = None
     if not args.no_augmentation:
         attack_cfg = AttackConfig.from_dict(config.get("augmentation", {}))
         attack_cfg.attack_prob = args.attack_prob
         attack_cfg.enabled_attacks = args.attack_types
         attack_cfg.max_branches_attacked = args.max_branches_attacked
+        attack_cfg.direct_meas_attack_prob = args.direct_meas_attack_prob
         attack_cfg.gps_attack_prob = args.gps_attack_prob
         attack_cfg.gps_attack_types = args.gps_attack_types
+        attack_cfg.measurement_focus_only = measurement_only
         augmenter = SensorAttackAugmenter(attack_cfg)
-        print(f"Attack augmentation enabled: prob={args.attack_prob}, types={args.attack_types}")
+        print(
+            f"Attack augmentation enabled: mode={attack_mode}"
+        )
+        if measurement_only:
+            print("  Raw-branch augmentation disabled in measurement_only mode.")
+        else:
+            print(
+                f"  Branch augmentation: p_branch={args.attack_prob}, "
+                f"types={args.attack_types}"
+            )
+        print(
+            f"Measurement-channel augmentation: p_direct={args.direct_meas_attack_prob}"
+        )
         print(f"GPS x/y augmentation enabled: prob={args.gps_attack_prob}, types={args.gps_attack_types}")
     else:
         print("Attack augmentation DISABLED (training on clean data only)")
@@ -982,13 +1109,18 @@ def main() -> None:
         val_attack_cfg = AttackConfig.from_dict(config.get("augmentation", {}))
         val_attack_cfg.attack_prob = args.attack_prob
         val_attack_cfg.enabled_attacks = list(args.attack_types)
+        val_attack_cfg.direct_meas_attack_prob = args.direct_meas_attack_prob
         val_attack_cfg.gps_attack_prob = args.gps_attack_prob
         val_attack_cfg.gps_attack_types = list(args.gps_attack_types)
         val_attack_cfg.max_branches_attacked = args.max_branches_attacked
+        val_attack_cfg.measurement_focus_only = measurement_only
         validation_attack_augmenter = SensorAttackAugmenter(val_attack_cfg)
         print(
             "Attacked validation enabled: "
-            f"p_branch={val_attack_cfg.attack_prob}, p_gps={val_attack_cfg.gps_attack_prob}, "
+            f"mode={attack_mode}, "
+            f"p_branch={val_attack_cfg.attack_prob}, "
+            f"p_direct={val_attack_cfg.direct_meas_attack_prob}, "
+            f"p_gps={val_attack_cfg.gps_attack_prob}, "
             f"seed={args.attacked_validation_seed}"
         )
 
@@ -1219,6 +1351,7 @@ def main() -> None:
         # ── Curriculum: determine effective augmenter for this epoch ──────
         curr_augmenter = None
         curr_attack_prob = 0.0
+        curr_direct_meas_attack_prob = 0.0
         curr_gps_attack_prob = 0.0
         if augmenter is not None:
             if phase == 2:  # Phase B: warmup then ramp
@@ -1230,16 +1363,26 @@ def main() -> None:
                     ramp_total = max(args.phase_b_epochs - warmup_epochs, 1)
                     ramp_progress = min((phase_epoch - warmup_epochs) / ramp_total, 1.0)
                     augmenter.config.attack_prob = args.attack_prob * ramp_progress
+                    augmenter.config.direct_meas_attack_prob = (
+                        args.direct_meas_attack_prob * ramp_progress
+                    )
                     augmenter.config.gps_attack_prob = args.gps_attack_prob * ramp_progress
                     curr_augmenter = augmenter
                     curr_attack_prob = float(augmenter.config.attack_prob)
+                    curr_direct_meas_attack_prob = float(
+                        augmenter.config.direct_meas_attack_prob
+                    )
                     curr_gps_attack_prob = float(augmenter.config.gps_attack_prob)
             else:
                 # Phase A or C: full augmentation
                 augmenter.config.attack_prob = args.attack_prob
+                augmenter.config.direct_meas_attack_prob = args.direct_meas_attack_prob
                 augmenter.config.gps_attack_prob = args.gps_attack_prob
                 curr_augmenter = augmenter
                 curr_attack_prob = float(augmenter.config.attack_prob)
+                curr_direct_meas_attack_prob = float(
+                    augmenter.config.direct_meas_attack_prob
+                )
                 curr_gps_attack_prob = float(augmenter.config.gps_attack_prob)
 
         model.train()
@@ -1292,6 +1435,8 @@ def main() -> None:
                 lambda_meas_mask=lam_meas_mask,
                 K=out.get("K"),
                 lambda_gain=args.lambda_gain,
+                lambda_gain_smooth=args.lambda_gain_smooth,
+                lambda_meas_mask_smooth=args.lambda_meas_mask_smooth,
             )
             # Clamp loss to prevent extreme attack batches from corrupting
             # Adam's momentum/variance estimates
@@ -1319,6 +1464,8 @@ def main() -> None:
                 "loss_mask",
                 "loss_meas_mask",
                 "loss_gain",
+                "loss_gain_smooth",
+                "loss_meas_mask_smooth",
                 "meas_mask_attacked_mean",
                 "meas_mask_clean_mean",
             ):
@@ -1350,8 +1497,10 @@ def main() -> None:
                 lambda_upd=lambda_upd,
                 lambda_pred=lambda_pred,
                 lambda_gain=args.lambda_gain,
+                lambda_gain_smooth=args.lambda_gain_smooth,
                 lambda_mask=lam_mask,
                 lambda_meas_mask=lam_meas_mask,
+                lambda_meas_mask_smooth=args.lambda_meas_mask_smooth,
             )
             if validation_attack_augmenter is not None:
                 val_attacked_loss, val_attacked_metrics = evaluate(
@@ -1363,8 +1512,10 @@ def main() -> None:
                     lambda_upd=lambda_upd,
                     lambda_pred=lambda_pred,
                     lambda_gain=args.lambda_gain,
+                    lambda_gain_smooth=args.lambda_gain_smooth,
                     lambda_mask=lam_mask,
                     lambda_meas_mask=lam_meas_mask,
+                    lambda_meas_mask_smooth=args.lambda_meas_mask_smooth,
                     augmenter=validation_attack_augmenter,
                     eval_seed=args.attacked_validation_seed,
                 )
@@ -1410,6 +1561,7 @@ def main() -> None:
                 "n_clean_samples": n_clean_samples,
                 "n_attacked_samples": n_attacked_samples,
                 "effective_attack_prob": float(curr_attack_prob),
+                "effective_direct_meas_attack_prob": float(curr_direct_meas_attack_prob),
                 "effective_gps_attack_prob": float(curr_gps_attack_prob),
             }
         )
@@ -1432,7 +1584,9 @@ def main() -> None:
             f"{steps_per_sec:.2f} steps/s | "
             f"batches clean/atk={n_clean}/{n_attacked} | "
             f"samples clean/atk={n_clean_samples}/{n_attacked_samples} | "
-            f"p_branch={curr_attack_prob:.4f}, p_gps={curr_gps_attack_prob:.4f}"
+            f"p_branch={curr_attack_prob:.4f}, "
+            f"p_direct={curr_direct_meas_attack_prob:.4f}, "
+            f"p_gps={curr_gps_attack_prob:.4f}"
         )
         if device.type == "cuda":
             mem_alloc_mb = torch.cuda.memory_allocated(device) / (1024 ** 2)

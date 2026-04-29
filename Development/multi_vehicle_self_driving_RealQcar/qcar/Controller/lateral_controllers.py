@@ -77,6 +77,10 @@ class PurePursuitController(LateralControllerBase):
         curvature_threshold=0.3,
         turn_lookahead_offset=0.1,
         turn_lookahead_gain=1.5,
+        turn_preview_cap=0.05,
+        heading_alignment_gain=0.0,
+        heading_alignment_window_deg=45.0,
+        heading_preview_cap=0.0,
         config=None,
         logger=None,
         **kwargs,
@@ -92,6 +96,7 @@ class PurePursuitController(LateralControllerBase):
             curvature_threshold: Threshold to detect turning (default 0.3)
             turn_lookahead_offset: Lateral offset during turns (default 0.1m)
             turn_lookahead_gain: Multiplier for lookahead during turns (default 1.5)
+            turn_preview_cap: Max forward preview added in turns when gap gets too small
             config: Optional config object (takes precedence)
             logger: Logger instance
         """
@@ -119,6 +124,16 @@ class PurePursuitController(LateralControllerBase):
             self.turn_lookahead_gain = params.get(
                 "turn_lookahead_gain", turn_lookahead_gain
             )
+            self.turn_preview_cap = params.get("turn_preview_cap", turn_preview_cap)
+            self.heading_alignment_gain = params.get(
+                "heading_alignment_gain", heading_alignment_gain
+            )
+            self.heading_alignment_window_deg = params.get(
+                "heading_alignment_window_deg", heading_alignment_window_deg
+            )
+            self.heading_preview_cap = params.get(
+                "heading_preview_cap", heading_preview_cap
+            )
         else:
             self.lookahead_distance = lookahead_distance
             self.k_steering = k_steering
@@ -127,6 +142,14 @@ class PurePursuitController(LateralControllerBase):
             self.curvature_threshold = curvature_threshold
             self.turn_lookahead_offset = turn_lookahead_offset
             self.turn_lookahead_gain = turn_lookahead_gain
+            self.turn_preview_cap = turn_preview_cap
+            self.heading_alignment_gain = heading_alignment_gain
+            self.heading_alignment_window_deg = heading_alignment_window_deg
+            self.heading_preview_cap = heading_preview_cap
+
+        self.heading_alignment_window_rad = np.deg2rad(
+            max(float(self.heading_alignment_window_deg), 1e-3)
+        )
 
     def compute_steering(
         self,
@@ -162,6 +185,7 @@ class PurePursuitController(LateralControllerBase):
         dx_to_leader = x_j - x
         dy_to_leader = y_j - y
         distance_to_leader = math.sqrt(dx_to_leader**2 + dy_to_leader**2)
+        leader_heading_error = wrap_to_pi(theta_j - theta)
 
         # Compute base lookahead distance
         if self.adaptive_lookahead:
@@ -173,7 +197,15 @@ class PurePursuitController(LateralControllerBase):
 
         # Compute dynamic 2D lookahead pose for turning sections
         target_x, target_y = self._compute_dynamic_lookahead_pose(
-            x_j, y_j, theta_j, base_lookahead, is_turning, turn_direction, curvature
+            x_j,
+            y_j,
+            theta_j,
+            base_lookahead,
+            distance_to_leader,
+            is_turning,
+            turn_direction,
+            curvature,
+            leader_heading_error,
         )
 
         # Compute heading error to target point
@@ -182,8 +214,12 @@ class PurePursuitController(LateralControllerBase):
         target_angle = math.atan2(dy, dx)
         heading_error = wrap_to_pi(target_angle - theta)
 
-        # Apply proportional control
-        steering_cmd = self.k_steering * heading_error
+        # Combine point tracking with a direct heading-alignment term so the
+        # follower rotates into the leader's orientation faster on first capture.
+        steering_cmd = (
+            self.k_steering * heading_error
+            + self.heading_alignment_gain * leader_heading_error
+        )
 
         # Clamp to limits
         steering_cmd = np.clip(steering_cmd, -self.max_steering, self.max_steering)
@@ -196,9 +232,11 @@ class PurePursuitController(LateralControllerBase):
         leader_y: float,
         leader_theta: float,
         base_lookahead: float,
+        distance_to_leader: float,
         is_turning: bool,
         turn_direction: str,
         curvature: float,
+        leader_heading_error: float,
     ) -> Tuple[float, float]:
         """
         Compute adjusted lookahead pose for turning sections.
@@ -220,18 +258,36 @@ class PurePursuitController(LateralControllerBase):
         Returns:
             (target_x, target_y): Adjusted lookahead target position
         """
-        # Apply longitudinal lookahead (behind leader position)
-        if is_turning:
-            lookahead = base_lookahead * self.turn_lookahead_gain
-            # Base target point (ahead of leader in its heading direction) avoid stop since too close to leader
-            target_x = leader_x + lookahead * math.cos(leader_theta)
-            target_y = leader_y + lookahead * math.sin(leader_theta)
+        # Default target trails the leader so the follower stays on the same line.
+        target_x = leader_x - base_lookahead * math.cos(leader_theta)
+        target_y = leader_y - base_lookahead * math.sin(leader_theta)
 
-        else:
-            lookahead = base_lookahead
-            # Base target point (behind leader in its heading direction)
-            target_x = leader_x - lookahead * math.cos(leader_theta)
-            target_y = leader_y - lookahead * math.sin(leader_theta)
+        heading_ratio = float(
+            np.clip(
+                abs(leader_heading_error) / self.heading_alignment_window_rad, 0.0, 1.0
+            )
+        )
+        heading_preview = min(
+            max(float(self.heading_preview_cap), 0.0),
+            max(base_lookahead, 0.0),
+        )
+        target_x += heading_ratio * heading_preview * math.cos(leader_theta)
+        target_y += heading_ratio * heading_preview * math.sin(leader_theta)
+
+        if is_turning:
+            # Only add a small forward preview if we are already very close to the
+            # leader. Keeping the target mostly trailing in turns reduces corner cutting.
+            close_ratio = 0.0
+            if base_lookahead > 1e-6:
+                close_ratio = float(
+                    np.clip((base_lookahead - distance_to_leader) / base_lookahead, 0.0, 1.0)
+                )
+
+            preview_cap = max(float(self.turn_preview_cap), 0.0)
+            preview_gain = max(float(self.turn_lookahead_gain) - 1.0, 0.0)
+            preview_distance = min(base_lookahead * preview_gain, preview_cap)
+            target_x += close_ratio * preview_distance * math.cos(leader_theta)
+            target_y += close_ratio * preview_distance * math.sin(leader_theta)
 
         # Apply lateral offset for turning sections
         if is_turning and abs(curvature) > 0.01:

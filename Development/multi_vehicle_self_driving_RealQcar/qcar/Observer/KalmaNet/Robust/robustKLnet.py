@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 try:
     from .qcar_heading_fusion import QCarHeadingFusion, QCarHeadingFusionConfig
@@ -44,8 +45,8 @@ except ImportError:
 
 @dataclass
 class RSNConfig:
-    state_dim: int = 5          # [x, y, psi, v, w]
-    meas_dim: int = 5           # [x_gnss, y_gnss, psi_imu, v_meas, w_imu]
+    state_dim: int = 4          # [x, y, psi, v]
+    meas_dim: int = 4           # [x_gnss, y_gnss, psi_imu, v_meas]
 
     imu_in_dim: int = 5         # [v, psi, ax, ay, wz]
     steer_in_dim: int = 3       # [v, psi, delta]
@@ -63,6 +64,8 @@ class RSNConfig:
     gain_tanh_scale: float = 2.0
     dt: float = 0.02
     update_mask_init_bias: float = 2.0
+    apply_meas_mask_to_innovation: bool = True
+    normalize_updater_features: bool = True
 
     # ── Modular prediction step ──────────────────────────────────────────
     # "nn"        → RobustMotionPredictor (tri-LSTM, learnable, default)
@@ -102,16 +105,23 @@ def inference_context():
         yield
 
 
-def make_H(device: torch.device, dtype=None):
+def make_H(
+    device: torch.device,
+    dtype=None,
+    state_dim: int = 4,
+    meas_dim: int = 4,
+):
     """
     Measurement model z = H x
-    State x = [x, y, psi, v, w]
-    Measurement z = [x, y, psi, v, w]
-    Here H is identity, as in the paper's measurement vector structure.
+    State x = [x, y, psi, v]
+    Measurement z = [x, y, psi, v]
     """
     if dtype is None:
         dtype = torch.float32
-    return torch.eye(5, device=device, dtype=dtype)
+    H = torch.zeros(int(meas_dim), int(state_dim), device=device, dtype=dtype)
+    diag_dim = min(int(state_dim), int(meas_dim))
+    H[:diag_dim, :diag_dim] = torch.eye(diag_dim, device=device, dtype=dtype)
+    return H
 
 
 
@@ -175,6 +185,11 @@ def wrap_state_residual(residual: torch.Tensor, angle_index: int = 2) -> torch.T
     )
 
 
+def safe_l2_normalize(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
+    """Numerically stable L2 normalization for updater feature groups."""
+    return F.normalize(x, p=2, dim=dim, eps=1e-12)
+
+
 
 def hard_sigmoid_st(mask_logits: torch.Tensor) -> torch.Tensor:
     """
@@ -236,7 +251,7 @@ class FeatureMask(nn.Module):
 
 
 class MotionRegressor(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int = 5):
+    def __init__(self, in_dim: int, hidden_dim: int, out_dim: int = 4):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
@@ -268,7 +283,11 @@ class RobustMotionPredictor(nn.Module):
 
         fusion_dim = 3 * cfg.pred_hidden
         self.mask_net = FeatureMask(fusion_dim, cfg.mask_hidden, cfg.use_hard_mask)
-        self.regressor = MotionRegressor(fusion_dim, cfg.pred_mlp_hidden, out_dim=5)
+        self.regressor = MotionRegressor(
+            fusion_dim,
+            cfg.pred_mlp_hidden,
+            out_dim=cfg.state_dim,
+        )
 
     def forward(
         self,
@@ -282,8 +301,8 @@ class RobustMotionPredictor(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict, torch.Tensor]:
         """
         returns:
-            x_pred_seq: [B,T,5] predicted state x_{k|k-1}
-            motion_seq: [B,T,5] [dxE,dyE,dpsi,v_next,w_next]
+            x_pred_seq: [B,T,m] predicted state x_{k|k-1}
+            motion_seq: [B,T,m] [dxE,dyE,dpsi,v_next] plus optional w_next
             hidden_dict
             mask: [B,T,3*H] the learned feature mask (for supervision)
         """
@@ -307,8 +326,8 @@ class RobustMotionPredictor(nn.Module):
     @staticmethod
     def motion_to_state(prev_state_seq: torch.Tensor, motion_seq: torch.Tensor) -> torch.Tensor:
         """
-        prev_state = [x, y, psi, v, w]
-        motion     = [dxE, dyE, dpsi, v_next, w_next]
+        prev_state = [x, y, psi, v] plus optional extra states
+        motion     = [dxE, dyE, dpsi, v_next] plus optional extra states
         """
         x_prev = prev_state_seq[..., 0]
         y_prev = prev_state_seq[..., 1]
@@ -318,7 +337,6 @@ class RobustMotionPredictor(nn.Module):
         dyE = motion_seq[..., 1]
         dpsi = motion_seq[..., 2]
         v_next = motion_seq[..., 3]
-        w_next = motion_seq[..., 4]
 
         dxG = dxE * torch.cos(psi_prev) - dyE * torch.sin(psi_prev)
         dyG = dxE * torch.sin(psi_prev) + dyE * torch.cos(psi_prev)
@@ -327,7 +345,12 @@ class RobustMotionPredictor(nn.Module):
         y_next = y_prev + dyG
         psi_next = wrap_angle(psi_prev + dpsi)
 
-        return torch.stack([x_next, y_next, psi_next, v_next, w_next], dim=-1)
+        next_parts = [x_next, y_next, psi_next, v_next]
+        if motion_seq.shape[-1] > 4:
+            next_parts.extend(
+                [motion_seq[..., idx] for idx in range(4, motion_seq.shape[-1])]
+            )
+        return torch.stack(next_parts, dim=-1)
 
 
 # ============================================================
@@ -693,8 +716,8 @@ class KinematicPredictor(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict, None]:
         """
         Returns:
-            x_pred   : [B, 1, 5]
-            motion   : [B, 1, 5]  [dxE, dyE, dpsi, v_next, w_next]
+            x_pred   : [B, 1, state_dim]
+            motion   : [B, 1, state_dim]  [dxE, dyE, dpsi, v_next]
             {}       : empty hidden dict (stateless)
             None     : no feature mask
         """
@@ -741,9 +764,7 @@ class KinematicPredictor(nn.Module):
         dxE    = v_pose * active_dt
         dyE    = torch.zeros_like(dxE)
         dpsi   = yaw_rate * active_dt
-        w_next = yaw_rate
-
-        motion = torch.cat([dxE, dyE, dpsi, v_next, w_next], dim=-1)  # [B, 1, 5]
+        motion = torch.cat([dxE, dyE, dpsi, v_next], dim=-1)
         x_pred = RobustMotionPredictor.motion_to_state(prev_state_seq, motion)
 
         return x_pred, motion, hidden_out, None
@@ -777,7 +798,16 @@ class LearnedKalmanUpdate(nn.Module):
         self.constrain_gain = cfg.constrain_gain
         self.gain_tanh_scale = float(cfg.gain_tanh_scale)
         self.update_mask_init_bias = float(cfg.update_mask_init_bias)
-        self.feat_dim_upd = self.m + self.n + self.n + self.n + 2
+        self.apply_meas_mask_to_innovation = bool(
+            getattr(cfg, "apply_meas_mask_to_innovation", True)
+        )
+        self.normalize_updater_features = bool(
+            getattr(cfg, "normalize_updater_features", True)
+        )
+        # dx, normalized innovation/delta, availability, GPS flags, plus
+        # raw innovation magnitudes. The magnitude terms are important for
+        # attack response because normalization alone removes anomaly scale.
+        self.feat_dim_upd = self.m + self.n + self.n + self.n + 2 + 2 * self.n
 
         # Update mask network (outputs mask of same size as features)
         self.mask_net = nn.Sequential(
@@ -820,7 +850,12 @@ class LearnedKalmanUpdate(nn.Module):
         
         device = x_pred_seq.device
         B, T, _ = z_seq.shape
-        H = make_H(device=device, dtype=x_pred_seq.dtype)
+        H = make_H(
+            device=device,
+            dtype=x_pred_seq.dtype,
+            state_dim=self.m,
+            meas_dim=self.n,
+        )
         Hx_pred = torch.matmul(x_pred_seq, H.T)
 
         # 1. Compute update features
@@ -859,16 +894,38 @@ class LearnedKalmanUpdate(nn.Module):
                 gps_valid_seq,
                 gps_valid_seq,
                 theta_valid_seq,
-                torch.ones(B, T, 2, device=device, dtype=x_pred_seq.dtype),
+                torch.ones(
+                    B,
+                    T,
+                    max(self.n - 3, 0),
+                    device=device,
+                    dtype=x_pred_seq.dtype,
+                ),
             ],
             dim=-1,
         )
         gps_age_feat = torch.log1p(gps_age_seq.clamp(max=10.0))
         dz_p = dz_p * meas_availability_seq
         dz = dz * meas_availability_seq
+        dz_p_mag = torch.log1p(torch.abs(dz_p))
+        dz_mag = torch.log1p(torch.abs(dz))
+
+        if self.normalize_updater_features:
+            dx = safe_l2_normalize(dx)
+            dz_p = safe_l2_normalize(dz_p)
+            dz = safe_l2_normalize(dz)
 
         f_upd = torch.cat(
-            [dx, dz_p, dz, meas_availability_seq, gps_hold_valid_seq, gps_age_feat],
+            [
+                dx,
+                dz_p,
+                dz,
+                meas_availability_seq,
+                gps_hold_valid_seq,
+                gps_age_feat,
+                dz_p_mag,
+                dz_mag,
+            ],
             dim=-1,
         )
 
@@ -906,7 +963,13 @@ class LearnedKalmanUpdate(nn.Module):
         # 6. Apply additive correction
         # x_{k|k} = x_{k|k-1} + K_k @ (z_k - Hx_{k|k-1})
         raw_innovation = wrap_state_residual(z_seq - Hx_pred) * meas_availability_seq
-        corr = torch.matmul(K_seq, raw_innovation.unsqueeze(-1)).squeeze(-1)
+        innovation_for_update = raw_innovation
+        if self.apply_meas_mask_to_innovation:
+            # Make the learned measurement mask directly suppress attacked
+            # channels in the actual correction path instead of only
+            # influencing the GRU features used to predict K.
+            innovation_for_update = innovation_for_update * learned_meas_mask
+        corr = torch.matmul(K_seq, innovation_for_update.unsqueeze(-1)).squeeze(-1)
 
         x_upd = x_pred_seq + corr
 
@@ -946,7 +1009,7 @@ class RobustStateNet(nn.Module):
         raw keys:
             ax, ay, wz, delta, vfl, vfr, vrl, vrr, throttle,
             gps_valid, gps_hold_valid, gps_age_sec
-        state_for_input = [B,T,5] containing [x,y,psi,v,w]
+        state_for_input = [B,T,4] containing [x,y,psi,v]
         Predictor inputs follow paper Eq.(2):
             IMU   = [v, psi, ax, ay, wz]
             Steer = [v, psi, delta]
@@ -1095,8 +1158,8 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
 
     Output state follows the current local observer contract:
         [x, y, theta, v]
-    The internal model state remains 5D:
-        [x, y, theta, v, yaw_rate]
+    The internal model state is 4D:
+        [x, y, theta, v]
     """
 
     RAW_KEYS = (
@@ -1249,6 +1312,9 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             gain_tanh_scale=float(self.config.get("gain_tanh_scale", 2.0)),
             dt=float(self.config.get("dt", 0.02)),
             update_mask_init_bias=float(self.config.get("update_mask_init_bias", 2.0)),
+            apply_meas_mask_to_innovation=bool(
+                self.config.get("apply_meas_mask_to_innovation", True)
+            ),
             predictor_mode=str(self.config.get("predictor_mode", "kinematic")),
             kin_wheelbase=float(self.config.get("kin_wheelbase", 0.2)),
             longitudinal_model=str(self.config.get("longitudinal_model", "")),
@@ -1285,6 +1351,12 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self._log_info(
             f"Robust KalmanNet gps_dropout_xy_mode='{self.gps_dropout_xy_mode}'"
         )
+        if self.publish_clean_reference_output:
+            self._log_warning(
+                "Robust KalmanNet is configured to publish the clean-reference "
+                "comparator output instead of the model output. Disable "
+                "'publish_clean_reference_output' for real robustness evaluation."
+            )
         self.model_path = self._resolve_model_path(self.config.get("model_path"))
         self.last_model_output = None
         self.last_pred_mask = None
@@ -1320,7 +1392,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self.measurement_history = deque(maxlen=self.sequence_length)
         self.dt_history = deque(maxlen=self.sequence_length)
 
-        self.internal_state = np.zeros(5, dtype=np.float32)
+        self.internal_state = np.zeros(self.model_cfg.state_dim, dtype=np.float32)
         if initial_pose is not None:
             self.internal_state[0] = float(initial_pose[0])
             self.internal_state[1] = float(initial_pose[1])
@@ -1604,11 +1676,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             except (TypeError, ValueError):
                 pass
 
-        simulator_cfg = (
-            self.sensor_failure_simulator.config
-            if self.sensor_failure_simulator is not None
-            else None
-        )
         current_intensity = metadata.get("current_intensity", {}) or {}
         return {
             "local_sensor_attack_supported": True,
@@ -1624,16 +1691,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             "local_sensor_attack_intensity": float(
                 current_intensity.get("overall", 0.0)
             ),
-            "local_sensor_attack_attack_prob": float(
-                getattr(simulator_cfg, "attack_prob", 0.0)
-            )
-            if simulator_cfg is not None
-            else 0.0,
-            "local_sensor_attack_gps_attack_prob": float(
-                getattr(simulator_cfg, "gps_attack_prob", 0.0)
-            )
-            if simulator_cfg is not None
-            else 0.0,
         }
 
     def _log_info(self, message: str):
@@ -1767,7 +1824,15 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         checkpoint = torch.load(self.model_path, map_location=self.device)
         self._warn_if_checkpoint_config_mismatch(checkpoint)
         state_dict = self._extract_state_dict(checkpoint)
-        self.model.load_state_dict(state_dict, strict=False)
+        try:
+            self.model.load_state_dict(state_dict, strict=False)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                "Robust KalmanNet checkpoint is not compatible with the current "
+                "4D [x, y, theta, v] architecture. Retrain the model after "
+                "removing the yaw-rate state, or point model_path to a matching "
+                "4D checkpoint."
+            ) from exc
         self.model.eval()
         self._log_info(
             f"Robust KalmanNet checkpoint loaded from {self.model_path}"
@@ -2234,7 +2299,10 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             raise RuntimeError("Robust KalmanNet streaming state is not initialized")
 
         dtype = torch.float32
-        measurement_arr = np.asarray(measurement, dtype=np.float32).reshape(1, 1, 5)
+        measurement_arr = np.asarray(
+            measurement,
+            dtype=np.float32,
+        ).reshape(1, 1, self.model_cfg.meas_dim)
         dt_arr = np.asarray([[[float(dt)]]], dtype=np.float32)
 
         raw_t = {
@@ -2248,22 +2316,22 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         z_t = torch.as_tensor(measurement_arr, device=self.device, dtype=dtype)
         dt_t = torch.as_tensor(dt_arr, device=self.device, dtype=dtype)
         prev_state_seq = torch.as_tensor(
-            self._stream_prev_upd_state.reshape(1, 1, 5),
+            self._stream_prev_upd_state.reshape(1, 1, self.model_cfg.state_dim),
             device=self.device,
             dtype=dtype,
         )
         prev_pred_seq = torch.as_tensor(
-            self._stream_prev_pred_state.reshape(1, 1, 5),
+            self._stream_prev_pred_state.reshape(1, 1, self.model_cfg.state_dim),
             device=self.device,
             dtype=dtype,
         )
         prev_prev_upd_seq = torch.as_tensor(
-            self._stream_prev_prev_upd_state.reshape(1, 1, 5),
+            self._stream_prev_prev_upd_state.reshape(1, 1, self.model_cfg.state_dim),
             device=self.device,
             dtype=dtype,
         )
         z_prev_seq = torch.as_tensor(
-            self._stream_prev_measurement.reshape(1, 1, 5),
+            self._stream_prev_measurement.reshape(1, 1, self.model_cfg.meas_dim),
             device=self.device,
             dtype=dtype,
         )
@@ -2372,8 +2440,14 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         measurements = list(self.measurement_history)
         padded_measurements = [measurements[0]] * pad_count + measurements
         z_arr = np.stack(padded_measurements[-self.sequence_length :], axis=0).astype(np.float32)
-        z_seq = torch.as_tensor(z_arr.reshape(1, self.sequence_length, 5), device=self.device)
-        x0 = torch.as_tensor(z_arr[0].reshape(1, 5), device=self.device)
+        z_seq = torch.as_tensor(
+            z_arr.reshape(1, self.sequence_length, self.model_cfg.meas_dim),
+            device=self.device,
+        )
+        x0 = torch.as_tensor(
+            z_arr[0].reshape(1, self.model_cfg.state_dim),
+            device=self.device,
+        )
 
         dts = list(self.dt_history)
         if not dts:
@@ -2479,13 +2553,16 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         if meas_mask_tensor is not None:
             self.last_meas_mask = meas_mask_tensor[0, -1].detach().cpu().numpy().astype(np.float64)
         else:
-            self.last_meas_mask = np.full(5, np.nan)
+            self.last_meas_mask = np.full(self.model_cfg.meas_dim, np.nan)
 
         K_tensor = out.get("K")
         if K_tensor is not None:
             self.last_K = K_tensor[0, -1].detach().cpu().numpy().astype(np.float64)
         else:
-            self.last_K = np.full((5, 5), np.nan)
+            self.last_K = np.full(
+                (self.model_cfg.state_dim, self.model_cfg.meas_dim),
+                np.nan,
+            )
 
         x_upd[2] = wrap_angle_scalar(float(x_upd[2]))
         self.last_model_output = x_upd.copy()
@@ -2541,7 +2618,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                 meas_y = float(self.internal_state[1])
 
         return np.array(
-            [meas_x, meas_y, heading_meas, float(motor_tach), float(gyro_z)],
+            [meas_x, meas_y, heading_meas, float(motor_tach)],
             dtype=np.float32,
         )
 
@@ -2662,7 +2739,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             innovation = measurement - self.last_x_pred
             innovation[2] = wrap_angle_scalar(float(innovation[2]))
         else:
-            innovation = np.full(5, np.nan)
+            innovation = np.full(self.model_cfg.meas_dim, np.nan)
 
         if reference_state is not None:
             robust_ref_delta = self._comparison_delta_vector(robust_state, reference_state)
@@ -2700,13 +2777,17 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             "meas_mask_y": self.last_meas_mask[1] if self.last_meas_mask is not None else np.nan,
             "meas_mask_psi": self.last_meas_mask[2] if self.last_meas_mask is not None else np.nan,
             "meas_mask_v": self.last_meas_mask[3] if self.last_meas_mask is not None else np.nan,
-            "meas_mask_w": self.last_meas_mask[4] if self.last_meas_mask is not None else np.nan,
+            "meas_mask_w": self.last_meas_mask[4]
+            if self.last_meas_mask is not None and self.last_meas_mask.size > 4
+            else np.nan,
             "K_norm": float(np.linalg.norm(self.last_K)) if self.last_K is not None else np.nan,
             "K_x_x": self.last_K[0, 0] if self.last_K is not None else np.nan,
             "K_y_y": self.last_K[1, 1] if self.last_K is not None else np.nan,
             "K_psi_psi": self.last_K[2, 2] if self.last_K is not None else np.nan,
             "K_v_v": self.last_K[3, 3] if self.last_K is not None else np.nan,
-            "K_w_w": self.last_K[4, 4] if self.last_K is not None else np.nan,
+            "K_w_w": self.last_K[4, 4]
+            if self.last_K is not None and self.last_K.shape[0] > 4 and self.last_K.shape[1] > 4
+            else np.nan,
             "ekf_K_norm": float(np.linalg.norm(ekf_gain_matrix))
             if ekf_gain_matrix is not None
             else np.nan,
@@ -2720,7 +2801,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             "innov_y": innovation[1],
             "innov_psi": innovation[2],
             "innov_v": innovation[3],
-            "innov_w": innovation[4],
+            "innov_w": innovation[4] if innovation.size > 4 else np.nan,
             "pred_x": self.last_x_pred[0] if self.last_x_pred is not None else np.nan,
             "pred_y": self.last_x_pred[1] if self.last_x_pred is not None else np.nan,
         }
@@ -2958,7 +3039,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self.measurement_history = deque(maxlen=self.sequence_length)
         self.dt_history = deque(maxlen=self.sequence_length)
         self._clear_stream_state()
-        self.internal_state = np.zeros(5, dtype=np.float32)
+        self.internal_state = np.zeros(self.model_cfg.state_dim, dtype=np.float32)
         if initial_pose is not None:
             self.internal_state[0] = float(initial_pose[0])
             self.internal_state[1] = float(initial_pose[1])
@@ -3006,8 +3087,8 @@ def weighted_state_mse(
     weights: Optional[torch.Tensor] = None,
 ):
     """
-    pred,target: [B,T,5]
-    weights: [5] or None
+    pred,target: [B,T,m]
+    weights: [m] or None
     """
     err = pred - target
     # Out-of-place angle wrapping to avoid breaking autograd
@@ -3035,9 +3116,9 @@ def meas_mask_supervision_loss(
     that occurs when NaN/Inf values propagate through a standalone sigmoid.
 
     Args:
-        meas_mask_logits: [B, T, 5] — raw logits (pre-sigmoid) for the
+        meas_mask_logits: [B, T, n] — raw logits (pre-sigmoid) for the
                           per-channel mask on measurements
-        meas_attack_labels: [B, T, 5] or legacy [B, 5] — 1 if that
+        meas_attack_labels: [B, T, n] or legacy [B, n] — 1 if that
                           measurement channel was attacked
 
     Returns:
@@ -3049,7 +3130,7 @@ def meas_mask_supervision_loss(
         labels = meas_attack_labels.expand_as(meas_mask_logits)
     else:
         raise ValueError(
-            f"Expected meas_attack_labels with shape [B, 5] or [B, T, 5], "
+            f"Expected meas_attack_labels with shape [B, n] or [B, T, n], "
             f"got {tuple(meas_attack_labels.shape)}"
         )
 
@@ -3064,6 +3145,16 @@ def meas_mask_supervision_loss(
     attack_weight = max(float(attacked_weight), 1.0)
     weights = torch.where(labels > 0.5, attack_weight, 1.0)
     return (element_loss * weights).sum() / weights.sum().clamp_min(1.0)
+
+
+def temporal_smoothness_loss(tensor: Optional[torch.Tensor]) -> torch.Tensor:
+    """Penalize fast timestep-to-timestep changes for sequence outputs."""
+    if tensor is None:
+        raise ValueError("temporal_smoothness_loss received None")
+    if tensor.dim() < 3 or tensor.shape[1] < 2:
+        return tensor.new_zeros(())
+    diff = tensor[:, 1:, ...] - tensor[:, :-1, ...]
+    return (diff ** 2).mean()
 
 
 def robuststatenet_loss(
@@ -3082,6 +3173,8 @@ def robuststatenet_loss(
     lambda_meas_mask: float = 0.1,
     K: Optional[torch.Tensor] = None,
     lambda_gain: float = 0.0,
+    lambda_gain_smooth: float = 0.0,
+    lambda_meas_mask_smooth: float = 0.0,
 ):
     """
     Paper-style combined loss with optional mask supervision:
@@ -3135,6 +3228,16 @@ def robuststatenet_loss(
         total = total + lambda_gain * loss_gain
         logs["loss_gain"] = loss_gain.item()
 
+    if K is not None and lambda_gain_smooth > 0:
+        loss_gain_smooth = temporal_smoothness_loss(K)
+        total = total + lambda_gain_smooth * loss_gain_smooth
+        logs["loss_gain_smooth"] = loss_gain_smooth.item()
+
+    if meas_mask is not None and lambda_meas_mask_smooth > 0:
+        loss_meas_mask_smooth = temporal_smoothness_loss(meas_mask)
+        total = total + lambda_meas_mask_smooth * loss_meas_mask_smooth
+        logs["loss_meas_mask_smooth"] = loss_meas_mask_smooth.item()
+
     return total, logs
 
 
@@ -3163,8 +3266,8 @@ def make_dummy_batch(B=4, T=20, device="cpu"):
         "gps_age_sec": torch.zeros(B, T, 1, device=device),
     }
 
-    z_seq = torch.randn(B, T, 5, device=device)
-    x_gt = torch.randn(B, T, 5, device=device)
+    z_seq = torch.randn(B, T, 4, device=device)
+    x_gt = torch.randn(B, T, 4, device=device)
     x0 = x_gt[:, 0, :]
 
     return raw, z_seq, x_gt, x0
@@ -3181,7 +3284,7 @@ def train_step(model, optimizer, batch, device="cpu"):
     optimizer.zero_grad()
 
     out = model(raw=raw, z_seq=z_seq, x0=x0, teacher_forcing_state=x_gt)
-    state_weights = torch.tensor([1.0, 1.0, 2.0, 1.0, 1.0], device=device)
+    state_weights = torch.tensor([1.0, 1.0, 2.0, 1.0], device=device)
 
     loss, logs = robuststatenet_loss(
         out["x_pred"],

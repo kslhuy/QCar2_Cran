@@ -231,13 +231,6 @@ class VehicleLogic:
             "delta": 0.0,
             "state": "UNKNOWN",
             "gps_valid": False,
-            "local_sensor_attack_supported": False,
-            "local_sensor_attack_enabled": False,
-            "local_sensor_attack_active": False,
-            "local_sensor_attack_branch_types": "",
-            "local_sensor_attack_gps_type": "",
-            "local_sensor_attack_remaining_steps": 0,
-            "local_sensor_attack_intensity": 0.0,
         }
         self._latest_observer_state = None
 
@@ -681,6 +674,20 @@ class VehicleLogic:
         merged_status = default_status.copy()
         merged_status.update(status)
         return merged_status
+
+    def _get_local_sensor_attack_status_compact(self) -> dict:
+        """Return only the low-churn local sensor attack fields intended for UI status."""
+        status = self._get_local_sensor_attack_status()
+        allowed_keys = (
+            "local_sensor_attack_supported",
+            "local_sensor_attack_enabled",
+            "local_sensor_attack_active",
+            "local_sensor_attack_branch_types",
+            "local_sensor_attack_gps_type",
+            "local_sensor_attack_remaining_steps",
+            "local_sensor_attack_intensity",
+        )
+        return {key: status.get(key) for key in allowed_keys}
 
     def start_local_sensor_attack(self, config: Optional[dict] = None) -> bool:
         """Enable runtime RKNet local sensor attack injection for this vehicle."""
@@ -1453,7 +1460,6 @@ class VehicleLogic:
         
         self._telemetry_state["state"] = self.state_machine.state.name if hasattr(self.state_machine, "state") and self.state_machine.state else "UNKNOWN"
         self._telemetry_state["gps_valid"] = bool(state_info.get("gps_valid", False))
-        self._telemetry_state.update(self._get_local_sensor_attack_status())
 
         # Include opponent tracking data in telemetry
         self._telemetry_state["opponents"] = self.opponent_data
@@ -1636,7 +1642,7 @@ class VehicleLogic:
         status_msg.update(v2v_status)
         status_msg.update(self._get_platoon_status())
         status_msg.update(self._get_cached_periodic_static_status())
-        status_msg.update(self._get_local_sensor_attack_status())
+        status_msg.update(self._get_local_sensor_attack_status_compact())
 
         try:
             current_handler = self.state_machine.get_current_state_handler()

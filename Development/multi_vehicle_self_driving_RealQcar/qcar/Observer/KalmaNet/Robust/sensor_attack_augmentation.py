@@ -42,11 +42,15 @@ BRANCH_KEYS: Dict[str, List[str]] = {
 BRANCH_NAMES = list(BRANCH_KEYS.keys())          # ["imu", "steer", "wheel"]
 BRANCH_INDEX = {name: i for i, name in enumerate(BRANCH_NAMES)}
 
-# Measurement z = [x, y, psi, v, w]
-# Indices 0,1,2 → GNSS-related ; 3 → motor tach ; 4 → gyro
+# Measurement z = [x, y, psi, v]
+# Indices 0,1,2 -> GNSS/heading-related ; 3 -> motor tach
 MEAS_GNSS_INDICES = [0, 1, 2]
 MEAS_VELOCITY_INDEX = 3
-MEAS_YAWRATE_INDEX = 4
+DIRECT_MEASUREMENT_GROUPS: Tuple[Tuple[int, ...], ...] = (
+    (2,),
+    (3,),
+    (2, 3),
+)
 
 GPS_POSITION_ATTACK_TYPES = [
     "noise",
@@ -75,13 +79,19 @@ class AttackConfig:
         "wheel": 0.3,
     })
 
-    # Probability of also attacking the measurement z
+    # Probability of also attacking the measurement z when a raw branch attack
+    # already happened in the same sample.
     meas_attack_prob: float = 0.3
+
+    # Independent probability of directly corrupting measurement-update
+    # channels [psi, v] without touching raw predictor inputs.
+    direct_meas_attack_prob: float = 0.3
 
     # Independent probability of corrupting GPS x/y measurement channels.
     # These attacks target the update step's position correction behavior.
     gps_attack_prob: float = 0.3
     gps_attack_types: List[str] = field(default_factory=lambda: list(GPS_POSITION_ATTACK_TYPES))
+    measurement_focus_only: bool = False
 
     # Which attack types to use (uniform random selection among enabled)
     enabled_attacks: List[str] = field(default_factory=lambda: [
@@ -390,6 +400,23 @@ class SensorAttackAugmenter:
         if mark_end > mark_start:
             meas_attack_labels[batch_index, mark_start:mark_end, 0:2] = 1.0
 
+    def _apply_direct_measurement_attack(
+        self,
+        z_out: "torch.Tensor",
+        meas_attack_labels: "torch.Tensor",
+        batch_index: int,
+    ) -> None:
+        """Directly corrupt measurement channels used by the updater."""
+        attack_name, attack_fn = self._pick_attack_fn()
+        group_idx = int(torch.randint(len(DIRECT_MEASUREMENT_GROUPS), (1,)).item())
+        channels = DIRECT_MEASUREMENT_GROUPS[group_idx]
+        attacked = attack_fn(
+            z_out[batch_index, :, list(channels)].unsqueeze(0),
+            self.config,
+        ).squeeze(0)
+        z_out[batch_index, :, list(channels)] = attacked
+        meas_attack_labels[batch_index, :, list(channels)] = 1.0
+
     def augment_batch(
         self,
         raw: Dict[str, "torch.Tensor"],
@@ -401,7 +428,7 @@ class SensorAttackAugmenter:
         Args:
             raw: Dict of raw sensor tensors, each [B, T, 1].
                  Keys: ax, ay, wz, delta, vfl, vfr, vrl, vrr
-            z_seq: Measurement tensor [B, T, 5] = [x, y, psi, v, w]
+            z_seq: Measurement tensor [B, T, 4] = [x, y, psi, v]
 
         Returns:
             raw_corrupted: Same structure as raw, with attacks applied
@@ -409,9 +436,9 @@ class SensorAttackAugmenter:
             attack_labels: [B, 3] binary tensor.
                            Column 0 = IMU attacked, 1 = Steer, 2 = Wheel.
                            Use for optional supervised prediction mask loss.
-            meas_attack_labels: [B, T, 5] binary tensor.
+            meas_attack_labels: [B, T, n] binary tensor.
                            Per-timestep, per-channel measurement attack indicator.
-                           [x, y, psi, v, w] — 1 if that channel was corrupted.
+                           [x, y, psi, v] — 1 if that channel was corrupted.
                            Use for optional supervised measurement mask loss.
         """
         if not TORCH_AVAILABLE:
@@ -428,12 +455,18 @@ class SensorAttackAugmenter:
         attack_labels = torch.zeros(B, len(BRANCH_NAMES), device=device)
         T = z_seq.shape[1]
         # meas_attack_labels[b, t, channel] = 1 if z[t, channel] was corrupted
-        meas_attack_labels = torch.zeros(B, T, 5, device=device, dtype=z_seq.dtype)
+        meas_attack_labels = torch.zeros(
+            B,
+            T,
+            int(z_seq.shape[-1]),
+            device=device,
+            dtype=z_seq.dtype,
+        )
 
         for b in range(B):
             branches: List[str] = []
 
-            if self._should_attack():
+            if not self.config.measurement_focus_only and self._should_attack():
                 branches = self._pick_branches_to_attack()
                 attack_name, attack_fn = self._pick_attack_fn()
 
@@ -450,13 +483,10 @@ class SensorAttackAugmenter:
                 # Optionally also attack the measurement z
                 if torch.rand(1).item() < self.config.meas_attack_prob:
                     if "imu" in branches:
-                        # Attack yaw rate in measurement
-                        z_out[b, :, MEAS_YAWRATE_INDEX] = attack_fn(
-                            z_out[b, :, MEAS_YAWRATE_INDEX:MEAS_YAWRATE_INDEX + 1].unsqueeze(0),
+                        z_out[b, :, 2] = attack_fn(
+                            z_out[b, :, 2:3].unsqueeze(0),
                             self.config,
                         ).squeeze(0).squeeze(-1)
-                        # Mark yaw rate (4) and psi (2) as attacked in measurement
-                        meas_attack_labels[b, :, MEAS_YAWRATE_INDEX] = 1.0
                         meas_attack_labels[b, :, 2] = 1.0  # psi is derived from IMU
                     if "wheel" in branches:
                         # Attack velocity in measurement
@@ -466,6 +496,9 @@ class SensorAttackAugmenter:
                         ).squeeze(0).squeeze(-1)
                         # Mark velocity (3) as attacked in measurement
                         meas_attack_labels[b, :, MEAS_VELOCITY_INDEX] = 1.0
+
+            if torch.rand(1).item() < self.config.direct_meas_attack_prob:
+                self._apply_direct_measurement_attack(z_out, meas_attack_labels, b)
 
             if torch.rand(1).item() < self.config.gps_attack_prob:
                 self._apply_gps_position_attack(raw_out, z_out, meas_attack_labels, b)

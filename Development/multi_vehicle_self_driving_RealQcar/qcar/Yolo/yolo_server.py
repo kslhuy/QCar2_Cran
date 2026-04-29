@@ -99,7 +99,9 @@ class ServerConfig:
             height=args.height,
             car_id=cid,
             probing=probing,
-            show_obstacle_box=True,  # Always show the obstacle box
+            # Keep obstacle state in the published packet, but only draw the
+            # center obstacle box on the video stream when explicitly requested.
+            show_obstacle_box=args.obsbox,
             config_path=args.config,
             distance_offset_m=yaml_config.yolo.postprocess.distance_offset_m,
             video_port=args.video_port,

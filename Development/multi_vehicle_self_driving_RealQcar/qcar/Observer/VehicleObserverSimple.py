@@ -25,6 +25,7 @@ from collections import defaultdict
 from Observer.local_state_estimators import (
     LocalEstimatorFactory,
     LocalStateEstimatorBase,
+    wrap_to_pi,
 )
 from Observer.fleet_state_estimators import (
     FleetEstimatorFactory,
@@ -275,8 +276,10 @@ class VehicleObserver:
         # self.last_velocity = 0.0
         self.acceleration_magnitude = 0.0
         self.v_lpf_alpha = 1.0
+        self.local_output_lpf_alpha = 1.0
         self._filtered_motor_tach = 0.0
         self._motor_tach_filter_initialized = False
+        self._local_output_filter_initialized = False
         self.accel_ema_alpha = 1.0
         self._filtered_accelerometer = np.zeros(3)
         self._accel_filter_initialized = False
@@ -312,11 +315,19 @@ class VehicleObserver:
             self.v_lpf_alpha = float(
                 np.clip(float(common_cfg.get("v_lpf_alpha", 1.0)), 0.0, 1.0)
             )
+            self.local_output_lpf_alpha = float(
+                np.clip(
+                    float(common_cfg.get("local_output_lpf_alpha", 1.0)),
+                    0.0,
+                    1.0,
+                )
+            )
             self.accel_ema_alpha = float(
                 np.clip(float(common_cfg.get("accel_ema_alpha", 1.0)), 0.0, 1.0)
             )
         except (TypeError, ValueError):
             self.v_lpf_alpha = 1.0
+            self.local_output_lpf_alpha = 1.0
             self.accel_ema_alpha = 1.0
         try:
             gps_hold_cfg = self.observer_config.get(
@@ -890,6 +901,44 @@ class VehicleObserver:
         )
         return self._filtered_motor_tach
 
+    def _coerce_local_output_state(self, state: np.ndarray) -> np.ndarray:
+        """Normalize estimator output to the canonical 5D local-state layout."""
+        state_arr = np.asarray(state, dtype=float).flatten()
+        local_state = np.zeros(self.state_dim, dtype=float)
+        if state_arr.size > 0:
+            copy_len = min(state_arr.size, self.state_dim)
+            local_state[:copy_len] = state_arr[:copy_len]
+        if state_arr.size < 5 and self.state_dim > 4:
+            local_state[4] = self._extract_accel_x_locked()
+        if self.state_dim > 2:
+            local_state[2] = wrap_to_pi(local_state[2])
+        return local_state
+
+    def _apply_local_output_lpf(self, state: np.ndarray) -> np.ndarray:
+        """
+        Smooth the final local-estimator output used by controller and V2V.
+
+        The first valid state passes through directly to avoid startup lag.
+        """
+        new_state = self._coerce_local_output_state(state)
+        alpha = float(np.clip(self.local_output_lpf_alpha, 0.0, 1.0))
+        if alpha >= 1.0:
+            self._local_output_filter_initialized = True
+            return new_state
+
+        if not self._local_output_filter_initialized:
+            self._local_output_filter_initialized = True
+            return new_state
+
+        prev_state = self._coerce_local_output_state(self.local_state)
+        filtered = (1.0 - alpha) * prev_state + alpha * new_state
+        if self.state_dim > 2:
+            theta_prev = float(prev_state[2])
+            theta_new = float(new_state[2])
+            theta_delta = wrap_to_pi(theta_new - theta_prev)
+            filtered[2] = wrap_to_pi(theta_prev + alpha * theta_delta)
+        return filtered
+
     def _init_recorders(self):
         """Initialize data recorders if enabled in config."""
         try:
@@ -1233,6 +1282,13 @@ class VehicleObserver:
                 self.v_lpf_alpha = float(
                     np.clip(float(estimator_params.get("v_lpf_alpha", 1.0)), 0.0, 1.0)
                 )
+                self.local_output_lpf_alpha = float(
+                    np.clip(
+                        float(estimator_params.get("local_output_lpf_alpha", 1.0)),
+                        0.0,
+                        1.0,
+                    )
+                )
                 self.accel_ema_alpha = float(
                     np.clip(
                         float(estimator_params.get("accel_ema_alpha", 1.0)),
@@ -1242,6 +1298,7 @@ class VehicleObserver:
                 )
             except (TypeError, ValueError):
                 self.v_lpf_alpha = 1.0
+                self.local_output_lpf_alpha = 1.0
                 self.accel_ema_alpha = 1.0
 
             # # motor_tach is filtered centrally in VehicleObserver, so disable
@@ -1604,32 +1661,25 @@ class VehicleObserver:
             # Get current state from estimator (returns numpy array directly)
             state = self.local_estimator.get_state()
 
-            # Update local state cache - handle both 4D and 5 dimension states
             # GPS validity is tracked at observer level based on actual GPS reading
             gps_valid = self.sensor_data.get("gps_valid", False)
 
             with self.lock:
-                if len(state) == 4:
-                    # Legacy 4D state: [x, y, theta, v] - add acceleration
-                    self.local_state = np.zeros(5)
-                    self.local_state[:4] = state.copy()
-                    self.local_state[4] = self._extract_accel_x_locked()
-                else:
-                    # 5D state: [x, y, theta, v, a]
-                    self.local_state = state.copy()
-
+                self.local_state = self._apply_local_output_lpf(state)
                 self.position = self.local_state[:3].copy()  # [x, y, theta]
                 self.velocity = float(self.local_state[3])
                 self.gps_valid = gps_valid  # GPS validity from sensor data
+                local_state_snapshot = self.local_state.copy()
+                position_snapshot = self.position.copy()
 
             # Record data if enabled
             if self.local_recorder and self.local_recorder.recording:
                 record_data = {
-                    "x": float(self.local_state[0]),
-                    "y": float(self.local_state[1]),
-                    "theta": float(self.local_state[2]),
-                    "velocity": float(self.local_state[3]),
-                    "acceleration": float(self.local_state[4]),
+                    "x": float(local_state_snapshot[0]),
+                    "y": float(local_state_snapshot[1]),
+                    "theta": float(local_state_snapshot[2]),
+                    "velocity": float(local_state_snapshot[3]),
+                    "acceleration": float(local_state_snapshot[4]),
                     "x_gps": gps_data["x"] if gps_data else 0.0,
                     "y_gps": gps_data["y"] if gps_data else 0.0,
                     "theta_gps": gps_data["theta"] if gps_data else 0.0,
@@ -1641,14 +1691,14 @@ class VehicleObserver:
                 self.local_recorder.record(time.time(), record_data)
 
             return {
-                "x": float(state[0]),
-                "y": float(state[1]),
-                "theta": float(state[2]),
-                "velocity": float(state[3]),
-                "acceleration": float(self.local_state[4]),
+                "x": float(local_state_snapshot[0]),
+                "y": float(local_state_snapshot[1]),
+                "theta": float(local_state_snapshot[2]),
+                "velocity": float(local_state_snapshot[3]),
+                "acceleration": float(local_state_snapshot[4]),
                 "gps_valid": gps_valid,
-                "position": self.position.copy(),
-                "local_state": self.local_state.copy(),
+                "position": position_snapshot,
+                "local_state": local_state_snapshot,
             }
 
         except Exception as e:
@@ -2740,6 +2790,7 @@ class VehicleObserver:
             self.acceleration_magnitude = 0.0
             self._filtered_motor_tach = 0.0
             self._motor_tach_filter_initialized = False
+            self._local_output_filter_initialized = False
             self._filtered_accelerometer = np.zeros(3)
             self._accel_filter_initialized = False
             self.control_input = {"steering": 0.0, "throttle": 0.0}

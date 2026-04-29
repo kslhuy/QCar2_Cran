@@ -113,13 +113,18 @@ trust:
 
   # Distributed trust covariance parameters (always paper-style)
   distributed_trust_fallback: 0.2
-  distributed_trust_covariance_diag: [2.0, 2.0, 3.0, 2.0, 6.0] # Sigma^2 for gamma_host (x,y,theta,v,a)
+  distributed_trust_covariance_diag: [2.0, 2.0, 3.5, 2.0, 6.0] # Sigma^2 for gamma_host (x,y,theta,v,a)
   # Robust global trust settings. Acceleration is model-derived in the real
   # fleet, so keep it diagnostic but prevent it from dominating gamma_host.
   distributed_trust_state_indices: [0, 1, 2, 3, 4]
-  distributed_trust_contribution_caps: [4.0, 4.0, 3.0, 2.0, 0.2]
+  distributed_trust_contribution_caps: [4.0, 4.0, 2.0, 2.0, 0.2]
   distributed_trust_accel_weight: 0.1
-  distributed_local_tau2_diag: [1.5, 0.5]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
+  ## GAMMA Self-Trust Settings
+  distributed_local_tau2_diag: [1.5, 0.6]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
+  distributed_self_turn_distance_gain: 1.5
+  distributed_self_turn_velocity_gain: 1.0
+  gamma_self_penalty_floor: 0.4  # if gamma_self can stay low but you do not want global_trust to fall much, increase
+  gamma_self_penalty_exponent: 0.9 # punishment curve is still too sharp, lower gamma_self_penalty_exponent
   # Relative-trust mode:
   # true  = use [distance, relative_velocity]
   # false = use [distance] only (simple mode)
@@ -155,6 +160,8 @@ weight:
   eta: 0.15                       # EMA smoothing factor
   enable_smoothing: false         # Enable weight smoothing between updates
   startup_fixed_duration_s: 5.0   # Keep fixed non-trust weights while platoon forms
+  use_gamma_self_weight_adaptation: true
+  gamma_self_weight_floor: 0.25
   
   # Flag-driven w₀ adaptation factors
   # These multiply w₀ when an attack flag fires for the target being estimated
@@ -187,9 +194,19 @@ observer:
   n_good: 3 
   blend_thresh: 3.0
   similarity_tolerances: [3.5, 2.0, 0.14, 2.0, 1.0]
+  # State propagation used by the fleet estimator prediction step:
+  # model           = existing bicycle + longitudinal model
+  # dead_reckoning  = propagate x/y only with current heading and velocity
+  # none            = skip propagation and keep the corrected/prior state
+  dynamics_prediction_mode: dead_reckoning
+  # Final output low-pass filter on each target estimate:
+  # x_filt = alpha * x_new + (1 - alpha) * x_prev
+  # lower alpha = smoother but more lag
+  enable_output_low_pass: true
+  output_low_pass_alpha: 0.25
 
   # Trust-triggered contamination rollback
-  rollback_enabled: false
+  rollback_enabled: true
   rollback_window_size: 15
   
   # Kalman-specific parameters (for trust_kalman type)
@@ -203,6 +220,11 @@ observer:
 # =====================================================================
 vehicle:
   vehicle_type: Qcar
+  # Vehicle-model metadata for prediction. The fleet estimator now treats
+  # `observer.dynamics_prediction_mode` as the global switch; use
+  # `vehicle_models.<id>.dynamics_prediction_mode` for explicit per-target
+  # overrides when needed.
+  dynamics_prediction_mode: model
   wheelbase: 0.256                # QCar wheelbase in meters
   max_velocity: 2.0               # Maximum velocity m/s
   max_acceleration: 2.0           # Match real-QCar longitudinal limit used elsewhere
@@ -220,6 +242,7 @@ vehicle_models:
   # Example for a Limo target:
   # 3:
   #   vehicle_type: Limo
+  #   dynamics_prediction_mode: dead_reckoning
   #   wheelbase: 0.2
   #   max_velocity: 1.2
   #   max_acceleration: 1.0
@@ -227,7 +250,7 @@ vehicle_models:
   #   velocity_command_tau: 0.35
 
 timestamp_alignment:
-  enabled: true
+  enabled: false
   max_extrapolation_s: 0.5
 
 # =====================================================================
