@@ -459,6 +459,39 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             if int(vehicle_id) != self.vehicle_id and float(trust_val) < threshold
         }
 
+    def _is_direct_measurement_allowed(
+        self, target_id: int, trust_scores: Dict[int, float]
+    ) -> bool:
+        """
+        Decide whether the direct owner-target channel may be used.
+
+        This gate is intentionally local-channel driven. A low combined/final
+        trust score can persist after a fleet inconsistency or mitigation event,
+        but that should not keep `w0` at zero once the target's local trust has
+        recovered. Only a bad local channel should suppress the direct packet.
+        """
+        trust_obj = self.trust_model.get_trust_score(int(target_id))
+        if trust_obj is None:
+            threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+            return float(trust_scores.get(int(target_id), 1.0)) >= threshold
+
+        if bool(getattr(trust_obj, "flag_local_est_check", False)):
+            return False
+
+        local_trust = getattr(trust_obj, "local_trust_sample", None)
+        if local_trust is None:
+            return True
+
+        try:
+            local_trust_f = float(local_trust)
+        except (TypeError, ValueError):
+            return True
+        if not np.isfinite(local_trust_f):
+            return True
+
+        threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+        return local_trust_f >= threshold
+
     def _get_rollback_trusted_state_entry(
         self, target_id: int
     ) -> Optional[Tuple[np.ndarray, Optional[int]]]:
@@ -1743,10 +1776,16 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "prediction": {"dt": float(dt), "control": None},
             "weights": {"w0": 0.0, "w_self": 1.0, "neighbors": {}},
         }
+        target_trust_obj = self.trust_model.get_trust_score(target_id)
+        allow_direct_channel = (
+            True
+            if not apply_trust_channel_gating
+            else self._is_direct_measurement_allowed(target_id, trust_scores)
+        )
 
         # Get direct measurement from target
         direct_state = None
-        if target_id not in current_malicious_ids:
+        if allow_direct_channel:
             direct_entry = self._get_latest_received_state_with_timestamp(
                 target_id, current_time_ns
             )
@@ -1776,8 +1815,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             if target_id not in neighbor_fleet:
                 continue
             neighbor_fleet_estimates[neighbor_id] = neighbor_fleet
-
-        target_trust_obj = self.trust_model.get_trust_score(target_id)
 
         # Calculate weights (paper or trust-based - unified call)
         if use_startup_fixed_weights:

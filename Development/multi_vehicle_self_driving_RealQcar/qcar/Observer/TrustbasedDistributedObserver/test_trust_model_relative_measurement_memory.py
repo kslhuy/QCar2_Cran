@@ -14,6 +14,7 @@ if QCAR_ROOT not in sys.path:
 from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (  # noqa: E402
     TrustBasedFleetEstimator,
 )
+from Observer.TrustbasedDistributedObserver.trust_model import TrustScore  # noqa: E402
 
 
 class CleanV2VRelativeMeasurementTests(unittest.TestCase):
@@ -108,6 +109,42 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
         self.assertEqual(trust.relative_measurement_source, "yolo_relative")
         self.assertAlmostEqual(trust.y_local_distance, 7.0, places=6)
         self.assertAlmostEqual(trust.y_local_rel_velocity, 0.25, places=6)
+
+    def test_direct_channel_recovers_from_local_trust_even_if_final_trust_is_low(self):
+        self.estimator.add_received_local_state(
+            sender_id=0,
+            state={
+                "x": 6.0,
+                "y": 0.0,
+                "theta": 0.0,
+                "velocity": 1.0,
+                "acceleration": 0.0,
+            },
+            timestamp_ns=self.current_time_ns,
+        )
+        self.estimator.fleet_states[:, 0] = np.array([0.0, 0.0, 0.0, 1.0, 0.0])
+        self.estimator.trust_model.trust_scores[0] = TrustScore(
+            vehicle_id=0,
+            final_score=0.2,
+            local_trust_sample=1.0,
+            global_trust_sample=0.1,
+            flag_target_attack=False,
+            flag_global_est_check=True,
+            flag_local_est_check=False,
+        )
+
+        updated_state, components = self.estimator._trust_weighted_update_with_components(
+            target_id=0,
+            current_time_ns=self.current_time_ns,
+            trust_scores={0: 0.2},
+            control=np.zeros(2, dtype=float),
+            dt=0.1,
+        )
+
+        self.assertGreater(components["weights"]["w0"], 0.0)
+        self.assertGreater(components["direct"]["weight"], 0.0)
+        self.assertIsNotNone(components["direct"]["state"])
+        self.assertGreater(updated_state[0], 0.0)
 
 
 if __name__ == "__main__":
