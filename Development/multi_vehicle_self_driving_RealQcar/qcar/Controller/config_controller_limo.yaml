@@ -149,8 +149,8 @@ pp_map:
   min_speed: 0.3
   kappa_speed_gain: 1.0
   max_speed: 1.0
-  hard_turn_kappa: 0.7
-  hard_turn_speed: 0.3
+  hard_turn_kappa: 0.69
+  hard_turn_speed: 0.32
   t_clip_min: 0.5
   t_clip_max: 1.0
   m_l1: 0.5

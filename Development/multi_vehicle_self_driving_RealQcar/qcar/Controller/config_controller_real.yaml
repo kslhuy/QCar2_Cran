@@ -167,9 +167,9 @@ pure_pursuit:
   curvature_threshold: 0.05   # Lane curvature threshold for turn detection
   turn_lookahead_offset: 0.2 # Lateral offset in turns (meters)
   turn_lookahead_gain: 1.4   # Lookahead distance multiplier in turns
-  turn_preview_cap: 0.0     # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
-  heading_alignment_gain: 0.0   # 0.0 = old lateral behavior. Increase only if first heading capture is too slow.
-  heading_alignment_window_deg: 0.0  # Heading-error range over which the extra alignment term ramps in.
+  turn_preview_cap: 0.02     # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
+  heading_alignment_gain: 0.1   # 0.0 = old lateral behavior. Increase only if first heading capture is too slow.
+  heading_alignment_window_deg: 30.0  # Heading-error range over which the extra alignment term ramps in.
   heading_preview_cap: 0.0      # 0.0 = no extra forward preview from heading mismatch. Increase cautiously; too high causes corner cutting.
 
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')

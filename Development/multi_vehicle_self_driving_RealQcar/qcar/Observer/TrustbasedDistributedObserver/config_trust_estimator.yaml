@@ -215,7 +215,7 @@ observer:
   # When true, clean_data / mixed_clean_data may re-anchor x/y to the clean
   # V2V target pose when attack flags are active. When false, keep x/y
   # continuity from the consensus/rollback estimate even under attack.
-  force_clean_pose_anchor: false
+  force_clean_pose_anchor: true
   # Final output low-pass filter on each target estimate:
   # x_filt = alpha * x_new + (1 - alpha) * x_prev
   # lower alpha = smoother but more lag
