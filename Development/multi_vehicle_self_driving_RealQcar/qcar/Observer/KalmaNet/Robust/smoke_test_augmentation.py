@@ -4,7 +4,7 @@ from robustKLnet import RSNConfig, RobustStateNet, robuststatenet_loss, make_dum
 from sensor_attack_augmentation import SensorAttackAugmenter, AttackConfig, mask_supervision_loss
 
 print("=== Test 1: Forward pass returns pred_mask and meas_mask ===")
-cfg = RSNConfig()
+cfg = RSNConfig(predictor_mode="nn")
 model = RobustStateNet(cfg)
 raw, z_seq, x_gt, x0 = make_dummy_batch(B=4, T=10)
 out = model(raw=raw, z_seq=z_seq, x0=x0, teacher_forcing_state=x_gt)
@@ -26,19 +26,22 @@ raw_aug, z_aug, labels, meas_labels = aug.augment_batch(raw, z_seq)
 print("attack_labels shape:", labels.shape)
 print("meas_attack_labels shape:", meas_labels.shape)
 print("attacked branches per sample:", labels.sum(dim=0).tolist())
-print("attacked meas channels per sample:", meas_labels.sum(dim=0).tolist())
+print("attacked meas channels per sample:", meas_labels.sum(dim=(0, 1)).tolist())
 diff = sum((raw_aug[k] - raw[k]).abs().sum().item() for k in raw)
 print("raw data changed:", diff > 0)
 assert diff > 0, "Augmentation did not modify data"
 assert labels.shape == (4, 3), f"Bad labels shape: {labels.shape}"
-assert meas_labels.shape == (4, 5), f"Bad meas_labels shape: {meas_labels.shape}"
+assert meas_labels.shape == (4, 10, 5), f"Bad meas_labels shape: {meas_labels.shape}"
 
 print()
 print("=== Test 3: Loss with pred mask + meas mask supervision ===")
 loss, logs = robuststatenet_loss(
     out["x_pred"], out["x_upd"], x_gt,
     pred_mask=out["pred_mask"], attack_labels=labels, lambda_mask=0.1,
-    meas_mask=out["meas_mask"], meas_attack_labels=meas_labels, lambda_meas_mask=0.1,
+    meas_mask=out["meas_mask"],
+    meas_mask_logits=out["meas_mask_logits"],
+    meas_attack_labels=meas_labels,
+    lambda_meas_mask=0.1,
 )
 print("total loss:", round(loss.item(), 4))
 print("logs:", {k: round(v, 4) for k, v in logs.items()})
@@ -54,7 +57,7 @@ print("pred mask_net gradient norm:", round(mask_grad.norm().item(), 6))
 assert mask_grad is not None, "No gradient on pred mask_net"
 assert mask_grad.norm().item() > 0, "Zero gradient on pred mask_net"
 
-meas_mask_grad = model.updater.meas_mask_net[0].weight.grad
+meas_mask_grad = model.updater.mask_net[0].weight.grad
 print("meas_mask_net gradient exists:", meas_mask_grad is not None)
 print("meas_mask_net gradient norm:", round(meas_mask_grad.norm().item(), 6))
 assert meas_mask_grad is not None, "No gradient on meas_mask_net"
@@ -72,7 +75,7 @@ for attack_type in ["bias", "scale", "freeze", "noise", "ramp", "zero_out"]:
 
 print()
 print("=== Test 6: No-attack mode (attack_prob=0) leaves data unchanged ===")
-no_aug = SensorAttackAugmenter(AttackConfig(attack_prob=0.0))
+no_aug = SensorAttackAugmenter(AttackConfig(attack_prob=0.0, gps_attack_prob=0.0))
 r_clean, z_clean, l_clean, ml_clean = no_aug.augment_batch(raw, z_seq)
 diff_clean = sum((r_clean[k] - raw[k]).abs().sum().item() for k in raw)
 assert diff_clean == 0.0, "attack_prob=0 modified data!"

@@ -60,9 +60,8 @@ DEFAULT_CONFIG = {
         "lambda_pred": 0.2,
         "lambda_upd": 0.8,
         "lambda_gain": 0.01,
-        "lambda_gain_smooth": 1e-3,
-        "lambda_meas_mask_smooth": 1e-2,
-        "state_weights": [1.0, 1.0, 2.0, 1.0],
+        "lambda_gain_smooth": 0.0,
+        "state_weights": [1.0, 1.0, 2.0, 1.0, 1.0],
     },
     "augmentation": {
         "enabled": True,
@@ -347,14 +346,8 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
     parser.add_argument(
         "--lambda-gain-smooth",
         type=float,
-        default=float(loss_cfg.get("lambda_gain_smooth", 1e-3)),
-        help="Weight for timestep-to-timestep Kalman gain smoothness regularization",
-    )
-    parser.add_argument(
-        "--lambda-meas-mask-smooth",
-        type=float,
-        default=float(loss_cfg.get("lambda_meas_mask_smooth", 1e-2)),
-        help="Weight for timestep-to-timestep measurement mask smoothness regularization",
+        default=float(loss_cfg.get("lambda_gain_smooth", 0.0)),
+        help="Weight for temporal Kalman gain smoothness regularization",
     )
     parser.add_argument(
         "--max-branches-attacked",
@@ -813,7 +806,6 @@ def evaluate(
                 K=out.get("K"),
                 lambda_gain=lambda_gain,
                 lambda_gain_smooth=lambda_gain_smooth,
-                lambda_meas_mask_smooth=lambda_meas_mask_smooth,
             )
             loss_upd = weighted_state_mse(out["x_upd"], x_gt, state_weights)
             loss_pred = weighted_state_mse(out["x_pred"], x_gt, state_weights)
@@ -839,6 +831,10 @@ def evaluate(
             }
             if out.get("K") is not None and lambda_gain > 0:
                 batch_metric["loss_gain"] = float((out["K"] ** 2).mean().item())
+            if out.get("K") is not None and lambda_gain_smooth > 0 and out["K"].shape[1] > 1:
+                batch_metric["loss_gain_smooth"] = float(
+                    ((out["K"][:, 1:] - out["K"][:, :-1]) ** 2).mean().item()
+                )
             batch_metrics.append(batch_metric)
     if cpu_rng_state is not None:
         torch.set_rng_state(cpu_rng_state)
@@ -1436,7 +1432,6 @@ def main() -> None:
                 K=out.get("K"),
                 lambda_gain=args.lambda_gain,
                 lambda_gain_smooth=args.lambda_gain_smooth,
-                lambda_meas_mask_smooth=args.lambda_meas_mask_smooth,
             )
             # Clamp loss to prevent extreme attack batches from corrupting
             # Adam's momentum/variance estimates
@@ -1465,7 +1460,6 @@ def main() -> None:
                 "loss_meas_mask",
                 "loss_gain",
                 "loss_gain_smooth",
-                "loss_meas_mask_smooth",
                 "meas_mask_attacked_mean",
                 "meas_mask_clean_mean",
             ):

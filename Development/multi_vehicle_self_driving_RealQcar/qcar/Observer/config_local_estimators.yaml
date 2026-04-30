@@ -2,7 +2,7 @@
 # Default parameters for the local state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-local_estimator_type: ekf # local_estimator_type: Which local estimator to use.
+local_estimator_type: robust_kalman_net # local_estimator_type: Which local estimator to use.
                         # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
 
 enable_recording: false # enable_recording: Controls data logging to CSV.
@@ -75,7 +75,7 @@ local:
   # Robust KalmanNet estimator
   # ---------------------------------------------------------------------
   robust_kalman_net:
-    predictor_mode: "kinematic"    # Always keep the predictor analytical/kinematic; only the update step is learned.
+    predictor_mode: "nn"    # Always keep the predictor analytical/kinematic; only the update step is learned.
     kin_wheelbase: 0.2          # Fallback default; VehicleObserver overrides from fleet_config.vehicle_geometry when available.
     longitudinal_model: "velocity_lag_lookup" # Observer-model calibration overrides this via `observer_model_source`; this is only the local fallback.
     kin_velocity_model: "velocity_lag" # Legacy fallback only when no calibration-backed longitudinal model is injected.

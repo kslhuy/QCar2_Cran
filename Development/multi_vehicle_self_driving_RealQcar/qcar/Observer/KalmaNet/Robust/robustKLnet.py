@@ -962,14 +962,16 @@ class LearnedKalmanUpdate(nn.Module):
 
         # 6. Apply additive correction
         # x_{k|k} = x_{k|k-1} + K_k @ (z_k - Hx_{k|k-1})
-        raw_innovation = wrap_state_residual(z_seq - Hx_pred) * meas_availability_seq
-        innovation_for_update = raw_innovation
-        if self.apply_meas_mask_to_innovation:
-            # Make the learned measurement mask directly suppress attacked
-            # channels in the actual correction path instead of only
-            # influencing the GRU features used to predict K.
-            innovation_for_update = innovation_for_update * learned_meas_mask
-        corr = torch.matmul(K_seq, innovation_for_update.unsqueeze(-1)).squeeze(-1)
+        # Apply both hard sensor availability and the learned measurement
+        # reliability mask to the innovation that actually corrects the state.
+        # Without this, mask supervision can learn to flag bad measurements
+        # while the final K @ innovation update still consumes them.
+        raw_innovation = (
+            wrap_state_residual(z_seq - Hx_pred)
+            * meas_availability_seq
+            * learned_meas_mask
+        )
+        corr = torch.matmul(K_seq, raw_innovation.unsqueeze(-1)).squeeze(-1)
 
         x_upd = x_pred_seq + corr
 
@@ -3174,7 +3176,6 @@ def robuststatenet_loss(
     K: Optional[torch.Tensor] = None,
     lambda_gain: float = 0.0,
     lambda_gain_smooth: float = 0.0,
-    lambda_meas_mask_smooth: float = 0.0,
 ):
     """
     Paper-style combined loss with optional mask supervision:
@@ -3182,6 +3183,7 @@ def robuststatenet_loss(
       + lambda_mask * pred_mask_supervision_loss
       + lambda_meas_mask * meas_mask_supervision_loss
       + lambda_gain * mean(K^2)   (gain regularization)
+      + lambda_gain_smooth * mean((K_t - K_{t-1})^2)
 
     When pred_mask and attack_labels are provided, the mask supervision
     term encourages the prediction mask to suppress attacked branches.
@@ -3192,6 +3194,9 @@ def robuststatenet_loss(
 
     When K is provided and lambda_gain > 0, a gain magnitude penalty
     discourages large Kalman gains to prevent over-correction at test time.
+
+    When lambda_gain_smooth > 0, a temporal penalty discourages noisy
+    frame-to-frame gain changes while still allowing the average gain to adapt.
     """
     loss_upd = weighted_state_mse(x_upd, x_gt, weights)
     loss_pred = weighted_state_mse(x_pred, x_gt, weights)
@@ -3228,15 +3233,10 @@ def robuststatenet_loss(
         total = total + lambda_gain * loss_gain
         logs["loss_gain"] = loss_gain.item()
 
-    if K is not None and lambda_gain_smooth > 0:
-        loss_gain_smooth = temporal_smoothness_loss(K)
+    if K is not None and lambda_gain_smooth > 0 and K.shape[1] > 1:
+        loss_gain_smooth = ((K[:, 1:] - K[:, :-1]) ** 2).mean()
         total = total + lambda_gain_smooth * loss_gain_smooth
         logs["loss_gain_smooth"] = loss_gain_smooth.item()
-
-    if meas_mask is not None and lambda_meas_mask_smooth > 0:
-        loss_meas_mask_smooth = temporal_smoothness_loss(meas_mask)
-        total = total + lambda_meas_mask_smooth * loss_meas_mask_smooth
-        logs["loss_meas_mask_smooth"] = loss_meas_mask_smooth.item()
 
     return total, logs
 

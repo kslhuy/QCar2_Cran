@@ -147,13 +147,9 @@ loss:
   # Penalizes large gains to encourage conservative corrections.
   lambda_gain: 0.003
 
-  # Weight for timestep-to-timestep Kalman gain smoothness.
-  # Helps reduce noisy update behavior in clean operation.
+  # Weight for temporal Kalman gain smoothness.
+  # Penalizes frame-to-frame gain chatter without forcing all gains to zero.
   lambda_gain_smooth: 0.001
-
-  # Weight for timestep-to-timestep measurement-mask smoothness.
-  # Helps avoid flickering masks across adjacent frames.
-  lambda_meas_mask_smooth: 0.01
 
 augmentation:
   # true  = apply synthetic attacks during training.
@@ -206,7 +202,7 @@ model:
   # kinematic = analytical QCar bicycle model
   #
   # Note: if set to kinematic, Phase A is skipped automatically.
-  predictor_mode: "kinematic"
+  predictor_mode: "nn"
   kin_wheelbase: 0.2
   # Longitudinal velocity prediction used by the analytical kinematic predictor.
   # tachometer        = legacy behavior, v_next = motor_tach, so z_v innovation is near zero.
