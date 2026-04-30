@@ -78,6 +78,13 @@ class TrustWeightLogger:
             "max": float(max(clean)),
         }
 
+    @classmethod
+    def _xy_error(cls, x1: Any, y1: Any, x2: Any, y2: Any) -> float:
+        vals = [x1, y1, x2, y2]
+        if any(not cls._is_number(v) or math.isnan(float(v)) for v in vals):
+            return cls._nan()
+        return float(math.hypot(float(x1) - float(x2), float(y1) - float(y2)))
+
     def _build_columns(self, max_vehicles: int) -> List[str]:
         columns: List[str] = [
             "time",
@@ -170,6 +177,40 @@ class TrustWeightLogger:
                     f"w_neighbor_sum_final_{i}",
                     f"est_conf_{i}",
                     f"pred_mode_{i}",
+                    f"consensus_x_{i}",
+                    f"consensus_y_{i}",
+                    f"consensus_theta_{i}",
+                    f"consensus_v_{i}",
+                    f"consensus_a_{i}",
+                    f"postpred_x_{i}",
+                    f"postpred_y_{i}",
+                    f"postpred_theta_{i}",
+                    f"postpred_v_{i}",
+                    f"postpred_a_{i}",
+                    f"ref_x_{i}",
+                    f"ref_y_{i}",
+                    f"ref_theta_{i}",
+                    f"ref_v_{i}",
+                    f"consensus_pos_err_{i}",
+                    f"postpred_pos_err_{i}",
+                    f"est_pos_err_{i}",
+                    f"consensus_vel_err_{i}",
+                    f"postpred_vel_err_{i}",
+                    f"est_vel_err_{i}",
+                    f"postpred_to_est_pos_gap_{i}",
+                    f"predsrc_{i}",
+                    f"pred_dt_{i}",
+                    f"pred_dx_{i}",
+                    f"pred_dy_{i}",
+                    f"pred_step_norm_{i}",
+                    f"pred_speed_dt_{i}",
+                    f"pred_steer_{i}",
+                    f"pred_host_steer_{i}",
+                    f"pred_theta_in_{i}",
+                    f"pred_theta_out_{i}",
+                    f"pred_v_in_{i}",
+                    f"pred_v_out_{i}",
+                    f"pred_host_v_{i}",
                     f"est_x_{i}",
                     f"est_y_{i}",
                     f"est_theta_{i}",
@@ -245,6 +286,18 @@ class TrustWeightLogger:
         )
         estimation_conf = self._normalize_vehicle_dict(data.get("estimation_confidence", {}))
         prediction_mode = self._normalize_vehicle_dict(data.get("prediction_mode", {}))
+        consensus_estimates = self._normalize_vehicle_dict(
+            data.get("consensus_estimates", {})
+        )
+        post_prediction_estimates = self._normalize_vehicle_dict(
+            data.get("post_prediction_estimates", {})
+        )
+        clean_reference_estimates = self._normalize_vehicle_dict(
+            data.get("clean_reference_estimates", {})
+        )
+        prediction_debugs = self._normalize_vehicle_dict(
+            data.get("prediction_debugs", {})
+        )
         fleet_estimates = self._normalize_vehicle_dict(data.get("fleet_estimates", {}))
         v2v_attack = data.get("v2v_attack", {})
         if not isinstance(v2v_attack, dict):
@@ -400,6 +453,40 @@ class TrustWeightLogger:
             row[f"w_neighbor_sum_final_{i}"] = nan_val
             row[f"est_conf_{i}"] = nan_val
             row[f"pred_mode_{i}"] = nan_val
+            row[f"consensus_x_{i}"] = nan_val
+            row[f"consensus_y_{i}"] = nan_val
+            row[f"consensus_theta_{i}"] = nan_val
+            row[f"consensus_v_{i}"] = nan_val
+            row[f"consensus_a_{i}"] = nan_val
+            row[f"postpred_x_{i}"] = nan_val
+            row[f"postpred_y_{i}"] = nan_val
+            row[f"postpred_theta_{i}"] = nan_val
+            row[f"postpred_v_{i}"] = nan_val
+            row[f"postpred_a_{i}"] = nan_val
+            row[f"ref_x_{i}"] = nan_val
+            row[f"ref_y_{i}"] = nan_val
+            row[f"ref_theta_{i}"] = nan_val
+            row[f"ref_v_{i}"] = nan_val
+            row[f"consensus_pos_err_{i}"] = nan_val
+            row[f"postpred_pos_err_{i}"] = nan_val
+            row[f"est_pos_err_{i}"] = nan_val
+            row[f"consensus_vel_err_{i}"] = nan_val
+            row[f"postpred_vel_err_{i}"] = nan_val
+            row[f"est_vel_err_{i}"] = nan_val
+            row[f"postpred_to_est_pos_gap_{i}"] = nan_val
+            row[f"predsrc_{i}"] = ""
+            row[f"pred_dt_{i}"] = nan_val
+            row[f"pred_dx_{i}"] = nan_val
+            row[f"pred_dy_{i}"] = nan_val
+            row[f"pred_step_norm_{i}"] = nan_val
+            row[f"pred_speed_dt_{i}"] = nan_val
+            row[f"pred_steer_{i}"] = nan_val
+            row[f"pred_host_steer_{i}"] = nan_val
+            row[f"pred_theta_in_{i}"] = nan_val
+            row[f"pred_theta_out_{i}"] = nan_val
+            row[f"pred_v_in_{i}"] = nan_val
+            row[f"pred_v_out_{i}"] = nan_val
+            row[f"pred_host_v_{i}"] = nan_val
             row[f"est_x_{i}"] = nan_val
             row[f"est_y_{i}"] = nan_val
             row[f"est_theta_{i}"] = nan_val
@@ -659,6 +746,107 @@ class TrustWeightLogger:
                 prediction_mode_count += pred_flag
                 present = True
 
+            if i in consensus_estimates:
+                est = consensus_estimates[i]
+                if isinstance(est, dict):
+                    row[f"consensus_x_{i}"] = self._to_float_or_nan(est.get("x", nan_val))
+                    row[f"consensus_y_{i}"] = self._to_float_or_nan(est.get("y", nan_val))
+                    row[f"consensus_theta_{i}"] = self._to_float_or_nan(
+                        est.get("theta", nan_val)
+                    )
+                    row[f"consensus_v_{i}"] = self._to_float_or_nan(
+                        est.get("velocity", nan_val)
+                    )
+                    row[f"consensus_a_{i}"] = self._to_float_or_nan(
+                        est.get("acceleration", nan_val)
+                    )
+                    present = True
+
+            if i in post_prediction_estimates:
+                est = post_prediction_estimates[i]
+                if isinstance(est, dict):
+                    row[f"postpred_x_{i}"] = self._to_float_or_nan(est.get("x", nan_val))
+                    row[f"postpred_y_{i}"] = self._to_float_or_nan(est.get("y", nan_val))
+                    row[f"postpred_theta_{i}"] = self._to_float_or_nan(
+                        est.get("theta", nan_val)
+                    )
+                    row[f"postpred_v_{i}"] = self._to_float_or_nan(
+                        est.get("velocity", nan_val)
+                    )
+                    row[f"postpred_a_{i}"] = self._to_float_or_nan(
+                        est.get("acceleration", nan_val)
+                    )
+                    present = True
+
+            if i in clean_reference_estimates:
+                est = clean_reference_estimates[i]
+                if isinstance(est, dict):
+                    row[f"ref_x_{i}"] = self._to_float_or_nan(est.get("x", nan_val))
+                    row[f"ref_y_{i}"] = self._to_float_or_nan(est.get("y", nan_val))
+                    row[f"ref_theta_{i}"] = self._to_float_or_nan(
+                        est.get("theta", nan_val)
+                    )
+                    row[f"ref_v_{i}"] = self._to_float_or_nan(
+                        est.get("velocity", nan_val)
+                    )
+                    present = True
+
+            if i in prediction_debugs:
+                debug_data = prediction_debugs[i]
+                if isinstance(debug_data, dict):
+                    row[f"predsrc_{i}"] = self._to_csv_text(
+                        debug_data.get("source", "")
+                    )
+                    row[f"pred_dt_{i}"] = self._to_float_or_nan(
+                        debug_data.get("dt", nan_val)
+                    )
+                    row[f"pred_dx_{i}"] = self._to_float_or_nan(
+                        debug_data.get("dx", nan_val)
+                    )
+                    row[f"pred_dy_{i}"] = self._to_float_or_nan(
+                        debug_data.get("dy", nan_val)
+                    )
+                    if (
+                        self._is_number(row[f"pred_dx_{i}"])
+                        and self._is_number(row[f"pred_dy_{i}"])
+                        and not math.isnan(float(row[f"pred_dx_{i}"]))
+                        and not math.isnan(float(row[f"pred_dy_{i}"]))
+                    ):
+                        row[f"pred_step_norm_{i}"] = float(
+                            math.hypot(row[f"pred_dx_{i}"], row[f"pred_dy_{i}"])
+                        )
+                    row[f"pred_steer_{i}"] = self._to_float_or_nan(
+                        debug_data.get("steering_used", nan_val)
+                    )
+                    row[f"pred_host_steer_{i}"] = self._to_float_or_nan(
+                        debug_data.get("host_steering_used", nan_val)
+                    )
+                    row[f"pred_theta_in_{i}"] = self._to_float_or_nan(
+                        debug_data.get("theta_in", nan_val)
+                    )
+                    row[f"pred_theta_out_{i}"] = self._to_float_or_nan(
+                        debug_data.get("theta_out", nan_val)
+                    )
+                    row[f"pred_v_in_{i}"] = self._to_float_or_nan(
+                        debug_data.get("v_in", nan_val)
+                    )
+                    row[f"pred_v_out_{i}"] = self._to_float_or_nan(
+                        debug_data.get("v_out", nan_val)
+                    )
+                    row[f"pred_host_v_{i}"] = self._to_float_or_nan(
+                        debug_data.get("host_v", nan_val)
+                    )
+                    if (
+                        self._is_number(row[f"pred_v_out_{i}"])
+                        and self._is_number(row[f"pred_dt_{i}"])
+                        and not math.isnan(float(row[f"pred_v_out_{i}"]))
+                        and not math.isnan(float(row[f"pred_dt_{i}"]))
+                    ):
+                        row[f"pred_speed_dt_{i}"] = float(
+                            row[f"pred_v_out_{i}"] * row[f"pred_dt_{i}"]
+                        )
+                    present = True
+
             if i in fleet_estimates:
                 est = fleet_estimates[i]
                 if isinstance(est, dict):
@@ -686,6 +874,46 @@ class TrustWeightLogger:
                     if len(est) > 4:
                         row[f"est_a_{i}"] = self._to_float_or_nan(est[4])
                     present = True
+
+            row[f"consensus_pos_err_{i}"] = self._xy_error(
+                row[f"consensus_x_{i}"],
+                row[f"consensus_y_{i}"],
+                row[f"ref_x_{i}"],
+                row[f"ref_y_{i}"],
+            )
+            row[f"postpred_pos_err_{i}"] = self._xy_error(
+                row[f"postpred_x_{i}"],
+                row[f"postpred_y_{i}"],
+                row[f"ref_x_{i}"],
+                row[f"ref_y_{i}"],
+            )
+            row[f"est_pos_err_{i}"] = self._xy_error(
+                row[f"est_x_{i}"],
+                row[f"est_y_{i}"],
+                row[f"ref_x_{i}"],
+                row[f"ref_y_{i}"],
+            )
+            row[f"postpred_to_est_pos_gap_{i}"] = self._xy_error(
+                row[f"postpred_x_{i}"],
+                row[f"postpred_y_{i}"],
+                row[f"est_x_{i}"],
+                row[f"est_y_{i}"],
+            )
+            if self._is_number(row[f"consensus_v_{i}"]) and self._is_number(row[f"ref_v_{i}"]):
+                if not math.isnan(float(row[f"consensus_v_{i}"])) and not math.isnan(float(row[f"ref_v_{i}"])):
+                    row[f"consensus_vel_err_{i}"] = float(
+                        row[f"consensus_v_{i}"] - row[f"ref_v_{i}"]
+                    )
+            if self._is_number(row[f"postpred_v_{i}"]) and self._is_number(row[f"ref_v_{i}"]):
+                if not math.isnan(float(row[f"postpred_v_{i}"])) and not math.isnan(float(row[f"ref_v_{i}"])):
+                    row[f"postpred_vel_err_{i}"] = float(
+                        row[f"postpred_v_{i}"] - row[f"ref_v_{i}"]
+                    )
+            if self._is_number(row[f"est_v_{i}"]) and self._is_number(row[f"ref_v_{i}"]):
+                if not math.isnan(float(row[f"est_v_{i}"])) and not math.isnan(float(row[f"ref_v_{i}"])):
+                    row[f"est_vel_err_{i}"] = float(
+                        row[f"est_v_{i}"] - row[f"ref_v_{i}"]
+                    )
 
             if present:
                 row[f"vehicle_present_{i}"] = 1

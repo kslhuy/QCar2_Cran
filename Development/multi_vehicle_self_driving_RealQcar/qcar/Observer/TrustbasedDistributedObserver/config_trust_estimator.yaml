@@ -188,32 +188,31 @@ observer:
   # Attack mitigation
   attack_mitigation: false         # Enable automatic attack mitigation
 
-  # Prediction-only switch (MATLAB-style)
-  use_predict_observer: false
-  max_predict_only_time: 3.0
-  n_good: 3 
-  blend_thresh: 3.0
-  similarity_tolerances: [3.5, 2.0, 0.14, 2.0, 1.0]
   # State propagation used by the fleet estimator prediction step:
   # model           = existing bicycle + longitudinal model
-  # dead_reckoning  = propagate x/y only with current heading and velocity
-  # none            = skip propagation and keep the corrected/prior state
-  dynamics_prediction_mode: dead_reckoning
+  # clean_data 
+  dynamics_prediction_mode: clean_data
   # Final output low-pass filter on each target estimate:
   # x_filt = alpha * x_new + (1 - alpha) * x_prev
   # lower alpha = smoother but more lag
   enable_output_low_pass: true
   output_low_pass_alpha: 0.25
+  # When a target's direct local-state channel is untrusted, use a larger
+  # alpha so host-following motion is not flattened by the output filter.
+  attack_output_low_pass_alpha: 1.0
 
   # Trust-triggered contamination rollback
   rollback_enabled: true
-  rollback_window_size: 15
+  rollback_window_size: 50
+  # Extra safety margin for delayed trust detection:
+  # when rollback seeds from the last trusted target snapshot, step back this
+  # many trusted samples first so replay starts from an older, safer pose.
+  rollback_trusted_state_guard_steps: 3
+  # Optional cap for cached trusted snapshots per target. Keep this at least
+  # guard_steps + 1; default code also falls back to rollback_window_size.
+  rollback_trusted_state_history_size: 60
   
-  # Kalman-specific parameters (for trust_kalman type)
-  kalman:
-    process_noise: 0.01           # Q - process noise covariance
-    measurement_noise: 0.1        # R - measurement noise covariance
-    initial_covariance: 1.0       # Initial P matrix diagonal
+
 
 # =====================================================================
 # Vehicle Dynamics Parameters (for prediction models)
@@ -230,7 +229,7 @@ vehicle:
   max_acceleration: 2.0           # Match real-QCar longitudinal limit used elsewhere
   max_steering: 0.5               # Maximum steering angle rad
   control_timeout_s: 1.0          # After this, predict targets with constant velocity
-  allow_host_control_fallback: false
+  
   # Longitudinal-model defaults come from `observer_model_source` above.
   # The referenced calibration file injects:
   # - longitudinal_model

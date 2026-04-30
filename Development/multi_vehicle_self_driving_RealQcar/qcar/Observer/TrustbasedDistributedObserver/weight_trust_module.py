@@ -41,6 +41,7 @@ class WeightConfig:
     startup_fixed_duration_s: float = 5.0  # Use fixed non-trust weights during startup
     use_gamma_self_weight_adaptation: bool = True
     gamma_self_weight_floor: float = 0.25
+    local_bad_zero_w0_neighbor_total_cap: float = 0.01 # Cap on total neighbor weight when local measurement is flagged bad (w0=0) , Good for prediction-only fallback but still allowing some neighbor influence if all neighbors are good.
 
     # Flag-driven w₀ adaptation factors
     flag_w0_target_attack_factor: float = 1.0    # Keep w₀ full when target under attack (local is reliable)
@@ -650,6 +651,48 @@ class WeightTrustModule:
 
         return capped, overflow_to_self
 
+    def _apply_local_bad_zero_w0_bias(
+        self,
+        weights: Dict[str, object],
+        trust_score,
+    ) -> Dict[str, object]:
+        """
+        When the local pose channel is explicitly bad and the direct channel is
+        fully suppressed, cap total neighbor pull so self/prediction can carry
+        more of the pose evolution.
+        """
+        if trust_score is None or not bool(
+            getattr(trust_score, "flag_local_est_check", False)
+        ):
+            return weights
+
+        w0 = max(0.0, float(weights.get("w0", 0.0)))
+        if w0 > 1e-9:
+            return weights
+
+        neighbors = {
+            int(neighbor_id): max(0.0, float(weight))
+            for neighbor_id, weight in weights.get("neighbors", {}).items()
+        }
+        if not neighbors:
+            weights["w_self"] = max(0.0, 1.0 - w0)
+            return weights
+
+        total_neighbor = float(sum(neighbors.values()))
+        cap_total = float(
+            np.clip(self.config.local_bad_zero_w0_neighbor_total_cap, 0.0, 1.0)
+        )
+        if total_neighbor <= cap_total + 1e-12:
+            return weights
+
+        scale = cap_total / max(total_neighbor, 1e-12)
+        weights["neighbors"] = {
+            neighbor_id: weight * scale for neighbor_id, weight in neighbors.items()
+        }
+        used = w0 + sum(weights["neighbors"].values())
+        weights["w_self"] = max(0.0, 1.0 - used)
+        return weights
+
     def calculate_weights_for_target(self, target_id: int,
                                       trust_scores: Dict[int, float],
                                       neighbor_fleet_estimates: Dict[int, Dict],
@@ -793,6 +836,10 @@ class WeightTrustModule:
         if abs(residual) > 1e-12:
             weights["w_self"] = max(0.0, weights["w_self"] + residual)
 
+        weights = self._apply_local_bad_zero_w0_bias(
+            weights=weights,
+            trust_score=target_trust_obj,
+        )
         return weights
 
     def calculate_startup_weights_for_target(

@@ -60,7 +60,7 @@ longitudinal_controller_type: 'pid'
 command_smoothing:
   longitudinal:
     alpha: 0.1
-    rise_rate: 0.9
+    rise_rate: 0.7
     fall_rate: 1.0
   lateral:
     alpha: 0.01
@@ -167,8 +167,8 @@ pure_pursuit:
   turn_lookahead_offset: 0.05 # Lateral offset in turns (meters). Smaller offset avoids pushing the follower too far to the outside of the corner.
   turn_lookahead_gain: 0.9   # Lookahead distance multiplier in turns. Below 1.0 makes turn tracking tighter instead of widening the arc.
   turn_preview_cap: 0.02     # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
-  heading_alignment_gain: 0.01   # 0.0 = old lateral behavior. Increase only if first heading capture is too slow.
-  heading_alignment_window_deg: 45.0  # Heading-error range over which the extra alignment term ramps in.
+  heading_alignment_gain: 0.05   # 0.0 = old lateral behavior. Increase only if first heading capture is too slow.
+  heading_alignment_window_deg: 40.0  # Heading-error range over which the extra alignment term ramps in.
   heading_preview_cap: 0.0      # 0.0 = no extra forward preview from heading mismatch. Increase cautiously; too high causes corner cutting.
 
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
@@ -178,9 +178,9 @@ pp_map:
   min_speed: 0.45                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
   kappa_speed_gain: 0.9           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
   max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
-  hard_turn_kappa: 0.59           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
+  hard_turn_kappa: 0.62           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
   hard_turn_speed: 0.4           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
-  t_clip_min: 0.45                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
+  t_clip_min: 0.40                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
   t_clip_max: 1.0                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
   m_l1: 0.50                      # L1 lookahead increase with speed: L1 = q_l1 + m_l1*v. Up = more preview at speed. Down = more reactive at speed.
   q_l1: 0.2                       # [m] Base L1 lookahead at low speed. Up = smoother but slower response. Down = sharper but more oscillation risk.

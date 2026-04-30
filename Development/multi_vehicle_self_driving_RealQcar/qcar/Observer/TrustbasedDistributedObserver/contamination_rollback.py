@@ -26,6 +26,9 @@ class ContaminationRollback:
             Callable[[np.ndarray, Optional[np.ndarray], float, int], np.ndarray]
         ] = None,
         constraints_fn: Optional[Callable[[np.ndarray, int], np.ndarray]] = None,
+        trusted_state_fn: Optional[
+            Callable[[int], Optional[tuple]]
+        ] = None,
         logger=None,
     ):
         self.state_dim = state_dim
@@ -35,6 +38,7 @@ class ContaminationRollback:
         self.trust_threshold = trust_threshold
         self.predict_fn = predict_fn
         self.constraints_fn = constraints_fn
+        self.trusted_state_fn = trusted_state_fn
         self.logger = logger
         self.buffer: deque = deque(maxlen=max(window_size, 1))
         self.malicious_vehicles: set = set()
@@ -105,9 +109,6 @@ class ContaminationRollback:
                 "direct": safe_direct,
                 "neighbors": safe_neighbors,
                 "prediction": safe_prediction,
-                "dynamics_delta": np.asarray(
-                    comp.get("dynamics_delta", np.zeros(self.state_dim)), dtype=float
-                ).copy(),
             }
 
         self.buffer.append(
@@ -209,14 +210,40 @@ class ContaminationRollback:
         oldest = self.buffer[0]
         corrected_states = np.asarray(oldest["pre_update_states"], dtype=float).copy()
         current_self_state = fleet_states[:, self.vehicle_id].copy()
+        target_replay_start_ns: Dict[int, Optional[int]] = {}
+
+        for target_id in range(self.fleet_size):
+            if target_id == self.vehicle_id or int(target_id) not in malicious_ids:
+                continue
+            trusted_entry = None
+            if callable(self.trusted_state_fn):
+                trusted_entry = self.trusted_state_fn(int(target_id))
+            if trusted_entry is None:
+                continue
+            trusted_state, trusted_time_ns = trusted_entry
+            trusted_state = np.asarray(trusted_state, dtype=float).copy()
+            if trusted_state.size < self.state_dim:
+                trusted_state = np.pad(
+                    trusted_state, (0, self.state_dim - trusted_state.size), mode="constant"
+                )
+            corrected_states[:, target_id] = self._apply_state_constraints(
+                trusted_state[: self.state_dim], target_id=target_id
+            )
+            target_replay_start_ns[int(target_id)] = (
+                None if trusted_time_ns is None else int(trusted_time_ns)
+            )
 
         for step in list(self.buffer):
             step_targets = step.get("targets", {})
+            step_time_ns = int(step.get("time_ns", 0))
             for target_id in range(self.fleet_size):
                 if target_id == self.vehicle_id:
                     continue
                 comp = step_targets.get(target_id)
                 if comp is None:
+                    continue
+                replay_start_ns = target_replay_start_ns.get(int(target_id))
+                if replay_start_ns is not None and step_time_ns <= replay_start_ns:
                     continue
                 corrected_states[:, target_id] = self._replay_without_malicious(
                     comp=comp,
@@ -336,9 +363,4 @@ class ContaminationRollback:
             )
             return self._apply_state_constraints(predicted_state, target_id=target_id)
 
-        legacy_delta = np.asarray(
-            comp.get("dynamics_delta", np.zeros(self.state_dim)), dtype=float
-        )
-        return self._apply_state_constraints(
-            consensus_state + legacy_delta, target_id=target_id
-        )
+        return consensus_state

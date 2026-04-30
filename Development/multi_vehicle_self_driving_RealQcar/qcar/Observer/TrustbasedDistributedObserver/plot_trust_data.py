@@ -18,12 +18,22 @@ import math
 import csv
 import json
 import time
+import io
+import contextlib
 from typing import Dict, List, Tuple
 
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import numpy as np
 import argparse
+
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        import matplotlib.pyplot as plt
+        import matplotlib.gridspec as gridspec
+    MATPLOTLIB_IMPORT_ERROR = None
+except Exception as exc:  # pragma: no cover - environment-specific fallback
+    plt = None
+    gridspec = None
+    MATPLOTLIB_IMPORT_ERROR = exc
 
 ATTACK_VALUE_FIELDS = [
     ("x", "Injected X", "x [m]"),
@@ -67,6 +77,15 @@ def _col_to_array(rows: List[dict], col: str) -> np.ndarray:
         except (ValueError, TypeError):
             vals.append(float("nan"))
     return np.array(vals, dtype=float)
+
+
+def _col_to_text(rows: List[dict], col: str) -> List[str]:
+    """Convert a column to a list of stripped strings."""
+    vals: List[str] = []
+    for row in rows:
+        raw = row.get(col, "")
+        vals.append("" if raw is None else str(raw).strip())
+    return vals
 
 
 def _extract_vehicle_ids(columns: List[str]) -> List[int]:
@@ -148,6 +167,24 @@ def _style(ax, title="", ylabel="", xlabel="", legend=True):
             ax.legend(by_label.values(), by_label.keys(), fontsize=7, ncol=max(1, len(by_label) // 2),
                       loc="best", framealpha=0.7)
 
+
+def _first_finite_index(*arrays: np.ndarray) -> int:
+    """Return the first index where every array has a finite value."""
+    if not arrays:
+        return -1
+    lengths = [len(np.asarray(arr)) for arr in arrays]
+    if not lengths:
+        return -1
+    n = min(lengths)
+    if n <= 0:
+        return -1
+    mask = np.ones(n, dtype=bool)
+    for arr in arrays:
+        arr_np = np.asarray(arr, dtype=float)[:n]
+        mask &= np.isfinite(arr_np)
+    idx = np.flatnonzero(mask)
+    return int(idx[0]) if idx.size > 0 else -1
+
 def _add_turn_sections(ax, times, rows):
     is_turning = _col_to_array(rows, "is_turning")
     if np.any(np.isfinite(is_turning)) and np.any(is_turning > 0):
@@ -161,6 +198,14 @@ def _safe_float(value, default=float("nan")) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _rmse(values: np.ndarray) -> float:
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return float("nan")
+    return float(np.sqrt(np.mean(arr ** 2)))
 
 
 def _last_nonempty_value(rows: List[dict], col: str) -> str:
@@ -911,7 +956,7 @@ def _fig_weights(times, rows, active, focus, host_id):
     return fig
 
 
-def _fig_estimation(times, rows, active, host_id):
+def _fig_estimation(times, rows, active, focus, host_id):
     """
     Figure 3 – State Estimation
     Layout (4 rows × 2 cols):
@@ -920,10 +965,10 @@ def _fig_estimation(times, rows, active, host_id):
       [2,0] Estimated heading (theta)        [2,1] Trajectory XY
       [3,0] Estimation confidence + self_belief  [3,1] Prediction mode flags
     """
-    fig = plt.figure(figsize=(16, 13))
+    fig = plt.figure(figsize=(16, 15))
     fig.suptitle(f"State Estimation  (Host V{host_id})", fontsize=13,
                  fontweight="bold")
-    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.35, wspace=0.25)
+    gs = gridspec.GridSpec(5, 2, figure=fig, hspace=0.35, wspace=0.25)
 
     # (0,0) Estimated X
     ax = fig.add_subplot(gs[0, 0])
@@ -976,8 +1021,20 @@ def _fig_estimation(times, rows, active, host_id):
         ax.axis("equal")
     _style(ax, "Trajectory XY", "y [m]", xlabel="x [m]")
 
-    # (3,0) Confidence + self_belief
+    # (3,0) Consensus X
     ax = fig.add_subplot(gs[3, 0])
+    if _plot_series(ax, times, rows, "consensus_x", active, label_fmt="V{}") == 0:
+        _no_data(ax, "Consensus X")
+    _style(ax, "Consensus X", "x [m]")
+
+    # (3,1) Post-prediction X
+    ax = fig.add_subplot(gs[3, 1])
+    if _plot_series(ax, times, rows, "postpred_x", active, label_fmt="V{}") == 0:
+        _no_data(ax, "Post-prediction X")
+    _style(ax, "Post-prediction X", "x [m]")
+
+    # (4,0) Confidence + self_belief
+    ax = fig.add_subplot(gs[4, 0])
     n = _plot_series(ax, times, rows, "est_conf", active,
                      label_fmt="Conf V{}")
     for col, lbl, ls in [("self_belief", "self_belief", "--"),
@@ -992,8 +1049,8 @@ def _fig_estimation(times, rows, active, host_id):
         _no_data(ax, "Estimation Confidence")
     _style(ax, "Estimation Confidence", "Confidence", xlabel="Time [s]")
 
-    # (3,1) Prediction mode flags
-    ax = fig.add_subplot(gs[3, 1])
+    # (4,1) Prediction mode flags
+    ax = fig.add_subplot(gs[4, 1])
     n = 0
     for vid in active:
         col = f"pred_mode_{vid}"
@@ -1008,6 +1065,493 @@ def _fig_estimation(times, rows, active, host_id):
     if n == 0:
         _no_data(ax, "Prediction Mode")
     _style(ax, "Prediction Mode Flags", "Mode (0/1)", xlabel="Time [s]")
+
+    return fig
+
+
+def _fig_prediction_debug(times, rows, focus, host_id):
+    """
+    Dedicated focus-target prediction diagnostics.
+    Keeps prediction internals separate from the general fleet-state figure.
+    """
+    fig = plt.figure(figsize=(17, 14))
+    fig.suptitle(
+        f"Prediction Debug  (Host V{host_id}, Focus V{focus})",
+        fontsize=13,
+        fontweight="bold",
+    )
+    gs = gridspec.GridSpec(3, 2, figure=fig, hspace=0.35, wspace=0.28)
+
+    focus_consensus_x = _col_to_array(rows, f"consensus_x_{focus}")
+    focus_consensus_y = _col_to_array(rows, f"consensus_y_{focus}")
+    focus_consensus_theta = _col_to_array(rows, f"consensus_theta_{focus}")
+    focus_consensus_v = _col_to_array(rows, f"consensus_v_{focus}")
+    focus_postpred_x = _col_to_array(rows, f"postpred_x_{focus}")
+    focus_postpred_y = _col_to_array(rows, f"postpred_y_{focus}")
+    focus_postpred_theta = _col_to_array(rows, f"postpred_theta_{focus}")
+    focus_postpred_v = _col_to_array(rows, f"postpred_v_{focus}")
+    focus_est_x = _col_to_array(rows, f"est_x_{focus}")
+    focus_est_y = _col_to_array(rows, f"est_y_{focus}")
+    focus_est_theta = _col_to_array(rows, f"est_theta_{focus}")
+    focus_est_v = _col_to_array(rows, f"est_v_{focus}")
+
+    focus_dx = _col_to_array(rows, f"pred_dx_{focus}")
+    focus_dy = _col_to_array(rows, f"pred_dy_{focus}")
+    focus_dt = _col_to_array(rows, f"pred_dt_{focus}")
+    focus_src = _col_to_text(rows, f"predsrc_{focus}")
+    focus_v_in = _col_to_array(rows, f"pred_v_in_{focus}")
+    focus_v_out = _col_to_array(rows, f"pred_v_out_{focus}")
+    focus_host_v = _col_to_array(rows, f"pred_host_v_{focus}")
+    focus_steer = _col_to_array(rows, f"pred_steer_{focus}")
+    focus_host_steer = _col_to_array(rows, f"pred_host_steer_{focus}")
+    focus_theta_in = _col_to_array(rows, f"pred_theta_in_{focus}")
+    focus_theta_out = _col_to_array(rows, f"pred_theta_out_{focus}")
+    focus_pred_mode = _col_to_array(rows, f"pred_mode_{focus}")
+
+    if not np.any(np.isfinite(focus_dx)):
+        focus_dx = focus_postpred_x - focus_consensus_x
+    if not np.any(np.isfinite(focus_dy)):
+        focus_dy = focus_postpred_y - focus_consensus_y
+    if not np.any(np.isfinite(focus_v_in)):
+        focus_v_in = focus_consensus_v
+    if not np.any(np.isfinite(focus_v_out)):
+        focus_v_out = focus_postpred_v
+    if not np.any(np.isfinite(focus_theta_in)):
+        focus_theta_in = focus_consensus_theta
+    if not np.any(np.isfinite(focus_theta_out)):
+        focus_theta_out = focus_postpred_theta
+
+    # (0,0) X comparison
+    ax = fig.add_subplot(gs[0, 0])
+    n = 0
+    for arr, label, style, color in [
+        (focus_consensus_x, "consensus_x", "--", "tab:blue"),
+        (focus_postpred_x, "postpred_x", ":", "tab:orange"),
+        (focus_est_x, "est_x", "-", "tab:green"),
+    ]:
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label, color=color, lw=1.3)
+            n += 1
+    if n == 0:
+        _no_data(ax, f"X Comparison V{focus}")
+    _style(ax, f"X Comparison V{focus}", "x [m]", xlabel="Time [s]")
+
+    # (0,1) Y comparison
+    ax = fig.add_subplot(gs[0, 1])
+    n = 0
+    for arr, label, style, color in [
+        (focus_consensus_y, "consensus_y", "--", "tab:blue"),
+        (focus_postpred_y, "postpred_y", ":", "tab:orange"),
+        (focus_est_y, "est_y", "-", "tab:green"),
+    ]:
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label, color=color, lw=1.3)
+            n += 1
+    if n == 0:
+        _no_data(ax, f"Y Comparison V{focus}")
+    _style(ax, f"Y Comparison V{focus}", "y [m]", xlabel="Time [s]")
+
+    # (1,0) step increments + dt
+    ax = fig.add_subplot(gs[1, 0])
+    n = 0
+    if np.any(np.isfinite(focus_dx)):
+        ax.plot(times, focus_dx, label="pred_dx", color="tab:blue", lw=1.3)
+        n += 1
+    if np.any(np.isfinite(focus_dy)):
+        ax.plot(times, focus_dy, label="pred_dy", color="tab:orange", lw=1.2, ls="--")
+        n += 1
+    ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
+    ax_dt = ax.twinx()
+    if np.any(np.isfinite(focus_dt)):
+        ax_dt.plot(times, focus_dt, label="pred_dt", color="tab:red", lw=1.1, ls=":")
+        n += 1
+    if n == 0:
+        _no_data(ax, f"Prediction Step V{focus}")
+    else:
+        handles, labels = ax.get_legend_handles_labels()
+        handles2, labels2 = ax_dt.get_legend_handles_labels()
+        merged = dict(zip(labels + labels2, handles + handles2))
+        ax.legend(merged.values(), merged.keys(), fontsize=7, ncol=2, loc="best", framealpha=0.7)
+    ax.set_title(f"Prediction Step V{focus}", fontsize=10, fontweight="bold")
+    ax.set_ylabel("dx / dy [m]", fontsize=9)
+    ax.set_xlabel("Time [s]", fontsize=9)
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.tick_params(labelsize=8)
+    ax_dt.set_ylabel("dt [s]", fontsize=9)
+    ax_dt.tick_params(labelsize=8)
+
+    # (1,1) velocity blend + steering
+    ax = fig.add_subplot(gs[1, 1])
+    n = 0
+    for arr, label, style, color in [
+        (focus_v_in, "v_in", "-", "tab:blue"),
+        (focus_v_out, "v_out", "-", "tab:green"),
+        (focus_host_v, "host_v", "--", "tab:purple"),
+        (focus_consensus_v, "consensus_v", ":", "tab:cyan"),
+        (focus_est_v, "est_v", "-.", "tab:olive"),
+    ]:
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label, color=color, lw=1.2)
+            n += 1
+    ax_steer = ax.twinx()
+    for arr, label, style, color in [
+        (focus_steer, "steer", ":", "tab:orange"),
+        (focus_host_steer, "host_steer", "-.", "tab:red"),
+    ]:
+        if np.any(np.isfinite(arr)):
+            ax_steer.plot(times, arr, style, label=label, color=color, lw=1.0)
+            n += 1
+    if n == 0:
+        _no_data(ax, f"Velocity / Steering V{focus}")
+    else:
+        handles, labels = ax.get_legend_handles_labels()
+        handles2, labels2 = ax_steer.get_legend_handles_labels()
+        merged = dict(zip(labels + labels2, handles + handles2))
+        ax.legend(merged.values(), merged.keys(), fontsize=7, ncol=2, loc="best", framealpha=0.7)
+    ax.set_title(f"Velocity / Steering V{focus}", fontsize=10, fontweight="bold")
+    ax.set_ylabel("Velocity [m/s]", fontsize=9)
+    ax.set_xlabel("Time [s]", fontsize=9)
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.tick_params(labelsize=8)
+    ax_steer.set_ylabel("Steering [rad]", fontsize=9)
+    ax_steer.tick_params(labelsize=8)
+
+    # (2,0) theta comparison
+    ax = fig.add_subplot(gs[2, 0])
+    n = 0
+    for arr, label, style, color in [
+        (focus_theta_in, "theta_in", "--", "tab:blue"),
+        (focus_theta_out, "theta_out", ":", "tab:orange"),
+        (focus_est_theta, "est_theta", "-", "tab:green"),
+    ]:
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, style, label=label, color=color, lw=1.2)
+            n += 1
+    if n == 0:
+        _no_data(ax, f"Theta Comparison V{focus}")
+    _style(ax, f"Theta Comparison V{focus}", "theta [rad]", xlabel="Time [s]")
+
+    # (2,1) source flags + prediction mode
+    ax = fig.add_subplot(gs[2, 1])
+    source_masks = {
+        "host heading": np.array([1.0 if src == "host_heading" else 0.0 for src in focus_src], dtype=float),
+        "host ctrl fallback": np.array([1.0 if src == "host_control_fallback" else 0.0 for src in focus_src], dtype=float),
+        "target control": np.array([1.0 if src == "target_control" else 0.0 for src in focus_src], dtype=float),
+    }
+    n = 0
+    offsets = {
+        "host heading": 0.0,
+        "host ctrl fallback": 1.2,
+        "target control": 2.4,
+        "pred_mode": 3.6,
+    }
+    for label, mask in source_masks.items():
+        if np.any(np.isfinite(mask)) and np.any(mask > 0.0):
+            ax.step(times, mask + offsets[label], where="post", label=label)
+            n += 1
+    if np.any(np.isfinite(focus_pred_mode)):
+        ax.step(
+            times,
+            focus_pred_mode + offsets["pred_mode"],
+            where="post",
+            label="pred_mode",
+            color="k",
+            ls="--",
+        )
+        n += 1
+    if n == 0:
+        _no_data(ax, f"Prediction Source Flags V{focus}")
+    else:
+        ax.set_yticks([0.5, 1.7, 2.9, 4.1])
+        ax.set_yticklabels(["host_heading", "host_ctrl", "target_ctrl", "pred_mode"])
+    _style(ax, f"Prediction Source Flags V{focus}", "Source", xlabel="Time [s]")
+
+    return fig
+
+
+def _motion_test_dataset(times, rows, focus, window_s=3.0, start_time=None):
+    """
+    Build a short-horizon motion propagation test for one target vehicle.
+
+    Two propagated paths are created from the same initial true pose:
+    - `ref_dr_*`: dead reckoning from true `ref_v/ref_theta`
+    - `pred_dr_*`: dead reckoning from logged `pred_v_out/pred_theta_out/pred_dt`
+
+    Both are compared against the logged true pose `ref_x/ref_y`.
+    """
+    times = np.asarray(times, dtype=float)
+    ref_x = _col_to_array(rows, f"ref_x_{focus}")
+    ref_y = _col_to_array(rows, f"ref_y_{focus}")
+    ref_theta = _col_to_array(rows, f"ref_theta_{focus}")
+    ref_v = _col_to_array(rows, f"ref_v_{focus}")
+    pred_theta = _col_to_array(rows, f"pred_theta_out_{focus}")
+    pred_v = _col_to_array(rows, f"pred_v_out_{focus}")
+    pred_dt = _col_to_array(rows, f"pred_dt_{focus}")
+    postpred_x = _col_to_array(rows, f"postpred_x_{focus}")
+    postpred_y = _col_to_array(rows, f"postpred_y_{focus}")
+    postpred_err = _col_to_array(rows, f"postpred_pos_err_{focus}")
+
+    valid_truth = (
+        np.isfinite(times)
+        & np.isfinite(ref_x)
+        & np.isfinite(ref_y)
+        & np.isfinite(ref_theta)
+        & np.isfinite(ref_v)
+    )
+    if not np.any(valid_truth):
+        return None
+
+    if start_time is not None and math.isfinite(float(start_time)):
+        valid_truth &= times >= float(start_time)
+        if not np.any(valid_truth):
+            return None
+
+    start_idx = int(np.flatnonzero(valid_truth)[0])
+    start_t = float(times[start_idx])
+    if window_s is not None and float(window_s) > 0.0:
+        end_t = start_t + float(window_s)
+        window_mask = valid_truth & (times <= end_t)
+    else:
+        window_mask = valid_truth
+
+    indices = np.flatnonzero(window_mask)
+    if indices.size < 2:
+        return None
+
+    ref_dr_x = np.full(indices.size, np.nan, dtype=float)
+    ref_dr_y = np.full(indices.size, np.nan, dtype=float)
+    pred_dr_x = np.full(indices.size, np.nan, dtype=float)
+    pred_dr_y = np.full(indices.size, np.nan, dtype=float)
+
+    ref_dr_x[0] = ref_x[indices[0]]
+    ref_dr_y[0] = ref_y[indices[0]]
+    pred_dr_x[0] = ref_x[indices[0]]
+    pred_dr_y[0] = ref_y[indices[0]]
+
+    for local_i in range(1, indices.size):
+        idx = int(indices[local_i])
+        prev_idx = int(indices[local_i - 1])
+        dt_truth = float(times[idx] - times[prev_idx])
+
+        if (
+            np.isfinite(ref_dr_x[local_i - 1])
+            and np.isfinite(ref_v[prev_idx])
+            and np.isfinite(ref_theta[prev_idx])
+            and math.isfinite(dt_truth)
+            and dt_truth >= 0.0
+        ):
+            ref_dr_x[local_i] = (
+                ref_dr_x[local_i - 1]
+                + float(ref_v[prev_idx]) * math.cos(float(ref_theta[prev_idx])) * dt_truth
+            )
+            ref_dr_y[local_i] = (
+                ref_dr_y[local_i - 1]
+                + float(ref_v[prev_idx]) * math.sin(float(ref_theta[prev_idx])) * dt_truth
+            )
+
+        step_dt = float(pred_dt[idx]) if np.isfinite(pred_dt[idx]) else dt_truth
+        if (
+            np.isfinite(pred_dr_x[local_i - 1])
+            and np.isfinite(pred_v[idx])
+            and np.isfinite(pred_theta[idx])
+            and math.isfinite(step_dt)
+            and step_dt >= 0.0
+        ):
+            pred_dr_x[local_i] = (
+                pred_dr_x[local_i - 1]
+                + float(pred_v[idx]) * math.cos(float(pred_theta[idx])) * step_dt
+            )
+            pred_dr_y[local_i] = (
+                pred_dr_y[local_i - 1]
+                + float(pred_v[idx]) * math.sin(float(pred_theta[idx])) * step_dt
+            )
+
+    true_x = ref_x[indices]
+    true_y = ref_y[indices]
+    true_t = times[indices]
+    postpred_x_win = postpred_x[indices]
+    postpred_y_win = postpred_y[indices]
+    postpred_err_win = postpred_err[indices]
+
+    ref_dr_err = np.hypot(ref_dr_x - true_x, ref_dr_y - true_y)
+    pred_dr_err = np.hypot(pred_dr_x - true_x, pred_dr_y - true_y)
+    postpred_geom_err = np.hypot(postpred_x_win - true_x, postpred_y_win - true_y)
+
+    return {
+        "start_t": start_t,
+        "end_t": float(true_t[-1]),
+        "indices": indices,
+        "times": true_t,
+        "true_x": true_x,
+        "true_y": true_y,
+        "ref_theta": ref_theta[indices],
+        "ref_v": ref_v[indices],
+        "pred_theta": pred_theta[indices],
+        "pred_v": pred_v[indices],
+        "pred_dt": pred_dt[indices],
+        "ref_dr_x": ref_dr_x,
+        "ref_dr_y": ref_dr_y,
+        "pred_dr_x": pred_dr_x,
+        "pred_dr_y": pred_dr_y,
+        "postpred_x": postpred_x_win,
+        "postpred_y": postpred_y_win,
+        "ref_dr_err": ref_dr_err,
+        "pred_dr_err": pred_dr_err,
+        "postpred_err": (
+            postpred_err_win
+            if np.any(np.isfinite(postpred_err_win))
+            else postpred_geom_err
+        ),
+        "ref_rmse": _rmse(ref_dr_err),
+        "pred_rmse": _rmse(pred_dr_err),
+        "postpred_rmse": _rmse(postpred_geom_err),
+        "ref_final_err": float(ref_dr_err[-1]) if np.isfinite(ref_dr_err[-1]) else float("nan"),
+        "pred_final_err": float(pred_dr_err[-1]) if np.isfinite(pred_dr_err[-1]) else float("nan"),
+        "postpred_final_err": (
+            float(postpred_geom_err[-1]) if np.isfinite(postpred_geom_err[-1]) else float("nan")
+        ),
+        "sample_count": int(indices.size),
+    }
+
+
+def _print_motion_test_summary(dataset, focus):
+    if dataset is None:
+        print(f"Motion test V{focus}: no valid truth window found.")
+        return
+
+    print(
+        f"Motion test V{focus}: {dataset['start_t']:.3f}s -> "
+        f"{dataset['end_t']:.3f}s ({dataset['sample_count']} samples)"
+    )
+    print(
+        f"  Truth dead-reckoning RMSE: {dataset['ref_rmse']:.4f} m"
+        f" | final error: {dataset['ref_final_err']:.4f} m"
+    )
+    print(
+        f"  Model v/theta dead-reckoning RMSE: {dataset['pred_rmse']:.4f} m"
+        f" | final error: {dataset['pred_final_err']:.4f} m"
+    )
+    print(
+        f"  Logged post-prediction RMSE: {dataset['postpred_rmse']:.4f} m"
+        f" | final error: {dataset['postpred_final_err']:.4f} m"
+    )
+
+
+def _write_motion_test_csv(dataset, focus, output_path):
+    """Export the step-by-step motion test so it can be inspected manually."""
+    if dataset is None:
+        return
+
+    fieldnames = [
+        "step",
+        "time",
+        "true_x",
+        "true_y",
+        "ref_theta",
+        "ref_v",
+        "pred_theta_out",
+        "pred_v_out",
+        "pred_dt",
+        "ref_dr_x",
+        "ref_dr_y",
+        "pred_dr_x",
+        "pred_dr_y",
+        "postpred_x",
+        "postpred_y",
+        "ref_dr_err",
+        "pred_dr_err",
+        "postpred_err",
+    ]
+
+    with open(output_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for i in range(dataset["sample_count"]):
+            writer.writerow(
+                {
+                    "step": i,
+                    "time": float(dataset["times"][i]),
+                    "true_x": float(dataset["true_x"][i]),
+                    "true_y": float(dataset["true_y"][i]),
+                    "ref_theta": float(dataset["ref_theta"][i]),
+                    "ref_v": float(dataset["ref_v"][i]),
+                    "pred_theta_out": float(dataset["pred_theta"][i]),
+                    "pred_v_out": float(dataset["pred_v"][i]),
+                    "pred_dt": float(dataset["pred_dt"][i]),
+                    "ref_dr_x": float(dataset["ref_dr_x"][i]),
+                    "ref_dr_y": float(dataset["ref_dr_y"][i]),
+                    "pred_dr_x": float(dataset["pred_dr_x"][i]),
+                    "pred_dr_y": float(dataset["pred_dr_y"][i]),
+                    "postpred_x": float(dataset["postpred_x"][i]),
+                    "postpred_y": float(dataset["postpred_y"][i]),
+                    "ref_dr_err": float(dataset["ref_dr_err"][i]),
+                    "pred_dr_err": float(dataset["pred_dr_err"][i]),
+                    "postpred_err": float(dataset["postpred_err"][i]),
+                }
+            )
+
+    print(f"Motion test CSV for V{focus}: {output_path}")
+
+
+def _fig_motion_test(times, rows, focus, host_id, window_s=3.0, start_time=None):
+    """
+    Short-horizon propagation test against logged truth for one focus vehicle.
+    """
+    dataset = _motion_test_dataset(
+        times,
+        rows,
+        focus,
+        window_s=window_s,
+        start_time=start_time,
+    )
+    _print_motion_test_summary(dataset, focus)
+    if dataset is None:
+        return None
+
+    fig = plt.figure(figsize=(16, 11))
+    fig.suptitle(
+        (
+            f"Motion Propagation Test (Host V{host_id}, Focus V{focus}) "
+            f"[{dataset['start_t']:.2f}s, {dataset['end_t']:.2f}s]"
+        ),
+        fontsize=13,
+        fontweight="bold",
+    )
+    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.32, wspace=0.28)
+    t = dataset["times"]
+
+    ax = fig.add_subplot(gs[0, 0])
+    ax.plot(t, dataset["true_x"], label="true ref_x", color="k", lw=1.6)
+    ax.plot(t, dataset["ref_dr_x"], label="DR from ref_v/theta", color="tab:blue", ls="--", lw=1.3)
+    ax.plot(t, dataset["pred_dr_x"], label="DR from pred_v_out/theta_out", color="tab:orange", ls=":", lw=1.4)
+    if np.any(np.isfinite(dataset["postpred_x"])):
+        ax.plot(t, dataset["postpred_x"], label="logged postpred_x", color="tab:green", lw=1.2, alpha=0.9)
+    _style(ax, f"X Propagation V{focus}", "x [m]", xlabel="Time [s]")
+
+    ax = fig.add_subplot(gs[0, 1])
+    ax.plot(t, dataset["true_y"], label="true ref_y", color="k", lw=1.6)
+    ax.plot(t, dataset["ref_dr_y"], label="DR from ref_v/theta", color="tab:blue", ls="--", lw=1.3)
+    ax.plot(t, dataset["pred_dr_y"], label="DR from pred_v_out/theta_out", color="tab:orange", ls=":", lw=1.4)
+    if np.any(np.isfinite(dataset["postpred_y"])):
+        ax.plot(t, dataset["postpred_y"], label="logged postpred_y", color="tab:green", lw=1.2, alpha=0.9)
+    _style(ax, f"Y Propagation V{focus}", "y [m]", xlabel="Time [s]")
+
+    ax = fig.add_subplot(gs[1, 0])
+    ax.plot(t, dataset["ref_dr_err"], label="truth DR error", color="tab:blue", ls="--", lw=1.3)
+    ax.plot(t, dataset["pred_dr_err"], label="model DR error", color="tab:orange", ls=":", lw=1.4)
+    if np.any(np.isfinite(dataset["postpred_err"])):
+        ax.plot(t, dataset["postpred_err"], label="logged postpred error", color="tab:green", lw=1.2, alpha=0.9)
+    ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
+    _style(ax, f"Position Error V{focus}", "error [m]", xlabel="Time [s]")
+
+    ax = fig.add_subplot(gs[1, 1])
+    ax.plot(dataset["true_x"], dataset["true_y"], label="true trajectory", color="k", lw=1.6)
+    ax.plot(dataset["ref_dr_x"], dataset["ref_dr_y"], label="DR from ref_v/theta", color="tab:blue", ls="--", lw=1.3)
+    ax.plot(dataset["pred_dr_x"], dataset["pred_dr_y"], label="DR from pred_v_out/theta_out", color="tab:orange", ls=":", lw=1.4)
+    if np.any(np.isfinite(dataset["postpred_x"])) and np.any(np.isfinite(dataset["postpred_y"])):
+        ax.plot(dataset["postpred_x"], dataset["postpred_y"], label="logged postpred", color="tab:green", lw=1.2, alpha=0.9)
+    ax.axis("equal")
+    _style(ax, f"XY Motion Test V{focus}", "y [m]", xlabel="x [m]")
 
     return fig
 
@@ -1908,6 +2452,7 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
     per_vehicle_prefixes = [
         "trust", "gtrust", "local_trust", "global_trust",
         "w_neighbor", "pred_mode", "est_x", "est_y",
+        "consensus_x", "consensus_y", "postpred_x", "postpred_y",
         "v_score", "d_score", "a_score", "h_score", "b_score",
         "q_factor", "gamma_host", "gamma_local_peer", "gamma_self",
         "flag_attack", "flag_local", "flag_global",
@@ -2090,10 +2635,50 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
         marker_line, = ax_xy.plot([], [], marker="o", color=color,
                                   linestyle="None", markersize=5)
         xy_lines.append((traj_line, marker_line, x, y))
+        if vid == focus:
+            cx = arrays.get(f"consensus_x_{vid}")
+            cy = arrays.get(f"consensus_y_{vid}")
+            if (
+                cx is not None and cy is not None
+                and np.any(np.isfinite(cx)) and np.any(np.isfinite(cy))
+            ):
+                traj_line, = ax_xy.plot(
+                    [], [], label=f"V{vid} consensus",
+                    color=color, lw=1.2, ls="--", alpha=0.9
+                )
+                marker_line, = ax_xy.plot(
+                    [], [], marker="s", color=color,
+                    linestyle="None", markersize=4, alpha=0.9
+                )
+                xy_lines.append((traj_line, marker_line, cx, cy))
+            px = arrays.get(f"postpred_x_{vid}")
+            py = arrays.get(f"postpred_y_{vid}")
+            if (
+                px is not None and py is not None
+                and np.any(np.isfinite(px)) and np.any(np.isfinite(py))
+            ):
+                traj_line, = ax_xy.plot(
+                    [], [], label=f"V{vid} postpred",
+                    color=color, lw=1.1, ls=":", alpha=0.95
+                )
+                marker_line, = ax_xy.plot(
+                    [], [], marker="^", color=color,
+                    linestyle="None", markersize=4, alpha=0.95
+                )
+                xy_lines.append((traj_line, marker_line, px, py))
     _style(ax_xy, "Estimated XY Trajectory", "Y [m]", xlabel="X [m]",
            legend=True)
     all_x = [arrays.get(f"est_x_{v}") for v in active]
     all_y = [arrays.get(f"est_y_{v}") for v in active]
+    if focus in active:
+        all_x.extend([
+            arrays.get(f"consensus_x_{focus}"),
+            arrays.get(f"postpred_x_{focus}"),
+        ])
+        all_y.extend([
+            arrays.get(f"consensus_y_{focus}"),
+            arrays.get(f"postpred_y_{focus}"),
+        ])
     ax_xy.set_xlim(*_finite_limits(all_x, default=(-1.0, 1.0)))
     ax_xy.set_ylim(*_finite_limits(all_y, default=(-1.0, 1.0)))
     ax_xy.set_aspect("auto")
@@ -2370,6 +2955,12 @@ def main():
                         help="start playback at this elapsed log time in seconds")
     parser.add_argument("--no-loop", action="store_true",
                         help="stop at the end of playback instead of looping")
+    parser.add_argument("--motion-test-seconds", type=float, default=3.0,
+                        help="time horizon in seconds for the propagation test figure (default: 3.0)")
+    parser.add_argument("--motion-test-start", type=float,
+                        help="optional log time in seconds to start the propagation test")
+    parser.add_argument("--motion-test-export", action="store_true",
+                        help="export the step-by-step propagation test to CSV")
     args = parser.parse_args()
 
     directory = os.path.dirname(os.path.abspath(__file__))
@@ -2423,7 +3014,14 @@ def main():
     print(f"Candidate focus vehicles: {focus_candidates}")
     print(f"Total samples: {len(rows)}\n")
 
+    if MATPLOTLIB_IMPORT_ERROR is not None:
+        print("Matplotlib import failed. Plot windows are disabled in this environment.")
+        print(f"Import error: {MATPLOTLIB_IMPORT_ERROR}\n")
+
     if args.playback:
+        if MATPLOTLIB_IMPORT_ERROR is not None:
+            print("Playback requires matplotlib. Exiting after summary.")
+            return
         if args.focus is not None and args.focus in focus_candidates:
             playback_focus = args.focus
         elif args.focus is not None and args.focus in active:
@@ -2456,7 +3054,21 @@ def main():
     # Print analytic summary
     _print_static_metrics(rows, active)
 
-    focuses = focus_candidates
+    if args.all:
+        focuses = focus_candidates
+    elif args.focus is not None:
+        if args.focus in focus_candidates:
+            focuses = [args.focus]
+        elif args.focus in active:
+            focuses = [args.focus]
+        else:
+            print(
+                f"Requested focus V{args.focus} not in candidate list; "
+                f"using V{focus_candidates[0]}."
+            )
+            focuses = [focus_candidates[0]]
+    else:
+        focuses = [focus_candidates[0]]
 
     # # Choose focus vehicles according to command-line flags or interactive input
     # if args.all:
@@ -2482,12 +3094,45 @@ def main():
     #         except ValueError:
     #             focuses = [focus_candidates[0]]
 
+    # Always compute the motion-test summary, even when matplotlib is unavailable.
+    for focus in focuses:
+        motion_dataset = _motion_test_dataset(
+            times,
+            rows,
+            focus,
+            window_s=args.motion_test_seconds,
+            start_time=args.motion_test_start,
+        )
+        _print_motion_test_summary(
+            motion_dataset,
+            focus,
+        )
+        if args.motion_test_export and motion_dataset is not None:
+            export_name = (
+                f"motion_test_V{host_id}_focusV{focus}_"
+                f"{motion_dataset['start_t']:.3f}s_to_{motion_dataset['end_t']:.3f}s.csv"
+            ).replace(":", "_")
+            export_path = os.path.join(directory, export_name)
+            _write_motion_test_csv(motion_dataset, focus, export_path)
+
+    if MATPLOTLIB_IMPORT_ERROR is not None:
+        return
+
     # Build the figures (multiple sets if necessary)
     for focus in focuses:
         print(f"Plotting figures with focus vehicle: V{focus} ...")
         _fig_trust(times, rows, active, focus, host_id)
         _fig_weights(times, rows, active, focus, host_id)
-        _fig_estimation(times, rows, active, host_id)
+        _fig_estimation(times, rows, active, focus, host_id)
+        _fig_prediction_debug(times, rows, focus, host_id)
+        _fig_motion_test(
+            times,
+            rows,
+            focus,
+            host_id,
+            window_s=args.motion_test_seconds,
+            start_time=args.motion_test_start,
+        )
         _fig_impact_histograms(rows, active, focus, host_id)
         _fig_v2v_details(times, rows, active, focus, host_id)
 

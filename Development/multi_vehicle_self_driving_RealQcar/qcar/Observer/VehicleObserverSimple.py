@@ -1772,6 +1772,7 @@ class VehicleObserver:
                 current_time_ns=current_time_ns,  # Pass nanoseconds
                 control=control,
             )
+            self._ensure_fleet_state_cache_locked()
 
             # Verify own state is correctly set in fleet_states
             if self.vehicle_id < self.fleet_size:
@@ -1828,9 +1829,51 @@ class VehicleObserver:
         """Return the latest cached fleet state for the selected target."""
         if target_id is None or target_id < 0:
             return None
-        if target_id >= self.fleet_states.shape[1]:
-            return None
-        return self.fleet_states[:, target_id].copy()
+        with self.lock:
+            self._ensure_fleet_state_cache_locked()
+            if target_id >= self.fleet_states.shape[1]:
+                return None
+            return self.fleet_states[:, target_id].copy()
+
+    def _ensure_fleet_state_cache_locked(self) -> None:
+        """Keep the cached fleet-state matrix aligned with fleet_size."""
+        target_cols = max(int(self.vehicle_id) + 1, int(self.fleet_size), 1)
+        estimator = getattr(self, "fleet_estimator", None)
+
+        if estimator is not None and hasattr(estimator, "_ensure_fleet_capacity"):
+            try:
+                estimator._ensure_fleet_capacity(target_cols - 1)
+            except Exception:
+                pass
+
+        if estimator is not None and hasattr(estimator, "get_fleet_states"):
+            try:
+                estimator_states = estimator.get_fleet_states()
+                if (
+                    isinstance(estimator_states, np.ndarray)
+                    and estimator_states.ndim == 2
+                    and estimator_states.shape[0] == self.state_dim
+                ):
+                    self.fleet_states = estimator_states.copy()
+            except Exception:
+                pass
+
+        if not isinstance(self.fleet_states, np.ndarray) or self.fleet_states.ndim != 2:
+            self.fleet_states = np.zeros((self.state_dim, target_cols))
+            return
+
+        current_rows, current_cols = self.fleet_states.shape
+        if current_rows != self.state_dim:
+            resized = np.zeros((self.state_dim, max(current_cols, target_cols)))
+            rows_to_copy = min(self.state_dim, current_rows)
+            resized[:rows_to_copy, :current_cols] = self.fleet_states[:rows_to_copy, :]
+            self.fleet_states = resized
+            current_cols = self.fleet_states.shape[1]
+
+        if current_cols < target_cols:
+            expanded = np.zeros((self.state_dim, target_cols))
+            expanded[:, :current_cols] = self.fleet_states
+            self.fleet_states = expanded
 
     def _publish_relative_measurement(
         self,
@@ -2151,6 +2194,33 @@ class VehicleObserver:
             self.vehicle_logger.log_error("Add received local state error", e)
             return False
 
+    def add_received_clean_local_state(
+        self, sender_id: int, state: Dict, timestamp_ns: int
+    ) -> bool:
+        """
+        Add received CLEAN local state from another vehicle for trust-only use.
+
+        This data must not change the estimator control/update path directly.
+        """
+        try:
+            if sender_id == self.vehicle_id:
+                return False
+
+            if self.fleet_estimator is None:
+                return False
+
+            if not hasattr(self.fleet_estimator, "add_received_clean_local_state"):
+                return False
+
+            return bool(
+                self.fleet_estimator.add_received_clean_local_state(
+                    sender_id, state, timestamp_ns
+                )
+            )
+        except Exception as e:
+            self.vehicle_logger.log_error("Add received clean local state error", e)
+            return False
+
     def add_received_fleet_state(
         self, sender_id: int, fleet_estimates: Dict, timestamp_ns: int
     ) -> bool:
@@ -2283,12 +2353,14 @@ class VehicleObserver:
     def get_fleet_states(self) -> np.ndarray:
         """Get current fleet state estimates."""
         with self.lock:
+            self._ensure_fleet_state_cache_locked()
             return self.fleet_states.copy()
 
     def get_vehicle_state(self, vehicle_id: int) -> Optional[np.ndarray]:
         """Get state estimate for a specific vehicle."""
         if 0 <= vehicle_id < self.fleet_size:
             with self.lock:
+                self._ensure_fleet_state_cache_locked()
                 return self.fleet_states[:, vehicle_id].copy()
         return None
 
@@ -2577,6 +2649,7 @@ class VehicleObserver:
         Now includes acceleration: [x, y, theta, v, a]
         """
         with self.lock:
+            self._ensure_fleet_state_cache_locked()
             fleet_data = {}
             for vehicle_id in range(self.fleet_size):
                 fs = self.fleet_states[:, vehicle_id]
@@ -2726,6 +2799,7 @@ class VehicleObserver:
 
                 # Update cached fleet states
                 self.fleet_states = self.fleet_estimator.get_fleet_states()
+                self._ensure_fleet_state_cache_locked()
 
                 # Log the complete fleet state after reinit
                 self.vehicle_logger.logger.info(

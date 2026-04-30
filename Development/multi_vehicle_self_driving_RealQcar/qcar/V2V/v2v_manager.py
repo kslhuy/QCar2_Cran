@@ -630,9 +630,11 @@ class V2VManager:
                 
                 # Add to VehicleObserver if available (observer expects a 5D numpy array)
                 if self.vehicle_observer:
-
                     self.vehicle_observer.add_received_local_state(
                         sender_id, state_dict, message_timestamp_ns
+                    )
+                    self.vehicle_observer.add_received_clean_local_state(
+                        sender_id, clean_state_dict, message_timestamp_ns
                     )
                     
                     

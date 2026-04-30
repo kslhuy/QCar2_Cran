@@ -456,10 +456,9 @@ class FleetEstimatorFactory:
         try:
             from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
                 TrustBasedFleetEstimator,
-                TrustBasedKalmanEstimator
+                
             )
             cls.ESTIMATOR_TYPES['trust_consensus'] = TrustBasedFleetEstimator
-            cls.ESTIMATOR_TYPES['trust_kalman'] = TrustBasedKalmanEstimator
             cls._trust_estimators_loaded = True
         except ImportError as e:
             # Trust-based estimators not available
