@@ -194,7 +194,7 @@ model:
   # kinematic = analytical QCar bicycle model
   #
   # Note: if set to kinematic, Phase A is skipped automatically.
-  predictor_mode: "kinematic"
+  predictor_mode: "nn"
   kin_wheelbase: 0.2
   # Longitudinal velocity prediction used by the analytical kinematic predictor.
   # tachometer        = legacy behavior, v_next = motor_tach, so z_v innovation is near zero.

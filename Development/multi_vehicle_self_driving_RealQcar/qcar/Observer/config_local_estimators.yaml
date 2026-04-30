@@ -2,7 +2,7 @@
 # Default parameters for the local state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-local_estimator_type: ekf # local_estimator_type: Which local estimator to use.
+local_estimator_type: robust_kalman_net # local_estimator_type: Which local estimator to use.
                         # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
 
 enable_recording: false # enable_recording: Controls data logging to CSV.
@@ -74,7 +74,7 @@ local:
   # Robust KalmanNet estimator
   # ---------------------------------------------------------------------
   robust_kalman_net:
-    predictor_mode: "kinematic"    # Always keep the predictor analytical/kinematic; only the update step is learned.
+    predictor_mode: "nn"    # Always keep the predictor analytical/kinematic; only the update step is learned.
     kin_wheelbase: 0.2          # Fallback default; VehicleObserver overrides from fleet_config.vehicle_geometry when available.
     longitudinal_model: "velocity_lag_lookup" # Observer-model calibration overrides this via `observer_model_source`; this is only the local fallback.
     kin_velocity_model: "velocity_lag" # Legacy fallback only when no calibration-backed longitudinal model is injected.
@@ -84,7 +84,7 @@ local:
     enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
     enable_clean_reference_comparator: true # Evaluation-only pseudo-ground-truth: run a second EKF on clean pre-attack inputs for error analysis.
     publish_clean_reference_output: true # Publish the clean-reference EKF state as the observer output for evaluation/control.
-    comparator_use_qcar_ekf: false # Use QCarEKF or fall back EKF  .
+    comparator_use_qcar_ekf: true # Use QCarEKF or fall back EKF  .
     comparator_console_log: false # Keep console quiet during runtime.
     comparator_log_interval: 100  # If console logging is enabled, log every N updates.
     comparator_history_size: 200 # Keep the last N comparison snapshots in memory.
@@ -95,7 +95,7 @@ local:
     comparator_file_prefix: rknet_comparison
     comparator_overwrite: false
     mask_branch_active_threshold: 0.5 # For log interpretation only; marks a branch as "active" when mean mask >= threshold.
-    sequence_length: 25          # Keep aligned with the training sequence length.
+    sequence_length: 20          # Keep aligned with the training sequence length.
     streaming_inference: true    # Reuse hidden state and run one model step per tick instead of replaying the whole window.
     dt: 0.02                     # Nominal sample time used by the trained model. Keep this aligned with the real inference cadence.
     heading_filter_enabled: true # Use the shared local replica of Quanser QCarEKF heading fusion (gyro + kinematic pose + GPS theta/x/y when available).
