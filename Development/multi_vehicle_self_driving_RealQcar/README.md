@@ -44,11 +44,14 @@ cd .\Development\QCar2_multi-vehicle_control\
 python .\initCars_Studio.py   -u
 # Spawn 1 vehicle   
 python .\initCars_Studio.py   -u -n 1  
+python .\initCars_Studio.py   -u -n 3 
 
 #  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\app_main.py
-
+cd .\GroundStation-Qcar-App\
+# Start the development server
+npm run dev
 
 # Run the real logic of vehicle 0   (another cmd)
 

@@ -149,7 +149,7 @@ weight:
   weight_type: trust_based
   
   # Base gains for trust_based mode before per-target normalization
-  w0_fixed: 0.3                   # Nominal maximum gain for the target's own direct broadcast
+  w0_fixed: 0.4                   # Nominal maximum gain for the target's own direct broadcast
   w_self_base: 0.2                # Base gain for self/prediction persistence
   
   # Neighbor weight constraints
@@ -190,13 +190,14 @@ observer:
 
   # State propagation used by the fleet estimator prediction step:
   # model           = existing bicycle + longitudinal model
-  # clean_data 
+  # clean_data      = test mode: keep current x/y continuity but use the clean
+  #                   target V2V theta/velocity/acceleration as the motion source
   dynamics_prediction_mode: clean_data
   # Final output low-pass filter on each target estimate:
   # x_filt = alpha * x_new + (1 - alpha) * x_prev
   # lower alpha = smoother but more lag
   enable_output_low_pass: true
-  output_low_pass_alpha: 0.25
+  output_low_pass_alpha: 1.0
   # When a target's direct local-state channel is untrusted, use a larger
   # alpha so host-following motion is not flattened by the output filter.
   attack_output_low_pass_alpha: 1.0
@@ -204,10 +205,19 @@ observer:
   # Trust-triggered contamination rollback
   rollback_enabled: true
   rollback_window_size: 50
+  # Fast rollback triggers:
+  # - final_trust        = fallback, slower because Dirichlet/EMA has memory
+  # - local_est_check    = fastest reaction to local/direct channel corruption
+  # - global_est_check   = react when fleet cross-check fails even before final
+  rollback_on_final_trust: true
+  rollback_on_local_est_check: true
+  rollback_on_global_est_check: true
   # Extra safety margin for delayed trust detection:
   # when rollback seeds from the last trusted target snapshot, step back this
   # many trusted samples first so replay starts from an older, safer pose.
-  rollback_trusted_state_guard_steps: 3
+  # This is safer against contamination, but it also adds temporal lag because
+  # replay does not start from the most recent trusted sample.
+  rollback_trusted_state_guard_steps: 15
   # Optional cap for cached trusted snapshots per target. Keep this at least
   # guard_steps + 1; default code also falls back to rollback_window_size.
   rollback_trusted_state_history_size: 60

@@ -159,6 +159,15 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             self.rollback_trusted_state_guard_steps + 1,
             1,
         )
+        self.rollback_on_final_trust = bool(
+            self.config.get("rollback_on_final_trust", True)
+        )
+        self.rollback_on_local_est_check = bool(
+            self.config.get("rollback_on_local_est_check", True)
+        )
+        self.rollback_on_global_est_check = bool(
+            self.config.get("rollback_on_global_est_check", True)
+        )
         self._rollback_trusted_state_history: Dict[int, deque] = {}
         self.rollback = ContaminationRollback(
             state_dim=self.state_dim,
@@ -208,6 +217,15 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         )
         self.output_low_pass_alpha = float(
             np.clip(self.config.get("output_low_pass_alpha", 1.0), 0.0, 1.0)
+        )
+        self.attack_output_low_pass_alpha = float(
+            np.clip(
+                self.config.get(
+                    "attack_output_low_pass_alpha", self.output_low_pass_alpha
+                ),
+                0.0,
+                1.0,
+            )
         )
         self.dynamics_prediction_mode = self._normalize_dynamics_prediction_mode(
             self.config.get(
@@ -265,6 +283,11 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.logger.logger.info(
             f"Acceleration lag model {'ENABLED' if self.accel_lag_enabled else 'DISABLED'}"
             f" (tau={self.accel_lag_tau}, gain={self.accel_lag_gain})"
+        )
+        self.logger.logger.info(
+            "Output low-pass alpha=%s, attack alpha=%s",
+            self.output_low_pass_alpha,
+            self.attack_output_low_pass_alpha,
         )
 
     @staticmethod
@@ -459,6 +482,17 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             if int(vehicle_id) != self.vehicle_id and float(trust_val) < threshold
         }
 
+    @staticmethod
+    def _has_active_attack_flags(trust_obj) -> bool:
+        """True when any target attack-detection flag is currently active."""
+        if trust_obj is None:
+            return False
+        return bool(
+            getattr(trust_obj, "flag_target_attack", False)
+            or getattr(trust_obj, "flag_global_est_check", False)
+            or getattr(trust_obj, "flag_local_est_check", False)
+        )
+
     def _is_direct_measurement_allowed(
         self, target_id: int, trust_scores: Dict[int, float]
     ) -> bool:
@@ -536,6 +570,38 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     int(current_time_ns),
                 )
             )
+
+    def _build_rollback_trigger_signals(
+        self, trust_scores: Dict[int, float]
+    ) -> Dict[int, Dict[str, object]]:
+        """Build per-target rollback trigger reasons from trust flags and final trust."""
+        threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+        signals: Dict[int, Dict[str, object]] = {}
+
+        for vehicle_id, trust_val in trust_scores.items():
+            target_id = int(vehicle_id)
+            if target_id == self.vehicle_id:
+                continue
+
+            trust_obj = self.trust_model.get_trust_score(target_id)
+            signals[target_id] = {
+                "trust_below_threshold": bool(
+                    self.rollback_on_final_trust and float(trust_val) < threshold
+                ),
+                "flag_local_est_check": bool(
+                    self.rollback_on_local_est_check
+                    and trust_obj is not None
+                    and getattr(trust_obj, "flag_local_est_check", False)
+                ),
+                "flag_global_est_check": bool(
+                    self.rollback_on_global_est_check
+                    and trust_obj is not None
+                    and getattr(trust_obj, "flag_global_est_check", False)
+                ),
+                "final_trust": float(trust_val),
+            }
+
+        return signals
 
     # ------------------------------------------------------------------
     # V2V attack metadata for trust-log ground truth
@@ -1046,6 +1112,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "current_model": "model",
             "default": "model",
             "kinematic": "model",
+            "clean_data": "clean_data",
+            "clean-data": "clean_data",
+            "clean": "clean_data",
+            "pure_prediction_self": "clean_data",
+            "pure-prediction-self": "clean_data",
+            "pure_self_prediction": "clean_data",
+            "pure-self-prediction": "clean_data",
             "dead_reckoning": "dead_reckoning",
             "dead_reckon": "dead_reckoning",
             "dead-reckoning": "dead_reckoning",
@@ -1329,26 +1402,55 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 target_ctrl = self._get_target_control(
                     target_id, control, current_time_ns=current_time_ns
                 )
+                target_trust_obj = self.trust_model.get_trust_score(target_id)
+                target_model_cfg = self._get_vehicle_model_config(target_id)
+                force_clean_pose_anchor = bool(
+                    self._normalize_dynamics_prediction_mode(
+                        target_model_cfg.get(
+                            "dynamics_prediction_mode", self.dynamics_prediction_mode
+                        )
+                    )
+                    == "clean_data"
+                    and self._has_active_attack_flags(target_trust_obj)
+                )
                 components["prediction"] = {
                     "dt": float(dt),
                     "control": None
                     if target_ctrl is None
                     else np.asarray(target_ctrl, dtype=float).copy(),
+                    "force_clean_pose_anchor": bool(force_clean_pose_anchor),
                 }
 
                 consensus_est = normal_est.copy()
                 normal_est = self._apply_state_constraints(
                     self._predict_dynamics(
-                        consensus_est, target_ctrl, dt, target_id=target_id
+                        consensus_est,
+                        target_ctrl,
+                        dt,
+                        target_id=target_id,
+                        current_time_ns=current_time_ns,
+                        force_clean_pose_anchor=force_clean_pose_anchor,
                     ),
                     target_id=target_id,
                 )
-                
+
+                attack_alpha_override = None
+                if force_clean_pose_anchor:
+                    attack_alpha_override = 1.0
+                elif (
+                    components["weights"].get("w0", 0.0) <= 1e-9
+                    or bool(
+                        target_trust_obj is not None
+                        and getattr(target_trust_obj, "flag_local_est_check", False)
+                    )
+                ):
+                    attack_alpha_override = self.attack_output_low_pass_alpha
 
                 final_est = self._apply_output_low_pass_filter(
                     previous_state=current_est,
                     new_state=normal_est,
                     target_id=target_id,
+                    alpha_override=attack_alpha_override,
                 )
 
                 self.fleet_states[:, target_id] = final_est
@@ -1356,6 +1458,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
             # 5.1 Contamination rollback
             if self.rollback.enabled:
+                rollback_trigger_signals = self._build_rollback_trigger_signals(
+                    trust_scores
+                )
                 self.rollback.record(
                     current_time_ns=current_time_ns,
                     pre_update_states=pre_update_states,
@@ -1365,6 +1470,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     trust_scores=trust_scores,
                     current_time_ns=current_time_ns,
                     fleet_states=self.fleet_states,
+                    trigger_signals=rollback_trigger_signals,
                 )
                 self._update_rollback_trusted_state_history(
                     trust_scores=trust_scores,
@@ -1922,12 +2028,86 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     # ==================================================================
     #   DYNAMICS & CONSTRAINTS
     # ==================================================================
+    def _predict_from_clean_data_motion(
+        self,
+        state: np.ndarray,
+        dt: float,
+        target_id: int,
+        current_time_ns: Optional[int] = None,
+        force_clean_pose_anchor: bool = False,
+    ) -> np.ndarray:
+        """
+        Predict using the clean V2V target broadcast as the motion source.
+
+        This keeps the host's current x/y estimate continuity, but drives the
+        motion with clean theta/velocity/acceleration for testing.
+        When `force_clean_pose_anchor` is enabled, x/y starts from the aligned
+        clean V2V pose instead of the rollback/consensus pose.
+        """
+        state = np.asarray(state, dtype=float).copy()
+        if dt <= 0.0:
+            return state
+
+        clean_state = None
+        if current_time_ns is not None:
+            clean_entry = self._get_latest_clean_received_state_with_timestamp(
+                target_id, current_time_ns
+            )
+            if clean_entry is not None:
+                clean_ts_ns, clean_state_raw = clean_entry
+                clean_state = self._align_state_array_to_time(
+                    clean_state_raw,
+                    snapshot_ts_ns=clean_ts_ns,
+                    current_time_ns=current_time_ns,
+                    target_id=target_id,
+                )
+        else:
+            history = self.received_clean_local_states.get(int(target_id), [])
+            if history:
+                clean_state = _normalize_state_array(
+                    history[-1][1], self.state_dim, logger=self.logger
+                )
+
+        if clean_state is None:
+            theta = float(state[2]) if state.shape[0] > 2 else 0.0
+            velocity = float(state[3]) if state.shape[0] > 3 else 0.0
+            acceleration = float(state[4]) if state.shape[0] > 4 else 0.0
+        else:
+            clean_state = np.asarray(clean_state, dtype=float).copy()
+            theta = float(clean_state[2]) if clean_state.shape[0] > 2 else 0.0
+            velocity = float(clean_state[3]) if clean_state.shape[0] > 3 else 0.0
+            acceleration = (
+                float(clean_state[4])
+                if clean_state.shape[0] > 4
+                else float(state[4]) if state.shape[0] > 4 else 0.0
+            )
+
+        predicted = state.copy()
+        base_x = float(state[0])
+        base_y = float(state[1])
+        if force_clean_pose_anchor and clean_state is not None:
+            if clean_state.shape[0] > 0:
+                base_x = float(clean_state[0])
+            if clean_state.shape[0] > 1:
+                base_y = float(clean_state[1])
+        predicted[0] = base_x + velocity * np.cos(theta) * dt
+        predicted[1] = base_y + velocity * np.sin(theta) * dt
+        if predicted.shape[0] > 2:
+            predicted[2] = self._wrap_angle(theta)
+        if predicted.shape[0] > 3:
+            predicted[3] = velocity
+        if predicted.shape[0] > 4:
+            predicted[4] = acceleration
+        return predicted
+
     def _predict_dynamics(
         self,
         state: np.ndarray,
         control: Optional[np.ndarray],
         dt: float,
         target_id: int = -1,
+        current_time_ns: Optional[int] = None,
+        force_clean_pose_anchor: bool = False,
     ) -> np.ndarray:
         """Predict next state using bicycle kinematics + configured longitudinal model."""
         model_cfg = self._get_vehicle_model_config(target_id)
@@ -1937,6 +2117,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         state = np.asarray(state, dtype=float).copy()
         if dt <= 0.0 or prediction_mode == "none":
             return state
+        if prediction_mode == "clean_data":
+            return self._predict_from_clean_data_motion(
+                state=state,
+                dt=dt,
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+                force_clean_pose_anchor=force_clean_pose_anchor,
+            )
 
         x, y, theta, v = state[:4]
         a = state[4] if len(state) > 4 else 0.0
@@ -2052,12 +2240,18 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         previous_state: np.ndarray,
         new_state: np.ndarray,
         target_id: int = -1,
+        alpha_override: Optional[float] = None,
     ) -> np.ndarray:
         """Low-pass filter the final target estimate using the previous output."""
         if not getattr(self, "enable_output_low_pass", False):
             return np.asarray(new_state, dtype=float).copy()
 
-        alpha = float(np.clip(getattr(self, "output_low_pass_alpha", 1.0), 0.0, 1.0))
+        if alpha_override is None:
+            alpha = float(
+                np.clip(getattr(self, "output_low_pass_alpha", 1.0), 0.0, 1.0)
+            )
+        else:
+            alpha = float(np.clip(alpha_override, 0.0, 1.0))
         if alpha >= 1.0:
             return np.asarray(new_state, dtype=float).copy()
 
