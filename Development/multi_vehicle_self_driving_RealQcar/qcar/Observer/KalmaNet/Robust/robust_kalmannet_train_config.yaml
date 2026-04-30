@@ -149,6 +149,10 @@ loss:
   # Penalizes large gains to encourage conservative corrections.
   lambda_gain: 0.003
 
+  # Weight for temporal Kalman gain smoothness.
+  # Penalizes frame-to-frame gain chatter without forcing all gains to zero.
+  lambda_gain_smooth: 0.001
+
 augmentation:
   # true  = apply synthetic attacks during training.
   # false = train on clean data only.

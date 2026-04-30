@@ -190,17 +190,17 @@ pywin32==311
 
 PyYAML==6.0.2
 
-quanser-api @ file:///C:/Program%20Files/Quanser/Quanser%20SDK/python/quanser_api-2024.10.17-py2.py3-none-any.whl#sha256=5dd010c7b4c84b81f058955ba58c4f1840a561732f7881cab86deeb05aa5067a
+# quanser-api @ file:///C:/Program%20Files/Quanser/Quanser%20SDK/python/quanser_api-2024.10.17-py2.py3-none-any.whl#sha256=5dd010c7b4c84b81f058955ba58c4f1840a561732f7881cab86deeb05aa5067a
 
-quanser-common==2024.10.17
+# quanser-common==2024.10.17
 
-quanser-communications==2024.10.17
+# quanser-communications==2024.10.17
 
-quanser-devices==2024.10.17
+# quanser-devices==2024.10.17
 
-quanser-hardware==2024.10.17
+# quanser-hardware==2024.10.17
 
-quanser-multimedia==2024.10.17
+# quanser-multimedia==2024.10.17
 
 referencing==0.36.2
 
