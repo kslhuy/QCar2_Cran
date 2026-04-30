@@ -27,7 +27,7 @@ leader_reverse_follow:
   stop_on_v2v_loss: true
 
 leader_sensor_acc:
-  enabled: true
+  enabled: false
   blend_alpha: 0.75           # 1.0 = pure V2V/CACC, 0.0 = pure local sensor ACC
   desired_distance: 0.35      # [m] Preferred stand-off distance from YOLO car_dist
   time_headway: 0.0           # [s] Extra dynamic spacing = desired_distance + time_headway * ego_speed
@@ -40,7 +40,7 @@ leader_sensor_acc:
   distance_smoothing: 0.7     # Low-pass filter on YOLO distance. Higher = smoother but slower
 
 leader_longitudinal_state_source:
-  mode: 'direct_v2v_attacked' # 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'
+  mode: 'direct_v2v_clean' # 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'
   fallback_to_v2v: true       # If fleet estimate is unavailable, keep current direct V2V behavior
 
 # Legacy fallbacks
@@ -73,6 +73,7 @@ cacc:
   target_velocity_gap_window: 0.12  # [m] Extra gap needed before the cruise-speed bias becomes strong. Up = waits for a larger safe gap. Down = starts accelerating sooner.
   target_velocity_turn_scale: 0.25  # Scale applied to that cruise-speed bias in turns. Up = more push remains in corners. Down = corners stay more conservative.
   spacing_deadband: 0.12
+  close_spacing_deadband: 0.03  # Smaller deadband used only when spacing error is negative (too close). Lower = reacts sooner to back off near the leader.
   velocity_deadband: 0.05
   throttle_smoothing: 0.0
   brake_smoothing: 0.6
@@ -137,9 +138,9 @@ pure_pursuit:
   curvature_threshold: 0.05
   turn_lookahead_offset: 0.18
   turn_lookahead_gain: 1.3
-  turn_preview_cap: 0.03   # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
+  turn_preview_cap: 0.0   # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
   heading_alignment_gain: 0.0
-  heading_alignment_window_deg: 45.0
+  heading_alignment_window_deg: 0.0
   heading_preview_cap: 0.0
 
 pp_map:

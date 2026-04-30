@@ -32,23 +32,6 @@ leader_reverse_follow:
   reverse_steering_gain: 0.5
   stop_on_v2v_loss: true
 
-leader_sensor_acc:
-  enabled: false
-  blend_alpha: 0.7            # 1.0 = pure V2V/CACC, 0.0 = pure local sensor ACC
-  desired_distance: 0.35      # [m] Preferred stand-off distance from YOLO car_dist
-  time_headway: 0.0           # [s] Extra dynamic spacing = desired_distance + time_headway * ego_speed
-  distance_gain: 1.0          # [m/s per m] Converts gap error into local ACC target-speed correction
-  min_target_velocity: 0.0    # [m/s] Lower clamp for the local ACC target speed
-  max_target_velocity: 0.7    # [m/s] Upper clamp for the local ACC target speed
-  stop_distance: 0.20         # [m] Force local ACC target speed to zero inside this gap
-  max_distance: 1.8           # [m] Ignore YOLO car-distance measurements beyond this range
-  max_offset: 0.75            # Ignore detections that are too far from the image center
-  distance_smoothing: 0.6     # Low-pass filter on YOLO distance. Higher = smoother but slower
-
-leader_longitudinal_state_source:
-  mode: 'fleet_estimator' # 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'
-  fallback_to_v2v: true       # If fleet estimate is unavailable, keep current direct V2V behavior
-
 # Legacy fallback (used if state-specific keys are missing)
 # ============================================================================
 # LONGITUDINAL CONTROLLER CONFIGURATION
@@ -56,16 +39,6 @@ leader_longitudinal_state_source:
 
 # Controller type options: 'cacc', 'pid', 'hybrid'
 longitudinal_controller_type: 'pid'
-
-command_smoothing:
-  longitudinal:
-    alpha: 0.1
-    rise_rate: 0.7
-    fall_rate: 1.0
-  lateral:
-    alpha: 0.01
-    rise_rate: 1.0
-    fall_rate: 1.0
 
 # CACC Controller Parameters
 cacc:
@@ -85,17 +58,13 @@ cacc:
   # respond when the leader changes acceleration faster/slower than the
   # follower. Set to 0 (default) to ignore acceleration information.
   leader_acceleration_weight: 0.8
-  target_velocity_weight: 0.6   # Extra straight-road catch-up toward v_ref when the gap is open. Up = reaches cruise speed faster. Down = follows the leader more conservatively.
-  target_velocity_gap_window: 0.0  # [m] Extra gap needed before the cruise-speed bias becomes strong. Up = waits for a larger safe gap. Down = starts accelerating sooner.
-  target_velocity_turn_scale: 0.5  # Scale applied to that cruise-speed bias in turns. Up = more push remains in corners. Down = corners stay more conservative.
-  spacing_deadband: 0.22      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
-  close_spacing_deadband: 0.03  # Smaller deadband used only when spacing error is negative (too close). Lower = reacts sooner to back off near the leader.
+  spacing_deadband: 0.2      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
   velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
   throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
-  brake_smoothing: 0.4    # Braking/deceleration smoothing [0-1]. 1.0 holds too much previous throttle; 0.8 still smooths but lets the command drop toward zero.
-  max_acc_rate: 1.5          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
+  brake_smoothing: 0.5      # Aggressive smoothing factor applied ONLY when braking/decelerating [0-1]. Higher values prevent jerky sudden stops. Default 0.85.
+  max_acc_rate: 2.0          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
   use_feedforward: false    # Disable hidden positive velocity feedforward in sim; spacing loop controls closing speed
-  ff_gain: 0.08              # CACC feedforward gain: u_ff = leader_velocity * ff_gain
+  ff_gain: 0.1              # CACC feedforward gain: u_ff = leader_velocity * ff_gain
   limo_max_speed: 0.7       # Limo-only speed ceiling for CACC velocity command [m/s]
   limo_max_accel: 0.25      # Limo-only positive acceleration cap [m/s^2]
   limo_max_decel: 0.45      # Limo-only braking/deceleration cap [m/s^2]
@@ -167,22 +136,18 @@ pure_pursuit:
   curvature_threshold: 0.15   # Lane curvature threshold for turn detection
   turn_lookahead_offset: 0.05 # Lateral offset in turns (meters). Smaller offset avoids pushing the follower too far to the outside of the corner.
   turn_lookahead_gain: 0.9   # Lookahead distance multiplier in turns. Below 1.0 makes turn tracking tighter instead of widening the arc.
-  turn_preview_cap: 0.02     # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
-  heading_alignment_gain: 0.05   # 0.0 = old lateral behavior. Increase only if first heading capture is too slow.
-  heading_alignment_window_deg: 40.0  # Heading-error range over which the extra alignment term ramps in.
-  heading_preview_cap: 0.0      # 0.0 = no extra forward preview from heading mismatch. Increase cautiously; too high causes corner cutting.
 
 # Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
 pp_map:
   sample_ds: 0.02                 # [m] Spacing between resampled path points. Up = fewer/coarser points. Down = denser/more detailed path.
   desired_speed: 0.55             # [m/s] Base cruise speed used to build the map speed profile. Up = faster almost everywhere. Down = slower everywhere.
-  min_speed: 0.45                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
-  kappa_speed_gain: 0.9           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
+  min_speed: 0.35                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
+  kappa_speed_gain: 1.0           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
   max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
-  hard_turn_kappa: 0.62           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
-  hard_turn_speed: 0.4           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
-  t_clip_min: 0.40                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
-  t_clip_max: 1.0                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
+  hard_turn_kappa: 0.60           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
+  hard_turn_speed: 0.36           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
+  t_clip_min: 0.4                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
+  t_clip_max: 0.9                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
   m_l1: 0.50                      # L1 lookahead increase with speed: L1 = q_l1 + m_l1*v. Up = more preview at speed. Down = more reactive at speed.
   q_l1: 0.2                       # [m] Base L1 lookahead at low speed. Up = smoother but slower response. Down = sharper but more oscillation risk.
   speed_lookahead: 0.2            # [s] How far ahead the controller samples path speed. Up = slows earlier before corners. Down = reacts later.
@@ -193,7 +158,7 @@ pp_map:
   end_scale_speed: 0.85           # [m/s] Speed where the full steering reduction is reached. Up = reduction comes in more gradually. Down = full reduction happens sooner.
   downscale_factor: 0.45          # Maximum steering reduction at/above end_scale_speed. Up = much softer steering at speed. Down = keep more steering authority.
   speed_lookahead_for_steer: 0.18 # [s] Preview horizon used for speed-based steering reduction. Up = use farther-ahead speed. Down = use more current/near speed.
-  target_speed_rise_rate: 0.7     # [m/s^2] Rate limit on PP-map target-speed increases before the speed controller.
+  target_speed_rise_rate: 0.8     # [m/s^2] Rate limit on PP-map target-speed increases before the speed controller.
   target_speed_fall_rate: 1.2     # [m/s^2] Rate limit on PP-map target-speed decreases to avoid sharp drop/recover oscillations.
   prioritize_dyn: false           # Reserved switch. Currently not a main tuning knob in normal PP-map behavior.
   trailing_gap: 0.8               # [m] Desired distance to the opponent in TRAILING mode. Up = stay farther back. Down = follow closer.
@@ -201,7 +166,7 @@ pp_map:
   trailing_i_gain: 0.0            # Integral action for trailing gap. Up = removes steady bias but can oscillate. Down = safer/simpler.
   trailing_d_gain: 0.1            # Damping using relative speed in trailing. Up = more anticipation/damping. Down = less damping, more overshoot risk.
   blind_trailing_speed: 0.2       # [m/s] Minimum speed when the opponent is not seen clearly. Up = keeps moving more. Down = becomes more cautious.
-  obstacle_avoidance_enabled: false  # Enable local obstacle replan around detected objects.
+  obstacle_avoidance_enabled: true  # Enable local obstacle replan around detected objects.
   obstacle_replan_period: 0.4       # [s] Minimum time between replans. Up = fewer, steadier replans. Down = more reactive, but noisier replans.
   obstacle_min_detect_dist: 0.15    # [m] Ignore detections closer than this. Up = ignore more very-close detections. Down = react even when very near.
   obstacle_max_detect_dist: 1.5     # [m] Ignore detections farther than this. Up = react earlier to far obstacles. Down = only react when closer.
@@ -209,7 +174,7 @@ pp_map:
   obstacle_person_radius: 0.1       # [m] Assumed pedestrian obstacle size. Up = more conservative avoidance. Down = tighter avoidance.
   obstacle_influence: 0.80          # [m] Distance around obstacle where path gets pushed away. Up = larger detour. Down = smaller detour.
   obstacle_clearance: 0.05          # [m] Extra safety margin added on top of obstacle radius. Up = safer/wider path. Down = tighter path.
-  car_overtake_mode: false           # true = try to go around cars. false = stay behind and trail them.
+  car_overtake_mode: true           # true = try to go around cars. false = stay behind and trail them.
 
 # ------------------------------------------------------------------------
 # MPC Controller Parameters
@@ -265,7 +230,7 @@ fusion_lateral:
   path_weight: 0.2           # Weight for path reference (0-1)
   leader_weight: 0.8         # Weight for leader adjustment (0-1)
   deviation_threshold: 0.25   # Max leader deviation before override (radians)
-  smoothing_factor: 0.7      # Output smoothing (0-1, higher = smoother , 0 = raw output)
+  smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother , 0 = raw output)
   max_steering: 0.5         # Maximum steering angle (radians)
 
 # ============================================================================

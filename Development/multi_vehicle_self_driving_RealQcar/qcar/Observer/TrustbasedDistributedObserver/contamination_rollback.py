@@ -22,9 +22,7 @@ class ContaminationRollback:
         enabled: bool = False,
         window_size: int = 15,
         trust_threshold: float = 0.5,
-        predict_fn: Optional[
-            Callable[[np.ndarray, Optional[np.ndarray], float, int], np.ndarray]
-        ] = None,
+        predict_fn: Optional[Callable[..., np.ndarray]] = None,
         constraints_fn: Optional[Callable[[np.ndarray, int], np.ndarray]] = None,
         trusted_state_fn: Optional[
             Callable[[int], Optional[tuple]]
@@ -104,9 +102,16 @@ class ContaminationRollback:
                 "force_clean_pose_anchor": bool(
                     prediction.get("force_clean_pose_anchor", False)
                 ),
+                "attack_relative_host_anchor_active": bool(
+                    prediction.get("attack_relative_host_anchor_active", False)
+                ),
+                "host_anchor_snapshot": None,
             }
             if control is not None:
                 safe_prediction["control"] = np.asarray(control, dtype=float).copy()
+            host_anchor_snapshot = prediction.get("host_anchor_snapshot")
+            if isinstance(host_anchor_snapshot, dict):
+                safe_prediction["host_anchor_snapshot"] = dict(host_anchor_snapshot)
 
             safe_targets[int(target_id)] = {
                 "direct": safe_direct,
@@ -413,6 +418,10 @@ class ContaminationRollback:
         force_clean_pose_anchor = bool(
             prediction.get("force_clean_pose_anchor", False)
         )
+        attack_relative_host_anchor_active = bool(
+            prediction.get("attack_relative_host_anchor_active", False)
+        )
+        host_anchor_snapshot = prediction.get("host_anchor_snapshot")
         if control is not None:
             control = np.asarray(control, dtype=float).copy()
 
@@ -424,6 +433,8 @@ class ContaminationRollback:
                 int(target_id),
                 current_time_ns=step_time_ns,
                 force_clean_pose_anchor=force_clean_pose_anchor,
+                attack_relative_host_anchor_active=attack_relative_host_anchor_active,
+                host_anchor_snapshot=host_anchor_snapshot,
             )
             return self._apply_state_constraints(predicted_state, target_id=target_id)
 

@@ -192,7 +192,30 @@ observer:
   # model           = existing bicycle + longitudinal model
   # clean_data      = test mode: keep current x/y continuity but use the clean
   #                   target V2V theta/velocity/acceleration as the motion source
+  # mixed_clean_data = use clean target V2V theta, but keep velocity and
+  #                   acceleration from the current estimator state; under
+  #                   attack-triggered clean anchoring, x/y starts from clean pose
+  # relative_host_anchor_mixed = normal operation uses the standard vehicle
+  #                   model; only while attack flags are active does it rebuild
+  #                   target x/y from host pose plus the latest trusted
+  #                   host-target distance, blend clean target theta with host
+  #                   theta, and fall back to host velocity
   dynamics_prediction_mode: clean_data
+  # Attack-time blend used only by relative_host_anchor_mixed:
+  # theta_attack = circular_mean(clean_theta, host_theta)
+  # with the weights below, and
+  # v_attack = target_w * last_target_v + host_w * host_v
+  # a_attack = target_w * last_target_a + host_w * host_a
+  relative_host_anchor_clean_theta_weight: 1.0
+  relative_host_anchor_host_theta_weight: 0.0
+  relative_host_anchor_target_velocity_weight: 0.1
+  relative_host_anchor_host_velocity_weight: 0.9
+  relative_host_anchor_target_acceleration_weight: 0.1
+  relative_host_anchor_host_acceleration_weight: 0.9
+  # When true, clean_data / mixed_clean_data may re-anchor x/y to the clean
+  # V2V target pose when attack flags are active. When false, keep x/y
+  # continuity from the consensus/rollback estimate even under attack.
+  force_clean_pose_anchor: false
   # Final output low-pass filter on each target estimate:
   # x_filt = alpha * x_new + (1 - alpha) * x_prev
   # lower alpha = smoother but more lag

@@ -169,6 +169,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             self.config.get("rollback_on_global_est_check", True)
         )
         self._rollback_trusted_state_history: Dict[int, deque] = {}
+        self._rollback_trusted_relative_anchor_history: Dict[int, deque] = {}
         self.rollback = ContaminationRollback(
             state_dim=self.state_dim,
             vehicle_id=self.vehicle_id,
@@ -223,6 +224,51 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 self.config.get(
                     "attack_output_low_pass_alpha", self.output_low_pass_alpha
                 ),
+                0.0,
+                1.0,
+            )
+        )
+        self.force_clean_pose_anchor = bool(
+            self.config.get("force_clean_pose_anchor", True)
+        )
+        self.relative_host_anchor_clean_theta_weight = float(
+            np.clip(
+                self.config.get("relative_host_anchor_clean_theta_weight", 0.8),
+                0.0,
+                1.0,
+            )
+        )
+        self.relative_host_anchor_host_theta_weight = float(
+            np.clip(
+                self.config.get("relative_host_anchor_host_theta_weight", 0.2),
+                0.0,
+                1.0,
+            )
+        )
+        self.relative_host_anchor_target_velocity_weight = float(
+            np.clip(
+                self.config.get("relative_host_anchor_target_velocity_weight", 0.1),
+                0.0,
+                1.0,
+            )
+        )
+        self.relative_host_anchor_host_velocity_weight = float(
+            np.clip(
+                self.config.get("relative_host_anchor_host_velocity_weight", 0.9),
+                0.0,
+                1.0,
+            )
+        )
+        self.relative_host_anchor_target_acceleration_weight = float(
+            np.clip(
+                self.config.get("relative_host_anchor_target_acceleration_weight", 0.1),
+                0.0,
+                1.0,
+            )
+        )
+        self.relative_host_anchor_host_acceleration_weight = float(
+            np.clip(
+                self.config.get("relative_host_anchor_host_acceleration_weight", 0.9),
                 0.0,
                 1.0,
             )
@@ -288,6 +334,18 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "Output low-pass alpha=%s, attack alpha=%s",
             self.output_low_pass_alpha,
             self.attack_output_low_pass_alpha,
+        )
+        self.logger.logger.info(
+            "Force clean pose anchor=%s", self.force_clean_pose_anchor
+        )
+        self.logger.logger.info(
+            "Relative host-anchor attack blend: theta(clean=%s, host=%s), velocity(target=%s, host=%s), acceleration(target=%s, host=%s)",
+            self.relative_host_anchor_clean_theta_weight,
+            self.relative_host_anchor_host_theta_weight,
+            self.relative_host_anchor_target_velocity_weight,
+            self.relative_host_anchor_host_velocity_weight,
+            self.relative_host_anchor_target_acceleration_weight,
+            self.relative_host_anchor_host_acceleration_weight,
         )
 
     @staticmethod
@@ -541,10 +599,263 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             None if trusted_time_ns is None else int(trusted_time_ns),
         )
 
+    @staticmethod
+    def _copy_host_anchor_snapshot(
+        snapshot: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize a replayable host-anchor snapshot."""
+        if not isinstance(snapshot, dict):
+            return None
+
+        copied: Dict[str, Any] = {}
+        for key in (
+            "host_x",
+            "host_y",
+            "host_theta",
+            "host_velocity",
+            "host_acceleration",
+            "distance",
+            "sign",
+            "relative_velocity",
+        ):
+            if key not in snapshot or snapshot.get(key) is None:
+                continue
+            try:
+                copied[key] = float(snapshot[key])
+            except (TypeError, ValueError):
+                continue
+
+        if "timestamp_ns" in snapshot and snapshot.get("timestamp_ns") is not None:
+            try:
+                copied["timestamp_ns"] = int(snapshot["timestamp_ns"])
+            except (TypeError, ValueError):
+                pass
+
+        source = snapshot.get("source")
+        if source is not None:
+            copied["source"] = str(source)
+
+        if "distance" not in copied or not np.isfinite(float(copied["distance"])):
+            return None
+
+        copied["distance"] = max(float(copied["distance"]), 0.1)
+        copied["sign"] = 1.0 if float(copied.get("sign", 1.0)) >= 0.0 else -1.0
+        return copied
+
+    def _resolve_relative_host_anchor_sign(
+        self,
+        target_id: int,
+        host_x: float,
+        host_y: float,
+        host_theta: float,
+        reference_state: Optional[np.ndarray] = None,
+        clean_state: Optional[np.ndarray] = None,
+    ) -> float:
+        """Estimate whether the target lies ahead of or behind the host."""
+        heading = np.array([np.cos(host_theta), np.sin(host_theta)], dtype=float)
+        tol = 1e-6
+
+        for candidate in (reference_state, clean_state):
+            if candidate is None:
+                continue
+            candidate = np.asarray(candidate, dtype=float)
+            if candidate.shape[0] < 2:
+                continue
+            rel = np.array(
+                [float(candidate[0]) - host_x, float(candidate[1]) - host_y], dtype=float
+            )
+            proj = float(np.dot(rel, heading))
+            if abs(proj) > tol:
+                return 1.0 if proj >= 0.0 else -1.0
+
+        leader_id = None
+        if isinstance(getattr(self, "_time_reference", None), dict):
+            leader_id = self._time_reference.get("leader_id")
+        try:
+            leader_id = int(leader_id) if leader_id is not None else None
+        except (TypeError, ValueError):
+            leader_id = None
+
+        if leader_id is not None:
+            if int(target_id) == leader_id and int(target_id) != self.vehicle_id:
+                return 1.0
+            if self.vehicle_id == leader_id and int(target_id) != self.vehicle_id:
+                return -1.0
+
+        return 1.0 if int(target_id) < self.vehicle_id else -1.0
+
+    def _build_relative_host_anchor_entry(
+        self,
+        target_id: int,
+        current_time_ns: int,
+        reference_state: Optional[np.ndarray] = None,
+        clean_state: Optional[np.ndarray] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Build a host-relative anchor from trusted memory or current geometry."""
+        if not self.host_state:
+            return None
+
+        host_x = float(self.host_state.get("x", 0.0))
+        host_y = float(self.host_state.get("y", 0.0))
+        host_theta = float(self.host_state.get("theta", 0.0))
+        host_velocity = float(self.host_state.get("velocity", 0.0))
+        host_acceleration = float(self.host_state.get("acceleration", 0.0))
+
+        distance = float("nan")
+        relative_velocity = float("nan")
+        timestamp_ns = int(current_time_ns)
+        source = ""
+
+        remembered = getattr(self.trust_model, "recent_relative_measurements", {}).get(
+            int(target_id)
+        )
+        if isinstance(remembered, dict):
+            try:
+                remembered_distance = float(remembered.get("distance", float("nan")))
+            except (TypeError, ValueError):
+                remembered_distance = float("nan")
+            if np.isfinite(remembered_distance) and remembered_distance > 0.0:
+                distance = remembered_distance
+                try:
+                    relative_velocity = float(
+                        remembered.get("relative_velocity", float("nan"))
+                    )
+                except (TypeError, ValueError):
+                    relative_velocity = float("nan")
+                try:
+                    timestamp_ns = int(
+                        remembered.get("timestamp_ns", current_time_ns) or current_time_ns
+                    )
+                except (TypeError, ValueError):
+                    timestamp_ns = int(current_time_ns)
+                source = str(remembered.get("source", "relative_measurement_memory"))
+                age_s = max((float(current_time_ns) - float(timestamp_ns)) / 1e9, 0.0)
+                if (
+                    np.isfinite(relative_velocity)
+                    and age_s <= float(getattr(self.trust_config, "max_message_age_s", 0.5))
+                ):
+                    distance += relative_velocity * age_s
+
+        if not (np.isfinite(distance) and distance > 0.0):
+            target_state = reference_state
+            if target_state is None and int(target_id) < self.fleet_states.shape[1]:
+                target_state = self.fleet_states[:, int(target_id)]
+            if target_state is not None:
+                target_state = np.asarray(target_state, dtype=float)
+                if target_state.shape[0] >= 2:
+                    dx = float(target_state[0]) - host_x
+                    dy = float(target_state[1]) - host_y
+                    geometric_distance = float(np.hypot(dx, dy))
+                    if np.isfinite(geometric_distance) and geometric_distance > 0.0:
+                        distance = geometric_distance
+                        timestamp_ns = int(current_time_ns)
+                        source = "fleet_geometry"
+
+        if not (np.isfinite(distance) and distance > 0.0):
+            return None
+
+        sign = self._resolve_relative_host_anchor_sign(
+            target_id=target_id,
+            host_x=host_x,
+            host_y=host_y,
+            host_theta=host_theta,
+            reference_state=reference_state,
+            clean_state=clean_state,
+        )
+        return self._copy_host_anchor_snapshot(
+            {
+                "host_x": host_x,
+                "host_y": host_y,
+                "host_theta": host_theta,
+                "host_velocity": host_velocity,
+                "host_acceleration": host_acceleration,
+                "distance": distance,
+                "sign": sign,
+                "relative_velocity": relative_velocity,
+                "timestamp_ns": timestamp_ns,
+                "source": source or "relative_host_anchor",
+            }
+        )
+
+    def _get_latest_trusted_relative_anchor_entry(
+        self, target_id: int, current_time_ns: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Return the latest trusted host-relative anchor, optionally time-aligned."""
+        history = self._rollback_trusted_relative_anchor_history.get(int(target_id))
+        if not history:
+            return None
+
+        snapshot = self._copy_host_anchor_snapshot(history[-1])
+        if snapshot is None:
+            return None
+
+        if current_time_ns is None:
+            return snapshot
+
+        timestamp_ns = int(snapshot.get("timestamp_ns", 0) or 0)
+        relative_velocity = float(snapshot.get("relative_velocity", float("nan")))
+        if timestamp_ns > 0 and np.isfinite(relative_velocity):
+            age_s = max((float(current_time_ns) - float(timestamp_ns)) / 1e9, 0.0)
+            if age_s <= float(getattr(self.trust_config, "max_message_age_s", 0.5)):
+                snapshot["distance"] = max(
+                    float(snapshot["distance"]) + relative_velocity * age_s, 0.1
+                )
+        return snapshot
+
+    def _build_relative_host_anchor_snapshot(
+        self,
+        target_id: int,
+        current_time_ns: int,
+        reference_state: np.ndarray,
+        clean_state: Optional[np.ndarray] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve the live host-relative anchor snapshot for prediction/replay."""
+        snapshot = self._get_latest_trusted_relative_anchor_entry(
+            target_id, current_time_ns=current_time_ns
+        )
+        if snapshot is None:
+            snapshot = self._build_relative_host_anchor_entry(
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+                reference_state=reference_state,
+                clean_state=clean_state,
+            )
+        if snapshot is None:
+            return None
+
+        if self.host_state:
+            snapshot["host_x"] = float(
+                self.host_state.get("x", snapshot.get("host_x", 0.0))
+            )
+            snapshot["host_y"] = float(
+                self.host_state.get("y", snapshot.get("host_y", 0.0))
+            )
+            snapshot["host_theta"] = float(
+                self.host_state.get("theta", snapshot.get("host_theta", 0.0))
+            )
+            snapshot["host_velocity"] = float(
+                self.host_state.get("velocity", snapshot.get("host_velocity", 0.0))
+            )
+            snapshot["host_acceleration"] = float(
+                self.host_state.get(
+                    "acceleration", snapshot.get("host_acceleration", 0.0)
+                )
+            )
+
+        snapshot["sign"] = self._resolve_relative_host_anchor_sign(
+            target_id=target_id,
+            host_x=float(snapshot.get("host_x", 0.0)),
+            host_y=float(snapshot.get("host_y", 0.0)),
+            host_theta=float(snapshot.get("host_theta", 0.0)),
+            reference_state=reference_state,
+            clean_state=clean_state,
+        )
+        return self._copy_host_anchor_snapshot(snapshot)
+
     def _update_rollback_trusted_state_history(
         self, trust_scores: Dict[int, float], current_time_ns: int
     ) -> None:
-        """Cache only trusted post-update target states for guarded rollback seeding."""
+        """Cache trusted post-update states and host-relative anchors for replay."""
         if not self.rollback.enabled:
             return
 
@@ -570,6 +881,25 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     int(current_time_ns),
                 )
             )
+
+            anchor_history = self._rollback_trusted_relative_anchor_history.get(target_id)
+            if (
+                anchor_history is None
+                or anchor_history.maxlen != self.rollback_trusted_state_history_size
+            ):
+                anchor_history = deque(
+                    [] if anchor_history is None else list(anchor_history),
+                    maxlen=self.rollback_trusted_state_history_size,
+                )
+                self._rollback_trusted_relative_anchor_history[target_id] = anchor_history
+
+            anchor_entry = self._build_relative_host_anchor_entry(
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+                reference_state=self.fleet_states[:, target_id],
+            )
+            if anchor_entry is not None:
+                anchor_history.append(anchor_entry)
 
     def _build_rollback_trigger_signals(
         self, trust_scores: Dict[int, float]
@@ -1119,6 +1449,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "pure-prediction-self": "clean_data",
             "pure_self_prediction": "clean_data",
             "pure-self-prediction": "clean_data",
+            "mixed_clean_data": "mixed_clean_data",
+            "mixed-clean-data": "mixed_clean_data",
+            "mixed_clean": "mixed_clean_data",
+            "mixed-clean": "mixed_clean_data",
+            "relative_host_anchor_mixed": "relative_host_anchor_mixed",
+            "relative-host-anchor-mixed": "relative_host_anchor_mixed",
+            "host_anchor_mixed": "relative_host_anchor_mixed",
+            "host-anchor-mixed": "relative_host_anchor_mixed",
             "dead_reckoning": "dead_reckoning",
             "dead_reckon": "dead_reckoning",
             "dead-reckoning": "dead_reckoning",
@@ -1404,24 +1742,43 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 )
                 target_trust_obj = self.trust_model.get_trust_score(target_id)
                 target_model_cfg = self._get_vehicle_model_config(target_id)
-                force_clean_pose_anchor = bool(
-                    self._normalize_dynamics_prediction_mode(
-                        target_model_cfg.get(
-                            "dynamics_prediction_mode", self.dynamics_prediction_mode
-                        )
+                prediction_mode = self._normalize_dynamics_prediction_mode(
+                    target_model_cfg.get(
+                        "dynamics_prediction_mode", self.dynamics_prediction_mode
                     )
-                    == "clean_data"
+                )
+                force_clean_pose_anchor = bool(
+                    self.force_clean_pose_anchor
+                    and prediction_mode
+                    in ("clean_data", "mixed_clean_data", "relative_host_anchor_mixed")
                     and self._has_active_attack_flags(target_trust_obj)
                 )
+                attack_relative_host_anchor_active = bool(
+                    prediction_mode == "relative_host_anchor_mixed"
+                    and self._has_active_attack_flags(target_trust_obj)
+                )
+                consensus_est = normal_est.copy()
+                host_anchor_snapshot = None
+                if attack_relative_host_anchor_active:
+                    host_anchor_snapshot = self._build_relative_host_anchor_snapshot(
+                        target_id=target_id,
+                        current_time_ns=current_time_ns,
+                        reference_state=consensus_est,
+                    )
+
                 components["prediction"] = {
                     "dt": float(dt),
                     "control": None
                     if target_ctrl is None
                     else np.asarray(target_ctrl, dtype=float).copy(),
                     "force_clean_pose_anchor": bool(force_clean_pose_anchor),
+                    "attack_relative_host_anchor_active": bool(
+                        attack_relative_host_anchor_active
+                    ),
+                    "host_anchor_snapshot": self._copy_host_anchor_snapshot(
+                        host_anchor_snapshot
+                    ),
                 }
-
-                consensus_est = normal_est.copy()
                 normal_est = self._apply_state_constraints(
                     self._predict_dynamics(
                         consensus_est,
@@ -1430,6 +1787,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         target_id=target_id,
                         current_time_ns=current_time_ns,
                         force_clean_pose_anchor=force_clean_pose_anchor,
+                        attack_relative_host_anchor_active=attack_relative_host_anchor_active,
+                        host_anchor_snapshot=host_anchor_snapshot,
                     ),
                     target_id=target_id,
                 )
@@ -2100,6 +2459,189 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             predicted[4] = acceleration
         return predicted
 
+    def _predict_from_mixed_clean_data_motion(
+        self,
+        state: np.ndarray,
+        dt: float,
+        target_id: int,
+        current_time_ns: Optional[int] = None,
+        force_clean_pose_anchor: bool = False,
+    ) -> np.ndarray:
+        """
+        Predict using clean V2V heading with host/estimator speed persistence.
+
+        Theta comes from the clean target broadcast when available, while
+        velocity and acceleration stay on the current estimator state.
+        When `force_clean_pose_anchor` is enabled, x/y starts from the aligned
+        clean V2V pose instead of the rollback/consensus pose.
+        """
+        state = np.asarray(state, dtype=float).copy()
+        if dt <= 0.0:
+            return state
+
+        clean_state = None
+        if current_time_ns is not None:
+            clean_entry = self._get_latest_clean_received_state_with_timestamp(
+                target_id, current_time_ns
+            )
+            if clean_entry is not None:
+                clean_ts_ns, clean_state_raw = clean_entry
+                clean_state = self._align_state_array_to_time(
+                    clean_state_raw,
+                    snapshot_ts_ns=clean_ts_ns,
+                    current_time_ns=current_time_ns,
+                    target_id=target_id,
+                )
+        else:
+            history = self.received_clean_local_states.get(int(target_id), [])
+            if history:
+                clean_state = _normalize_state_array(
+                    history[-1][1], self.state_dim, logger=self.logger
+                )
+
+        theta = float(state[2]) if state.shape[0] > 2 else 0.0
+        velocity = float(state[3]) if state.shape[0] > 3 else 0.0
+        acceleration = float(state[4]) if state.shape[0] > 4 else 0.0
+
+        if clean_state is not None:
+            clean_state = np.asarray(clean_state, dtype=float).copy()
+            if clean_state.shape[0] > 2:
+                theta = float(clean_state[2])
+
+        predicted = state.copy()
+        base_x = float(state[0])
+        base_y = float(state[1])
+        if force_clean_pose_anchor and clean_state is not None:
+            if clean_state.shape[0] > 0:
+                base_x = float(clean_state[0])
+            if clean_state.shape[0] > 1:
+                base_y = float(clean_state[1])
+        predicted[0] = base_x + velocity * np.cos(theta) * dt
+        predicted[1] = base_y + velocity * np.sin(theta) * dt
+        if predicted.shape[0] > 2:
+            predicted[2] = self._wrap_angle(theta)
+        if predicted.shape[0] > 3:
+            predicted[3] = velocity
+        if predicted.shape[0] > 4:
+            predicted[4] = acceleration
+        return predicted
+
+    def _predict_from_relative_host_anchor_mixed_motion(
+        self,
+        state: np.ndarray,
+        control: Optional[np.ndarray],
+        dt: float,
+        target_id: int,
+        current_time_ns: Optional[int] = None,
+        force_clean_pose_anchor: bool = False,
+        attack_relative_host_anchor_active: bool = False,
+        host_anchor_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> np.ndarray:
+        """
+        Predict with normal dynamics unless an attack activates host anchoring.
+
+        During attack, base x/y is rebuilt from host pose plus the latest
+        trusted relative distance. Heading blends clean target theta with host
+        theta when both exist, and target velocity falls back to host velocity.
+        Outside attack, this mode degrades to the normal vehicle model.
+        """
+        state = np.asarray(state, dtype=float).copy()
+        if dt <= 0.0:
+            return state
+        if not attack_relative_host_anchor_active:
+            return self._predict_with_vehicle_model(
+                state=state,
+                control=control,
+                dt=dt,
+                target_id=target_id,
+            )
+
+        clean_state = None
+        if current_time_ns is not None:
+            clean_entry = self._get_latest_clean_received_state_with_timestamp(
+                target_id, current_time_ns
+            )
+            if clean_entry is not None:
+                clean_ts_ns, clean_state_raw = clean_entry
+                clean_state = self._align_state_array_to_time(
+                    clean_state_raw,
+                    snapshot_ts_ns=clean_ts_ns,
+                    current_time_ns=current_time_ns,
+                    target_id=target_id,
+                )
+        else:
+            history = self.received_clean_local_states.get(int(target_id), [])
+            if history:
+                clean_state = _normalize_state_array(
+                    history[-1][1], self.state_dim, logger=self.logger
+                )
+
+        anchor_snapshot = self._copy_host_anchor_snapshot(host_anchor_snapshot)
+        if anchor_snapshot is None and current_time_ns is not None:
+            anchor_snapshot = self._build_relative_host_anchor_snapshot(
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+                reference_state=state,
+                clean_state=clean_state,
+            )
+
+        theta = float(state[2]) if state.shape[0] > 2 else 0.0
+        velocity = float(state[3]) if state.shape[0] > 3 else 0.0
+        acceleration = float(state[4]) if state.shape[0] > 4 else 0.0
+
+        host_theta = (
+            float(anchor_snapshot.get("host_theta", theta))
+            if anchor_snapshot is not None
+            else theta
+        )
+        if clean_state is not None:
+            clean_state = np.asarray(clean_state, dtype=float).copy()
+            if clean_state.shape[0] > 2:
+                clean_theta = float(clean_state[2])
+                theta = self._blend_angles(
+                    clean_theta,
+                    host_theta,
+                    primary_weight=self.relative_host_anchor_clean_theta_weight,
+                    secondary_weight=self.relative_host_anchor_host_theta_weight,
+                )
+            else:
+                theta = host_theta
+        else:
+            theta = host_theta
+
+        if anchor_snapshot is not None:
+            host_velocity = float(anchor_snapshot.get("host_velocity", velocity))
+            velocity = (
+                self.relative_host_anchor_target_velocity_weight * velocity
+                + self.relative_host_anchor_host_velocity_weight * host_velocity
+            )
+
+        predicted = state.copy()
+        base_x = float(state[0])
+        base_y = float(state[1])
+        if anchor_snapshot is not None:
+            host_x = float(anchor_snapshot.get("host_x", base_x))
+            host_y = float(anchor_snapshot.get("host_y", base_y))
+            distance = max(float(anchor_snapshot.get("distance", 0.1)), 0.1)
+            sign = 1.0 if float(anchor_snapshot.get("sign", 1.0)) >= 0.0 else -1.0
+            base_x = host_x + sign * distance * np.cos(host_theta)
+            base_y = host_y + sign * distance * np.sin(host_theta)
+        elif force_clean_pose_anchor and clean_state is not None:
+            if clean_state.shape[0] > 0:
+                base_x = float(clean_state[0])
+            if clean_state.shape[0] > 1:
+                base_y = float(clean_state[1])
+
+        predicted[0] = base_x + velocity * np.cos(theta) * dt
+        predicted[1] = base_y + velocity * np.sin(theta) * dt
+        if predicted.shape[0] > 2:
+            predicted[2] = self._wrap_angle(theta)
+        if predicted.shape[0] > 3:
+            predicted[3] = velocity
+        if predicted.shape[0] > 4:
+            predicted[4] = acceleration
+        return predicted
+
     def _predict_dynamics(
         self,
         state: np.ndarray,
@@ -2108,6 +2650,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         target_id: int = -1,
         current_time_ns: Optional[int] = None,
         force_clean_pose_anchor: bool = False,
+        attack_relative_host_anchor_active: bool = False,
+        host_anchor_snapshot: Optional[Dict[str, Any]] = None,
     ) -> np.ndarray:
         """Predict next state using bicycle kinematics + configured longitudinal model."""
         model_cfg = self._get_vehicle_model_config(target_id)
@@ -2125,11 +2669,65 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 current_time_ns=current_time_ns,
                 force_clean_pose_anchor=force_clean_pose_anchor,
             )
+        if prediction_mode == "mixed_clean_data":
+            return self._predict_from_mixed_clean_data_motion(
+                state=state,
+                dt=dt,
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+                force_clean_pose_anchor=force_clean_pose_anchor,
+            )
+        if prediction_mode == "relative_host_anchor_mixed":
+            return self._predict_from_relative_host_anchor_mixed_motion(
+                state=state,
+                control=control,
+                dt=dt,
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+                force_clean_pose_anchor=force_clean_pose_anchor,
+                attack_relative_host_anchor_active=attack_relative_host_anchor_active,
+                host_anchor_snapshot=host_anchor_snapshot,
+            )
+        return self._predict_with_vehicle_model(
+            state=state,
+            control=control,
+            dt=dt,
+            target_id=target_id,
+        )
 
+    @staticmethod
+    def _blend_angles(
+        primary_angle: float,
+        secondary_angle: float,
+        primary_weight: float = 1.0,
+        secondary_weight: float = 1.0,
+    ) -> float:
+        """Blend two headings using a circular mean."""
+        sin_sum = primary_weight * np.sin(primary_angle) + secondary_weight * np.sin(
+            secondary_angle
+        )
+        cos_sum = primary_weight * np.cos(primary_angle) + secondary_weight * np.cos(
+            secondary_angle
+        )
+        if abs(sin_sum) <= 1e-9 and abs(cos_sum) <= 1e-9:
+            return float(primary_angle)
+        return float(np.arctan2(sin_sum, cos_sum))
+
+    def _predict_with_vehicle_model(
+        self,
+        state: np.ndarray,
+        control: Optional[np.ndarray],
+        dt: float,
+        target_id: int,
+    ) -> np.ndarray:
+        """Predict next state using the configured vehicle model."""
+        model_cfg = self._get_vehicle_model_config(target_id)
         x, y, theta, v = state[:4]
         a = state[4] if len(state) > 4 else 0.0
 
-        if prediction_mode == "dead_reckoning":
+        if self._normalize_dynamics_prediction_mode(
+            model_cfg.get("dynamics_prediction_mode", self.dynamics_prediction_mode)
+        ) == "dead_reckoning":
             state[0] = x + v * np.cos(theta) * dt
             state[1] = y + v * np.sin(theta) * dt
             return state
@@ -2151,7 +2749,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         )
         L = max(float(model_cfg.get("wheelbase", 0.256)), 1e-6)
 
-        # Bicycle kinematics
         x_new = x + v * np.cos(theta) * dt
         y_new = y + v * np.sin(theta) * dt
         theta_new = theta + (v * np.tan(steering) / L) * dt
@@ -2160,9 +2757,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             model_cfg.get("longitudinal_model", "constant_velocity")
         ).strip().lower()
 
-        # If target control is unavailable, never use the host command for the
-        # target by default. Hold velocity and let direct/consensus corrections
-        # bring the estimate back to measurements.
         if not has_control:
             v_new = v
             a_new = 0.0
@@ -2193,7 +2787,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 throttle_breakpoints.size >= 2
                 and throttle_breakpoints.size == velocity_breakpoints.size
             ):
-                v_ss = float(np.interp(float(throttle), throttle_breakpoints, velocity_breakpoints))
+                v_ss = float(
+                    np.interp(float(throttle), throttle_breakpoints, velocity_breakpoints)
+                )
             else:
                 deadband = max(float(model_cfg.get("velocity_lag_deadband", 0.0)), 0.0)
                 throttle_eff = float(throttle)
@@ -2202,13 +2798,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         np.sign(throttle) * max(abs(float(throttle)) - deadband, 0.0)
                     )
                 v_ss = float(model_cfg["velocity_gain"]) * throttle_eff
-            tau_lookup = float(model_cfg.get("velocity_lag_lookup_tau", model_cfg["velocity_lag_tau"]))
+            tau_lookup = float(
+                model_cfg.get("velocity_lag_lookup_tau", model_cfg["velocity_lag_tau"])
+            )
             v_dot = (v_ss - v) / max(tau_lookup, 1e-6)
             v_new = v + v_dot * dt
             a_new = v_dot
         elif longitudinal_model == "velocity_command":
-            # Limo ROS Twist.linear.x style: command is desired velocity, not
-            # a QCar throttle. Treat `throttle` slot as v_cmd for compatibility.
             v_cmd = throttle
             tau = float(model_cfg["velocity_command_tau"])
             v_dot = (v_cmd - v) / tau
@@ -2527,6 +3123,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.stats = self._make_default_stats()
         self.rollback.reset()
         self._rollback_trusted_state_history.clear()
+        self._rollback_trusted_relative_anchor_history.clear()
         self._received_control_inputs.clear()
         self._init_runtime_tracking()
 

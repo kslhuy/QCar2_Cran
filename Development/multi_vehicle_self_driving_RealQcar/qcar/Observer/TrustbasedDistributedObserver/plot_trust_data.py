@@ -959,84 +959,187 @@ def _fig_weights(times, rows, active, focus, host_id):
 def _fig_estimation(times, rows, active, focus, host_id):
     """
     Figure 3 – State Estimation
-    Layout (4 rows × 2 cols):
-      [0,0] Estimated X                      [0,1] Estimated Y
-      [1,0] Estimated velocity               [1,1] Estimated acceleration
-      [2,0] Estimated heading (theta)        [2,1] Trajectory XY
-      [3,0] Estimation confidence + self_belief  [3,1] Prediction mode flags
+    Layout (5 rows × 2 cols):
+      [0,0] Focus X comparison               [0,1] Focus Y comparison
+      [1,0] Focus velocity comparison        [1,1] Focus acceleration comparison
+      [2,0] Focus heading comparison         [2,1] Focus trajectory XY
+      [3,0] Fleet estimated X overview       [3,1] Fleet estimated Y overview
+      [4,0] Estimation confidence            [4,1] Prediction mode flags
     """
     fig = plt.figure(figsize=(16, 15))
-    fig.suptitle(f"State Estimation  (Host V{host_id})", fontsize=13,
-                 fontweight="bold")
+    fig.suptitle(
+        f"State Estimation  (Host V{host_id}, Focus V{focus})",
+        fontsize=13,
+        fontweight="bold",
+    )
     gs = gridspec.GridSpec(5, 2, figure=fig, hspace=0.35, wspace=0.25)
 
-    # (0,0) Estimated X
+    def _focus_series(prefix):
+        return _col_to_array(rows, f"{prefix}_{focus}")
+
+    def _plot_focus_state(ax, title, ylabel, series_specs):
+        n = 0
+        for arr, label, style, color, lw in series_specs:
+            if np.any(np.isfinite(arr)):
+                ax.plot(times, arr, style, label=label, color=color, lw=lw)
+                n += 1
+        if n == 0:
+            _no_data(ax, title)
+        _style(ax, title, ylabel, xlabel="Time [s]")
+
+    focus_ref_x = _focus_series("ref_x")
+    focus_ref_y = _focus_series("ref_y")
+    focus_ref_theta = _focus_series("ref_theta")
+    focus_ref_v = _focus_series("ref_v")
+    focus_est_x = _focus_series("est_x")
+    focus_est_y = _focus_series("est_y")
+    focus_est_theta = _focus_series("est_theta")
+    focus_est_v = _focus_series("est_v")
+    focus_est_a = _focus_series("est_a")
+    focus_consensus_x = _focus_series("consensus_x")
+    focus_consensus_y = _focus_series("consensus_y")
+    focus_consensus_theta = _focus_series("consensus_theta")
+    focus_consensus_v = _focus_series("consensus_v")
+    focus_consensus_a = _focus_series("consensus_a")
+    focus_postpred_x = _focus_series("postpred_x")
+    focus_postpred_y = _focus_series("postpred_y")
+    focus_postpred_theta = _focus_series("postpred_theta")
+    focus_postpred_v = _focus_series("postpred_v")
+    focus_postpred_a = _focus_series("postpred_a")
+
+    # (0,0) Focus X
     ax = fig.add_subplot(gs[0, 0])
-    if _plot_series(ax, times, rows, "est_x", active, label_fmt="V{}") == 0:
-        _no_data(ax, "Estimated X")
-    _style(ax, "Estimated X", "x [m]")
+    _plot_focus_state(
+        ax,
+        f"Focus X Comparison V{focus}",
+        "x [m]",
+        [
+            (focus_ref_x, "ref_x", "-", "tab:red", 1.4),
+            (focus_consensus_x, "consensus_x", "--", "tab:blue", 1.2),
+            (focus_postpred_x, "postpred_x", ":", "tab:orange", 1.3),
+            (focus_est_x, "est_x", "-", "tab:green", 1.6),
+        ],
+    )
 
-    # (0,1) Estimated Y
+    # (0,1) Focus Y
     ax = fig.add_subplot(gs[0, 1])
-    if _plot_series(ax, times, rows, "est_y", active, label_fmt="V{}") == 0:
-        _no_data(ax, "Estimated Y")
-    _style(ax, "Estimated Y", "y [m]")
+    _plot_focus_state(
+        ax,
+        f"Focus Y Comparison V{focus}",
+        "y [m]",
+        [
+            (focus_ref_y, "ref_y", "-", "tab:red", 1.4),
+            (focus_consensus_y, "consensus_y", "--", "tab:blue", 1.2),
+            (focus_postpred_y, "postpred_y", ":", "tab:orange", 1.3),
+            (focus_est_y, "est_y", "-", "tab:green", 1.6),
+        ],
+    )
 
-    # (1,0) Velocity
+    # (1,0) Focus velocity
     ax = fig.add_subplot(gs[1, 0])
-    if _plot_series(ax, times, rows, "est_v", active, label_fmt="V{}") == 0:
-        _no_data(ax, "Estimated Velocity")
-    _style(ax, "Estimated Velocity", "v [m/s]")
+    _plot_focus_state(
+        ax,
+        f"Focus Velocity Comparison V{focus}",
+        "v [m/s]",
+        [
+            (focus_ref_v, "ref_v", "-", "tab:red", 1.4),
+            (focus_consensus_v, "consensus_v", "--", "tab:blue", 1.2),
+            (focus_postpred_v, "postpred_v", ":", "tab:orange", 1.3),
+            (focus_est_v, "est_v", "-", "tab:green", 1.6),
+        ],
+    )
 
-    # (1,1) Acceleration
+    # (1,1) Focus acceleration
     ax = fig.add_subplot(gs[1, 1])
-    if _plot_series(ax, times, rows, "est_a", active, label_fmt="V{}") == 0:
-        _no_data(ax, "Estimated Acceleration")
-    _style(ax, "Estimated Acceleration", "a [m/s²]")
+    _plot_focus_state(
+        ax,
+        f"Focus Acceleration Comparison V{focus}",
+        "a [m/s^2]",
+        [
+            (focus_consensus_a, "consensus_a", "--", "tab:blue", 1.2),
+            (focus_postpred_a, "postpred_a", ":", "tab:orange", 1.3),
+            (focus_est_a, "est_a", "-", "tab:green", 1.6),
+        ],
+    )
 
-    # (2,0) Estimated Heading (theta)
+    # (2,0) Focus heading
     ax = fig.add_subplot(gs[2, 0])
-    if _plot_series(ax, times, rows, "est_theta", active, label_fmt="V{}") == 0:
-        _no_data(ax, "Estimated Heading")
-    _style(ax, "Estimated Heading", "theta [rad]")
+    _plot_focus_state(
+        ax,
+        f"Focus Heading Comparison V{focus}",
+        "theta [rad]",
+        [
+            (focus_ref_theta, "ref_theta", "-", "tab:red", 1.4),
+            (focus_consensus_theta, "consensus_theta", "--", "tab:blue", 1.2),
+            (focus_postpred_theta, "postpred_theta", ":", "tab:orange", 1.3),
+            (focus_est_theta, "est_theta", "-", "tab:green", 1.6),
+        ],
+    )
 
-    # (2,1) Trajectory (XY)
+    # (2,1) Focus trajectory XY
     ax = fig.add_subplot(gs[2, 1])
     n = 0
-    for vid in active:
-        col_x = f"est_x_{vid}"
-        col_y = f"est_y_{vid}"
-        arr_x = _col_to_array(rows, col_x)
-        arr_y = _col_to_array(rows, col_y)
-        if np.any(np.isfinite(arr_x)) and np.any(np.isfinite(arr_y)):
-            ax.plot(arr_x, arr_y, label=f"V{vid}")
-            # Add a marker at the start
-            idx = np.where(np.isfinite(arr_x) & np.isfinite(arr_y))[0]
-            if len(idx) > 0:
-                ax.plot(arr_x[idx[0]], arr_y[idx[0]], 'o', color=ax.lines[-1].get_color())
+    for arr_x, arr_y, label, style, color, lw in [
+        (focus_ref_x, focus_ref_y, "ref_xy", "-", "tab:red", 1.4),
+        (focus_consensus_x, focus_consensus_y, "consensus_xy", "--", "tab:blue", 1.2),
+        (focus_postpred_x, focus_postpred_y, "postpred_xy", ":", "tab:orange", 1.3),
+        (focus_est_x, focus_est_y, "est_xy", "-", "tab:green", 1.6),
+    ]:
+        mask = np.isfinite(arr_x) & np.isfinite(arr_y)
+        if np.any(mask):
+            ax.plot(arr_x[mask], arr_y[mask], style, label=label, color=color, lw=lw)
             n += 1
     if n == 0:
-        _no_data(ax, "Trajectory XY")
+        _no_data(ax, f"Focus Trajectory XY V{focus}")
     else:
         ax.axis("equal")
-    _style(ax, "Trajectory XY", "y [m]", xlabel="x [m]")
+    _style(ax, f"Focus Trajectory XY V{focus}", "y [m]", xlabel="x [m]")
 
-    # (3,0) Consensus X
+    # (3,0) Fleet estimated X overview
     ax = fig.add_subplot(gs[3, 0])
-    if _plot_series(ax, times, rows, "consensus_x", active, label_fmt="V{}") == 0:
-        _no_data(ax, "Consensus X")
-    _style(ax, "Consensus X", "x [m]")
+    n = 0
+    for vid in active:
+        arr = _col_to_array(rows, f"est_x_{vid}")
+        if not np.any(np.isfinite(arr)):
+            continue
+        color = "tab:green" if vid == focus else None
+        lw = 1.8 if vid == focus else 1.0
+        alpha = 1.0 if vid == focus else 0.65
+        ax.plot(times, arr, label=f"V{vid}", color=color, lw=lw, alpha=alpha)
+        n += 1
+    if n == 0:
+        _no_data(ax, "Fleet Estimated X")
+    _style(ax, f"Fleet Estimated X (focus V{focus} highlighted)", "x [m]")
 
-    # (3,1) Post-prediction X
+    # (3,1) Fleet estimated Y overview
     ax = fig.add_subplot(gs[3, 1])
-    if _plot_series(ax, times, rows, "postpred_x", active, label_fmt="V{}") == 0:
-        _no_data(ax, "Post-prediction X")
-    _style(ax, "Post-prediction X", "x [m]")
+    n = 0
+    for vid in active:
+        arr = _col_to_array(rows, f"est_y_{vid}")
+        if not np.any(np.isfinite(arr)):
+            continue
+        color = "tab:green" if vid == focus else None
+        lw = 1.8 if vid == focus else 1.0
+        alpha = 1.0 if vid == focus else 0.65
+        ax.plot(times, arr, label=f"V{vid}", color=color, lw=lw, alpha=alpha)
+        n += 1
+    if n == 0:
+        _no_data(ax, "Fleet Estimated Y")
+    _style(ax, f"Fleet Estimated Y (focus V{focus} highlighted)", "y [m]")
 
     # (4,0) Confidence + self_belief
     ax = fig.add_subplot(gs[4, 0])
-    n = _plot_series(ax, times, rows, "est_conf", active,
-                     label_fmt="Conf V{}")
+    n = 0
+    for vid in active:
+        arr = _col_to_array(rows, f"est_conf_{vid}")
+        if not np.any(np.isfinite(arr)):
+            continue
+        color = "tab:green" if vid == focus else None
+        lw = 1.8 if vid == focus else 1.0
+        alpha = 1.0 if vid == focus else 0.60
+        label = f"Conf V{vid}"
+        ax.plot(times, arr, label=label, color=color, lw=lw, alpha=alpha)
+        n += 1
     for col, lbl, ls in [("self_belief", "self_belief", "--"),
                           ("platoon_conf_mean", "platoon_conf_mean", "-"),
                           ("platoon_conf_min", "platoon_conf_min", ":"),
@@ -1056,7 +1159,10 @@ def _fig_estimation(times, rows, active, focus, host_id):
         col = f"pred_mode_{vid}"
         arr = _col_to_array(rows, col)
         if np.any(np.isfinite(arr)):
-            ax.step(times, arr, where="post", label=f"V{vid}")
+            color = "k" if vid == focus else None
+            lw = 1.8 if vid == focus else 1.0
+            alpha = 1.0 if vid == focus else 0.55
+            ax.step(times, arr, where="post", label=f"V{vid}", color=color, lw=lw, alpha=alpha)
             n += 1
     pred_count = _col_to_array(rows, "prediction_mode_count")
     if np.any(np.isfinite(pred_count)):
@@ -1065,206 +1171,6 @@ def _fig_estimation(times, rows, active, focus, host_id):
     if n == 0:
         _no_data(ax, "Prediction Mode")
     _style(ax, "Prediction Mode Flags", "Mode (0/1)", xlabel="Time [s]")
-
-    return fig
-
-
-def _fig_prediction_debug(times, rows, focus, host_id):
-    """
-    Dedicated focus-target prediction diagnostics.
-    Keeps prediction internals separate from the general fleet-state figure.
-    """
-    fig = plt.figure(figsize=(17, 14))
-    fig.suptitle(
-        f"Prediction Debug  (Host V{host_id}, Focus V{focus})",
-        fontsize=13,
-        fontweight="bold",
-    )
-    gs = gridspec.GridSpec(3, 2, figure=fig, hspace=0.35, wspace=0.28)
-
-    focus_consensus_x = _col_to_array(rows, f"consensus_x_{focus}")
-    focus_consensus_y = _col_to_array(rows, f"consensus_y_{focus}")
-    focus_consensus_theta = _col_to_array(rows, f"consensus_theta_{focus}")
-    focus_consensus_v = _col_to_array(rows, f"consensus_v_{focus}")
-    focus_postpred_x = _col_to_array(rows, f"postpred_x_{focus}")
-    focus_postpred_y = _col_to_array(rows, f"postpred_y_{focus}")
-    focus_postpred_theta = _col_to_array(rows, f"postpred_theta_{focus}")
-    focus_postpred_v = _col_to_array(rows, f"postpred_v_{focus}")
-    focus_est_x = _col_to_array(rows, f"est_x_{focus}")
-    focus_est_y = _col_to_array(rows, f"est_y_{focus}")
-    focus_est_theta = _col_to_array(rows, f"est_theta_{focus}")
-    focus_est_v = _col_to_array(rows, f"est_v_{focus}")
-
-    focus_dx = _col_to_array(rows, f"pred_dx_{focus}")
-    focus_dy = _col_to_array(rows, f"pred_dy_{focus}")
-    focus_dt = _col_to_array(rows, f"pred_dt_{focus}")
-    focus_src = _col_to_text(rows, f"predsrc_{focus}")
-    focus_v_in = _col_to_array(rows, f"pred_v_in_{focus}")
-    focus_v_out = _col_to_array(rows, f"pred_v_out_{focus}")
-    focus_host_v = _col_to_array(rows, f"pred_host_v_{focus}")
-    focus_steer = _col_to_array(rows, f"pred_steer_{focus}")
-    focus_host_steer = _col_to_array(rows, f"pred_host_steer_{focus}")
-    focus_theta_in = _col_to_array(rows, f"pred_theta_in_{focus}")
-    focus_theta_out = _col_to_array(rows, f"pred_theta_out_{focus}")
-    focus_pred_mode = _col_to_array(rows, f"pred_mode_{focus}")
-
-    if not np.any(np.isfinite(focus_dx)):
-        focus_dx = focus_postpred_x - focus_consensus_x
-    if not np.any(np.isfinite(focus_dy)):
-        focus_dy = focus_postpred_y - focus_consensus_y
-    if not np.any(np.isfinite(focus_v_in)):
-        focus_v_in = focus_consensus_v
-    if not np.any(np.isfinite(focus_v_out)):
-        focus_v_out = focus_postpred_v
-    if not np.any(np.isfinite(focus_theta_in)):
-        focus_theta_in = focus_consensus_theta
-    if not np.any(np.isfinite(focus_theta_out)):
-        focus_theta_out = focus_postpred_theta
-
-    # (0,0) X comparison
-    ax = fig.add_subplot(gs[0, 0])
-    n = 0
-    for arr, label, style, color in [
-        (focus_consensus_x, "consensus_x", "--", "tab:blue"),
-        (focus_postpred_x, "postpred_x", ":", "tab:orange"),
-        (focus_est_x, "est_x", "-", "tab:green"),
-    ]:
-        if np.any(np.isfinite(arr)):
-            ax.plot(times, arr, style, label=label, color=color, lw=1.3)
-            n += 1
-    if n == 0:
-        _no_data(ax, f"X Comparison V{focus}")
-    _style(ax, f"X Comparison V{focus}", "x [m]", xlabel="Time [s]")
-
-    # (0,1) Y comparison
-    ax = fig.add_subplot(gs[0, 1])
-    n = 0
-    for arr, label, style, color in [
-        (focus_consensus_y, "consensus_y", "--", "tab:blue"),
-        (focus_postpred_y, "postpred_y", ":", "tab:orange"),
-        (focus_est_y, "est_y", "-", "tab:green"),
-    ]:
-        if np.any(np.isfinite(arr)):
-            ax.plot(times, arr, style, label=label, color=color, lw=1.3)
-            n += 1
-    if n == 0:
-        _no_data(ax, f"Y Comparison V{focus}")
-    _style(ax, f"Y Comparison V{focus}", "y [m]", xlabel="Time [s]")
-
-    # (1,0) step increments + dt
-    ax = fig.add_subplot(gs[1, 0])
-    n = 0
-    if np.any(np.isfinite(focus_dx)):
-        ax.plot(times, focus_dx, label="pred_dx", color="tab:blue", lw=1.3)
-        n += 1
-    if np.any(np.isfinite(focus_dy)):
-        ax.plot(times, focus_dy, label="pred_dy", color="tab:orange", lw=1.2, ls="--")
-        n += 1
-    ax.axhline(0.0, color="k", ls=":", lw=0.8, alpha=0.6)
-    ax_dt = ax.twinx()
-    if np.any(np.isfinite(focus_dt)):
-        ax_dt.plot(times, focus_dt, label="pred_dt", color="tab:red", lw=1.1, ls=":")
-        n += 1
-    if n == 0:
-        _no_data(ax, f"Prediction Step V{focus}")
-    else:
-        handles, labels = ax.get_legend_handles_labels()
-        handles2, labels2 = ax_dt.get_legend_handles_labels()
-        merged = dict(zip(labels + labels2, handles + handles2))
-        ax.legend(merged.values(), merged.keys(), fontsize=7, ncol=2, loc="best", framealpha=0.7)
-    ax.set_title(f"Prediction Step V{focus}", fontsize=10, fontweight="bold")
-    ax.set_ylabel("dx / dy [m]", fontsize=9)
-    ax.set_xlabel("Time [s]", fontsize=9)
-    ax.grid(True, linestyle="--", alpha=0.4)
-    ax.tick_params(labelsize=8)
-    ax_dt.set_ylabel("dt [s]", fontsize=9)
-    ax_dt.tick_params(labelsize=8)
-
-    # (1,1) velocity blend + steering
-    ax = fig.add_subplot(gs[1, 1])
-    n = 0
-    for arr, label, style, color in [
-        (focus_v_in, "v_in", "-", "tab:blue"),
-        (focus_v_out, "v_out", "-", "tab:green"),
-        (focus_host_v, "host_v", "--", "tab:purple"),
-        (focus_consensus_v, "consensus_v", ":", "tab:cyan"),
-        (focus_est_v, "est_v", "-.", "tab:olive"),
-    ]:
-        if np.any(np.isfinite(arr)):
-            ax.plot(times, arr, style, label=label, color=color, lw=1.2)
-            n += 1
-    ax_steer = ax.twinx()
-    for arr, label, style, color in [
-        (focus_steer, "steer", ":", "tab:orange"),
-        (focus_host_steer, "host_steer", "-.", "tab:red"),
-    ]:
-        if np.any(np.isfinite(arr)):
-            ax_steer.plot(times, arr, style, label=label, color=color, lw=1.0)
-            n += 1
-    if n == 0:
-        _no_data(ax, f"Velocity / Steering V{focus}")
-    else:
-        handles, labels = ax.get_legend_handles_labels()
-        handles2, labels2 = ax_steer.get_legend_handles_labels()
-        merged = dict(zip(labels + labels2, handles + handles2))
-        ax.legend(merged.values(), merged.keys(), fontsize=7, ncol=2, loc="best", framealpha=0.7)
-    ax.set_title(f"Velocity / Steering V{focus}", fontsize=10, fontweight="bold")
-    ax.set_ylabel("Velocity [m/s]", fontsize=9)
-    ax.set_xlabel("Time [s]", fontsize=9)
-    ax.grid(True, linestyle="--", alpha=0.4)
-    ax.tick_params(labelsize=8)
-    ax_steer.set_ylabel("Steering [rad]", fontsize=9)
-    ax_steer.tick_params(labelsize=8)
-
-    # (2,0) theta comparison
-    ax = fig.add_subplot(gs[2, 0])
-    n = 0
-    for arr, label, style, color in [
-        (focus_theta_in, "theta_in", "--", "tab:blue"),
-        (focus_theta_out, "theta_out", ":", "tab:orange"),
-        (focus_est_theta, "est_theta", "-", "tab:green"),
-    ]:
-        if np.any(np.isfinite(arr)):
-            ax.plot(times, arr, style, label=label, color=color, lw=1.2)
-            n += 1
-    if n == 0:
-        _no_data(ax, f"Theta Comparison V{focus}")
-    _style(ax, f"Theta Comparison V{focus}", "theta [rad]", xlabel="Time [s]")
-
-    # (2,1) source flags + prediction mode
-    ax = fig.add_subplot(gs[2, 1])
-    source_masks = {
-        "host heading": np.array([1.0 if src == "host_heading" else 0.0 for src in focus_src], dtype=float),
-        "host ctrl fallback": np.array([1.0 if src == "host_control_fallback" else 0.0 for src in focus_src], dtype=float),
-        "target control": np.array([1.0 if src == "target_control" else 0.0 for src in focus_src], dtype=float),
-    }
-    n = 0
-    offsets = {
-        "host heading": 0.0,
-        "host ctrl fallback": 1.2,
-        "target control": 2.4,
-        "pred_mode": 3.6,
-    }
-    for label, mask in source_masks.items():
-        if np.any(np.isfinite(mask)) and np.any(mask > 0.0):
-            ax.step(times, mask + offsets[label], where="post", label=label)
-            n += 1
-    if np.any(np.isfinite(focus_pred_mode)):
-        ax.step(
-            times,
-            focus_pred_mode + offsets["pred_mode"],
-            where="post",
-            label="pred_mode",
-            color="k",
-            ls="--",
-        )
-        n += 1
-    if n == 0:
-        _no_data(ax, f"Prediction Source Flags V{focus}")
-    else:
-        ax.set_yticks([0.5, 1.7, 2.9, 4.1])
-        ax.set_yticklabels(["host_heading", "host_ctrl", "target_ctrl", "pred_mode"])
-    _style(ax, f"Prediction Source Flags V{focus}", "Source", xlabel="Time [s]")
 
     return fig
 
@@ -3124,7 +3030,6 @@ def main():
         _fig_trust(times, rows, active, focus, host_id)
         _fig_weights(times, rows, active, focus, host_id)
         _fig_estimation(times, rows, active, focus, host_id)
-        _fig_prediction_debug(times, rows, focus, host_id)
         _fig_motion_test(
             times,
             rows,
