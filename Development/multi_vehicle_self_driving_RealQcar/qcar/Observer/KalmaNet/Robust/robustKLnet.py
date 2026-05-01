@@ -66,6 +66,12 @@ class RSNConfig:
     update_mask_init_bias: float = 2.0
     apply_meas_mask_to_innovation: bool = True
     normalize_updater_features: bool = True
+    updater_feature_normalization: str = "l2"
+    updater_state_scale: Tuple[float, ...] = (0.25, 0.25, 0.20, 0.50)
+    updater_measurement_scale: Tuple[float, ...] = (0.25, 0.25, 0.20, 0.50)
+    gain_smoothing_alpha: float = 1.0
+    meas_mask_smoothing_alpha: float = 1.0
+    max_update_correction: Tuple[float, ...] = ()
 
     # ── Modular prediction step ──────────────────────────────────────────
     # "nn"        → RobustMotionPredictor (tri-LSTM, learnable, default)
@@ -188,6 +194,66 @@ def wrap_state_residual(residual: torch.Tensor, angle_index: int = 2) -> torch.T
 def safe_l2_normalize(x: torch.Tensor, dim: int = -1) -> torch.Tensor:
     """Numerically stable L2 normalization for updater feature groups."""
     return F.normalize(x, p=2, dim=dim, eps=1e-12)
+
+
+def _scale_vector(
+    values: Tuple[float, ...],
+    dim: int,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    fallback: float = 1.0,
+) -> torch.Tensor:
+    scale = torch.full((dim,), float(fallback), device=device, dtype=dtype)
+    if values:
+        raw = torch.as_tensor(list(values), device=device, dtype=dtype).reshape(-1)
+        count = min(int(raw.numel()), dim)
+        scale[:count] = raw[:count]
+    return torch.clamp(scale, min=1e-6).view(1, 1, dim)
+
+
+def _ema_sequence(
+    values: torch.Tensor,
+    previous: Optional[torch.Tensor],
+    alpha: float,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Apply first-order temporal smoothing along the sequence dimension."""
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    if alpha >= 1.0 or values.shape[1] <= 0:
+        return values, values[:, -1] if values.shape[1] else values
+
+    smoothed = []
+    state = previous
+    if state is not None:
+        state = state.to(device=values.device, dtype=values.dtype)
+    for idx in range(values.shape[1]):
+        current = values[:, idx]
+        if state is None:
+            state = current
+        else:
+            state = alpha * current + (1.0 - alpha) * state
+        smoothed.append(state)
+    return torch.stack(smoothed, dim=1), state
+
+
+def _clamp_correction(
+    correction: torch.Tensor,
+    limits: Tuple[float, ...],
+) -> torch.Tensor:
+    if not limits:
+        return correction
+    limit = _scale_vector(
+        limits,
+        correction.shape[-1],
+        device=correction.device,
+        dtype=correction.dtype,
+        fallback=0.0,
+    )
+    if torch.count_nonzero(limit > 0.0).item() == 0:
+        return correction
+    unlimited = limit <= 0.0
+    clamped = torch.clamp(correction, min=-limit, max=limit)
+    return torch.where(unlimited, correction, clamped)
 
 
 
@@ -543,7 +609,7 @@ class KinematicPredictor(nn.Module):
             device=throttle.device,
             dtype=throttle.dtype,
         )
-        flat_throttle = throttle.reshape(-1)
+        flat_throttle = throttle.reshape(-1).contiguous()
         indices = torch.bucketize(flat_throttle, breakpoints)
         indices = torch.clamp(indices, 1, breakpoints.numel() - 1)
 
@@ -804,6 +870,32 @@ class LearnedKalmanUpdate(nn.Module):
         self.normalize_updater_features = bool(
             getattr(cfg, "normalize_updater_features", True)
         )
+        normalization_mode = str(
+            getattr(cfg, "updater_feature_normalization", "")
+            or ("l2" if self.normalize_updater_features else "none")
+        ).strip().lower()
+        if normalization_mode in {"true", "yes", "unit"}:
+            normalization_mode = "l2"
+        elif normalization_mode in {"false", "no", "off"}:
+            normalization_mode = "none"
+        if normalization_mode not in {"l2", "scale", "none"}:
+            normalization_mode = "l2" if self.normalize_updater_features else "none"
+        self.updater_feature_normalization = normalization_mode
+        self.updater_state_scale = tuple(
+            float(v) for v in getattr(cfg, "updater_state_scale", ()) or ()
+        )
+        self.updater_measurement_scale = tuple(
+            float(v) for v in getattr(cfg, "updater_measurement_scale", ()) or ()
+        )
+        self.gain_smoothing_alpha = float(
+            np.clip(float(getattr(cfg, "gain_smoothing_alpha", 1.0)), 0.0, 1.0)
+        )
+        self.meas_mask_smoothing_alpha = float(
+            np.clip(float(getattr(cfg, "meas_mask_smoothing_alpha", 1.0)), 0.0, 1.0)
+        )
+        self.max_update_correction = tuple(
+            float(v) for v in getattr(cfg, "max_update_correction", ()) or ()
+        )
         # dx, normalized innovation/delta, availability, GPS flags, plus
         # raw innovation magnitudes. The magnitude terms are important for
         # attack response because normalization alone removes anomaly scale.
@@ -910,10 +1002,28 @@ class LearnedKalmanUpdate(nn.Module):
         dz_p_mag = torch.log1p(torch.abs(dz_p))
         dz_mag = torch.log1p(torch.abs(dz))
 
-        if self.normalize_updater_features:
+        if self.updater_feature_normalization == "l2":
             dx = safe_l2_normalize(dx)
             dz_p = safe_l2_normalize(dz_p)
             dz = safe_l2_normalize(dz)
+        elif self.updater_feature_normalization == "scale":
+            state_scale = _scale_vector(
+                self.updater_state_scale,
+                self.m,
+                device=device,
+                dtype=x_pred_seq.dtype,
+                fallback=1.0,
+            )
+            meas_scale = _scale_vector(
+                self.updater_measurement_scale,
+                self.n,
+                device=device,
+                dtype=x_pred_seq.dtype,
+                fallback=1.0,
+            )
+            dx = dx / state_scale
+            dz_p = dz_p / meas_scale
+            dz = dz / meas_scale
 
         f_upd = torch.cat(
             [
@@ -940,9 +1050,17 @@ class LearnedKalmanUpdate(nn.Module):
         f_upd_masked = f_upd * m_upd
 
         # Return the learned measurement mask for diagnostics/supervision.
-        learned_meas_mask = m_upd[..., self.m : self.m + self.n]
+        learned_meas_mask_raw = m_upd[..., self.m : self.m + self.n]
         # Also return raw logits (pre-sigmoid) for numerically stable BCE loss
         meas_mask_logits_out = mask_logits[..., self.m : self.m + self.n]
+        prev_meas_mask = None
+        if hidden is not None:
+            prev_meas_mask = hidden.get("meas_mask_ema")
+        learned_meas_mask, meas_mask_ema = _ema_sequence(
+            learned_meas_mask_raw,
+            prev_meas_mask,
+            self.meas_mask_smoothing_alpha,
+        )
 
         # 4. Run GRU
         if hidden is None:
@@ -959,6 +1077,10 @@ class LearnedKalmanUpdate(nn.Module):
         if self.constrain_gain:
             K_flat = self.gain_tanh_scale * torch.tanh(K_flat)
         K_seq = K_flat.view(B, T, self.m, self.n)
+        prev_K = None
+        if hidden is not None:
+            prev_K = hidden.get("K_ema")
+        K_seq, K_ema = _ema_sequence(K_seq, prev_K, self.gain_smoothing_alpha)
 
         # 6. Apply additive correction
         # x_{k|k} = x_{k|k-1} + K_k @ (z_k - Hx_{k|k-1})
@@ -966,12 +1088,14 @@ class LearnedKalmanUpdate(nn.Module):
         # reliability mask to the innovation that actually corrects the state.
         # Without this, mask supervision can learn to flag bad measurements
         # while the final K @ innovation update still consumes them.
-        raw_innovation = (
-            wrap_state_residual(z_seq - Hx_pred)
-            * meas_availability_seq
-            * learned_meas_mask
+        innovation_gate = (
+            learned_meas_mask
+            if self.apply_meas_mask_to_innovation
+            else torch.ones_like(learned_meas_mask)
         )
+        raw_innovation = wrap_state_residual(z_seq - Hx_pred) * meas_availability_seq * innovation_gate
         corr = torch.matmul(K_seq, raw_innovation.unsqueeze(-1)).squeeze(-1)
+        corr = _clamp_correction(corr, self.max_update_correction)
 
         x_upd = x_pred_seq + corr
 
@@ -981,7 +1105,11 @@ class LearnedKalmanUpdate(nn.Module):
             x_upd[..., 3:],
         ], dim=-1)
 
-        hidden_out = {"gru": h_k_next}
+        hidden_out = {
+            "gru": h_k_next,
+            "meas_mask_ema": meas_mask_ema,
+            "K_ema": K_ema,
+        }
 
         return x_upd, K_seq, hidden_out, learned_meas_mask, meas_mask_logits_out
 
@@ -1317,6 +1445,34 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             apply_meas_mask_to_innovation=bool(
                 self.config.get("apply_meas_mask_to_innovation", True)
             ),
+            normalize_updater_features=bool(
+                self.config.get("normalize_updater_features", True)
+            ),
+            updater_feature_normalization=str(
+                self.config.get("updater_feature_normalization", "")
+                or (
+                    "l2"
+                    if bool(self.config.get("normalize_updater_features", True))
+                    else "none"
+                )
+            ),
+            updater_state_scale=tuple(
+                self.config.get("updater_state_scale", (0.25, 0.25, 0.20, 0.50))
+                or ()
+            ),
+            updater_measurement_scale=tuple(
+                self.config.get(
+                    "updater_measurement_scale", (0.25, 0.25, 0.20, 0.50)
+                )
+                or ()
+            ),
+            gain_smoothing_alpha=float(self.config.get("gain_smoothing_alpha", 1.0)),
+            meas_mask_smoothing_alpha=float(
+                self.config.get("meas_mask_smoothing_alpha", 1.0)
+            ),
+            max_update_correction=tuple(
+                self.config.get("max_update_correction", ()) or ()
+            ),
             predictor_mode=str(self.config.get("predictor_mode", "kinematic")),
             kin_wheelbase=float(self.config.get("kin_wheelbase", 0.2)),
             longitudinal_model=str(self.config.get("longitudinal_model", "")),
@@ -1352,6 +1508,12 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         )
         self._log_info(
             f"Robust KalmanNet gps_dropout_xy_mode='{self.gps_dropout_xy_mode}'"
+        )
+        self._log_info(
+            "Robust KalmanNet updater "
+            f"normalization='{self.model_cfg.updater_feature_normalization}', "
+            f"K_alpha={self.model_cfg.gain_smoothing_alpha:.3f}, "
+            f"mask_alpha={self.model_cfg.meas_mask_smoothing_alpha:.3f}"
         )
         if self.publish_clean_reference_output:
             self._log_warning(
@@ -1479,6 +1641,27 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         trained_sequence_length_phase_c = int(
             training_section.get("sequence_length_phase_c", 0) or 0
         )
+        trained_feature_norm = str(
+            model_section.get("updater_feature_normalization", "")
+            or ("l2" if model_section.get("normalize_updater_features", True) else "none")
+        ).strip().lower()
+        runtime_feature_norm = str(
+            self.model_cfg.updater_feature_normalization
+        ).strip().lower()
+        trained_gain_alpha = model_section.get("gain_smoothing_alpha")
+        trained_mask_alpha = model_section.get("meas_mask_smoothing_alpha")
+        try:
+            trained_gain_alpha = (
+                None if trained_gain_alpha is None else float(trained_gain_alpha)
+            )
+        except (TypeError, ValueError):
+            trained_gain_alpha = None
+        try:
+            trained_mask_alpha = (
+                None if trained_mask_alpha is None else float(trained_mask_alpha)
+            )
+        except (TypeError, ValueError):
+            trained_mask_alpha = None
 
         warnings: List[str] = []
         runtime_predictor_mode = str(self.model_cfg.predictor_mode).strip().lower()
@@ -1502,6 +1685,21 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             warnings.append(
                 "gps_dropout_xy_mode "
                 f"(checkpoint='{trained_gps_dropout_xy_mode}', runtime='{self.gps_dropout_xy_mode}')"
+            )
+        if trained_feature_norm and trained_feature_norm != runtime_feature_norm:
+            warnings.append(
+                "updater_feature_normalization "
+                f"(checkpoint='{trained_feature_norm}', runtime='{runtime_feature_norm}')"
+            )
+        if trained_gain_alpha is not None and abs(trained_gain_alpha - float(self.model_cfg.gain_smoothing_alpha)) > 1e-6:
+            warnings.append(
+                "gain_smoothing_alpha "
+                f"(checkpoint='{trained_gain_alpha:.3f}', runtime='{self.model_cfg.gain_smoothing_alpha:.3f}')"
+            )
+        if trained_mask_alpha is not None and abs(trained_mask_alpha - float(self.model_cfg.meas_mask_smoothing_alpha)) > 1e-6:
+            warnings.append(
+                "meas_mask_smoothing_alpha "
+                f"(checkpoint='{trained_mask_alpha:.3f}', runtime='{self.model_cfg.meas_mask_smoothing_alpha:.3f}')"
             )
         if (
             trained_sequence_length > 0
@@ -1827,7 +2025,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self._warn_if_checkpoint_config_mismatch(checkpoint)
         state_dict = self._extract_state_dict(checkpoint)
         try:
-            self.model.load_state_dict(state_dict, strict=False)
+            load_result = self.model.load_state_dict(state_dict, strict=False)
         except RuntimeError as exc:
             raise RuntimeError(
                 "Robust KalmanNet checkpoint is not compatible with the current "
@@ -1835,6 +2033,14 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                 "removing the yaw-rate state, or point model_path to a matching "
                 "4D checkpoint."
             ) from exc
+        missing_keys = list(getattr(load_result, "missing_keys", []) or [])
+        unexpected_keys = list(getattr(load_result, "unexpected_keys", []) or [])
+        if missing_keys or unexpected_keys:
+            self._log_warning(
+                "Robust KalmanNet checkpoint loaded with non-strict key mismatch "
+                f"(missing={missing_keys}, unexpected={unexpected_keys}). "
+                "Retrain before relying on attack-rejection behavior."
+            )
         self.model.eval()
         self._log_info(
             f"Robust KalmanNet checkpoint loaded from {self.model_path}"
@@ -3173,6 +3379,7 @@ def robuststatenet_loss(
     meas_mask_logits: Optional[torch.Tensor] = None,
     meas_attack_labels: Optional[torch.Tensor] = None,
     lambda_meas_mask: float = 0.1,
+    lambda_meas_mask_smooth: float = 0.0,
     K: Optional[torch.Tensor] = None,
     lambda_gain: float = 0.0,
     lambda_gain_smooth: float = 0.0,
@@ -3225,6 +3432,11 @@ def robuststatenet_loss(
                 logs["meas_mask_attacked_mean"] = meas_mask.detach()[attacked].mean().item()
             if clean.any():
                 logs["meas_mask_clean_mean"] = meas_mask.detach()[clean].mean().item()
+
+    if meas_mask is not None and lambda_meas_mask_smooth > 0:
+        loss_meas_mask_smooth = temporal_smoothness_loss(meas_mask)
+        total = total + lambda_meas_mask_smooth * loss_meas_mask_smooth
+        logs["loss_meas_mask_smooth"] = loss_meas_mask_smooth.item()
 
     # FIX-E: Gain regularization — penalize large Kalman gains to encourage
     # conservative corrections and prevent GPS snap at test time.

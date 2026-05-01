@@ -75,7 +75,7 @@ local:
   # Robust KalmanNet estimator
   # ---------------------------------------------------------------------
   robust_kalman_net:
-    predictor_mode: "nn"    # Always keep the predictor analytical/kinematic; only the update step is learned.
+    predictor_mode: "kinematic"    # Always keep the predictor analytical/kinematic; only the update step is learned.
     kin_wheelbase: 0.2          # Fallback default; VehicleObserver overrides from fleet_config.vehicle_geometry when available.
     longitudinal_model: "velocity_lag_lookup" # Observer-model calibration overrides this via `observer_model_source`; this is only the local fallback.
     kin_velocity_model: "velocity_lag" # Legacy fallback only when no calibration-backed longitudinal model is injected.
@@ -96,8 +96,8 @@ local:
     comparator_file_prefix: rknet_comparison
     comparator_overwrite: false
     mask_branch_active_threshold: 0.5 # For log interpretation only; marks a branch as "active" when mean mask >= threshold.
-    sequence_length: 20          # Keep aligned with the best_robust checkpoint training window length.
-    streaming_inference: true    # Reuse hidden state and run one model step per tick instead of replaying the whole window.
+    sequence_length: 20          # Runtime warm-up/history length. Keep short for real-time control.
+    streaming_inference: true    # Run one model step per tick; replay mode is too slow for the QCar control loop.
     dt: 0.02                     # Nominal sample time used by the trained model. Keep this aligned with the real inference cadence.
     heading_filter_enabled: true # Use the shared local replica of Quanser QCarEKF heading fusion (gyro + kinematic pose + GPS theta/x/y when available).
     heading_filter_q_psi: 0.0001  # QCarEKF KF process noise on theta.
@@ -118,6 +118,13 @@ local:
     mask_hidden: 32
     update_mask_init_bias: 0.0   # Neutral start so the updater can learn stronger rejection when needed.
     apply_meas_mask_to_innovation: true # Apply the learned measurement gate directly to the innovation before correction.
+    normalize_updater_features: true
+    updater_feature_normalization: "scale"
+    updater_state_scale: [0.25, 0.25, 0.20, 0.50]
+    updater_measurement_scale: [0.25, 0.25, 0.20, 0.50]
+    gain_smoothing_alpha: 0.35
+    meas_mask_smoothing_alpha: 0.35
+    max_update_correction: [0.35, 0.35, 0.35, 0.80]
     use_hard_mask: false
     # sensor_failure_simulation parameters control the online injection of synthetic sensor faults/attacks during evaluation. These are disabled by default to avoid unintended consequences during normal runs, but can be enabled to stress-test the estimator's robustness in a more realistic setting than offline test sets.
     sensor_failure_simulation:

@@ -511,17 +511,17 @@ In the following subsections, we will explain how to calculate the trust. After 
 \subsection{Data validity indicator}
 \vspace*{-0.3cm}
 
-Before trust computation, every received V2V packet data is validated for authenticity and freshness:
+Before evaluating any continuous trust score, the host vehicle $i$ first applies a binary validity test to each packet received from vehicle $l$. This preliminary gate is used to reject clearly unusable data before entering the physical-consistency checks. In particular, a packet is considered valid only if it passes the communication-layer security and timing requirements, namely message authentication and freshness:
 \begin{equation}
-    % \small
     \delta_{i,l}(t)=
     \begin{cases}
-        1, & \text{if message}\text{ is authenticated and fresh}, \\
+        1, & \text{if the message is authenticated and fresh}, \\
         0, & \text{otherwise.}
     \end{cases}
 \end{equation}
-% When (\delta_{i,l}(t)=0), the data from vehicle (l) is treated as unavailable.
-Only packets satisfying $\delta_{i,l}(t)=1$ are used in the following trust evaluation process.
+The authentication condition ensures that the packet originates from the claimed sender and has not been altered during transmission, while the freshness condition prevents delayed or replayed packets from being treated as current information. Hence, $\delta_{i,l}(t)$ acts as a hard communication-quality gate: when $\delta_{i,l}(t)=0$, the received data are treated as unavailable and are excluded from the instantaneous trust update.
+
+This binary indicator is intentionally separated from the trust scores $\LT_{i,l}$ and $\DT_{i,l}$. The role of $\delta_{i,l}(t)$ is not to quantify how reliable the content is, but to decide whether the content is admissible at all. Once a packet passes this admissibility test, the trust layer evaluates whether its \emph{content} is physically and statistically consistent with the host vehicle's observations and distributed estimates.
 
 \vspace*{-0.3cm}
 \subsection{Local trust}\label{sub:local_trust}
@@ -1172,52 +1172,62 @@ The trust framework provides each vehicle with a set of quantified opinions $\O_
 This section shows how these values are used to define adaptive observer weights $w_{il}^{j}(t)$ and establishes conditions for stability of the estimation error dynamics.
 
 \subsection{Weight based on the trust}
-Based on the virtual communication graph $\bar{\G}^{{(j)}}$ as that includes the local observer node 0, each vehicle $i$ identifies its legitimate neighbors at time $t$: 
-%\begin{small}
+For each host vehicle $i$ and target vehicle $j$, the implementation uses a target-wise correction step followed by prediction. The correction stage can be written as
+\begin{equation}\label{eq:code_correction}
+\hat{x}_{i,c}^{(j)}(t)=
+w_{ii}^{(j)}(t)\hat{x}_{i}^{(j)}(t)
++w_{i0}^{(j)}(t)\hat{x}_{0}^{(j)}(t)
++\sum_{l\in \mathcal{N}_{i}^{(j)}(t)} w_{il}^{(j)}(t)\hat{x}_{l}^{(j)}(t),
+\end{equation}
+and the prediction stage is
+\begin{equation}\label{eq:code_prediction}
+\hat{x}_{i}^{(j)}(t+1)=A_{\text{b}}\hat{x}_{i,c}^{(j)}(t)+B_{\text{b}}\hat{u}_{j}(t).
+\end{equation}
+The residual self-weight is defined by
+\begin{equation}\label{eq:self_weight}
+w_{ii}^{(j)}(t)=1-w_{i0}^{(j)}(t)-\sum_{l\in\mathcal{N}_{i}^{(j)}(t)}w_{il}^{(j)}(t),
+\end{equation}
+where $\mathcal{N}_{i}^{(j)}(t)$ denotes the neighbors of host $i$ that are trusted at time $t$ and currently provide an estimate of target $j$.
 
-
-% \begin{equation}
-% \mathcal{LN}^{(j)}_{i}(t) = 
-% \left\{ l \in N_i \ \middle| \  O_i(l,t) \geq \theta_{\min} \right\}
-% \cup
-% \left( \{0\} \ \text{if} \ \mathcal{LT}^{i,j}(t) \geq \theta_{\min} \right)
-% \end{equation}
-
+To match the code, the direct, self, and neighbor channels are first assigned raw scores. Let $\bar w_0>0$ and $\bar w_{\rm self}>0$ be fixed gains, and define the neighbor budget $\bar w_{\rm N}=1-\bar w_0-\bar w_{\rm self}$. Then
+\begin{subequations}\label{eq:raw_weights}
 \begin{align}
-\mathcal{LN}^{(j)}_{i}(t)
-&= \Big\{\, l \in N_i \;\big|\; O_i(l,t) \ge \theta_{\min} \Big\} \nonumber \\
-&\quad \cup\;
-\Big( \{0\}\ \text{if}\ \mathcal{LT}_{i,j}(t) \ge \theta_{\min} \Big)
+\tilde{w}_{i0}^{(j)}(t) &= \bar w_0\,\LT_{i,j}(t)\,\phi_{i0}^{(j)}(t),\\
+\tilde{w}_{ii}^{(j)}(t) &= \bar w_{\rm self}\,\phi_{ii}^{(j)}(t),\\
+\tilde{w}_{il}^{(j)}(t) &= \bar w_{\rm N}\,\phi_{i,\mathrm{N}}^{(j)}(t)\,
+\frac{\O_i(l,t)}{\sum\limits_{p\in\mathcal{N}_{i}^{(j)}(t)}\O_i(p,t)},
+\qquad l\in\mathcal{N}_{i}^{(j)}(t).
 \end{align}
-
-% \begin{equation}
-% \mathcal{LN}_i^{(j)}= 
-% \left\{ \begin{array}{lc}
-%     \left\{l \in \V| \  \O_{i}(l) > 0.5 \right\} \cup \left\{0  \right\},  & \text{if}\  \O_{i}(j)>0.5, \\
-%     \left\{l \in \V| \ {\O_{i}(l) > 0.5 } \right\}, & \text{if}\  \O_{i}(j) \leq 0.5.
-% \end{array}\right.
-% \end{equation}
-
-% \end{small}
-To limit the influence of any single neighbor, a normalization factor is introduced.
-\begin{equation}\label{new_setneibor}
-n_{il}^{(j)}(t)=\max \left\{\kappa,\left|\mathcal{LN}_i^{(j)}(t)\right|+1\right\} \geq 1, \forall l\in \mathcal{LN}_i^{(j)}
-\end{equation}
-where $\kappa >0$ is the parameter to limit the maximum influence from the neighbors of $i$th vehicle. 
-Then, the observer's weight gain can be chosen as
+\end{subequations}
+The final normalized gains are
 \begin{equation}\label{design_gain}
-    w_{il}^{(j)}(t) = \begin{cases}
-        \dfrac{1}{n_{il}^{(j)}(t)}, & l \in \mathcal{LN}_i^{(j)}(t)\\
-        0 ,& \text{otherwise}.
-    \end{cases}
+w_{iq}^{(j)}(t)=
+\frac{\tilde{w}_{iq}^{(j)}(t)}
+{\tilde{w}_{i0}^{(j)}(t)+\tilde{w}_{ii}^{(j)}(t)+\sum_{l\in\mathcal{N}_{i}^{(j)}(t)}\tilde{w}_{il}^{(j)}(t)},
 \end{equation}
-%
-% \begin{equation}\label{redesign_gain_virtual}
-%     w_{i0}^{(j)}(t) = \begin{cases}
-%         \dfrac{1}{n_{il}^{(j)}(t)}, & \LT_j > 0.5\\
-%         0 ,& \text{otherwise}.
-%     \end{cases}
-% \end{equation}
+for every active channel $q\in\{0,i\}\cup\mathcal{N}_{i}^{(j)}(t)$.
+
+The multipliers $\phi_{i0}^{(j)}(t)$, $\phi_{ii}^{(j)}(t)$, and $\phi_{i,\mathrm{N}}^{(j)}(t)$ encode the trust flags produced by the estimator:
+\begin{itemize}
+    \item under nominal conditions, all three multipliers are equal to $1$;
+    \item when the target-$j$ direct/local channel becomes suspicious, the direct term is reduced and the residual confidence is shifted toward the self-prediction channel;
+    \item when the fleet-consensus channel is suspicious but the direct target packet remains reliable, the direct channel is reinforced and the neighbor channels are reduced.
+\end{itemize}
+In addition, each neighbor contribution is upper bounded by a design cap $\bar w_{\max}$, and any overflow is reassigned to the self channel. Hence,
+\begin{equation}\label{eq:weight_simplex}
+w_{ii}^{(j)}(t)\ge 0,\qquad
+w_{i0}^{(j)}(t)\ge 0,\qquad
+w_{il}^{(j)}(t)\ge 0,\qquad
+w_{ii}^{(j)}(t)+w_{i0}^{(j)}(t)+\sum_{l\in\mathcal{N}_{i}^{(j)}(t)}w_{il}^{(j)}(t)=1.
+\end{equation}
+
+\paragraph{Presentation summary.}
+The meaning of the three channels is:
+\begin{itemize}
+    \item $w_{i0}^{(j)}$: trust in the direct packet or anchor for target $j$;
+    \item $w_{il}^{(j)}$: trust in neighbor $l$ when estimating target $j$;
+    \item $w_{ii}^{(j)}$: confidence kept on the host's own prediction.
+\end{itemize}
 According to the weight gain, the communication graph will be switched depending on the time. The following assumption is required.
 % \cite{hao2024eventtriggered,liu2021discretetime}
 \begin{assumption}[\it Jointly connected graph]%\label{def1}
@@ -1225,6 +1235,49 @@ According to the weight gain, the communication graph will be switched depending
 There exists a scalar constant $T > 0$ such that for all $t\geq 0$, the union graph $\cup _{[t, t+ T]}\bar{\G}^{(j)}(t)$ contains a spanning tree.
 \end{assumption}
 Assumption~\ref{ass_graph} means that for all $t\geq 0$, every node $i \in\V$ is reachable from node ``0 in the union graph $\cup _{[t, t+ T]}\bar{\G}^{(j)}(t)$. This ensures the connectivity of the proposed switching communication topology, which is required for our observer design method. For more details on this assumption, we refer the reader to~\cite{hao2024eventtriggered}.
+
+\subsection{Contamination rollback mechanism}\label{subsec:rollback}
+The trust-adaptive weights protect future updates, but in practice a malicious packet can already contaminate the estimate before the trust score drops. For this reason, the implementation stores a short replay buffer for each target vehicle.
+
+At each time $k$, host vehicle $i$ stores the pre-update estimate and the information used in the correction/prediction steps:
+\begin{equation}\label{eq:rollback_buffer}
+\mathcal{B}_{i}^{(j)}(k)=
+\Big\{
+\hat{x}_{i}^{(j)}(k^{-}),
+\hat{x}_{0}^{(j)}(k),
+\{\hat{x}_{l}^{(j)}(k)\}_{l\in\mathcal{N}_{i}^{(j)}(k)},
+\Delta t_k,
+\hat{u}_j(k)
+\Big\},
+\end{equation}
+together with the applied weights $w_{i0}^{(j)}(k)$ and $w_{il}^{(j)}(k)$.
+
+If target $j$ becomes suspicious at time $t$ because $\T_{i,j}(t)<\theta_{\min}$ or a consistency flag is raised, the host constructs a malicious set $\mathcal{M}_{i}(t)$ and restarts from the latest trusted snapshot
+\begin{equation}
+\hat{x}_{i,\mathrm{tr}}^{(j)}(t_{\mathrm{r}}), \qquad t_{\mathrm{r}}\le t.
+\end{equation}
+The buffered window is then replayed with the same observer law, but excluding all malicious contributors:
+\begin{equation}\label{eq:rollback_correction}
+\hat{x}_{i,c}^{(j)}(k)=
+\hat{x}_{i}^{(j)}(k^{-})
++\mathbf{1}_{\{j\notin\mathcal{M}_{i}(t)\}}\,
+w_{i0}^{(j)}(k)\big(\hat{x}_{0}^{(j)}(k)-\hat{x}_{i}^{(j)}(k^{-})\big)
++\sum_{l\in\mathcal{N}_{i}^{(j)}(k)\setminus\mathcal{M}_{i}(t)}
+w_{il}^{(j)}(k)\big(\hat{x}_{l}^{(j)}(k)-\hat{x}_{i}^{(j)}(k^{-})\big),
+\end{equation}
+\begin{equation}\label{eq:rollback_prediction}
+\hat{x}_{i}^{(j)}(k+1)=A_{\text{b}}\hat{x}_{i,c}^{(j)}(k)+B_{\text{b}}\hat{u}_j(k),
+\qquad k=t_{\mathrm{r}},\ldots,t-1.
+\end{equation}
+Therefore, rollback is not a different observer. It is the same observer replayed over a short window after removing corrupted channels.
+
+\paragraph{Presentation summary.}
+The rollback logic can be stated in three steps:
+\begin{itemize}
+    \item record recent correction terms and prediction inputs;
+    \item when trust drops, jump back to the last trusted state;
+    \item replay the buffered window without malicious contributors.
+\end{itemize}
 
 % The role of the trust mechanism is not to identify attacks perfectly, but to bound the contribution of unreliable nodes through nonnegative, normalized weights so that the resulting switched virtual Laplacian remains uniformly contractive.
 
@@ -1759,22 +1812,8 @@ The analysis in this chapter focuses on stability and boundedness (ISS) under bo
     In~\eqref{eq_observer}--\eqref{design_gain}, the coupling weights $w_{il}^{(j)}(t)$ are scalar and therefore apply the same attenuation to all state channels. A promising extension is to replace them with \emph{matrix} gains $W_{il}^{(j)}(t)\in\mathbb{R}^{n_x\times n_x}$ (e.g., diagonal or block-diagonal), allowing the trust mechanism to down-weight only the corrupted channels (e.g., acceleration) while preserving reliable channels (e.g., position). This leads to a matrix-weighted virtual Laplacian and stability conditions of the form
     $\|\mathcal{A}_{\mathrm{DO}}^{(j)}(t)\|_*\le \alpha<1$ for a suitably defined induced norm, or equivalently LMI-type contraction constraints on the lifted (block) error dynamics.
 
-    \item \textbf{Trust/detection delay and rollback mechanisms.}
-    In realistic networks, trust values are computed from time windows and may be delayed; consequently, false data can enter the distributed observer before a node is flagged, degrading the estimate. Moreover, abruptly cutting a node can temporarily reduce information flow and worsen estimation during the transition.
-    A natural direction is to equip each host with a \emph{rollback buffer}: store a fixed window of past estimates and received packets. When the trust of a node drops below threshold, roll back to time $t-T_{\mathrm{w}}$ (window length) and re-propagate the observer using (i) only trusted neighbors and (ii) model-based prediction/local-observer anchoring to bridge the missing information. This resembles fixed-lag smoothing with trust-aware data rejection and could mitigate transient corruption while preserving stability, provided the reset/rollback map is bounded and updates satisfy a dwell-time or bounded-variation condition.
-
-    \medskip
-    \noindent\emph{Contamination rollback (compact recipe).}
-    If a neighbor $l^{\star}$ is flagged at time $t$, undo the last $K$ steps by keeping a buffer of the \emph{innovation terms} appearing in~\eqref{eq_DO}. For each step $k$, store $\hat{x}_i^{(j)}(k)$ and
-    \begin{align*}
-    \eta_{il}^{(j)}(k) &\triangleq w_{il}^{(j)}(k)\big(\hat{x}_l^{(j)}(k)-\hat{x}_i^{(j)}(k)\big),\quad l\in\mathcal{N}_i,\\
-    \eta_{i0}^{(j)}(k) &\triangleq w_{i0}^{(j)}(k)\big(\hat{x}_0^{(j)}(k)-\hat{x}_i^{(j)}(k)\big),
-    \end{align*}
-    as well as the input term $\hat{u}_j(k)$. When $l^{\star}$ is flagged, set $x\leftarrow\hat{x}_i^{(j)}(t-K)$ and replay for $k=t-K,\ldots,t-1$ using the same observer update but excluding $l^{\star}$ (or a malicious set $\mathcal{M}$):
-    \begin{equation*}
-    x \leftarrow A_{\text{b}}\Big(x + \sum_{l\in\mathcal{N}_i\setminus\mathcal{M}} \eta_{il}^{(j)}(k) + \eta_{i0}^{(j)}(k)\Big) + B_{\text{b}}\hat{u}_j(k),
-    \end{equation*}
-    and finally set $\hat{x}_i^{(j)}(t)\leftarrow x$.
+    \item \textbf{Hybrid-system analysis for rollback.}
+    The current implementation already includes a rollback buffer and replay mechanism to remove contaminated updates after trust-triggered detection. However, the associated theory remains open: once rollback is activated, the observer becomes a hybrid system with state resets and short replay intervals. A useful future direction is to derive sufficient conditions ensuring that the reset-and-replay map remains bounded, does not amplify disturbances, and preserves the ISS-type convergence properties of the nominal observer under repeated rollback events.
 
     \item \textbf{Data-driven trust and learned uncertainty (with model-based safety layer).}
     Machine learning can be used to \emph{learn the mapping from signals to reliability}, while keeping the stability guarantee in the model-based layer by enforcing bounded weights. Concretely: (i) learn a calibrated trust score or anomaly probability from a feature vector built from innovation/residual signals (e.g., $\hat{x}_l^{(j)}-\hat{x}_i^{(j)}$, $\varepsilon_{i,l}^{(j)}$, packet age/loss, and consistency indicators), using change-point detection, self-supervised prediction, or lightweight sequence models; (ii) learn state-dependent covariance/uncertainty (heteroscedastic models) to adapt $\Sigma_{\text{local}}$ and thresholding; and (iii) implement the learned output only through a saturation/projection step that maps it to admissible weights satisfying Condition~(2) and preserving contraction in Condition~(3).

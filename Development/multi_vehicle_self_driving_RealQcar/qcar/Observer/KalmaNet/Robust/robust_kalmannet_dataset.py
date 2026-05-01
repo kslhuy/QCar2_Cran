@@ -901,11 +901,18 @@ def build_training_windows(
     heading_rebuild_mode: str = "qcar_ekf",
     heading_kinematic_config: Optional[Dict[str, Any]] = None,
     gps_dropout_xy_mode: str = "freeze",
+    initial_state_source: str = "target",
 ) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     measurement_source_norm = str(measurement_source).strip().lower()
     if measurement_source_norm not in {"rebuilt", "raw"}:
         raise ValueError(
             f"Unsupported measurement_source '{measurement_source}'. Expected 'rebuilt' or 'raw'."
+        )
+    initial_state_source_norm = str(initial_state_source).strip().lower()
+    if initial_state_source_norm not in {"target", "measurement"}:
+        raise ValueError(
+            f"Unsupported initial_state_source '{initial_state_source}'. "
+            "Expected 'target' or 'measurement'."
         )
 
     metadata = dataset.get("metadata", {}) or {}
@@ -999,7 +1006,10 @@ def build_training_windows(
     }
     z_seq = np.concatenate(z_windows, axis=0)
     x_gt = np.concatenate(x_gt_windows, axis=0)
-    x0 = z_seq[:, 0, :].copy()
+    if initial_state_source_norm == "measurement":
+        x0 = z_seq[:, 0, :].copy()
+    else:
+        x0 = x_gt[:, 0, :].copy()
     dt_seq = np.concatenate(dt_windows, axis=0)
 
     return raw, z_seq, x_gt, x0, dt_seq

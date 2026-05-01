@@ -32,6 +32,7 @@ DEFAULT_CONFIG = {
         "measurement_source": "rebuilt",
         "heading_rebuild_mode": "qcar_ekf",
         "gps_dropout_xy_mode": "freeze",
+        "initial_state_source": "target",
         "sequence_length": 20,
         "sequence_length_phase_c": 30,
         "stride": 1,
@@ -61,7 +62,8 @@ DEFAULT_CONFIG = {
         "lambda_upd": 0.8,
         "lambda_gain": 0.01,
         "lambda_gain_smooth": 0.0,
-        "state_weights": [1.0, 1.0, 2.0, 1.0, 1.0],
+        "lambda_meas_mask_smooth": 0.0,
+        "state_weights": [1.0, 1.0, 2.0, 1.0],
     },
     "augmentation": {
         "enabled": True,
@@ -76,6 +78,11 @@ DEFAULT_CONFIG = {
     "model": {
         "predictor_mode": "kinematic",
         "kin_wheelbase": 0.2,
+        "longitudinal_model": "",
+        "velocity_lag_model": {},
+        "velocity_lag_lookup_model": {},
+        "accel_lag_model": {},
+        "coupled_kinematic_model": {},
         "kin_velocity_model": "tachometer",
         "kin_velocity_tau": 0.301,
         "kin_velocity_gain": 6.598,
@@ -90,6 +97,12 @@ DEFAULT_CONFIG = {
         "update_mask_init_bias": 2.0,
         "apply_meas_mask_to_innovation": True,
         "normalize_updater_features": True,
+        "updater_feature_normalization": "l2",
+        "updater_state_scale": [0.25, 0.25, 0.20, 0.50],
+        "updater_measurement_scale": [0.25, 0.25, 0.20, 0.50],
+        "gain_smoothing_alpha": 1.0,
+        "meas_mask_smoothing_alpha": 1.0,
+        "max_update_correction": [],
     },
 }
 
@@ -139,6 +152,112 @@ def _normalize_attack_mode(aug_cfg: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _resolve_relative_path(path_value: Any, base_dir: Path) -> Optional[Path]:
+    if path_value is None:
+        return None
+    path_text = str(path_value).strip()
+    if not path_text:
+        return None
+    candidate = Path(path_text)
+    if not candidate.is_absolute():
+        candidate = (base_dir / candidate).resolve()
+    return candidate
+
+
+def _load_yaml_mapping(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise SystemExit(f"Referenced YAML file not found: {path}")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise SystemExit(f"Referenced YAML must be a mapping: {path}")
+    return payload
+
+
+def _observer_model_to_model_cfg(observer_model: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(observer_model, dict):
+        return {}
+
+    patch: Dict[str, Any] = {}
+    recommended = observer_model.get("recommended_longitudinal_model")
+    if recommended is not None:
+        patch["longitudinal_model"] = copy.deepcopy(recommended)
+
+    for key in (
+        "velocity_lag_model",
+        "velocity_lag_lookup_model",
+        "accel_lag_model",
+        "coupled_kinematic_model",
+    ):
+        value = observer_model.get(key)
+        if isinstance(value, dict):
+            patch[key] = copy.deepcopy(value)
+    return patch
+
+
+def _load_observer_model_source_config(
+    source_path: Path,
+    *,
+    profile: str,
+) -> Dict[str, Any]:
+    source_cfg = _load_yaml_mapping(source_path)
+    if "observer_model" in source_cfg:
+        return _observer_model_to_model_cfg(source_cfg.get("observer_model", {}))
+
+    source_spec = source_cfg.get("observer_model_source")
+    if isinstance(source_spec, dict):
+        selected = (
+            source_spec.get(profile)
+            or source_spec.get(str(profile).strip().lower())
+            or source_spec.get("qcar_real")
+            or next(iter(source_spec.values()), None)
+        )
+    else:
+        selected = source_spec
+
+    nested_path = _resolve_relative_path(selected, source_path.parent)
+    if nested_path is None:
+        return {}
+    nested_cfg = _load_yaml_mapping(nested_path)
+    return _observer_model_to_model_cfg(nested_cfg.get("observer_model", {}))
+
+
+def _apply_observer_model_source(config: Dict[str, Any], config_path: Path) -> Dict[str, Any]:
+    """Merge calibration-derived longitudinal model data into training model config."""
+    model_cfg = copy.deepcopy(config.get("model", {}) or {})
+    source_spec = (
+        config.get("observer_model_source")
+        or model_cfg.pop("observer_model_source", None)
+    )
+    if source_spec is None:
+        config["model"] = model_cfg
+        return config
+
+    profile = str(
+        config.get("observer_model_profile")
+        or model_cfg.pop("observer_model_profile", "qcar_real")
+    ).strip() or "qcar_real"
+    source_path = _resolve_relative_path(source_spec, config_path.parent)
+    if source_path is None:
+        config["model"] = model_cfg
+        return config
+
+    calibrated_cfg = _load_observer_model_source_config(
+        source_path,
+        profile=profile,
+    )
+    if calibrated_cfg:
+        merged_model_cfg = copy.deepcopy(model_cfg)
+        for key, value in calibrated_cfg.items():
+            current = merged_model_cfg.get(key)
+            if current in (None, "", [], {}):
+                merged_model_cfg[key] = copy.deepcopy(value)
+        config["model"] = merged_model_cfg
+        config["observer_model_profile"] = profile
+    else:
+        config["model"] = model_cfg
+    return config
+
+
 def load_training_config(config_path: Path) -> Dict[str, Any]:
     """Load YAML training config and merge it with defaults."""
     config = json.loads(json.dumps(DEFAULT_CONFIG))
@@ -149,6 +268,7 @@ def load_training_config(config_path: Path) -> Dict[str, Any]:
     if not isinstance(loaded, dict):
         raise SystemExit(f"Training config must be a YAML mapping: {config_path}")
     config = _deep_update(config, loaded)
+    config = _apply_observer_model_source(config, config_path)
     config["augmentation"] = _normalize_attack_mode(config.get("augmentation", {}))
     return config
 
@@ -215,6 +335,12 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         default=str(train_cfg.get("gps_dropout_xy_mode", "freeze")),
         choices=["freeze", "dead_reckon"],
         help="When measurement-source=rebuilt, how z[x,y] behaves while GPS position is invalid",
+    )
+    parser.add_argument(
+        "--initial-state-source",
+        default=str(train_cfg.get("initial_state_source", "target")),
+        choices=["target", "measurement"],
+        help="Initial state for each training window: target avoids leaking corrupted z[0] into x0",
     )
     parser.add_argument(
         "--sequence-length", type=int, default=int(train_cfg.get("sequence_length", 20))
@@ -350,6 +476,12 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         help="Weight for temporal Kalman gain smoothness regularization",
     )
     parser.add_argument(
+        "--lambda-meas-mask-smooth",
+        type=float,
+        default=float(loss_cfg.get("lambda_meas_mask_smooth", 0.0)),
+        help="Weight for temporal measurement-mask smoothness regularization",
+    )
+    parser.add_argument(
         "--max-branches-attacked",
         type=int,
         default=int(aug_cfg.get("max_branches_attacked", 1)),
@@ -404,9 +536,34 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         help="Wheelbase L used by the analytical kinematic predictor to match QCarEKF",
     )
     parser.add_argument(
+        "--longitudinal-model",
+        default=str(model_cfg.get("longitudinal_model", "")),
+        choices=[
+            "",
+            "tachometer",
+            "imu_acceleration",
+            "velocity_lag",
+            "velocity_lag_lookup",
+            "velocity_command",
+            "acceleration_lag",
+            "simple_acceleration",
+            "coupled_kinematic",
+        ],
+        help="Calibration-backed longitudinal model for the analytical predictor",
+    )
+    parser.add_argument(
         "--kin-velocity-model",
         default=str(model_cfg.get("kin_velocity_model", "tachometer")),
-        choices=["tachometer", "imu_acceleration", "velocity_lag", "velocity_command", "simple_acceleration"],
+        choices=[
+            "tachometer",
+            "imu_acceleration",
+            "velocity_lag",
+            "velocity_lag_lookup",
+            "velocity_command",
+            "acceleration_lag",
+            "simple_acceleration",
+            "coupled_kinematic",
+        ],
         help="Longitudinal model for kinematic predictor velocity; non-tachometer modes create velocity innovation",
     )
     parser.add_argument(
@@ -492,13 +649,60 @@ def create_parser(config: Dict[str, Any], default_config_path: Path) -> argparse
         "--normalize-updater-features",
         action="store_true",
         default=bool(model_cfg.get("normalize_updater_features", True)),
-        help="L2-normalize updater feature groups before the mask/GRU to reduce gain jitter",
+        help="Enable updater feature normalization before the mask/GRU",
     )
     parser.add_argument(
         "--no-normalize-updater-features",
         dest="normalize_updater_features",
         action="store_false",
         help="Disable updater feature normalization",
+    )
+    parser.add_argument(
+        "--updater-feature-normalization",
+        default=str(
+            model_cfg.get(
+                "updater_feature_normalization",
+                "l2" if bool(model_cfg.get("normalize_updater_features", True)) else "none",
+            )
+        ),
+        choices=["l2", "scale", "none"],
+        help="Updater feature normalization: l2 is legacy, scale preserves anomaly magnitude",
+    )
+    parser.add_argument(
+        "--updater-state-scale",
+        type=float,
+        nargs=4,
+        default=list(model_cfg.get("updater_state_scale", [0.25, 0.25, 0.20, 0.50])),
+        metavar=("SX", "SY", "STH", "SV"),
+        help="Physical scales for dx when updater-feature-normalization=scale",
+    )
+    parser.add_argument(
+        "--updater-measurement-scale",
+        type=float,
+        nargs=4,
+        default=list(model_cfg.get("updater_measurement_scale", [0.25, 0.25, 0.20, 0.50])),
+        metavar=("ZX", "ZY", "ZTH", "ZV"),
+        help="Physical scales for innovation features when updater-feature-normalization=scale",
+    )
+    parser.add_argument(
+        "--gain-smoothing-alpha",
+        type=float,
+        default=float(model_cfg.get("gain_smoothing_alpha", 1.0)),
+        help="EMA alpha for learned Kalman gains inside the recurrent update; 1 disables smoothing",
+    )
+    parser.add_argument(
+        "--meas-mask-smoothing-alpha",
+        type=float,
+        default=float(model_cfg.get("meas_mask_smoothing_alpha", 1.0)),
+        help="EMA alpha for learned measurement masks; 1 disables smoothing",
+    )
+    parser.add_argument(
+        "--max-update-correction",
+        type=float,
+        nargs=4,
+        default=list(model_cfg.get("max_update_correction", [])),
+        metavar=("CX", "CY", "CTH", "CV"),
+        help="Optional per-step correction clamp [x,y,theta,v]; omit or use <=0 to disable a channel",
     )
     parser.add_argument(
         "--grad-clip",
@@ -709,6 +913,40 @@ def summarize_batch_metrics(batch_metrics: List[Dict[str, float]]) -> Dict[str, 
     return summary
 
 
+def print_training_data_diagnostics(
+    raw: Dict[str, np.ndarray],
+    z_seq: np.ndarray,
+    x_gt: np.ndarray,
+) -> None:
+    """Print high-signal checks for common RKNet dataset failure modes."""
+    if z_seq.size == 0 or x_gt.size == 0:
+        return
+    z_flat = z_seq.reshape(-1, z_seq.shape[-1])
+    x_flat = x_gt.reshape(-1, x_gt.shape[-1])
+    dim = min(z_flat.shape[-1], x_flat.shape[-1], 4)
+    residual = z_flat[:, :dim] - x_flat[:, :dim]
+    if dim > 2:
+        residual[:, 2] = np.arctan2(np.sin(residual[:, 2]), np.cos(residual[:, 2]))
+    rmse = np.sqrt(np.mean(residual**2, axis=0))
+    gps_valid = raw.get("gps_valid")
+    gps_ratio = float(np.mean(np.asarray(gps_valid).reshape(-1) > 0.5)) if gps_valid is not None else float("nan")
+    print(
+        "Dataset check   : "
+        f"gps_valid={gps_ratio:.3f}, "
+        f"z-target rmse={np.round(rmse, 4).tolist()}"
+    )
+    if dim >= 4 and float(np.max(rmse[:4])) < 1.0e-3:
+        print(
+            "  Warning: z is almost identical to the target state. "
+            "The updater can learn pass-through behavior instead of a real EKF-like correction."
+        )
+    if np.isfinite(gps_ratio) and gps_ratio < 0.10:
+        print(
+            "  Warning: GPS-valid samples are sparse. Position-mask learning may be weak "
+            "unless attack augmentation supplies enough valid GPS corruptions."
+        )
+
+
 def build_train_val_subsets(
     dataset: Dataset,
     val_split: float,
@@ -803,6 +1041,7 @@ def evaluate(
                 meas_mask_logits=out.get("meas_mask_logits"),
                 meas_attack_labels=meas_attack_labels,
                 lambda_meas_mask=lambda_meas_mask,
+                lambda_meas_mask_smooth=lambda_meas_mask_smooth,
                 K=out.get("K"),
                 lambda_gain=lambda_gain,
                 lambda_gain_smooth=lambda_gain_smooth,
@@ -956,10 +1195,11 @@ def main() -> None:
 
     device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else args.device if args.device != "auto" else "cpu")
     pin_memory = bool(args.pin_memory and device.type == "cuda")
+    model_cfg = config.get("model", {}) or {}
     merged = merge_recorded_datasets(args.datasets)
     heading_kinematic_config = {
         "wheelbase": args.kin_wheelbase,
-        "velocity_model": args.kin_velocity_model,
+        "velocity_model": args.longitudinal_model or args.kin_velocity_model,
         "velocity_tau": args.kin_velocity_tau,
         "velocity_gain": args.kin_velocity_gain,
         "max_velocity": args.kin_max_velocity,
@@ -973,7 +1213,9 @@ def main() -> None:
         heading_rebuild_mode=args.heading_rebuild_mode,
         heading_kinematic_config=heading_kinematic_config,
         gps_dropout_xy_mode=args.gps_dropout_xy_mode,
+        initial_state_source=args.initial_state_source,
     )
+    print_training_data_diagnostics(raw, z_seq, x_gt)
     dataset = SlidingWindowDataset(raw, z_seq, x_gt, x0, dt_seq)
     train_subset, val_subset = build_train_val_subsets(
         dataset,
@@ -1006,6 +1248,15 @@ def main() -> None:
         dt=float(merged.get("metadata", {}).get("dt_mean", 0.02) or 0.02),
         predictor_mode=args.predictor_mode,
         kin_wheelbase=args.kin_wheelbase,
+        longitudinal_model=args.longitudinal_model,
+        velocity_lag_model=copy.deepcopy(model_cfg.get("velocity_lag_model", {}) or {}),
+        velocity_lag_lookup_model=copy.deepcopy(
+            model_cfg.get("velocity_lag_lookup_model", {}) or {}
+        ),
+        accel_lag_model=copy.deepcopy(model_cfg.get("accel_lag_model", {}) or {}),
+        coupled_kinematic_model=copy.deepcopy(
+            model_cfg.get("coupled_kinematic_model", {}) or {}
+        ),
         kin_velocity_model=args.kin_velocity_model,
         kin_velocity_tau=args.kin_velocity_tau,
         kin_velocity_gain=args.kin_velocity_gain,
@@ -1020,10 +1271,21 @@ def main() -> None:
         update_mask_init_bias=args.update_mask_init_bias,
         apply_meas_mask_to_innovation=args.apply_meas_mask_to_innovation,
         normalize_updater_features=args.normalize_updater_features,
+        updater_feature_normalization=args.updater_feature_normalization,
+        updater_state_scale=tuple(args.updater_state_scale),
+        updater_measurement_scale=tuple(args.updater_measurement_scale),
+        gain_smoothing_alpha=args.gain_smoothing_alpha,
+        meas_mask_smoothing_alpha=args.meas_mask_smoothing_alpha,
+        max_update_correction=tuple(args.max_update_correction or ()),
     )
     model = RobustStateNet(cfg).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = None  # created at each phase start
+    if len(args.state_weights) != cfg.state_dim:
+        raise SystemExit(
+            f"state_weights must have {cfg.state_dim} values for state [x,y,theta,v], "
+            f"got {len(args.state_weights)}"
+        )
     state_weights = torch.tensor(args.state_weights, device=device, dtype=torch.float32)
     phase_patience = {
         1: max(int(args.early_stop_phase_a_patience), 0),
@@ -1055,15 +1317,24 @@ def main() -> None:
     if args.measurement_source == "rebuilt":
         print(f"Heading rebuild : {args.heading_rebuild_mode}")
         print(f"GPS dropout x/y : {args.gps_dropout_xy_mode}")
+    print(f"Initial x0      : {args.initial_state_source}")
     print(f"Dataset windows : {len(dataset)}, batch_size={args.batch_size}, batches/epoch={len(train_loader)}")
     print(f"Val split mode  : {args.val_split_mode}")
 
     print(f"\nPredictor mode : {args.predictor_mode}")
     if args.predictor_mode == "kinematic":
+        active_longitudinal_model = args.longitudinal_model or args.kin_velocity_model
+        print(f"  Longitudinal model: {active_longitudinal_model}")
         print("  → Kinematic predictor: QCar bicycle model (no learnable parameters in prediction step).")
         print("  → Phase A (Pretrain Predictor) is automatically skipped.")
         print("  → Prediction mask supervision (lambda_mask) is automatically skipped (pred_mask=None).")
         args.phase_a_epochs = 0
+    print(
+        "Updater features: "
+        f"normalization={args.updater_feature_normalization}, "
+        f"K alpha={args.gain_smoothing_alpha:.3f}, "
+        f"mask alpha={args.meas_mask_smoothing_alpha:.3f}"
+    )
 
     total_epochs = args.phase_a_epochs + args.phase_b_epochs + args.phase_c_epochs
     phase_bounds = get_phase_bounds(args)
@@ -1307,6 +1578,7 @@ def main() -> None:
                         heading_rebuild_mode=args.heading_rebuild_mode,
                         heading_kinematic_config=heading_kinematic_config,
                         gps_dropout_xy_mode=args.gps_dropout_xy_mode,
+                        initial_state_source=args.initial_state_source,
                     )
                     dataset_c = SlidingWindowDataset(raw_c, z_seq_c, x_gt_c, x0_c, dt_seq_c)
                     train_subset_c, val_subset_c = build_train_val_subsets(
@@ -1429,6 +1701,7 @@ def main() -> None:
                 meas_mask_logits=out.get("meas_mask_logits"),
                 meas_attack_labels=meas_attack_labels,
                 lambda_meas_mask=lam_meas_mask,
+                lambda_meas_mask_smooth=args.lambda_meas_mask_smooth,
                 K=out.get("K"),
                 lambda_gain=args.lambda_gain,
                 lambda_gain_smooth=args.lambda_gain_smooth,
@@ -1458,6 +1731,7 @@ def main() -> None:
             for key in (
                 "loss_mask",
                 "loss_meas_mask",
+                "loss_meas_mask_smooth",
                 "loss_gain",
                 "loss_gain_smooth",
                 "meas_mask_attacked_mean",

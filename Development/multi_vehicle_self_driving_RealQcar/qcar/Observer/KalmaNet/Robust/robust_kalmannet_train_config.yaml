@@ -10,7 +10,7 @@
 # Recorded .npz files used to build the training windows.
 # Replace these example paths with your real datasets.
 datasets:
-  - "datasets/robust_kalmannet_dataset_V0_20260427_162806.npz"
+  # - "datasets/robust_kalmannet_dataset_V0_20260427_162806.npz"
   - "datasets/robust_kalmannet_dataset_V0_20260417_094048.npz"
   # - "datasets/robust_kalmannet_dataset_V0_20260401_170829.npz"
   # - "datasets/robust_kalmannet_dataset_V0_20260405_180043.npz"
@@ -19,6 +19,12 @@ datasets:
 # Base checkpoint output path, relative to this folder.
 # The trainer also writes best/final variants derived from this name.
 output: "models/robust_kalmannet.pt"
+
+# Pull the same calibration-backed longitudinal predictor used by runtime.
+# Profile should match the vehicle used to record the dataset: qcar_real,
+# qcar_sim, or limo.
+observer_model_source: "../../config_local_estimators.yaml"
+observer_model_profile: "qcar_real"
 
 training:
   # Phase A: predictor-only training. Updater is frozen.
@@ -52,11 +58,15 @@ training:
   gps_dropout_xy_mode: "freeze"
 
   # Sliding-window length for Phases A/B.
-  sequence_length: 20
+  sequence_length: 50
 
   # Optional longer sequence for Phase C.
   # Helps reduce autoregressive drift mismatch.
-  sequence_length_phase_c: 50
+  sequence_length_phase_c: 80
+
+  # Use the clean EKF/reference state as x0 during supervised training.
+  # This avoids leaking a corrupted first measurement into every attack window.
+  initial_state_source: "target"
   
 
   # Sliding-window step. 1 means maximum overlap.
@@ -145,11 +155,14 @@ loss:
 
   # Weight for Kalman gain magnitude regularization.
   # Penalizes large gains to encourage conservative corrections.
-  lambda_gain: 0.003
+  lambda_gain: 0.01
 
   # Weight for temporal Kalman gain smoothness.
   # Penalizes frame-to-frame gain chatter without forcing all gains to zero.
-  lambda_gain_smooth: 0.001
+  lambda_gain_smooth: 0.02
+
+  # Weight for temporal measurement-mask smoothness.
+  lambda_meas_mask_smooth: 0.01
 
 augmentation:
   # true  = apply synthetic attacks during training.
@@ -168,23 +181,23 @@ augmentation:
   # Single control for the augmentation curriculum:
   # measurement_only = attack updater measurements/GPS only
   # mixed            = use both raw-branch and measurement attacks
-  attack_mode: measurement_only
+  attack_mode: mixed
 
   # Probability that one sample receives raw-branch augmentation in mixed mode.
-  attack_prob: 0.35
+  attack_prob: 0.25
   branch_attack_probs:
     imu: 0.45
     steer: 0.20
     wheel: 0.35
   # When a raw branch is attacked in mixed mode, optionally mirror that corruption
   # into the derived measurement channels.
-  meas_attack_prob: 0.7
+  meas_attack_prob: 0.35
 
   # Independent probability of directly attacking updater measurement channels [psi, v].
   direct_meas_attack_prob: 0.35
 
   # Maximum number of sensor branches attacked at once.
-  max_branches_attacked: 2
+  max_branches_attacked: 1
 
   # Independent GPS-position augmentation for the measurement vector z=[x,y,psi,v].
   # These attacks teach the update mask/gain to avoid snapping to bad GPS x/y.
@@ -202,8 +215,10 @@ model:
   # kinematic = analytical QCar bicycle model
   #
   # Note: if set to kinematic, Phase A is skipped automatically.
-  predictor_mode: "nn"
+  predictor_mode: "kinematic"
   kin_wheelbase: 0.2
+  # Filled from observer_model_source above unless explicitly overridden here.
+  longitudinal_model: ""
   # Longitudinal velocity prediction used by the analytical kinematic predictor.
   # tachometer        = legacy behavior, v_next = motor_tach, so z_v innovation is near zero.
   # imu_acceleration  = v_next = v_prev + ax * dt.
@@ -227,7 +242,12 @@ model:
   update_mask_init_bias: 0.0
   apply_meas_mask_to_innovation: true
 
-  # Normalize updater feature groups before the measurement-mask MLP and GRU.
-  # This follows the original KalmanNet idea of normalized gain features and
-  # usually reduces gain jitter / noisy output.
+  # Scale-based normalization keeps physical anomaly magnitude. L2/unit
+  # normalization can magnify tiny clean-case innovations into noisy directions.
   normalize_updater_features: true
+  updater_feature_normalization: "scale"
+  updater_state_scale: [0.25, 0.25, 0.20, 0.50]
+  updater_measurement_scale: [0.25, 0.25, 0.20, 0.50]
+  gain_smoothing_alpha: 0.35
+  meas_mask_smoothing_alpha: 0.35
+  max_update_correction: [0.35, 0.35, 0.35, 0.80]

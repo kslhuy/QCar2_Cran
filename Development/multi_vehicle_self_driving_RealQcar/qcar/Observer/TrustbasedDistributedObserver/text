@@ -1,0 +1,178 @@
+Here is a simpler proof sketch you can use in slides.
+
+**Idea**
+The observer error is bounded because every bad effect enters through a bounded “input” term. The observer has two stabilizing mechanisms:
+
+1. The local observer corrects itself using real sensor data.
+2. The distributed observer contracts disagreement through consensus, while trust weights reduce the influence of suspicious vehicles.
+
+**Step 1: Local observer error**
+Define
+\[
+e_0^{(j)}(t)=\hat{x}_0^{(j)}(t)-x_j(t).
+\]
+
+The local observer error satisfies
+\[
+e_0^{(j)}(t+1)
+=
+(A_b-F_jC_b)e_0^{(j)}(t)+d_0^{(j)}(t).
+\]
+
+If \(A_b-F_jC_b\) is stable, then
+\[
+\|e_0^{(j)}(t)\|
+\le
+\text{decaying initial error}
++
+\text{bounded local mismatch}.
+\]
+
+So the local observer error is bounded by:
+\[
+\boxed{
+\text{local error}
+\le
+\text{initial error}
++
+\text{sensor/model mismatch}
+}
+\]
+
+**Step 2: Distributed observer error**
+Define
+\[
+e_i^{(j)}(t)=\hat{x}_i^{(j)}(t)-x_j(t).
+\]
+
+The distributed observer error has the form
+\[
+e_{\mathrm{DO}}^{(j)}(t+1)
+=
+\text{contractive consensus part}
++
+\text{local anchor error}
++
+\text{model/input mismatch}.
+\]
+
+More explicitly,
+\[
+e_{\mathrm{DO}}^{(j)}(t+1)
+=
+A_{\mathrm{DO}}^{(j)}(t)e_{\mathrm{DO}}^{(j)}(t)
++
+B_0^{(j)}(t)e_0^{(j)}(t)
++
+d_{\mathrm{DO}}^{(j)}(t).
+\]
+
+If
+\[
+\|A_{\mathrm{DO}}^{(j)}(t)\|\le \alpha<1,
+\]
+then the consensus part contracts.
+
+So:
+\[
+\boxed{
+\text{distributed error}
+\le
+\text{decaying old distributed error}
++
+\text{local observer error}
++
+\text{model/input mismatch}
+}
+\]
+
+**Step 3: Where consensus mismatch appears**
+The consensus correction is
+\[
+\sum_{l\in\mathcal N_i}
+w_{il}^{(j)}
+\big(\hat{x}_l^{(j)}-\hat{x}_i^{(j)}\big).
+\]
+
+Since
+\[
+\hat{x}_l^{(j)}-\hat{x}_i^{(j)}
+=
+e_l^{(j)}-e_i^{(j)},
+\]
+the consensus mismatch is only a weighted difference between observer errors.
+
+Because the weights satisfy
+\[
+w_{i0}^{(j)}+\sum_{l\in\mathcal N_i}w_{il}^{(j)}\le 1,
+\]
+the consensus term cannot grow without bound.
+
+Simple message:
+\[
+\boxed{
+\text{consensus mismatch is bounded by weighted estimation disagreement}
+}
+\]
+
+**Step 4: Attack attenuation by trust weights**
+Assume a malicious neighbor sends
+\[
+\tilde{x}_l^{(j)}
+=
+\hat{x}_l^{(j)}+a_l^{(j)}.
+\]
+
+Then the attack enters the observer as
+\[
+\sum_{l\in\mathcal M_i}
+w_{il}^{(j)}a_l^{(j)}.
+\]
+
+Therefore,
+\[
+\left\|
+\sum_{l\in\mathcal M_i}
+w_{il}^{(j)}a_l^{(j)}
+\right\|
+\le
+\left(\sum_{l\in\mathcal M_i}w_{il}^{(j)}\right)
+\bar a.
+\]
+
+This is the key trust argument:
+\[
+\boxed{
+\text{attack impact}
+\le
+\text{malicious weight mass}
+\times
+\text{attack size}
+}
+\]
+
+When trust decreases,
+\[
+w_{il}^{(j)} \downarrow,
+\]
+so the attack effect decreases.
+
+**Final Bound**
+You can summarize everything as:
+\[
+\boxed{
+\|e_{\mathrm{DO}}^{(j)}(t)\|
+\le
+\text{decaying initial error}
++
+\text{local estimation mismatch}
++
+\text{model/input mismatch}
++
+\text{weighted attack effect}
+}
+\]
+
+Or in words:
+
+“The distributed estimation error remains bounded because the consensus dynamics are contractive, the local observer error is bounded, model mismatch is bounded, and malicious data is multiplied by trust weights. When trust drops, the malicious weight becomes small, so the attack influence is attenuated.”
