@@ -13,6 +13,25 @@ import numpy as np
 DEFAULT_LOG_DIR = Path(__file__).resolve().parent / "logs" / "comparator"
 DEFAULT_EXPORT_DIR = Path(__file__).resolve().parent / "logs" / "plots"
 DEFAULT_RECOVERY_WINDOW_SECONDS = 2.0
+UPDATE_CHANNELS = ("x", "y", "psi", "v")
+MEAS_MASK_COLUMNS = ("meas_mask_x", "meas_mask_y", "meas_mask_psi", "meas_mask_v")
+INNOVATION_COLUMNS = ("innov_x", "innov_y", "innov_psi", "innov_v")
+MASKED_INNOVATION_COLUMNS = (
+    "masked_innov_x",
+    "masked_innov_y",
+    "masked_innov_psi",
+    "masked_innov_v",
+)
+K_DIAG_COLUMNS = ("K_x_x", "K_y_y", "K_psi_psi", "K_v_v")
+EKF_K_DIAG_COLUMNS = ("ekf_K_x_x", "ekf_K_y_y", "ekf_K_psi_psi", "ekf_K_v_v")
+K_EFFECTIVE_DIAG_COLUMNS = ("K_eff_x_x", "K_eff_y_y", "K_eff_psi_psi", "K_eff_v_v")
+DIAG_UPDATE_COLUMNS = ("diag_update_x", "diag_update_y", "diag_update_psi", "diag_update_v")
+UPDATE_CORRECTION_COLUMNS = (
+    "update_corr_x",
+    "update_corr_y",
+    "update_corr_psi",
+    "update_corr_v",
+)
 
 
 def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
@@ -65,6 +84,7 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
         "ekf_ref_heading_error",
         "ekf_ref_velocity_error",
         "gps_valid",
+        "real_gps_valid",
         "gps_hold_valid",
         "gps_age_sec",
         "sensor_failure_active",
@@ -97,12 +117,32 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
         "meas_mask_psi",
         "meas_mask_v",
         "meas_mask_w",
+        "masked_innov_x",
+        "masked_innov_y",
+        "masked_innov_psi",
+        "masked_innov_v",
+        "masked_innov_w",
         "K_norm",
         "K_x_x",
         "K_y_y",
         "K_psi_psi",
         "K_v_v",
         "K_w_w",
+        "K_eff_x_x",
+        "K_eff_y_y",
+        "K_eff_psi_psi",
+        "K_eff_v_v",
+        "K_eff_w_w",
+        "diag_update_x",
+        "diag_update_y",
+        "diag_update_psi",
+        "diag_update_v",
+        "diag_update_w",
+        "update_corr_x",
+        "update_corr_y",
+        "update_corr_psi",
+        "update_corr_v",
+        "update_corr_w",
         "ekf_K_norm",
         "ekf_K_x_x",
         "ekf_K_y_y",
@@ -127,6 +167,24 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
                 values.append(np.nan)
         data[column] = np.asarray(values, dtype=np.float64)
 
+    inferred_real_gps_valid = data["gps_valid"].copy()
+    gps_valid_flip = data.get("sensor_failure_gps_valid_flip")
+    if gps_valid_flip is not None:
+        flip_mask = (
+            np.isfinite(inferred_real_gps_valid)
+            & np.isfinite(gps_valid_flip)
+            & (gps_valid_flip > 0.5)
+        )
+        inferred_real_gps_valid[flip_mask] = 1.0 - (
+            inferred_real_gps_valid[flip_mask] > 0.5
+        ).astype(np.float64)
+    logged_real_gps_valid = data["real_gps_valid"].copy()
+    missing_real_gps_valid = ~np.isfinite(logged_real_gps_valid)
+    logged_real_gps_valid[missing_real_gps_valid] = inferred_real_gps_valid[
+        missing_real_gps_valid
+    ]
+    data["real_gps_valid"] = logged_real_gps_valid
+
     if "innov_psi" in data:
         data["innov_psi"] = np.arctan2(np.sin(data["innov_psi"]), np.cos(data["innov_psi"]))
 
@@ -142,6 +200,30 @@ def _load_csv_rows(filepath: Path) -> Dict[str, np.ndarray]:
     )
     data["sensor_failure_gps_type"] = np.asarray(
         [row.get("sensor_failure_gps_type", "") for row in rows], dtype=object
+    )
+    data["K_matrix_json"] = np.asarray(
+        [row.get("K_matrix_json", "") for row in rows], dtype=object
+    )
+    data["K_effective_matrix_json"] = np.asarray(
+        [row.get("K_effective_matrix_json", "") for row in rows], dtype=object
+    )
+    data["ekf_K_matrix_json"] = np.asarray(
+        [row.get("ekf_K_matrix_json", "") for row in rows], dtype=object
+    )
+    data["ekf_K_measurement_labels"] = np.asarray(
+        [row.get("ekf_K_measurement_labels", "") for row in rows], dtype=object
+    )
+    data["meas_mask_json"] = np.asarray(
+        [row.get("meas_mask_json", "") for row in rows], dtype=object
+    )
+    data["innovation_json"] = np.asarray(
+        [row.get("innovation_json", "") for row in rows], dtype=object
+    )
+    data["masked_innovation_json"] = np.asarray(
+        [row.get("masked_innovation_json", "") for row in rows], dtype=object
+    )
+    data["update_correction_json"] = np.asarray(
+        [row.get("update_correction_json", "") for row in rows], dtype=object
     )
     return data
 
@@ -227,6 +309,184 @@ def _masked_series_stats(
         mask_bool = np.broadcast_to(mask_bool, values.shape)
     masked = np.where(mask_bool, values, np.nan)
     return _series_stats(masked, absolute=absolute)
+
+
+def _stack_columns(data: Dict[str, np.ndarray], columns: Tuple[str, ...]) -> np.ndarray:
+    sample_count = int(len(data.get("timestamp", np.asarray([], dtype=np.float64))))
+    if sample_count == 0:
+        return np.empty((0, len(columns)), dtype=np.float64)
+    return np.column_stack(
+        [
+            np.asarray(
+                data.get(column, np.full(sample_count, np.nan, dtype=np.float64)),
+                dtype=np.float64,
+            )
+            for column in columns
+        ]
+    )
+
+
+def _prefer_logged(logged: np.ndarray, fallback: np.ndarray) -> np.ndarray:
+    result = np.asarray(logged, dtype=np.float64).copy()
+    fallback_arr = np.asarray(fallback, dtype=np.float64)
+    if result.shape != fallback_arr.shape:
+        return fallback_arr.copy()
+    missing = ~np.isfinite(result)
+    result[missing] = fallback_arr[missing]
+    return result
+
+
+def _derive_update_diagnostics(data: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    meas_mask = _stack_columns(data, MEAS_MASK_COLUMNS)
+    innovation = _stack_columns(data, INNOVATION_COLUMNS)
+    masked_innovation = _prefer_logged(
+        _stack_columns(data, MASKED_INNOVATION_COLUMNS),
+        meas_mask * innovation,
+    )
+    rknet_k_diag = _stack_columns(data, K_DIAG_COLUMNS)
+    ekf_k_diag = _stack_columns(data, EKF_K_DIAG_COLUMNS)
+    effective_k_diag = _prefer_logged(
+        _stack_columns(data, K_EFFECTIVE_DIAG_COLUMNS),
+        rknet_k_diag * meas_mask,
+    )
+    diag_update = _prefer_logged(
+        _stack_columns(data, DIAG_UPDATE_COLUMNS),
+        effective_k_diag * innovation,
+    )
+    update_correction = _prefer_logged(
+        _stack_columns(data, UPDATE_CORRECTION_COLUMNS),
+        diag_update,
+    )
+    return {
+        "meas_mask": meas_mask,
+        "innovation": innovation,
+        "masked_innovation": masked_innovation,
+        "rknet_K_diag": rknet_k_diag,
+        "ekf_K_diag": ekf_k_diag,
+        "rknet_effective_K_diag": effective_k_diag,
+        "diag_update_contribution": diag_update,
+        "update_correction": update_correction,
+    }
+
+
+def _phase_names(phase_masks: Dict[str, np.ndarray], sample_count: int) -> np.ndarray:
+    names = np.full(sample_count, "clean", dtype="<U8")
+    if sample_count == 0:
+        return names
+    if "attack" in phase_masks:
+        names[np.asarray(phase_masks["attack"], dtype=bool)] = "attack"
+    if "recovery" in phase_masks:
+        names[np.asarray(phase_masks["recovery"], dtype=bool)] = "recovery"
+    return names
+
+
+def _phase_ids(phase_names: np.ndarray) -> np.ndarray:
+    mapping = {"clean": 0, "attack": 1, "recovery": 2}
+    return np.asarray([mapping.get(str(name), -1) for name in phase_names], dtype=np.int16)
+
+
+def _json_matrix_series(
+    values: np.ndarray,
+    sample_count: int,
+    default_shape: Tuple[int, int] = (4, 4),
+) -> np.ndarray:
+    parsed: List[Optional[np.ndarray]] = []
+    max_rows, max_cols = default_shape
+    for raw in values:
+        text = str(raw).strip()
+        matrix: Optional[np.ndarray] = None
+        if text:
+            try:
+                def none_to_nan(item: Any) -> Any:
+                    if isinstance(item, list):
+                        return [none_to_nan(child) for child in item]
+                    return np.nan if item is None else item
+
+                loaded = none_to_nan(json.loads(text))
+                candidate = np.asarray(loaded, dtype=np.float64)
+                if candidate.ndim == 1:
+                    candidate = candidate.reshape(1, -1)
+                if candidate.ndim == 2 and candidate.size > 0:
+                    matrix = candidate
+                    max_rows = max(max_rows, int(candidate.shape[0]))
+                    max_cols = max(max_cols, int(candidate.shape[1]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                matrix = None
+        parsed.append(matrix)
+
+    result = np.full((sample_count, max_rows, max_cols), np.nan, dtype=np.float64)
+    for idx, matrix in enumerate(parsed[:sample_count]):
+        if matrix is None:
+            continue
+        rows = min(max_rows, int(matrix.shape[0]))
+        cols = min(max_cols, int(matrix.shape[1]))
+        result[idx, :rows, :cols] = matrix[:rows, :cols]
+    return result
+
+
+def _diag_matrix_series(diagonal: np.ndarray) -> np.ndarray:
+    sample_count, channel_count = diagonal.shape
+    matrices = np.full((sample_count, channel_count, channel_count), np.nan, dtype=np.float64)
+    row_idx = np.arange(channel_count)
+    matrices[:, row_idx, row_idx] = diagonal
+    return matrices
+
+
+def _build_update_diagnostic_summary(
+    diagnostics: Dict[str, np.ndarray],
+    phase_masks: Dict[str, np.ndarray],
+) -> Dict[str, Any]:
+    groups = [
+        ("meas_mask", diagnostics["meas_mask"], False),
+        ("rknet_K_diag", diagnostics["rknet_K_diag"], False),
+        ("rknet_effective_K_diag", diagnostics["rknet_effective_K_diag"], False),
+        ("ekf_K_diag", diagnostics["ekf_K_diag"], False),
+        ("abs_innovation", diagnostics["innovation"], True),
+        ("abs_masked_innovation", diagnostics["masked_innovation"], True),
+        ("abs_diag_update_contribution", diagnostics["diag_update_contribution"], True),
+        ("abs_update_correction", diagnostics["update_correction"], True),
+    ]
+    phase_metrics: Dict[str, Any] = {}
+    for phase_name in ("clean", "attack", "recovery"):
+        mask = phase_masks.get(phase_name)
+        if mask is None:
+            continue
+        phase_metrics[phase_name] = {}
+        for group_name, values, absolute in groups:
+            phase_metrics[phase_name][group_name] = {
+                channel: _masked_series_stats(values[:, idx], mask, absolute=absolute)
+                for idx, channel in enumerate(UPDATE_CHANNELS)
+            }
+
+    def _mean_for(matrix: np.ndarray, phase_name: str, idx: int) -> Optional[float]:
+        stats = _masked_series_stats(matrix[:, idx], phase_masks.get(phase_name, np.zeros(matrix.shape[0])))
+        return stats.get("mean")
+
+    deltas: Dict[str, Dict[str, Optional[float]]] = {}
+    for group_name, matrix in (
+        ("meas_mask", diagnostics["meas_mask"]),
+        ("rknet_effective_K_diag", diagnostics["rknet_effective_K_diag"]),
+    ):
+        deltas[group_name] = {}
+        for idx, channel in enumerate(UPDATE_CHANNELS):
+            clean_mean = _mean_for(matrix, "clean", idx)
+            attack_mean = _mean_for(matrix, "attack", idx)
+            if clean_mean is None or attack_mean is None:
+                deltas[group_name][f"{channel}_attack_minus_clean_mean"] = None
+            else:
+                deltas[group_name][f"{channel}_attack_minus_clean_mean"] = _safe_float(
+                    attack_mean - clean_mean
+                )
+
+    return {
+        "formula": (
+            "x_upd = x_pred + K @ (measurement_mask * innovation); older CSVs "
+            "without full K/update fields use diagonal fallback diagnostics"
+        ),
+        "channel_order": list(UPDATE_CHANNELS),
+        "phase_metrics": phase_metrics,
+        "attack_minus_clean_mean": deltas,
+    }
 
 
 def _build_phase_masks(
@@ -365,6 +625,7 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
     model_used = int(np.count_nonzero(data["source"] == "model"))
     fallback_used = int(np.count_nonzero(data["source"] == "fallback"))
     gps_valid_count = int(np.count_nonzero(data["gps_valid"] > 0.5))
+    real_gps_valid_count = int(np.count_nonzero(data["real_gps_valid"] > 0.5))
     gps_hold_valid_count = int(np.count_nonzero(data["gps_hold_valid"] > 0.5))
     attack_active_count = int(np.count_nonzero(data.get("sensor_failure_active", np.zeros(total_samples)) > 0.5))
     mask_imu_active_count = int(np.count_nonzero(data["mask_imu_active"] > 0.5))
@@ -393,9 +654,10 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
         "K_psi_psi_error": data["K_psi_psi"] - data["ekf_K_psi_psi"],
         "K_v_v_error": data["K_v_v"] - data["ekf_K_v_v"],
     }
+    update_diagnostics = _derive_update_diagnostics(data)
 
     summary: Dict[str, Any] = {
-        "schema_version": 4,
+        "schema_version": 6,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_csv": str(filepath),
         "log_name": filepath.name,
@@ -407,6 +669,7 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
             "model_samples": model_used,
             "fallback_samples": fallback_used,
             "gps_valid_samples": gps_valid_count,
+            "real_gps_valid_samples": real_gps_valid_count,
             "gps_hold_valid_samples": gps_hold_valid_count,
             "attack_active_samples": attack_active_count,
             "mask_imu_active_samples": mask_imu_active_count,
@@ -418,6 +681,9 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
             "model_ratio": _safe_float(model_used / total_samples) if total_samples else None,
             "fallback_ratio": _safe_float(fallback_used / total_samples) if total_samples else None,
             "gps_valid_ratio": _safe_float(gps_valid_count / total_samples) if total_samples else None,
+            "real_gps_valid_ratio": _safe_float(real_gps_valid_count / total_samples)
+            if total_samples
+            else None,
             "gps_hold_valid_ratio": _safe_float(gps_hold_valid_count / total_samples) if total_samples else None,
             "attack_active_ratio": _safe_float(attack_active_count / total_samples) if total_samples else None,
             "mask_imu_active_ratio": _safe_float(mask_imu_active_count / total_samples)
@@ -562,6 +828,22 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
             "K_y_y_error": _series_stats(gain_errors["K_y_y_error"]),
             "K_psi_psi_error": _series_stats(gain_errors["K_psi_psi_error"]),
             "K_v_v_error": _series_stats(gain_errors["K_v_v_error"]),
+            "K_eff_x_x": _series_stats(update_diagnostics["rknet_effective_K_diag"][:, 0]),
+            "K_eff_y_y": _series_stats(update_diagnostics["rknet_effective_K_diag"][:, 1]),
+            "K_eff_psi_psi": _series_stats(update_diagnostics["rknet_effective_K_diag"][:, 2]),
+            "K_eff_v_v": _series_stats(update_diagnostics["rknet_effective_K_diag"][:, 3]),
+            "diag_update_x_abs": _series_stats(
+                update_diagnostics["diag_update_contribution"][:, 0], absolute=True
+            ),
+            "diag_update_y_abs": _series_stats(
+                update_diagnostics["diag_update_contribution"][:, 1], absolute=True
+            ),
+            "diag_update_psi_abs": _series_stats(
+                update_diagnostics["diag_update_contribution"][:, 2], absolute=True
+            ),
+            "diag_update_v_abs": _series_stats(
+                update_diagnostics["diag_update_contribution"][:, 3], absolute=True
+            ),
             "steering": _series_stats(data["steering"]),
             "throttle": _series_stats(data["throttle"]),
             "mask_selected_score": _series_stats(data["mask_selected_score"]),
@@ -579,6 +861,8 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
             "meas_mask_psi": _series_stats(data["meas_mask_psi"]),
             "meas_mask_v": _series_stats(data["meas_mask_v"]),
             "meas_mask_w": _series_stats(data["meas_mask_w"]),
+            "gps_valid": _series_stats(data["gps_valid"]),
+            "real_gps_valid": _series_stats(data["real_gps_valid"]),
             "gps_age_sec": _series_stats(data["gps_age_sec"]),
             "sensor_failure_intensity": _series_stats(data["sensor_failure_intensity"]),
             "sensor_failure_imu_intensity": _series_stats(data["sensor_failure_imu_intensity"]),
@@ -657,10 +941,20 @@ def _compute_summary(filepath: Path, data: Dict[str, np.ndarray], time_axis: np.
             "finite_mask_score_samples": _finite_count(data["mask_selected_score"]),
         },
     }
+    summary["update_diagnostics"] = _build_update_diagnostic_summary(
+        update_diagnostics,
+        phase_masks,
+    )
     return summary
 
 
-def _add_attack_spans(ax: plt.Axes, attack_segments: List[Dict[str, Any]]) -> None:
+def _add_attack_spans(
+    ax: plt.Axes,
+    attack_segments: List[Dict[str, Any]],
+    *,
+    label_first: bool = False,
+    annotate: bool = False,
+) -> None:
     if not attack_segments:
         return
     colors = [
@@ -682,7 +976,27 @@ def _add_attack_spans(ax: plt.Axes, attack_segments: List[Dict[str, Any]]) -> No
             color=colors[idx % len(colors)],
             alpha=0.08,
             linewidth=0.0,
+            label="attack interval" if label_first and idx == 0 else None,
         )
+        if annotate:
+            label = str(segment.get("dominant_type", "attack")).strip() or "attack"
+            center = 0.5 * (float(start) + float(end))
+            ax.text(
+                center,
+                0.98,
+                label,
+                transform=ax.get_xaxis_transform(),
+                ha="center",
+                va="top",
+                fontsize=7,
+                color="tab:red",
+                bbox={
+                    "boxstyle": "round,pad=0.18",
+                    "facecolor": "white",
+                    "alpha": 0.65,
+                    "edgecolor": "none",
+                },
+            )
 
 
 def _plot_attack_figure(
@@ -691,7 +1005,7 @@ def _plot_attack_figure(
     time_axis: np.ndarray,
 ) -> plt.Figure:
     fig, axes = plt.subplots(3, 1, figsize=(13, 9), sharex=True)
-    fig.suptitle(f"RKNet Comparator (3/3): Attack Timeline {filepath.name}", fontsize=14)
+    fig.suptitle(f"RKNet Comparator (4/4): Attack Timeline {filepath.name}", fontsize=14)
 
     attack_segments = _extract_attack_segments(data, time_axis)
     has_attack_metadata = (
@@ -824,11 +1138,227 @@ def _plot_attack_figure(
     return fig
 
 
+def _export_diagnostic_files(
+    filepath: Path,
+    data: Dict[str, np.ndarray],
+    time_axis: np.ndarray,
+    export_dir: Path,
+) -> Dict[str, str]:
+    base_name = filepath.stem
+    sample_count = int(time_axis.size)
+    diagnostics = _derive_update_diagnostics(data)
+    phase_masks = _build_phase_masks(data, time_axis)
+    phase_name = _phase_names(phase_masks, sample_count)
+    attack_labels = np.asarray(
+        [
+            _attack_type_label(branch_types, gps_type)
+            for branch_types, gps_type in zip(
+                data.get("sensor_failure_branch_types", np.asarray([], dtype=object)),
+                data.get("sensor_failure_gps_type", np.asarray([], dtype=object)),
+            )
+        ],
+        dtype="<U64",
+    )
+    if attack_labels.size != sample_count:
+        attack_labels = np.full(sample_count, "none", dtype="<U64")
+
+    rknet_k_matrix = _json_matrix_series(
+        data.get("K_matrix_json", np.asarray([], dtype=object)),
+        sample_count,
+    )
+    if not np.any(np.isfinite(rknet_k_matrix)):
+        rknet_k_matrix = _diag_matrix_series(diagnostics["rknet_K_diag"])
+
+    rknet_k_effective_matrix = _json_matrix_series(
+        data.get("K_effective_matrix_json", np.asarray([], dtype=object)),
+        sample_count,
+    )
+    if not np.any(np.isfinite(rknet_k_effective_matrix)):
+        if np.any(np.isfinite(rknet_k_matrix)):
+            rknet_k_effective_matrix = rknet_k_matrix.copy()
+            usable_cols = min(rknet_k_effective_matrix.shape[2], diagnostics["meas_mask"].shape[1])
+            rknet_k_effective_matrix[:, :, :usable_cols] *= diagnostics["meas_mask"][
+                :, np.newaxis, :usable_cols
+            ]
+        else:
+            rknet_k_effective_matrix = _diag_matrix_series(
+                diagnostics["rknet_effective_K_diag"]
+            )
+
+    ekf_k_matrix = _json_matrix_series(
+        data.get("ekf_K_matrix_json", np.asarray([], dtype=object)),
+        sample_count,
+    )
+    if not np.any(np.isfinite(ekf_k_matrix)):
+        ekf_k_matrix = _diag_matrix_series(diagnostics["ekf_K_diag"])
+
+    attack_segments = _extract_attack_segments(data, time_axis)
+    attack_segment_times = np.asarray(
+        [
+            [
+                segment.get("start_time_seconds", np.nan),
+                segment.get("end_time_seconds", np.nan),
+                segment.get("peak_time_seconds", np.nan),
+                segment.get("peak_intensity", np.nan),
+            ]
+            for segment in attack_segments
+        ],
+        dtype=np.float64,
+    ).reshape(-1, 4)
+    attack_segment_indices = np.asarray(
+        [
+            [
+                segment.get("start_index", -1),
+                segment.get("end_index", -1),
+            ]
+            for segment in attack_segments
+        ],
+        dtype=np.int64,
+    ).reshape(-1, 2)
+
+    npz_path = export_dir / f"{base_name}_diagnostics.npz"
+    np.savez_compressed(
+        npz_path,
+        time_seconds=time_axis,
+        timestamp=data["timestamp"],
+        tick=data["tick"],
+        phase_id=_phase_ids(phase_name),
+        phase_name=phase_name,
+        attack_label=attack_labels,
+        attack_active=data["sensor_failure_active"],
+        attack_intensity=data["sensor_failure_intensity"],
+        gps_valid=data["gps_valid"],
+        real_gps_valid=data["real_gps_valid"],
+        gps_hold_valid=data["gps_hold_valid"],
+        gps_age_sec=data["gps_age_sec"],
+        attack_segment_times=attack_segment_times,
+        attack_segment_indices=attack_segment_indices,
+        meas_mask=diagnostics["meas_mask"],
+        innovation=diagnostics["innovation"],
+        masked_innovation=diagnostics["masked_innovation"],
+        rknet_K_diag=diagnostics["rknet_K_diag"],
+        rknet_effective_K_diag=diagnostics["rknet_effective_K_diag"],
+        ekf_K_diag=diagnostics["ekf_K_diag"],
+        diag_update_contribution=diagnostics["diag_update_contribution"],
+        update_correction=diagnostics["update_correction"],
+        rknet_K_matrix=rknet_k_matrix,
+        rknet_effective_K_matrix=rknet_k_effective_matrix,
+        ekf_K_matrix=ekf_k_matrix,
+        robust_state=np.column_stack(
+            [data["robust_x"], data["robust_y"], data["robust_theta"], data["robust_v"]]
+        ),
+        ekf_state=np.column_stack([data["ekf_x"], data["ekf_y"], data["ekf_theta"], data["ekf_v"]]),
+        reference_state=np.column_stack([data["ref_x"], data["ref_y"], data["ref_theta"], data["ref_v"]]),
+        robust_ref_delta=np.column_stack(
+            [data["robust_ref_dx"], data["robust_ref_dy"], data["robust_ref_dtheta"], data["robust_ref_dv"]]
+        ),
+        ekf_ref_delta=np.column_stack(
+            [data["ekf_ref_dx"], data["ekf_ref_dy"], data["ekf_ref_dtheta"], data["ekf_ref_dv"]]
+        ),
+        controls=np.column_stack([data["steering"], data["throttle"], data["motor_tach"]]),
+    )
+
+    csv_path = export_dir / f"{base_name}_diagnostics.csv"
+    fieldnames = [
+        "time_seconds",
+        "timestamp",
+        "tick",
+        "phase",
+        "attack_active",
+        "attack_label",
+        "sensor_failure_intensity",
+        "sensor_failure_gps_valid_flip",
+        "gps_valid",
+        "real_gps_valid",
+        "gps_hold_valid",
+        "gps_age_sec",
+        "robust_ref_position_error_norm",
+        "ekf_ref_position_error_norm",
+        "robust_ref_heading_error_abs",
+        "ekf_ref_heading_error_abs",
+        "robust_ref_velocity_error_abs",
+        "ekf_ref_velocity_error_abs",
+    ]
+    for channel in UPDATE_CHANNELS:
+        fieldnames.extend(
+            [
+                f"mask_{channel}",
+                f"innov_{channel}",
+                f"masked_innov_{channel}",
+                f"rknet_K_{channel}",
+                f"rknet_K_eff_{channel}",
+                f"ekf_K_{channel}",
+                f"diag_update_{channel}",
+                f"update_corr_{channel}",
+            ]
+        )
+
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for idx in range(sample_count):
+            row: Dict[str, Any] = {
+                "time_seconds": float(time_axis[idx]),
+                "timestamp": float(data["timestamp"][idx]),
+                "tick": float(data["tick"][idx]),
+                "phase": str(phase_name[idx]),
+                "attack_active": int(data["sensor_failure_active"][idx] > 0.5),
+                "attack_label": str(attack_labels[idx]),
+                "sensor_failure_intensity": float(data["sensor_failure_intensity"][idx]),
+                "sensor_failure_gps_valid_flip": float(
+                    data["sensor_failure_gps_valid_flip"][idx]
+                ),
+                "gps_valid": int(data["gps_valid"][idx] > 0.5),
+                "real_gps_valid": int(data["real_gps_valid"][idx] > 0.5),
+                "gps_hold_valid": int(data["gps_hold_valid"][idx] > 0.5),
+                "gps_age_sec": float(data["gps_age_sec"][idx]),
+                "robust_ref_position_error_norm": float(data["robust_ref_position_error_norm"][idx]),
+                "ekf_ref_position_error_norm": float(data["ekf_ref_position_error_norm"][idx]),
+                "robust_ref_heading_error_abs": float(abs(data["robust_ref_heading_error"][idx])),
+                "ekf_ref_heading_error_abs": float(abs(data["ekf_ref_heading_error"][idx])),
+                "robust_ref_velocity_error_abs": float(abs(data["robust_ref_velocity_error"][idx])),
+                "ekf_ref_velocity_error_abs": float(abs(data["ekf_ref_velocity_error"][idx])),
+            }
+            for channel_index, channel in enumerate(UPDATE_CHANNELS):
+                row.update(
+                    {
+                        f"mask_{channel}": float(diagnostics["meas_mask"][idx, channel_index]),
+                        f"innov_{channel}": float(diagnostics["innovation"][idx, channel_index]),
+                        f"masked_innov_{channel}": float(
+                            diagnostics["masked_innovation"][idx, channel_index]
+                        ),
+                        f"rknet_K_{channel}": float(
+                            diagnostics["rknet_K_diag"][idx, channel_index]
+                        ),
+                        f"rknet_K_eff_{channel}": float(
+                            diagnostics["rknet_effective_K_diag"][idx, channel_index]
+                        ),
+                        f"ekf_K_{channel}": float(
+                            diagnostics["ekf_K_diag"][idx, channel_index]
+                        ),
+                        f"diag_update_{channel}": float(
+                            diagnostics["diag_update_contribution"][idx, channel_index]
+                        ),
+                        f"update_corr_{channel}": float(
+                            diagnostics["update_correction"][idx, channel_index]
+                        ),
+                    }
+                )
+            writer.writerow(row)
+
+    return {
+        "diagnostics_npz": str(npz_path),
+        "diagnostics_csv": str(csv_path),
+    }
+
+
 def _export_artifacts(
     filepath: Path,
     figures: Dict[str, plt.Figure],
     summary: Dict[str, Any],
     output_dir: Optional[str],
+    data: Dict[str, np.ndarray],
+    time_axis: np.ndarray,
 ) -> Dict[str, str]:
     export_dir = Path(output_dir).expanduser() if output_dir else DEFAULT_EXPORT_DIR
     if not export_dir.is_absolute():
@@ -842,6 +1372,7 @@ def _export_artifacts(
         figure_path = export_dir / f"{base_name}_{fig_key}.png"
         figure.savefig(figure_path, dpi=180, bbox_inches="tight")
         artifacts[f"{fig_key}_png"] = str(figure_path)
+    artifacts.update(_export_diagnostic_files(filepath, data, time_axis, export_dir))
     artifacts["summary_json"] = str(json_path)
     summary["artifacts"] = dict(artifacts)
 
@@ -882,9 +1413,10 @@ def main() -> None:
         "K_v_v": data["K_v_v"] - data["ekf_K_v_v"],
         "K_norm": data["K_norm"] - data["ekf_K_norm"],
     }
+    update_diagnostics = _derive_update_diagnostics(data)
 
     fig1, axes1 = plt.subplots(4, 2, figsize=(13, 11))
-    fig1.suptitle(f"RKNet Comparator (1/2): {filepath.name}", fontsize=14)
+    fig1.suptitle(f"RKNet Comparator (1/4): {filepath.name}", fontsize=14)
 
     # Figure 1, Row 0: Kalman Gain Diagonals side by side
     ax = axes1[0, 0]
@@ -895,6 +1427,7 @@ def main() -> None:
     ax.set_title("RKNet Gain Diagonals")
     ax.set_xlabel("time [s]")
     ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
     ax.legend(fontsize=8)
 
     ax = axes1[0, 1]
@@ -905,6 +1438,7 @@ def main() -> None:
     ax.set_title("EKF Gain Diagonals")
     ax.set_xlabel("time [s]")
     ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
     ax.legend(fontsize=8)
 
     # Figure 1, Row 1: Gain Error and Mask Decision Summary
@@ -918,6 +1452,7 @@ def main() -> None:
     ax.set_title("Gain Error (RKNet - EKF)")
     ax.set_xlabel("time [s]")
     ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
     ax.legend(fontsize=8)
 
     ax = axes1[1, 1]
@@ -935,6 +1470,7 @@ def main() -> None:
     ax.set_yticklabels(["imu", "steer", "wheel"])
     ax.set_ylim(-0.2, 2.2)
     ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
     ax1_twin = ax.twinx()
     ax1_twin.plot(
         time_axis,
@@ -957,6 +1493,7 @@ def main() -> None:
     ax.set_title("Signed State Differences (Robust - EKF)")
     ax.set_xlabel("time [s]")
     ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
     ax.legend(fontsize=8)
 
     ax = axes1[2, 1]
@@ -970,6 +1507,7 @@ def main() -> None:
     ax.set_xlabel("time [s]")
     ax.set_ylim(-0.1, 1.1)
     ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
     ax.legend(fontsize=8)
 
     # Figure 1, Row 3: Measurement Update Masks and Innovations
@@ -982,6 +1520,7 @@ def main() -> None:
     ax.set_xlabel("time [s]")
     ax.set_ylim(-0.05, 1.05)
     ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments, label_first=True, annotate=True)
     ax.legend(fontsize=8)
 
     ax = axes1[3, 1]
@@ -992,13 +1531,14 @@ def main() -> None:
     ax.set_title("Innovations (z - H*x_pred)")
     ax.set_xlabel("time [s]")
     ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
     ax.legend(fontsize=8)
 
     fig1.tight_layout(rect=[0, 0, 1, 0.97])
 
     # --------------- FIGURE 2 ---------------
     fig2, axes2 = plt.subplots(4, 2, figsize=(12, 10))
-    fig2.suptitle(f"RKNet Comparator (2/2): {filepath.name}", fontsize=14)
+    fig2.suptitle(f"RKNet Comparator (2/4): {filepath.name}", fontsize=14)
 
     # Figure 2, Row 0: Trajectory and Errors
     ax = axes2[0, 0]
@@ -1190,6 +1730,92 @@ def main() -> None:
     _add_attack_spans(ax, attack_segments)
 
     fig2.tight_layout(rect=[0, 0, 1, 0.97])
+
+    # --------------- FIGURE 3 ---------------
+    fig4, axes4 = plt.subplots(4, 1, figsize=(13, 11), sharex=True)
+    fig4.suptitle(f"RKNet Comparator (3/4): Update Diagnostics {filepath.name}", fontsize=14)
+
+    channel_colors = {
+        "x": "tab:blue",
+        "y": "tab:orange",
+        "psi": "tab:green",
+        "v": "tab:red",
+    }
+
+    ax = axes4[0]
+    for idx, channel in enumerate(UPDATE_CHANNELS):
+        ax.plot(
+            time_axis,
+            update_diagnostics["meas_mask"][:, idx],
+            label=f"mask {channel}",
+            linewidth=1.2,
+            color=channel_colors[channel],
+        )
+    ax.set_title("Measurement Update Mask with Attack Windows")
+    ax.set_ylabel("mask")
+    ax.set_ylim(-0.05, 1.05)
+    ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments, label_first=True, annotate=True)
+    ax.legend(fontsize=8, ncol=3, loc="lower right")
+
+    ax = axes4[1]
+    for idx, channel in enumerate(UPDATE_CHANNELS):
+        ax.plot(
+            time_axis,
+            update_diagnostics["rknet_effective_K_diag"][:, idx],
+            label=f"RKNet K_eff({channel})",
+            linewidth=1.2,
+            color=channel_colors[channel],
+        )
+        ax.plot(
+            time_axis,
+            update_diagnostics["ekf_K_diag"][:, idx],
+            label=f"EKF K({channel})",
+            linewidth=1.0,
+            linestyle=":",
+            color=channel_colors[channel],
+            alpha=0.7,
+        )
+    ax.set_title("Effective Diagonal Gain: RKNet K_diag * mask vs EKF K_diag")
+    ax.set_ylabel("gain")
+    ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
+    ax.legend(fontsize=7, ncol=4, loc="upper right")
+
+    ax = axes4[2]
+    for idx, channel in enumerate(UPDATE_CHANNELS):
+        ax.plot(
+            time_axis,
+            update_diagnostics["masked_innovation"][:, idx],
+            label=f"masked innov {channel}",
+            linewidth=1.1,
+            color=channel_colors[channel],
+        )
+    ax.axhline(0.0, color="black", linewidth=0.8, linestyle=":", alpha=0.7)
+    ax.set_title("Masked Innovation (measurement mask * innovation)")
+    ax.set_ylabel("masked innovation")
+    ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
+    ax.legend(fontsize=8, ncol=4, loc="upper right")
+
+    ax = axes4[3]
+    for idx, channel in enumerate(UPDATE_CHANNELS):
+        ax.plot(
+            time_axis,
+            update_diagnostics["update_correction"][:, idx],
+            label=f"update corr {channel}",
+            linewidth=1.1,
+            color=channel_colors[channel],
+        )
+    ax.axhline(0.0, color="black", linewidth=0.8, linestyle=":", alpha=0.7)
+    ax.set_title("State Update Correction (full if logged; diagonal fallback for older CSV)")
+    ax.set_xlabel("time [s]")
+    ax.set_ylabel("correction")
+    ax.grid(True, alpha=0.3)
+    _add_attack_spans(ax, attack_segments)
+    ax.legend(fontsize=8, ncol=4, loc="upper right")
+    fig4.tight_layout(rect=[0, 0, 1, 0.97])
+
     fig3 = _plot_attack_figure(filepath, data, time_axis)
     summary = _compute_summary(filepath, data, time_axis)
     artifacts = _export_artifacts(
@@ -1197,15 +1823,21 @@ def main() -> None:
         {
             "figure1": fig1,
             "figure2": fig2,
+            "update_diagnostics": fig4,
             "attacks": fig3,
         },
         summary,
         args.output_dir,
+        data,
+        time_axis,
     )
 
     print(f"Saved figure 1: {artifacts['figure1_png']}")
     print(f"Saved figure 2: {artifacts['figure2_png']}")
+    print(f"Saved update diagnostics figure: {artifacts['update_diagnostics_png']}")
     print(f"Saved attack figure: {artifacts['attacks_png']}")
+    print(f"Saved diagnostics CSV: {artifacts['diagnostics_csv']}")
+    print(f"Saved diagnostics NPZ: {artifacts['diagnostics_npz']}")
     print(f"Saved summary: {artifacts['summary_json']}")
 
     if not args.no_show:
@@ -1213,6 +1845,7 @@ def main() -> None:
     else:
         plt.close(fig1)
         plt.close(fig2)
+        plt.close(fig4)
         plt.close(fig3)
 
 

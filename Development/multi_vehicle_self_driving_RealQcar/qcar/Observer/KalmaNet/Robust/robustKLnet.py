@@ -6,6 +6,7 @@ import copy
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import importlib
+import json
 from pathlib import Path
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -2165,6 +2166,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     "throttle",
                     "gyro_z",
                     "gps_valid",
+                    "real_gps_valid",
                     "gps_hold_valid",
                     "gps_age_sec",
                     "sensor_failure_active",
@@ -2234,22 +2236,50 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     "meas_mask_psi",
                     "meas_mask_v",
                     "meas_mask_w",
+                    "meas_mask_json",
+                    "masked_innov_x",
+                    "masked_innov_y",
+                    "masked_innov_psi",
+                    "masked_innov_v",
+                    "masked_innov_w",
+                    "masked_innovation_json",
                     "K_norm",
                     "K_x_x",
                     "K_y_y",
                     "K_psi_psi",
                     "K_v_v",
                     "K_w_w",
+                    "K_eff_x_x",
+                    "K_eff_y_y",
+                    "K_eff_psi_psi",
+                    "K_eff_v_v",
+                    "K_eff_w_w",
+                    "diag_update_x",
+                    "diag_update_y",
+                    "diag_update_psi",
+                    "diag_update_v",
+                    "diag_update_w",
+                    "update_corr_x",
+                    "update_corr_y",
+                    "update_corr_psi",
+                    "update_corr_v",
+                    "update_corr_w",
+                    "update_correction_json",
+                    "K_matrix_json",
+                    "K_effective_matrix_json",
                     "ekf_K_norm",
                     "ekf_K_x_x",
                     "ekf_K_y_y",
                     "ekf_K_psi_psi",
                     "ekf_K_v_v",
+                    "ekf_K_matrix_json",
+                    "ekf_K_measurement_labels",
                     "innov_x",
                     "innov_y",
                     "innov_psi",
                     "innov_v",
                     "innov_w",
+                    "innovation_json",
                     "pred_x",
                     "pred_y",
                 ],
@@ -2299,6 +2329,13 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             gps_data
             and gps_data.get("position_valid", gps_data.get("fresh", gps_data.get("valid", False)))
         )
+        real_gps_valid_raw = comparison.get("real_gps_valid", int(gps_valid))
+        try:
+            real_gps_valid = bool(
+                np.isfinite(float(real_gps_valid_raw)) and float(real_gps_valid_raw) > 0.5
+            )
+        except (TypeError, ValueError):
+            real_gps_valid = bool(real_gps_valid_raw)
         gps_hold_valid = bool(gps_data and gps_data.get("hold_valid", gps_data.get("valid", False)))
         gps_age_sec = float(gps_data.get("age_sec", np.nan)) if gps_data else np.nan
         robust_state = comparison["robust_state"]
@@ -2318,6 +2355,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     "throttle": float(throttle),
                     "gyro_z": float(gyro_z),
                     "gps_valid": int(gps_valid),
+                    "real_gps_valid": int(real_gps_valid),
                     "gps_hold_valid": int(gps_hold_valid),
                     "gps_age_sec": float(gps_age_sec),
                     "sensor_failure_active": int(comparison.get("sensor_failure_active", 0)),
@@ -2399,22 +2437,58 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     "meas_mask_psi": float(comparison.get("meas_mask_psi", np.nan)),
                     "meas_mask_v": float(comparison.get("meas_mask_v", np.nan)),
                     "meas_mask_w": float(comparison.get("meas_mask_w", np.nan)),
+                    "meas_mask_json": str(comparison.get("meas_mask_json", "")),
+                    "masked_innov_x": float(comparison.get("masked_innov_x", np.nan)),
+                    "masked_innov_y": float(comparison.get("masked_innov_y", np.nan)),
+                    "masked_innov_psi": float(comparison.get("masked_innov_psi", np.nan)),
+                    "masked_innov_v": float(comparison.get("masked_innov_v", np.nan)),
+                    "masked_innov_w": float(comparison.get("masked_innov_w", np.nan)),
+                    "masked_innovation_json": str(
+                        comparison.get("masked_innovation_json", "")
+                    ),
                     "K_norm": float(comparison.get("K_norm", np.nan)),
                     "K_x_x": float(comparison.get("K_x_x", np.nan)),
                     "K_y_y": float(comparison.get("K_y_y", np.nan)),
                     "K_psi_psi": float(comparison.get("K_psi_psi", np.nan)),
                     "K_v_v": float(comparison.get("K_v_v", np.nan)),
                     "K_w_w": float(comparison.get("K_w_w", np.nan)),
+                    "K_eff_x_x": float(comparison.get("K_eff_x_x", np.nan)),
+                    "K_eff_y_y": float(comparison.get("K_eff_y_y", np.nan)),
+                    "K_eff_psi_psi": float(comparison.get("K_eff_psi_psi", np.nan)),
+                    "K_eff_v_v": float(comparison.get("K_eff_v_v", np.nan)),
+                    "K_eff_w_w": float(comparison.get("K_eff_w_w", np.nan)),
+                    "diag_update_x": float(comparison.get("diag_update_x", np.nan)),
+                    "diag_update_y": float(comparison.get("diag_update_y", np.nan)),
+                    "diag_update_psi": float(comparison.get("diag_update_psi", np.nan)),
+                    "diag_update_v": float(comparison.get("diag_update_v", np.nan)),
+                    "diag_update_w": float(comparison.get("diag_update_w", np.nan)),
+                    "update_corr_x": float(comparison.get("update_corr_x", np.nan)),
+                    "update_corr_y": float(comparison.get("update_corr_y", np.nan)),
+                    "update_corr_psi": float(comparison.get("update_corr_psi", np.nan)),
+                    "update_corr_v": float(comparison.get("update_corr_v", np.nan)),
+                    "update_corr_w": float(comparison.get("update_corr_w", np.nan)),
+                    "update_correction_json": str(
+                        comparison.get("update_correction_json", "")
+                    ),
+                    "K_matrix_json": str(comparison.get("K_matrix_json", "")),
+                    "K_effective_matrix_json": str(
+                        comparison.get("K_effective_matrix_json", "")
+                    ),
                     "ekf_K_norm": float(comparison.get("ekf_K_norm", np.nan)),
                     "ekf_K_x_x": float(comparison.get("ekf_K_x_x", np.nan)),
                     "ekf_K_y_y": float(comparison.get("ekf_K_y_y", np.nan)),
                     "ekf_K_psi_psi": float(comparison.get("ekf_K_psi_psi", np.nan)),
                     "ekf_K_v_v": float(comparison.get("ekf_K_v_v", np.nan)),
+                    "ekf_K_matrix_json": str(comparison.get("ekf_K_matrix_json", "")),
+                    "ekf_K_measurement_labels": str(
+                        comparison.get("ekf_K_measurement_labels", "")
+                    ),
                     "innov_x": float(comparison.get("innov_x", np.nan)),
                     "innov_y": float(comparison.get("innov_y", np.nan)),
                     "innov_psi": float(comparison.get("innov_psi", np.nan)),
                     "innov_v": float(comparison.get("innov_v", np.nan)),
                     "innov_w": float(comparison.get("innov_w", np.nan)),
+                    "innovation_json": str(comparison.get("innovation_json", "")),
                     "pred_x": float(comparison.get("pred_x", np.nan)),
                     "pred_y": float(comparison.get("pred_y", np.nan)),
                 }
@@ -2461,6 +2535,45 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         if column_index < 0 or column_index >= gain_matrix.shape[1]:
             return float("nan")
         return float(gain_matrix[state_index, column_index])
+
+    @staticmethod
+    def _vector_entry(vector: Optional[np.ndarray], index: int) -> float:
+        if vector is None:
+            return float("nan")
+        array = np.asarray(vector, dtype=np.float64).reshape(-1)
+        if index < 0 or index >= array.size:
+            return float("nan")
+        return float(array[index])
+
+    @staticmethod
+    def _matrix_entry(matrix: Optional[np.ndarray], row: int, column: int) -> float:
+        if matrix is None:
+            return float("nan")
+        array = np.asarray(matrix, dtype=np.float64)
+        if array.ndim != 2:
+            return float("nan")
+        if row < 0 or row >= array.shape[0] or column < 0 or column >= array.shape[1]:
+            return float("nan")
+        return float(array[row, column])
+
+    @staticmethod
+    def _json_numeric_array(value: Optional[np.ndarray]) -> str:
+        if value is None:
+            return ""
+        array = np.asarray(value, dtype=np.float64)
+        if array.size == 0:
+            return ""
+
+        def convert(item: Any) -> Any:
+            if isinstance(item, list):
+                return [convert(child) for child in item]
+            try:
+                number = float(item)
+            except (TypeError, ValueError):
+                return None
+            return number if np.isfinite(number) else None
+
+        return json.dumps(convert(array.tolist()), separators=(",", ":"))
 
     def _append_sample(self, raw_sample: Dict[str, float], measurement: np.ndarray, dt: float) -> None:
         for key, value in raw_sample.items():
@@ -2949,17 +3062,61 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         else:
             innovation = np.full(self.model_cfg.meas_dim, np.nan)
 
+        meas_mask_vector = (
+            np.asarray(self.last_meas_mask, dtype=np.float64).reshape(-1)
+            if self.last_meas_mask is not None
+            else np.full(self.model_cfg.meas_dim, np.nan, dtype=np.float64)
+        )
+        K_matrix = (
+            np.asarray(self.last_K, dtype=np.float64)
+            if self.last_K is not None
+            else None
+        )
+        masked_innovation = np.full_like(innovation, np.nan, dtype=np.float64)
+        usable_meas = min(masked_innovation.size, meas_mask_vector.size, innovation.size)
+        if usable_meas > 0:
+            masked_innovation[:usable_meas] = (
+                np.asarray(innovation[:usable_meas], dtype=np.float64)
+                * meas_mask_vector[:usable_meas]
+            )
+
+        K_effective_matrix = None
+        update_correction = np.full(self.model_cfg.state_dim, np.nan, dtype=np.float64)
+        if K_matrix is not None and K_matrix.ndim == 2:
+            K_effective_matrix = np.asarray(K_matrix, dtype=np.float64).copy()
+            usable_cols = min(K_effective_matrix.shape[1], meas_mask_vector.size)
+            if usable_cols > 0:
+                K_effective_matrix[:, :usable_cols] *= meas_mask_vector[:usable_cols].reshape(
+                    1, -1
+                )
+            usable_cols = min(K_matrix.shape[1], masked_innovation.size)
+            if usable_cols > 0:
+                correction = K_matrix[:, :usable_cols] @ masked_innovation[:usable_cols]
+                update_correction[: min(update_correction.size, correction.size)] = correction[
+                    : min(update_correction.size, correction.size)
+                ]
+
+        diag_update = np.full(self.model_cfg.state_dim, np.nan, dtype=np.float64)
+        for idx in range(min(self.model_cfg.state_dim, masked_innovation.size)):
+            diag_gain = self._matrix_entry(K_effective_matrix, idx, idx)
+            if np.isfinite(diag_gain) and np.isfinite(innovation[idx]):
+                diag_update[idx] = diag_gain * innovation[idx]
+
         if reference_state is not None:
             robust_ref_delta = self._comparison_delta_vector(robust_state, reference_state)
             ekf_ref_delta = self._comparison_delta_vector(ekf_state, reference_state)
         else:
             robust_ref_delta = np.full(4, np.nan, dtype=np.float64)
             ekf_ref_delta = np.full(4, np.nan, dtype=np.float64)
+        real_gps_valid = gps_position_is_valid(
+            clean_gps_data if clean_gps_data is not None else gps_data
+        )
 
         comparison = {
             "tick": self.update_count,
             "timestamp": time.time(),
             "robust_source": "model",
+            "real_gps_valid": int(real_gps_valid),
             "robust_state": robust_state.copy(),
             "ekf_state": ekf_state.copy(),
             "reference_state": reference_state.copy() if reference_state is not None else None,
@@ -2981,21 +3138,37 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             "ekf_ref_position_error_norm": float(np.linalg.norm(ekf_ref_delta[:2])),
             "ekf_ref_heading_error": float(ekf_ref_delta[2]),
             "ekf_ref_velocity_error": float(ekf_ref_delta[3]),
-            "meas_mask_x": self.last_meas_mask[0] if self.last_meas_mask is not None else np.nan,
-            "meas_mask_y": self.last_meas_mask[1] if self.last_meas_mask is not None else np.nan,
-            "meas_mask_psi": self.last_meas_mask[2] if self.last_meas_mask is not None else np.nan,
-            "meas_mask_v": self.last_meas_mask[3] if self.last_meas_mask is not None else np.nan,
-            "meas_mask_w": self.last_meas_mask[4]
-            if self.last_meas_mask is not None and self.last_meas_mask.size > 4
-            else np.nan,
-            "K_norm": float(np.linalg.norm(self.last_K)) if self.last_K is not None else np.nan,
-            "K_x_x": self.last_K[0, 0] if self.last_K is not None else np.nan,
-            "K_y_y": self.last_K[1, 1] if self.last_K is not None else np.nan,
-            "K_psi_psi": self.last_K[2, 2] if self.last_K is not None else np.nan,
-            "K_v_v": self.last_K[3, 3] if self.last_K is not None else np.nan,
-            "K_w_w": self.last_K[4, 4]
-            if self.last_K is not None and self.last_K.shape[0] > 4 and self.last_K.shape[1] > 4
-            else np.nan,
+            "meas_mask_x": self._vector_entry(meas_mask_vector, 0),
+            "meas_mask_y": self._vector_entry(meas_mask_vector, 1),
+            "meas_mask_psi": self._vector_entry(meas_mask_vector, 2),
+            "meas_mask_v": self._vector_entry(meas_mask_vector, 3),
+            "meas_mask_w": self._vector_entry(meas_mask_vector, 4),
+            "masked_innov_x": self._vector_entry(masked_innovation, 0),
+            "masked_innov_y": self._vector_entry(masked_innovation, 1),
+            "masked_innov_psi": self._vector_entry(masked_innovation, 2),
+            "masked_innov_v": self._vector_entry(masked_innovation, 3),
+            "masked_innov_w": self._vector_entry(masked_innovation, 4),
+            "K_norm": float(np.linalg.norm(K_matrix)) if K_matrix is not None else np.nan,
+            "K_x_x": self._matrix_entry(K_matrix, 0, 0),
+            "K_y_y": self._matrix_entry(K_matrix, 1, 1),
+            "K_psi_psi": self._matrix_entry(K_matrix, 2, 2),
+            "K_v_v": self._matrix_entry(K_matrix, 3, 3),
+            "K_w_w": self._matrix_entry(K_matrix, 4, 4),
+            "K_eff_x_x": self._matrix_entry(K_effective_matrix, 0, 0),
+            "K_eff_y_y": self._matrix_entry(K_effective_matrix, 1, 1),
+            "K_eff_psi_psi": self._matrix_entry(K_effective_matrix, 2, 2),
+            "K_eff_v_v": self._matrix_entry(K_effective_matrix, 3, 3),
+            "K_eff_w_w": self._matrix_entry(K_effective_matrix, 4, 4),
+            "diag_update_x": self._vector_entry(diag_update, 0),
+            "diag_update_y": self._vector_entry(diag_update, 1),
+            "diag_update_psi": self._vector_entry(diag_update, 2),
+            "diag_update_v": self._vector_entry(diag_update, 3),
+            "diag_update_w": self._vector_entry(diag_update, 4),
+            "update_corr_x": self._vector_entry(update_correction, 0),
+            "update_corr_y": self._vector_entry(update_correction, 1),
+            "update_corr_psi": self._vector_entry(update_correction, 2),
+            "update_corr_v": self._vector_entry(update_correction, 3),
+            "update_corr_w": self._vector_entry(update_correction, 4),
             "ekf_K_norm": float(np.linalg.norm(ekf_gain_matrix))
             if ekf_gain_matrix is not None
             else np.nan,
@@ -3005,13 +3178,21 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                 ekf_gain_matrix, ekf_gain_labels, 2, "theta"
             ),
             "ekf_K_v_v": self._gain_entry_by_label(ekf_gain_matrix, ekf_gain_labels, 3, "v"),
-            "innov_x": innovation[0],
-            "innov_y": innovation[1],
-            "innov_psi": innovation[2],
-            "innov_v": innovation[3],
-            "innov_w": innovation[4] if innovation.size > 4 else np.nan,
+            "innov_x": self._vector_entry(innovation, 0),
+            "innov_y": self._vector_entry(innovation, 1),
+            "innov_psi": self._vector_entry(innovation, 2),
+            "innov_v": self._vector_entry(innovation, 3),
+            "innov_w": self._vector_entry(innovation, 4),
             "pred_x": self.last_x_pred[0] if self.last_x_pred is not None else np.nan,
             "pred_y": self.last_x_pred[1] if self.last_x_pred is not None else np.nan,
+            "meas_mask_json": self._json_numeric_array(meas_mask_vector),
+            "innovation_json": self._json_numeric_array(innovation),
+            "masked_innovation_json": self._json_numeric_array(masked_innovation),
+            "update_correction_json": self._json_numeric_array(update_correction),
+            "K_matrix_json": self._json_numeric_array(K_matrix),
+            "K_effective_matrix_json": self._json_numeric_array(K_effective_matrix),
+            "ekf_K_matrix_json": self._json_numeric_array(ekf_gain_matrix),
+            "ekf_K_measurement_labels": "|".join(ekf_gain_labels),
         }
         comparison.update(self._build_sensor_failure_log_fields())
         if self.last_pred_mask_summary is not None:

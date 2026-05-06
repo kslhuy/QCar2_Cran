@@ -1,0 +1,393 @@
+\documentclass[aspectratio=169,10pt]{beamer}
+
+\usetheme{Madrid}
+\setbeamertemplate{navigation symbols}{}
+
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs}
+
+% Notation used in ch5_main.tex
+\newcommand{\G}{\mathcal{G}}
+\newcommand{\V}{\mathcal{V}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Lbar}{\bar{\mathcal{L}}}
+\newcommand{\LO}{\mathsf{LO}}
+\newcommand{\DO}{\mathsf{DO}}
+\newcommand{\LT}{\mathsf{LT}}
+\newcommand{\DT}{\mathsf{DT}}
+\providecommand{\T}{}
+\renewcommand{\T}{\mathsf{T}}
+\newcommand{\VT}{\mathsf{VT}}
+\providecommand{\O}{}
+\renewcommand{\O}{\mathcal{O}}
+\newcommand{\col}[1]{\operatorname{col}\{#1\}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+
+\title[Trust Fleet Estimation]{Proof Sketch for Trust-Aware Fleet Estimation}
+\author{}
+\date{}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{Observer Law For Target $j$}
+\small
+Fix a target vehicle $j\in\V$. Host vehicle $i$ runs $\DO_i^{(j)}$ to estimate $x_j(t)$.
+\vspace{0.5ex}
+\begin{align*}
+\hat{x}_{i,c}^{(j)}(t)
+&=w_{ii}^{(j)}(t)\hat{x}_{i}^{(j)}(t)
++w_{i0}^{(j)}(t)\hat{x}_{0}^{(j)}(t)
++\sum_{l\in \mathcal{N}_{i}^{(j)}(t)}
+w_{il}^{(j)}(t)\hat{x}_{l}^{(j)}(t),\\
+\hat{x}_{i}^{(j)}(t+1)
+&=A_{\text{b}}\hat{x}_{i,c}^{(j)}(t)+B_{\text{b}}\hat{u}_{j}(t).
+\end{align*}
+
+The residual self-weight is
+\[
+w_{ii}^{(j)}(t)=
+1-w_{i0}^{(j)}(t)
+-\sum_{l\in\mathcal{N}_{i}^{(j)}(t)}w_{il}^{(j)}(t).
+\]
+
+\begin{block}{Interpretation}
+$w_{i0}^{(j)}$ anchors to $\LO_j$, $w_{il}^{(j)}$ fuses trusted neighbor estimates, and $w_{ii}^{(j)}$ keeps confidence in host $i$'s own prediction.
+\end{block}
+\end{frame}
+
+\begin{frame}{From Trust Scores To Active Channels}
+\small
+For host vehicle $i$, the trust layer gives an opinion about all vehicles:
+\[
+\O_i=[\O_i(1),\ldots,\O_i(N)],\qquad \O_i(l,t)\in[0,1].
+\]
+
+When $\DO_i^{(j)}$ estimates target $j$, it uses only channels that are available
+and trusted enough:
+\[
+\mathcal{N}_{i}^{(j)}(t)
+=\Big\{l\in\mathcal{N}_i:
+\hat{x}_{l}^{(j)}(t)\text{ is available},\
+\O_i(l,t)\ge\theta_{\min}\Big\}.
+\]
+
+\begin{block}{Three channels used by the correction step}
+\[
+\underbrace{\hat{x}_{0}^{(j)}}_{\text{direct/local anchor}}
+\qquad
+\underbrace{\{\hat{x}_{l}^{(j)}\}_{l\in\mathcal{N}_{i}^{(j)}(t)}}_{\text{trusted neighbors}}
+\qquad
+\underbrace{\hat{x}_{i}^{(j)}}_{\text{host self-prediction}}.
+\]
+\end{block}
+
+If a channel becomes suspicious, the trust layer does not need to change the
+observer equation; it only gives that channel a smaller weight.
+\end{frame}
+
+\begin{frame}{Raw Weight Scores Before Normalization}
+\scriptsize
+Choose nominal budgets
+\[
+\bar w_0>0,\qquad \bar w_{\rm self}>0,\qquad
+\bar w_{\rm N}=1-\bar w_0-\bar w_{\rm self}\ge0.
+\]
+Then assign nonnegative raw scores:
+\begin{align*}
+\tilde{w}_{i0}^{(j)}(t)
+&=\bar w_0\,\LT_{i,j}(t)\,\phi_{i0}^{(j)}(t),\\
+\tilde{w}_{ii}^{(j)}(t)
+&=\bar w_{\rm self}\,\phi_{ii}^{(j)}(t),\\
+\tilde{w}_{il}^{(j)}(t)
+&=\bar w_{\rm N}\,\phi_{i,\mathrm{N}}^{(j)}(t)
+\frac{\O_i(l,t)}
+{\sum\limits_{p\in\mathcal{N}_{i}^{(j)}(t)}\O_i(p,t)},
+\quad l\in\mathcal{N}_{i}^{(j)}(t).
+\end{align*}
+
+\begin{block}{Meaning}
+\begin{itemize}
+\item $\LT_{i,j}$ controls the direct/local anchor weight $w_{i0}^{(j)}$.
+\item $\O_i(l,t)$ distributes neighbor weight toward more trusted neighbors.
+\item $\phi_{i0}^{(j)}$, $\phi_{ii}^{(j)}$, $\phi_{i,\mathrm{N}}^{(j)}$ are flag multipliers: they reduce or reinforce a channel depending on attack checks.
+\end{itemize}
+\end{block}
+\end{frame}
+
+\begin{frame}{Normalization Gives Admissible Weights}
+\footnotesize
+Normalize the raw scores by their total mass:
+\[
+\begin{aligned}
+Z_i^{(j)}(t)
+&=\tilde{w}_{i0}^{(j)}(t)+\tilde{w}_{ii}^{(j)}(t)+
+\sum_{l\in\mathcal{N}_{i}^{(j)}(t)}\tilde{w}_{il}^{(j)}(t),\\
+w_{iq}^{(j)}(t)
+&=\frac{\tilde{w}_{iq}^{(j)}(t)}{Z_i^{(j)}(t)},\qquad
+q\in\{0,i\}\cup\mathcal{N}_{i}^{(j)}(t).
+\end{aligned}
+\]
+
+\begin{block}{Why this is useful for the theorem}
+Since all raw scores are nonnegative,
+\[
+\begin{gathered}
+w_{ii}^{(j)}(t)\ge0,\quad w_{i0}^{(j)}(t)\ge0,\quad
+w_{il}^{(j)}(t)\ge0,\\
+w_{ii}^{(j)}(t)+w_{i0}^{(j)}(t)+
+\sum_{l\in\mathcal{N}_{i}^{(j)}(t)}w_{il}^{(j)}(t)=1.
+\end{gathered}
+\]
+Hence
+\[
+w_{i0}^{(j)}(t)+
+\sum_{l\in\mathcal{N}_{i}^{(j)}(t)}w_{il}^{(j)}(t)\le1,
+\]
+which is the admissible-weight condition used in the ISS theorem.
+\end{block}
+\end{frame}
+
+\begin{frame}{Error Dynamics}
+\small
+Define, for fixed $j\in\V$,
+\[
+e_0^{(j)}(t)=\hat{x}_0^{(j)}(t)-x_j(t),\qquad
+e_i^{(j)}(t)=\hat{x}_i^{(j)}(t)-x_j(t),
+\]
+\[
+e_{\mathrm{DO}}^{(j)}(t)=
+\col{e_1^{(j)}(t),\ldots,e_N^{(j)}(t)}.
+\]
+
+The local observer error is
+\[
+e_0^{(j)}(t+1)=
+\left(A_{\text{b}}-F_jC_{\text{b}}\right)e_0^{(j)}(t)+d_0^{(j)}(t).
+\]
+
+The distributed observer error is
+\begin{align*}
+e_{\mathrm{DO}}^{(j)}(t+1)
+&=\Big(w_{0}^{(j)}(t)\otimes A_{\text{b}}\Big)e_0^{(j)}(t)\\
+&\quad+
+\Big(\big(I_{N}-\Lbar^{(j)}(t)\big)\otimes A_{\text{b}}\Big)
+e_{\mathrm{DO}}^{(j)}(t)
++d_{\mathrm{DO}}^{(j)}(t).
+\end{align*}
+\end{frame}
+
+\begin{frame}{Meaning Of The Row Sum}
+\small
+For row $i$ of $I_N-\Lbar^{(j)}(t)$,
+\[
+\big[I_N-\Lbar^{(j)}(t)\big]_{ii}
+=1-w_{i0}^{(j)}(t)-\sum_{l\in\mathcal{N}_i}w_{il}^{(j)}(t),
+\qquad
+\big[I_N-\Lbar^{(j)}(t)\big]_{il}=w_{il}^{(j)}(t).
+\]
+Therefore,
+\[
+\sum_{l=1}^{N}\big[I_N-\Lbar^{(j)}(t)\big]_{il}
+=1-w_{i0}^{(j)}(t)\le 1.
+\]
+\begin{block}{Meaning of the row sum}
+$I_N-\Lbar^{(j)}(t)$ mixes only distributed-observer errors. The missing mass
+$w_{i0}^{(j)}(t)$ is not lost; it enters through the local-anchor input
+$\big(w_0^{(j)}(t)\otimes A_{\text{b}}\big)e_0^{(j)}(t)$.
+\end{block}
+
+If $w_{i0}^{(j)}(t)>0$, the distributed-error mixing row is strictly less than
+one. This is why the local observer node $0$ acts as an anchor in the ISS proof.
+\end{frame}
+
+\begin{frame}{Sufficient ISS Conditions}
+\footnotesize
+Assume $\norm{d_0^{(j)}(t)}\le \bar d_0$ and
+$\norm{d_{\mathrm{DO}}^{(j)}(t)}\le \bar d_{\mathrm{DO}}$.
+
+\textbf{1) Local observer is internally stable.}
+\[
+A_{\ell,j}\triangleq A_{\text{b}}-F_jC_{\text{b}}
+\quad\text{is Schur stable.}
+\]
+Meaning: if the local observer $\LO_j$ has no disturbance, its error
+$e_0^{(j)}$ decays to zero; with bounded disturbance, $e_0^{(j)}$ remains bounded.
+
+\vspace{1ex}
+\textbf{2) Trust weights form an admissible correction.}
+\[
+w_{i0}^{(j)}(t)\ge0,\quad w_{il}^{(j)}(t)\ge0,\quad
+w_{i0}^{(j)}(t)+\sum_{l\in\mathcal{N}_i}w_{il}^{(j)}(t)\le1.
+\]
+Meaning: every received signal has nonnegative influence and the total external
+influence is capped; the remaining weight stays on the host prediction.
+
+\vspace{1ex}
+\textbf{3) Distributed observer contracts at every switch.}
+\[
+\left\|
+\big(I_N-\Lbar^{(j)}(t)\big)\otimes A_{\text{b}}
+\right\|_*
+\le \alpha,\qquad \alpha\in(0,1).
+\]
+Meaning: after each trust/topology update, the old distributed error is multiplied
+by a factor strictly smaller than one.
+\end{frame}
+
+\begin{frame}{ISS Conclusion}
+\small
+Then there exist $c_0,c_1>0$ and $\lambda\in(0,1)$ such that
+\begin{align*}
+\norm{e_0^{(j)}(t)}
+&\le c_0\lambda^t\norm{e_0^{(j)}(0)}+c_0\bar d_0,\\
+\norm{e_{\mathrm{DO}}^{(j)}(t)}
+&\le c_1\lambda^t\norm{e_{\mathrm{DO}}^{(j)}(0)}
++c_1\Big(\norm{e_0^{(j)}(0)}+\bar d_0+\bar d_{\mathrm{DO}}\Big).
+\end{align*}
+\begin{block}{Reading the bound}
+Both errors are a decaying initial-error term plus bounded terms caused by
+local mismatch, model/input mismatch, and any bounded attack input absorbed into
+$d_{\mathrm{DO}}^{(j)}$.
+\end{block}
+\end{frame}
+
+\begin{frame}{Proof Step 1: Local Observer Loop}
+\small
+Since $A_{\ell,j}$ is Schur, there exist $c_{\ell,j}>0$ and
+$\lambda_{\ell,j}\in(0,1)$ such that
+\[
+\norm{A_{\ell,j}^{t}}_*\le c_{\ell,j}\lambda_{\ell,j}^t.
+\]
+Unroll the local error recursion:
+\[
+e_0^{(j)}(t)
+=A_{\ell,j}^{t}e_0^{(j)}(0)
++\sum_{k=0}^{t-1}A_{\ell,j}^{t-1-k}d_0^{(j)}(k).
+\]
+Using $\norm{d_0^{(j)}(k)}\le\bar d_0$,
+\[
+\norm{e_0^{(j)}(t)}
+\le
+c_{\ell,j}\lambda_{\ell,j}^{t}\norm{e_0^{(j)}(0)}
++\frac{c_{\ell,j}}{1-\lambda_{\ell,j}}\bar d_0.
+\]
+
+\begin{block}{Conclusion}
+The local anchor error is exponentially decaying up to a bounded disturbance term.
+\end{block}
+\end{frame}
+
+\begin{frame}{Proof Step 2: Distributed Observer Loop}
+\scriptsize
+Define
+\[
+A_{\mathrm{DO}}^{(j)}(t)=
+\big(I_N-\Lbar^{(j)}(t)\big)\otimes A_{\text{b}},\qquad
+B_0^{(j)}(t)=w_0^{(j)}(t)\otimes A_{\text{b}}.
+\]
+The recursion becomes
+\[
+e_{\mathrm{DO}}^{(j)}(t+1)
+=A_{\mathrm{DO}}^{(j)}(t)e_{\mathrm{DO}}^{(j)}(t)
++B_0^{(j)}(t)e_0^{(j)}(t)+d_{\mathrm{DO}}^{(j)}(t).
+\]
+Because the weights are nonnegative and normalized,
+$\norm{B_0^{(j)}(t)}_*\le\bar B_0$ for some $\bar B_0>0$.
+With the transition matrix $\Phi(t,k)$,
+\[
+\norm{\Phi(t,k)}_*\le \alpha^{t-k}.
+\]
+Thus,
+\[
+\norm{e_{\mathrm{DO}}^{(j)}(t)}
+\le
+\alpha^t\norm{e_{\mathrm{DO}}^{(j)}(0)}
++\sum_{k=0}^{t-1}\alpha^{t-1-k}
+\Big(\bar B_0\norm{e_0^{(j)}(k)}+\bar d_{\mathrm{DO}}\Big).
+\]
+Insert the Step 1 bound and take
+\[
+\lambda=\max\{\alpha,\lambda_{\ell,j}\}\in(0,1).
+\]
+The geometric sums are bounded, which gives the stated ISS bound.
+\end{frame}
+
+\begin{frame}{How Attacks Enter The Theorem}
+\scriptsize
+The theorem is written for the stacked distributed error
+\[
+e_{\mathrm{DO}}^{(j)}(t+1)
+=A_{\mathrm{DO}}^{(j)}(t)e_{\mathrm{DO}}^{(j)}(t)
++B_0^{(j)}(t)e_0^{(j)}(t)
++d_{\mathrm{DO}}^{(j)}(t),
+\tag{T}
+\]
+where $d_{\mathrm{DO}}^{(j)}$ is only required to be bounded. It can collect
+model mismatch, input mismatch, noise, and attack-induced terms.
+
+\vspace{0.5ex}
+If a received channel is corrupted before the correction step,
+\[
+\tilde{x}_{0}^{(j)}=\hat{x}_{0}^{(j)}+a_0^{(j)},\qquad
+\tilde{x}_{l}^{(j)}=\hat{x}_{l}^{(j)}+a_l^{(j)},
+\]
+then host $i$ receives the additive attack input
+\[
+d_{\mathrm{att},i}^{(j)}
+=A_{\text{b}}\left(
+\chi_{i0}^{(j)}w_{i0}^{(j)}a_0^{(j)}
++\sum_{l\in\mathcal{M}_i(t)}w_{il}^{(j)}a_l^{(j)}
+\right).
+\]
+Thus the attacked observer has the same theorem form:
+\[
+e_{\mathrm{DO}}^{(j)}(t+1)
+=A_{\mathrm{DO}}^{(j)}e_{\mathrm{DO}}^{(j)}
++B_0^{(j)}e_0^{(j)}
++\tilde d_{\mathrm{DO}}^{(j)},\qquad
+\tilde d_{\mathrm{DO}}^{(j)}=d_{\mathrm{DO}}^{(j)}+d_{\mathrm{att}}^{(j)}.
+\]
+\begin{block}{Link to the theorem}
+No new stability proof is needed if $\tilde d_{\mathrm{DO}}^{(j)}$ is bounded;
+the ISS bound is the same, with $\bar d_{\mathrm{DO}}$ replaced by
+$\bar{\tilde d}_{\mathrm{DO}}$.
+\end{block}
+\end{frame}
+
+\begin{frame}{Why Trust Gives Resilience}
+\small
+The attack input in row $i$ is
+\[
+d_{\mathrm{att},i}^{(j)}(t)
+=A_{\text{b}}
+\left(
+\chi_{i0}^{(j)}w_{i0}^{(j)}(t)a_0^{(j)}(t)
++\sum_{l\in\mathcal{M}_i(t)}
+w_{il}^{(j)}(t)a_l^{(j)}(t)
+\right).
+\]
+If $\norm{a_0^{(j)}(t)}\le\bar a_0$ and
+$\norm{a_l^{(j)}(t)}\le\bar a_{\mathrm{N}}$, then
+\[
+\norm{d_{\mathrm{att},i}^{(j)}(t)}
+\le
+\norm{A_{\text{b}}}_*
+\left(
+\chi_{i0}^{(j)}w_{i0}^{(j)}(t)\bar a_0+
+\sum_{l\in\mathcal{M}_i(t)}w_{il}^{(j)}(t)\bar a_{\mathrm{N}}
+\right).
+\]
+
+\begin{block}{Key point}
+The attack effect is bounded by the malicious weight mass. Local-anchor attacks
+are attenuated by reducing $w_{i0}^{(j)}$ through $\LT_{i,j}$ and
+$\phi_{i0}^{(j)}$; neighbor attacks are attenuated by reducing
+$w_{il}^{(j)}$ through $\O_i(l,t)$ or $\VT_{i,l}$.
+\end{block}
+\end{frame}
+
+\end{document}
