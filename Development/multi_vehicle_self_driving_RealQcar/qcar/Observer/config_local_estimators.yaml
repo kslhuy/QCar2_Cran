@@ -2,32 +2,59 @@
 # Default parameters for the local state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-local_estimator_type: ekf # local_estimator_type: Which local estimator to use.
-                        # Options: 'ekf', 'luenberger', 'neural_luenberger'
+local_estimator_type: robust_kalman_net # local_estimator_type: Which local estimator to use.
+                        # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
 
-# Plotting configuration
-enable_plotting: false # enable_plotting: Controls real-time visualization.
-                        # true: Opens Matplotlib/MultiScope windows to show real-time plots of state, error, etc.
-                        # false: No windows are opened.
 enable_recording: false # enable_recording: Controls data logging to CSV.
                         # true: Logs data to scope_recordings/ (e.g., local_V0_120000.csv).
                         # false: No data is logged to these files.
 recording_overwrite: true # recording_overwrite:
                         # true: Overwrites the file (e.g., locl_V0.csv)
                         # false: Creates a new timestamped file every run (e.g., local_V0_123456.csv)
-plotting:
-  fps: 30 # fps: Refresh rate for the plots.
-  time_window: 20.0 # time_window: How much history (in seconds) to show on the moving plots.
-  save_only: true # save_only: If enable_plotting is true and this is true, it runs in "headless" mode (no window, but still processes the scope logic, useful if you wanted to save video frames or verify logic without GUI).
+
+# Calibration-derived longitudinal model source.
+# VehicleObserverSimple resolves this using:
+# - `config.vehicle.vehicle_type`
+# - `config.vehicle.is_physical_qcar`
+# so QCar hardware, QCar simulation, and Limo can each use different files.
+observer_model_source:
+  qcar_real: extra_configs/throttle_acceleration_observer_model_real.yaml
+  qcar_sim: extra_configs/throttle_acceleration_observer_model_sim.yaml
+  limo: extra_configs/throttle_acceleration_observer_model_limo.yaml
 
 
 # Local estimator defaults
 local:
   # ---------------------------------------------------------------------
+  # Shared sensor filtering defaults
+  # ---------------------------------------------------------------------
+  common:
+    v_lpf_alpha: 0.15  # LPF coefficient for motor_tach applied in VehicleObserver.
+    local_output_lpf_alpha: 0.25  # LPF coefficient applied to final local state [x, y, theta, v, a] before controller/V2V use. Set 1.0 to disable.
+    accel_ema_alpha: 0.25  # EMA coefficient for IMU acceleration applied in VehicleObserver.
+    gps_valid_hold_mode: adaptive  # adaptive = derive freshness window from measured GPS packet interval; fixed = use gps_valid_hold_seconds below.
+    gps_valid_hold_seconds: 0.20  # Fixed fallback only; for 5 Hz GPS this should not be below the packet interval.
+    gps_valid_hold_scale: 1.15  # Adaptive hold = scale * measured GPS period.
+    gps_valid_hold_min_seconds: 0.08  # Lower clamp for adaptive/fixed hold window.
+    gps_valid_hold_max_seconds: 0.35  # Upper clamp for adaptive/fixed hold window.
+
+  # ---------------------------------------------------------------------
   # EKF estimator defaults
   # ---------------------------------------------------------------------
   ekf:
     use_qcar_ekf: true  # Whether to use QCarEKF (if available)
+    wheelbase: 0.2       # Fallback default; VehicleObserver overrides from fleet_config.vehicle_geometry when available.
+    gyro_heading_blend: 0.3 # 0=bicycle yaw only ( model ), 1=gyro yaw only. QCarEKF-like fallback uses both.
+    max_steering_angle: 0.5  # Rad; clips pathological steering before tan(delta).
+    max_velocity: 2.0
+    max_acceleration: 2.0
+    # Longitudinal-model defaults come from `observer_model_source` above.
+    # The referenced calibration file injects:
+    # - longitudinal_model
+    # - use_tachometer_update
+    # - velocity_lag_model / velocity_lag_lookup_model / accel_lag_model
+    # - acceleration_fusion
+    velocity_command_tau: 0.301
 
   # ---------------------------------------------------------------------
   # Luenberger estimator defaults
@@ -43,6 +70,81 @@ local:
   # Full configuration is in: LocalNeuralObs/2LayerObs/neural_obs_params.yaml
   # Runtime overrides can be passed via estimator_params in initialize_local_estimator()
   neural_luenberger: {}
+
+  # ---------------------------------------------------------------------
+  # Robust KalmanNet estimator
+  # ---------------------------------------------------------------------
+  robust_kalman_net:
+    predictor_mode: "kinematic"    # Always keep the predictor analytical/kinematic; only the update step is learned.
+    kin_wheelbase: 0.2          # Fallback default; VehicleObserver overrides from fleet_config.vehicle_geometry when available.
+    longitudinal_model: "velocity_lag_lookup" # Observer-model calibration overrides this via `observer_model_source`; this is only the local fallback.
+    kin_velocity_model: "velocity_lag" # Legacy fallback only when no calibration-backed longitudinal model is injected.
+    kin_max_velocity: 2.0
+    kin_max_acceleration: 2.0
+    model_path: models/robust_kalmannet.best_robust.pt # Required checkpoint path, relative to Observer/KalmaNet/Robust/
+    enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
+    enable_clean_reference_comparator: true # Evaluation-only pseudo-ground-truth: run a second EKF on clean pre-attack inputs for error analysis.
+    publish_clean_reference_output: true # Keep false for robustness evaluation; true bypasses the robust model output with the clean-reference EKF state.
+    comparator_use_qcar_ekf: false # Use QCarEKF or fall back EKF  .
+    comparator_console_log: false # Keep console quiet during runtime.
+    comparator_log_interval: 100  # If console logging is enabled, log every N updates.
+    comparator_history_size: 200 # Keep the last N comparison snapshots in memory.
+    comparator_record_to_file: true # File logging adds jitter; enable only for short debug runs.
+    comparator_record_interval: 1 # Record every N updates to the CSV file.
+    comparator_flush_interval: 200 # Flush the comparator CSV every N recorded rows.
+    comparator_output_dir: logs/comparator # Relative to Observer/KalmaNet/Robust/
+    comparator_file_prefix: rknet_comparison
+    comparator_overwrite: false
+    mask_branch_active_threshold: 0.5 # For log interpretation only; marks a branch as "active" when mean mask >= threshold.
+    sequence_length: 20          # Runtime warm-up/history length. Keep short for real-time control.
+    streaming_inference: true    # Run one model step per tick; replay mode is too slow for the QCar control loop.
+    dt: 0.02                     # Nominal sample time used by the trained model. Keep this aligned with the real inference cadence.
+    heading_filter_enabled: true # Use the shared local replica of Quanser QCarEKF heading fusion (gyro + kinematic pose + GPS theta/x/y when available).
+    heading_filter_q_psi: 0.0001  # QCarEKF KF process noise on theta.
+    heading_filter_q_bias: 0.001 # QCarEKF KF process noise on gyro bias.
+    heading_filter_r_gps: 0.001 # QCarEKF KF GPS-theta measurement noise.
+    heading_output_gain: 0.0     # Keep 0 for exact QCarEKF-style heading output; nonzero adds an extra post-filter not present in QCarEKF.
+    heading_output_gain_gps_valid: 0.0 # Keep 0 for exact QCarEKF-style heading output.
+    heading_output_gain_gps_invalid: 0.0 # Keep 0 for exact QCarEKF-style heading output.
+    heading_output_max_correction: 0.35 # Limit one-step heading correction (rad) to avoid snaps.
+    gps_dropout_xy_mode: "freeze" # Options: freeze = hold last valid GPS x/y in z, dead_reckon = propagate z[x,y] during GPS dropout.
+    wheel_speed_scale: 1.0       # Proxy conversion from motor tach to wheel-speed channels.
+    device: cpu                  # Tiny 1-step streaming inference is usually more stable on CPU than auto/GPU.
+    pred_hidden: 32
+    upd_hidden: 32
+    gain_hidden: 32
+    gain_tanh_scale: 1.2
+    pred_mlp_hidden: 32
+    mask_hidden: 32
+    update_mask_init_bias: 2.2   # Neutral start so the updater can learn stronger rejection when needed.
+    apply_meas_mask_to_innovation: true # Apply the learned measurement gate directly to the innovation before correction.
+    normalize_updater_features: true
+    updater_feature_normalization: "scale"
+    updater_state_scale: [0.25, 0.25, 0.20, 0.50]
+    updater_measurement_scale: [0.25, 0.25, 0.20, 0.50]
+    gain_smoothing_alpha: 0.35
+    meas_mask_smoothing_alpha: 0.35
+    max_update_correction: [0.35, 0.35, 0.35, 0.80]
+    use_hard_mask: false
+    # sensor_failure_simulation parameters control the online injection of synthetic sensor faults/attacks during evaluation. These are disabled by default to avoid unintended consequences during normal runs, but can be enabled to stress-test the estimator's robustness in a more realistic setting than offline test sets.
+    sensor_failure_simulation:
+      enabled: false            # true = inject online sensor failures/attacks during evaluation.
+      attack_prob: 0.02          # Per observer step probability of starting a branch fault episode.
+      attack_types: ["freeze", "zero_out", "noise", "ramp"] # Same branch attack vocabulary as training.
+      branch_attack_probs:
+        imu: 0.4
+        steer: 0.2
+        wheel: 0.4
+      max_branches_attacked: 1   # Keep 1 to match the default single-branch training curriculum.
+      gps_attack_prob: 0.01      # Independent per-step probability of starting a GPS fault episode.
+      gps_attack_types: ["freeze", "dropout", "reacquisition", "jump"]
+      min_attack_steps: 15       # Episode duration in observer ticks.
+      max_attack_steps: 80
+      gps_min_attack_steps: 15
+      gps_max_attack_steps: 80
+      cooldown_steps: 0
+      gps_cooldown_steps: 0
+      seed: null                 # Set an integer for repeatable fault schedules.
 
 # Example override (when loading config into VehicleObserver):
 # vehicle_observer_config:

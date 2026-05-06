@@ -8,13 +8,23 @@
 # Options: 'trust_consensus', 'trust_kalman'
 fleet_estimator_type: trust_consensus
 
+# Calibration-derived longitudinal model source.
+# VehicleObserverSimple resolves this using:
+# - `config.vehicle.vehicle_type`
+# - `config.vehicle.is_physical_qcar`
+# so QCar hardware, QCar simulation, and Limo can each use different files.
+observer_model_source:
+  qcar_real: ../extra_configs/throttle_acceleration_observer_model_real.yaml
+  qcar_sim: ../extra_configs/throttle_acceleration_observer_model_sim.yaml
+  limo: ../extra_configs/throttle_acceleration_observer_model_limo.yaml
+
 # =====================================================================
 # Global Fleet Settings (inherited from base estimators)
 # =====================================================================
 fleet:
   state_dim: 5                    # [x, y, theta, v, a]
   max_state_age_ns: 1000000000    # 1 second validity window
-  fleet_observer_rate: 50         # Hz
+  fleet_observer_rate: 25         # Hz
   received_local_states_limit: 10
   received_fleet_states_limit: 5
 
@@ -24,21 +34,51 @@ fleet:
 trust:
   # Component weights (exponents for score calculation)
   # Higher weight = more sensitive to errors in that component
-  weight_velocity: 12.0           # Velocity consistency weight
+  weight_velocity: 1.0           # Velocity consistency weight (exponent, lower = more tolerant)
+  velocity_tolerance: 0.2        # m/s - base absolute tolerance for velocity mismatch
+  min_velocity_tolerance: 0.05    # m/s - hard lower bound for adaptive tolerance
+  turn_velocity_tolerance_gain: 0.3   # extra tolerance in turns (scales with yaw-rate)
+  accel_velocity_tolerance_gain: 0.25  # extra tolerance during accel/decel transients
+  # Adaptive acceleration consistency (distance + relative velocity + turn-aware)
+  acceleration_base_tolerance: 1.0
+  acceleration_speed_tolerance_gain: 0.15
+  acceleration_host_tolerance_gain: 0.6
+  acceleration_turn_tolerance_gain: 0.8
+  acceleration_distance_base_tolerance: 0.35
+  acceleration_distance_turn_gain: 0.4
+  acceleration_rel_velocity_tolerance: 0.2
+  # Adaptive heading/path similarity
+  heading_min_movement_m: 0.05
+  heading_base_tolerance_rad: 0.35
+  heading_turn_tolerance_gain: 1.0
+  heading_yaw_rate_tolerance: 0.8
+  # Turn-aware theta robustness in global trust Mahalanobis
+  theta_similarity_distance_scale: 1.5
+  theta_similarity_velocity_scale: 1.0
+  theta_similarity_gain: 2.5
+  theta_turn_gain: 2.0
+  theta_contribution_cap: 3.0
+
   weight_distance: 2.0            # Distance consistency weight  
   weight_acceleration: 0.3        # Acceleration plausibility weight
-  weight_heading: 1.0             # Heading consistency weight
+  weight_heading: 0.3             # Heading consistency weight
   
   # Trust threshold for considering a vehicle "trusted"
   trust_threshold: 0.5
   
   # Dirichlet-based trust level parameters
   num_trust_levels: 5             # [Untrusted, Suspicious, Neutral, Trusted, Highly Trusted]
-  dirichlet_update_rate: 0.1      # How fast trust levels update (0-1)
+  dirichlet_update_rate: 0.1      # How fast trust levels update (0-1) — used by "ema" method
   dirichlet_type: "Dual"          # "Single" (local only) or "Dual" (local + cross-validation)
+  # Dirichlet method: "ema" (simple EMA update) or "matlab" (aging-factor + regularized score)
+  dirichlet_method: "matlab"
+  # MATLAB Dirichlet parameters (only used when dirichlet_method: "matlab")
+  dirichlet_C: 0.2                # Regularization constant C
+  dirichlet_wt_local: 0.4         # Aging weight for local trust
+  dirichlet_wt_global: 0.5        # Aging weight for global trust
   
   # Attack detection settings
-  monitor_sudden_change: true     # Enable sudden trust change monitoring
+  monitor_sudden_change: false     # Enable sudden trust change monitoring
   sudden_change_threshold: 0.5    # Threshold for sudden change detection
   attack_detection_window: 10     # Number of samples for attack detection
   
@@ -49,6 +89,54 @@ trust:
   # EMA smoothing for trust scores
   ema_alpha: 0.3                  # Smoothing factor (0-1, higher = less smoothing)
 
+  # Validation and decay (MATLAB-parity features)
+  use_physical_constraints_check: false
+  use_temporal_consistency_check: false
+  max_velocity: 5.0
+  max_acceleration: 4.0
+  max_deceleration: -5.0
+  max_jerk: 8.0
+  temporal_pos_tolerance_m: 0.5
+  temporal_vel_tolerance: 0.5
+  trust_decay_lambda: 0.2
+
+  # Distance to Trust conversion method
+  # Options: 'exponential', 'piecewise_linear', 'gaussian', 'sigmoid', 'chi_squared'
+  distance_to_gamma_method: 'exponential'
+  gamma_piecewise_min: 1.5
+  gamma_piecewise_max: 5.0
+  gamma_gaussian_sigma: 2.0
+  gamma_sigmoid_k: 2.0
+  gamma_sigmoid_thresh: 3.0
+  gamma_chi2_dof_local: 2
+  gamma_chi2_dof_global: 5
+
+  # Distributed trust covariance parameters (always paper-style)
+  distributed_trust_fallback: 0.2
+  distributed_trust_covariance_diag: [2.0, 2.0, 3.5, 2.0, 6.0] # Sigma^2 for gamma_host (x,y,theta,v,a)
+  # Robust global trust settings. Acceleration is model-derived in the real
+  # fleet, so keep it diagnostic but prevent it from dominating gamma_host.
+  distributed_trust_state_indices: [0, 1, 2, 3, 4]
+  distributed_trust_contribution_caps: [4.0, 4.0, 2.0, 2.0, 0.2]
+  distributed_trust_accel_weight: 0.1
+  ## GAMMA Self-Trust Settings
+  distributed_local_tau2_diag: [1.5, 0.6]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
+  distributed_self_turn_distance_gain: 1.5
+  distributed_self_turn_velocity_gain: 1.0
+  gamma_self_penalty_floor: 0.4  # if gamma_self can stay low but you do not want global_trust to fall much, increase
+  gamma_self_penalty_exponent: 0.9 # punishment curve is still too sharp, lower gamma_self_penalty_exponent
+  # Relative-trust mode:
+  # true  = use [distance, relative_velocity]
+  # false = use [distance] only (simple mode)
+  use_relative_velocity_in_relative_trust: false
+
+  # Generalized trust vector O_i(j) from exchanged trust reports
+  use_generalized_trust_vector: true
+  trust_vector_theta_min: 0.4
+
+  # Message age quality gate (disable if timestamps are unreliable)
+  use_message_age_quality: false
+
 # =====================================================================
 # Weight Calculation Configuration
 # =====================================================================
@@ -56,22 +144,37 @@ weight:
   # Weight calculation type
   # Options: 'equal', 'trust_based', 'graph_based'
   # - 'equal': All neighbors get equal weight (simple consensus)
-  # - 'trust_based': Trust-proportional weights with fixed w0 and w_self
+  # - 'trust_based': Per-target trust-aware normalization of direct/self/neighbor channels
   # - 'graph_based': Graph topology-based weights (matches old implementation)
   weight_type: trust_based
   
-  # Fixed weight allocations (for trust_based mode)
-  w0_fixed: 0.3                   # Weight for direct measurement (target's own broadcast)
-  w_self_base: 0.2                # Base weight for self (persistence of own estimate)
+  # Base gains for trust_based mode before per-target normalization
+  w0_fixed: 0.4                   # Nominal maximum gain for the target's own direct broadcast
+  w_self_base: 0.2                # Base gain for self/prediction persistence
   
   # Neighbor weight constraints
   w_cap: 0.4                      # Maximum weight per neighbor (influence cap - 40%)
-  kappa: 5                        # Maximum neighbors to consider in consensus
+  kappa: 3                        # Smaller kappa gives stronger direct/neighbor corrections in small fleets
   
   # Temporal smoothing (EMA)
   eta: 0.15                       # EMA smoothing factor
-  enable_smoothing: true          # Enable weight smoothing between updates
+  enable_smoothing: false         # Enable weight smoothing between updates
+  startup_fixed_duration_s: 5.0   # Keep fixed non-trust weights while platoon forms
+  use_gamma_self_weight_adaptation: true
+  gamma_self_weight_floor: 0.25
   
+  # Flag-driven w₀ adaptation factors
+  # These multiply w₀ when an attack flag fires for the target being estimated
+  flag_w0_target_attack_factor: 1.0     # Keep w₀ full when target under attack (local is reliable)
+  flag_w0_global_est_check_factor: 0.3  # Reduce w₀ when local sensors are faulty
+  flag_w0_local_est_check_factor: 0.5   # Reduce w₀ when local measurements unreliable
+
+  # Semantics-aligned overrides for trust-based target weighting.
+  # YAML parsers typically honor the last duplicate key in a mapping.
+  flag_w0_target_attack_factor: 0.25
+  flag_w0_global_est_check_factor: 1.25
+  flag_w0_local_est_check_factor: 0.5
+
   # Advanced options
   use_distance_weighting: false   # Weight by physical distance (experimental)
 
@@ -83,22 +186,104 @@ observer:
   consensus_gain: 0.2             # Consensus correction gain
   
   # Attack mitigation
-  attack_mitigation: true         # Enable automatic attack mitigation
+  attack_mitigation: false         # Enable automatic attack mitigation
+
+  # State propagation used by the fleet estimator prediction step:
+  # model           = existing bicycle + longitudinal model
+  # clean_data      = test mode: keep current x/y continuity but use the clean
+  #                   target V2V theta/velocity/acceleration as the motion source
+  # mixed_clean_data = use clean target V2V theta, but keep velocity and
+  #                   acceleration from the current estimator state; under
+  #                   attack-triggered clean anchoring, x/y starts from clean pose
+  # relative_host_anchor_mixed = normal operation uses the standard vehicle
+  #                   model; only while attack flags are active does it rebuild
+  #                   target x/y from host pose plus the latest trusted
+  #                   host-target distance, blend clean target theta with host
+  #                   theta, and fall back to host velocity
+  dynamics_prediction_mode: clean_data
+  # Attack-time blend used only by relative_host_anchor_mixed:
+  # theta_attack = circular_mean(clean_theta, host_theta)
+  # with the weights below, and
+  # v_attack = target_w * last_target_v + host_w * host_v
+  # a_attack = target_w * last_target_a + host_w * host_a
+  relative_host_anchor_clean_theta_weight: 1.0
+  relative_host_anchor_host_theta_weight: 0.0
+  relative_host_anchor_target_velocity_weight: 0.1
+  relative_host_anchor_host_velocity_weight: 0.9
+  relative_host_anchor_target_acceleration_weight: 0.1
+  relative_host_anchor_host_acceleration_weight: 0.9
+  # When true, clean_data / mixed_clean_data may re-anchor x/y to the clean
+  # V2V target pose when attack flags are active. When false, keep x/y
+  # continuity from the consensus/rollback estimate even under attack.
+  force_clean_pose_anchor: true
+  # Final output low-pass filter on each target estimate:
+  # x_filt = alpha * x_new + (1 - alpha) * x_prev
+  # lower alpha = smoother but more lag
+  enable_output_low_pass: true
+  output_low_pass_alpha: 1.0
+  # When a target's direct local-state channel is untrusted, use a larger
+  # alpha so host-following motion is not flattened by the output filter.
+  attack_output_low_pass_alpha: 1.0
+
+  # Trust-triggered contamination rollback
+  rollback_enabled: true
+  rollback_window_size: 50
+  # Fast rollback triggers:
+  # - final_trust        = fallback, slower because Dirichlet/EMA has memory
+  # - local_est_check    = fastest reaction to local/direct channel corruption
+  # - global_est_check   = react when fleet cross-check fails even before final
+  rollback_on_final_trust: true
+  rollback_on_local_est_check: true
+  rollback_on_global_est_check: true
+  # Extra safety margin for delayed trust detection:
+  # when rollback seeds from the last trusted target snapshot, step back this
+  # many trusted samples first so replay starts from an older, safer pose.
+  # This is safer against contamination, but it also adds temporal lag because
+  # replay does not start from the most recent trusted sample.
+  rollback_trusted_state_guard_steps: 15
+  # Optional cap for cached trusted snapshots per target. Keep this at least
+  # guard_steps + 1; default code also falls back to rollback_window_size.
+  rollback_trusted_state_history_size: 60
   
-  # Kalman-specific parameters (for trust_kalman type)
-  kalman:
-    process_noise: 0.01           # Q - process noise covariance
-    measurement_noise: 0.1        # R - measurement noise covariance
-    initial_covariance: 1.0       # Initial P matrix diagonal
+
 
 # =====================================================================
 # Vehicle Dynamics Parameters (for prediction models)
 # =====================================================================
 vehicle:
+  vehicle_type: Qcar
+  # Vehicle-model metadata for prediction. The fleet estimator now treats
+  # `observer.dynamics_prediction_mode` as the global switch; use
+  # `vehicle_models.<id>.dynamics_prediction_mode` for explicit per-target
+  # overrides when needed.
+  dynamics_prediction_mode: model
   wheelbase: 0.256                # QCar wheelbase in meters
   max_velocity: 2.0               # Maximum velocity m/s
-  max_acceleration: 5.0           # Maximum acceleration m/s^2
+  max_acceleration: 2.0           # Match real-QCar longitudinal limit used elsewhere
   max_steering: 0.5               # Maximum steering angle rad
+  control_timeout_s: 1.0          # After this, predict targets with constant velocity
+  
+  # Longitudinal-model defaults come from `observer_model_source` above.
+  # The referenced calibration file injects:
+  # - longitudinal_model
+  # - velocity_lag_model / velocity_lag_lookup_model / accel_lag_model
+
+# Optional per-target model overrides. The estimator uses these when predicting
+# each target vehicle; absent IDs inherit the default `vehicle` model above.
+vehicle_models:
+  # Example for a Limo target:
+  # 3:
+  #   vehicle_type: Limo
+  #   dynamics_prediction_mode: dead_reckoning
+  #   wheelbase: 0.2
+  #   max_velocity: 1.2
+  #   max_acceleration: 1.0
+  #   longitudinal_model: velocity_command
+  #   velocity_command_tau: 0.35
+
+timestamp_alignment:
+  enabled: false
+  max_extrapolation_s: 0.5
 
 # =====================================================================
 # Logging and Debugging

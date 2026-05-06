@@ -7,9 +7,10 @@ command sending, telemetry reception, and status tracking.
 """
 
 import socket
-import json
+import msgpack
 import time
 import threading
+import traceback
 from typing import Dict, List, Optional, Any, Callable, Set
 from collections import deque
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ import sys
 import asyncio
 import websockets
 from websockets.server import WebSocketServerProtocol
+import json
 
 # Add qcar directory to path for command_types import
 # Path: controllers -> qcar_gui -> GUI -> qcar (where command_types.py is located)
@@ -611,24 +613,39 @@ class QCarRemoteController:
                 )
 
     def _receive_data(self, car_id: int, conn: socket.socket) -> None:
-        """Receive and process telemetry data from a car."""
-        buffer = ""
+        """Receive and process telemetry data from a car via msgpack."""
+        buffer = b""
 
         try:
             while self.running and car_id in self.cars:
-                data = conn.recv(4096).decode("utf-8")
+                data = conn.recv(65536)
                 if not data:
                     print(f"[Ground Station] Car {car_id} disconnected")
                     break
 
                 buffer += data
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    if line:
-                        self._process_message(car_id, line)
+                while len(buffer) >= 4:
+                    msg_len = int.from_bytes(buffer[:4], byteorder='big')
+                    if len(buffer) < 4 + msg_len:
+                        break
+                    
+                    msg_bytes = buffer[4:4+msg_len]
+                    buffer = buffer[4+msg_len:]
+                    
+                    try:
+                        message = msgpack.unpackb(msg_bytes, strict_map_key=False)
+                        self._process_message_dict(car_id, message)
+                    except Exception as e:
+                        print(
+                            f"[Ground Station] Error decoding/processing message "
+                            f"from Car {car_id}: {e}"
+                        )
+                        traceback.print_exc()
+                        continue
 
         except Exception as e:
             print(f"[Ground Station] Error receiving from Car {car_id}: {e}")
+            traceback.print_exc()
         finally:
             # Clean up car data on disconnection
             self._cleanup_car(car_id)
@@ -673,10 +690,9 @@ class QCarRemoteController:
             f"[Ground Station] Car {car_id} data cleaned up, waiting for reconnection..."
         )
 
-    def _process_message(self, car_id: int, message: str) -> None:
+    def _process_message_dict(self, car_id: int, data: dict) -> None:
         """Process a received message."""
         try:
-            data = json.loads(message)
 
             # Update last data (MERGE instead of overwrite to support partial updates)
             if self.cars[car_id].last_data is None:
@@ -704,7 +720,18 @@ class QCarRemoteController:
             # Ensure 'type' field is always present for the web handler
             if "type" not in ws_data:
                 ws_data["type"] = "telemetry"
-            self._broadcast_to_websockets(ws_data)
+
+            # Prevent raw scope data from being broadcasted to save bandwidth
+            if msg_type == "scope_data":
+                pass
+            else:
+                # For baseline telemetry updates, attach matched scope data explicitly
+                if msg_type == "telemetry" and self.scope_manager and self.scope_manager.is_streaming(car_id):
+                    buffer = self.scope_manager.get_buffer(car_id)
+                    if buffer:
+                        ws_data["fleet_estimation"] = buffer.get_latest_values()
+                
+                self._broadcast_to_websockets(ws_data)
 
             # Update scope manager with vehicle info (e.g. node sequence for path plotting)
             if self.scope_manager and "node_sequence" in data:
@@ -716,22 +743,29 @@ class QCarRemoteController:
 
             # Generate Path if node_sequence is present and roadmap is available
             if self.roadmap and "node_sequence" in data and data["node_sequence"]:
-                try:
-                    # Generate path points (3xN array: x, y, z)
-                    waypoints = self.roadmap.generate_path(data["node_sequence"])
+                node_seq = tuple(data["node_sequence"])
+                # Initialize state if not present
+                if "last_node_sequence" not in self.cars[car_id].last_data:
+                    self.cars[car_id].last_data["last_node_sequence"] = None
+                    self.cars[car_id].last_data["path_x"] = []
+                    self.cars[car_id].last_data["path_y"] = []
+                
+                # Only regenerate path if the sequence has changed
+                if self.cars[car_id].last_data["last_node_sequence"] != node_seq:
+                    try:
+                        # Generate path points (3xN array: x, y, z)
+                        waypoints = self.roadmap.generate_path(data["node_sequence"])
 
-                    # Add path points to data for WebSocket broadcast
-                    ws_data["path_x"] = waypoints[0, :].tolist()
-                    ws_data["path_y"] = waypoints[1, :].tolist()
+                        # Update cache in last_data
+                        self.cars[car_id].last_data["path_x"] = waypoints[0, :].tolist()
+                        self.cars[car_id].last_data["path_y"] = waypoints[1, :].tolist()
+                        self.cars[car_id].last_data["last_node_sequence"] = node_seq
+                    except Exception as e:
+                        print(f"[Ground Station] Error generating path for Car {car_id}: {e}")
 
-                    # Update cache in last_data so new clients get it immediately
-                    self.cars[car_id].last_data["path_x"] = ws_data["path_x"]
-                    self.cars[car_id].last_data["path_y"] = ws_data["path_y"]
-
-                except Exception as e:
-                    print(
-                        f"[Ground Station] Error generating path for Car {car_id}: {e}"
-                    )
+                # Always add cached path points to data for WebSocket broadcast
+                ws_data["path_x"] = self.cars[car_id].last_data["path_x"]
+                ws_data["path_y"] = self.cars[car_id].last_data["path_y"]
 
             self._handle_special_message(car_id, msg_type, data)
 
@@ -772,7 +806,11 @@ class QCarRemoteController:
             elif self.gui_controller and hasattr(
                 self.gui_controller, "process_v2v_status"
             ):
-                self.gui_controller.process_v2v_status(car_id, v2v_data)
+                self._dispatch_gui_callback(
+                    self.gui_controller.process_v2v_status,
+                    car_id,
+                    v2v_data,
+                )
 
         elif msg_type == "platoon_setup_confirm":
             platoon_data = data.get("data", {})
@@ -781,9 +819,25 @@ class QCarRemoteController:
             elif self.gui_controller and hasattr(
                 self.gui_controller, "process_platoon_setup_confirmation"
             ):
-                self.gui_controller.process_platoon_setup_confirmation(
-                    car_id, platoon_data
+                self._dispatch_gui_callback(
+                    self.gui_controller.process_platoon_setup_confirmation,
+                    car_id,
+                    platoon_data,
                 )
+
+    def _dispatch_gui_callback(self, callback: Callable, *args) -> None:
+        """Schedule GUI callbacks on the Tk main thread when available."""
+        if not callback:
+            return
+
+        gui = self.gui_controller
+        root = getattr(gui, "root", None)
+
+        if root and hasattr(root, "after"):
+            root.after(0, lambda: callback(*args))
+            return
+
+        callback(*args)
 
     # ========== Command Sending ==========
 
@@ -815,8 +869,9 @@ class QCarRemoteController:
             return False
 
         try:
-            cmd_str = json.dumps(command_with_metadata) + "\n"
-            self.cars[car_id].sock.sendall(cmd_str.encode("utf-8"))
+            msg_bytes = msgpack.packb(command_with_metadata)
+            length_prefix = len(msg_bytes).to_bytes(4, byteorder='big')
+            self.cars[car_id].sock.sendall(length_prefix + msg_bytes)
 
             # Update statistics
             self.stats.commands_sent += 1
@@ -1127,7 +1182,8 @@ class QCarRemoteController:
     # ========== Scope Streaming Commands ==========
 
     def enable_scope_streaming(
-        self, car_id: int, preset_names: List[str] = None, stream_rate: float = 50.0
+        self, car_id: int, preset_names: List[str] = None, stream_rate: float = 20.0,
+        fleet_size: int = None
     ) -> bool:
         """
         Enable scope data streaming from a vehicle for remote plotting.
@@ -1135,7 +1191,8 @@ class QCarRemoteController:
         Args:
             car_id: Vehicle ID
             preset_names: List of preset names to stream (default: local_state, local_control)
-            stream_rate: Streaming rate in Hz (default 50)
+            stream_rate: Streaming rate in Hz (default 20)
+            fleet_size: Actual fleet size for dynamic fleet field generation
 
         Returns:
             bool: True if command sent successfully
@@ -1143,9 +1200,15 @@ class QCarRemoteController:
         if preset_names is None:
             preset_names = ["local_state", "local_control"]
 
+        # Get fleet_size from V2V status if not provided and fleet_state is requested
+        if fleet_size is None and 'fleet_state' in preset_names:
+            car_data = self.cars.get(car_id)
+            if car_data and car_data.last_data:
+                fleet_size = car_data.last_data.get('v2v_peers', 0) + 1
+
         # Start receiving on scope manager
         if self.scope_manager:
-            self.scope_manager.start_stream(car_id, preset_names)
+            self.scope_manager.start_stream(car_id, preset_names, fleet_size=fleet_size)
 
         return self.send_command(
             car_id,
@@ -1153,6 +1216,7 @@ class QCarRemoteController:
                 "type": CommandType.ENABLE_SCOPE_STREAMING.value,
                 "preset_names": preset_names,
                 "stream_rate": stream_rate,
+                "fleet_size": fleet_size,
             },
         )
 

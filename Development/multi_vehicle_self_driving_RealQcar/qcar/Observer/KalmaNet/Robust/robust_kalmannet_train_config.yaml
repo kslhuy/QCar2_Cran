@@ -1,0 +1,253 @@
+# Robust KalmaNet offline training config
+#
+# State order used by the training loss:
+# [x, y, psi, v]
+# x   : global x position
+# y   : global y position
+# psi : heading / yaw angle
+# v   : speed
+
+# Recorded .npz files used to build the training windows.
+# Replace these example paths with your real datasets.
+datasets:
+  # - "datasets/robust_kalmannet_dataset_V0_20260427_162806.npz"
+  - "datasets/robust_kalmannet_dataset_V0_20260417_094048.npz"
+  # - "datasets/robust_kalmannet_dataset_V0_20260401_170829.npz"
+  # - "datasets/robust_kalmannet_dataset_V0_20260405_180043.npz"
+  # - "datasets/robust_kalmannet_dataset_V0_20260328_211545.npz"
+
+# Base checkpoint output path, relative to this folder.
+# The trainer also writes best/final variants derived from this name.
+output: "models/robust_kalmannet.pt"
+
+# Pull the same calibration-backed longitudinal predictor used by runtime.
+# Profile should match the vehicle used to record the dataset: qcar_real,
+# qcar_sim, or limo.
+observer_model_source: "../../config_local_estimators.yaml"
+observer_model_profile: "qcar_real"
+
+training:
+  # Phase A: predictor-only training. Updater is frozen.
+  phase_a_epochs: 10
+
+  # Phase B: updater-only training. Predictor is frozen.
+  phase_b_epochs: 15
+
+  # Phase C: end-to-end fine tuning of the full model.
+  phase_c_epochs: 5
+
+  # Mini-batch size.
+  batch_size: 128
+
+  # Source of training measurement z:
+  # rebuilt = use offline reconstruction logic from robust_kalmannet_dataset.py
+  # raw     = use the z saved directly in the recorded dataset file
+  measurement_source: "rebuilt"
+
+  # When measurement_source=rebuild, choose how theta is reconstructed
+  # when GPS heading/position is unavailable.
+  # qcar_ekf   = exact local replica of the Quanser QCarEKF heading path
+  # gyro_filter = legacy gyro-integrated heading filter
+  # kinematic   = bicycle-model yaw prediction using v*tan(delta)/L
+  heading_rebuild_mode: "qcar_ekf"
+
+  # How z[x,y] behaves while GPS position is invalid when
+  # measurement_source=rebuilt.
+  # freeze      = hold last valid GPS position
+  # dead_reckon = propagate z[x,y] with heading and wheel speed
+  gps_dropout_xy_mode: "freeze"
+
+  # Sliding-window length for Phases A/B.
+  sequence_length: 50
+
+  # Optional longer sequence for Phase C.
+  # Helps reduce autoregressive drift mismatch.
+  sequence_length_phase_c: 80
+
+  # Use the clean EKF/reference state as x0 during supervised training.
+  # This avoids leaking a corrupted first measurement into every attack window.
+  initial_state_source: "target"
+  
+
+  # Sliding-window step. 1 means maximum overlap.
+  stride: 1
+
+  # Fraction of data reserved for validation.
+  val_split: 0.2
+  val_split_mode: tail # Options: middle, tail, head
+  attacked_validation_enabled: true
+  attacked_validation_weight: 1.5
+  attacked_validation_seed: 1007
+
+  # Initial learning rate.
+  lr: 1.0e-4
+
+  # Learning rate used when Phase C starts.
+  # null means use lr / 5 automatically.
+  lr_phase2: null
+
+  # Gradient clipping threshold. Set 0 to disable.
+  grad_clip: 1.0
+
+  # Number of background DataLoader workers.
+  # 0 = load batches in the main process.
+  num_workers: 0
+
+  # Use pinned host memory to speed up CPU -> GPU copies.
+  # Only has an effect when training on CUDA.
+  pin_memory: false
+
+  # Random seed for reproducibility.
+  seed: 7
+
+  # auto = CUDA if available, else CPU.
+  device: "auto"
+
+  # false = train on early time segment, validate on later segment.
+  # true  = validate on early time segment, train on later segment.
+  reverse_split: false
+
+  # Curriculum learning: fraction of Phase B epochs that train on clean
+  # data before augmentation is introduced.
+  # 0.0 = augmentation from epoch 1 (no warmup).
+  # 0.5 = first 50% of Phase B is clean, then attack prob ramps to target.
+  # 1.0 = entire Phase B is clean (augmentation only in Phase C).
+  aug_warmup_fraction: 0.2
+
+  # Minimum validation improvement required to reset early stopping.
+  early_stop_min_delta: 0.0
+
+  # Per-phase early stopping patience.
+  # 0 disables early stopping for that phase.
+  early_stop_phase_a_patience: 0
+  early_stop_phase_b_patience: 8
+  early_stop_phase_c_patience: 3
+
+loss:
+  # Weight for predictor mask supervision loss.
+  # Encourages the prediction-side mask to suppress attacked sensor branches.
+  lambda_mask: 0.5
+
+  # Weight for measurement mask supervision loss.
+  # Encourages the update-side mask to suppress corrupted measurement channels.
+  lambda_meas_mask: 0.5
+
+  # Weight of prediction-state loss in Phase C.
+  # Higher = care more about x_pred quality.
+  lambda_pred: 0.15
+
+  # Weight of update-state loss in Phase C.
+  # Higher = care more about final corrected state x_upd.
+  lambda_upd: 0.85
+
+  # Per-state weights inside the state MSE:
+  # [x, y, psi, v]
+  #
+  # Current setting means:
+  # x   -> 1.0
+  # y   -> 1.0
+  # psi -> 2.0   (heading error is emphasized, but no longer dominates)
+  # v   -> 1.0
+  #
+  # Increase a value if that state matters more.
+  # Decrease a value if that state is noisy or dominates training too much.
+  state_weights: [1.0, 1.0, 2.5, 1.2]
+
+  # Weight for Kalman gain magnitude regularization.
+  # Penalizes large gains to encourage conservative corrections.
+  lambda_gain: 0.01
+
+  # Weight for temporal Kalman gain smoothness.
+  # Penalizes frame-to-frame gain chatter without forcing all gains to zero.
+  lambda_gain_smooth: 0.02
+
+  # Weight for temporal measurement-mask smoothness.
+  lambda_meas_mask_smooth: 0.01
+
+augmentation:
+  # true  = apply synthetic attacks during training.
+  # false = train on clean data only.
+  enabled: true
+
+  # Available synthetic attack types:
+  # bias     = add constant offset
+  # scale    = multiply signal
+  # freeze   = hold signal constant
+  # noise    = add random noise
+  # ramp     = add drifting corruption
+  # zero_out = set signal to zero
+  attack_types: ["bias", "scale", "freeze", "noise", "ramp", "zero_out"]
+
+  # Single control for the augmentation curriculum:
+  # measurement_only = attack updater measurements/GPS only
+  # mixed            = use both raw-branch and measurement attacks
+  attack_mode: mixed
+
+  # Probability that one sample receives raw-branch augmentation in mixed mode.
+  attack_prob: 0.25
+  branch_attack_probs:
+    imu: 0.45
+    steer: 0.20
+    wheel: 0.35
+  # When a raw branch is attacked in mixed mode, optionally mirror that corruption
+  # into the derived measurement channels.
+  meas_attack_prob: 0.35
+
+  # Independent probability of directly attacking updater measurement channels [psi, v].
+  direct_meas_attack_prob: 0.35
+
+  # Maximum number of sensor branches attacked at once.
+  max_branches_attacked: 1
+
+  # Independent GPS-position augmentation for the measurement vector z=[x,y,psi,v].
+  # These attacks teach the update mask/gain to avoid snapping to bad GPS x/y.
+  gps_attack_prob: 0.45
+  gps_attack_types: ["noise", "freeze", "jump", "dropout", "reacquisition"]
+  gps_noise_std_range: [0.05, 0.35]    # meters
+  gps_jump_range: [0.30, 1.50]         # meters
+  gps_reacq_jump_range: [0.20, 1.00]   # meters
+  gps_dropout_min_fraction: 0.25
+  gps_dropout_max_fraction: 0.85
+
+model:
+  # Predictor implementation:
+  # nn        = learned neural predictor
+  # kinematic = analytical QCar bicycle model
+  #
+  # Note: if set to kinematic, Phase A is skipped automatically.
+  predictor_mode: "kinematic"
+  kin_wheelbase: 0.2
+  # Filled from observer_model_source above unless explicitly overridden here.
+  longitudinal_model: ""
+  # Longitudinal velocity prediction used by the analytical kinematic predictor.
+  # tachometer        = legacy behavior, v_next = motor_tach, so z_v innovation is near zero.
+  # imu_acceleration  = v_next = v_prev + ax * dt.
+  # velocity_lag      = v_dot = (-v + velocity_gain * throttle) / tau.
+  # velocity_command  = throttle slot is treated as desired velocity.
+  # simple_acceleration = throttle slot is treated as acceleration.
+  kin_velocity_model: "velocity_lag"
+  kin_velocity_tau: 0.301
+  kin_velocity_gain: 6.598
+  kin_max_velocity: 2.0
+  kin_max_acceleration: 2.0
+
+  # Hidden sizes. Keep these aligned with
+  # qcar/Observer/config_local_estimators.yaml at runtime.
+  pred_hidden: 32
+  upd_hidden: 32
+  gain_hidden: 32
+  pred_mlp_hidden: 32
+  mask_hidden: 32
+  gain_tanh_scale: 1.2
+  update_mask_init_bias: 2.2
+  apply_meas_mask_to_innovation: true
+
+  # Scale-based normalization keeps physical anomaly magnitude. L2/unit
+  # normalization can magnify tiny clean-case innovations into noisy directions.
+  normalize_updater_features: true
+  updater_feature_normalization: "scale"
+  updater_state_scale: [0.25, 0.25, 0.20, 0.50]
+  updater_measurement_scale: [0.25, 0.25, 0.20, 0.50]
+  gain_smoothing_alpha: 0.35
+  meas_mask_smoothing_alpha: 0.35
+  max_update_correction: [0.35, 0.35, 0.35, 0.80]

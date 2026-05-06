@@ -335,6 +335,76 @@ class TestAttackModule(unittest.TestCase):
         # X should have +15.0 bias: 100.0 + 15.0 = 115.0
         self.assertAlmostEqual(modified['x'], 115.0, places=5)
         print(f"  ✓ Bias attack test passed (100.0 + 15.0 = {modified['x']})")
+
+    def test_attack_status_includes_local_value_snapshot(self):
+        """Test attack status exposes original/modified local values."""
+        scenario = make_scenario(
+            attacker_id=1,
+            victim_ids=-1,
+            t_start=0.0,
+            t_end=100.0,
+            modification_type='scaling',
+            intensity=0.5,
+            data_type='local',
+            target_fields=['velocity'],
+        )
+        self.attack_module.add_scenario(scenario)
+        self.attack_module.update(5.0)
+
+        local_state = {
+            'vehicle_id': 1,
+            'x': 100.0,
+            'y': 50.0,
+            'theta': 0.5,
+            'velocity': 10.0,
+            'acceleration': 0.1,
+            'source': 'local_sensors',
+        }
+        self.attack_module.apply_attack_to_local_state(local_state)
+
+        status = self.attack_module.get_attack_status()
+        snapshot = status.get('attack_value_snapshot', {}).get('by_vehicle', {}).get(1, {})
+        velocity_snapshot = snapshot.get('values', {}).get('velocity', {})
+
+        self.assertAlmostEqual(velocity_snapshot.get('original'), 10.0, places=5)
+        self.assertAlmostEqual(velocity_snapshot.get('modified'), 5.0, places=5)
+        self.assertAlmostEqual(velocity_snapshot.get('delta'), -5.0, places=5)
+        print("  ✓ Local attack value snapshot test passed")
+
+    def test_attack_status_includes_fleet_value_snapshot(self):
+        """Test attack status exposes original/modified fleet values per victim."""
+        scenario = make_scenario(
+            attacker_id=1,
+            victim_ids=[2],
+            t_start=0.0,
+            t_end=100.0,
+            modification_type='zero',
+            intensity=0.0,
+            data_type='fleet',
+            target_fields=['velocity'],
+            attack_type='DoS',
+        )
+        self.attack_module.add_scenario(scenario)
+        self.attack_module.update(5.0)
+
+        fleet_state = {
+            'sender_id': 1,
+            'fleet_states': {
+                1: {'x': 100.0, 'y': 50.0, 'theta': 0.5, 'velocity': 5.0, 'confidence': 0.95},
+                2: {'x': 110.0, 'y': 50.0, 'theta': 0.5, 'velocity': 5.0, 'confidence': 0.90},
+            },
+            'source': 'fleet_consensus',
+        }
+        self.attack_module.apply_attack_to_fleet_state(fleet_state)
+
+        status = self.attack_module.get_attack_status()
+        snapshot = status.get('attack_value_snapshot', {}).get('by_vehicle', {}).get(2, {})
+        velocity_snapshot = snapshot.get('values', {}).get('velocity', {})
+
+        self.assertAlmostEqual(velocity_snapshot.get('original'), 5.0, places=5)
+        self.assertAlmostEqual(velocity_snapshot.get('modified'), 0.0, places=5)
+        self.assertAlmostEqual(velocity_snapshot.get('delta'), -5.0, places=5)
+        print("  ✓ Fleet attack value snapshot test passed")
     
     def test_clear_scenarios(self):
         """Test clearing all scenarios."""

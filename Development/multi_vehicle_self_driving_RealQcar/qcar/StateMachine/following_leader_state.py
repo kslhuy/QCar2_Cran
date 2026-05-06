@@ -31,12 +31,14 @@ if parent_dir not in sys.path:
 
 try:
     from command_handler import CommandType
+    from Controller.longitudinal_controllers import ControllerFactory
 
     COMMAND_TYPE_AVAILABLE = True
 except ImportError as e:
     print(f"ERROR: Cannot import CommandType: {e}")
     COMMAND_TYPE_AVAILABLE = False
     CommandType = None
+    ControllerFactory = None
 
 
 class FollowingLeaderState(StateBase):
@@ -59,6 +61,27 @@ class FollowingLeaderState(StateBase):
         self._route_xy = None
         self._route_s_axis = None
         self._route_track_length = 0.0
+        self.reverse_follow_config: Dict[str, Any] = {}
+        self.sensor_acc_config: Dict[str, Any] = {}
+        self.leader_state_source_config: Dict[str, Any] = {}
+        self.sensor_acc_controller = None
+        self._reverse_follow_active = False
+        self._reverse_heading_limit_rad = np.deg2rad(20.0)
+        self._sensor_acc_distance_filtered: Optional[float] = None
+
+        self._prev_u = 0.0
+        self._prev_delta = 0.0
+
+    def _smooth_cmd(self, raw: float, prev: float, dt: float, alpha: float, rise_rate: float, fall_rate: float) -> float:
+        if prev is None or dt <= 1e-6:
+            return raw
+
+        if raw > prev:
+            limited = min(raw, prev + rise_rate * dt)
+        else:
+            limited = max(raw, prev - fall_rate * dt)
+
+        return alpha * prev + (1.0 - alpha) * limited
 
     def enter(self) -> bool:
         """Initialize leader following mode"""
@@ -89,6 +112,9 @@ class FollowingLeaderState(StateBase):
 
         # Get controllers from ControllerManager
         self._init_controllers()
+        self._load_reverse_follow_config()
+        self._load_sensor_acc_config()
+        self._load_leader_state_source_config()
 
         return True
 
@@ -131,6 +157,226 @@ class FollowingLeaderState(StateBase):
         # Build projection cache once on entry (refreshes automatically if path object changes)
         self._refresh_route_projection_cache()
 
+    def _load_reverse_follow_config(self):
+        """Load conservative reverse-follow safety limits from controller config."""
+        reverse_cfg = {
+            "enabled": False,
+            "trigger_velocity_threshold": -0.03,
+            "max_reverse_throttle": 0.08,
+            "max_reverse_speed": 0.12,
+            "min_gap": 0.20,
+            "max_gap": 0.90,
+            "max_heading_error_deg": 20.0,
+            "reverse_steering_gain": 0.5,
+            "stop_on_v2v_loss": True,
+        }
+
+        controller_config = getattr(
+            getattr(self.vehicle_logic, "controller_manager", None), "config", None
+        )
+        if controller_config and hasattr(
+            controller_config, "get_leader_reverse_follow_config"
+        ):
+            reverse_cfg.update(controller_config.get_leader_reverse_follow_config())
+
+        self.reverse_follow_config = reverse_cfg
+        self._reverse_heading_limit_rad = np.deg2rad(
+            max(float(reverse_cfg.get("max_heading_error_deg", 20.0)), 0.0)
+        )
+
+    def _load_sensor_acc_config(self):
+        """Load optional local sensor ACC branch for close-range stop control."""
+        sensor_cfg = {
+            "enabled": False,
+            "blend_alpha": 0.7,
+            "desired_distance": 0.35,
+            "time_headway": 0.0,
+            "distance_gain": 1.0,
+            "min_target_velocity": 0.0,
+            "max_target_velocity": 0.8,
+            "stop_distance": 0.20,
+            "max_distance": 2.0,
+            "max_offset": 0.75,
+            "distance_smoothing": 0.6,
+        }
+
+        controller_manager = getattr(self.vehicle_logic, "controller_manager", None)
+        controller_config = getattr(controller_manager, "config", None)
+        if controller_config and hasattr(controller_config, "get_leader_sensor_acc_config"):
+            sensor_cfg.update(controller_config.get_leader_sensor_acc_config())
+
+        self.sensor_acc_config = sensor_cfg
+        self.sensor_acc_controller = None
+        self._sensor_acc_distance_filtered = None
+
+        if not sensor_cfg.get("enabled", False) or ControllerFactory is None:
+            return
+
+        try:
+            params = {"vehicle_type": getattr(controller_manager, "vehicle_type", "QCar")}
+            self.sensor_acc_controller = ControllerFactory.create(
+                "sensor_acc",
+                params,
+                logger=self.logger,
+                config=controller_config,
+            )
+        except Exception as exc:
+            self.logger.logger.warning(
+                f"[FOLLOW] Failed to initialize sensor ACC helper: {exc}"
+            )
+            self.sensor_acc_controller = None
+
+    def _load_leader_state_source_config(self):
+        """Load leader-state source selection for controller inputs."""
+        source_cfg = {
+            "mode": "direct_v2v_attacked",
+            "fallback_to_v2v": True,
+        }
+
+        controller_manager = getattr(self.vehicle_logic, "controller_manager", None)
+        controller_config = getattr(controller_manager, "config", None)
+        if controller_config and hasattr(
+            controller_config, "get_leader_longitudinal_state_source_config"
+        ):
+            source_cfg.update(
+                controller_config.get_leader_longitudinal_state_source_config()
+            )
+
+        self.leader_state_source_config = source_cfg
+        self.logger.logger.info(
+            "[FOLLOW] Leader state source: "
+            f"{source_cfg.get('mode', 'direct_v2v_attacked')}"
+        )
+
+    @staticmethod
+    def _wrap_to_pi(angle: float) -> float:
+        """Wrap angle to [-pi, pi)."""
+        return (angle + np.pi) % (2 * np.pi) - np.pi
+
+    def _compute_leader_gap(
+        self, follower_state: Dict[str, float], leader_state: Dict[str, float]
+    ) -> float:
+        """Use Euclidean gap for reverse safety gating."""
+        dx = float(leader_state["x"]) - float(follower_state["x"])
+        dy = float(leader_state["y"]) - float(follower_state["y"])
+        return float(np.hypot(dx, dy))
+
+    def _get_reverse_gate_status(
+        self,
+        follower_state: Dict[str, float],
+        leader_state: Dict[str, float],
+        v2v_data: Optional[Dict[str, Any]],
+    ) -> Tuple[bool, str]:
+        """Evaluate reverse-follow intent and local safety gates."""
+        cfg = self.reverse_follow_config
+        if not cfg.get("enabled", False):
+            return False, "disabled"
+
+        if v2v_data is None:
+            return False, "v2v_lost"
+
+        leader_velocity = float(leader_state.get("velocity", 0.0))
+        if leader_velocity >= float(cfg.get("trigger_velocity_threshold", -0.03)):
+            return False, "leader_not_reversing"
+
+        gap = self._compute_leader_gap(follower_state, leader_state)
+        if gap < float(cfg.get("min_gap", 0.20)):
+            return False, "gap_too_small"
+        if gap > float(cfg.get("max_gap", 0.90)):
+            return False, "gap_too_large"
+
+        heading_error = abs(
+            self._wrap_to_pi(
+                float(leader_state.get("theta", 0.0))
+                - float(follower_state.get("theta", 0.0))
+            )
+        )
+        if heading_error > self._reverse_heading_limit_rad:
+            return False, "heading_mismatch"
+
+        return True, "ok"
+
+    def _should_activate_reverse_follow(
+        self,
+        follower_state: Dict[str, float],
+        leader_state: Dict[str, float],
+        v2v_data: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Reverse-follow is allowed only when reverse intent and safety both pass."""
+        reverse_ok, _ = self._get_reverse_gate_status(
+            follower_state, leader_state, v2v_data
+        )
+        return reverse_ok
+
+    def _should_force_reverse_stop(
+        self,
+        follower_state: Dict[str, float],
+        leader_state: Dict[str, float],
+        v2v_data: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Hold stop if leader is trying to reverse but local safety gates fail."""
+        cfg = self.reverse_follow_config
+        if not cfg.get("enabled", False):
+            return False
+
+        if v2v_data is None:
+            return self._reverse_follow_active and bool(cfg.get("stop_on_v2v_loss", True))
+
+        leader_velocity = float(leader_state.get("velocity", 0.0))
+        if leader_velocity >= float(cfg.get("trigger_velocity_threshold", -0.03)):
+            return False
+
+        reverse_ok, _ = self._get_reverse_gate_status(
+            follower_state, leader_state, v2v_data
+        )
+        return not reverse_ok
+
+    def _get_reverse_steering_limit(self) -> float:
+        """Extract the steering clamp from active controllers when available."""
+        for controller in (self.lateral_controller, self.steering_controller):
+            if controller is None:
+                continue
+            for attr in ("max_steering", "max_steering_angle"):
+                value = getattr(controller, attr, None)
+                if value is not None:
+                    return abs(float(value))
+        return 0.5
+
+    def _compute_reverse_steering(
+        self,
+        follower_state: Dict[str, float],
+        leader_state: Dict[str, float],
+    ) -> float:
+        """Track a point behind the leader and invert steering for reverse motion."""
+        desired_gap = float(
+            np.clip(
+                max(
+                    float(self.reverse_follow_config.get("min_gap", 0.20)),
+                    float(getattr(self.longitudinal_controller, "s0", 0.20)),
+                ),
+                float(self.reverse_follow_config.get("min_gap", 0.20)),
+                float(self.reverse_follow_config.get("max_gap", 0.90)),
+            )
+        )
+
+        leader_theta = float(leader_state.get("theta", 0.0))
+        target_x = float(leader_state["x"]) - desired_gap * np.cos(leader_theta)
+        target_y = float(leader_state["y"]) - desired_gap * np.sin(leader_theta)
+
+        dx = target_x - float(follower_state["x"])
+        dy = target_y - float(follower_state["y"])
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            return 0.0
+
+        target_angle = float(np.arctan2(dy, dx))
+        heading_error = self._wrap_to_pi(target_angle - float(follower_state["theta"]))
+        steering_cmd = -float(
+            self.reverse_follow_config.get("reverse_steering_gain", 0.5)
+        ) * heading_error
+
+        steering_limit = self._get_reverse_steering_limit()
+        return float(np.clip(steering_cmd, -steering_limit, steering_limit))
+
     def update(
         self, dt: float, sensor_data: Dict[str, Any]
     ) -> Tuple[float, float, Optional[Tuple[VehicleState, StateTransitionReason]]]:
@@ -152,6 +398,7 @@ class FollowingLeaderState(StateBase):
         # Extract basic sensor data
         x, y, theta = sensor_data["x"], sensor_data["y"], sensor_data["theta"]
         velocity = sensor_data["velocity"]
+        acceleration = float(sensor_data.get("acceleration", 0.0))
         yolo_data = sensor_data.get("yolo_data", {})
 
         # Update Data for PlatoonController (perception and V2V data)
@@ -161,10 +408,12 @@ class FollowingLeaderState(StateBase):
         v2v_data = self._get_v2v_leader_data()
 
         # Compute control using PlatoonController (pass yolo_data for turning detection)
-        u, delta = self._compute_control(dt, x, y, theta, velocity, v2v_data, yolo_data)
+        u, delta = self._compute_control(
+            dt, x, y, theta, velocity, acceleration, v2v_data, yolo_data
+        )
 
         # Enhanced periodic logging for debugging
-        self._log_status(velocity, u, v2v_data)
+        # self._log_status(velocity, u, v2v_data)
 
         return u, delta, None
 
@@ -320,8 +569,132 @@ class FollowingLeaderState(StateBase):
 
         return is_turning, direction, curvature
 
+    def _update_sensor_acc_distance(self, yolo_data: Optional[Dict[str, Any]]) -> Optional[float]:
+        """Filter YOLO leader distance for close-range stop protection."""
+        if not self.sensor_acc_config.get("enabled", False):
+            self._sensor_acc_distance_filtered = None
+            return None
+
+        yolo_data = yolo_data or {}
+        cars_detected = yolo_data.get("cars", [])
+        if isinstance(cars_detected, np.ndarray):
+            has_car = cars_detected.any() if cars_detected.size > 0 else False
+        elif isinstance(cars_detected, (list, tuple)):
+            has_car = any(cars_detected)
+        else:
+            has_car = bool(cars_detected) if cars_detected is not None else False
+
+        measured_distance = yolo_data.get("car_dist", None)
+        measured_offset = yolo_data.get("car_offset", None)
+
+        if not has_car or measured_distance is None:
+            self._sensor_acc_distance_filtered = None
+            return None
+
+        try:
+            distance_value = float(measured_distance)
+        except (TypeError, ValueError):
+            self._sensor_acc_distance_filtered = None
+            return None
+
+        if not np.isfinite(distance_value) or distance_value <= 0.0:
+            self._sensor_acc_distance_filtered = None
+            return None
+
+        max_distance = float(self.sensor_acc_config.get("max_distance", 2.0))
+        if distance_value > max_distance:
+            self._sensor_acc_distance_filtered = None
+            return None
+
+        if measured_offset is not None:
+            try:
+                offset_value = abs(float(measured_offset))
+            except (TypeError, ValueError):
+                offset_value = 0.0
+            if offset_value > float(self.sensor_acc_config.get("max_offset", 0.75)):
+                self._sensor_acc_distance_filtered = None
+                return None
+
+        alpha = float(np.clip(self.sensor_acc_config.get("distance_smoothing", 0.6), 0.0, 0.99))
+        if self._sensor_acc_distance_filtered is None:
+            self._sensor_acc_distance_filtered = distance_value
+        else:
+            self._sensor_acc_distance_filtered = (
+                alpha * self._sensor_acc_distance_filtered
+                + (1.0 - alpha) * distance_value
+            )
+
+        return float(self._sensor_acc_distance_filtered)
+
+    def _blend_sensor_acc_command(
+        self,
+        base_u: float,
+        follower_state: Dict[str, Any],
+        leader_state: Dict[str, Any],
+        dt: float,
+    ) -> float:
+        """Blend local close-range ACC with V2V CACC near the leader bumper."""
+        if self.sensor_acc_controller is None:
+            return base_u
+
+        measured_distance = follower_state.get("sensor_leader_distance_filtered")
+        if measured_distance is None:
+            return base_u
+
+        sensor_u = self.sensor_acc_controller.compute_throttle(
+            follower_state, leader_state, dt
+        )
+
+        stop_distance = float(self.sensor_acc_config.get("stop_distance", 0.20))
+        desired_distance = max(
+            float(self.sensor_acc_config.get("desired_distance", stop_distance)),
+            stop_distance + 1e-3,
+        )
+        proximity_ratio = float(
+            np.clip(
+                (float(measured_distance) - stop_distance)
+                / max(desired_distance - stop_distance, 1e-3),
+                0.0,
+                1.0,
+            )
+        )
+        blend_alpha = float(
+            np.clip(self.sensor_acc_config.get("blend_alpha", 0.7), 0.0, 1.0)
+        )
+        effective_alpha = blend_alpha * proximity_ratio
+        return float(effective_alpha * base_u + (1.0 - effective_alpha) * sensor_u)
+
+    def _should_hold_stop(
+        self,
+        follower_state: Dict[str, Any],
+        leader_state: Dict[str, Any],
+    ) -> bool:
+        """Hold zero command once the follower reaches the stand-off zone."""
+        leader_speed = abs(float(leader_state.get("velocity", 0.0)))
+        follower_speed = abs(float(follower_state.get("velocity", 0.0)))
+        if leader_speed > 0.05 or follower_speed > 0.12:
+            return False
+
+        measured_gap = follower_state.get("sensor_leader_distance_filtered")
+        if measured_gap is not None:
+            stop_target = float(
+                self.sensor_acc_config.get(
+                    "desired_distance",
+                    getattr(self.longitudinal_controller, "s0", 0.2),
+                )
+            )
+            stop_margin = 0.03
+            return float(measured_gap) <= stop_target + stop_margin
+
+        along_track_gap = follower_state.get("along_track_gap")
+        if along_track_gap is None:
+            return False
+
+        stop_target = float(getattr(self.longitudinal_controller, "s0", 0.2))
+        return float(along_track_gap) <= stop_target + 0.02
+
     def _get_v2v_leader_data(self) -> Optional[Dict[str, Any]]:
-        """Get leader data from V2V"""
+        """Get leader data for control from the configured source."""
         if not hasattr(self.vehicle_logic, "platoon_controller"):
             return None
 
@@ -334,11 +707,23 @@ class FollowingLeaderState(StateBase):
             # TODO : Consider transitioning back to FOLLOWING_PATH state
             return None
 
-        # TODO: Should have the choice to use data direct from v2v_manager or Estimated by Observer
-        v2v_data = (
-            self.vehicle_logic.platoon_controller.get_direct_leader_data_from_v2v(
-                self.vehicle_logic.v2v_manager, self.vehicle_logic.vehicle_id
-            )
+        source_mode = str(
+            self.leader_state_source_config.get("mode", "direct_v2v_attacked")
+        ).strip().lower()
+        if source_mode == "fleet_estimator":
+            leader_data = self._get_leader_data_from_fleet_estimator()
+            if leader_data is not None:
+                return leader_data
+
+            if not bool(self.leader_state_source_config.get("fallback_to_v2v", True)):
+                return None
+            source_mode = "direct_v2v_attacked"
+
+        v2v_channel = "clean" if source_mode == "direct_v2v_clean" else "attacked"
+        v2v_data = self.vehicle_logic.platoon_controller.get_direct_leader_data_from_v2v(
+            self.vehicle_logic.v2v_manager,
+            self.vehicle_logic.vehicle_id,
+            channel=v2v_channel,
         )
 
         # Log V2V data status occasionally for debugging
@@ -347,11 +732,55 @@ class FollowingLeaderState(StateBase):
             and self.vehicle_logic.loop_counter % 1000 == 0
         ):
             if v2v_data is not None:
-                self.logger.logger.debug(f"[FOLLOW] V2V Leader data available")
+                self.logger.logger.debug(
+                    f"[FOLLOW] Leader data available from {source_mode}"
+                )
             else:
-                self.logger.logger.debug(f"[FOLLOW] No V2V leader data received")
+                self.logger.logger.debug(
+                    f"[FOLLOW] No leader data received from {source_mode}"
+                )
 
         return v2v_data
+
+    def _get_leader_data_from_fleet_estimator(self) -> Optional[Dict[str, Any]]:
+        """Get direct leader state from the fleet estimator output."""
+        observer = getattr(self.vehicle_logic, "vehicle_observer", None)
+        platoon_controller = getattr(self.vehicle_logic, "platoon_controller", None)
+        if observer is None or platoon_controller is None:
+            return None
+
+        if not hasattr(platoon_controller, "get_direct_leader_vehicle_id"):
+            return None
+
+        leader_vehicle_id = platoon_controller.get_direct_leader_vehicle_id()
+        if leader_vehicle_id is None:
+            return None
+
+        if not hasattr(observer, "get_vehicle_state"):
+            return None
+
+        leader_state = observer.get_vehicle_state(leader_vehicle_id)
+        if leader_state is None or len(leader_state) < 4:
+            return None
+
+        acceleration = float(leader_state[4]) if len(leader_state) > 4 else 0.0
+        data = {
+            "x": float(leader_state[0]),
+            "y": float(leader_state[1]),
+            "theta": float(leader_state[2]),
+            "velocity": float(leader_state[3]),
+            "acceleration": acceleration,
+            "source": "fleet_estimator",
+        }
+
+        if (
+            hasattr(self.vehicle_logic, "loop_counter")
+            and self.vehicle_logic.loop_counter % 1000 == 0
+        ):
+            self.logger.logger.debug(
+                f"[FOLLOW] Using fleet estimator leader state from vehicle {leader_vehicle_id}"
+            )
+        return data
 
     def _normalize_waypoint_sequence(self, waypoint_sequence) -> Optional[np.ndarray]:
         """Normalize waypoint sequence to shape [N, 2]."""
@@ -499,6 +928,7 @@ class FollowingLeaderState(StateBase):
         y: float,
         theta: float,
         velocity: float,
+        acceleration: float,
         v2v_data: Optional[Dict[str, Any]],
         yolo_data: Dict[str, Any] = None,
     ) -> Tuple[float, float]:
@@ -507,6 +937,14 @@ class FollowingLeaderState(StateBase):
 
         # No V2V data - stop
         if v2v_data is None:
+            if (
+                self._reverse_follow_active
+                and self.reverse_follow_config.get("stop_on_v2v_loss", True)
+            ):
+                self.logger.logger.warning(
+                    "[FOLLOW] Reverse follow halted: V2V leader data lost"
+                )
+            self._reverse_follow_active = False
             if (
                 hasattr(self.vehicle_logic, "loop_counter")
                 and self.vehicle_logic.loop_counter % 200 == 0
@@ -521,6 +959,7 @@ class FollowingLeaderState(StateBase):
         is_turning, turn_direction, curvature = self._detect_turning_section(
             yolo_data or {}, theta, leader_theta
         )
+        sensor_gap = self._update_sensor_acc_distance(yolo_data)
 
         # Prepare follower state with turning context
         follower_state = {
@@ -528,12 +967,18 @@ class FollowingLeaderState(StateBase):
             "y": y,
             "theta": theta,
             "velocity": velocity,
+            "acceleration": acceleration,
             "target_velocity": base_velocity,
+            # "motor_tach": float(sensor_data.get("motor_tach", velocity)),
+            # "battery_voltage": float(sensor_data.get("battery_voltage", 0.0)),
             # Turning context for dynamic lookahead
             "is_turning": is_turning,
             "turn_direction": turn_direction,
             "curvature": curvature,
         }
+        if sensor_gap is not None:
+            follower_state["sensor_leader_distance"] = float(sensor_gap)
+            follower_state["sensor_leader_distance_filtered"] = float(sensor_gap)
 
         # Prepare leader state from V2V data
         leader_x = v2v_data.get("x", 0.0)
@@ -548,6 +993,8 @@ class FollowingLeaderState(StateBase):
 
         # Compute path-based along-track gap when route waypoints are available.
         along_track = self._compute_along_track_gap(x, y, leader_x, leader_y)
+        # leader_state.get("path_d"), it is looking at a value that was entirely computed locally by the follower car based purely on the raw 
+        # (x, y) coordinates the leader sent over the network.
         if along_track is not None:
             gap_s, follower_frenet, leader_frenet = along_track
             follower_state["along_track_gap"] = gap_s
@@ -556,30 +1003,90 @@ class FollowingLeaderState(StateBase):
             leader_state["path_s"] = leader_frenet[0]
             leader_state["path_d"] = leader_frenet[1]
 
-        # Compute throttle using modular longitudinal controller
-        u = self.longitudinal_controller.compute_throttle(
-            follower_state, leader_state, dt
+        reverse_follow_active = self._should_activate_reverse_follow(
+            follower_state, leader_state, v2v_data
+        )
+        reverse_follow_blocked = self._should_force_reverse_stop(
+            follower_state, leader_state, v2v_data
         )
 
-        # Compute steering based on lateral control mode
-        if self.lateral_controller_type in ("path", "pp_map"):
-            # Path-following mode: use steering controller with waypoints
-            delta = self._compute_path_steering(x, y, theta, velocity)
-        elif self.lateral_controller_type in ("fusion", "fusion_lateral"):
-            # Fusion mode: combines path steering with leader tracking
-            delta = self._compute_fusion_steering(
-                x, y, theta, velocity, leader_state, dt
+        if reverse_follow_active:
+            reverse_speed_target = min(
+                abs(float(leader_state.get("velocity", 0.0))),
+                float(self.reverse_follow_config.get("max_reverse_speed", 0.12)),
             )
-        else:
-            # Leader-following mode: use lateral controller to follow leader position
-            delta = self.lateral_controller.compute_steering(
+            follower_state["reverse_follow_active"] = True
+            follower_state["reverse_follow_config"] = dict(self.reverse_follow_config)
+            follower_state["target_velocity"] = -reverse_speed_target
+
+            u = self.longitudinal_controller.compute_throttle(
                 follower_state, leader_state, dt
             )
+            delta = self._compute_reverse_steering(follower_state, leader_state)
+            self.vehicle_logic.v_ref_actual = -reverse_speed_target
+            self._reverse_follow_active = True
+        elif reverse_follow_blocked:
+            follower_state["reverse_follow_active"] = False
+            follower_state["reverse_follow_blocked"] = True
+            follower_state["target_velocity"] = 0.0
+            u = 0.0
+            delta = 0.0
+            self.vehicle_logic.v_ref_actual = 0.0
+            self._reverse_follow_active = False
+        else:
+            self._reverse_follow_active = False
+
+            # Compute throttle using modular longitudinal controller
+            u = self.longitudinal_controller.compute_throttle(
+                follower_state, leader_state, dt
+            )
+            u = self._blend_sensor_acc_command(u, follower_state, leader_state, dt)
+
+            # Compute steering based on lateral control mode
+            if self.lateral_controller_type in ("path", "pp_map"):
+                # Path-following mode: use steering controller with waypoints
+                delta = self._compute_path_steering(x, y, theta, velocity)
+            elif self.lateral_controller_type in ("fusion", "fusion_lateral"):
+                # Fusion mode: combines path steering with leader tracking
+                delta = self._compute_fusion_steering(
+                    follower_state, leader_state, dt
+                )
+            else:
+                # Leader-following mode: use lateral controller to follow leader position
+                delta = self.lateral_controller.compute_steering(
+                    follower_state, leader_state, dt
+                )
+
+            # Record actual target speed for scope display
+            self.vehicle_logic.v_ref_actual = base_velocity
+
+            if self._should_hold_stop(follower_state, leader_state):
+                u = 0.0
+                self.vehicle_logic.v_ref_actual = 0.0
 
         # Log following leader control data
         self.logger.log_following_leader_control(
             follower_state=follower_state, leader_state=leader_state, u=u, delta=delta
         )
+
+        # Apply unified command smoothing
+        if hasattr(self.vehicle_logic, "controller_manager"):
+            cm = self.vehicle_logic.controller_manager
+            if hasattr(cm, "config") and hasattr(cm.config, "get_command_smoothing_config"):
+                smooth_cfg = cm.config.get_command_smoothing_config()
+                long_cfg = smooth_cfg.get("longitudinal", {})
+                lat_cfg = smooth_cfg.get("lateral", {})
+                u = self._smooth_cmd(u, self._prev_u, dt, 
+                                     long_cfg.get("alpha", 0.7),
+                                     long_cfg.get("rise_rate", 0.25),
+                                     long_cfg.get("fall_rate", 0.40))
+                delta = self._smooth_cmd(delta, self._prev_delta, dt,
+                                         lat_cfg.get("alpha", 0.8),
+                                         lat_cfg.get("rise_rate", 1.0),
+                                         lat_cfg.get("fall_rate", 1.0))
+                
+        self._prev_u = u
+        self._prev_delta = delta
 
         # u = 0.05
         # delta = 0
@@ -595,16 +1102,12 @@ class FollowingLeaderState(StateBase):
         ):
             return 0.0
 
-        # Use look-ahead point (0.2m forward from vehicle center)
-        p = np.array([x, y]) + np.array([np.cos(theta), np.sin(theta)]) * 0.2
+        p = np.array([x, y])
         return self.steering_controller.update(p, theta, max(velocity, 0.1))
 
     def _compute_fusion_steering(
         self,
-        x: float,
-        y: float,
-        theta: float,
-        velocity: float,
+        follower_state: Dict[str, Any],
         leader_state: Dict[str, float],
         dt: float,
     ) -> float:
@@ -616,9 +1119,7 @@ class FollowingLeaderState(StateBase):
         trajectory while the leader position provides deviation corrections.
 
         Args:
-            x, y: Current position
-            theta: Current heading
-            velocity: Current velocity
+            follower_state: Current vehicle state, including turn/path context
             leader_state: Leader position and heading from V2V
             dt: Time step
 
@@ -626,13 +1127,14 @@ class FollowingLeaderState(StateBase):
             Fused steering command in radians
         """
         # Get path-based steering (primary reference)
-        path_steering = self._compute_path_steering(x, y, theta, velocity)
+        path_steering = self._compute_path_steering(
+            follower_state["x"],
+            follower_state["y"],
+            follower_state["theta"],
+            follower_state["velocity"],
+        )
 
         if self.lateral_controller is not None:
-            follower_state = {"x": x, "y": y, "theta": theta, "velocity": velocity}
-            if hasattr(self.vehicle_logic, "current_state_data"):
-                follower_state.update(self.vehicle_logic.current_state_data)
-
             return self.lateral_controller.compute_steering(
                 follower_state, leader_state, dt, path_steering=path_steering
             )
@@ -721,9 +1223,13 @@ class FollowingLeaderState(StateBase):
             self.vehicle_logic.platoon_controller.disable()
 
         # Reset controllers
+        self._reverse_follow_active = False
+        self._sensor_acc_distance_filtered = None
         self.longitudinal_controller.reset()
         if self.lateral_controller:
             self.lateral_controller.reset()
+        if self.sensor_acc_controller:
+            self.sensor_acc_controller.reset()
         self.logger.logger.info("Controllers reset")
 
         super().exit()

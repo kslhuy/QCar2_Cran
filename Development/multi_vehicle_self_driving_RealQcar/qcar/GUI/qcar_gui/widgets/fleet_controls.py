@@ -45,11 +45,12 @@ class FleetControlsWidget(BaseWidget):
         self.frame = ThemedLabelFrame(
             self.parent,
             text="🚁 Fleet Operations",
-            theme=self.theme
+            theme=self.theme,
+            font=self.theme.fonts.tiny()
         )
         
         content = tk.Frame(self.frame, bg=c.bg_medium)
-        content.pack(fill='x', padx=15, pady=10)
+        content.pack(fill='x', padx=2, pady=2)
         
         # Row 1: Basic fleet controls
         self._build_basic_controls(content)
@@ -58,32 +59,34 @@ class FleetControlsWidget(BaseWidget):
         self._build_platoon_controls(content)
         
         # Row 3: Perception controls
-        self._build_perception_controls(content)
+        # self._build_perception_controls(content)
     
     def _build_basic_controls(self, parent: tk.Frame) -> None:
         """Build basic fleet control buttons."""
         c = self.theme.colors
         
         row = tk.Frame(parent, bg=c.bg_medium)
-        row.pack(fill='x', pady=(0, 8))
+        row.pack(fill='x', pady=(0, 2))
         
         ThemedButton(
             row,
             text="▶ Start All",
             button_type='start',
             command=self._safe_callback(self.callbacks.on_start_all),
-            padx=20,
-            pady=8
-        ).pack(side='left', expand=True, fill='x', padx=(0, 5))
+            font=self.theme.fonts.body_bold(),
+            padx=8,
+            pady=6
+        ).pack(side='left', expand=True, fill='x', padx=(0, 2))
         
         ThemedButton(
             row,
             text="⬛ Stop All",
             button_type='stop',
             command=self._safe_callback(self.callbacks.on_stop_all),
-            padx=20,
-            pady=8
-        ).pack(side='left', expand=True, fill='x', padx=(5, 0))
+            font=self.theme.fonts.body_bold(),
+            padx=8,
+            pady=6
+        ).pack(side='left', expand=True, fill='x', padx=(2, 0))
     
     def _build_platoon_controls(self, parent: tk.Frame) -> None:
         """Build platoon and V2V control buttons."""
@@ -91,35 +94,38 @@ class FleetControlsWidget(BaseWidget):
         
         # First row of platoon controls
         row1 = tk.Frame(parent, bg=c.bg_medium)
-        row1.pack(fill='x', pady=(8, 5))
+        row1.pack(fill='x', pady=(2, 1))
         
         ThemedButton(
             row1,
             text="⚙️ Setup Platoon",
             button_type='command',
             command=self._safe_callback(self.callbacks.on_setup_platoon),
-            padx=15,
-            pady=6
-        ).pack(side='left', expand=True, fill='x', padx=(0, 2))
+            font=self.theme.fonts.small_bold(),
+            padx=6,
+            pady=5
+        ).pack(side='left', expand=True, fill='x', padx=(0, 1))
         
         ThemedButton(
             row1,
             text="🚗🚗 Trigger Platoon",
             button_type='platoon',
             command=self._safe_callback(self.callbacks.on_trigger_platoon),
-            padx=15,
-            pady=6
-        ).pack(side='left', expand=True, fill='x', padx=(2, 2))
+            font=self.theme.fonts.small_bold(),
+            padx=6,
+            pady=5
+        ).pack(side='left', expand=True, fill='x', padx=(1, 1))
         
         self._v2v_btn = ThemedButton(
             row1,
             text="📡 V2V Active",
             button_type='warning',
             command=self._safe_callback(self.callbacks.on_activate_v2v),
-            padx=15,
-            pady=6
+            font=self.theme.fonts.small_bold(),
+            padx=6,
+            pady=5
         )
-        self._v2v_btn.pack(side='left', expand=True, fill='x', padx=(2, 0))
+        self._v2v_btn.pack(side='left', expand=True, fill='x', padx=(1, 0))
         
         # Second row of platoon controls
         row2 = tk.Frame(parent, bg=c.bg_medium)
@@ -130,9 +136,10 @@ class FleetControlsWidget(BaseWidget):
             text="Disable All Platoons",
             button_type='secondary',
             command=self._safe_callback(self.callbacks.on_disable_all_platoons),
-            padx=15,
-            pady=6
-        ).pack(side='left', expand=True, fill='x', padx=(0, 3))
+            font=self.theme.fonts.small_bold(),
+            padx=6,
+            pady=5
+        ).pack(side='left', expand=True, fill='x', padx=(0, 1))
         
         self._disable_v2v_btn = tk.Button(
             row2,
@@ -143,10 +150,10 @@ class FleetControlsWidget(BaseWidget):
             command=self._safe_callback(self.callbacks.on_disable_v2v),
             relief='flat',
             state='disabled',
-            padx=15,
-            pady=6
+            padx=6,
+            pady=5
         )
-        self._disable_v2v_btn.pack(side='left', expand=True, fill='x', padx=(3, 0))
+        self._disable_v2v_btn.pack(side='left', expand=True, fill='x', padx=(1, 0))
     
     def _build_perception_controls(self, parent: tk.Frame) -> None:
         """Build perception (YOLO) control buttons."""
@@ -160,8 +167,9 @@ class FleetControlsWidget(BaseWidget):
             text="👁️ Activate Perception",
             button_type='command',
             command=self._safe_callback(self.callbacks.on_activate_perception),
-            padx=15,
-            pady=6
+            font=self.theme.fonts.tiny(),
+            padx=10,
+            pady=4
         ).pack(side='left', expand=True, fill='x', padx=(0, 3))
         
         ThemedButton(
@@ -169,8 +177,9 @@ class FleetControlsWidget(BaseWidget):
             text="👁️ Disable Perception",
             button_type='secondary',
             command=self._safe_callback(self.callbacks.on_disable_perception),
-            padx=15,
-            pady=6
+            font=self.theme.fonts.tiny(),
+            padx=10,
+            pady=4
         ).pack(side='left', expand=True, fill='x', padx=(3, 0))
     
     def _safe_callback(self, callback: Callable) -> Callable:
@@ -226,3 +235,5 @@ class FleetControlsWidget(BaseWidget):
     def reset_v2v_buttons(self) -> None:
         """Reset V2V buttons to default state."""
         self.set_v2v_connected(False)
+
+

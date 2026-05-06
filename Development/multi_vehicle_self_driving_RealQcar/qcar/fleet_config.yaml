@@ -12,6 +12,8 @@ remote:
     username: nvidia
     password: nvidia
     remote_path: /home/nvidia/Documents/multi_vehicle_RealCar
+    remote_path_py: /home/nvidia/Documents/multi_vehicle_RealCar
+    remote_path_ros: /home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar
     # Remote QCar Configuration
   Limo:
     username: agilex
@@ -28,20 +30,39 @@ upload:
   skip_upload: false
   enable_remote_logs: true
 
+# Vehicle geometry resolved by vehicle_type at runtime.
+# This lets QCar and Limo coexist in the same fleet with the correct model dimensions.
+vehicle_geometry:
+  Qcar:
+    wheelbase: 0.2
+    l_r: 0.141
+    l_f: 0.115
+  Limo:
+    wheelbase: 0.2
+    l_r: 0.1
+    l_f: 0.1
+    track: 0.172
+
 # Vehicle Configurations
 # Each vehicle can have individual settings
 # vehicle_type can be: "Qcar" or "Limo"
+observer:
+  # Added to YOLO relative measurements before relative/fleet estimators consume them.
+  # Keep this at 0.0 when YOLO distance is already corrected at the source.
+  camera_distance_offset: 0.0
+
 vehicles:
   - car_id: 0
     ip: 192.168.2.137
     # ip: 192.168.137.102
     vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
+    enable_v2v_attack: false # Set true to inject attacks from this car
     probing: true          # Enable YOLO probing (object detection)
     calibrate: false       # Start in calibration mode
     path_number: 0         # Path selection (0, 1, 2, etc.)
     left_hand_traffic: false
-    initial_v_ref: 0.6    # Initial velocity reference (m/s)
+    initial_v_ref: 0.4    # Initial velocity reference (m/s)
     description: "Leader vehicle with probing"
     
   - car_id: 1
@@ -49,23 +70,25 @@ vehicles:
     ip: 192.168.2.108   # Car 67 alway need be center map
     vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
+    enable_v2v_attack: false # Set true to inject attacks from this car
     probing: true         # Enable probing for follower
     calibrate: false
-    path_number: 1         # Different path from leader
+    path_number: 0         # Different path from leader
     left_hand_traffic: false
-    initial_v_ref: 0.6
+    initial_v_ref: 0.4
     description: "Follower vehicle"
   
-  # - car_id: 2
-  #   ip: 192.168.2.108
-  #   vehicle_type: "Limo"   # Vehicle type: "Qcar" or "Limo"
-  #   enabled: true
-  #   probing: true         # Enable probing for follower
-  #   calibrate: false
-  #   path_number: 0         # Same path as leader
-  #   left_hand_traffic: false
-  #   initial_v_ref: 0.75
-  #   description: "Follower vehicle"
+  - car_id: 2
+    ip: 192.168.2.108
+    vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
+    enabled: true
+    enable_v2v_attack: false # Set true to inject attacks from this car
+    probing: true         # Enable probing for follower
+    calibrate: false
+    path_number: 0         # Same path as leader
+    left_hand_traffic: false
+    initial_v_ref: 0.4
+    description: "Follower vehicle"
 
 # Path Definitions
 # Available paths that vehicles can follow
@@ -148,16 +171,16 @@ safety:
 logging:
   log_dir: "logs"
   data_log_dir: "data_logs"
-  enable_telemetry_logging: true
+  enable_telemetry_logging: false
   enable_state_logging: true
   log_level: "INFO"
   console_output: true
   # Granular logging control
-  enable_fleet_estimation_logging: true
+  enable_fleet_estimation_logging: false
   enable_local_estimation_logging: false
   enable_following_leader_logging: false
-  enable_trust_weight_logging: true
+  enable_trust_weight_logging: false
   
   # File naming strategy
-  use_timestamped_log_files: true  # true = create new timestamped file/folder, false = use single static file (append/overwrite)
+  use_timestamped_log_files: false  # true = create new timestamped file/folder, false = use single static file (append/overwrite)
 

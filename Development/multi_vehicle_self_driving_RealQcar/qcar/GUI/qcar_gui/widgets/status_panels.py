@@ -177,7 +177,9 @@ class HeaderWidget(BaseWidget):
         """Build the header widget."""
         c = self.theme.colors
         
-        self.frame = tk.Frame(self.parent, bg=c.bg_darkest, height=80)
+        # shrink the header so it takes up less vertical space
+        # height reduced from 80 to 50 and padding trimmed
+        self.frame = tk.Frame(self.parent, bg=c.bg_darkest, height=50)
         self.frame.pack_propagate(False)
         
         content = tk.Frame(self.frame, bg=c.bg_darkest)
@@ -191,7 +193,7 @@ class HeaderWidget(BaseWidget):
             fg=c.fg_primary,
             font=self.theme.fonts.title()
         )
-        self._title_label.pack(pady=10)
+        self._title_label.pack(pady=5)
         
         # # Statistics bar
         # self._stats_label = tk.Label(

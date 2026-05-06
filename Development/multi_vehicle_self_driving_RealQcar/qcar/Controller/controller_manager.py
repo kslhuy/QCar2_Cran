@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import os
 import yaml
 
-from .config_controller_loader import get_controller_config
+from .config_controller_loader import ControllerConfig, get_controller_config
 from Controller.longitudinal_controllers import ControllerFactory
 
 
@@ -62,15 +62,31 @@ class ControllerManager:
         """Return True if *ctrl_type* handles both lon and lat jointly."""
         return ctrl_type in cls.COUPLED_CONTROLLERS
 
-    def __init__(self, logger=None, config=None):
+    def __init__(
+        self,
+        logger=None,
+        config=None,
+        vehicle_type="QCar",
+        vehicle_geometry=None,
+    ):
         """
         Initialize ControllerManager.
 
         Args:
             logger: Logger instance
+            vehicle_type: Type of the vehicle (e.g., 'QCar' or 'Limo')
         """
-        self.config = config if config else get_controller_config()
         self.logger = logger
+        self.vehicle_type = vehicle_type
+        self.config = config if config else self._load_default_config_for_vehicle(
+            vehicle_type
+        )
+        self.vehicle_geometry = self._normalize_vehicle_geometry(vehicle_geometry)
+        if (
+            self.vehicle_geometry
+            and hasattr(self.config, "set_vehicle_params_override")
+        ):
+            self.config.set_vehicle_params_override(self.vehicle_geometry)
 
         # Active controllers
         self._longitudinal: Optional[ControllerInfo] = None
@@ -92,6 +108,33 @@ class ControllerManager:
                 f"path[long={self._path_longitudinal_type}, lat={self._path_lateral_type}], "
                 f"leader[long={self._leader_longitudinal_type}, lat={self._leader_lateral_type}]"
             )
+
+    @staticmethod
+    def _load_default_config_for_vehicle(vehicle_type: str):
+        """Load the vehicle-specific controller YAML when one exists."""
+        vehicle_type_normalized = str(vehicle_type).strip().lower()
+        if vehicle_type_normalized == "limo":
+            config_dir = os.path.dirname(os.path.abspath(__file__))
+            limo_config_path = os.path.join(config_dir, "config_controller_limo.yaml")
+            if os.path.exists(limo_config_path):
+                return ControllerConfig(limo_config_path)
+
+        return get_controller_config()
+
+    @staticmethod
+    def _normalize_vehicle_geometry(vehicle_geometry) -> Dict[str, float]:
+        """Convert runtime geometry data into a plain numeric dictionary."""
+        if isinstance(vehicle_geometry, dict):
+            source = vehicle_geometry
+        else:
+            source = getattr(vehicle_geometry, "__dict__", {}) or {}
+
+        normalized: Dict[str, float] = {}
+        for key in ("wheelbase", "l_r", "l_f", "track"):
+            value = source.get(key)
+            if value is not None:
+                normalized[key] = float(value)
+        return normalized
 
     def _load_config(self):
         """Load controller types and params from config."""
@@ -150,6 +193,8 @@ class ControllerManager:
             params = {}
             if self.config:
                 params = self.config.get_longitudinal_params(ctrl_type)
+                
+            params['vehicle_type'] = self.vehicle_type
 
             controller = ControllerFactory.create(
                 ctrl_type,
@@ -211,6 +256,8 @@ class ControllerManager:
             params = {}
             if self.config:
                 params = self.config.get_lateral_params(ctrl_type)
+
+            params['vehicle_type'] = self.vehicle_type
 
             controller = LateralControllerFactory.create(
                 ctrl_type,
@@ -295,13 +342,15 @@ class ControllerManager:
 
     def get_speed_controller(self):
         """
-        Get PID speed controller (for FOLLOWING_PATH state).
-        Convenience wrapper around get_longitudinal_controller('pid').
+        Get the configured path-state speed controller.
 
         Returns:
-            PIDVelocityController instance
+            Longitudinal controller instance for FOLLOWING_PATH
         """
-        return self.get_longitudinal_controller("pid")
+        ctrl_type = self._path_longitudinal_type
+        if ctrl_type not in {"pid", "qcar2_speed"}:
+            ctrl_type = "pid"
+        return self.get_longitudinal_controller(ctrl_type)
 
     # =============== Type Getters (for telemetry) ===============
 
@@ -419,7 +468,9 @@ class ControllerManager:
             controller = self.get_lateral_controller(new_type)
 
             # Update config for persistence
-            if self.config and (controller is not None or new_type == "pp_map"):
+            # coupled types such as pp_map and mpc may not immediately produce a
+            # controller instance, but we still want to remember the choice
+            if self.config and (controller is not None or new_type in ("pp_map", "mpc")):
                 config_key = f"{state}_lateral_controller_type"
                 self.config.config[config_key] = new_type
                 self.config.config["lateral_controller_type"] = new_type
@@ -429,7 +480,7 @@ class ControllerManager:
                     f"[ControllerManager] Switched {state} lateral → {new_type}"
                 )
 
-            return controller is not None or new_type == "pp_map"
+            return controller is not None or new_type in ("pp_map", "mpc")
 
         except Exception as e:
             if self.logger:
@@ -519,23 +570,26 @@ class ControllerManager:
                         f"Failed to update params on active controller {active_type}", e
                     )
 
-        # Special case for pp_map since it's managed separately by the state machine
-        if category == "lateral" and active_type == "pp_map":
-            # The state machine (FollowingPathState) holds the pp_controller instance.
-            # We attempt to find it via vehicle_logic and update it.
+        # Special case for pp_map and MPC since these coupled controllers are
+        # managed inside the state machine rather than by ControllerManager.
+        if category == "lateral" and active_type in ("pp_map", "mpc"):
+            # The state machine (FollowingPathState) holds the controller instance.
+            # We attempt to locate it via vehicle_logic and then update it.
             if self.vehicle_logic and hasattr(
                 self.vehicle_logic, "current_state_handler"
             ):
                 state = self.vehicle_logic.current_state_handler
-                if hasattr(state, "pp_controller") and state.pp_controller is not None:
+                ctrl_attr = "pp_controller" if active_type == "pp_map" else "mpc_controller"
+                if hasattr(state, ctrl_attr) and getattr(state, ctrl_attr) is not None:
+                    controller_obj = getattr(state, ctrl_attr)
                     try:
-                        if hasattr(state.pp_controller, "update_params"):
-                            state.pp_controller.update_params(params)
+                        if hasattr(controller_obj, "update_params"):
+                            controller_obj.update_params(params)
                             success = True
                     except Exception as e:
                         if self.logger:
                             self.logger.log_error(
-                                "Failed to update params on pp_controller", e
+                                f"Failed to update params on {ctrl_attr}", e
                             )
 
         # 2. Update ControllerConfig to persist changes

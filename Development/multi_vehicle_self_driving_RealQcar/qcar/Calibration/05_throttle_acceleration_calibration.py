@@ -2,17 +2,19 @@
 """
 05_throttle_acceleration_calibration.py
 =======================================
-QCar Calibration - Throttle Step -> Acceleration Dynamics Lookup
-----------------------------------------------------------------
-Runs throttle step transitions and identifies a first-order lag model per
-transition:
+QCar Calibration - Throttle Step -> Acceleration-Lag Dynamics Lookup
+--------------------------------------------------------------------
+Runs throttle step transitions and identifies a first-order acceleration lag
+model per transition:
 
-    tau * dv/dt + v = K * u
+    a_dot = -(1/tau) * a + (input_gain/tau) * u
+    v_dot = a
 
 For each step (u_from -> u_to), the script estimates:
-  - tau (time constant)
-  - local gain K_local = Delta v_ss / Delta u
-  - initial acceleration a0 = Delta v_ss / tau
+  - tau (time constant of the acceleration response)
+  - a_pre and a_ss (baseline and steady acceleration for the tested step)
+  - local input_gain = Delta a_ss / Delta u
+  - inverse gain acc_to_throttle_gain = 1 / input_gain
   - rise timing (t63, t90, t95)
   - lead-time suggestion for preview scheduling
 
@@ -80,20 +82,22 @@ class CSVLogger:
 
 
 class FirstOrderMotorSim:
-    """Lightweight first-order motor simulation: tau * dv/dt + v = K * u."""
+    """Lightweight acceleration-lag simulation for throttle-step testing."""
 
     def __init__(self, tau: float = 0.8, K: float = 5.0, noise_std: float = 0.01):
         self.tau = tau
-        self.K = K
+        self.input_gain = K
         self.noise_std = noise_std
+        self.a = 0.0
         self.v = 0.0
 
     def step(self, u: float, dt: float) -> float:
-        dvdt = (self.K * u - self.v) / self.tau
-        self.v += dvdt * dt
+        self.a += ((self.input_gain * u) - self.a) * (dt / self.tau)
+        self.v += self.a * dt
         return float(self.v + np.random.randn() * self.noise_std)
 
     def reset(self):
+        self.a = 0.0
         self.v = 0.0
 
 
@@ -255,7 +259,7 @@ parser.add_argument(
     "--sim_gain",
     type=float,
     default=5.0,
-    help="Simulation-only gain K [m/s per throttle unit]",
+    help="Simulation-only acceleration gain [m/s^2 per throttle unit]",
 )
 parser.add_argument(
     "--tag",
@@ -499,6 +503,7 @@ def _collect_step_response(
 ) -> Dict[str, object]:
     pre_v: List[float] = []
     pre_imu: List[float] = []
+    pre_a: List[float] = []
     step_t: List[float] = []
     step_v: List[float] = []
     step_a: List[float] = []
@@ -554,6 +559,7 @@ def _collect_step_response(
         prev_v = v
         prev_t = now
         pre_v.append(v)
+        pre_a.append(a_filt)
 
         elapsed = now - t_global0
         t_rel = now - phase_t0
@@ -646,8 +652,13 @@ def _collect_step_response(
     else:
         source_used = "tach"
 
+    pre_a_arr = np.asarray(pre_a, dtype=float)
+    if source_used == "imu" and abs(imu_bias) > 0.0:
+        pre_a_arr = pre_a_arr - float(imu_bias)
+
     return {
         "pre_v": np.asarray(pre_v, dtype=float),
+        "pre_a": pre_a_arr,
         "step_t": np.asarray(step_t, dtype=float),
         "step_v": np.asarray(step_v, dtype=float),
         "step_a": np.asarray(step_a, dtype=float),
@@ -660,6 +671,7 @@ def _analyse_transition(
     u_from: float,
     u_to: float,
     pre_v: np.ndarray,
+    pre_a: np.ndarray,
     step_t: np.ndarray,
     step_v: np.ndarray,
     step_a: np.ndarray,
@@ -677,28 +689,34 @@ def _analyse_transition(
 
     v0 = float(np.mean(pre_v[-min(len(pre_v), baseline_steps) :]))
     vss = float(np.mean(step_v[-min(len(step_v), steady_steps) :]))
+    a_pre = float(np.mean(pre_a[-min(len(pre_a), baseline_steps) :]))
+    a_ss = float(np.mean(step_a[-min(len(step_a), steady_steps) :]))
 
     delta_u = float(u_to - u_from)
     delta_v = float(vss - v0)
-    tau_s, fit_method = _estimate_tau(step_t, step_v, v0, vss)
+    delta_a = float(a_ss - a_pre)
+    tau_s, fit_method = _estimate_tau(step_t, step_a, a_pre, a_ss)
 
     if abs(delta_u) > 1e-12:
-        k_local = float(delta_v / delta_u)
+        input_gain = float(delta_a / delta_u)
     else:
-        k_local = float("nan")
+        input_gain = float("nan")
 
     if np.isfinite(tau_s) and tau_s > 0.0:
-        a0_model = float(delta_v / tau_s)
         t63 = float(tau_s)
         t90 = float(2.302585093 * tau_s)
         t95 = float(2.995732274 * tau_s)
         lead_time = float(-tau_s * np.log(1.0 - lookahead_ratio))
     else:
-        a0_model = float("nan")
         t63 = float("nan")
         t90 = float("nan")
         t95 = float("nan")
         lead_time = float("nan")
+
+    if np.isfinite(input_gain) and abs(input_gain) > 1e-9:
+        acc_to_throttle_gain = float(1.0 / input_gain)
+    else:
+        acc_to_throttle_gain = float("nan")
 
     early_a = step_a[: min(len(step_a), peak_steps)]
     if early_a.size > 0:
@@ -721,9 +739,12 @@ def _analyse_transition(
         "v0_mps": v0,
         "vss_mps": vss,
         "delta_v_mps": delta_v,
+        "a_pre_mps2": a_pre,
+        "a_ss_mps2": a_ss,
+        "delta_a_mps2": delta_a,
         "tau_s": tau_s,
-        "k_local_mps_per_throttle": k_local,
-        "a0_model_mps2": a0_model,
+        "input_gain_mps2_per_throttle": input_gain,
+        "acc_to_throttle_gain": acc_to_throttle_gain,
         "a_peak_meas_mps2": a_peak_meas,
         "a_mean_early_mps2": a_mean_early,
         "t63_s": t63,
@@ -806,45 +827,45 @@ def run_calibration(
 
     results: List[Dict[str, object]] = []
 
-    with (
-        CSVLogger(
-            raw_csv,
-            [
-                "transition_idx",
-                "phase",
-                "time_s",
-                "rel_time_s",
-                "throttle_cmd",
-                "velocity_mps",
-                "accel_mps2",
-                "accel_source",
-            ],
-        ) as raw_log,
-        CSVLogger(
-            lookup_csv,
-            [
-                "transition",
-                "u_from",
-                "u_to",
-                "delta_u",
-                "accel_source",
-                "imu_bias_mps2",
-                "v0_mps",
-                "vss_mps",
-                "delta_v_mps",
-                "tau_s",
-                "k_local_mps_per_throttle",
-                "a0_model_mps2",
-                "a_peak_meas_mps2",
-                "a_mean_early_mps2",
-                "t63_s",
-                "t90_s",
-                "t95_s",
-                "lead_time_s",
-                "fit_method",
-            ],
-        ) as lut_log,
-    ):
+    with CSVLogger(
+        raw_csv,
+        [
+            "transition_idx",
+            "phase",
+            "time_s",
+            "rel_time_s",
+            "throttle_cmd",
+            "velocity_mps",
+            "accel_mps2",
+            "accel_source",
+        ],
+    ) as raw_log, CSVLogger(
+        lookup_csv,
+        [
+            "transition",
+            "u_from",
+            "u_to",
+            "delta_u",
+            "accel_source",
+            "imu_bias_mps2",
+            "v0_mps",
+            "vss_mps",
+            "delta_v_mps",
+            "a_pre_mps2",
+            "a_ss_mps2",
+            "delta_a_mps2",
+            "tau_s",
+            "input_gain_mps2_per_throttle",
+            "acc_to_throttle_gain",
+            "a_peak_meas_mps2",
+            "a_mean_early_mps2",
+            "t63_s",
+            "t90_s",
+            "t95_s",
+            "lead_time_s",
+            "fit_method",
+        ],
+    ) as lut_log:
         t_global0 = time.time()
 
         for idx, (u_from, u_to) in enumerate(transitions, start=1):
@@ -891,6 +912,7 @@ def run_calibration(
                 u_from=u_from,
                 u_to=u_to,
                 pre_v=data["pre_v"],
+                pre_a=data["pre_a"],
                 step_t=data["step_t"],
                 step_v=data["step_v"],
                 step_a=data["step_a"],
@@ -914,9 +936,12 @@ def run_calibration(
                 info["v0_mps"],
                 info["vss_mps"],
                 info["delta_v_mps"],
+                info["a_pre_mps2"],
+                info["a_ss_mps2"],
+                info["delta_a_mps2"],
                 info["tau_s"],
-                info["k_local_mps_per_throttle"],
-                info["a0_model_mps2"],
+                info["input_gain_mps2_per_throttle"],
+                info["acc_to_throttle_gain"],
                 info["a_peak_meas_mps2"],
                 info["a_mean_early_mps2"],
                 info["t63_s"],
@@ -929,8 +954,8 @@ def run_calibration(
 
             print(
                 f"  tau={info['tau_s']:.4f}s  "
-                f"K_local={info['k_local_mps_per_throttle']:.4f}  "
-                f"a0={info['a0_model_mps2']:.4f} m/s^2  "
+                f"gain={info['input_gain_mps2_per_throttle']:.4f} m/s^2/u  "
+                f"inv_gain={info['acc_to_throttle_gain']:.4f} u/(m/s^2)  "
                 f"lead={info['lead_time_s']:.4f}s  "
                 f"src={info['accel_source']}  "
                 f"({info['fit_method']})"
@@ -940,19 +965,19 @@ def run_calibration(
 
 
 def print_summary(results: List[Dict[str, object]]):
-    print_section("Throttle-Step Dynamics Summary")
+    print_section("Throttle-Step Acceleration-Lag Summary")
     print(
-        f"  {'Step':>13}  {'source':>15}  {'tau[s]':>8}  {'Kloc':>9}  "
-        f"{'a0[m/s2]':>10}  {'lead[s]':>8}"
+        f"  {'Step':>13}  {'source':>15}  {'tau[s]':>8}  {'gain':>10}  "
+        f"{'1/gain':>10}  {'lead[s]':>8}"
     )
-    print(f"  {'-' * 13}  {'-' * 15}  {'-' * 8}  {'-' * 9}  {'-' * 10}  {'-' * 8}")
+    print(f"  {'-' * 13}  {'-' * 15}  {'-' * 8}  {'-' * 10}  {'-' * 10}  {'-' * 8}")
 
     for row in results:
         step_name = f"{row['u_from']:.2f}->{row['u_to']:.2f}"
         print(
             f"  {step_name:>13}  {str(row['accel_source']):>15}  {row['tau_s']:8.4f}  "
-            f"{row['k_local_mps_per_throttle']:9.4f}  "
-            f"{row['a0_model_mps2']:10.4f}  {row['lead_time_s']:8.4f}"
+            f"{row['input_gain_mps2_per_throttle']:10.4f}  "
+            f"{row['acc_to_throttle_gain']:10.4f}  {row['lead_time_s']:8.4f}"
         )
 
 
@@ -1096,13 +1121,27 @@ def main():
 
     print_summary(rows)
 
+    finite_tau = [
+        float(row["tau_s"]) for row in rows if np.isfinite(float(row["tau_s"]))
+    ]
+    finite_gain = [
+        float(row["input_gain_mps2_per_throttle"])
+        for row in rows
+        if np.isfinite(float(row["input_gain_mps2_per_throttle"]))
+    ]
+    finite_inv_gain = [
+        float(row["acc_to_throttle_gain"])
+        for row in rows
+        if np.isfinite(float(row["acc_to_throttle_gain"]))
+    ]
+
     model_yaml = {
-        "description": "Throttle-step to acceleration dynamics lookup table",
+        "description": "Throttle-step acceleration-lag lookup table",
         "mode": "simulation" if args.sim else ("qlabs" if args.qlabs else "hardware"),
         "model_assumption": {
-            "equation": "tau * dv/dt + v = K_local * u (local per transition)",
-            "velocity_response": "v(t) = v_ss + (v0 - v_ss) * exp(-t/tau)",
-            "accel_response": "a(t) = ((v_ss - v0)/tau) * exp(-t/tau)",
+            "equation": "a_dot = -(1/tau) * a + (input_gain/tau) * u",
+            "accel_response": "a(t) = a_ss + (a_pre - a_ss) * exp(-t/tau)",
+            "velocity_response": "v(t) = v0 + integral(a(t) dt)",
         },
         "settings": {
             "throttle_levels": LEVELS,
@@ -1124,6 +1163,19 @@ def main():
             "lookahead_ratio": float(args.lookahead_ratio),
             "dt_s": float(args.dt),
         },
+        "recommended_parameters": {
+            "avg_tau_s": float(np.mean(finite_tau)) if finite_tau else float("nan"),
+            "avg_input_gain_mps2_per_throttle": (
+                float(np.mean(finite_gain)) if finite_gain else float("nan")
+            ),
+            "avg_acc_to_throttle_gain": (
+                float(np.mean(finite_inv_gain)) if finite_inv_gain else float("nan")
+            ),
+            "note": (
+                "Use acc_to_throttle_gain as the inverse of the identified "
+                "acceleration gain when mapping desired acceleration to throttle."
+            ),
+        },
         "lookup_table": rows,
         "usage": {
             "lookup_key": "select by nearest (u_from, u_to) transition",
@@ -1131,7 +1183,7 @@ def main():
             "example_ratio": float(args.lookahead_ratio),
             "example_note": (
                 "If ratio=0.632, lead_time approx tau. "
-                "Use this to command next throttle earlier."
+                "For controllers, throttle ~= desired_accel * acc_to_throttle_gain."
             ),
         },
     }

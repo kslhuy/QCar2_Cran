@@ -3,7 +3,7 @@ Configuration Management for QCar Vehicle Control System
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 import json
 import yaml
 import numpy as np
@@ -84,6 +84,8 @@ class PathPlanningConfig:
             return [0, 2, 4, 6, 8, 10, 1, 10, 2, 4, 6, 0]
         elif self.path_number == 3:
             return [0, 2, 4, 6, 13, 19, 17, 15, 6, 0]
+        elif self.path_number == 3:
+            return [0, 2, 4, 6, 13, 19, 17, 15, 6, 0]
 
     @property
     def calibration_pose(self) -> List[float]:
@@ -110,10 +112,17 @@ class VehicleConfig:
     """Vehicle-specific configuration"""
 
     vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
+    programme_type: str = "Py"  # "Ros" or "Py"
     probing: bool = False  # Enable YOLO perception system
+    limo_gear_multiplier: float = 3.5  # Gear multiplier for Limo velocity limits
+    enable_v2v_attack: bool = False  # Enable V2V attack injection using attack_config.yaml
 
     def __post_init__(self):
         """Validate vehicle type"""
+        if str(self.vehicle_type).strip().lower() == "limo":
+            self.vehicle_type = "Limo"
+        else:
+            self.vehicle_type = "Qcar"
         valid_types = ["Qcar", "Limo"]
         if self.vehicle_type not in valid_types:
             raise ValueError(
@@ -165,6 +174,10 @@ class ObserverConfig:
     # Update rates (Hz)
     observer_rate: int = 100
     fleet_observer_rate: int = 30
+    # Added to YOLO relative measurements before observers consume them.
+    # Keep 0.0 when YOLO already publishes camera/source-corrected distance.
+    camera_distance_offset: float = 0.0
+    yolo_relative_min_confidence: float = 0.35
 
 
 @dataclass
@@ -179,10 +192,17 @@ class VehicleMainConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     observer: ObserverConfig = field(default_factory=ObserverConfig)
     vehicle: VehicleConfig = field(default_factory=VehicleConfig)
+    vehicle_geometry: Dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, config_dict: dict) -> "VehicleMainConfig":
         """Create config from dictionary"""
+        vehicle_dict = config_dict.get("vehicle", {}) or {}
+        vehicle_type = (
+            "Limo"
+            if str(vehicle_dict.get("vehicle_type", "Qcar")).strip().lower() == "limo"
+            else "Qcar"
+        )
         return cls(
             timing=TimingConfig(**config_dict.get("timing", {})),
             yolo=YOLODetectionConfig(**config_dict.get("yolo", {})),
@@ -190,8 +210,9 @@ class VehicleMainConfig:
             path=PathPlanningConfig(**config_dict.get("path", {})),
             safety=SafetyConfig(**config_dict.get("safety", {})),
             logging=LoggingConfig(**config_dict.get("logging", {})),
-            vehicle=VehicleConfig(**config_dict.get("vehicle", {})),
+            vehicle=VehicleConfig(**{**vehicle_dict, "vehicle_type": vehicle_type}),
             observer=ObserverConfig(**config_dict.get("observer", {})),
+            vehicle_geometry=config_dict.get("vehicle_geometry", {}) or {},
         )
 
     @classmethod
@@ -245,19 +266,34 @@ class VehicleMainConfig:
 
         # Build vehicle config from per-vehicle entry
         if vehicle_entry:
+            vehicle_type = (
+                "Limo"
+                if str(vehicle_entry.get("vehicle_type", "Qcar")).strip().lower()
+                == "limo"
+                else "Qcar"
+            )
             config_dict["vehicle"] = {
-                "vehicle_type": vehicle_entry.get("vehicle_type", "Qcar"),
+                "vehicle_type": vehicle_type,
                 "probing": vehicle_entry.get("probing", False),
+                "limo_gear_multiplier": vehicle_entry.get("limo_gear_multiplier", 6.0),
+                "enable_v2v_attack": vehicle_entry.get("enable_v2v_attack", False),
             }
             config_dict["path"] = {
                 "path_number": vehicle_entry.get("path_number", 0),
                 "calibrate": vehicle_entry.get("calibrate", False),
                 "left_hand_traffic": vehicle_entry.get("left_hand_traffic", False),
             }
+            geometry_by_type = fleet_config.get("vehicle_geometry", {})
+            config_dict["vehicle_geometry"] = (
+                geometry_by_type.get(vehicle_type, {})
+                if isinstance(geometry_by_type, dict)
+                else {}
+            )
         else:
             # Use defaults if vehicle not found
             config_dict["vehicle"] = {}
             config_dict["path"] = {}
+            config_dict["vehicle_geometry"] = {}
 
         return cls.from_dict(config_dict)
 
@@ -272,6 +308,7 @@ class VehicleMainConfig:
             "logging": self.logging.__dict__,
             "vehicle": self.vehicle.__dict__,
             "observer": self.observer.__dict__,
+            "vehicle_geometry": dict(self.vehicle_geometry),
         }
 
     def to_json(self, filepath: str):

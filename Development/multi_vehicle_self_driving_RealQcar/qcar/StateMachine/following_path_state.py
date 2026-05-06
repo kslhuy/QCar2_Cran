@@ -118,6 +118,7 @@ class FollowingPathState(StateBase):
         self.pp_speed_profile_base = None  # Base speed profile from path_rich
         self.pp_profile_design_speed = 0.0  # desired_speed used to build base profile
         self.pp_last_v_ref = None  # For lightweight change logging
+        self._path_speed_target_filtered = None
 
         # Optional pp_map local obstacle-avoidance replanning from YOLO distances.
         self.pp_obstacle_avoidance_enabled = False
@@ -140,6 +141,20 @@ class FollowingPathState(StateBase):
         self._general_obstacle_path_active = False
         self._general_last_replan = 0.0
 
+        self._prev_u = 0.0
+        self._prev_delta = 0.0
+
+    def _smooth_cmd(self, raw: float, prev: float, dt: float, alpha: float, rise_rate: float, fall_rate: float) -> float:
+        if prev is None or dt <= 1e-6:
+            return raw
+
+        if raw > prev:
+            limited = min(raw, prev + rise_rate * dt)
+        else:
+            limited = max(raw, prev - fall_rate * dt)
+
+        return alpha * prev + (1.0 - alpha) * limited
+
     def _init_controllers(self, force: bool = False):
         """
         Initialize controllers for this state using ControllerManager.
@@ -154,8 +169,9 @@ class FollowingPathState(StateBase):
             cm = self.vehicle_logic.controller_manager
             lateral_type = cm.get_lateral_type(state="path")
             self._use_pp_map = lateral_type == "pp_map"
+            self._use_mpc = lateral_type == "mpc"
 
-            # Speed controller (PID for path following)
+            # Speed controller (PID for path following) unless we're in MPC mode
             # TODO : Instead of get_speed_controller(), use get_longitudinal_controller()
             # Currently only PID is available for path following
             self.speed_controller = cm.get_speed_controller()
@@ -195,24 +211,35 @@ class FollowingPathState(StateBase):
         # Initialize MPC controller for combined throttle+steering (test mode)
         if self._use_mpc and MPC_AVAILABLE:
             try:
-                mpc_params = {
-                    "horizon": 15,  # 15×0.05=0.75s lookahead (enough to see curves)
-                    "dt_mpc": 0.05,
-                    "Q_pos": 200.0,  # Position tracking (moderate to avoid over-correction)
-                    "Q_heading": 100.0,  # Heading tracking (align with path tangent)
-                    "Q_vel": 50.0,  # Higher velocity weight: maintain forward speed!
-                    "R_delta": 5.0,  # Moderate: smooth steering
-                    "R_acc": 5.0,  # Moderate: smooth throttle
-                    "R_delta_rate": 15.0,  # Penalize jerky steering
-                    "R_acc_rate": 15.0,  # Penalize jerky throttle (prevents oscillation)
-                    "Qf_pos": 200.0,  # Terminal position
-                    "Qf_heading": 200.0,  # Terminal heading
-                    "Qf_vel": 50.0,  # Terminal velocity (keep moving!)
+                # load default parameters or override with config
+                if cm.config and hasattr(cm.config, "get_mpc_params"):
+                    mpc_params = cm.config.get_mpc_params()
+                else:
+                    mpc_params = {
+                        "horizon": 15,  # 15×0.05=0.75s lookahead (enough to see curves)
+                        "dt_mpc": 0.05,
+                        "Q_pos": 200.0,  # Position tracking (moderate to avoid over-correction)
+                        "Q_heading": 100.0,  # Heading tracking (align with path tangent)
+                        "Q_vel": 50.0,  # Higher velocity weight: maintain forward speed!
+                        "R_delta": 5.0,  # Moderate: smooth steering
+                        "R_acc": 5.0,  # Moderate: smooth throttle
+                        "R_delta_rate": 15.0,  # Penalize jerky steering
+                        "R_acc_rate": 15.0,  # Penalize jerky throttle (prevents oscillation)
+                        "Qf_pos": 200.0,  # Terminal position
+                        "Qf_heading": 200.0,  # Terminal heading
+                        "Qf_vel": 50.0,  # Terminal velocity (keep moving!)
                     "path_lookahead_scale": 1,  # More lookahead for smoother curves
                     "desired_spacing": 0.5,
                     "max_steering_rate": 1.0,  # Reasonable steering rate
                 }
-                # Use factory to create standalone MPC (auto-loads QCar vehicle params)
+                if "params" not in mpc_params and cm.config:
+                    vehicle_params = cm.config.get_vehicle_params()
+                    mpc_params["params"] = {
+                        "a": vehicle_params.get("l_f", 0.115),
+                        "b": vehicle_params.get("l_r", 0.141),
+                    }
+
+                # Use factory to create standalone MPC with the active vehicle geometry.
                 self.mpc_controller = MPCControllerFactory.create(
                     "mpc",
                     params=mpc_params,
@@ -303,14 +330,17 @@ class FollowingPathState(StateBase):
 
         # --- Lateral switch in path-following mode ---
         if category == "lateral":
-            was_pp_map = self._use_pp_map
+            was_coupled = self._use_pp_map or self._use_mpc
             now_pp_map = controller_type == "pp_map"
+            now_mpc = controller_type == "mpc"
+            now_coupled = now_pp_map or now_mpc
 
-            if was_pp_map and not now_pp_map:
-                # ---- Leaving pp_map → switch to PID speed + steering ----
+            if was_coupled and not now_coupled:
+                # ---- Leaving coupled mode → revert to separate controllers ----
                 self._use_pp_map = False
                 self._use_mpc = False
                 self.pp_controller = None  # deactivate PP pipeline
+                self.mpc_controller = None  # deactivate MPC pipeline
 
                 # Ensure PID speed controller is active
                 self.speed_controller = cm.get_speed_controller()
@@ -323,10 +353,10 @@ class FollowingPathState(StateBase):
                     self.vehicle_logic.steering_controller = self.steering_controller
 
                 self.logger.logger.info(
-                    f"[PATH] PP map deactivated → PID speed + {controller_type} steering"
+                    f"[PATH] Coupled controller deactivated → PID speed + {controller_type} steering"
                 )
 
-            elif not was_pp_map and now_pp_map:
+            elif not was_coupled and now_pp_map:
                 # ---- Entering pp_map → initialize PP pipeline ----
                 self._use_pp_map = True
                 self._use_mpc = False
@@ -344,6 +374,31 @@ class FollowingPathState(StateBase):
                         "[PATH] PP map requested but unavailable — falling back"
                     )
                     self._use_pp_map = False
+
+            elif not was_coupled and now_mpc:
+                # ---- Entering MPC → init combined controller ----
+                self._use_mpc = True
+                self._use_pp_map = False
+                self._init_controllers(force=True)
+                if self.mpc_controller is not None:
+                    self.logger.logger.info("[PATH] MPC controller activated")
+                else:
+                    self.logger.logger.warning(
+                        "[PATH] MPC requested but unavailable — falling back"
+                    )
+                    self._use_mpc = False
+
+            elif was_coupled and now_coupled:
+                # switching between two coupled controllers
+                if now_pp_map:
+                    self._use_mpc = False
+                    self._use_pp_map = True
+                    self._init_pp_mode()
+                elif now_mpc:
+                    self._use_pp_map = False
+                    self._use_mpc = True
+                    self._init_controllers(force=True)
+                self.logger.logger.info(f"[PATH] Coupled lateral switched to {controller_type}")
 
             else:
                 # Same regime (non-coupled → non-coupled), just refresh steering
@@ -376,6 +431,7 @@ class FollowingPathState(StateBase):
         self.pp_speed_profile_base = None
         self.pp_profile_design_speed = 0.0
         self.pp_last_v_ref = None
+        self._path_speed_target_filtered = None
         self._pp_last_obstacle_replan = 0.0
         self._pp_obstacle_path_active = False
 
@@ -823,7 +879,7 @@ class FollowingPathState(StateBase):
           - obstacles:       list of [x, y, radius]
           - avoidance_active: bool
         """
-        MAX_PTS = 80  # keep bandwidth reasonable
+        MAX_PTS = 30  # keep bandwidth reasonable
 
         def _downsample(arr, max_n):
             """Downsample 1-D array to at most max_n equally-spaced points."""
@@ -887,17 +943,17 @@ class FollowingPathState(StateBase):
     ) -> Tuple[float, float]:
         """Compute control using PP_Controller + PID throttle tracking."""
         if not self.vehicle_logic.controller_manager.config.enable_steering_control:
-            return self._compute_speed_control(sensor_data["velocity"], dt), 0.0
+            return self._compute_speed_control(sensor_data["velocity"], dt, sensor_data), 0.0
 
         if self.pp_controller is None:
-            return self._compute_speed_control(sensor_data["velocity"], dt), 0.0
+            return self._compute_speed_control(sensor_data["velocity"], dt, sensor_data), 0.0
 
         if self.pp_waypoint_array is None and hasattr(
             self.vehicle_logic, "waypoint_sequence"
         ):
             self._build_pp_waypoint_array(self.vehicle_logic.waypoint_sequence)
         if self.pp_waypoint_array is None:
-            return self._compute_speed_control(sensor_data["velocity"], dt), 0.0
+            return self._compute_speed_control(sensor_data["velocity"], dt, sensor_data), 0.0
         self._maybe_replan_pp_with_obstacles(sensor_data)
         self._update_pp_runtime_speed_profile()
 
@@ -927,7 +983,7 @@ class FollowingPathState(StateBase):
             )
         except Exception as e:
             self.logger.log_error("PP control step failed", e)
-            return self._compute_speed_control(velocity, dt), 0.0
+            return self._compute_speed_control(velocity, dt, sensor_data), 0.0
 
         if speed_target is None or not np.isfinite(speed_target):
             speed_target = self.vehicle_logic.v_ref
@@ -937,13 +993,13 @@ class FollowingPathState(StateBase):
 
         # dt_safe = max(float(dt), 1e-3)
         dt_safe = max(float(dt), 1e-3)
-
-        if self.speed_controller:
-            # Closed-loop tracking of PP target speed (supports braking without reversing).
-            u = self.speed_controller.update(velocity, speed_target, dt_safe)
-        else:
-            # Safe fallback if speed controller is missing.
-            u = speed_target
+        u = self._compute_speed_control(
+            velocity,
+            dt_safe,
+            sensor_data,
+            target_velocity=speed_target,
+            apply_yolo_gain=True,
+        )
 
         if steering is None or not np.isfinite(steering):
             steering = 0.0
@@ -976,7 +1032,7 @@ class FollowingPathState(StateBase):
 
             # Check if enabled in config
             if not settings.enabled:
-                self.logger.logger.info("[PATH] Lane Fusion disabled in config")
+                # self.logger.logger.info("[PATH] Lane Fusion disabled in config")
                 self._lane_fusion_enabled = False
                 return
 
@@ -1063,27 +1119,43 @@ class FollowingPathState(StateBase):
 
         self.logger.logger.info(f"[PATH] Lane fusion config updated: {kwargs}")
 
-    def update_path(self, new_waypoint_sequence: np.ndarray):
+    def update_path(
+        self,
+        new_waypoint_sequence: np.ndarray,
+        node_sequence: Optional[List[int]] = None,
+    ):
         """
         Update the waypoint sequence and reset the steering controller
 
         Args:
             new_waypoint_sequence: New waypoint sequence to follow
+            node_sequence: Optional node sequence backing the path. When provided,
+                it is broadcast to the Ground Station so the GUI can rebuild the
+                same global route immediately.
         """
         try:
+            if new_waypoint_sequence is None:
+                raise ValueError("new_waypoint_sequence cannot be None")
+
+            waypoint_sequence = np.asarray(new_waypoint_sequence, dtype=float)
+            if waypoint_sequence.ndim != 2 or waypoint_sequence.shape[1] < 2:
+                raise ValueError("new_waypoint_sequence must be a 2D array with at least 2 points")
+
             # Update vehicle logic waypoint sequence
-            self.vehicle_logic.waypoint_sequence = new_waypoint_sequence
+            self.vehicle_logic.waypoint_sequence = waypoint_sequence
+            if node_sequence is not None:
+                self.vehicle_logic.node_sequence = list(node_sequence)
 
             # Reset general obstacle avoidance with new base path
             if self._general_obstacle_path_active or self._original_waypoint_sequence is not None:
-                self._original_waypoint_sequence = new_waypoint_sequence.copy()
+                self._original_waypoint_sequence = waypoint_sequence.copy()
                 self._general_obstacle_path_active = False
                 self._pp_obstacle_path_active = False
                 self._pp_current_obstacles = []
                 self._pp_local_path_xy = None
                 if self.rich_planner is not None and not self._use_pp_map:
                     self.rich_planner._base_path = self.rich_planner._resample_path(
-                        new_waypoint_sequence, self.rich_planner.sample_ds
+                        waypoint_sequence, self.rich_planner.sample_ds
                     )
                     self.rich_planner._base_s = self.rich_planner._path_s(
                         self.rich_planner._base_path[0, :],
@@ -1091,7 +1163,7 @@ class FollowingPathState(StateBase):
                     )
 
             if self._use_pp_map:
-                if self._build_pp_waypoint_array(new_waypoint_sequence):
+                if self._build_pp_waypoint_array(waypoint_sequence):
                     self.logger.logger.info(
                         "[PATH] PP map waypoints rebuilt from new path"
                     )
@@ -1102,7 +1174,7 @@ class FollowingPathState(StateBase):
 
             # Reset steering controller with new waypoints
             if self.steering_controller:
-                self.steering_controller.reset(new_waypoint_sequence)
+                self.steering_controller.reset(waypoint_sequence)
                 self.logger.logger.info(
                     "[PATH] Steering controller updated with new path"
                 )
@@ -1111,9 +1183,9 @@ class FollowingPathState(StateBase):
             if self.mpc_controller is not None and hasattr(
                 self.mpc_controller, "set_waypoints"
             ):
-                self.mpc_controller.set_waypoints(new_waypoint_sequence, cyclic=True)
+                self.mpc_controller.set_waypoints(waypoint_sequence, cyclic=True)
                 self.logger.logger.info(
-                    f"[PATH] MPC updated with {new_waypoint_sequence.shape[1]} waypoints"
+                    f"[PATH] MPC updated with {waypoint_sequence.shape[1]} waypoints"
                 )
 
             if not self.steering_controller and self.mpc_controller is None:
@@ -1216,7 +1288,7 @@ class FollowingPathState(StateBase):
             u, delta = self._compute_pp_control(dt, sensor_data)
         else:
             # --- Original PID + Stanley control ---
-            u = self._compute_speed_control(velocity, dt)
+            u = self._compute_speed_control(velocity, dt, sensor_data)
             yolo_data = sensor_data.get("yolo_data", None)
             if yolo_data and not yolo_data.get("is_valid", True):
                 yolo_data = None
@@ -1224,7 +1296,7 @@ class FollowingPathState(StateBase):
 
         # Apply YOLO gain to throttle for MPC / PP-map branches
         # (PID+Stanley branch already applies it inside _compute_speed_control)
-        if self._use_mpc or self._use_pp_map:
+        if self._use_mpc:
             yolo_gain = 1.0
             if (
                 hasattr(self.vehicle_logic, "yolo_manager")
@@ -1234,7 +1306,7 @@ class FollowingPathState(StateBase):
             if yolo_gain < 1.0:
                 u = u * yolo_gain
 
-        # --- Center-box obstacle: person → full stop, cone → replanned above ---
+        # # --- Center-box obstacle: person → full stop, cone → replanned above ---
         yolo_data = sensor_data.get("yolo_data", None)
         if yolo_data and yolo_data.get("obstacle_in_path", False):
             obs_type = yolo_data.get("obstacle_type", 0.0)
@@ -1262,6 +1334,11 @@ class FollowingPathState(StateBase):
 
         gear = getattr(self.vehicle_logic, "gear", None)
         max_throttle = float(getattr(gear, "value", 0.1))
+        
+        if getattr(self.vehicle_logic, "vehicle_type", "") == "Limo":
+            gear_mult = getattr(self.vehicle_logic.config.vehicle, "limo_gear_multiplier", 3.0)
+            max_throttle *= gear_mult  # Limo velocity limits (m/s) based on gear with configurable gain
+
         if abs(u) > max_throttle:
             u = np.clip(u, -max_throttle, max_throttle)
 
@@ -1269,7 +1346,25 @@ class FollowingPathState(StateBase):
         self._monitor_progress()
 
         # Periodic logging
-        self._periodic_logging(x, y, theta, velocity, u, delta)
+        # Apply unified command smoothing
+        if hasattr(self.vehicle_logic, "controller_manager"):
+            cm = self.vehicle_logic.controller_manager
+            if hasattr(cm, "config") and hasattr(cm.config, "get_command_smoothing_config"):
+                smooth_cfg = cm.config.get_command_smoothing_config()
+                long_cfg = smooth_cfg.get("longitudinal", {})
+                lat_cfg = smooth_cfg.get("lateral", {})
+
+                u = self._smooth_cmd(u, self._prev_u, dt, 
+                                     long_cfg.get("alpha", 0.7),
+                                     long_cfg.get("rise_rate", 0.25),
+                                     long_cfg.get("fall_rate", 0.40))
+                delta = self._smooth_cmd(delta, self._prev_delta, dt,
+                                         lat_cfg.get("alpha", 0.8),
+                                         lat_cfg.get("rise_rate", 1.0),
+                                         lat_cfg.get("fall_rate", 1.0))
+                
+        self._prev_u = u
+        self._prev_delta = delta
 
         return u, delta, None
 
@@ -1358,24 +1453,12 @@ class FollowingPathState(StateBase):
     def _handle_set_path_event(self, data: Dict[str, Any]) -> None:
         """Handle SET_PATH while in FOLLOWING_PATH."""
         node_sequence = data.get("node_sequence")
-        if not (node_sequence and isinstance(node_sequence, list)):
-            self.logger.logger.warning(f"[!] Invalid path update data: {data}")
+        new_waypoints = self._generate_waypoints_from_node_sequence(node_sequence)
+        if new_waypoints is None:
             return
 
-        if not (hasattr(self.vehicle_logic, "roadmap") and self.vehicle_logic.roadmap):
-            self.logger.logger.warning("[!] No roadmap available for path generation")
-            return
-
-        try:
-            new_waypoints = self.vehicle_logic.roadmap.generate_path(node_sequence)
-
-            if not self.vehicle_logic.is_physical_qcar and new_waypoints is not None:
-                new_waypoints = new_waypoints * 0.975
-
-            self.update_path(new_waypoints)
-            self.logger.logger.info(f"[OK] Path updated in {self.__class__.__name__}")
-        except Exception as e:
-            self.logger.log_error("Failed to generate path from nodes", e)
+        self.update_path(new_waypoint_sequence=new_waypoints, node_sequence=node_sequence)
+        self.logger.logger.info(f"[OK] Path updated in {self.__class__.__name__}")
 
     def _should_follow_leader(self, sensor_data: Dict[str, Any]) -> bool:
         """Check if we should transition to following a leader"""
@@ -1423,7 +1506,15 @@ class FollowingPathState(StateBase):
 
         return False
 
-    def _compute_speed_control(self, velocity: float, dt: float) -> float:
+
+    def _compute_speed_control(
+        self,
+        velocity: float,
+        dt: float,
+        sensor_data: Optional[Dict[str, Any]] = None,
+        target_velocity: Optional[float] = None,
+        apply_yolo_gain: bool = True,
+    ) -> float:
         """Compute speed control command"""
         if not self.speed_controller:
             return 0.0
@@ -1436,7 +1527,35 @@ class FollowingPathState(StateBase):
             and self.vehicle_logic.yolo_manager is not None
         ):
             yolo_gain = self.vehicle_logic.yolo_manager.get_yolo_gain()
-        v_ref_adjusted = self.vehicle_logic.v_ref * yolo_gain
+        if target_velocity is None:
+            v_ref_adjusted = self.vehicle_logic.v_ref
+            if apply_yolo_gain:
+                v_ref_adjusted *= yolo_gain
+        else:
+            v_ref_adjusted = float(target_velocity)
+            if apply_yolo_gain:
+                v_ref_adjusted *= yolo_gain
+        
+        # Record actual target speed for scope display
+        self.vehicle_logic.v_ref_actual = v_ref_adjusted
+
+        follower_state = {
+            "velocity": velocity,
+            "target_velocity": v_ref_adjusted,
+        }
+        if sensor_data:
+            if "motor_tach" in sensor_data:
+                follower_state["motor_tach"] = float(sensor_data["motor_tach"])
+            if "battery_voltage" in sensor_data:
+                follower_state["battery_voltage"] = float(
+                    sensor_data["battery_voltage"]
+                )
+
+        if hasattr(self.speed_controller, "compute_throttle"):
+            return self.speed_controller.compute_throttle(
+                follower_state, leader_state=None, dt=dt
+            )
+
         return self.speed_controller.update(velocity, v_ref_adjusted, dt)
 
     def _extract_lane_data(self, yolo_data: dict) -> dict:
@@ -1475,12 +1594,7 @@ class FollowingPathState(StateBase):
             return 0.0
 
         # Primary: Waypoint-based steering (global path following)
-        # Add lookahead point slightly ahead of vehicle
-        lookahead_offset = 0.2  # meters
-        p = (
-            np.array([x, y])
-            + np.array([np.cos(theta), np.sin(theta)]) * lookahead_offset
-        )
+        p = np.array([x, y])
         waypoint_steering = self.steering_controller.update(
             p, theta, max(velocity, 0.1)
         )

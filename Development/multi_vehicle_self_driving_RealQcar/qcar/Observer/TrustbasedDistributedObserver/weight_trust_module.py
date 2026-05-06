@@ -5,7 +5,7 @@ Calculates adaptive consensus weights based on trust scores.
 Implements trust-aware weight allocation with influence capping and temporal smoothing.
 
 Key features:
-1. Fixed weights for virtual node (local measurement) and self
+1. Trust-aware per-target weights for direct, self, and neighbor channels
 2. Trust-proportional distribution among trusted neighbors
 3. Influence capping to prevent single neighbor dominance
 4. EMA smoothing for temporal stability
@@ -13,7 +13,7 @@ Key features:
 """
 import numpy as np
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from collections import defaultdict
 
 
@@ -21,11 +21,11 @@ from collections import defaultdict
 class WeightConfig:
     """Configuration for weight calculation"""
     # Weight calculation type
-    weight_type: str = "trust_based"  # 'equal', 'trust_based', 'graph_based'
+    weight_type: str = "trust_based"  # 'equal', 'trust_based', 'graph_based', 'paper'
     
-    # Fixed weights
-    w0_fixed: float = 0.3          # Virtual node weight (local measurement)
-    w_self_base: float = 0.2       # Self weight
+    # Base gains used by per-target raw-score normalization
+    w0_fixed: float = 0.3          # Base gain / nominal maximum for direct measurement
+    w_self_base: float = 0.2       # Base self/prediction gain
     
     # Neighbor weight constraints
     w_cap: float = 0.4             # Maximum weight per neighbor (influence cap)
@@ -38,6 +38,35 @@ class WeightConfig:
     # Trust integration
     trust_threshold: float = 0.5   # Minimum trust to be considered neighbor
     use_distance_weighting: bool = False  # Weight by distance (reserved)
+    startup_fixed_duration_s: float = 5.0  # Use fixed non-trust weights during startup
+    use_gamma_self_weight_adaptation: bool = True
+    gamma_self_weight_floor: float = 0.25
+    local_bad_zero_w0_neighbor_total_cap: float = 0.01 # Cap on total neighbor weight when local measurement is flagged bad (w0=0) , Good for prediction-only fallback but still allowing some neighbor influence if all neighbors are good.
+
+    # Flag-driven w₀ adaptation factors
+    flag_w0_target_attack_factor: float = 1.0    # Keep w₀ full when target under attack (local is reliable)
+    flag_w0_global_est_check_factor: float = 0.3 # Reduce w₀ when local sensors are faulty
+    flag_w0_local_est_check_factor: float = 0.5  # Reduce w₀ when local measurements unreliable
+
+    def __post_init__(self):
+        """
+        Align legacy defaults with the current flag semantics.
+
+        Explicit config values loaded from YAML still override these fields.
+        """
+        if self.flag_w0_target_attack_factor == 1.0:
+            self.flag_w0_target_attack_factor = 0.25
+        if self.flag_w0_global_est_check_factor == 0.3:
+            self.flag_w0_global_est_check_factor = 1.25
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "WeightConfig":
+        """Create config from a dictionary, using dataclass defaults for missing keys."""
+        if not d:
+            return cls()
+        known = {f.name for f in dataclass_fields(cls)}
+        kwargs = {k: v for k, v in d.items() if k in known}
+        return cls(**kwargs)
 
 
 @dataclass
@@ -49,6 +78,10 @@ class WeightResult:
     w0: float                      # Virtual node weight
     w_self: float                  # Self weight
     total_neighbor_weight: float   # Total weight allocated to neighbors
+    trust_source_scores: Dict[int, float] = field(default_factory=dict)
+    mean_source_trust: float = 0.0
+    mean_trusted_trust: float = 0.0
+    weighted_neighbor_trust: float = 0.0
 
 
 class WeightTrustModule:
@@ -115,6 +148,7 @@ class WeightTrustModule:
         - 'equal': Equal weights for all neighbors
         - 'trust_based': Trust-proportional weights with fixed w0/w_self
         - 'graph_based': Graph topology-based weights
+        - 'paper': Paper-style bounded equal weights over legitimate neighbors
         
         Args:
             trust_scores: Dict of {vehicle_id: trust_score}
@@ -127,8 +161,217 @@ class WeightTrustModule:
             return self._calculate_equal_weights(trust_scores, neighbor_ids)
         elif self.config.weight_type == "graph_based":
             return self.calculate_weights_with_graph(trust_scores)
+        elif self.config.weight_type == "paper":
+            return self._calculate_paper_style_weights(trust_scores, neighbor_ids)
         else:  # trust_based (default)
             return self._calculate_trust_based_weights(trust_scores, neighbor_ids)
+
+    def _build_fixed_channel_weights(
+        self, available_neighbors: List[int], include_anchor: bool
+    ) -> Dict[str, object]:
+        """
+        Build deterministic non-trust weights for startup warmup.
+
+        The base anchor/self gains stay fixed and any remaining budget is
+        distributed equally across currently available neighbors, with capped
+        overflow returned to self.
+        """
+        unique_neighbors = []
+        for neighbor_id in available_neighbors:
+            neighbor_id = int(neighbor_id)
+            if neighbor_id == self.vehicle_id or neighbor_id in unique_neighbors:
+                continue
+            unique_neighbors.append(neighbor_id)
+        unique_neighbors = unique_neighbors[: self.config.kappa]
+
+        anchor_weight = max(0.0, float(self.config.w0_fixed)) if include_anchor else 0.0
+        self_weight = max(0.0, float(self.config.w_self_base))
+        neighbor_budget = max(0.0, 1.0 - anchor_weight - self_weight)
+
+        neighbor_weights: Dict[int, float] = {}
+        if unique_neighbors and neighbor_budget > 0.0:
+            equal_basis = {
+                neighbor_id: 1.0 / float(len(unique_neighbors))
+                for neighbor_id in unique_neighbors
+            }
+            neighbor_weights = {
+                neighbor_id: neighbor_budget * equal_basis[neighbor_id]
+                for neighbor_id in unique_neighbors
+            }
+            neighbor_weights, overflow_to_self = self._apply_neighbor_cap_for_target(
+                neighbor_weights, equal_basis
+            )
+            self_weight += overflow_to_self
+        else:
+            self_weight += neighbor_budget
+
+        used = anchor_weight + self_weight + sum(neighbor_weights.values())
+        residual = 1.0 - used
+        if abs(residual) > 1e-12:
+            self_weight = max(0.0, self_weight + residual)
+
+        return {
+            "w0": float(anchor_weight),
+            "neighbors": {
+                int(neighbor_id): float(weight)
+                for neighbor_id, weight in neighbor_weights.items()
+            },
+            "w_self": float(self_weight),
+        }
+
+    def calculate_startup_weights(
+        self, neighbor_ids: List[int] = None
+    ) -> WeightResult:
+        """Return stable non-trust summary weights for the startup warmup."""
+        available_neighbors = []
+        if neighbor_ids:
+            available_neighbors = [
+                int(neighbor_id)
+                for neighbor_id in neighbor_ids
+                if int(neighbor_id) != self.vehicle_id
+            ]
+        weights = self._build_fixed_channel_weights(
+            available_neighbors=available_neighbors,
+            include_anchor=True,
+        )
+
+        new_weights = np.zeros(self.fleet_size + 1)
+        new_weights[0] = float(weights["w0"])
+        new_weights[self.vehicle_id + 1] = float(weights["w_self"])
+
+        neighbor_weights = {
+            int(neighbor_id): float(weight)
+            for neighbor_id, weight in weights["neighbors"].items()
+        }
+        for neighbor_id, weight in neighbor_weights.items():
+            if 0 <= neighbor_id < self.fleet_size:
+                new_weights[neighbor_id + 1] = weight
+
+        startup_trust = {int(neighbor_id): 1.0 for neighbor_id in neighbor_weights.keys()}
+        trust_summary = self._summarize_trust_context(
+            trust_scores=startup_trust,
+            trusted_neighbors=list(neighbor_weights.keys()),
+            neighbor_weights=neighbor_weights,
+        )
+
+        return WeightResult(
+            weights=new_weights,
+            trusted_neighbors=list(neighbor_weights.keys()),
+            neighbor_weights=neighbor_weights,
+            w0=float(weights["w0"]),
+            w_self=float(weights["w_self"]),
+            total_neighbor_weight=float(sum(neighbor_weights.values())),
+            trust_source_scores=trust_summary["source_scores"],
+            mean_source_trust=trust_summary["mean_source_trust"],
+            mean_trusted_trust=trust_summary["mean_trusted_trust"],
+            weighted_neighbor_trust=trust_summary["weighted_neighbor_trust"],
+        )
+
+    def _summarize_trust_context(
+        self,
+        trust_scores: Dict[int, float],
+        trusted_neighbors: List[int],
+        neighbor_weights: Dict[int, float],
+    ) -> Dict[str, float]:
+        """
+        Build compact trust/weight summary metrics for logging and diagnostics.
+        """
+        source_scores = {
+            int(vid): float(score)
+            for vid, score in trust_scores.items()
+            if int(vid) != self.vehicle_id
+        }
+
+        source_vals = list(source_scores.values())
+        trusted_vals = [
+            float(source_scores.get(int(vid), trust_scores.get(int(vid), 0.0)))
+            for vid in trusted_neighbors
+        ]
+
+        mean_source = float(np.mean(source_vals)) if source_vals else 0.0
+        mean_trusted = float(np.mean(trusted_vals)) if trusted_vals else 0.0
+
+        total_weight = float(sum(float(w) for w in neighbor_weights.values()))
+        if total_weight > 0.0:
+            weighted_trust = float(
+                sum(
+                    float(neighbor_weights.get(vid, 0.0))
+                    * float(source_scores.get(vid, trust_scores.get(vid, 0.0)))
+                    for vid in neighbor_weights.keys()
+                )
+                / total_weight
+            )
+        else:
+            weighted_trust = 0.0
+
+        return {
+            "source_scores": source_scores,
+            "mean_source_trust": mean_source,
+            "mean_trusted_trust": mean_trusted,
+            "weighted_neighbor_trust": weighted_trust,
+        }
+
+    def _calculate_paper_style_weights(
+        self, trust_scores: Dict[int, float], neighbor_ids: List[int] = None
+    ) -> WeightResult:
+        """
+        Paper-style summary weights for logging/global use.
+
+        The actual observer update should use per-target
+        `calculate_paper_weights_for_target(...)`.
+        """
+        trusted = self._get_trusted_neighbors(trust_scores, neighbor_ids)
+
+        # Include anchor in summary mode
+        include_anchor = True
+        n_legitimate = len(trusted) + (1 if include_anchor else 0)
+
+        # Paper normalization factor n = max(kappa, |LN| + 1[self])
+        n_w = max(self.config.kappa, n_legitimate + 1)
+        base_w = 1.0 / n_w
+
+        new_weights = np.zeros(self.fleet_size + 1)
+        neighbor_weights = {}
+
+        if include_anchor:
+            new_weights[0] = base_w
+
+        for vid in trusted:
+            new_weights[vid + 1] = base_w
+            neighbor_weights[vid] = base_w
+
+        # Residual self coefficient so total external influence stays <= 1
+        new_weights[self.vehicle_id + 1] = max(
+            0.0, 1.0 - new_weights[0] - sum(neighbor_weights.values())
+        )
+
+        # Optional smoothing
+        if self.config.enable_smoothing and np.any(self.prev_weights > 0):
+            eta = self.config.eta
+            smoothed_weights = eta * new_weights + (1 - eta) * self.prev_weights
+            smoothed_weights = smoothed_weights / np.sum(smoothed_weights)
+            new_weights = smoothed_weights
+
+        self.prev_weights = new_weights.copy()
+        self.weights = new_weights
+        trust_summary = self._summarize_trust_context(
+            trust_scores=trust_scores,
+            trusted_neighbors=trusted,
+            neighbor_weights=neighbor_weights,
+        )
+
+        return WeightResult(
+            weights=new_weights,
+            trusted_neighbors=trusted,
+            neighbor_weights=neighbor_weights,
+            w0=new_weights[0],
+            w_self=new_weights[self.vehicle_id + 1],
+            total_neighbor_weight=sum(neighbor_weights.values()),
+            trust_source_scores=trust_summary["source_scores"],
+            mean_source_trust=trust_summary["mean_source_trust"],
+            mean_trusted_trust=trust_summary["mean_trusted_trust"],
+            weighted_neighbor_trust=trust_summary["weighted_neighbor_trust"],
+        )
     
     def _calculate_equal_weights(self, trust_scores: Dict[int, float],
                                   neighbor_ids: List[int] = None) -> WeightResult:
@@ -182,7 +425,12 @@ class WeightTrustModule:
         # Store for next iteration
         self.prev_weights = new_weights.copy()
         self.weights = new_weights
-        
+        trust_summary = self._summarize_trust_context(
+            trust_scores=trust_scores,
+            trusted_neighbors=trusted,
+            neighbor_weights=neighbor_weights,
+        )
+
         # Build result
         result = WeightResult(
             weights=new_weights,
@@ -190,7 +438,11 @@ class WeightTrustModule:
             neighbor_weights=neighbor_weights,
             w0=new_weights[0],
             w_self=new_weights[self.vehicle_id + 1],
-            total_neighbor_weight=sum(neighbor_weights.values())
+            total_neighbor_weight=sum(neighbor_weights.values()),
+            trust_source_scores=trust_summary["source_scores"],
+            mean_source_trust=trust_summary["mean_source_trust"],
+            mean_trusted_trust=trust_summary["mean_trusted_trust"],
+            weighted_neighbor_trust=trust_summary["weighted_neighbor_trust"],
         )
         
         return result
@@ -270,7 +522,12 @@ class WeightTrustModule:
         # Store for next iteration
         self.prev_weights = new_weights.copy()
         self.weights = new_weights
-        
+        trust_summary = self._summarize_trust_context(
+            trust_scores=trust_scores,
+            trusted_neighbors=trusted,
+            neighbor_weights=neighbor_weights,
+        )
+
         # Build result
         result = WeightResult(
             weights=new_weights,
@@ -278,80 +535,423 @@ class WeightTrustModule:
             neighbor_weights=neighbor_weights,
             w0=new_weights[0],
             w_self=new_weights[self.vehicle_id + 1],
-            total_neighbor_weight=sum(neighbor_weights.values())
+            total_neighbor_weight=sum(neighbor_weights.values()),
+            trust_source_scores=trust_summary["source_scores"],
+            mean_source_trust=trust_summary["mean_source_trust"],
+            mean_trusted_trust=trust_summary["mean_trusted_trust"],
+            weighted_neighbor_trust=trust_summary["weighted_neighbor_trust"],
         )
         
         return result
     
+    @staticmethod
+    def _clip_unit(value, default: float = 1.0) -> float:
+        """Clip scalar inputs to [0, 1], with a safe default for NaN/None."""
+        if value is None:
+            return float(default)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if not np.isfinite(value):
+            return float(default)
+        return float(np.clip(value, 0.0, 1.0))
+
+    def _resolve_flag_group_factors(self, trust_score) -> Tuple[float, float, float]:
+        """
+        Resolve raw-score multipliers for direct, self, and neighbor channels.
+
+        Precedence mirrors the trust model semantics:
+        target_attack > global_est_check > local_est_check.
+        """
+        direct_factor = 1.0
+        self_factor = 1.0
+        neighbor_factor = 1.0
+
+        if trust_score is None:
+            return direct_factor, self_factor, neighbor_factor
+
+        if trust_score.flag_target_attack:
+            # Local bad, global bad:
+            # fall back to self/prediction and suppress all external channels.
+            direct_factor = min(
+                1.0, max(0.0, float(self.config.flag_w0_target_attack_factor))
+            )
+            neighbor_factor = direct_factor
+            self_factor = 1.0 + (1.0 - direct_factor)
+        elif trust_score.flag_global_est_check:
+            # Local good, global bad:
+            # trust the direct owner-target channel more than fleet consensus.
+            direct_factor = max(
+                1.0, float(self.config.flag_w0_global_est_check_factor)
+            )
+            neighbor_factor = max(0.0, 1.0 / direct_factor)
+        elif trust_score.flag_local_est_check:
+            # Local bad (broad warning, after the more specific cases above):
+            # reduce direct and lean harder on trusted neighbors.
+            direct_factor = min(
+                1.0, max(0.0, float(self.config.flag_w0_local_est_check_factor))
+            )
+            neighbor_factor = 1.0 + (1.0 - direct_factor)
+
+        return direct_factor, self_factor, neighbor_factor
+
+    def _apply_neighbor_cap_for_target(
+        self,
+        neighbor_weights: Dict[int, float],
+        neighbor_basis: Dict[int, float],
+    ) -> Tuple[Dict[int, float], float]:
+        """
+        Enforce per-neighbor caps and move any irreducible overflow to self.
+        """
+        if not neighbor_weights:
+            return {}, 0.0
+
+        capped = {
+            int(neighbor_id): float(weight)
+            for neighbor_id, weight in neighbor_weights.items()
+        }
+        overflow_to_self = 0.0
+        tol = 1e-12
+
+        while True:
+            over_cap = [
+                neighbor_id
+                for neighbor_id, weight in capped.items()
+                if weight > self.config.w_cap + tol
+            ]
+            if not over_cap:
+                break
+
+            overflow = 0.0
+            for neighbor_id in over_cap:
+                overflow += capped[neighbor_id] - self.config.w_cap
+                capped[neighbor_id] = self.config.w_cap
+
+            uncapped = [
+                neighbor_id
+                for neighbor_id, weight in capped.items()
+                if weight < self.config.w_cap - tol
+            ]
+            if overflow <= tol or not uncapped:
+                overflow_to_self += overflow
+                break
+
+            basis_sum = sum(
+                max(0.0, float(neighbor_basis.get(neighbor_id, 0.0)))
+                for neighbor_id in uncapped
+            )
+            if basis_sum <= tol:
+                overflow_to_self += overflow
+                break
+
+            for neighbor_id in uncapped:
+                basis = max(0.0, float(neighbor_basis.get(neighbor_id, 0.0)))
+                capped[neighbor_id] += overflow * (basis / basis_sum)
+
+        return capped, overflow_to_self
+
+    def _apply_local_bad_zero_w0_bias(
+        self,
+        weights: Dict[str, object],
+        trust_score,
+    ) -> Dict[str, object]:
+        """
+        When the local pose channel is explicitly bad and the direct channel is
+        fully suppressed, cap total neighbor pull so self/prediction can carry
+        more of the pose evolution.
+        """
+        if trust_score is None or not bool(
+            getattr(trust_score, "flag_local_est_check", False)
+        ):
+            return weights
+
+        w0 = max(0.0, float(weights.get("w0", 0.0)))
+        if w0 > 1e-9:
+            return weights
+
+        neighbors = {
+            int(neighbor_id): max(0.0, float(weight))
+            for neighbor_id, weight in weights.get("neighbors", {}).items()
+        }
+        if not neighbors:
+            weights["w_self"] = max(0.0, 1.0 - w0)
+            return weights
+
+        total_neighbor = float(sum(neighbors.values()))
+        cap_total = float(
+            np.clip(self.config.local_bad_zero_w0_neighbor_total_cap, 0.0, 1.0)
+        )
+        if total_neighbor <= cap_total + 1e-12:
+            return weights
+
+        scale = cap_total / max(total_neighbor, 1e-12)
+        weights["neighbors"] = {
+            neighbor_id: weight * scale for neighbor_id, weight in neighbors.items()
+        }
+        used = w0 + sum(weights["neighbors"].values())
+        weights["w_self"] = max(0.0, 1.0 - used)
+        return weights
+
     def calculate_weights_for_target(self, target_id: int,
                                       trust_scores: Dict[int, float],
                                       neighbor_fleet_estimates: Dict[int, Dict],
-                                      direct_measurement: Optional[np.ndarray] = None) -> Dict[str, float]:
+                                      direct_measurement: Optional[np.ndarray] = None,
+                                      target_trust_obj=None) -> Dict[str, float]:
         """
-        Calculate weights for estimating a specific target vehicle
-        
-        This is used in the distributed observer where each vehicle
-        estimates every other vehicle's state.
-        
-        Args:
-            target_id: ID of the vehicle being estimated
-            trust_scores: Trust scores for all vehicles
-            neighbor_fleet_estimates: Neighbor estimates {neighbor_id: {target_id: state}}
-            direct_measurement: Direct broadcast from target (if available)
-            
-        Returns:
-            Dict with weight components for the update equation
+        Calculate weights for estimating a specific target vehicle.
+
+        For trust-based mode, the target row is built from raw group scores and
+        normalized jointly:
+        - direct channel depends on the target's local/direct reliability
+        - neighbor channels depend on neighbor source trust
+        - self channel absorbs residual confidence in the host prediction
         """
-        weights = {
-            'w0': self.config.w0_fixed,  # Weight for direct measurement
-            'neighbors': {},              # Weights for each neighbor's estimate
-            'w_self': 0.0                 # Weight for own previous estimate
-        }
-        
+        if self.config.weight_type == "paper":
+            # In paper mode, `trust_scores` is expected to be O_i(j) generalized trust
+            # or direct trust when generalized trust is unavailable.
+            target_local_trust = trust_scores.get(target_id, 0.0)
+            return self.calculate_paper_weights_for_target(
+                target_id=target_id,
+                opinion_scores=trust_scores,
+                target_local_trust=target_local_trust,
+                neighbor_fleet_estimates=neighbor_fleet_estimates,
+                direct_measurement=direct_measurement,
+            )
+        if self.config.weight_type == "equal":
+            available_neighbors = []
+            for neighbor_id, fleet_est in neighbor_fleet_estimates.items():
+                if (
+                    target_id in fleet_est
+                    and neighbor_id != self.vehicle_id
+                    and neighbor_id != target_id
+                ):
+                    trust = trust_scores.get(neighbor_id, 0.0)
+                    if trust >= self.config.trust_threshold:
+                        available_neighbors.append(int(neighbor_id))
+
+            available_neighbors = available_neighbors[: self.config.kappa]
+
+            channel_count = len(available_neighbors) + (
+                1 if direct_measurement is not None else 0
+            )
+            if channel_count <= 0:
+                return {"w0": 0.0, "neighbors": {}, "w_self": 1.0}
+
+            equal_weight = 1.0 / float(channel_count)
+            return {
+                "w0": equal_weight if direct_measurement is not None else 0.0,
+                "neighbors": {
+                    neighbor_id: equal_weight for neighbor_id in available_neighbors
+                },
+                "w_self": 0.0,
+            }
+
         # Get neighbors who have estimates for target
         available_neighbors = []
         for neighbor_id, fleet_est in neighbor_fleet_estimates.items():
-            if target_id in fleet_est and neighbor_id != self.vehicle_id:
+            if (
+                target_id in fleet_est
+                and neighbor_id != self.vehicle_id
+                and neighbor_id != target_id
+            ):
                 trust = trust_scores.get(neighbor_id, 0.0)
                 if trust >= self.config.trust_threshold:
                     available_neighbors.append((neighbor_id, trust))
-        
+
         # Sort by trust (highest first) and limit by kappa
         available_neighbors.sort(key=lambda x: x[1], reverse=True)
         available_neighbors = available_neighbors[:self.config.kappa]
-        
-        # Calculate neighbor weights
-        remaining_weight = 1.0 - weights['w0']
-        
-        if available_neighbors:
-            trust_sum = sum(t for _, t in available_neighbors)
-            
-            for neighbor_id, trust in available_neighbors:
-                raw_weight = (trust / trust_sum) * remaining_weight
-                capped_weight = min(raw_weight, self.config.w_cap)
-                weights['neighbors'][neighbor_id] = capped_weight
-            
-            # Allocate leftover to self
-            used_weight = sum(weights['neighbors'].values())
-            weights['w_self'] = remaining_weight - used_weight
+
+        direct_factor, self_factor, neighbor_factor = (
+            self._resolve_flag_group_factors(target_trust_obj)
+        )
+
+        direct_available = direct_measurement is not None
+        if target_trust_obj is not None:
+            local_trust = self._clip_unit(
+                getattr(target_trust_obj, "local_trust_sample", None), default=1.0
+            )
+            # quality_factor = self._clip_unit(
+            #     getattr(target_trust_obj, "quality_factor", None), default=1.0
+            # )
         else:
-            # No neighbors - all remaining goes to self (persistence)
-            weights['w_self'] = remaining_weight
+            local_trust = 1.0
+            # quality_factor = 1.0
+
+        # direct_reliability = local_trust * quality_factor if direct_available else 0.0
+        direct_reliability = local_trust if direct_available else 0.0
+        anchor_gain = max(0.0, float(self.config.w0_fixed))
+        self_gain = max(0.0, float(self.config.w_self_base))
+        neighbor_gain = max(0.0, 1.0 - anchor_gain - self_gain)
+
+        if (
+            self.config.use_gamma_self_weight_adaptation
+            and target_trust_obj is not None
+        ):
+            gamma_self = self._clip_unit(
+                getattr(target_trust_obj, "gamma_self", None), default=1.0
+            )
+            gamma_self_floor = self._clip_unit(
+                self.config.gamma_self_weight_floor, default=0.25
+            )
+            self_factor *= gamma_self_floor + (1.0 - gamma_self_floor) * gamma_self
+
+        w0_raw = anchor_gain * direct_reliability * direct_factor
+        w_self_raw = self_gain * self_factor
+
+        neighbor_basis = {}
+        trust_sum = sum(max(0.0, trust) for _, trust in available_neighbors)
+        if trust_sum > 0.0:
+            for neighbor_id, trust in available_neighbors:
+                neighbor_basis[neighbor_id] = max(0.0, float(trust)) / trust_sum
+
+        neighbor_raw = {
+            neighbor_id: neighbor_gain * neighbor_factor * basis
+            for neighbor_id, basis in neighbor_basis.items()
+        }
+
+        raw_total = w0_raw + w_self_raw + sum(neighbor_raw.values())
+        if raw_total <= 0.0:
+            return {"w0": 0.0, "neighbors": {}, "w_self": 1.0}
+
+        weights = {
+            "w0": w0_raw / raw_total,
+            "neighbors": {
+                neighbor_id: raw_weight / raw_total
+                for neighbor_id, raw_weight in neighbor_raw.items()
+            },
+            "w_self": w_self_raw / raw_total,
+        }
+
+        if weights["neighbors"]:
+            capped_neighbors, overflow_to_self = self._apply_neighbor_cap_for_target(
+                weights["neighbors"], neighbor_basis
+            )
+            weights["neighbors"] = capped_neighbors
+            weights["w_self"] += overflow_to_self
+
+        used = weights["w0"] + weights["w_self"] + sum(weights["neighbors"].values())
+        residual = 1.0 - used
+        if abs(residual) > 1e-12:
+            weights["w_self"] = max(0.0, weights["w_self"] + residual)
+
+        weights = self._apply_local_bad_zero_w0_bias(
+            weights=weights,
+            trust_score=target_trust_obj,
+        )
+        return weights
+
+    def calculate_startup_weights_for_target(
+        self,
+        target_id: int,
+        neighbor_fleet_estimates: Dict[int, Dict],
+        direct_measurement: Optional[np.ndarray] = None,
+    ) -> Dict[str, object]:
+        """Return stable non-trust target weights for the startup warmup."""
+        available_neighbors = []
+        for neighbor_id, fleet_est in neighbor_fleet_estimates.items():
+            if (
+                neighbor_id == self.vehicle_id
+                or neighbor_id == target_id
+                or target_id not in fleet_est
+            ):
+                continue
+            available_neighbors.append(int(neighbor_id))
+
+        return self._build_fixed_channel_weights(
+            available_neighbors=available_neighbors,
+            include_anchor=direct_measurement is not None,
+        )
+
+    def calculate_paper_weights_for_target(
+        self,
+        target_id: int,
+        opinion_scores: Dict[int, float],
+        target_local_trust: float,
+        neighbor_fleet_estimates: Dict[int, Dict],
+        direct_measurement: Optional[np.ndarray] = None,
+    ) -> Dict[str, float]:
+        """
+        Paper-like per-target weight design:
+        LN_i^(j) = {l in N_i | O_i(l) >= theta_min} U ({0} if LT_i,j >= theta_min)
+        n = max{kappa, |LN_i^(j)| + 1}
+        w_il^(j) = 1/n for l in LN_i^(j), else 0.
+
+        Returned dictionary follows the estimator update interface.
+        """
+        theta_min = self.config.trust_threshold
+
+        # Build candidate neighbors who actually provide target estimates
+        candidates = []
+        for neighbor_id, fleet_est in neighbor_fleet_estimates.items():
+            if neighbor_id == self.vehicle_id:
+                continue
+            if target_id in fleet_est:
+                candidates.append(neighbor_id)
+
+        legitimate_neighbors = [
+            vid
+            for vid in candidates
+            if opinion_scores.get(vid, 0.0) >= theta_min
+        ]
+
+        include_anchor = (
+            target_local_trust >= theta_min and direct_measurement is not None
+        )
+
+        n_legitimate = len(legitimate_neighbors) + (1 if include_anchor else 0)
+        n_w = max(self.config.kappa, n_legitimate + 1)  # +1 for self residual channel
+        base_w = 1.0 / n_w
+
+        weights = {
+            "w0": base_w if include_anchor else 0.0,
+            "neighbors": {vid: base_w for vid in legitimate_neighbors},
+            "w_self": 0.0,
+        }
+
+        used = weights["w0"] + sum(weights["neighbors"].values())
+        weights["w_self"] = max(0.0, 1.0 - used)
+        return weights
+
+    @staticmethod
+    def apply_flag_adaptation(
+        weights: Dict[str, object],
+        trust_score,
+        config: WeightConfig,
+    ) -> Dict[str, object]:
+        """
         
-        # Adjust if no direct measurement available
-        if direct_measurement is None:
-            # Redistribute w0 to neighbors/self
-            redistribute = weights['w0']
-            weights['w0'] = 0.0
-            
-            if weights['neighbors']:
-                # Proportional redistribution
-                total_neighbor = sum(weights['neighbors'].values())
-                for nid in weights['neighbors']:
-                    weights['neighbors'][nid] += redistribute * (weights['neighbors'][nid] / total_neighbor)
-            else:
-                weights['w_self'] += redistribute
-        
+        Adjust per-target weights based on trust model attack flags.
+
+        Flag logic:
+        - flag_target_attack  (local OK, global BAD):  keep w₀ high
+        - flag_global_est_check (local BAD, global OK): reduce w₀
+        - flag_local_est_check  (local BAD):            reduce w₀
+
+        Freed budget is absorbed by w_self (own dynamics prediction).
+        """
+        if trust_score is None:
+            return weights
+
+        w0_original = weights.get("w0", 0.0)
+
+        if trust_score.flag_target_attack:
+            # Local sensors say OK, fleet says BAD → trust your own sensor
+            factor = config.flag_w0_target_attack_factor
+            weights["w0"] = max(w0_original, w0_original * factor)
+        elif trust_score.flag_global_est_check:
+            # Local sensors BAD, fleet says OK → reduce local, lean on neighbors
+            weights["w0"] = w0_original * config.flag_w0_global_est_check_factor
+        elif trust_score.flag_local_est_check:
+            # Local measurements unreliable
+            weights["w0"] = w0_original * config.flag_w0_local_est_check_factor
+        else:
+            return weights  # no flag active, nothing to change
+
+        # Rebalance: w_self absorbs the residual
+        used = weights["w0"] + sum(weights.get("neighbors", {}).values())
+        weights["w_self"] = max(0.0, 1.0 - used)
         return weights
     
     def _get_trusted_neighbors(self, trust_scores: Dict[int, float],
@@ -549,7 +1149,12 @@ class WeightTrustModule:
         # Store for next iteration
         self.prev_weights = new_weights.copy()
         self.weights = new_weights
-        
+        trust_summary = self._summarize_trust_context(
+            trust_scores=trust_scores,
+            trusted_neighbors=list(trusted_neighbors),
+            neighbor_weights=neighbor_weights,
+        )
+
         # Build result
         result = WeightResult(
             weights=new_weights,
@@ -557,7 +1162,11 @@ class WeightTrustModule:
             neighbor_weights=neighbor_weights,
             w0=new_weights[0],
             w_self=new_weights[self.vehicle_id + 1],
-            total_neighbor_weight=sum(neighbor_weights.values())
+            total_neighbor_weight=sum(neighbor_weights.values()),
+            trust_source_scores=trust_summary["source_scores"],
+            mean_source_trust=trust_summary["mean_source_trust"],
+            mean_trusted_trust=trust_summary["mean_trusted_trust"],
+            weighted_neighbor_trust=trust_summary["weighted_neighbor_trust"],
         )
         
         return result

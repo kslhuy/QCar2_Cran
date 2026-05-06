@@ -17,6 +17,9 @@ import os
 
 from pal.products.qcar import QCarGPS
 import numpy as np
+"""Get time spent in current state"""
+import time
+
 
 # Add parent directory to sys.path to import command_types
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -88,12 +91,70 @@ class StateBase:
         pass
 
     def get_time_in_state(self) -> float:
-        """Get time spent in current state"""
-        import time
 
         if self.state_entry_time:
             return time.time() - self.state_entry_time
         return 0.0
+
+    def _generate_waypoints_from_node_sequence(
+        self, node_sequence: Any
+    ) -> Optional[np.ndarray]:
+        """
+        Build a waypoint sequence from a node list.
+
+        Returns:
+            np.ndarray: waypoint array with shape [2, N] (or richer variants),
+            or None when the request is invalid.
+        """
+        if not (node_sequence and isinstance(node_sequence, list)):
+            if self.logger:
+                self.logger.logger.warning(
+                    f"[!] Invalid path update data: {node_sequence}"
+                )
+            return None
+
+        if not (hasattr(self.vehicle_logic, "roadmap") and self.vehicle_logic.roadmap):
+            if self.logger:
+                self.logger.logger.warning("[!] No roadmap available for path generation")
+            return None
+
+        try:
+            new_waypoints = self.vehicle_logic.roadmap.generate_path(node_sequence)
+        except Exception as e:
+            if self.logger:
+                self.logger.log_error("Failed to generate path from nodes", e)
+            return None
+
+        if new_waypoints is None:
+            if self.logger:
+                self.logger.logger.warning(
+                    f"[!] Roadmap returned no path for nodes: {node_sequence}"
+                )
+            return None
+
+        new_waypoints = np.asarray(new_waypoints, dtype=float)
+        if new_waypoints.ndim != 2 or new_waypoints.shape[1] < 2:
+            if self.logger:
+                self.logger.logger.warning(
+                    f"[!] Generated path is invalid for nodes: {node_sequence}"
+                )
+            return None
+
+        if not self.vehicle_logic.is_physical_qcar:
+            new_waypoints = new_waypoints * 0.975
+
+        return new_waypoints
+
+    def _store_active_path(
+        self, node_sequence: Any, waypoint_sequence: Optional[np.ndarray]
+    ) -> bool:
+        """Persist the current route so control and telemetry stay aligned."""
+        if waypoint_sequence is None:
+            return False
+
+        self.vehicle_logic.node_sequence = list(node_sequence)
+        self.vehicle_logic.waypoint_sequence = waypoint_sequence
+        return True
 
     # === Single Event Handler Method ===
 
@@ -157,60 +218,35 @@ class StateBase:
         elif command_type == CommandType.SET_PATH:
             # Handle path updates without transitioning
             node_sequence = data.get("node_sequence")
-            if node_sequence and isinstance(node_sequence, list):
-                # Generate waypoints from node sequence using roadmap
+            new_waypoints = self._generate_waypoints_from_node_sequence(node_sequence)
+            if self._store_active_path(node_sequence, new_waypoints):
+                # Update steering controller if it exists
                 if (
-                    hasattr(self.vehicle_logic, "roadmap")
-                    and self.vehicle_logic.roadmap
+                    hasattr(self.vehicle_logic, "steering_controller")
+                    and self.vehicle_logic.steering_controller
                 ):
-                    try:
-                        new_waypoints = self.vehicle_logic.roadmap.generate_path(
-                            node_sequence
-                        )
-                        if (
-                            not self.vehicle_logic.is_physical_qcar
-                            and new_waypoints is not None
-                        ):
-                            new_waypoints = new_waypoints * 0.975
+                    self.vehicle_logic.steering_controller.reset(new_waypoints)
 
-                        self.vehicle_logic.waypoint_sequence = new_waypoints
-
-                        # Update steering controller if it exists
-                        if (
-                            hasattr(self.vehicle_logic, "steering_controller")
-                            and self.vehicle_logic.steering_controller
-                        ):
-                            self.vehicle_logic.steering_controller.reset(new_waypoints)
-
-                        if self.logger:
-                            self.logger.logger.info(
-                                f"[OK] Path updated with {len(node_sequence)} nodes in {self.__class__.__name__}"
-                            )
-                        return None
-                    except Exception as e:
-                        if self.logger:
-                            self.logger.log_error(
-                                "Failed to generate path from nodes", e
-                            )
-                else:
-                    if self.logger:
-                        self.logger.logger.warning(
-                            "[!] No roadmap available for path generation"
-                        )
-            else:
                 if self.logger:
-                    self.logger.logger.warning(f"[!] Invalid path update data")
+                    self.logger.logger.info(
+                        f"[OK] Path updated with {len(node_sequence)} nodes in {self.__class__.__name__}"
+                    )
             return None
 
         elif command_type == CommandType.ACTIVATE_V2V:
             # Handle V2V activation
             peer_vehicles = data.get("peer_vehicles", [])
             peer_ips = data.get("peer_ips", [])
+            time_reference = data.get("time_reference")
+            vehicle_manifest = data.get("vehicle_manifest")
 
             if peer_vehicles and peer_ips:
                 if hasattr(self.vehicle_logic, "v2v_manager"):
                     success = self.vehicle_logic.v2v_manager.activate_v2v(
-                        peer_vehicles, peer_ips
+                        peer_vehicles,
+                        peer_ips,
+                        time_reference=time_reference,
+                        vehicle_manifest=vehicle_manifest,
                     )
                     if success and self.logger:
                         self.logger.logger.info(
@@ -396,7 +432,7 @@ class StateBase:
                 preset_names = data.get(
                     "preset_names", ["local_state", "local_control"]
                 )
-                stream_rate = data.get("stream_rate", 50.0)
+                stream_rate = data.get("stream_rate", 30.0)
                 success = self._enable_scope_streaming(preset_names, stream_rate)
                 if success:
                     self.logger.logger.info(
@@ -439,6 +475,39 @@ class StateBase:
                 self.logger.log_warning(
                     "[CMD] SET_LOCAL_OBSERVER missing observer_type"
                 )
+            return None
+
+        elif command_type == CommandType.START_LOCAL_SENSOR_ATTACK:
+            attack_config = data.get("config", data)
+            self.logger.logger.info("[CMD] Starting local sensor attack")
+            try:
+                success = self.vehicle_logic.start_local_sensor_attack(attack_config)
+                if success:
+                    self.logger.logger.info(
+                        "[CMD] Local sensor attack enabled successfully"
+                    )
+                else:
+                    self.logger.logger.warning(
+                        "[CMD] Local sensor attack request was ignored"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error starting local sensor attack", e)
+            return None
+
+        elif command_type == CommandType.STOP_LOCAL_SENSOR_ATTACK:
+            self.logger.logger.info("[CMD] Stopping local sensor attack")
+            try:
+                success = self.vehicle_logic.stop_local_sensor_attack()
+                if success:
+                    self.logger.logger.info(
+                        "[CMD] Local sensor attack disabled successfully"
+                    )
+                else:
+                    self.logger.logger.warning(
+                        "[CMD] Local sensor attack stop request was ignored"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error stopping local sensor attack", e)
             return None
 
         elif command_type == CommandType.SET_FLEET_OBSERVER:
@@ -504,6 +573,16 @@ class StateBase:
                 self._handle_online_sysid_params(params)
                 return None
 
+            if category == "online_calibration":
+                if not isinstance(params, dict):
+                    params = {}
+                self._handle_online_calibration_params(params)
+                return None
+            if category == "robust_kalmannet_dataset":
+                if not isinstance(params, dict):
+                    params = {}
+                self._handle_robust_kalmannet_dataset_params(params)
+                return None
             if category and params:
                 if self.logger:
                     self.logger.logger.info(
@@ -574,6 +653,45 @@ class StateBase:
                     self.logger.log_error(f"[MANUAL] Invalid gear value: {gear_name}")
             return None
 
+        # Handle Online Calibration (passive data collection) enable/disable
+        elif command_type == CommandType.ENABLE_ONLINE_CALIBRATION:
+            self.logger.logger.info("[CMD] Enabling passive online calibration")
+            try:
+                cfg = data.get("config", {})
+                if hasattr(self.vehicle_logic, "enable_online_calibration_zmq"):
+                    success = self.vehicle_logic.enable_online_calibration_zmq(cfg)
+                    if success:
+                        self.logger.logger.info(
+                            "[CMD] Online calibration enabled successfully"
+                        )
+                    else:
+                        self.logger.log_error(
+                            "[CMD] Failed to enable online calibration"
+                        )
+                else:
+                    self.logger.log_warning(
+                        "[CMD] vehicle_logic does not expose enable_online_calibration_zmq"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error enabling online calibration", e)
+            return None
+
+        elif command_type == CommandType.DISABLE_ONLINE_CALIBRATION:
+            self.logger.logger.info("[CMD] Pausing passive online calibration")
+            try:
+                if hasattr(self.vehicle_logic, "disable_online_calibration_zmq"):
+                    self.vehicle_logic.disable_online_calibration_zmq()
+                    self.logger.logger.info(
+                        "[CMD] Online calibration paused successfully"
+                    )
+                else:
+                    self.logger.log_warning(
+                        "[CMD] vehicle_logic does not expose disable_online_calibration_zmq"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error disabling online calibration", e)
+            return None
+
         return None
 
     def _init_controllers(self, force: bool = False):
@@ -630,6 +748,8 @@ class StateBase:
             return False
 
         if success:
+            if hasattr(self.vehicle_logic, "invalidate_periodic_status_cache"):
+                self.vehicle_logic.invalidate_periodic_status_cache()
             self._on_controller_switched(category, controller_type, state_context)
         # else:
         #     self.logger.logger.error(f"Failed to switch {category} controller to {controller_type}")
@@ -768,6 +888,175 @@ class StateBase:
         )
         return False
 
+    def _handle_online_calibration_params(self, params: Dict[str, Any]) -> bool:
+        """
+        Handle SET_PARAMS category='online_calibration'.
+        action: 'analyse', 'clear', 'status', 'disconnect'
+        calibration_type: 'throttle_velocity', 'steering_curvature', etc.
+        """
+        action = str(params.get("action", "status")).strip().lower()
+
+        import time
+        if action in ("disconnect", "close", "close_transport"):
+            client = getattr(self.vehicle_logic, "online_calibration_zmq", None)
+            if client is not None:
+                try:
+                    client.stop_collection()
+                except Exception as e:
+                    self.logger.log_error(
+                        "[CMD] Failed to pause online calibration before disconnect",
+                        e,
+                    )
+
+            if hasattr(self.vehicle_logic, "close_online_calibration_zmq"):
+                self.vehicle_logic.close_online_calibration_zmq()
+                self.logger.logger.info(
+                    "[CMD] ZMQ Online Calibration transport disconnected"
+                )
+                return True
+
+            self.logger.log_warning(
+                "[CMD] vehicle_logic does not expose close_online_calibration_zmq"
+            )
+            return False
+
+        client = getattr(self.vehicle_logic, "online_calibration_zmq", None)
+        if client is None:
+            self.logger.log_warning("[CMD] Online calibration client not available")
+            return False
+
+        if action in ("analyse", "trigger_analyse", "analyze"):
+            calibration_type = params.get("calibration_type")
+            if calibration_type:
+                client.trigger_analyse(calibration_type=calibration_type, options=params.get("options"))
+                self.logger.logger.info(f"[CMD] ZMQ Online Calibration analyse command sent for {calibration_type}")
+                return True
+            else:
+                self.logger.log_warning("[CMD] Online calibration analyse requested but calibration_type missing")
+                return False
+
+        if action in ("clear", "reset_buffer"):
+            client.clear_buffer()
+            self.logger.logger.info("[CMD] ZMQ Online Calibration clear command sent")
+            return True
+
+        if action in ("status", "get_status"):
+            client.request_status()
+            status = client.get_status()
+            if (
+                hasattr(self.vehicle_logic, "client_Ground_Station")
+                and self.vehicle_logic.client_Ground_Station
+            ):
+                self.vehicle_logic.client_Ground_Station.queue_telemetry(
+                    {
+                        "type": "online_calibration_status",
+                        "timestamp": time.time(),
+                        "car_id": getattr(self.vehicle_logic, "vehicle_id", 0),
+                        "data": {"mode": "zmq", "status": status},
+                    }
+                )
+            return True
+
+        self.logger.log_warning(
+            f"[CMD] Unknown online_calibration action '{action}'. "
+            "Valid: analyse, status, clear, disconnect"
+        )
+        return False
+
+    def _handle_robust_kalmannet_dataset_params(
+        self, params: Dict[str, Any]
+    ) -> bool:
+        """
+        Handle SET_PARAMS category='robust_kalmannet_dataset'.
+
+        actions:
+            - start: begin local dataset collection
+            - stop: stop and save dataset
+            - discard: stop without saving
+            - status: publish current recorder status
+        """
+        action = str(params.get("action", "status")).strip().lower()
+        cfg = params.get("config", {})
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        vehicle_logic = getattr(self, "vehicle_logic", None)
+        if vehicle_logic is None:
+            self.logger.log_warning("[CMD] vehicle_logic unavailable for RKNet dataset")
+            return False
+
+        if action in ("start", "collect_on"):
+            if not hasattr(vehicle_logic, "enable_robust_kalmannet_dataset"):
+                self.logger.log_warning(
+                    "[CMD] vehicle_logic does not expose enable_robust_kalmannet_dataset"
+                )
+                return False
+            success = vehicle_logic.enable_robust_kalmannet_dataset(cfg)
+            if success:
+                self.logger.logger.info("[CMD] Robust KalmanNet dataset collection started")
+            else:
+                self.logger.log_warning("[CMD] Failed to start Robust KalmanNet dataset collection")
+            return success
+
+        if action in ("stop", "collect_off", "pause"):
+            if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
+                return False
+            vehicle_logic.disable_robust_kalmannet_dataset(save=False)
+            self.logger.logger.info("[CMD] Robust KalmanNet dataset recording paused")
+            return True
+
+        if action in ("save",):
+            if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
+                return False
+            saved_path = vehicle_logic.disable_robust_kalmannet_dataset(save=True)
+            if saved_path:
+                self.logger.logger.info(
+                    f"[CMD] Robust KalmanNet dataset saved to {saved_path}"
+                )
+                return True
+            self.logger.log_warning("[CMD] Robust KalmanNet dataset save requested but nothing was saved")
+            return False
+
+        if action in ("discard", "reset", "clear"):
+            if not hasattr(vehicle_logic, "disable_robust_kalmannet_dataset"):
+                return False
+            # Stop if recording
+            vehicle_logic.disable_robust_kalmannet_dataset(save=False)
+            # Then clear buffer
+            if hasattr(vehicle_logic, "clear_robust_kalmannet_dataset"):
+                vehicle_logic.clear_robust_kalmannet_dataset()
+            self.logger.logger.info(
+                "[CMD] Robust KalmanNet dataset discarded/cleared"
+            )
+            return True
+
+
+        if action in ("status", "get_status"):
+            status = (
+                vehicle_logic._get_robust_kalmannet_dataset_status()
+                if hasattr(vehicle_logic, "_get_robust_kalmannet_dataset_status")
+                else {"enabled": False}
+            )
+            if (
+                hasattr(vehicle_logic, "client_Ground_Station")
+                and vehicle_logic.client_Ground_Station
+            ):
+                vehicle_logic.client_Ground_Station.queue_telemetry(
+                    {
+                        "type": "robust_kalmannet_dataset_status",
+                        "timestamp": time.time(),
+                        "car_id": getattr(vehicle_logic, "vehicle_id", 0),
+                        "robust_kalmannet_dataset_status": status,
+                    }
+                )
+            return True
+
+        self.logger.log_warning(
+            f"[CMD] Unknown robust_kalmannet_dataset action '{action}'. "
+            "Valid: start, stop, discard, status"
+        )
+        return False
+
     def _send_platoon_setup_confirmation(
         self, my_vehicle_id: int, formation: Dict, leader_id: int
     ):
@@ -869,8 +1158,15 @@ class StateBase:
                 except:
                     pass
 
-            # Reinitialize GPS with calibration
-            if not self.vehicle_logic.is_physical_qcar:
+            # Reinitialize GPS with calibration            
+            if self.vehicle_logic.vehicle_type == "Limo":
+                if hasattr(self.vehicle_logic.gps, "send_initial_pose"):
+                    x, y, theta = calibration_pose
+                    self.vehicle_logic.gps.send_initial_pose(x, y, np.rad2deg(theta))
+                    self.logger.logger.info("GPS recalibrated (Limo ROS AMCL via send_initial_pose)")
+                else:
+                    self.logger.log_error("Limo GPS adapter missing send_initial_pose method")
+            elif not self.vehicle_logic.is_physical_qcar:
                 # For fake vehicles: Update mock hardware positions
                 self._update_fake_vehicle_position(calibration_pose)
 
@@ -981,7 +1277,8 @@ class StateBase:
             vehicle_id = self.vehicle_logic.vehicle_id
 
             # Get probing flag from config
-            probing_enabled = self.config.vehicle.probing
+            # probing_enabled = self.config.vehicle.probing
+            probing_enabled = True
             self.logger.logger.info(
                 f"[PERCEPTION] Starting YOLO system for vehicle {vehicle_id} with probing {probing_enabled}..."
             )
@@ -992,6 +1289,7 @@ class StateBase:
                 vehicle_id=vehicle_id,
                 probing=probing_enabled,
                 logger=self.logger,
+                vehicle_type=self.vehicle_logic.vehicle_type,
             )
 
             if yolo_process:
@@ -1154,7 +1452,7 @@ class StateBase:
         return probing_enabled
 
     def _enable_scope_streaming(
-        self, preset_names: list = None, stream_rate: float = 50.0
+        self, preset_names: list = None, stream_rate: float = 30.0
     ) -> bool:
         """
         Enable scope data streaming to Ground Station for remote plotting.
@@ -1200,8 +1498,14 @@ class StateBase:
             # Enable streaming on client
             self.vehicle_logic.client_Ground_Station.enable_scope_streaming()
 
+            # Get fleet size for dynamic field generation
+            fleet_size = None
+            if 'fleet_state' in preset_names:
+                if hasattr(self.vehicle_logic, 'vehicle_observer') and self.vehicle_logic.vehicle_observer:
+                    fleet_size = self.vehicle_logic.vehicle_observer.fleet_size
+
             # Enable streamer
-            success = self.vehicle_logic.scope_streamer.enable(preset_names)
+            success = self.vehicle_logic.scope_streamer.enable(preset_names, fleet_size=fleet_size)
 
             if success:
                 self.logger.logger.info(
@@ -1250,7 +1554,9 @@ class StateBase:
         Switch the local state estimator at runtime.
 
         Args:
-            observer_type: Type of local estimator ('ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger')
+            observer_type: Type of local estimator
+                ('ekf', 'luenberger', 'dead_reckoning', 'neural_luenberger',
+                'robust_kalman_net')
 
         Returns:
             bool: True if successful
@@ -1258,7 +1564,13 @@ class StateBase:
         try:
             from Observer.local_state_estimators import LocalEstimatorFactory
 
-            valid_types = ["ekf", "luenberger", "dead_reckoning", "neural_luenberger"]
+            valid_types = [
+                "ekf",
+                "luenberger",
+                "dead_reckoning",
+                "neural_luenberger",
+                "robust_kalman_net",
+            ]
             if observer_type not in valid_types:
                 self.logger.log_error(
                     f"Invalid local observer type: {observer_type}. Valid: {valid_types}"
@@ -1305,6 +1617,8 @@ class StateBase:
             # Swap the estimator
             vehicle_observer.set_local_estimator(new_estimator)
             vehicle_observer.local_estimator_type = observer_type
+            if hasattr(self.vehicle_logic, "invalidate_periodic_status_cache"):
+                self.vehicle_logic.invalidate_periodic_status_cache()
 
             return True
 
@@ -1363,6 +1677,8 @@ class StateBase:
             # Swap the estimator
             vehicle_observer.set_fleet_estimator(new_estimator)
             vehicle_observer.fleet_estimator_type = observer_type
+            if hasattr(self.vehicle_logic, "invalidate_periodic_status_cache"):
+                self.vehicle_logic.invalidate_periodic_status_cache()
 
             return True
 

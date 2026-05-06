@@ -1,0 +1,233 @@
+# ============================================================================
+# Limo Controller Configuration
+# ============================================================================
+# Limo uses ROS /cmd_vel directly: longitudinal commands are velocity [m/s],
+# while steering commands are Ackermann steering angles [rad] on angular.z.
+# The values below are intentionally slower and more steering-authoritative
+# than the QCar real profile so path tracking is stable on the physical Limo.
+# ============================================================================
+
+enable_steering_control: true
+
+# State-specific controller defaults
+path_longitudinal_controller_type: 'pid'
+path_lateral_controller_type: 'pp_map'
+leader_longitudinal_controller_type: 'cacc'
+leader_lateral_controller_type: 'fusion_lateral'
+
+leader_reverse_follow:
+  enabled: false
+  trigger_velocity_threshold: -0.03
+  max_reverse_throttle: 0.08
+  max_reverse_speed: 0.12
+  min_gap: 0.20
+  max_gap: 0.90
+  max_heading_error_deg: 20.0
+  reverse_steering_gain: 0.5
+  stop_on_v2v_loss: true
+
+leader_sensor_acc:
+  enabled: false
+  blend_alpha: 0.75           # 1.0 = pure V2V/CACC, 0.0 = pure local sensor ACC
+  desired_distance: 0.35      # [m] Preferred stand-off distance from YOLO car_dist
+  time_headway: 0.0           # [s] Extra dynamic spacing = desired_distance + time_headway * ego_speed
+  distance_gain: 0.8          # [m/s per m] Converts gap error into local ACC target-speed correction
+  min_target_velocity: 0.0    # [m/s] Lower clamp for the local ACC target speed
+  max_target_velocity: 0.6    # [m/s] Upper clamp for the local ACC target speed
+  stop_distance: 0.20         # [m] Force local ACC target speed to zero inside this gap
+  max_distance: 1.8           # [m] Ignore YOLO car-distance measurements beyond this range
+  max_offset: 0.80            # Ignore detections that are too far from the image center
+  distance_smoothing: 0.7     # Low-pass filter on YOLO distance. Higher = smoother but slower
+
+leader_longitudinal_state_source:
+  mode: 'direct_v2v_clean' # 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'
+  fallback_to_v2v: true       # If fleet estimate is unavailable, keep current direct V2V behavior
+
+# Legacy fallbacks
+longitudinal_controller_type: 'cacc'
+lateral_controller_type: 'pp_map'
+
+command_smoothing:
+  longitudinal:
+    alpha: 0.1
+    rise_rate: 1.0
+    fall_rate: 1.0
+  lateral:
+    alpha: 0.01 # take previous 
+    rise_rate: 1.0
+    fall_rate: 1.0
+
+cacc:
+  s0: 0.25
+  h: 0.6
+  K_spacing: 0.28
+  K_velocity: 0.12
+  spacing_mode: "path_or_projected"
+  projection_heading_source: "leader"
+  blend_heading_deg: 20.0
+  min_effective_spacing: 0.0
+  acc_to_throttle_gain: 0.35
+  max_throttle: 0.20
+  leader_acceleration_weight: 1.0
+  target_velocity_weight: 0.2   # Extra straight-road catch-up toward v_ref when the gap is open. Up = reaches cruise speed faster. Down = follows the leader more conservatively.
+  target_velocity_gap_window: 0.12  # [m] Extra gap needed before the cruise-speed bias becomes strong. Up = waits for a larger safe gap. Down = starts accelerating sooner.
+  target_velocity_turn_scale: 0.25  # Scale applied to that cruise-speed bias in turns. Up = more push remains in corners. Down = corners stay more conservative.
+  spacing_deadband: 0.12
+  close_spacing_deadband: 0.03  # Smaller deadband used only when spacing error is negative (too close). Lower = reacts sooner to back off near the leader.
+  velocity_deadband: 0.05
+  throttle_smoothing: 0.0
+  brake_smoothing: 0.6
+  max_acc_rate: 1.0
+  use_feedforward: true
+  ff_gain: 0.16129
+  limo_max_speed: 0.45
+  limo_max_accel: 0.25
+  limo_max_decel: 0.35
+  limo_leader_speed_margin: 0.06
+  limo_gap_closing_gain: 0.16
+  limo_close_gap_gain: 0.50
+
+pid:
+  kp: 0.1
+  ki: 0.03
+  kd: 0.001
+  ff_gain: 0.0
+  use_affine_feedforward: false
+  ff_speed_slope: 6.63
+  ff_speed_intercept: -0.31
+  max_throttle: 0.3
+  min_throttle: 0.0
+  ei_max: 0.5
+  v_ref: 0.38
+  # Limo path controller returns a velocity command, not QCar throttle.
+  limo_max_accel: 0.35
+  limo_max_decel: 0.45
+  limo_max_speed: 0.45
+  limo_stop_speed_threshold: 0.05
+  limo_stop_command_threshold: 0.08
+
+qcar2_speed:
+  kp: 20.0
+  kd: 0.1
+  km: 0.0047
+  use_affine_feedforward: true
+  ff_speed_slope: 6.63
+  ff_speed_intercept: -0.31
+  max_throttle: 0.3
+  min_forward_throttle: 0.01
+  min_reverse_throttle: 0.01
+  nominal_battery_voltage: 12.0
+  min_battery_voltage: 1.0
+  stop_speed_threshold: 0.001
+
+sa_acc:
+  tau: 0.4
+  h: 0.5
+  k1: -0.8
+  k2: 2.5
+  li: 5.0
+  Li: 8.0
+  acc_to_throttle_gain: 0.65
+  max_throttle: 0.30
+
+pure_pursuit:
+  lookahead_distance: 0.22
+  k_steering: 0.65
+  max_steering: 0.48
+  adaptive_lookahead: true
+  curvature_threshold: 0.05
+  turn_lookahead_offset: 0.18
+  turn_lookahead_gain: 1.3
+  turn_preview_cap: 0.0   # [m] Max forward preview added in turns. Up = smoother/wider arc, but more corner cutting. Down = stays closer to the leader's exact arc.
+  heading_alignment_gain: 0.0
+  heading_alignment_window_deg: 0.0
+  heading_preview_cap: 0.0
+
+pp_map:
+  sample_ds: 0.02
+  desired_speed: 0.5
+  min_speed: 0.3
+  kappa_speed_gain: 1.0
+  max_speed: 1.0
+  hard_turn_kappa: 0.69
+  hard_turn_speed: 0.32
+  t_clip_min: 0.5
+  t_clip_max: 1.0
+  m_l1: 0.5
+  q_l1: 0.2
+  speed_lookahead: 0.28
+  lat_err_coeff: 0.25
+  acc_scaler_for_steer: 1.0
+  dec_scaler_for_steer: 1.0
+  start_scale_speed: 0.20
+  end_scale_speed: 0.55
+  downscale_factor: 0.35
+  speed_lookahead_for_steer: 0.18
+  target_speed_rise_rate: 0.25
+  target_speed_fall_rate: 0.60
+  prioritize_dyn: false
+  trailing_gap: 0.8
+  trailing_p_gain: 0.5
+  trailing_i_gain: 0.0
+  trailing_d_gain: 0.1
+  blind_trailing_speed: 0.15
+  obstacle_avoidance_enabled: false
+  obstacle_replan_period: 0.4
+  obstacle_min_detect_dist: 0.15
+  obstacle_max_detect_dist: 1.5
+  obstacle_car_radius: 0.12
+  obstacle_person_radius: 0.12
+  obstacle_influence: 0.80
+  obstacle_clearance: 0.06
+  car_overtake_mode: false
+
+mpc:
+  horizon: 10
+  dt_mpc: 0.05
+  Q_pos: 500.0
+  Q_heading: 300.0
+  Q_vel: 10.0
+  R_delta: 1.0
+  R_acc: 1.0
+  R_delta_rate: 3.0
+  R_acc_rate: 3.0
+  Qf_pos: 500.0
+  Qf_heading: 500.0
+  Qf_vel: 10.0
+  max_steering_rate: 2.0
+  path_lookahead_scale: 0.35
+  desired_spacing: 0.5
+  time_headway: 0.5
+  solver_print_level: 0
+  solver_max_iter: 100
+
+stanley:
+  k_e: 0.35
+  k_soft: 0.1
+  max_steering: 0.48
+  lookahead_distance: 0.12
+  position_lookahead_offset: 0.16
+
+lookahead:
+  ri: 0.8
+  hi: 0.3
+  l_r: 0.165
+  l_f: 0.165
+  k1: 1.0
+  k2: 1.0
+  max_steering: 0.48
+
+fusion_lateral:
+  mode: 'leader_primary'
+  path_weight: 0.25
+  leader_weight: 0.75
+  deviation_threshold: 0.25
+  smoothing_factor: 0.8
+  max_steering: 0.48
+
+# Effective geometry used by PP-map and MPC. Tune wheelbase from tracking logs:
+# increase it if Limo cuts wide/understeers; decrease it if it oscillates.
+vehicle:
+  wheelbase: 0.19
+  l_r: 0.1
+  l_f: 0.1

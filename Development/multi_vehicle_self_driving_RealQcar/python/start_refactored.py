@@ -61,7 +61,7 @@ config = read_config(args.config)
 QCAR_IPS = config.get('QCAR_IPS', [])
 LOCAL_IP = config.get('LOCAL_IP', '192.168.2.200')
 PROBING_IPS = config.get('PROBING_IP', [QCAR_IPS[0]] if QCAR_IPS else [])
-REMOTE_PATH = config.get('REMOTE_PATH', '/home/nvidia/Documents/multi_vehicle_RealCar')
+REMOTE_PATH = config.get('REMOTE_PATH', '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar')
 WIDTH = config.get('WIDTH', '320')
 HEIGHT = config.get('HEIGHT', '200')
 

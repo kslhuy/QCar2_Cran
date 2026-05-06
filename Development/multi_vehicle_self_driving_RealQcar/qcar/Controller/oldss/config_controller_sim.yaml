@@ -1,0 +1,299 @@
+# ============================================================================
+# Vehicle Controller Configuration
+# ============================================================================
+# This file centralizes ALL controller parameters for both longitudinal 
+# and lateral control. Change parameters in ONE place for the entire system.
+# ============================================================================
+
+# ============================================================================
+# GENERAL CONTROL CONFIGURATION
+# ============================================================================
+enable_steering_control: true  # Enable/disable steering control system
+
+# ============================================================================
+# STATE-SPECIFIC CONTROLLER DEFAULTS
+# ============================================================================
+# "Following Path" state controllers (autonomous path-following)
+path_longitudinal_controller_type: 'pid'   # Speed loop used in FOLLOWING_PATH
+path_lateral_controller_type: 'pp_map'     # Lateral controller for FOLLOWING_PATH
+
+# "Following Leader" state controllers (platoon / leader-tracking)
+leader_longitudinal_controller_type: 'cacc'      # Gap/speed tracking in FOLLOWING_LEADER
+leader_lateral_controller_type: 'fusion_lateral'   # Keep fusion lateral, but bias toward path tracking
+
+leader_reverse_follow:
+  enabled: false
+  trigger_velocity_threshold: -0.03
+  max_reverse_throttle: 0.08
+  max_reverse_speed: 0.12
+  min_gap: 0.20
+  max_gap: 0.90
+  max_heading_error_deg: 20.0
+  reverse_steering_gain: 0.5
+  stop_on_v2v_loss: true
+
+# Legacy fallback (used if state-specific keys are missing)
+# ============================================================================
+# LONGITUDINAL CONTROLLER CONFIGURATION
+# ============================================================================
+
+# Controller type options: 'cacc', 'pid', 'hybrid'
+longitudinal_controller_type: 'pid'
+
+# CACC Controller Parameters
+cacc:
+  s0: 0.25                    # Minimum spacing (meters)
+  h: 0.5                     # Time headway (seconds)
+  K_spacing: 0.35             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
+  K_velocity: 0.15           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
+  spacing_mode: "path_or_projected"  # 'euclidean', 'projected', 'blended', 'path', 'path_or_projected'
+  projection_heading_source: "leader" # Heading source for longitudinal projection ,  Assume the road's direction is the exact direction the "projection_heading_source" here is the leader car is currently pointing."
+  blend_heading_deg: 20.0    # Used only when spacing_mode: 'blended'
+  min_effective_spacing: 0.0 # Minimum gap fed to CACC after projectio
+  acc_to_throttle_gain: 0.45  # Conversion gain from acceleration to throttle
+  max_throttle: 0.3          # Maximum throttle output
+  # Optional weight applied to the *difference* between leader and
+  # follower acceleration. This is treated like an additional tracking
+  # error term rather than a feedforward command, making the controller
+  # respond when the leader changes acceleration faster/slower than the
+  # follower. Set to 0 (default) to ignore acceleration information.
+  leader_acceleration_weight: 0.8
+  spacing_deadband: 0.2      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
+  velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
+  throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.
+  brake_smoothing: 0.5      # Aggressive smoothing factor applied ONLY when braking/decelerating [0-1]. Higher values prevent jerky sudden stops. Default 0.85.
+  max_acc_rate: 2.0          # Maximum rate of change of acceleration (m/s^3) to limit sudden jerk during harsh maneuvers.
+  use_feedforward: false    # Disable hidden positive velocity feedforward in sim; spacing loop controls closing speed
+  ff_gain: 0.1              # CACC feedforward gain: u_ff = leader_velocity * ff_gain
+  limo_max_speed: 0.7       # Limo-only speed ceiling for CACC velocity command [m/s]
+  limo_max_accel: 0.25      # Limo-only positive acceleration cap [m/s^2]
+  limo_max_decel: 0.45      # Limo-only braking/deceleration cap [m/s^2]
+  limo_leader_speed_margin: 0.08  # Limo-only allowance above leader speed [m/s]
+  limo_gap_closing_gain: 0.20     # Limo-only extra speed per meter of positive spacing error
+  limo_close_gap_gain: 0.60       # Limo-only speed reduction when spacing error goes negative
+
+# PID Velocity Controller Parameters
+
+
+pid:
+  kp: 0.1                   # Proportional gain (lower = softer accel response)
+  ki: 0.03                  # Integral gain (lower = less surge after target jumps)
+  kd: 0.001                    # Derivative gain (set to 0.0 to prevent throttle spikes)
+  ff_gain: 0           # Feedforward gain: base command from target speed (u_ff = v_ref * ff_gain). Tune separately for sim vs real.
+  use_affine_feedforward: true  # Keep sim on classic feedforward unless you calibrate it
+  ff_speed_slope: 6.75
+  ff_speed_intercept: -0.05
+  max_throttle: 0.24         # Maximum throttle output (limits aggressive launches)
+  min_throttle: 0.0         # Minimum throttle (allows active braking in simulation)
+  ei_max: 0.5                # Integral anti-windup limit
+  v_ref: 0.6                # Default reference velocity (m/s)
+
+# QCar2 hardware-inspired incremental speed controller
+qcar2_speed:
+  kp: 20.0                  # Matches qcar2_hardware PD proportional gain
+  kd: 0.1                   # Matches qcar2_hardware derivative gain
+  km: 0.0047                # Motor constant used in qcar2_hardware
+  use_affine_feedforward: true  # Enable only if the sim has been calibrated with the same map
+  ff_speed_slope: 6.75
+  ff_speed_intercept: -0.05
+  max_throttle: 0.3         # Same saturation used by the hardware node
+  min_forward_throttle: 0.01  # Forward deadband compensation
+  min_reverse_throttle: 0.01  # Reverse deadband compensation
+  nominal_battery_voltage: 12.0  # Fallback when battery telemetry is unavailable
+  min_battery_voltage: 1.0       # Guard against divide-by-zero / invalid voltage
+  stop_speed_threshold: 0.001    # Command zero throttle when desired speed is near zero
+
+
+
+# SA-ACC Controller Parameters
+sa_acc:
+  tau: 0.4
+  h: 0.5
+  k1: -0.8
+  k2: 2.5
+  li: 5.0
+  Li: 8.0
+  acc_to_throttle_gain: 0.65
+  max_throttle: 0.30
+
+fix:
+  throttle: 0.075
+
+# ============================================================================
+# LATERAL CONTROLLER CONFIGURATION
+# ============================================================================
+
+# Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path', 'pp_map'
+lateral_controller_type: 'pp_map'  # legacy fallback
+
+# Pure Pursuit Controller Parameters
+pure_pursuit:
+  lookahead_distance: 0.2    # Base lookahead distance (meters). Shorter lookahead turns in more decisively when leader tracking falls behind in corners.
+  k_steering: 0.5            # Proportional steering gain. Higher gain reduces the "lazy" steering feel when the follower lags the leader heading in a bend.
+  max_steering: 0.5         # Maximum steering angle (radians)
+  adaptive_lookahead: true   # Enable adaptive lookahead based on distance
+  # Turning section parameters (for corner-cutting prevention)
+  curvature_threshold: 0.15   # Lane curvature threshold for turn detection
+  turn_lookahead_offset: 0.05 # Lateral offset in turns (meters). Smaller offset avoids pushing the follower too far to the outside of the corner.
+  turn_lookahead_gain: 0.9   # Lookahead distance multiplier in turns. Below 1.0 makes turn tracking tighter instead of widening the arc.
+
+# Map-based PP_Controller mode parameters (used when lateral_controller_type: 'pp_map')
+pp_map:
+  sample_ds: 0.02                 # [m] Spacing between resampled path points. Up = fewer/coarser points. Down = denser/more detailed path.
+  desired_speed: 0.55             # [m/s] Base cruise speed used to build the map speed profile. Up = faster almost everywhere. Down = slower everywhere.
+  min_speed: 0.35                  # [m/s] Lowest speed the profile is allowed to use in turns. Up = less slowing in corners. Down = more slowing in corners.
+  kappa_speed_gain: 1.0           # How strongly curvature reduces speed. Up = slower in bends. Down = keeps more speed in bends.
+  max_speed: 0.65                 # [m/s] Maximum speed allowed by the profile. Up = higher straight-line speed. Down = lower overall cap.
+  hard_turn_kappa: 0.60           # [1/m] Curvature threshold for a very sharp turn. Up = fewer turns treated as hard. Down = more turns treated as hard.
+  hard_turn_speed: 0.36           # [m/s] Speed cap used once a turn is classified as hard. Up = faster through hairpins. Down = safer/slower hairpins.
+  t_clip_min: 0.4                 # [m] Minimum L1 lookahead. Up = smoother, less twitchy, but weaker correction. Down = more aggressive correction.
+  t_clip_max: 0.9                 # [m] Maximum L1 lookahead. Up = smoother/wider steering. Down = tighter/more local steering.
+  m_l1: 0.50                      # L1 lookahead increase with speed: L1 = q_l1 + m_l1*v. Up = more preview at speed. Down = more reactive at speed.
+  q_l1: 0.2                       # [m] Base L1 lookahead at low speed. Up = smoother but slower response. Down = sharper but more oscillation risk.
+  speed_lookahead: 0.2            # [s] How far ahead the controller samples path speed. Up = slows earlier before corners. Down = reacts later.
+  lat_err_coeff: 0.15             # [0..1] How much speed is reduced when the car is off the path. Up = slows more to recover. Down = keeps speed even with error.
+  acc_scaler_for_steer: 1.0       # Steering multiplier while accelerating. Above 1.0 = stronger steering under accel. Below 1.0 = softer steering.
+  dec_scaler_for_steer: 1.0       # Steering multiplier while braking/decelerating. Above 1.0 = stronger steering under braking. Below 1.0 = softer steering.
+  start_scale_speed: 0.25         # [m/s] Speed where high-speed steering reduction starts. Up = keep full steering until faster speeds. Down = reduce steering earlier.
+  end_scale_speed: 0.85           # [m/s] Speed where the full steering reduction is reached. Up = reduction comes in more gradually. Down = full reduction happens sooner.
+  downscale_factor: 0.45          # Maximum steering reduction at/above end_scale_speed. Up = much softer steering at speed. Down = keep more steering authority.
+  speed_lookahead_for_steer: 0.18 # [s] Preview horizon used for speed-based steering reduction. Up = use farther-ahead speed. Down = use more current/near speed.
+  target_speed_rise_rate: 0.8     # [m/s^2] Rate limit on PP-map target-speed increases before the speed controller.
+  target_speed_fall_rate: 1.2     # [m/s^2] Rate limit on PP-map target-speed decreases to avoid sharp drop/recover oscillations.
+  prioritize_dyn: false           # Reserved switch. Currently not a main tuning knob in normal PP-map behavior.
+  trailing_gap: 0.8               # [m] Desired distance to the opponent in TRAILING mode. Up = stay farther back. Down = follow closer.
+  trailing_p_gain: 0.6            # Main aggressiveness of trailing gap correction. Up = faster gap correction, more surge risk. Down = calmer but slower response.
+  trailing_i_gain: 0.0            # Integral action for trailing gap. Up = removes steady bias but can oscillate. Down = safer/simpler.
+  trailing_d_gain: 0.1            # Damping using relative speed in trailing. Up = more anticipation/damping. Down = less damping, more overshoot risk.
+  blind_trailing_speed: 0.2       # [m/s] Minimum speed when the opponent is not seen clearly. Up = keeps moving more. Down = becomes more cautious.
+  obstacle_avoidance_enabled: true  # Enable local obstacle replan around detected objects.
+  obstacle_replan_period: 0.4       # [s] Minimum time between replans. Up = fewer, steadier replans. Down = more reactive, but noisier replans.
+  obstacle_min_detect_dist: 0.15    # [m] Ignore detections closer than this. Up = ignore more very-close detections. Down = react even when very near.
+  obstacle_max_detect_dist: 1.5     # [m] Ignore detections farther than this. Up = react earlier to far obstacles. Down = only react when closer.
+  obstacle_car_radius: 0.1          # [m] Assumed car obstacle size. Up = wider safety bubble. Down = tighter pass.
+  obstacle_person_radius: 0.1       # [m] Assumed pedestrian obstacle size. Up = more conservative avoidance. Down = tighter avoidance.
+  obstacle_influence: 0.80          # [m] Distance around obstacle where path gets pushed away. Up = larger detour. Down = smaller detour.
+  obstacle_clearance: 0.05          # [m] Extra safety margin added on top of obstacle radius. Up = safer/wider path. Down = tighter path.
+  car_overtake_mode: true           # true = try to go around cars. false = stay behind and trail them.
+
+# ------------------------------------------------------------------------
+# MPC Controller Parameters
+# ------------------------------------------------------------------------
+# This section defines default parameters for the MPC controller. When
+# lateral_controller_type or path_lateral_controller_type is set to 'mpc'
+# the vehicle will use a combined throttle/steering MPC. Tune weights here
+# to adjust behavior without touching code.
+# Example values mirror the defaults used in the Python controller class.
+mpc:
+  horizon: 10                       # prediction horizon (steps)
+  dt_mpc: 0.05                      # MPC timestep (s)
+  Q_pos: 500.0                      # position tracking weight
+  Q_heading: 300.0                  # heading tracking weight
+  Q_vel: 10.0                       # velocity tracking weight
+  R_delta: 1.0                      # steering effort penalty
+  R_acc: 1.0                        # acceleration effort penalty
+  R_delta_rate: 3.0                 # steering rate penalty
+  R_acc_rate: 3.0                   # acceleration rate penalty
+  Qf_pos: 500.0                     # terminal state position weight
+  Qf_heading: 500.0                 # terminal state heading weight
+  Qf_vel: 10.0                      # terminal state velocity weight
+  max_steering_rate: 3.0            # bound on steering rate (rad/s)
+  path_lookahead_scale: 0.4         # path lookahead scaling factor
+  desired_spacing: 0.5              # longitudinal following spacing (m)
+  time_headway: 0.5                 # longitudinal headway (s)
+  solver_print_level: 0             # IPOPT verbosity
+  solver_max_iter: 100              # IPOPT max iterations
+
+# Stanley Controller Parameters
+stanley:
+  k_e: 0.2                   # Cross-track error gain
+  k_soft: 0.1                # Softening gain to prevent division by zero
+  max_steering: 0.5         # Maximum steering angle (radians)
+  lookahead_distance: 0.15   # [m] Preview distance along the global path segment. Up = smoother/more anticipatory. Down = tighter/more local tracking.
+  position_lookahead_offset: 0.18  # [m] Forward offset of the vehicle point sent into Stanley. 0.2 keeps the old state behavior.
+
+
+# Lookahead Controller Parameters
+lookahead:
+  ri: 0.8                    # Desired inter-vehicle spacing (meters)
+  hi: 0.4                    # Time headway (seconds)
+  l_r: 0.141                 # Distance from CG to rear axle (meters)
+  l_f: 0.115                 # Distance from CG to front axle (meters)
+  k1: 1.0                    # Lateral control gain
+  k2: 1.0                    # Yaw rate control gain
+  max_steering: 0.5         # Maximum steering angle (radians)
+
+
+# Fusion Lateral Controller Parameters (combines path + leader tracking)
+fusion_lateral:
+  mode: 'leader_primary'       # Use the map/path as the main cornering reference and let the leader act as a correction term.
+  path_weight: 0.2           # Weight for path reference (0-1)
+  leader_weight: 0.8         # Weight for leader adjustment (0-1)
+  deviation_threshold: 0.25   # Max leader deviation before override (radians)
+  smoothing_factor: 0.8      # Output smoothing (0-1, higher = smoother , 0 = raw output)
+  max_steering: 0.5         # Maximum steering angle (radians)
+
+# ============================================================================
+# VEHICLE PARAMETERS (for all controllers)
+# ============================================================================
+vehicle:
+  wheelbase: 0.256           # Total wheelbase (l_r + l_f) in meters
+  l_r: 0.141                 # Distance from CG to rear axle (meters)
+  l_f: 0.115                 # Distance from CG to front axle (meters)
+
+# ============================================================================
+# QUICK SWITCH PRESETS
+# ============================================================================
+# Uncomment the sections you want to use:
+
+# ------------------------------------------------------------------------
+# Preset 1: Aggressive Following (Tight spacing, responsive)
+# ------------------------------------------------------------------------
+# longitudinal_controller_type: 'cacc'
+# lateral_controller_type: 'pure_pursuit'
+# cacc:
+#   s0: 1.0
+#   h: 0.3
+#   K_spacing: 0.3
+#   K_velocity: 0.08
+# pure_pursuit:
+#   lookahead_distance: 0.8
+#   k_steering: 1.2
+
+# ------------------------------------------------------------------------
+# Preset 2: Conservative/Safe Following (Large spacing, smooth)
+# ------------------------------------------------------------------------
+# longitudinal_controller_type: 'cacc'
+# lateral_controller_type: 'stanley'
+# cacc:
+#   s0: 2.0
+#   h: 0.7
+#   K_spacing: 0.15
+#   K_velocity: 0.03
+# stanley:
+#   k_e: 0.3
+#   k_soft: 1.5
+
+# ------------------------------------------------------------------------
+# Preset 3: Simple Velocity Tracking (No spacing control)
+# ------------------------------------------------------------------------
+# longitudinal_controller_type: 'pi'
+# lateral_controller_type: 'pure_pursuit'
+
+# ------------------------------------------------------------------------
+# Preset 4: Best of Both Worlds (Adaptive hybrid controllers)
+# ------------------------------------------------------------------------
+# longitudinal_controller_type: 'hybrid'
+# lateral_controller_type: 'hybrid'
+
+# ------------------------------------------------------------------------
+# Preset 5: Advanced Lookahead Control
+# ------------------------------------------------------------------------
+# longitudinal_controller_type: 'cacc'
+# lateral_controller_type: 'lookahead'
+# lookahead:
+#   k1: 1.2
+#   k2: 1.0
+#   ri: 1.5
+
+

@@ -43,7 +43,7 @@ neural_network:
   # RECOMMENDED: true when using 'physics_tire' loss — gives the NN access to
   # load-transfer and transient dynamics information that improves tire residual
   # prediction during braking, fast steering, and surface changes.
-  use_acceleration: false
+  use_acceleration: true
 
   # Disturbance estimation mode: 'tire' (default 2D: [w_r, w_f]) or 'general' (3D: [d_vx, d_vy, d_r])
   disturbance_mode: 'tire'
@@ -88,6 +88,19 @@ learning:
   # Recommended: 10.0 for GRU, 20.0 for MLP, 0 to disable
   grad_clip_norm: 10.0
 
+  # Runtime policy:
+  # inference_only=true fully freezes learning and only runs NN inference.
+  # For hybrid use, keep inference_only=false and throttle online updates below.
+  inference_only: false
+  online_learning_enabled: true
+  online_update_interval: 3
+  online_warmup_steps: 20
+  online_learning_requires_gps: true
+  online_learning_min_speed: 0.15
+  online_learning_max_speed: 3.0
+  online_learning_min_steering: 0.02
+  online_learning_min_yaw_rate: 0.05
+
   # ---- Selective Data Curation (for learningby_dict mode) ----
   # These parameters control WHAT data enters the learning dictionary.
   # Goal: only train on rich, informative data (turning, lateral dynamics)
@@ -100,13 +113,13 @@ learning:
   # Higher = more selective, only very different data accepted.
   # 0.0 = disabled (accept everything, like original LearningBatch).
   # Recommended: 0.03 - 0.10 (set 0.0 for initial debugging)
-  novelty_threshold: 0.0
+  novelty_threshold: 0.03
 
   # Minimum excitation score to accept a sample.
   # Based on |δ|, |r|, |v_y| — measures how much tire nonlinearity is excited.
   # Samples below this threshold (e.g., straight-line driving) are rejected.
   # 0.0 = disabled. Recommended: 0.01 - 0.05 (set 0.0 for initial debugging)
-  min_excitation: 0.0
+  min_excitation: 0.01
 
   # Weight for excitation score when deciding which entry to replace.
   # Higher = prefer replacing low-excitation entries over high-excitation ones.
@@ -115,7 +128,7 @@ learning:
   # Replacement strategy when dictionary is full:
   #   true: Replace most similar entry (maximize diversity)
   #   false: Replace entry with lowest excitation score
-  use_diversity_replacement: false
+  use_diversity_replacement: true
 
 # ============================================================================
 # Observer Parameters
@@ -288,7 +301,7 @@ weights_prediction_error:
 #
 loss:
   # Loss function type
-  type: simple_residual
+  type: prediction_error
 
 # ============================================================================
 # Simple Residual Learning Configuration (for loss type: 'simple_residual')
@@ -442,7 +455,7 @@ model:
   path: trained_data/neural_observer_model.pt
   
   # Load pretrained model on initialization
-  load_pretrained: false
+  load_pretrained: true
 
 # ============================================================================
 # Data Recording Configuration

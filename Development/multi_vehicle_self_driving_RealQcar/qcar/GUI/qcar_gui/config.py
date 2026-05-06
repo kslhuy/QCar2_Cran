@@ -37,10 +37,10 @@ class GUIConfig:
     """GUI configuration settings."""
 
     window_title: str = "🚗 QCar Fleet Controller"
-    window_width: int = 1400
-    window_height: int = 900
+    window_width: int = 1200
+    window_height: int = 800
     update_rate_hz: float = 20.0
-    max_cars: int = 10
+    max_cars: int = 8
     default_num_cars: int = 5
 
 
@@ -62,9 +62,9 @@ class ManualControlConfig:
     """Manual control configuration for keyboard and wheel input."""
 
     # Keyboard
-    forward_key: str = "w"
+    forward_key: str = "z"
     backward_key: str = "s"
-    left_key: str = "a"
+    left_key: str = "q"
     right_key: str = "d"
     stop_key: str = "space"
 
@@ -75,6 +75,7 @@ class ManualControlConfig:
     steering_scale: float = 0.5
     throttle_scale: float = 0.3
     deadzone: float = 0.05
+    update_interval_ms: int = 50
 
 
 @dataclass(frozen=True)
@@ -88,17 +89,32 @@ class VehicleDeploymentConfig:
 
     # Remote paths
     remote_path: str = "/home/nvidia/Documents/multi_vehicle_RealCar"
+    remote_path_py: Optional[str] = "/home/nvidia/Documents/multi_vehicle_RealCar"
+    remote_path_ros: Optional[str] = (
+        "/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar"
+    )
 
     # Local scripts path (relative to GUI folder)
     scripts_path: str = "../../qcar"
 
     # Default vehicle settings
-    default_ip_prefix: str = "192.168.2."
+    default_ip_prefix: str = "192.168.137."
     default_vehicle_type: str = "Qcar"
+    default_programme_type: str = "Ros"
     default_velocity: float = 0.6
 
     # Upload settings
-    upload_folders: tuple = ("StateMachine", "Yolo", "Observer", "V2V", "Controller")
+    upload_folders: tuple = (
+        "StateMachine",
+        "Yolo",
+        "Observer",
+        "V2V",
+        "Controller",
+        "simulation",
+        "Calibration",
+        "PathPlanner",
+        "Taxi",
+    )
 
 
 @dataclass
@@ -140,17 +156,17 @@ class AppConfig:
 
 # Telemetry field definitions for display
 TELEMETRY_FIELDS = [
-    ("position", "Position (m):", "(0.00, 0.00)", 14),
-    ("velocity", "Velocity (m/s):", "0.00", 8),
-    ("heading", "Heading (rad):", "0.00", 8),
-    ("state", "Vehicle State:", "Unknown", 15),
-    ("path_long_ctrl", "🛤️ Path Long:", "unknown", 10),
-    ("path_lat_ctrl", "🛤️ Path Lat:", "unknown", 12),
-    ("leader_long_ctrl", "🚗 Lead Long:", "unknown", 10),
-    ("leader_lat_ctrl", "🚗 Lead Lat:", "unknown", 12),
-    ("throttle", "Throttle:", "0.00", 8),
-    ("steering", "Steering:", "0.00", 8),
-    ("perception", "👁️ Perception:", "OFF", 6),
+    ("position", "Pos:", "(0.0, 0.0)", 9),
+    ("velocity", "Vel:", "0.00", 4),
+    ("heading", "Heading:", "0.00", 4),
+    ("state", "State:", "Unknown", 15),
+    ("path_long_ctrl", "Path Long Ctrl:", "unk", 6),
+    ("path_lat_ctrl", "Path Lat Ctrl:", "unk", 8),
+    ("leader_long_ctrl", "Leader Long Ctrl:", "unk", 6),
+    ("leader_lat_ctrl", "Leader Lat Ctrl:", "unk", 8),
+    ("throttle", "Throttle:", "0.00", 4),
+    ("steering", "Steering:", "0.00", 4),
+    ("perception", "Perception:", "OFF", 3),
 ]
 
 

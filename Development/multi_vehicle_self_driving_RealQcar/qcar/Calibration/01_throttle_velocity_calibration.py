@@ -222,18 +222,15 @@ def run_calibration(interface, sim_mode: bool):
     raw_filename = f"throttle_velocity_time_series{tag}.csv"
 
     # Open both summary logger and raw data logger
-    with (
-        CSVLogger(
-            csv_filename,
-            ["throttle_cmd", "v_ss_mean", "v_ss_std", "v_min", "v_max"],
-            results_dir=SCRIPT_RESULTS_DIR,
-        ) as summary_log,
-        CSVLogger(
-            raw_filename,
-            ["time_s", "throttle_cmd", "velocity_ms"],
-            results_dir=SCRIPT_RESULTS_DIR,
-        ) as raw_log,
-    ):
+    with CSVLogger(
+        csv_filename,
+        ["throttle_cmd", "v_ss_mean", "v_ss_std", "v_min", "v_max"],
+        results_dir=SCRIPT_RESULTS_DIR,
+    ) as summary_log, CSVLogger(
+        raw_filename,
+        ["time_s", "throttle_cmd", "velocity_ms"],
+        results_dir=SCRIPT_RESULTS_DIR,
+    ) as raw_log:
         start_time = time.time()
 
         for throttle in throttle_levels:

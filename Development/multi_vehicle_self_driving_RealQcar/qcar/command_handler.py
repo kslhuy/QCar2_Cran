@@ -202,6 +202,10 @@ class CommandHandler:
             CommandType.SET_INITIAL_POSITION,
             CommandType.ACTIVATE_V2V,
             CommandType.DISABLE_V2V,
+            CommandType.TRIGGER_ATTACK,
+            CommandType.DISABLE_ATTACK,
+            CommandType.START_LOCAL_SENSOR_ATTACK,
+            CommandType.STOP_LOCAL_SENSOR_ATTACK,
             CommandType.ACTIVATE_PERCEPTION,
             CommandType.DISABLE_PERCEPTION,
             CommandType.SET_PARAMS,
@@ -221,12 +225,20 @@ class CommandHandler:
             CommandType.SET_FLEET_OBSERVER,
             CommandType.SET_CONTROLLER,
             CommandType.SET_GEAR,
+            CommandType.DISABLE_MANUAL_MODE,
             # Taxi commands
             CommandType.SET_TAXI_TRIP,
             CommandType.DISABLE_TAXI_MODE,
+            # Online calibration commands
+            CommandType.ENABLE_ONLINE_CALIBRATION,
+            CommandType.DISABLE_ONLINE_CALIBRATION,
         ]
 
         if command_type in NON_TRANSITION_COMMANDS:
+            if command_type == CommandType.TRIGGER_ATTACK:
+                self.state_machine.vehicle_logic.trigger_v2v_attack(data)
+            elif command_type == CommandType.DISABLE_ATTACK:
+                self.state_machine.vehicle_logic.disable_v2v_attack()
             return True
 
         return False

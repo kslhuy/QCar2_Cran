@@ -242,6 +242,9 @@ def nn_train(
     )  # Defining average velocity for the simulation, NN will have more accurate predictions
     avg_vel = np.clip(avg_vel, 2.75, 4)
 
+    # Collect results from every iteration for a combined final plot
+    all_iterations_data = []
+
     # Iterative training loop
     for i in range(1, num_of_iterations + 1):
         plot_this_iteration = (plot_model or always_plot_last_iteration) and (
@@ -291,25 +294,32 @@ def nn_train(
                 print(f"C_Pf_identified at Iteration {i}:", C_Pf_identified)
                 print(f"C_Pr_identified at Iteration {i}:", C_Pr_identified)
 
-                if plot_this_iteration:
-                    from helpers.plot_results import plot_results
-
-                    LOGGER.logwarn("Close the plot window (press Q) to continue... ")
-                    plot_results(
-                        model,
-                        v_x,
-                        v_y,
-                        omega,
-                        delta,
-                        C_Pf_identified,
-                        C_Pr_identified,
-                        i,
-                        training_data_raw,
-                    )
+                # Store this iteration's results for the combined final plot
+                all_iterations_data.append({
+                    "iteration": i,
+                    "v_x": v_x.copy(),
+                    "v_y": v_y.copy(),
+                    "omega": omega.copy(),
+                    "delta": delta.copy(),
+                    "C_Pf_identified": [c for c in C_Pf_identified],
+                    "C_Pr_identified": [c for c in C_Pr_identified],
+                    "model_snapshot": dict(model),  # snapshot before update
+                })
 
                 # Update model with identified coefficients
                 model["C_Pf_model"] = C_Pf_identified
                 model["C_Pr_model"] = C_Pr_identified
+
+    # Plot all iterations combined at the end
+    if (plot_model or always_plot_last_iteration) and len(all_iterations_data) > 0:
+        from helpers.plot_results import plot_all_iterations
+
+        LOGGER.logwarn("Close the plot window (press Q) to continue... ")
+        plot_all_iterations(
+            model,
+            all_iterations_data,
+            training_data_raw,
+        )
 
     # Save the trained model with identified coefficients
     model_name = racecar_version + "_pacejka"

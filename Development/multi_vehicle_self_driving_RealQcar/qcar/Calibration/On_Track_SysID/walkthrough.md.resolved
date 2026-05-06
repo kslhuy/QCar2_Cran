@@ -1,0 +1,61 @@
+# On-Track System Identification Architecture Walkthrough
+
+Based on the investigation of the codebase, the On-Track System Identification (SysID) for the QCar fleet follows a distributed architecture as described below.
+
+## 🏗️ Architecture Overview
+
+The system is split into three primary layers: **Observation**, **Worker/Calibration**, and **Ground Station (GUI)**.
+
+### 1. Observer Layer (`Obs_6d_on_track_sysID`)
+This component is responsible for real-time estimation of vehicle states that are not directly measurable.
+- **[vehicle_dynamics_stown.py](file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/Obs_6d_on_track_sysID/vehicle_dynamics_stown.py)**: Implementation of the nominal vehicle dynamics (Single Track model).
+- **[vy_kalman_filter.py](file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/Obs_6d_on_track_sysID/vy_kalman_filter.py)**: A Kalman Filter used to estimate **lateral velocity ($v_y$)**, which is a critical input for Pacejka tire model identification.
+
+### 2. Worker & Calibration Layer (`On_Track_SysID`)
+This is the "engine" of the system identification process, using a **Client-Worker** pattern over **ZeroMQ (ZMQ)**.
+
+- **Vehicle Side (Client - [online_sysid_zmq_client.py](file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Calibration/On_Track_SysID/src/online_sysid_zmq_client.py))**:
+  - Captures and streams "samples" (state data: $v_x$, $v_y$, $\omega$, $\delta$) to the worker.
+  - Receives high-level commands (start/stop/train) from the worker/GUI.
+- **Worker Side (Engine - [online_sysid_zmq_worker.py](file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Calibration/On_Track_SysID/src/online_sysid_zmq_worker.py))**:
+  - Runs as a **standalone process** to offload heavy computation from the vehicle logic.
+  - Buffers samples and triggers **Neural Network (NN) training** when commanded.
+  - Performs **Pacejka Parameter Identification** (`solve_pacejka.py`).
+  - Generates the final **Look-Up Table (LUT)** used by controllers.
+
+### 3. Ground Station / GUI Layer (`qcar_gui`)
+The GUI acts as the central command node and visualization tool.
+- **[car_panel.py](file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/widgets/car_panel.py) & [app.py](file:///c:/Users/Quang%20Huy%20Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/GUI/qcar_gui/app.py)**: Provide the user interface to trigger calibration, start/stop collection, and monitor the worker's status.
+- **Data Flow**: The GUI sends commands via the vehicle's remote connection, which are then forwarded to the SysID worker. It also displays real-time telemetry and status updates from the worker.
+
+## 🔄 Communication Flow
+
+```mermaid
+graph TD
+    subgraph "Vehicle (Real or SIM)"
+        Obs[Observer / KF] --> Client[SysID ZMQ Client]
+        Control[Vehicle Controller] <--> Client
+    end
+
+    subgraph "SysID Worker (Compute Node)"
+        Worker[ZMQ Worker] --> NN[NN Training]
+        NN --> Pacejka[Pacejka ID]
+        Pacejka --> LUT[LUT Generation]
+    end
+
+    subgraph "Ground Station (GUI)"
+        GS[App/CarPanel]
+    end
+
+    Client -- "Samples (ZMQ PUB)" --> Worker
+    GS -- "Commands" --> Client
+    Client -- "Commands" --> Worker
+    Worker -- "Status (ZMQ PUB)" --> Client
+    Client -- "Telemetry" --> GS
+```
+
+## ✅ Conclusion
+Yes, your understanding is correct:
+- **`On_Track_SysID`** handles the core system identification logic (via the worker).
+- **Communication** happens between the vehicle (client) and the worker process.
+- **The GUI** is intended for **monitoring**, **data collection**, and **high-level commands** (e.g., triggering training or resetting buffers), rather than performing the identification logic itself.

@@ -1,0 +1,119 @@
+# Quick activation guide (in yolo_config.yaml):
+# - Lane detection:
+#   - `lane.enable_detection: true`
+#   - `lane.show_overlay: true` (only controls drawing)
+# - LiDAR fusion:
+#   - `lidar_fusion.enabled: true`
+#   - optional visuals: `lidar_fusion.show_overlay: true`, `lidar_fusion.show_bev: true`
+# - Note:
+#   - Fusion is also auto-enabled if either `show_overlay` or `show_bev` is true.
+#   - You can still override a few runtime values from CLI (`-idx`, `-p`, `-s`).
+
+server:
+  car_id: 0
+  probing: false
+  show_image: true
+  show_lane_debug: false
+  show_obstacle_box: false
+
+ports:
+  data_port_base: 18660
+  video_port_base: 18760
+
+camera:
+  image_width: 640
+  image_height: 480
+  use_intrinsics: false
+  clipping_distance_m: 5.0
+  load_settings: true
+  use_fast_alignment: true
+
+yolo:
+  model_path: ""
+  use_tracking: true
+  classes_preset: traffic_plus
+  classes: []
+  confidence: 0.4
+  half: true
+  verbose: false
+  tracker:
+    persist: true
+    name: botsort.yaml
+  postprocess:
+    clipping_distance_m: 10.0
+    # Positive values are subtracted from published YOLO distances.
+    distance_offset_m: 0.20
+
+sign_filter:
+  invert_lr: false
+  side: right
+
+buffers:
+  center_box_width_ratio: 0.40
+  center_box_height_ratio: 0.60
+  bottom_ignore_px: 40
+  center_box_raise_px: 40
+
+lane:
+  enable_detection: true
+  show_overlay: true
+
+lidar_fusion:
+  enabled: false
+  show_overlay: false
+  show_bev: false
+  lidar_min_distance_m: 0.08
+  # Association gate for fusing YOLO detections with LiDAR.
+  # Increase this if BEV shows no fused objects at normal driving distance.
+  lidar_max_distance_m: 6.0
+  obstacle_distance_threshold_m: 1.0
+  lidar_min_points_for_trust: 2
+  max_depth_lidar_disagreement_ratio: 0.6
+  lower_bbox_start_ratio: 0.40
+  mask_erode_kernel_size: 3
+  mask_erode_iterations: 1
+  allow_upper_bbox_fallback: true
+  bbox_fallback_shrink_factor: -0.15
+  bbox_overlay_shrink_factor: -0.20
+  outlier_filter_method: one_sigma
+  distance_selection_technique: median
+  blend_weights:
+    trust_lidar:
+      lidar: 0.85
+      depth: 0.15
+    sparse_lidar:
+      lidar: 0.70
+      depth: 0.30
+  bev:
+    size_px: 520
+    pixels_per_meter: 30.0
+    max_range_m: 12.0
+  sensor:
+    num_measurements: 360
+    ranging_distance_mode: 2
+    interpolation_mode: 0
+  geometry:
+    is_physical: false
+    camera_fov_h_deg: 68.0
+    camera_fov_v_deg: 42.5
+    image_width: 640
+    image_height: 480
+    fx: null
+    fy: null
+    cx: 320.0
+    cy: 240.0
+    scale: 1.0
+    # Projection-range gate for raw LiDAR points before association.
+    # Keep broad; obstacle fusion thresholds are above (lidar_min/max_distance_m).
+    min_distance_lidar_m: 0.1
+    max_distance_lidar_m: 40.0
+    camera_position: [0.95, 0.32, 1.72]
+    camera_rotation:
+      - [0.0, 0.0, 1.0]
+      - [-1.0, 0.0, 0.0]
+      - [0.0, -1.0, 0.0]
+    lidar_position: [-0.12, 0.0, 1.93]
+    lidar_rotation:
+      - [-1.0, 0.0, 0.0]
+      - [0.0, -1.0, 0.0]
+      - [0.0, 0.0, 1.0]

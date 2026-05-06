@@ -30,6 +30,7 @@ class VehicleConnectionConfig:
     car_id: int = 0
     ip: str = ""
     vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
+    programme_type: str = "Py"  # "Py" (legacy) or "Ros" (new)
     enabled: bool = True
     # probing removed
     calibrate: bool = False
@@ -37,6 +38,21 @@ class VehicleConnectionConfig:
     left_hand_traffic: bool = False
     initial_v_ref: float = 0.6
     description: str = ""
+    folders_to_upload: List[str] = field(
+        default_factory=lambda: [
+            "StateMachine",
+            "Yolo",
+            "Observer",
+            "V2V",
+            "Controller",
+            "simulation",
+            "Calibration",
+            "PathPlanner",
+            "Taxi",
+            "GUI",
+        ]
+    )
+    upload_root_files: bool = True
 
 
 @dataclass
@@ -91,6 +107,8 @@ class VehicleConnectionPanel(BaseWidget):
         # UI components
         self._ip_entry: Optional[ThemedEntry] = None
         self._vehicle_type_var: Optional[tk.StringVar] = None
+        self._programme_type_var: Optional[tk.StringVar] = None
+        self._programme_mode_radios: List[tk.Radiobutton] = []
         # Removed settings UI elements
         # self._path_entry: Optional[ThemedEntry] = None
         # self._velocity_entry: Optional[ThemedEntry] = None
@@ -218,6 +236,34 @@ class VehicleConnectionPanel(BaseWidget):
                 font=self.theme.fonts.small(),
             ).pack(side="left", padx=(0, 15))
 
+        # Program mode row (QCar: legacy Python or new ROS)
+        mode_row = tk.Frame(content, bg=c.bg_medium)
+        mode_row.pack(fill="x", pady=2)
+
+        ThemedLabel(mode_row, text="Program Mode:", style="muted", theme=self.theme).pack(
+            side="left", padx=(0, 10)
+        )
+
+        default_programme_type = self.default_config.programme_type
+        if default_programme_type not in ("Py", "Ros"):
+            default_programme_type = "Py"
+
+        self._programme_type_var = tk.StringVar(value=default_programme_type)
+        self._programme_mode_radios = []
+        for text, value in [("Legacy Py", "Py"), ("ROS (New)", "Ros")]:
+            rb = tk.Radiobutton(
+                mode_row,
+                text=text,
+                variable=self._programme_type_var,
+                value=value,
+                bg=c.bg_medium,
+                fg=c.fg_primary,
+                selectcolor=c.bg_light,
+                font=self.theme.fonts.small(),
+            )
+            rb.pack(side="left", padx=(0, 15))
+            self._programme_mode_radios.append(rb)
+
     # _build_vehicle_settings REMOVED
 
     def _build_action_buttons(self) -> None:
@@ -244,6 +290,19 @@ class VehicleConnectionPanel(BaseWidget):
         )
         self._connect_btn.pack(side="left", expand=True, fill="x", padx=(0, 5))
 
+        # Folder settings button
+        self._upload_settings_btn = tk.Button(
+            row1,
+            text="⚙️",
+            bg=c.bg_light,
+            fg=c.fg_primary,
+            activebackground=c.accent_blue,
+            activeforeground=c.fg_primary,
+            relief="flat",
+            command=self._open_upload_settings,
+        )
+        self._upload_settings_btn.pack(side="left", padx=(0, 2))
+
         self._upload_btn = ThemedButton(
             row1,
             text="📤 Upload Files",
@@ -252,7 +311,7 @@ class VehicleConnectionPanel(BaseWidget):
             padx=12,
             pady=4,
         )
-        self._upload_btn.pack(side="left", expand=True, fill="x", padx=(5, 0))
+        self._upload_btn.pack(side="left", expand=True, fill="x", padx=(0, 0))
         self._upload_btn.config(state="disabled")
 
         # Button row 2: Start and Stop
@@ -376,6 +435,18 @@ class VehicleConnectionPanel(BaseWidget):
             return
         is_limo = self._vehicle_type_var.get() == "Limo"
 
+        # Limo currently uses ROS launch flow only.
+        if self._programme_type_var:
+            if is_limo:
+                self._programme_type_var.set("Ros")
+                for rb in self._programme_mode_radios:
+                    rb.config(state="disabled")
+            else:
+                for rb in self._programme_mode_radios:
+                    rb.config(state="normal")
+                if self._programme_type_var.get() not in ("Py", "Ros"):
+                    self._programme_type_var.set("Py")
+
         if self._calibrate_btn:
             new_label = "🧭 Align Waypoints" if is_limo else "📐 Calibrate LiDAR"
             self._calibrate_btn.config(text=new_label)
@@ -433,11 +504,93 @@ class VehicleConnectionPanel(BaseWidget):
                 target=self.callbacks.on_upload_files, args=(config,), daemon=True
             ).start()
 
+    def _open_upload_settings(self) -> None:
+        """Open a dialog to select which folders to upload."""
+        c = self.theme.colors
+
+        dialog = tk.Toplevel(self.frame.winfo_toplevel())
+        dialog.title(f"Vehicle {self.car_id} - Upload Settings")
+        dialog.geometry("300x400")
+        dialog.transient(self.frame.winfo_toplevel())
+        dialog.grab_set()
+        
+        # Center dialog
+        dialog.update_idletasks()
+        x = self.frame.winfo_toplevel().winfo_x() + (self.frame.winfo_toplevel().winfo_width() - dialog.winfo_reqwidth()) // 2
+        y = self.frame.winfo_toplevel().winfo_y() + (self.frame.winfo_toplevel().winfo_height() - dialog.winfo_reqheight()) // 2
+        dialog.geometry(f"+{x}+{y}")
+        
+        dialog.config(bg=c.bg_panel)
+
+        ThemedLabel(
+            dialog, text="Select items to upload:", style="normal", theme=self.theme
+        ).pack(pady=10, padx=10, anchor="w")
+
+        folders = self.default_config.folders_to_upload.copy()
+        
+        frame = tk.Frame(dialog, bg=c.bg_panel)
+        frame.pack(fill="both", expand=True, padx=20)
+        
+        temp_vars = {}
+        
+        # ROOT FILES
+        temp_vars["ROOT_FILES"] = tk.BooleanVar(dialog, value=getattr(self, "_upload_root_files", True))
+        tk.Checkbutton(
+            frame,
+            text="Root Scripts (*.py, *.yaml, *.txt)",
+            variable=temp_vars["ROOT_FILES"],
+            bg=c.bg_panel,
+            fg=c.fg_primary,
+            selectcolor=c.bg_light,
+            font=self.theme.fonts.small(),
+            activebackground=c.bg_panel,
+            activeforeground=c.fg_primary
+        ).pack(anchor="w", pady=(2, 10))
+
+        if not hasattr(self, "_selected_folders"):
+            self._selected_folders = self.default_config.folders_to_upload.copy()
+            
+        for folder in folders:
+            var = tk.BooleanVar(dialog, value=folder in self._selected_folders)
+            temp_vars[folder] = var
+            cb = tk.Checkbutton(
+                frame,
+                text=folder,
+                variable=var,
+                bg=c.bg_panel,
+                fg=c.fg_primary,
+                selectcolor=c.bg_light,
+                font=self.theme.fonts.small(),
+                activebackground=c.bg_panel,
+                activeforeground=c.fg_primary
+            )
+            cb.pack(anchor="w", pady=2)
+            
+        btn_frame = tk.Frame(dialog, bg=c.bg_panel)
+        btn_frame.pack(fill="x", pady=15, padx=20)
+        
+        def save_and_close():
+            self._upload_root_files = temp_vars["ROOT_FILES"].get()
+            self._selected_folders = [f for f in folders if temp_vars[f].get()]
+            dialog.destroy()
+            
+        ThemedButton(
+            btn_frame,
+            text="Save",
+            button_type="command",
+            command=save_and_close,
+            padx=20,
+            pady=5
+        ).pack(side="right")
+
     def _on_start(self) -> None:
         """Handle start vehicle button click."""
         config = self._get_current_config()
 
-        self._set_status("starting", "Starting vehicle control program...")
+        mode = config.programme_type if config.vehicle_type == "Qcar" else "Ros"
+        self._set_status(
+            "starting", f"Starting {config.vehicle_type} ({mode}) control program..."
+        )
         self._start_btn.config(state="disabled")
 
         if self.callbacks.on_start_vehicle:
@@ -494,10 +647,17 @@ class VehicleConnectionPanel(BaseWidget):
 
     def _get_current_config(self) -> VehicleConnectionConfig:
         """Get the current configuration from UI inputs."""
+        # Get selected folders
+        folders_to_upload = getattr(self, "_selected_folders", self.default_config.folders_to_upload)
+        upload_root_files = getattr(self, "_upload_root_files", True)
+
         return VehicleConnectionConfig(
             car_id=self.car_id,
             ip=self._ip_entry.get().strip(),
             vehicle_type=self._vehicle_type_var.get(),
+            programme_type=(
+                self._programme_type_var.get() if self._programme_type_var else "Py"
+            ),
             enabled=True,
             # Defaults for removed UI elements
             calibrate=False,
@@ -505,6 +665,8 @@ class VehicleConnectionPanel(BaseWidget):
             left_hand_traffic=False,
             initial_v_ref=0.6,
             description=f"Vehicle {self.car_id}",
+            folders_to_upload=folders_to_upload,
+            upload_root_files=upload_root_files,
         )
 
     def _set_status(self, status: str, message: str) -> None:

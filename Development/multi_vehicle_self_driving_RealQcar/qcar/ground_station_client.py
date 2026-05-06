@@ -6,7 +6,7 @@ import socket
 import threading
 import time
 import queue
-import json
+import msgpack
 from typing import Optional, Dict, Any
 from threading import Event
 
@@ -54,6 +54,8 @@ class GroundStationClient:
         self.telemetry_queue = queue.Queue(maxsize=self.MAX_QUEUE_SIZE)
         self.scope_data_queue = queue.Queue(maxsize=200)  # High-frequency scope data
         self.command_queue = queue.Queue(maxsize=10)
+        self._latest_manual_command: Optional[Dict[str, Any]] = None
+        self._manual_command_lock = threading.Lock()
         
         # Scope streaming state
         self._scope_streaming_enabled = False
@@ -68,7 +70,7 @@ class GroundStationClient:
         }
         
         # Receive buffer for message parsing
-        self._recv_buffer = ""
+        self._recv_buffer = b""
     
     def initialize_network(self) -> bool:
         """Initialize network connection to Ground Station with 8-second timeout"""
@@ -259,7 +261,7 @@ class GroundStationClient:
                 return
             
             # Add to buffer and parse messages
-            self._recv_buffer += data.decode('utf-8')
+            self._recv_buffer += data
             self._parse_received_messages()
             
         except socket.timeout:
@@ -270,31 +272,47 @@ class GroundStationClient:
             self._handle_disconnect()
     
     def _parse_received_messages(self):
-        """Parse newline-delimited JSON messages from buffer"""
-        while '\n' in self._recv_buffer:
+        """Parse length-prefixed msgpack messages from buffer"""
+        while len(self._recv_buffer) >= 4:
             try:
-                line, self._recv_buffer = self._recv_buffer.split('\n', 1)
-                if line.strip():
-                    command = json.loads(line)
+                # Read 4-byte length prefix
+                msg_len = int.from_bytes(self._recv_buffer[:4], byteorder='big')
+                
+                if len(self._recv_buffer) < 4 + msg_len:
+                    break # Not enough data yet
                     
-                    # Queue command (drop oldest if full)
-                    try:
-                        self.command_queue.put_nowait(command)
-                        self.stats['commands_received'] += 1
-                    except queue.Full:
+                msg_bytes = self._recv_buffer[4:4+msg_len]
+                self._recv_buffer = self._recv_buffer[4+msg_len:]
+                
+                command = msgpack.unpackb(msg_bytes, strict_map_key=False)
+
+                self.stats['commands_received'] += 1
+
+                # High-rate manual control should not overwrite state/config
+                # commands such as ENABLE_MANUAL_MODE. Keep only the latest
+                # manual sample and process structural commands in order.
+                if command.get("type") == "manual_control":
+                    with self._manual_command_lock:
+                        self._latest_manual_command = command
+                    continue
+
+                # Queue command (drop oldest if full)
+                try:
+                    self.command_queue.put_nowait(command)
+                except queue.Full:
                         self.command_queue.get_nowait()  # Remove oldest
                         self.command_queue.put_nowait(command)
                         self.stats['queue_overflows'] += 1
                         
-            except json.JSONDecodeError:
-                self.logger.log_warning("Invalid JSON received from Ground Station")
+            except msgpack.ExtraData:
+                self.logger.log_warning("Invalid msgpack received from Ground Station")
+                break
             except Exception as e:
                 self.logger.log_error("Error parsing command", e)
-    
+                break
+
     def _attempt_reconnection(self) -> bool:
-        """Attempt to reconnect to Ground Station with timeout"""
-        self.logger.logger.info(f"Attempting to reconnect to Ground Station (timeout: {self.RECONNECT_TIMEOUT}s)...")
-        
+        """Attempt to reconnect to the Ground Station"""
         reconnect_attempts = 0
         while time.time() - self._reconnect_start_time < self.RECONNECT_TIMEOUT:
             if self.kill_event.is_set():
@@ -313,7 +331,7 @@ class GroundStationClient:
                 
                 self.connected = True
                 self._reconnecting = False
-                self._recv_buffer = ""  # Clear receive buffer
+                self._recv_buffer = b""  # Clear receive buffer
                 
                 self.logger.logger.info(f"Successfully reconnected to Ground Station after {reconnect_attempts} attempts")
                 return True
@@ -332,10 +350,13 @@ class GroundStationClient:
         return False
     
     def _send_json_message(self, data: dict) -> bool:
-        """Send JSON message to Ground Station"""
+        """Send MSGPACK message to Ground Station (Kept name for compatibility)"""
         try:
-            message = json.dumps(data) + '\n'
-            self.socket.sendall(message.encode('utf-8'))
+            # Use msgpack for much faster serialization and smaller payloads
+            msg_bytes = msgpack.packb(data)
+            # Prefix with 4-byte length header to frame messages
+            length_prefix = len(msg_bytes).to_bytes(4, byteorder='big')
+            self.socket.sendall(length_prefix + msg_bytes)
             return True
         except Exception as e:
             self.logger.log_warning(f"Send failed: {e}")
@@ -426,19 +447,22 @@ class GroundStationClient:
         self.logger.logger.info("Scope data streaming disabled")
     
     def get_latest_commands(self) -> Optional[Dict[str, Any]]:
-        """Get latest commands from queue"""
+        """Get the next command to process.
+
+        Structural commands are processed in FIFO order. High-rate manual
+        control is collapsed to the latest sample and returned only when there
+        are no queued structural commands waiting.
+        """
         if not self._running:
             return None
-        
-        latest_command = None
+
         try:
-            # Get the most recent command(s)
-            while True:
-                latest_command = self.command_queue.get_nowait()
+            return self.command_queue.get_nowait()
         except queue.Empty:
-            pass
-        
-        return latest_command
+            with self._manual_command_lock:
+                latest_command = self._latest_manual_command
+                self._latest_manual_command = None
+            return latest_command
     
     def stop_threads(self):
         """Stop communication thread gracefully"""
@@ -464,6 +488,9 @@ class GroundStationClient:
                 self.command_queue.get_nowait()
             except queue.Empty:
                 break
+
+        with self._manual_command_lock:
+            self._latest_manual_command = None
         
         self.logger.logger.info(f"Ground Station stopped. Stats: {self.get_statistics()}")
     

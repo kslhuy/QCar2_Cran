@@ -5,6 +5,7 @@ import logging
 import logging.handlers
 import os
 import time
+from collections import deque
 from datetime import datetime
 from typing import Optional
 import csv
@@ -858,92 +859,122 @@ class PerformanceMonitor:
         self.logger = logger
         self.window_size = window_size
         
-        self.loop_times = []
-        self.network_latencies = []
-        self.control_computation_times = []
+        self.loop_times = deque(maxlen=window_size)
+        self.blocking_events = deque(maxlen=window_size)
+        self.severe_blocking_events = deque(maxlen=window_size)
+        self.network_latencies = deque(maxlen=window_size)
+        self.control_computation_times = deque(maxlen=window_size)
         
         self._iteration_count = 0
-        self._last_report_time = datetime.now()
+        self._last_report_time = time.monotonic()
         self.report_interval = 10.0  # Report every 10 seconds
         
         # Blocking detection
         self.blocking_threshold = blocking_threshold  # Threshold for potential blocking
         self.severe_blocking_threshold = 0.25  # 250ms threshold for severe blocking
-        self.blocking_incidents = 0
-        self.severe_blocking_incidents = 0
+        self.total_blocking_incidents = 0
+        self.total_severe_blocking_incidents = 0
     
     def log_loop_time(self, dt: float):
         """Log control loop execution time"""
         self.loop_times.append(dt)
-        if len(self.loop_times) > self.window_size:
-            self.loop_times.pop(0)
+
+        is_blocking = dt > self.blocking_threshold
+        is_severe_blocking = dt > self.severe_blocking_threshold
+        self.blocking_events.append(is_blocking)
+        self.severe_blocking_events.append(is_severe_blocking)
         
         self._iteration_count += 1
         
         # Blocking detection
-        if dt > self.severe_blocking_threshold:
-            self.severe_blocking_incidents += 1
+        if is_blocking:
+            self.total_blocking_incidents += 1
+
+        if is_severe_blocking:
+            self.total_severe_blocking_incidents += 1
             self.logger.log_warning(
                 f"WARNING: SEVERE BLOCKING detected: Loop time {dt*1000:.2f}ms "
                 f"(threshold: {self.severe_blocking_threshold*1000:.2f}ms)"
             )
-        elif dt > self.blocking_threshold:
-            self.blocking_incidents += 1
-            if self.blocking_incidents % 50 == 1:  # Log every 50th incident
+        elif is_blocking:
+            if self.total_blocking_incidents % 50 == 1:  # Log every 50th incident
                 self.logger.log_warning(
                     f"WARNING: Potential blocking: Loop time {dt*1000:.2f}ms "
-                    f"(incident #{self.blocking_incidents})"
+                    f"(incident #{self.total_blocking_incidents})"
                 )
         
         # Periodic reporting
-        now = datetime.now()
-        if (now - self._last_report_time).total_seconds() >= self.report_interval:
+        now = time.monotonic()
+        if now - self._last_report_time >= self.report_interval:
             self.report_statistics()
             self._last_report_time = now
     
     def log_network_latency(self, latency: float):
         """Log network communication latency"""
         self.network_latencies.append(latency)
-        if len(self.network_latencies) > self.window_size:
-            self.network_latencies.pop(0)
     
     def log_control_computation_time(self, computation_time: float):
         """Log control computation time"""
         self.control_computation_times.append(computation_time)
-        if len(self.control_computation_times) > self.window_size:
-            self.control_computation_times.pop(0)
+
+    def _compute_series_stats(self, values) -> dict:
+        """Compute mean/min/max/std for a rolling numeric series."""
+        if not values:
+            return {}
+
+        count = len(values)
+        total = sum(values)
+        mean = total / count
+        variance = sum((value - mean) ** 2 for value in values) / count
+
+        return {
+            "mean": mean,
+            "max": max(values),
+            "min": min(values),
+            "std": variance ** 0.5,
+        }
     
     def get_statistics(self) -> dict:
         """Get current performance statistics"""
-        import numpy as np
+        window_samples = len(self.loop_times)
+        window_blocking_incidents = sum(self.blocking_events)
+        window_severe_blocking_incidents = sum(self.severe_blocking_events)
         
         stats = {
             'iteration_count': self._iteration_count,
-            'blocking_incidents': self.blocking_incidents,
-            'severe_blocking_incidents': self.severe_blocking_incidents
+            'window_samples': window_samples,
+            'blocking_incidents': window_blocking_incidents,
+            'severe_blocking_incidents': window_severe_blocking_incidents,
+            'total_blocking_incidents': self.total_blocking_incidents,
+            'total_severe_blocking_incidents': self.total_severe_blocking_incidents,
         }
         
         if self.loop_times:
+            loop_stats = self._compute_series_stats(self.loop_times)
             stats['loop_time'] = {
-                'mean': np.mean(self.loop_times),
-                'max': np.max(self.loop_times),
-                'min': np.min(self.loop_times),
-                'std': np.std(self.loop_times),
-                'frequency': 1.0 / np.mean(self.loop_times) if np.mean(self.loop_times) > 0 else 0,
-                'blocking_percentage': (self.blocking_incidents / self._iteration_count * 100) if self._iteration_count > 0 else 0
+                'mean': loop_stats['mean'],
+                'max': loop_stats['max'],
+                'min': loop_stats['min'],
+                'std': loop_stats['std'],
+                'frequency': 1.0 / loop_stats['mean'] if loop_stats['mean'] > 0 else 0,
+                'blocking_percentage': (
+                    window_blocking_incidents / window_samples * 100
+                ) if window_samples > 0 else 0
             }
         
         if self.network_latencies:
+            network_stats = self._compute_series_stats(self.network_latencies)
             stats['network_latency'] = {
-                'mean': np.mean(self.network_latencies),
-                'max': np.max(self.network_latencies),
-                'min': np.min(self.network_latencies)
+                'mean': network_stats['mean'],
+                'max': network_stats['max'],
+                'min': network_stats['min']
             }
         
         if self.control_computation_times:
+            control_stats = self._compute_series_stats(self.control_computation_times)
             stats['control_computation'] = {
-                'mean': np.mean(self.control_computation_times),
-                'max': np.max(self.control_computation_times)
+                'mean': control_stats['mean'],
+                'max': control_stats['max']
             }
         
         return stats
@@ -964,7 +995,7 @@ class PerformanceMonitor:
             if lt['blocking_percentage'] > 5.0:
                 self.logger.log_warning(
                     f"WARNING: High blocking percentage: {lt['blocking_percentage']:.1f}% "
-                    f"({stats['blocking_incidents']} incidents)"
+                    f"({stats['blocking_incidents']} of last {stats['window_samples']} loops)"
                 )
         
         if 'network_latency' in stats:
@@ -973,8 +1004,3 @@ class PerformanceMonitor:
                 f"Performance: Network latency avg={nl['mean']*1000:.2f}ms, "
                 f"max={nl['max']*1000:.2f}ms"
             )
-        
-        # Reset counters periodically to prevent overflow
-        if self._iteration_count > 10000:
-            self.blocking_incidents = max(0, self.blocking_incidents - 100)
-            self.severe_blocking_incidents = max(0, self.severe_blocking_incidents - 10)

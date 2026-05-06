@@ -42,8 +42,15 @@ python yolo_server.py -i 192.168.1.100 -p True -w 320 -ht 200 -idx 0
 
 ```
 for limo 
+
+Lauch the camera to pub the img
 ```bash
-ros2 run limo_nav_huy_test yolo_ros2_server -p True --ros-args -p probing:=True
+ros2 launch astra_camera dabai.launch.py
+```
+
+Lauch the yolo server to run yolo and send to the system
+```bash
+ros2 run limo_nav_huy_test yolo_server_limo -p True --ros-args -p probing:=True
 ```
 
 ### Depth Alignment

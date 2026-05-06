@@ -4,6 +4,7 @@
 from .longitudinal_controllers import (
     LongitudinalControllerBase,
     PIDVelocityController,
+    QCar2SpeedController,
     CACCLongitudinalController,
     SA_ACCController,
     FixConstantController,
@@ -43,6 +44,7 @@ __all__ = [
     # Longitudinal
     "LongitudinalControllerBase",
     "PIDVelocityController",
+    "QCar2SpeedController",
     "CACCLongitudinalController",
     "SA_ACCController",
     "FixConstantController",

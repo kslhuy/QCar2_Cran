@@ -289,75 +289,6 @@ class PlatoonController:
         time_since_seen = time.time() - self.last_leader_seen
         return time_since_seen > self.config.lost_timeout
     
-    def compute_follower_velocity(self, current_velocity: float, 
-                                  base_velocity: float) -> float:
-        """
-        Compute velocity for follower to maintain spacing using perception data
-        
-        Args:
-            current_velocity: Current vehicle velocity (m/s)
-            base_velocity: Base/target velocity (m/s)
-            
-        Returns:
-            Adjusted velocity to maintain spacing (m/s)
-        """
-        if not self.leader_detected or self.leader_distance is None:
-            # No leader detected via perception sensors, maintain base velocity
-            return base_velocity
-        
-        # Compute spacing error based on perceived distance
-        spacing_error = self.leader_distance - self.config.target_spacing
-        
-        # Update integral term (with anti-windup)
-        self.spacing_error_integral += spacing_error * 0.005  # Assuming ~200Hz
-        self.spacing_error_integral = np.clip(
-            self.spacing_error_integral,
-            -0.5,  # Max integral contribution: 0.5 m/s
-            0.5
-        )
-        
-        # PI controller for velocity adjustment
-        velocity_adjustment = (
-            self.config.spacing_kp * spacing_error +
-            self.config.spacing_ki * self.spacing_error_integral
-        )
-        
-        # Low-pass filter for smooth adjustments
-        alpha = self.config.velocity_filter
-        self.filtered_velocity_adjustment = (
-            alpha * velocity_adjustment +
-            (1 - alpha) * self.filtered_velocity_adjustment
-        )
-        
-        # Compute target velocity (combining perception and communication data)
-        if self.leader_velocity is not None:
-            # Use leader velocity from communication + spacing adjustment from perception
-            target_velocity = self.leader_velocity + self.filtered_velocity_adjustment
-        else:
-            # Use base velocity + spacing adjustment from perception only
-            target_velocity = base_velocity + self.filtered_velocity_adjustment
-        
-        # Safety limits
-        if self.leader_distance < self.config.min_safe_spacing:
-            # Too close! Slow down significantly
-            target_velocity = min(target_velocity, current_velocity * 0.5)
-        
-        # Clip to reasonable range
-        target_velocity = np.clip(target_velocity, 0.0, base_velocity * 1.5)
-        
-        # Debug logging (occasional) - Initialize counter if needed
-        if self.logger:
-            self._debug_counter = getattr(self, '_debug_counter', 0) + 1
-            if self._debug_counter % 100 == 0:  # Log every 100 calls
-                self.logger.logger.debug(
-                    f"Follower control (perception-based): "
-                    f"perceived_dist={self.leader_distance:.2f}m, "
-                    f"spacing_error={spacing_error:.2f}m, "
-                    f"velocity_adj={self.filtered_velocity_adjustment:.3f}m/s, "
-                    f"target_velocity={target_velocity:.2f}m/s"
-                )
-        
-        return target_velocity
     
     # ===== COMMUNICATION-BASED FOLLOWER STATUS (for leader) =====
     
@@ -381,153 +312,68 @@ class PlatoonController:
         
         return len(self.followers_ready) == len(self.expected_followers)
     
-    # ===== COMMUNICATION-BASED CONTROL (for followers) =====
     
-    # def compute_follower_velocity_v2v(self, current_velocity: float, base_velocity: float, 
-    #                                   direct_leader_data: Optional[Dict[str, Any]] = None) -> float:
-    #     """
-    #     Compute velocity for follower using direct leader communication data (V2V)
-        
-    #     Args:
-    #         current_velocity: Current vehicle velocity (m/s)
-    #         base_velocity: Base/target velocity (m/s)
-    #         direct_leader_data: Direct leader state from V2V communication
-            
-    #     Returns:
-    #         Adjusted velocity for formation following (m/s)
-    #     """
-    #     if direct_leader_data is None:
-    #         # No V2V data available, fallback to base velocity
-    #         return base_velocity
-        
-    #     leader_velocity = direct_leader_data.get('velocity', 0.0)
-        
-    #     # Use leader velocity as primary reference
-    #     # Follow leader speed with conservative approach for safety
-    #     target_velocity = leader_velocity * 0.95  # 95% of leader speed for safety margin
-        
-    #     # Clip to reasonable range
-    #     target_velocity = np.clip(target_velocity, 0.0, base_velocity)
-        
-    #     # Debug logging - periodic for monitoring (reduced frequency)
-    #     if self.logger:
-    #         self._debug_counter_v2v = getattr(self, '_debug_counter_v2v', 0) + 1
-    #         if self._debug_counter_v2v % 500 == 0:  # Every 500 calls (~25 seconds at 20Hz)
-    #             self.logger.logger.debug(
-    #                 f"[V2V FOLLOW] Leader: {leader_velocity:.2f}m/s -> Target: {target_velocity:.2f}m/s"
-    #             )
-        
-    #     return target_velocity
-    
-    # def compute_follower_steering_v2v(self, current_x: float, current_y: float, current_theta: float,
-    #                                   current_velocity: float, direct_leader_data: Optional[Dict[str, Any]] = None,
-    #                                   target_distance: float = 2.0) -> Optional[float]:
-    #     """
-    #     Compute steering for follower using direct leader communication data (V2V)
-        
-    #     Args:
-    #         current_x, current_y, current_theta: Current vehicle pose
-    #         current_velocity: Current vehicle velocity
-    #         direct_leader_data: Direct leader state from V2V communication
-    #         target_distance: Target following distance (m)
-            
-    #     Returns:
-    #         Steering angle (radians) or None if no valid target
-    #     """
-    #     if direct_leader_data is None:
-    #         return None
-        
-    #     leader_x = direct_leader_data.get('x', 0.0)
-    #     leader_y = direct_leader_data.get('y', 0.0)
-    #     leader_theta = direct_leader_data.get('theta', 0.0)
-        
-    #     # Calculate target point behind the leader
-    #     target_x = leader_x - target_distance * np.cos(leader_theta)
-    #     target_y = leader_y - target_distance * np.sin(leader_theta)
-        
-    #     # Pure pursuit steering calculation
-    #     dx = target_x - current_x
-    #     dy = target_y - current_y
-    #     target_distance_actual = np.sqrt(dx**2 + dy**2)
-        
-    #     if target_distance_actual < 0.1:  # Too close to target
-    #         return 0.0
-        
-    #     # Calculate heading error
-    #     target_heading = np.arctan2(dy, dx)
-    #     heading_error = target_heading - current_theta
-        
-    #     # Normalize heading error to [-pi, pi]
-    #     heading_error = np.arctan2(np.sin(heading_error), np.cos(heading_error))
-        
-    #     # Simple proportional steering control
-    #     steering_gain = 2.0  # Adjust based on vehicle dynamics
-    #     lookahead_distance = max(1.0, current_velocity * 0.5)  # Dynamic lookahead
-        
-    #     steering_angle = np.arctan2(2.0 * np.sin(heading_error) * lookahead_distance, target_distance_actual)
-        
-    #     # Limit steering angle
-    #     max_steering = np.pi / 6  # 30 degrees max
-    #     steering_angle = np.clip(steering_angle, -max_steering, max_steering)
-        
-    #     if self.logger:
-    #         self._debug_counter_steering_v2v = getattr(self, '_debug_counter_steering_v2v', 0) + 1
-    #         if self._debug_counter_steering_v2v % 100 == 0:
-    #             self.logger.logger.debug(
-    #                 f"Follower steering (V2V-based): "
-    #                 f"target=({target_x:.2f},{target_y:.2f}), "
-    #                 f"heading_err={np.degrees(heading_error):.1f}°, "
-    #                 f"steering={np.degrees(steering_angle):.1f}°"
-    #             )
-        
-    #     return steering_angle
-    
-    def get_direct_leader_data_from_v2v(self, v2v_manager, my_vehicle_id: int) -> Optional[Dict[str, Any]]:
+    def get_direct_leader_vehicle_id(self) -> Optional[int]:
+        """Resolve the direct leader vehicle ID from the current formation data."""
+        try:
+            if hasattr(self, "formation_data") and hasattr(self, "my_position"):
+                my_position = self.my_position
+                if my_position > 1:
+                    direct_leader_position = my_position - 1
+                    for vehicle_id, position in self.formation_data.items():
+                        vehicle_id_int = int(vehicle_id)
+                        if position == direct_leader_position:
+                            return vehicle_id_int
+
+            if self.leader_car_id is not None:
+                return int(self.leader_car_id)
+
+            return None
+        except Exception as e:
+            if self.logger:
+                self.logger.logger.warning(
+                    f"Error resolving direct leader vehicle id: {e}"
+                )
+            return None
+
+    def get_direct_leader_data_from_v2v(
+        self,
+        v2v_manager,
+        my_vehicle_id: int,
+        channel: str = "attacked",
+    ) -> Optional[Dict[str, Any]]:
         """
-        Get direct leader's state data from V2V manager
-        
+        Get direct leader's state data from V2V manager.
+
         Args:
             v2v_manager: V2V manager instance
             my_vehicle_id: This vehicle's ID
-            
+            channel: V2V channel selector ('attacked' or 'clean')
+
         Returns:
             Direct leader's state data or None
         """
         try:
-            # Use get_latest_local_state_raw 
-            if not v2v_manager or not hasattr(v2v_manager, 'get_latest_local_state_raw'):
+            if not v2v_manager or not hasattr(v2v_manager, "get_latest_local_state_raw"):
                 if self.logger:
-                    self.logger.logger.debug(f"V2V manager not available or missing get_latest_local_state_raw")
+                    self.logger.logger.debug(
+                        "V2V manager not available or missing get_latest_local_state_raw"
+                    )
                 return None
-            
-            # Find direct leader (vehicle with position = my_position - 1)
-            if hasattr(self, 'formation_data') and hasattr(self, 'my_position'):
-                my_position = self.my_position
-                if my_position > 1:  # Not the leader
-                    direct_leader_position = my_position - 1
-                    
-                    # Find vehicle ID with this position - handle both string and int keys
-                    for vehicle_id, position in self.formation_data.items():
-                        # Convert vehicle_id to int if it's a string for querying V2V
-                        if isinstance(vehicle_id, str):
-                            vehicle_id_int = int(vehicle_id)
-                        else:
-                            vehicle_id_int = vehicle_id
-                        
-                        if position == direct_leader_position:
-                            # Use get_latest_local_state_raw
-                            leader_data = v2v_manager.get_latest_local_state_raw(vehicle_id_int)
-                            return leader_data
-            
-            # Fallback: use leader_car_id if available
-            if self.leader_car_id is not None:
-                return v2v_manager.get_latest_local_state_raw(self.leader_car_id)
-            
-            return None
-            
+
+            leader_vehicle_id = self.get_direct_leader_vehicle_id()
+            if leader_vehicle_id is None:
+                return None
+
+            return v2v_manager.get_latest_local_state_raw(
+                leader_vehicle_id, channel=channel
+            )
+
         except Exception as e:
             if self.logger:
-                self.logger.logger.warning(f"Error getting direct leader data from V2V: {e}")
+                self.logger.logger.warning(
+                    f"Error getting direct leader data from V2V: {e}"
+                )
             return None
     
     def update_leader_velocity_from_v2v(self, v2v_manager, my_vehicle_id: int):

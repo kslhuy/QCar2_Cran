@@ -77,6 +77,10 @@ class PurePursuitController(LateralControllerBase):
         curvature_threshold=0.3,
         turn_lookahead_offset=0.1,
         turn_lookahead_gain=1.5,
+        turn_preview_cap=0.05,
+        heading_alignment_gain=0.0,
+        heading_alignment_window_deg=45.0,
+        heading_preview_cap=0.0,
         config=None,
         logger=None,
         **kwargs,
@@ -92,6 +96,7 @@ class PurePursuitController(LateralControllerBase):
             curvature_threshold: Threshold to detect turning (default 0.3)
             turn_lookahead_offset: Lateral offset during turns (default 0.1m)
             turn_lookahead_gain: Multiplier for lookahead during turns (default 1.5)
+            turn_preview_cap: Max forward preview added in turns when gap gets too small
             config: Optional config object (takes precedence)
             logger: Logger instance
         """
@@ -119,6 +124,16 @@ class PurePursuitController(LateralControllerBase):
             self.turn_lookahead_gain = params.get(
                 "turn_lookahead_gain", turn_lookahead_gain
             )
+            self.turn_preview_cap = params.get("turn_preview_cap", turn_preview_cap)
+            self.heading_alignment_gain = params.get(
+                "heading_alignment_gain", heading_alignment_gain
+            )
+            self.heading_alignment_window_deg = params.get(
+                "heading_alignment_window_deg", heading_alignment_window_deg
+            )
+            self.heading_preview_cap = params.get(
+                "heading_preview_cap", heading_preview_cap
+            )
         else:
             self.lookahead_distance = lookahead_distance
             self.k_steering = k_steering
@@ -127,6 +142,14 @@ class PurePursuitController(LateralControllerBase):
             self.curvature_threshold = curvature_threshold
             self.turn_lookahead_offset = turn_lookahead_offset
             self.turn_lookahead_gain = turn_lookahead_gain
+            self.turn_preview_cap = turn_preview_cap
+            self.heading_alignment_gain = heading_alignment_gain
+            self.heading_alignment_window_deg = heading_alignment_window_deg
+            self.heading_preview_cap = heading_preview_cap
+
+        self.heading_alignment_window_rad = np.deg2rad(
+            max(float(self.heading_alignment_window_deg), 1e-3)
+        )
 
     def compute_steering(
         self,
@@ -162,6 +185,7 @@ class PurePursuitController(LateralControllerBase):
         dx_to_leader = x_j - x
         dy_to_leader = y_j - y
         distance_to_leader = math.sqrt(dx_to_leader**2 + dy_to_leader**2)
+        leader_heading_error = wrap_to_pi(theta_j - theta)
 
         # Compute base lookahead distance
         if self.adaptive_lookahead:
@@ -173,7 +197,15 @@ class PurePursuitController(LateralControllerBase):
 
         # Compute dynamic 2D lookahead pose for turning sections
         target_x, target_y = self._compute_dynamic_lookahead_pose(
-            x_j, y_j, theta_j, base_lookahead, is_turning, turn_direction, curvature
+            x_j,
+            y_j,
+            theta_j,
+            base_lookahead,
+            distance_to_leader,
+            is_turning,
+            turn_direction,
+            curvature,
+            leader_heading_error,
         )
 
         # Compute heading error to target point
@@ -182,8 +214,12 @@ class PurePursuitController(LateralControllerBase):
         target_angle = math.atan2(dy, dx)
         heading_error = wrap_to_pi(target_angle - theta)
 
-        # Apply proportional control
-        steering_cmd = self.k_steering * heading_error
+        # Combine point tracking with a direct heading-alignment term so the
+        # follower rotates into the leader's orientation faster on first capture.
+        steering_cmd = (
+            self.k_steering * heading_error
+            + self.heading_alignment_gain * leader_heading_error
+        )
 
         # Clamp to limits
         steering_cmd = np.clip(steering_cmd, -self.max_steering, self.max_steering)
@@ -196,9 +232,11 @@ class PurePursuitController(LateralControllerBase):
         leader_y: float,
         leader_theta: float,
         base_lookahead: float,
+        distance_to_leader: float,
         is_turning: bool,
         turn_direction: str,
         curvature: float,
+        leader_heading_error: float,
     ) -> Tuple[float, float]:
         """
         Compute adjusted lookahead pose for turning sections.
@@ -220,18 +258,36 @@ class PurePursuitController(LateralControllerBase):
         Returns:
             (target_x, target_y): Adjusted lookahead target position
         """
-        # Apply longitudinal lookahead (behind leader position)
-        if is_turning:
-            lookahead = base_lookahead * self.turn_lookahead_gain
-            # Base target point (ahead of leader in its heading direction) avoid stop since too close to leader
-            target_x = leader_x + lookahead * math.cos(leader_theta)
-            target_y = leader_y + lookahead * math.sin(leader_theta)
+        # Default target trails the leader so the follower stays on the same line.
+        target_x = leader_x - base_lookahead * math.cos(leader_theta)
+        target_y = leader_y - base_lookahead * math.sin(leader_theta)
 
-        else:
-            lookahead = base_lookahead
-            # Base target point (behind leader in its heading direction)
-            target_x = leader_x - lookahead * math.cos(leader_theta)
-            target_y = leader_y - lookahead * math.sin(leader_theta)
+        heading_ratio = float(
+            np.clip(
+                abs(leader_heading_error) / self.heading_alignment_window_rad, 0.0, 1.0
+            )
+        )
+        heading_preview = min(
+            max(float(self.heading_preview_cap), 0.0),
+            max(base_lookahead, 0.0),
+        )
+        target_x += heading_ratio * heading_preview * math.cos(leader_theta)
+        target_y += heading_ratio * heading_preview * math.sin(leader_theta)
+
+        if is_turning:
+            # Only add a small forward preview if we are already very close to the
+            # leader. Keeping the target mostly trailing in turns reduces corner cutting.
+            close_ratio = 0.0
+            if base_lookahead > 1e-6:
+                close_ratio = float(
+                    np.clip((base_lookahead - distance_to_leader) / base_lookahead, 0.0, 1.0)
+                )
+
+            preview_cap = max(float(self.turn_preview_cap), 0.0)
+            preview_gain = max(float(self.turn_lookahead_gain) - 1.0, 0.0)
+            preview_distance = min(base_lookahead * preview_gain, preview_cap)
+            target_x += close_ratio * preview_distance * math.cos(leader_theta)
+            target_y += close_ratio * preview_distance * math.sin(leader_theta)
 
         # Apply lateral offset for turning sections
         if is_turning and abs(curvature) > 0.01:
@@ -287,6 +343,8 @@ class StanleyController(LateralControllerBase):
         k_e=0.5,
         k_soft=1.0,
         max_steering=0.55,
+        lookahead_distance=0.0,
+        position_lookahead_offset=0.2,
         config=None,
         logger=None,
         cyclic: bool = True,
@@ -300,6 +358,8 @@ class StanleyController(LateralControllerBase):
             k_e: Cross-track error gain (if config not provided)
             k_soft: Softening gain to prevent division by zero
             max_steering: Maximum steering angle (radians)
+            lookahead_distance: Preview distance along path for the reference segment
+            position_lookahead_offset: Forward offset applied to the vehicle point
             config: Optional config object (takes precedence)
             logger: Logger instance
             cyclic: Whether to cycle through waypoints
@@ -311,10 +371,27 @@ class StanleyController(LateralControllerBase):
             # ControllerConfig - get params from dictionary
             params = config.get_lateral_params("stanley")
             self.k = params.get("k_e", k_e)
+            self.k_soft = params.get("k_soft", k_soft)
             self.max_steering_angle = params.get("max_steering", max_steering)
+            self.lookahead_distance = max(
+                0.0, float(params.get("lookahead_distance", lookahead_distance))
+            )
+            self.position_lookahead_offset = max(
+                0.0,
+                float(
+                    params.get(
+                        "position_lookahead_offset", position_lookahead_offset
+                    )
+                ),
+            )
         else:
             self.k = k_e
+            self.k_soft = k_soft
             self.max_steering_angle = max_steering
+            self.lookahead_distance = max(0.0, float(lookahead_distance))
+            self.position_lookahead_offset = max(
+                0.0, float(position_lookahead_offset)
+            )
 
         # Path following attributes
         self.wp = waypoints
@@ -330,11 +407,38 @@ class StanleyController(LateralControllerBase):
         self.cross_track_error = 0.0
         self.heading_error = 0.0
 
-        # Softening constant for low speeds
-        self.k_soft = k_soft
-
         # Thread safety
         self._lock = Lock()
+
+    def _segment_index_with_lookahead(self, start_idx: int) -> int:
+        """Return a preview segment index offset by cumulative path distance."""
+        if self.wp is None or self.N < 2 or self.lookahead_distance <= 1e-6:
+            return start_idx
+
+        remaining = float(self.lookahead_distance)
+        idx = start_idx
+        max_segments = max(self.N - 1, 1)
+
+        for _ in range(max_segments):
+            next_idx = (idx + 1) % self.N if self.cyclic else min(idx + 1, self.N - 1)
+            seg = self.wp[:, next_idx] - self.wp[:, idx]
+            seg_len = float(np.linalg.norm(seg))
+
+            if seg_len >= remaining:
+                return idx
+
+            remaining -= seg_len
+
+            if not self.cyclic and idx >= self.N - 2:
+                return self.N - 2
+
+            idx += 1
+            if self.cyclic:
+                idx %= self.N - 1
+            else:
+                idx = min(idx, self.N - 2)
+
+        return idx
 
     def update(self, p: np.ndarray, th: float, speed: float) -> float:
         """
@@ -352,36 +456,70 @@ class StanleyController(LateralControllerBase):
             return 0.0
 
         with self._lock:
-            # Get current waypoints
-            wp_1 = self.wp[:, np.mod(self.wpi, self.N - 1)]
-            wp_2 = self.wp[:, np.mod(self.wpi + 1, self.N - 1)]
+            p_eval = np.asarray(p, dtype=float)
+            if self.position_lookahead_offset > 1e-6:
+                p_eval = p_eval + np.array([np.cos(th), np.sin(th)]) * float(
+                    self.position_lookahead_offset
+                )
 
-            # Path vector
+            # Get current segment safely, accounting for cyclic vs non-cyclic
+            if self.cyclic:
+                idx = self.wpi % (self.N - 1)
+            else:
+                idx = min(self.wpi, self.N - 2)
+
+            wp_1_prog = self.wp[:, idx]
+            wp_2_prog = self.wp[:, (idx + 1) % self.N]
+
+            # Use the current segment only to advance progress along the route.
+            v_prog = wp_2_prog - wp_1_prog
+            v_prog_mag = np.linalg.norm(v_prog)
+
+            # Handle zero-length segment safely (e.g. duplicate waypoints)
+            if v_prog_mag < 1e-6:
+                if self.cyclic or self.wpi < self.N - 2:
+                    self.wpi += 1
+                return 0.0
+
+            v_prog_uv = v_prog / v_prog_mag
+
+            # Progress along current segment
+            s_prog = np.dot(p_eval - wp_1_prog, v_prog_uv)
+
+            # Check if we should advance to next waypoint
+            if s_prog >= v_prog_mag:
+                if self.cyclic or self.wpi < self.N - 2:
+                    self.wpi += 1
+
+                if self.cyclic:
+                    idx = self.wpi % (self.N - 1)
+                else:
+                    idx = min(self.wpi, self.N - 2)
+
+            ref_idx = self._segment_index_with_lookahead(idx)
+            wp_1 = self.wp[:, ref_idx]
+            wp_2 = self.wp[:, (ref_idx + 1) % self.N]
+
+            # Path vector for the previewed segment
             v = wp_2 - wp_1
             v_mag = np.linalg.norm(v)
 
-            # Handle zero-length segment (inspired by control.py)
-            try:
-                v_uv = v / v_mag
-            except ZeroDivisionError:
-                return 0
+            if v_mag < 1e-6:
+                return 0.0
+
+            v_uv = v / v_mag
 
             # Path tangent angle
             tangent = np.arctan2(v_uv[1], v_uv[0])
 
-            # Progress along current segment
-            s = np.dot(p - wp_1, v_uv)
-
-            # Check if we should advance to next waypoint
-            if s >= v_mag:
-                if self.cyclic or self.wpi < self.N - 2:
-                    self.wpi += 1
+            # Progress along previewed segment
+            s = np.dot(p_eval - wp_1, v_uv)
 
             # Closest point on path
             ep = wp_1 + v_uv * s
 
             # Cross-track error vector
-            ct = ep - p
+            ct = ep - p_eval
 
             # # Direction of cross-track error
             # dir = wrap_to_pi(np.arctan2(ct[1], ct[0]) - tangent)
@@ -404,7 +542,7 @@ class StanleyController(LateralControllerBase):
 
             # Stanley control law (matching control.py implementation)
             return np.clip(
-                wrap_to_pi(psi + np.arctan2(self.k * ect, speed)),
+                wrap_to_pi(psi + np.arctan2(self.k * ect, speed + self.k_soft)),
                 -self.max_steering_angle,
                 self.max_steering_angle,
             )
@@ -496,6 +634,14 @@ class StanleyController(LateralControllerBase):
                 self.max_steering_angle = params["max_steering"]
             elif "max_steering_angle" in params:
                 self.max_steering_angle = params["max_steering_angle"]
+
+            if "lookahead_distance" in params:
+                self.lookahead_distance = max(0.0, float(params["lookahead_distance"]))
+
+            if "position_lookahead_offset" in params:
+                self.position_lookahead_offset = max(
+                    0.0, float(params["position_lookahead_offset"])
+                )
 
             if self.logger:
                 self.logger.logger.info(f"[StanleyController] Updated params: {params}")
@@ -738,17 +884,8 @@ class FusionLateralController(LateralControllerBase):
         # Inner controllers for steering computation
         self.pure_pursuit = PurePursuitController(config=config, logger=logger)
 
-        # We need a path controller for the path_or_leader mode
-        try:
-            from .PP_Controller import PP_Controller
-
-            self.path_controller = PP_Controller(config=config, logger=logger)
-        except ImportError:
-            self.path_controller = None
-            if self.logger:
-                self.logger.warning(
-                    "[FusionLateralController] PP_Controller not available."
-                )
+        # Path steering is provided externally by the state machine
+        # via the ``path_steering`` argument to ``compute_steering``.
 
         # For tracking active mode
         self.active_sub_mode = "path"
@@ -862,11 +999,14 @@ class FusionLateralController(LateralControllerBase):
                 self.path_weight * path_steering + self.leader_weight * leader_steering
             )
 
-        # Apply output smoothing
-        smoothed = (
-            self.smoothing_factor * final_steering
-            + (1 - self.smoothing_factor) * self.prev_steering
-        )
+        # # Apply output smoothing
+        if self.smoothing_factor > 0:
+            smoothed = (
+                self.smoothing_factor * final_steering
+                + (1 - self.smoothing_factor) * self.prev_steering
+            )
+        else:
+            smoothed = final_steering
         self.prev_steering = smoothed
 
         return np.clip(smoothed, -self.max_steering, self.max_steering)

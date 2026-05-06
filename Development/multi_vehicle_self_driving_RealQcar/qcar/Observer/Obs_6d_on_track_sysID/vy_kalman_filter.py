@@ -1,22 +1,8 @@
 import numpy as np
 import math
 
-# Try importing the vehicle_dynamics_st function from the local workspace
-try:
-    from qcar.Calibration.On_Track_SysID.src.helpers.vehicle_dynamics_stown import (
-        vehicle_dynamics_st,
-    )
-except ImportError:
-    import sys, os
 
-    # Add absolute path to ensure we can import it
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.abspath(os.path.join(current_dir, "../../../"))
-    if project_root not in sys.path:
-        sys.path.append(project_root)
-    from qcar.Calibration.On_Track_SysID.src.helpers.vehicle_dynamics_stown import (
-        vehicle_dynamics_st,
-    )
+from Observer.Obs_6d_on_track_sysID.vehicle_dynamics_stown import vehicle_dynamics_st
 
 
 class ParamsDummy:

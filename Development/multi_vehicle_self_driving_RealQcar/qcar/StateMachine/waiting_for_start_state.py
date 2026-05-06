@@ -118,6 +118,20 @@ class WaitingForStartState(StateBase):
             # Stay in WAITING_FOR_START state - no transition needed
             return None
 
+        # Handle active calibration mode - DIRECT TRANSITION to CALIBRATING!
+        if command_type == CommandType.ENABLE_CALIBRATION_MODE:
+            cal_type = data.get("calibration_type", "throttle_velocity")
+            cal_params = data.get("params", {})
+            self.logger.logger.info(
+                f"[CAL] Calibration mode requested: {cal_type}"
+            )
+            # Store calibration request for CalibratingState.enter() to read
+            self.vehicle_logic._calibration_request = {
+                "calibration_type": cal_type,
+                "params": cal_params,
+            }
+            return (VehicleState.CALIBRATING, StateTransitionReason.START_COMMAND)
+
         # Handle start command - DIRECT TRANSITION (Normal start only)!
         if command_type == CommandType.START:
             self.logger.logger.info(
@@ -206,6 +220,14 @@ class WaitingForStartState(StateBase):
             )
             return None
 
+        # Ignore raw manual-control samples until manual mode is explicitly
+        # enabled. This keeps manual mode entry consistent across states.
+        elif command_type == CommandType.MANUAL_CONTROL:
+            self.logger.logger.info(
+                " Manual control received while waiting - ignoring until ENABLE_MANUAL_MODE"
+            )
+            return None
+
         # Handle manual mode activation - DIRECT TRANSITION!
         elif command_type == CommandType.ENABLE_MANUAL_MODE:
             control_type = data.get("control_type", "unknown")
@@ -217,6 +239,13 @@ class WaitingForStartState(StateBase):
                 StateTransitionReason.MANUAL_MODE_ACTIVATED,
             )
 
+        # If we're already not in manual mode, disabling it is a harmless no-op.
+        elif command_type == CommandType.DISABLE_MANUAL_MODE:
+            self.logger.logger.info(
+                " Manual mode disable received while waiting - already not in manual mode"
+            )
+            return None
+
         # Handle taxi mode activation - DIRECT TRANSITION!
         elif command_type == CommandType.ENABLE_TAXI_MODE:
             self.logger.logger.info(
@@ -224,45 +253,26 @@ class WaitingForStartState(StateBase):
             )
             return (VehicleState.TAXI_MODE, StateTransitionReason.TAXI_MODE_ACTIVATED)
 
-        # Handle path updates - store for when we start
-        elif command_type == CommandType.SET_PATH:
-            node_sequence = data.get("node_sequence")
-            self.logger.logger.info(
-                f"Received SET_PATH command with node_sequence: {node_sequence}"
-            )
+        # # Handle path updates - store for when we start
+        # elif command_type == CommandType.SET_PATH:
+        #     node_sequence = data.get("node_sequence")
+        #     self.logger.logger.info(
+        #         f"Received SET_PATH command with node_sequence: {node_sequence}"
+        #     )
 
-            if node_sequence and isinstance(node_sequence, list):
-                # Generate waypoints from node sequence using roadmap
-                if (
-                    hasattr(self.vehicle_logic, "roadmap")
-                    and self.vehicle_logic.roadmap
-                ):
-                    try:
-                        new_waypoints = self.vehicle_logic.roadmap.generate_path(
-                            node_sequence
-                        )
-                        self.vehicle_logic.waypoint_sequence = new_waypoints
+        #     new_waypoints = self._generate_waypoints_from_node_sequence(node_sequence)
+        #     if self._store_active_path(node_sequence, new_waypoints):
+        #         # Update steering controller if it exists (though it shouldn't in waiting state)
+        #         if (
+        #             hasattr(self.vehicle_logic, "steering_controller")
+        #             and self.vehicle_logic.steering_controller
+        #         ):
+        #             self.vehicle_logic.steering_controller.reset(new_waypoints)
 
-                        # Update steering controller if it exists (though it shouldn't in waiting state)
-                        if (
-                            hasattr(self.vehicle_logic, "steering_controller")
-                            and self.vehicle_logic.steering_controller
-                        ):
-                            self.vehicle_logic.steering_controller.reset(new_waypoints)
-
-                        self.logger.logger.info(
-                            f"Path updated with {len(node_sequence)} nodes, generated {new_waypoints.shape[1]} waypoints"
-                        )
-                        return None
-                    except Exception as e:
-                        self.logger.log_error("Failed to generate path from nodes", e)
-                else:
-                    self.logger.logger.warning(
-                        "No roadmap available for path generation"
-                    )
-            else:
-                self.logger.logger.warning(f"Invalid path data: {node_sequence}")
-            return None
+        #         self.logger.logger.info(
+        #             f"Path updated with {len(node_sequence)} nodes, generated {new_waypoints.shape[1]} waypoints"
+        #         )
+        #     return None
 
         # Handle initial position updates - set the vehicle's starting position (with optional GPS recalibration)
         elif command_type == CommandType.SET_INITIAL_POSITION:

@@ -32,6 +32,7 @@ class ControllerConfig:
 
         self.config_path = config_path
         self.config = self._load_config()
+        self._vehicle_params_override: Dict[str, Any] = {}
 
     def _load_config(self) -> Dict[str, Any]:
         """Load YAML configuration file"""
@@ -86,6 +87,85 @@ class ControllerConfig:
             self.get_lateral_controller_type(),  # legacy fallback
         )
 
+    def get_leader_reverse_follow_config(self) -> Dict[str, Any]:
+        """Get reverse-follow safety config for Following Leader state."""
+        reverse_cfg = self.config.get("leader_reverse_follow", {})
+        return {
+            "enabled": reverse_cfg.get("enabled", False),
+            "trigger_velocity_threshold": reverse_cfg.get(
+                "trigger_velocity_threshold", -0.03
+            ),
+            "max_reverse_throttle": reverse_cfg.get("max_reverse_throttle", 0.08),
+            "max_reverse_speed": reverse_cfg.get("max_reverse_speed", 0.12),
+            "min_gap": reverse_cfg.get("min_gap", 0.20),
+            "max_gap": reverse_cfg.get("max_gap", 0.90),
+            "max_heading_error_deg": reverse_cfg.get(
+                "max_heading_error_deg", 20.0
+            ),
+            "reverse_steering_gain": reverse_cfg.get("reverse_steering_gain", 0.5),
+            "stop_on_v2v_loss": reverse_cfg.get("stop_on_v2v_loss", True),
+        }
+
+    def get_leader_sensor_acc_config(self) -> Dict[str, Any]:
+        """Get optional YOLO-distance ACC blend config for Following Leader."""
+        sensor_acc_cfg = self.config.get("leader_sensor_acc", {})
+        return {
+            "enabled": sensor_acc_cfg.get("enabled", False),
+            "blend_alpha": sensor_acc_cfg.get("blend_alpha", 0.7),
+            "desired_distance": sensor_acc_cfg.get("desired_distance", 0.35),
+            "time_headway": sensor_acc_cfg.get("time_headway", 0.0),
+            "distance_gain": sensor_acc_cfg.get("distance_gain", 1.0),
+            "min_target_velocity": sensor_acc_cfg.get("min_target_velocity", 0.0),
+            "max_target_velocity": sensor_acc_cfg.get("max_target_velocity", 0.8),
+            "stop_distance": sensor_acc_cfg.get("stop_distance", 0.20),
+            "max_distance": sensor_acc_cfg.get("max_distance", 2.0),
+            "max_offset": sensor_acc_cfg.get("max_offset", 0.75),
+            "distance_smoothing": sensor_acc_cfg.get("distance_smoothing", 0.6),
+        }
+
+    def get_leader_longitudinal_state_source_config(self) -> Dict[str, Any]:
+        """Get leader-state source selection for FOLLOWING_LEADER longitudinal control."""
+        source_cfg = self.config.get("leader_longitudinal_state_source", {})
+        mode = str(source_cfg.get("mode", "direct_v2v_attacked")).strip().lower()
+        legacy_mode_map = {
+            "direct_v2v": "direct_v2v_attacked",
+            "v2v": "direct_v2v_attacked",
+            "clean_v2v": "direct_v2v_clean",
+            "attacked_v2v": "direct_v2v_attacked",
+        }
+        mode = legacy_mode_map.get(mode, mode)
+        if mode not in {
+            "direct_v2v_attacked",
+            "direct_v2v_clean",
+            "fleet_estimator",
+        }:
+            mode = "direct_v2v_attacked"
+
+        return {
+            "mode": mode,
+            "fallback_to_v2v": source_cfg.get("fallback_to_v2v", True),
+        }
+
+    def get_command_smoothing_config(self) -> Dict[str, Dict[str, float]]:
+        """Get command smoothing filter parameters."""
+        cfg = self.config.get("command_smoothing", {})
+        
+        long_cfg = cfg.get("longitudinal", {})
+        lat_cfg = cfg.get("lateral", {})
+        
+        return {
+            "longitudinal": {
+                "alpha": float(long_cfg.get("alpha", 0.7)),
+                "rise_rate": float(long_cfg.get("rise_rate", 0.25)),
+                "fall_rate": float(long_cfg.get("fall_rate", 0.40)),
+            },
+            "lateral": {
+                "alpha": float(lat_cfg.get("alpha", 0.8)),
+                "rise_rate": float(lat_cfg.get("rise_rate", 1.0)),
+                "fall_rate": float(lat_cfg.get("fall_rate", 1.0)),
+            }
+        }
+
     def get_available_longitudinal_types(self) -> list:
         """Get list of available longitudinal controller types based on config"""
         types = []
@@ -93,8 +173,15 @@ class ControllerConfig:
             types.append("cacc")
         if "pid" in self.config:
             types.append("pid")
+        if "qcar2_speed" in self.config:
+            types.append("qcar2_speed")
         if "sa_acc" in self.config:
             types.append("sa_acc")
+        if "fix" in self.config:
+            types.append("fix")
+        # coupled MPC may also be listed even though typically selected via lateral
+        if "mpc" in self.config:
+            types.append("mpc")
         return types
 
     def get_available_lateral_types(self) -> list:
@@ -110,6 +197,10 @@ class ControllerConfig:
             types.append("lookahead")
         if "fusion_lateral" in self.config:
             types.append("fusion")
+            types.append("fusion_lateral")
+        # MPC behaves like pp_map: coupled controller handled via lateral selection
+        if "mpc" in self.config:
+            types.append("mpc")
         return types
 
     def get_longitudinal_params(
@@ -131,9 +222,15 @@ class ControllerConfig:
             return self._get_cacc_params()
         elif controller_type == "pid":
             return self._get_pid_params()
+        elif controller_type == "qcar2_speed":
+            return self._get_qcar2_speed_params()
 
         elif controller_type == "sa_acc":
             return self._get_sa_acc_params()
+        elif controller_type == "fix":
+            return self._get_fix_params()
+        elif controller_type == "mpc":
+            return self._get_mpc_params()
         else:
             raise ValueError(f"Unknown longitudinal controller type: {controller_type}")
 
@@ -162,6 +259,8 @@ class ControllerConfig:
             return self._get_lookahead_params()
         elif controller_type in ("fusion", "fusion_lateral"):
             return self._get_fusion_lateral_params()
+        elif controller_type == "mpc":
+            return self._get_mpc_params()
         else:
             raise ValueError(f"Unknown lateral controller type: {controller_type}")
 
@@ -183,14 +282,43 @@ class ControllerConfig:
             "K": np.array([[K_spacing, K_velocity]]),
             "acc_to_throttle_gain": cacc_config.get("acc_to_throttle_gain", 0.5),
             "max_throttle": cacc_config.get("max_throttle", 0.3),
-            "alpha_filter": cacc_config.get("alpha_filter", 0.3),
-            "ki_velocity": cacc_config.get("ki_velocity", 0.1),
             "spacing_mode": cacc_config.get("spacing_mode", "path_or_projected"),
             "projection_heading_source": cacc_config.get(
                 "projection_heading_source", "leader"
             ),
             "blend_heading_deg": cacc_config.get("blend_heading_deg", 20.0),
             "min_effective_spacing": cacc_config.get("min_effective_spacing", 0.0),
+            "spacing_deadband": cacc_config.get("spacing_deadband", 0.2),
+            "velocity_deadband": cacc_config.get("velocity_deadband", 0.05),
+            "throttle_smoothing": cacc_config.get("throttle_smoothing", 0.7),
+            "brake_smoothing": cacc_config.get("brake_smoothing", 0.5),
+            "max_acc_rate": cacc_config.get("max_acc_rate", 2.0),
+            "use_feedforward": cacc_config.get("use_feedforward", False),
+            "ff_gain": cacc_config.get("ff_gain", 0.1 / 0.62),
+            "leader_acceleration_weight": cacc_config.get(
+                "leader_acceleration_weight",
+                cacc_config.get("leader_acceleration_gain", 0.0),
+            ),
+            "leader_acceleration_gain": cacc_config.get(
+                "leader_acceleration_gain", 0.0
+            ),
+            "target_velocity_weight": cacc_config.get("target_velocity_weight", 0.0),
+            "target_velocity_gap_window": cacc_config.get(
+                "target_velocity_gap_window", 0.15
+            ),
+            "target_velocity_turn_scale": cacc_config.get(
+                "target_velocity_turn_scale", 0.35
+            ),
+            "limo_max_speed": cacc_config.get("limo_max_speed", 0.8),
+            "limo_max_accel": cacc_config.get("limo_max_accel", 0.4),
+            "limo_max_decel": cacc_config.get("limo_max_decel", 0.8),
+            "limo_leader_speed_margin": cacc_config.get(
+                "limo_leader_speed_margin", 0.12
+            ),
+            "limo_gap_closing_gain": cacc_config.get(
+                "limo_gap_closing_gain", 0.25
+            ),
+            "limo_close_gap_gain": cacc_config.get("limo_close_gap_gain", 0.8),
         }
 
     def _get_pid_params(self) -> Dict[str, Any]:
@@ -201,11 +329,49 @@ class ControllerConfig:
             "kp": pid_config.get("kp", 0.1),
             "ki": pid_config.get("ki", 1.0),
             "kd": pid_config.get("kd", 0.01),
+            "ff_gain": pid_config.get("ff_gain", 0.1 / 0.62),
+            "use_affine_feedforward": pid_config.get(
+                "use_affine_feedforward", False
+            ),
+            "ff_speed_slope": pid_config.get("ff_speed_slope", 6.63),
+            "ff_speed_intercept": pid_config.get("ff_speed_intercept", -0.31),
             "max_throttle": pid_config.get("max_throttle", 0.3),
             # Keep this explicit so config min_throttle affects PID behavior.
             "min_throttle": pid_config.get("min_throttle", 0.0),
             "ei_max": pid_config.get("ei_max", 1.0),
             "v_ref": pid_config.get("v_ref", 0.6),
+            "limo_max_accel": pid_config.get("limo_max_accel", 1.0),
+            "limo_max_decel": pid_config.get("limo_max_decel", 1.0),
+            "limo_max_speed": pid_config.get("limo_max_speed", 3.0),
+            "limo_stop_speed_threshold": pid_config.get(
+                "limo_stop_speed_threshold", 0.05
+            ),
+            "limo_stop_command_threshold": pid_config.get(
+                "limo_stop_command_threshold", 0.1
+            ),
+        }
+
+    def _get_qcar2_speed_params(self) -> Dict[str, Any]:
+        """Get qcar2_hardware-inspired speed controller parameters."""
+        hw_config = self.config.get("qcar2_speed", {})
+
+        return {
+            "kp": hw_config.get("kp", 20.0),
+            "kd": hw_config.get("kd", 0.1),
+            "km": hw_config.get("km", 0.0047),
+            "use_affine_feedforward": hw_config.get(
+                "use_affine_feedforward", False
+            ),
+            "ff_speed_slope": hw_config.get("ff_speed_slope", 6.63),
+            "ff_speed_intercept": hw_config.get("ff_speed_intercept", -0.31),
+            "max_throttle": hw_config.get("max_throttle", 0.3),
+            "min_forward_throttle": hw_config.get("min_forward_throttle", 0.01),
+            "min_reverse_throttle": hw_config.get("min_reverse_throttle", 0.01),
+            "nominal_battery_voltage": hw_config.get(
+                "nominal_battery_voltage", 12.0
+            ),
+            "min_battery_voltage": hw_config.get("min_battery_voltage", 1.0),
+            "stop_speed_threshold": hw_config.get("stop_speed_threshold", 1e-3),
         }
 
     def _get_hybrid_longitudinal_params(self) -> Dict[str, Any]:
@@ -242,6 +408,11 @@ class ControllerConfig:
             "max_throttle": sa_acc_config.get("max_throttle", 0.3),
         }
 
+    def _get_fix_params(self) -> Dict[str, Any]:
+        """Get fixed-throttle controller parameters."""
+        fix_config = self.config.get("fix", {})
+        return {"throttle": fix_config.get("throttle", 0.0)}
+
     # ========================================================================
     # Lateral Controller Parameter Getters
     # ========================================================================
@@ -258,6 +429,12 @@ class ControllerConfig:
             "curvature_threshold": pp_config.get("curvature_threshold", 0.3),
             "turn_lookahead_offset": pp_config.get("turn_lookahead_offset", 0.1),
             "turn_lookahead_gain": pp_config.get("turn_lookahead_gain", 1.5),
+            "turn_preview_cap": pp_config.get("turn_preview_cap", 0.05),
+            "heading_alignment_gain": pp_config.get("heading_alignment_gain", 0.0),
+            "heading_alignment_window_deg": pp_config.get(
+                "heading_alignment_window_deg", 45.0
+            ),
+            "heading_preview_cap": pp_config.get("heading_preview_cap", 0.0),
         }
 
     def _get_stanley_params(self) -> Dict[str, Any]:
@@ -268,6 +445,10 @@ class ControllerConfig:
             "k_e": stanley_config.get("k_e", 0.5),
             "k_soft": stanley_config.get("k_soft", 1.0),
             "max_steering": stanley_config.get("max_steering", 0.5),
+            "lookahead_distance": stanley_config.get("lookahead_distance", 0.0),
+            "position_lookahead_offset": stanley_config.get(
+                "position_lookahead_offset", 0.2
+            ),
         }
 
     def _get_pp_map_params(self) -> Dict[str, Any]:
@@ -296,6 +477,12 @@ class ControllerConfig:
             "speed_lookahead_for_steer": pp_map_config.get(
                 "speed_lookahead_for_steer", 0.1
             ),
+            "target_speed_rise_rate": pp_map_config.get(
+                "target_speed_rise_rate", 0.8
+            ),
+            "target_speed_fall_rate": pp_map_config.get(
+                "target_speed_fall_rate", 1.2
+            ),
             "prioritize_dyn": pp_map_config.get("prioritize_dyn", False),
             "trailing_gap": pp_map_config.get("trailing_gap", 0.8),
             "trailing_p_gain": pp_map_config.get("trailing_p_gain", 0.6),
@@ -321,12 +508,13 @@ class ControllerConfig:
     def _get_lookahead_params(self) -> Dict[str, Any]:
         """Get Lookahead controller parameters"""
         lookahead_config = self.config.get("lookahead", {})
+        vehicle_params = self.get_vehicle_params()
 
         return {
             "ri": lookahead_config.get("ri", 1.0),
             "hi": lookahead_config.get("hi", 0.3),
-            "l_r": lookahead_config.get("l_r", 0.141),
-            "l_f": lookahead_config.get("l_f", 0.115),
+            "l_r": lookahead_config.get("l_r", vehicle_params.get("l_r", 0.141)),
+            "l_f": lookahead_config.get("l_f", vehicle_params.get("l_f", 0.115)),
             "k1": lookahead_config.get("k1", 1.0),
             "k2": lookahead_config.get("k2", 1.0),
             "max_steering": lookahead_config.get("max_steering", 0.55),
@@ -348,12 +536,40 @@ class ControllerConfig:
     def get_vehicle_params(self) -> Dict[str, Any]:
         """Get vehicle physical parameters"""
         vehicle_config = self.config.get("vehicle", {})
-
-        return {
+        params = {
             "wheelbase": vehicle_config.get("wheelbase", 0.256),
             "l_r": vehicle_config.get("l_r", 0.141),
             "l_f": vehicle_config.get("l_f", 0.115),
         }
+        for key, value in self._vehicle_params_override.items():
+            if value is not None:
+                params[key] = value
+        return params
+
+    def set_vehicle_params_override(self, vehicle_params: Optional[Dict[str, Any]]):
+        """Apply runtime vehicle-geometry overrides for the active vehicle."""
+        if not isinstance(vehicle_params, dict):
+            self._vehicle_params_override = {}
+            return
+
+        self._vehicle_params_override = {
+            key: value
+            for key, value in vehicle_params.items()
+            if key in {"wheelbase", "l_r", "l_f", "track"} and value is not None
+        }
+
+    # ------------------------------------------------------------------
+    # MPC parameter support
+    # ------------------------------------------------------------------
+    def get_mpc_params(self) -> Dict[str, Any]:
+        """Retrieve MPC configuration dictionary from YAML.
+
+        Returns an empty dict if section is missing. This is used both by the
+        MPC wrappers and by the controllers themselves when they accept a
+        config object.
+        """
+        return self.config.get("mpc", {})
+
 
     def get_enable_steering_control(self) -> bool:
         """Get enable_steering_control flag"""

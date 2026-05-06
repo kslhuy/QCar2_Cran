@@ -25,6 +25,9 @@ class VehicleState(Enum):
     # Manual control
     MANUAL_MODE = auto()  # Direct manual control from Ground Station
 
+    # Calibration
+    CALIBRATING = auto()  # Active calibration sequences (throttle/steering/accel)
+
     # Stopped state
     STOPPED = auto()  # Vehicle stopped (manual stop, safety stop, etc.)
 
@@ -32,9 +35,13 @@ class VehicleState(Enum):
 class Gear(Enum):
     """Vehicle transmission gears"""
 
-    DRIVE_1 = 0.1  # Low speed / Safe mode
+    DRIVE_1 = 0.13  # Low speed / Safe mode
     DRIVE_2 = 0.2  # Medium speed
     DRIVE_3 = 0.3  # High speed / Full power
+    DRIVE_4 = 0.4  # Highest speed / Maximum power
+    DRIVE_5 = 0.5  # Highest speed / Maximum power
+
+
 
 
 class StateTransitionReason(Enum):
@@ -57,6 +64,9 @@ class StateTransitionReason(Enum):
     # Safety events
     EMERGENCY_STOP = auto()
     COLLISION_RISK = auto()
+
+    # Calibration events
+    CALIBRATION_COMPLETE = auto()
 
     # System events
     SHUTDOWN = auto()

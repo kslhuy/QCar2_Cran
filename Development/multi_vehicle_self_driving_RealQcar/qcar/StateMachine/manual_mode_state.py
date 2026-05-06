@@ -10,7 +10,7 @@ import time
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
 from .state_base import StateBase
-from .vehicle_state import VehicleState, StateTransitionReason, Gear
+from .vehicle_state import VehicleState, StateTransitionReason
 
 
 # Import CommandType once at module level
@@ -30,6 +30,11 @@ except ImportError as e:
     print(f"ERROR: Cannot import CommandType: {e}")
     COMMAND_TYPE_AVAILABLE = False
     CommandType = None
+
+
+MANUAL_THROTTLE_LIMIT = 0.30
+LIMO_MANUAL_VELOCITY_GAIN = 2.16
+LIMO_MANUAL_MAX_VELOCITY = 1.20
 
 
 class ManualModeState(StateBase):
@@ -127,31 +132,27 @@ class ManualModeState(StateBase):
 
         # Handle manual control commands (throttle/steering updates)
         if command_type == CommandType.MANUAL_CONTROL:
-            throttle = data.get("throttle", 0.0)
+            throttle = float(data.get("throttle", 0.0))
             steering = data.get("steering", 0.0)
 
-            if not self.vehicle_logic.is_physical_qcar:
-                throttle *= 0.7  # Scale down for simulation (to sensible speeds)
-
-            # Apply Gear-based throttle limiting
-            if hasattr(self.vehicle_logic, "gear"):
-                current_gear = self.vehicle_logic.gear
-                limit = 0.2  # Default full power
-
-                if current_gear == Gear.DRIVE_1:
-                    limit = 0.2  # Limit to 50% power in Gear 1
-                elif current_gear == Gear.DRIVE_2:
-                    limit = 0.4  # Limit to 75% power in Gear 2
-                elif current_gear == Gear.DRIVE_3:
-                    limit = 0.6  # Full power in Gear 3
-
-                # # Apply limit to throttle magnitude
-                # throttle = min(throttle, limit)
-
-            # Validate and clamp control inputs
-            throttle = max(-limit, min(limit, throttle))
+            # Manual mode bypasses gear selection and always accepts the full
+            # manual throttle envelope.
+            throttle = max(-MANUAL_THROTTLE_LIMIT, min(MANUAL_THROTTLE_LIMIT, throttle))
 
             if self.vehicle_logic.vehicle_type == "Limo":
+                # Ground-station manual input is expressed in QCar throttle
+                # units. Map it to the Limo's direct velocity command with a
+                # simple proportional gain fitted from:
+                #   0.15 -> 0.30 m/s
+                #   0.20 -> 0.45 m/s
+                throttle = float(
+                    np.clip(
+                        throttle * LIMO_MANUAL_VELOCITY_GAIN,
+                        -LIMO_MANUAL_MAX_VELOCITY,
+                        LIMO_MANUAL_MAX_VELOCITY,
+                    )
+                )
+
                 # Driver uses angular.z as Ackermann steering angle [rad] in
                 # steering_angle mode.
                 # Accept both command conventions:
@@ -164,16 +165,12 @@ class ManualModeState(StateBase):
                     desired_inner = max(-1.0, min(1.0, raw_steering)) * 0.48869
 
                 steering = max(-0.48869, min(0.48869, desired_inner))
-                # When reversing, invert steering so "left" always steers left
-                # from the driver's perspective
-                if throttle < 0:
-                    steering *= -1.0
             else:
                 steering = max(-1.0, min(1.0, steering))
 
-            print(
-                f"ManualModeState: Received MANUAL_CONTROL command - throttle={throttle:.2f}, steering={steering:.2f}"
-            )
+            # print(
+            #     f"ManualModeState: Received MANUAL_CONTROL command - throttle={throttle:.2f}, steering={steering:.2f}"
+            # )
 
             # Update state data
             self.state_data["current_throttle"] = throttle
@@ -242,7 +239,7 @@ class ManualModeState(StateBase):
                 return
 
             # Set LED indicators
-            LEDs = np.array([0, 0, 0, 0, 0, 0, 1, 1])  # Default: rear lights on
+            LEDs = np.array([0, 0, 0, 0, 0, 0, 0, 0])  # Default: rear lights off
 
             # Adjust LED indicators based on steering
             if steering > 0.1:

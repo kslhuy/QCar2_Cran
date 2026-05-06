@@ -33,6 +33,10 @@ class CommandType(Enum):
     # V2V commands
     ACTIVATE_V2V = "activate_v2v"
     DISABLE_V2V = "disable_v2v"
+    TRIGGER_ATTACK = "trigger_attack"
+    DISABLE_ATTACK = "disable_attack"
+    START_LOCAL_SENSOR_ATTACK = "start_local_sensor_attack"
+    STOP_LOCAL_SENSOR_ATTACK = "stop_local_sensor_attack"
 
     # Perception commands
     ACTIVATE_PERCEPTION = "activate_perception"
@@ -58,6 +62,9 @@ class CommandType(Enum):
     SHUTDOWN = "shutdown"
     RESET = "reset"
     CALIBRATE = "calibrate"
+    ENABLE_CALIBRATION_MODE = "enable_calibration_mode"
+    ENABLE_ONLINE_CALIBRATION = "enable_online_calibration"
+    DISABLE_ONLINE_CALIBRATION = "disable_online_calibration"
 
     # Runtime switching commands
     SET_LOCAL_OBSERVER = "set_local_observer"
@@ -84,7 +91,12 @@ def is_platoon_command(cmd_type: CommandType) -> bool:
 
 def is_v2v_command(cmd_type: CommandType) -> bool:
     """Check if a command is V2V-related"""
-    return cmd_type in [CommandType.ACTIVATE_V2V, CommandType.DISABLE_V2V]
+    return cmd_type in [
+        CommandType.ACTIVATE_V2V, 
+        CommandType.DISABLE_V2V,
+        CommandType.TRIGGER_ATTACK,
+        CommandType.DISABLE_ATTACK
+    ]
 
 
 def is_manual_control_command(cmd_type: CommandType) -> bool:

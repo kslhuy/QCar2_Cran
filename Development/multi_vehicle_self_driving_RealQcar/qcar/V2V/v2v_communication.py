@@ -12,7 +12,7 @@ from dataclasses import dataclass, asdict
 from contextlib import contextmanager
 from enum import Enum
 
-import json
+import msgpack
 
 
 class MessageType(Enum):
@@ -22,6 +22,7 @@ class MessageType(Enum):
     INTENT = "intent"
     WARNING = "warning"
     HEARTBEAT = "heartbeat"
+    TRUST_REPORT = "trust_report"
 
 
 @dataclass
@@ -63,6 +64,7 @@ class V2VCommunication:
     DEFAULT_SEND_INTERVALS = {
         'local_state': 50_000_000,    # 50ms = 20 Hz - high frequency for position updates
         'fleet_state': 200_000_000,   # 200ms = 5 Hz - medium frequency for fleet consensus
+        'trust_report': 200_000_000,  # 200ms = 5 Hz - trust opinion exchange
         'heartbeat': 1_000_000_000,   # 1000ms = 1 Hz - low frequency for health checks
         'telemetry': 50_000_000,      # 50ms = 20 Hz - high frequency (legacy)
         'intent': 100_000_000,        # 100ms = 10 Hz - medium frequency for intentions
@@ -236,10 +238,10 @@ class V2VCommunication:
                 break
     
     def _process_udp_message(self, data: bytes, addr):
-        """Process incoming UDP message with fast JSON parsing"""
+        """Process incoming UDP message with fast msgpack parsing"""
         try:
-            # Fast JSON decode
-            msg_data = json.loads(data.decode('utf-8'))
+            # Fast msgpack decode
+            msg_data = msgpack.unpackb(data, strict_map_key=False)
             sender_id = msg_data.get('sender_id')
             
             # Quick validation
@@ -270,8 +272,8 @@ class V2VCommunication:
                 except Exception as e:
                     self.logger.error(f"Handler error for {message.message_type}: {e}")
                     
-        except json.JSONDecodeError:
-            self.logger.debug(f"Invalid JSON from {addr}")
+        except msgpack.ExtraData as e:
+            self.logger.debug(f"Invalid msgpack from {addr}: {e}")
         except Exception as e:
             self.logger.error(f"UDP message processing error: {e}")
     
@@ -370,8 +372,8 @@ class V2VCommunication:
         msg_dict = message.to_dict()
         
         try:
-            # Fast JSON encode
-            msg_bytes = json.dumps(msg_dict).encode('utf-8')
+            # Fast msgpack encode
+            msg_bytes = msgpack.packb(msg_dict)
             
             if len(msg_bytes) > self.MAX_PACKET_SIZE:
                 self.logger.warning(f"Message too large: {len(msg_bytes)} bytes")

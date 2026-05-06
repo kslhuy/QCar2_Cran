@@ -638,6 +638,70 @@ def atk_scenarios(
     )
 
 
+def build_attack_scenario(
+    attack_type: str,
+    case_number: int,
+    attacker_id: int,
+    victim_ids: Union[int, List[int]] = -1,
+    t_start: float = 10.0,
+    t_end: float = 15.0,
+    data_type: str = "local",
+) -> AttackScenario:
+    """
+    Build a single attack scenario for the requested type/case without mutating
+    the caller's attack module.
+
+    This is useful for ad-hoc/manual trigger flows where the scenario should be
+    generated from the existing case library but managed separately from
+    config-loaded scheduled scenarios.
+    """
+    normalized_type = str(attack_type).strip().upper()
+    type_aliases = {
+        "BOGUS": "BOGUS",
+        "DOS": "DOS",
+        "POSITION": "POS",
+        "POS": "POS",
+        "VELOCITY": "VEL",
+        "VEL": "VEL",
+        "ACCELERATION": "ACC",
+        "ACC": "ACC",
+        "HEADING": "HEADING",
+    }
+    dispatch = {
+        "BOGUS": create_bogus_scenarios,
+        "DOS": create_dos_scenarios,
+        "POS": create_position_attack,
+        "VEL": create_velocity_attack,
+        "ACC": create_acceleration_attack,
+        "HEADING": create_heading_attack,
+    }
+
+    dispatch_key = type_aliases.get(normalized_type)
+    if dispatch_key is None:
+        raise ValueError(
+            f"Unknown attack type: {attack_type}. "
+            f"Available: {sorted(type_aliases.keys())}"
+        )
+
+    temp_module = AttackModule(vehicle_id=attacker_id)
+    dispatch[dispatch_key](
+        temp_module,
+        case_number,
+        attacker_id=attacker_id,
+        victim_id=victim_ids,
+        t_start=t_start,
+        t_end=t_end,
+        data_type=data_type,
+    )
+
+    if not temp_module.scenarios:
+        raise RuntimeError(
+            f"Failed to build attack scenario for {attack_type} case {case_number}"
+        )
+
+    return temp_module.scenarios[-1]
+
+
 # =============================================================================
 # YAML Configuration Loading
 # =============================================================================

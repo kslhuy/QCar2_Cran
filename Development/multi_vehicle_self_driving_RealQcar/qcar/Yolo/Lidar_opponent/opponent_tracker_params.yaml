@@ -1,0 +1,34 @@
+# Opponent Detection & Tracking Parameters for QCar2
+# Adapted from ForzaETH abd_tracker for indoor QCar2 track
+
+opponent_detector_node:
+  ros__parameters:
+    rate: 20.0                    # Hz — detection loop rate
+    min_obs_size: 5               # min laser points per cluster (filter noise)
+    max_obs_size: 0.5             # max obstacle width in meters (filter walls)
+    max_viewing_distance: 5.0     # meters — max LiDAR range to consider
+    track_margin: 0.5             # meters — max distance from waypoint to be "on track"
+    lambda_angle: 10.0            # degrees — adaptive breakpoint threshold angle
+    sigma: 0.01                   # meters — LiDAR noise standard deviation
+    min_2_points_dist: 0.01       # meters — min distance for rectangle fitting
+    lidar_frame: "base_scan"      # TF frame of the LiDAR sensor
+
+opponent_tracker_node:
+  ros__parameters:
+    rate: 20.0                    # Hz — tracking loop rate
+    max_association_dist: 0.5     # meters — max distance for data association
+    ttl_static: 10                # ticks — time-to-live for unseen static obstacles
+    ttl_dynamic: 40               # ticks — time-to-live for unseen dynamic obstacles
+    min_nb_meas: 5                # measurements before classifying static/dynamic
+    min_std: 0.05                 # below this std → classified as static
+    max_std: 0.10                 # above this std → immediately classified as dynamic
+    vs_reset: 0.05                # m/s — below this avg speed, dynamic resets to static
+    publish_static: true          # whether to publish static obstacles
+    aggro_multiplier: 2.0         # association distance multiplier for dynamic obstacles
+    var_pub_threshold: 1.0        # EKF variance threshold for publishing
+
+    # Kalman Filter noise parameters
+    measurement_var_x: 0.01       # measurement noise variance (x position)
+    measurement_var_y: 0.01       # measurement noise variance (y position)
+    process_var_vx: 0.1           # process noise variance (x velocity)
+    process_var_vy: 0.1           # process noise variance (y velocity)

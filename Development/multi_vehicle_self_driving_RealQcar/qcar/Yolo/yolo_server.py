@@ -3,22 +3,29 @@ YOLO Server Physical - Refactored for Robustness
 matches architecture of yolo_server_virtual.py but for physical QCar.
 """
 
+import os
+import sys
 import cv2
 
 import argparse
 from dataclasses import dataclass
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
 
 # Retaining original camera import as requested
 from pit.YOLO.utils import QCar2DepthAligned
 
 # Using enhanced wrapper for consistency with virtual server (better rendering)
 from YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy, DetectionBuffers
-from Yolo.YoLo import YOLOPublisher, YOLOVideoPublisher
+from YoLo import YOLOPublisher, YOLOVideoPublisher
+from yolo_config import DEFAULT_CONFIG_PATH, YoloServerConfig, parse_bool_string
 
 # Import Lane Detection and Interface
 try:
-    from Yolo.LaneFollow import create_lane_detector
-    from Yolo.LaneFollow.lane_detection_interface import LaneDetectionResult
+    from LaneFollow import create_lane_detector
+    from LaneFollow.lane_detection_interface import LaneDetectionResult
 
     LANE_MODULE_AVAILABLE = True
 except ImportError as e:
@@ -41,6 +48,8 @@ class ServerConfig:
     show_obstacle_box: bool = False
     image_width: int = 640
     image_height: int = 480
+    config_path: str = DEFAULT_CONFIG_PATH
+    distance_offset_m: float = 0.0
     video_port: int = (
         18760  # Base port; actual port = 18760 + car_id (set via --video-port)
     )
@@ -54,6 +63,12 @@ class ServerConfig:
         parser.add_argument("-w", "--width", type=int, default=320)
         parser.add_argument("-ht", "--height", type=int, default=200)
         parser.add_argument("-idx", "--caridx", type=int, default=0)
+        parser.add_argument(
+            "--config",
+            type=str,
+            default=DEFAULT_CONFIG_PATH,
+            help="Path to yolo_config.yaml",
+        )
         parser.add_argument("--video-port", type=int, default=18766)
         parser.add_argument(
             "--obsbox",
@@ -69,14 +84,26 @@ class ServerConfig:
         cid = args.caridx
         if args.caridx_alt is not None:
             cid = args.caridx_alt
+        probing = parse_bool_string(args.probing)
+        if probing is None:
+            probing = False
+
+        yaml_config = YoloServerConfig.from_yaml(
+            config_path=args.config,
+            overrides={"car_id": cid, "probing": probing},
+        )
 
         return cls(
             ip_host=args.ip_host,
             width=args.width,
             height=args.height,
             car_id=cid,
-            probing=(args.probing == "True"),
-            show_obstacle_box=True,  # Always show the obstacle box
+            probing=probing,
+            # Keep obstacle state in the published packet, but only draw the
+            # center obstacle box on the video stream when explicitly requested.
+            show_obstacle_box=args.obsbox,
+            config_path=args.config,
+            distance_offset_m=yaml_config.yolo.postprocess.distance_offset_m,
             video_port=args.video_port,
         )
 
@@ -118,9 +145,15 @@ class YOLOServerPhysical:
         self.buffers = DetectionBuffers(
             image_width=config.image_width,
             image_height=config.image_height,
+            distance_offset_m=config.distance_offset_m,
         )
 
         print(f"[SERVER] YOLOServerPhysical initialized for Car {config.car_id}")
+        if abs(float(config.distance_offset_m)) > 1e-9:
+            print(
+                "[SERVER] YOLO distance offset: "
+                f"published_distance = measured_distance - {config.distance_offset_m:.2f} m"
+            )
 
     def _init_camera(self):
         """Initialize camera using the specified QCar2DepthAligned class."""
@@ -233,10 +266,6 @@ class YOLOServerPhysical:
             lane_result = self.lane_detector.detect(raw_rgb)
             self.yolo.set_lane_result(lane_result)
 
-        # Render annotated image
-        # Even without Lane Detection, this renders bounding boxes nicer
-        annotated = self.yolo.post_process_render(showFPS=True, show_lane_overlay=True)
-
         bboxes = None
         if hasattr(self.yolo, "predictions") and self.yolo.predictions is not None and len(self.yolo.predictions) > 0:
             bboxes = self.yolo.predictions[0].boxes.xyxy.cpu().numpy()
@@ -246,6 +275,9 @@ class YOLOServerPhysical:
         # Build and send detection packet first for obstacle state
         self.buffers.fill_from_results(results, bounding_boxes=bboxes)
         self.buffers.fill_lane(lane_result)
+
+        # Render after buffer fill so the distance text uses corrected distances.
+        annotated = self.yolo.post_process_render(showFPS=True, show_lane_overlay=True)
 
         # Draw obstacle box if config says so
         if getattr(self.config, "show_obstacle_box", False):

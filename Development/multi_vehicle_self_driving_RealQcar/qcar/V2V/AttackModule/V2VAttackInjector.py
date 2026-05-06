@@ -166,6 +166,9 @@ class V2VAttackInjector:
             
             # Process fleet state broadcast with attack injection  
             fleet_sent = self._broadcast_fleet_state_with_attack()
+
+            # Trust reports are forwarded without modification (independent V2V rate)
+            trust_sent = self._broadcast_trust_report()
             
             # Process heartbeat (usually not attacked but could be)
             heartbeat_sent = self._broadcast_heartbeat()
@@ -173,7 +176,7 @@ class V2VAttackInjector:
             # Process received messages (not attacked - incoming data)
             self._process_received_messages()
             
-            broadcast_sent = local_sent or fleet_sent or heartbeat_sent
+            broadcast_sent = local_sent or fleet_sent or trust_sent or heartbeat_sent
             
         except Exception as e:
             if self.logger:
@@ -200,10 +203,17 @@ class V2VAttackInjector:
             else:
                 modified_state = local_state
             
-            # Send modified (or original) state
+            dual_channel_payload = self.v2v_manager._build_dual_channel_payload(
+                clean_payload=local_state,
+                attacked_payload=modified_state,
+                selected_channel="attacked",
+            )
+
+            # Send modified state at the top level while preserving clean data
+            # in the side channel for controller/debug consumers.
             success = self.v2v_manager.v2v_communication.send_message(
                 message_type="local_state",
-                data=modified_state
+                data=dual_channel_payload
             )
             
             if success:
@@ -235,8 +245,8 @@ class V2VAttackInjector:
                     self.stats['fleet_modifications'] += 1
             else:
                 modified_state = fleet_state
-            
-            # Send modified (or original) state
+
+            # Fleet state stays single-channel to keep packet size bounded.
             success = self.v2v_manager.v2v_communication.send_message(
                 message_type="fleet_state",
                 data=modified_state
@@ -256,6 +266,12 @@ class V2VAttackInjector:
     def _broadcast_heartbeat(self) -> bool:
         """Broadcast heartbeat message (delegated to V2VManager)."""
         return self.v2v_manager._broadcast_heartbeat()
+
+    def _broadcast_trust_report(self) -> bool:
+        """Broadcast trust report message (delegated to V2VManager)."""
+        if hasattr(self.v2v_manager, "_broadcast_trust_report"):
+            return self.v2v_manager._broadcast_trust_report()
+        return False
     
     def _process_received_messages(self) -> None:
         """Process received messages (delegated to V2VManager)."""
@@ -315,9 +331,16 @@ class V2VAttackInjector:
     # V2VManager Passthrough Methods
     # =====================================================================
     
-    def activate(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
+    def activate(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Activate V2V communication."""
-        result = self.v2v_manager.activate(peer_vehicles, peer_ips)
+        result = self.v2v_manager.activate(
+            peer_vehicles, peer_ips, time_reference=time_reference
+        )
         if result:
             # Reset start time when V2V is activated
             self.reset_start_time()
@@ -327,9 +350,20 @@ class V2VAttackInjector:
         """Deactivate V2V communication."""
         return self.v2v_manager.deactivate()
     
-    def activate_v2v(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
+    def activate_v2v(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict[str, Any]] = None,
+        vehicle_manifest: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Activate V2V (alias)."""
-        result = self.v2v_manager.activate_v2v(peer_vehicles, peer_ips)
+        result = self.v2v_manager.activate_v2v(
+            peer_vehicles,
+            peer_ips,
+            time_reference=time_reference,
+            vehicle_manifest=vehicle_manifest,
+        )
         if result:
             self.reset_start_time()
         return result
@@ -374,21 +408,29 @@ class V2VAttackInjector:
         
         return combined_stats
     
-    def get_latest_local_state_raw(self, vehicle_id: int):
+    def get_latest_local_state_raw(self, vehicle_id: int, channel: str = "attacked"):
         """Get latest local state (passthrough)."""
-        return self.v2v_manager.get_latest_local_state_raw(vehicle_id)
+        return self.v2v_manager.get_latest_local_state_raw(
+            vehicle_id, channel=channel
+        )
     
-    def get_latest_fleet_state_raw(self, vehicle_id: int):
+    def get_latest_fleet_state_raw(self, vehicle_id: int, channel: str = "attacked"):
         """Get latest fleet state (passthrough)."""
-        return self.v2v_manager.get_latest_fleet_state_raw(vehicle_id)
+        return self.v2v_manager.get_latest_fleet_state_raw(
+            vehicle_id, channel=channel
+        )
     
-    def get_direct_leader_data(self, current_vehicle_position: int):
+    def get_direct_leader_data(
+        self, current_vehicle_position: int, channel: str = "attacked"
+    ):
         """Get direct leader data (passthrough)."""
-        return self.v2v_manager.get_direct_leader_data(current_vehicle_position)
+        return self.v2v_manager.get_direct_leader_data(
+            current_vehicle_position, channel=channel
+        )
     
-    def get_my_direct_leader_data(self):
+    def get_my_direct_leader_data(self, channel: str = "attacked"):
         """Get my direct leader data (passthrough)."""
-        return self.v2v_manager.get_my_direct_leader_data()
+        return self.v2v_manager.get_my_direct_leader_data(channel=channel)
     
     def update_vehicle_observer(self, vehicle_observer) -> None:
         """Update vehicle observer reference."""
@@ -441,11 +483,21 @@ class V2VAttackInjector:
     def received_local_states(self):
         """Access received local states."""
         return self.v2v_manager.received_local_states
+
+    @property
+    def received_local_states_clean(self):
+        """Access clean-channel received local states."""
+        return self.v2v_manager.received_local_states_clean
     
     @property
     def received_fleet_states(self):
         """Access received fleet states."""
         return self.v2v_manager.received_fleet_states
+
+    @property
+    def received_fleet_states_clean(self):
+        """Access clean-channel received fleet states."""
+        return self.v2v_manager.received_fleet_states_clean
     
     @property
     def position_to_vehicle_id_map(self):

@@ -57,7 +57,7 @@ def read_config(config_path):
 try:
     config = read_config(args.config)
     QCAR_IPS = config.get('QCAR_IPS', [])
-    REMOTE_PATH = config.get('REMOTE_PATH', '/home/nvidia/Documents/multi_vehicle_RealCar')
+    REMOTE_PATH = config.get('REMOTE_PATH', '/home/nvidia/Documents/qcar2/Development/ros2/src/ros2test/ros2test/multi_vehicle_RealCar')
     
     if not QCAR_IPS:
         print("[ERROR] No QCar IPs found in configuration")

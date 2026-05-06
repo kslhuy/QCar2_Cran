@@ -1,191 +1,287 @@
-# QCar Calibration Suite
+# QCar Calibration
 
-A set of scripts to **measure, identify, and configure** the QCar's longitudinal and
-lateral control parameters.  All scripts run without physical hardware using `--sim`.
 
----
 
-## Folder Structure
+This folder contains two different calibration workflows:
 
-```
-Calibration/
-├── calibration_utils.py               ← shared helpers (CSV, plotting, fitting)
-├── 01_throttle_velocity_calibration.py
-├── 02_motor_model_identification.py
-├── 03_steering_calibration.py
-├── 04_pid_autotuner.py
-├── 05_throttle_acceleration_calibration.py
-└── results/                           ← output CSVs, YAMLs, PNG plots
-```
+1. Passive online calibration over ZMQ
+2. Offline scripted calibration runs such as `05_throttle_acceleration_calibration.py`
 
----
-## Quickstart (QLabs virtual car)
-# Step 1: Spawn the virtual car in QLabs
-```bash
-cd QCar2_multi-vehicle_control
-python initPlatoon.py          # num_cars = 1, actor = QC2_0
-```
-# Step 2: Run calibration against the virtual car
-```bash
-cd Development/multi_vehicle_self_driving_RealQcar/qcar/Calibration
-python 01_throttle_velocity_calibration.py --qlabs --actor QC2_0
-python 02_motor_model_identification.py    --qlabs --actor QC2_0 --throttle 0.10
-# python 04_pid_autotuner.py                 # reads results/motor_model_id.yaml
-```
-## Quickstart (Simulation – no hardware needed)
+The two workflows solve different problems. Use the online path when you want to
+collect data while driving normally. Use the offline scripts when you want a
+controlled experiment with repeatable step inputs.
 
-```bash
-cd qcar/Calibration
+Assume the commands below are run from:
 
-# 1. Map throttle command → steady-state velocity
-python 01_throttle_velocity_calibration.py --sim
-
-# 2. Identify first-order motor model (τ, K) from a step response
-python 02_motor_model_identification.py --sim --throttle 0.10
-
-# 3. Map steering command → curvature / turning radius
-python 03_steering_calibration.py --sim
-
-# 4. Compute PID gains from the identified model
-python 04_pid_autotuner.py
-
-# 5. Build throttle-step -> acceleration lookup (default up to 0.3)
-python 05_throttle_acceleration_calibration.py --sim
+```powershell
+Development/multi_vehicle_self_driving_RealQcar/qcar
 ```
 
----
+## Passive Online Calibration
 
-## Script Details
 
-### `01_throttle_velocity_calibration.py` – Throttle → Velocity Map
 
-Steps through throttle levels, waits for steady state, measures velocity.
+### What it does
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--sim` | false | Use simulated motor |
-| `--throttle_levels` | `0.02,…,0.20` | Comma-separated throttle steps |
-| `--settle_time` | `4.0 s` | Wait per level |
-| `--measure_time` | `1.0 s` | Averaging window at steady state |
-| `--poly_deg` | `2` | Degree of `v = f(throttle)` polynomial |
+The online calibration path streams samples from the vehicle process to an
+external ZMQ worker.
 
-**Outputs:** `results/throttle_velocity_map_<tag>.csv`, `.png`, `_poly.yaml`
+Sample format:
 
-Use the polynomial coefficients as a **feedforward term** in the PID controller
-to reduce the initial velocity error and speed up settling.
-
----
-
-### `02_motor_model_identification.py` – Motor Model ID
-
-Applies a single throttle step and fits the first-order model:
-
-```
-τ · dv/dt + v = K · u     →  v(t) = K·u · (1 − exp(−t/τ))
+```text
+[v, throttle, steering, yaw_rate, ax, ay, az, x, y, theta, a_ref, v_raw]
 ```
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--sim` | false | Use simulated motor |
-| `--throttle` | `0.10` | Step amplitude |
-| `--duration` | `8.0 s` | Recording length |
+Notes:
 
-**Outputs:** `results/motor_model_id.yaml`, `step_response_<tag>.csv/.png`
+- `v` is the observer / estimator velocity reference.
+- `v_raw` is the raw motor-tach velocity saved for offline identification.
+- `a_ref` is the observer acceleration reference saved for comparison or blended
+  offline targets.
 
-The canonical output `motor_model_id.yaml` is read by script `04`.
+Supported passive analyses in `online_calibration_service.py`:
 
----
+- `throttle_velocity`
+- `steering_curvature`
+- `throttle_acceleration`
+- `coupled_kinematic`
 
-### `03_steering_calibration.py` – Steering → Curvature Map
+Important: the online `throttle_acceleration` analysis is still the lightweight
+passive step detector implemented in `online_calibration_service.py`. It is not
+the same as the newer offline acceleration-lag fit in
+`05_throttle_acceleration_calibration.py`.
 
-Drives at constant speed with each steering level and measures yaw-rate.
-Computes `κ = yaw_rate / velocity` and fits the Ackermann model for
-effective wheelbase.
+### Architecture
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--sim` | false | Use kinematic bicycle model |
-| `--steer_levels` | `-0.4…0.4` | Steering command values to test |
-| `--speed_throttle` | `0.06` | Constant throttle during test |
-| `--speed_sim` | `0.30 m/s` | Simulation velocity |
-
-**Outputs:** `results/steering_curvature_map_<tag>.csv`, `.png`, `steering_calibration_<tag>.yaml`
-
-Use `poly_coefficients` to implement a **curvature → steering lookup** in the path
-follower for more accurate lateral control.
-
----
-
-### `04_pid_autotuner.py` – PID Gain Recommender
-
-Reads `results/motor_model_id.yaml` and computes three sets of PID gains:
-
-| Method | Character |
-|--------|-----------|
-| Ziegler-Nichols | Fast, may overshoot (~10-20%) |
-| **IMC** (recommended) | Smooth, no overshoot, good for real car |
-| ITAE | Best disturbance rejection |
-
-Also runs a quick simulation to show predicted overshoot and settling time.
-
-```bash
-# Optionally write IMC gains directly to controller config:
-python 04_pid_autotuner.py --apply --method IMC
+```text
+vehicle_logic
+  -> OnlineCalibrationZMQClient
+  -> publishes samples and commands
+  -> online_calibration_zmq_worker.py
+  -> OnlineCalibrationService
+  -> saves YAML and raw CSV results
 ```
 
-**Outputs:** `results/pid_gains_recommendation.yaml`
+Default ports:
 
----
+- sample stream: `18890`
+- control stream: `18891`
+- worker status PUB: `18892`
 
-### `05_throttle_acceleration_calibration.py` – Throttle Step → Acceleration Dynamics
+### Start the worker
 
-Runs step transitions (default adjacent up/down steps for `0.0,0.1,0.2,0.3`) and
-fits a first-order lag per transition:
+Run this in a separate terminal on the machine that will receive the streamed
+samples:
 
-```
-tau * dv/dt + v = K_local * u
-```
-
-For each step (`u_from -> u_to`), it stores:
-- `tau_s`: lag/time constant
-- `K_local_mps_per_throttle`: local velocity gain
-- `a0_model_mps2`: model initial acceleration
-- `lead_time_s`: preview timing recommendation
-
-Acceleration source options:
-- `--accel_source tach` (default): uses `dv/dt` from `motorTach`
-- `--accel_source imu`: uses `self.accelerometer[axis]` (`--imu_axis`, `--imu_sign`, `--imu_remove_bias`)
-
-Example IMU-based run:
-```bash
-python 05_throttle_acceleration_calibration.py --qlabs --actor QC2_0 --accel_source imu --imu_axis 0 --imu_remove_bias
+```powershell
+python Calibration/online_calibration_zmq_worker.py
 ```
 
-**Outputs:** `results/throttle_accel_step_raw_<tag>.csv`, `throttle_accel_lookup_<tag>.csv`, `throttle_accel_model_<tag>.yaml`
+You can override ports if needed:
 
----
-
-## Calibration Workflow (Hardware)
-
-1. SSH into QCar and upload the `Calibration/` folder (the `calibrate.py` launcher
-   in `python/` does this automatically).
-2. Run scripts 01 and 02 to measure the motor response.
-3. Run script 03 to calibrate steering.
-4. Run script 04 to generate PID gains and optionally apply them.
-5. Copy the updated config back to the Ground Station.
-
----
-
-## Dependencies
-
-```
-numpy
-scipy   (for curve_fit in script 02)
-matplotlib   (optional – plots are saved as PNG, not displayed)
-pyyaml
+```powershell
+python Calibration/online_calibration_zmq_worker.py --sample-port 18890 --control-port 18891 --status-port 18892
 ```
 
-Install on QCar:
-```bash
-pip install scipy matplotlib pyyaml
+`pyzmq` must be installed for the worker and the vehicle-side client.
+
+### Start collection from the GUI
+
+The Ground Station GUI already sends the correct commands.
+
+Workflow:
+
+1. Start the ZMQ worker.
+2. Start the vehicle and Ground Station as usual.
+3. In the Calibration panel for the target car, click `Collect`.
+4. Drive normally and cover the operating range you care about.
+5. Click `Pause` when you have enough data.
+6. Click `Analyse` for the desired calibration type.
+7. Use `Clear` before a new run if you want a fresh buffer.
+
+GUI actions map to these commands:
+
+- start collection: `enable_online_calibration`
+- stop collection: `disable_online_calibration`
+- clear buffer: `set_params` with category `online_calibration`, action `clear`
+- analyse: `set_params` with category `online_calibration`, action `analyse`
+
+
+### Where the online results are saved
+
+The worker writes results under:
+
+```text
+Calibration/results/online_<calibration_type>/
 ```
+
+Examples:
+
+- `Calibration/results/online_throttle_velocity/`
+- `Calibration/results/online_steering_curvature/`
+- `Calibration/results/online_throttle_acceleration/`
+- `Calibration/results/online_coupled_kinematic/`
+
+Each run typically saves:
+
+- `<calibration_type>_<timestamp>.yaml`
+- `<calibration_type>_latest.yaml`
+- `raw_samples_<timestamp>.csv`
+
+### When to use each online analysis
+
+`throttle_velocity`
+
+- Best when you have long dwell periods at roughly constant throttle.
+- Produces a steady-state map `v_ss = f(throttle)`.
+
+`steering_curvature`
+
+- Best when you drive smooth constant-radius turns with nonzero speed.
+- Produces a curvature map and an effective wheelbase estimate.
+
+`throttle_acceleration`
+
+- Best when your passive drive log contains clear throttle step changes.
+- Produces a simple first-order step summary from buffered samples.
+- Good for quick inspection, but not the preferred path if you need the
+  controller-facing `acc_to_throttle_gain`.
+
+`coupled_kinematic`
+
+- Best when the passive drive log covers both straight and turning motion.
+- Uses filtered online references for `v`, `a`, `yaw_rate`, `x`, `y`, and `theta`.
+- Fits a coupled motion model where acceleration and yaw rate both depend on
+  velocity, throttle, and steering.
+- Exports an observer-model YAML that can patch the local EKF / Robust
+  KalmanNet analytical predictor.
+
+## Offline Acceleration-Lag Calibration: `05_throttle_acceleration_calibration.py`
+
+### What this script estimates
+
+`05_throttle_acceleration_calibration.py` now fits the acceleration-lag model:
+
+```text
+a_dot = -(1/tau) * a + (input_gain/tau) * u
+v_dot = a
+```
+
+For each tested throttle transition it estimates:
+
+- `tau_s`
+- `a_pre_mps2`
+- `a_ss_mps2`
+- `delta_a_mps2`
+- `input_gain_mps2_per_throttle`
+- `acc_to_throttle_gain`
+- `t63_s`, `t90_s`, `t95_s`
+- `lead_time_s`
+
+The YAML also includes a `recommended_parameters` block with averaged values.
+
+Use this script when you want parameters for:
+
+```text
+throttle ~= desired_accel * acc_to_throttle_gain
+```
+
+### Recommended workflow
+
+For this script, controlled step tests matter. Do not treat it like passive
+background logging.
+
+Recommended procedure:
+
+1. Put the vehicle on a straight, safe, open section.
+2. Start with small throttle levels.
+3. Use IMU acceleration if available.
+4. Run one full step-test sequence.
+5. Inspect the generated YAML and raw CSV.
+6. Repeat with different level ranges if needed.
+
+### Example commands
+
+Simulation smoke test:
+
+```powershell
+python Calibration/05_throttle_acceleration_calibration.py --sim --throttle_levels 0.0,0.1,0.2 --step_time 2.0 --pre_hold 1.0 --settle_time 1.0
+```
+
+QLabs run:
+
+```powershell
+python Calibration/05_throttle_acceleration_calibration.py --qlabs --actor QC2_0 --accel_source tach --throttle_levels 0.0,0.1,0.2,0.3
+```
+
+Physical QCar run using IMU acceleration:
+
+```powershell
+python Calibration/05_throttle_acceleration_calibration.py --accel_source imu --imu_axis 0 --imu_sign 1.0 --imu_remove_bias --throttle_levels 0.0,0.1,0.2,0.3
+```
+
+If the car is sensitive, reduce the tested levels:
+
+```powershell
+python Calibration/05_throttle_acceleration_calibration.py --accel_source imu --imu_axis 0 --imu_sign 1.0 --imu_remove_bias --throttle_levels 0.0,0.06,0.10,0.14,0.18 --max_throttle 0.18
+```
+
+Useful options:
+
+- `--pre_hold`: hold the initial throttle before the step
+- `--step_time`: duration of the stepped input
+- `--settle_time`: time allowed to settle before each new transition
+- `--accel_alpha`: low-pass smoothing on measured acceleration
+- `--all_pairs`: test all throttle pairs instead of only adjacent steps
+- `--no_down`: skip descending steps
+- `--tag`: append a custom tag to output filenames
+- `--no_plot`: skip the end-of-run plot
+
+### Where the `05` results are saved
+
+Outputs are written to:
+
+```text
+Calibration/results/05_throttle_acceleration_calibration/
+```
+
+Important files:
+
+- `throttle_accel_step_raw_<tag>.csv`
+- `throttle_accel_lookup_<tag>.csv`
+- `throttle_accel_model_<tag>.yaml`
+- `throttle_accel_model.yaml`
+
+### How to use the fitted parameters
+
+Open the generated YAML and look at:
+
+- `recommended_parameters.avg_tau_s`
+- `recommended_parameters.avg_input_gain_mps2_per_throttle`
+- `recommended_parameters.avg_acc_to_throttle_gain`
+
+For controller tuning:
+
+- use `avg_acc_to_throttle_gain` if you want a single global
+  `acc_to_throttle_gain`
+- use the per-transition lookup table if the gain changes significantly across
+  throttle ranges
+- use `avg_tau_s` if you want a first-order actuator model in an observer or a
+  future controller update
+
+### Practical notes
+
+- IMU acceleration is preferred over tach-derived acceleration when available.
+- Very long step times can make drag dominate the late part of the signal.
+- Very short step times can make `a_ss` noisy.
+- If feedforward is enabled in the controller, calibrate with that effect in
+  mind or disable it during dedicated experiments.
+- For repeatability, keep the road flat and avoid steering during the run.
+
+## Summary
+
+Use passive online calibration when you want quick maps from normal driving.
+
+Use `05_throttle_acceleration_calibration.py` when you need a controlled
+acceleration-lag model with `tau` and `acc_to_throttle_gain` that can be used
+directly in longitudinal controller or observer design.

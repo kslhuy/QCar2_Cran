@@ -7,16 +7,6 @@ fleet_estimator_type: trust_consensus
 
 
 
-# Plotting configuration for general ouput observer
-enable_plotting: false # enable_plotting: Controls real-time visualization.
-# true: Opens Matplotlib/MultiScope windows to show real-time plots of state, error, etc.
-# false: No windows are opened.
-plotting:
-  fps: 30 # fps: Refresh rate for the plots.
-  time_window: 20.0 # time_window: How much history (in seconds) to show on the moving plots.
-  max_vehicles_plot: 5 # max_vehicles_plot: Maximum number of vehicles to plot.
-  save_only: true # save_only: If enable_plotting is true and this is true, it runs in "headless" mode (no window, but still processes the scope logic, useful if you wanted to save video frames or verify logic without GUI).
-
 enable_recording: false # enable_recording: Controls data logging to CSV.
 # true: Logs data to scope_recordings/ (e.g., local_V0_120000.csv).
 # true: Logs data to scope_recordings/ (e.g., local_V0_120000.csv).
@@ -24,6 +14,7 @@ enable_recording: false # enable_recording: Controls data logging to CSV.
 recording_overwrite: true # recording_overwrite:
 # true: Overwrites the file (e.g., fleet_V0.csv)
 # false: Creates a new timestamped file every run (e.g., fleet_V0_123456.csv)
+max_record_vehicles: 5 # max_record_vehicles: Number of fleet vehicle columns reserved in the CSV.
 
 # Global defaults for fleet estimation
 fleet:
@@ -64,39 +55,14 @@ fleet:
     mu_i: 0.01
 
   # ---------------------------------------------------------------------
-  # Trust-Based Consensus estimator defaults
-  # See TrustbasedDistributedObserver/config_trust_estimator.yaml for full options
+  # Trust-Based estimators
   # ---------------------------------------------------------------------
-  trust_consensus:
-    observer_gain: 0.1
-    consensus_gain: 0.2
-    attack_mitigation: true
-    trust:
-      trust_threshold: 0.5
-      dirichlet_type: "Dual"
-      ema_alpha: 0.3
-    weight:
-      w0_fixed: 0.3
-      w_self_base: 0.2
-      w_cap: 0.4
-      kappa: 5
-      eta: 0.15
-
-  # ---------------------------------------------------------------------
-  # Trust-Based Kalman estimator defaults
-  # ---------------------------------------------------------------------
-  trust_kalman:
-    observer_gain: 0.1
-    consensus_gain: 0.2
-    process_noise: 0.01
-    measurement_noise: 0.1
-    attack_mitigation: true
-    trust:
-      trust_threshold: 0.5
-      dirichlet_type: "Dual"
-    weight:
-      w0_fixed: 0.3
-      w_cap: 0.4
+  # trust_consensus / trust_kalman parameters are loaded from:
+  # TrustbasedDistributedObserver/config_trust_estimator.yaml
+  #
+  # Keep this parent file focused on global fleet defaults. If needed,
+  # you can still add local override keys under `trust_consensus` or
+  # `trust_kalman` and they will be merged before runtime overrides.
 
 # Example override (when loading config into VehicleObserver):
 # vehicle_observer_config:

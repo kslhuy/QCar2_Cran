@@ -41,6 +41,8 @@ class InitializingState(StateBase):
     INITIAL_DELAY = 1.0  # Wait before starting initialization
     STEP_DELAY = 0.5  # Delay between initialization steps
     TIMEOUT = 30.0  # Maximum initialization time
+    GPS_TIMEOUT = 10.0
+    GPS_POLL_INTERVAL = 0.1
 
     def enter(self) -> bool:
         """Initialize system components"""
@@ -52,6 +54,31 @@ class InitializingState(StateBase):
             "components_initialized": False,
             "ready_to_start": False,
             "last_step_time": time.time(),
+            "current_step_index": 0,
+            "current_step_started_at": None,
+            "current_step_name": None,
+            "step_ready_at": 0.0,
+            "init_steps": [
+                {
+                    "name": "Path planning",
+                    "func": self._initialize_path_planning,
+                    "settle_time": 0.0,
+                },
+                {
+                    "name": "QCar hardware",
+                    "func": self._initialize_qcar_step,
+                    "settle_time": 0.0,
+                },
+                {
+                    "name": "Telemetry logging",
+                    "func": self._initialize_telemetry,
+                    "settle_time": 0.0,
+                },
+            ],
+            "qcar_init_phase": "create_interfaces",
+            "qcar_phase_ready_at": 0.0,
+            "gps_timeout_at": 0.0,
+            "next_gps_poll_at": 0.0,
         }
 
         return True
@@ -84,12 +111,11 @@ class InitializingState(StateBase):
 
         # Initialize components
         if not self.state_data["components_initialized"]:
-            if self._initialize_all_components():
-                self.state_data["components_initialized"] = True
-                self.state_data["last_step_time"] = current_time
-                self.logger.logger.info("[STEP 1/2] All components initialized")
-                time.sleep(0.2)
-            else:
+            init_status = self._advance_initialization(current_time)
+            if init_status is False:
+                self._log_initialization_progress(elapsed_time)
+                return throttle, steering, None
+            if not self.state_data["components_initialized"]:
                 self._log_initialization_progress(elapsed_time)
                 return throttle, steering, None
 
@@ -103,7 +129,6 @@ class InitializingState(StateBase):
 
             self.state_data["ready_to_start"] = True
             self.logger.logger.info("[STEP 2/2] System ready to start")
-            time.sleep(0.3)
 
         # Transition to WAITING_FOR_START
         if self.state_data["ready_to_start"]:
@@ -128,6 +153,60 @@ class InitializingState(StateBase):
                 f"[INIT] Component initialization in progress... ({elapsed_time:.1f}s elapsed)"
             )
 
+    def _advance_initialization(self, current_time: float) -> Optional[bool]:
+        """Advance one initialization phase without blocking the main loop."""
+        steps = self.state_data["init_steps"]
+        step_index = self.state_data["current_step_index"]
+
+        if step_index >= len(steps):
+            return True
+
+        if step_index == 0 and self.state_data["current_step_started_at"] is None:
+            self.logger.logger.info("Starting component initialization...")
+
+        if current_time < self.state_data["step_ready_at"]:
+            return None
+
+        step = steps[step_index]
+        if self.state_data["current_step_name"] != step["name"]:
+            self.state_data["current_step_name"] = step["name"]
+            self.state_data["current_step_started_at"] = current_time
+
+        try:
+            step_status = step["func"]()
+        except Exception as e:
+            self.logger.log_error(f"{step['name']} initialization failed", e)
+            return False
+
+        if step_status is None:
+            return None
+
+        if step_status is False:
+            self.logger.log_error(f"{step['name']} initialization failed")
+            return False
+
+        completed_at = time.time()
+        step_duration = completed_at - self.state_data["current_step_started_at"]
+        self.logger.logger.info(
+            f"  [{step_index + 1}/{len(steps)}] {step['name']} ready "
+            f"({step_duration*1000:.1f}ms)"
+        )
+
+        self.state_data["current_step_index"] += 1
+        self.state_data["current_step_name"] = None
+        self.state_data["current_step_started_at"] = None
+        self.state_data["step_ready_at"] = completed_at + float(step["settle_time"])
+
+        if self.state_data["current_step_index"] >= len(steps):
+            self.state_data["components_initialized"] = True
+            self.state_data["last_step_time"] = completed_at
+            self.logger.logger.info(
+                f"All {len(steps)} components initialized successfully!"
+            )
+            self.logger.logger.info("[STEP 1/2] All components initialized")
+
+        return True
+
     def handle_event(
         self, command_type, data: Dict[str, Any] = None
     ) -> Optional[Tuple[VehicleState, StateTransitionReason]]:
@@ -143,39 +222,6 @@ class InitializingState(StateBase):
             f"Ignoring '{command_type}' command during initialization"
         )
         return None
-
-    def _initialize_all_components(self) -> bool:
-        """Initialize all required components in sequence"""
-        initialization_steps = [
-            ("Path planning", self._initialize_path_planning, 0.2),
-            ("QCar hardware", self._initialize_qcar, 0.2),
-            # Perception is now activated via Ground Station command
-            ("Telemetry logging", self._initialize_telemetry, 0.1),
-        ]
-
-        try:
-            self.logger.logger.info("Starting component initialization...")
-
-            for idx, (component_name, init_func, settle_time) in enumerate(
-                initialization_steps, 1
-            ):
-                if not init_func():
-                    self.logger.log_error(f"{component_name} initialization failed")
-                    return False
-
-                self.logger.logger.info(
-                    f"  [{idx}/{len(initialization_steps)}] {component_name} ready"
-                )
-                time.sleep(settle_time)
-
-            self.logger.logger.info(
-                f"All {len(initialization_steps)} components initialized successfully!"
-            )
-            return True
-
-        except Exception as e:
-            self.logger.log_error("Component initialization failed", e)
-            return False
 
     def _initialize_telemetry(self) -> bool:
         """Initialize telemetry logging if enabled"""
@@ -276,6 +322,9 @@ class InitializingState(StateBase):
             if not self.vehicle_logic.is_physical_qcar:
                 waypoints = waypoints * 0.975
                 self.logger.logger.info("Scaled virtual waypoints by 0.975")
+            if self.vehicle_logic.vehicle_type == "Limo":
+                waypoints = waypoints * 1.06
+                self.logger.logger.info("Scaled Limo waypoints by 1.06")
 
             self.vehicle_logic.waypoint_sequence = waypoints
             self.logger.logger.info(
@@ -333,45 +382,76 @@ class InitializingState(StateBase):
             self.logger.log_error("Ground Station initialization failed", e)
             return False
 
-    def _initialize_qcar(self) -> bool:
+    def _initialize_qcar_step(self) -> Optional[bool]:
         """
-        Initialize QCar hardware and GPS
+        Initialize QCar hardware, GPS, and local estimator across multiple loop ticks.
 
-        Initialization Flow:
-        1. Create QCar and GPS instances (hardware/simulation)
-        2. Wait for first GPS reading to get initial pose
-        3. Initialize VehicleObserver's local estimator with GPS and initial pose
-
-        Note: VehicleObserver already exists (created in vehicle_logic.__init__),
-              but its local estimator needs GPS data to initialize properly.
+        Returns:
+            True when the full step is complete,
+            False on failure,
+            None while the step is still in progress.
         """
         try:
-            # Initialize QCar and GPS based on physical/simulation mode
-            if self.vehicle_logic.vehicle_type == "Limo":
-                self.logger.logger.info(
-                    "Limo Car detected - skipping QCar initialization"
-                )
+            phase = self.state_data["qcar_init_phase"]
+            current_time = time.time()
 
-            elif (
-                not self.vehicle_logic.is_physical_qcar
-                and self.vehicle_logic.vehicle_type == "Qcar"
-            ):
-                self.logger.logger.info("QCar Simulation mode detected")
-                from qvl.multi_agent import readRobots
+            if phase == "create_interfaces":
+                if self.vehicle_logic.programme_type == "Ros":
+                    self.logger.logger.info(
+                        "ROS mode detected - skipping direct QCar initialization"
+                    )
+                    self.state_data["qcar_init_phase"] = "wait_for_gps"
+                    self._start_waiting_for_gps(current_time)
+                    return None
 
-                self._initialize_simulated_qcar(readRobots)
-            else:
-                self._initialize_physical_qcar()
+                if (
+                    not self.vehicle_logic.is_physical_qcar
+                    and self.vehicle_logic.vehicle_type == "Qcar"
+                ):
+                    self.logger.logger.info("QCar Simulation mode detected")
+                    from qvl.multi_agent import readRobots
 
-            # Wait for GPS and initialize state estimator
-            if not self._wait_for_gps():
-                return False
+                    self._initialize_simulated_qcar(readRobots)
+                    self.state_data["qcar_init_phase"] = "wait_for_gps"
+                    self._start_waiting_for_gps(current_time)
+                    return None
 
-            if not self._initialize_state_estimator():
-                return False
+                self._create_physical_qcar()
+                self.state_data["qcar_init_phase"] = "wait_after_qcar"
+                self.state_data["qcar_phase_ready_at"] = current_time + 0.3
+                return None
 
-            self.logger.logger.info("QCar hardware initialized with state estimation")
-            return True
+            if phase == "wait_after_qcar":
+                if current_time < self.state_data["qcar_phase_ready_at"]:
+                    return None
+                self._create_physical_gps()
+                self.state_data["qcar_init_phase"] = "wait_after_gps"
+                self.state_data["qcar_phase_ready_at"] = current_time + 0.3
+                return None
+
+            if phase == "wait_after_gps":
+                if current_time < self.state_data["qcar_phase_ready_at"]:
+                    return None
+                self.state_data["qcar_init_phase"] = "wait_for_gps"
+                self._start_waiting_for_gps(current_time)
+                return None
+
+            if phase == "wait_for_gps":
+                gps_status = self._poll_gps_once(current_time)
+                if gps_status is None:
+                    return None
+                if gps_status is False:
+                    return False
+                self.state_data["qcar_init_phase"] = "init_estimator"
+
+            if self.state_data["qcar_init_phase"] == "init_estimator":
+                if not self._initialize_state_estimator():
+                    return False
+                self.logger.logger.info("QCar hardware initialized with state estimation")
+                self.state_data["qcar_init_phase"] = "complete"
+                return True
+
+            return self.state_data["qcar_init_phase"] == "complete"
 
         except Exception as e:
             self.logger.log_error("QCar initialization failed", e)
@@ -401,21 +481,20 @@ class InitializingState(StateBase):
             lidarIdealPort=car_config["lidarIdealPort"],
         )
 
-    def _initialize_physical_qcar(self):
-        """Initialize physical QCar"""
-
+    def _create_physical_qcar(self):
+        """Create the physical QCar interface."""
         self.vehicle_logic.qcar = QCar(
             readMode=1, frequency=self.config.timing.controller_update_rate
         )
-        time.sleep(0.3)
 
-        # Check if calibration was requested, otherwise use config setting
+    def _create_physical_gps(self):
+        """Create the physical GPS interface."""
         calibrate_gps = getattr(
             self.vehicle_logic, "calibration_requested", self.config.path.calibrate
         )
         if getattr(self.vehicle_logic, "calibration_requested", False):
             self.logger.logger.info("GPS calibration requested - calibrating GPS")
-            self.vehicle_logic.calibration_requested = False  # Reset flag
+            self.vehicle_logic.calibration_requested = False
         self.logger.logger.info(
             f"Calibration pose: {self.config.path.calibration_pose}"
         )
@@ -423,31 +502,42 @@ class InitializingState(StateBase):
         self.vehicle_logic.gps = QCarGPS(
             initialPose=self.config.path.calibration_pose, calibrate=calibrate_gps
         )
-        time.sleep(0.3)
 
-    def _wait_for_gps(self, timeout: float = 10.0) -> bool:
-        """Wait for initial GPS reading"""
+    def _poll_gps_once(self, current_time: float) -> Optional[bool]:
+        """Try one GPS read without blocking the control loop."""
+        if self.vehicle_logic.gps is None:
+            self.logger.log_error("GPS interface is not available")
+            return False
+
+        if current_time >= self.state_data["gps_timeout_at"]:
+            self.logger.log_error("GPS timeout - no reading received")
+            return False
+
+        if current_time < self.state_data["next_gps_poll_at"]:
+            return None
+
+        self.state_data["next_gps_poll_at"] = current_time + self.GPS_POLL_INTERVAL
+        if not self.vehicle_logic.gps.readGPS():
+            return None
+
+        self.init_pose = np.array(
+            [
+                self.vehicle_logic.gps.position[0],
+                self.vehicle_logic.gps.position[1],
+                self.vehicle_logic.gps.orientation[2],
+            ]
+        )
+        self.logger.logger.info(
+            f"Initial pose: x={self.init_pose[0]:.2f}, "
+            f"y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}"
+        )
+        return True
+
+    def _start_waiting_for_gps(self, current_time: float):
+        """Initialize the non-blocking GPS wait phase."""
         self.logger.logger.info("Waiting for initial GPS reading...")
-        start = time.time()
-
-        while (time.time() - start) < timeout:
-            if self.vehicle_logic.gps.readGPS():
-                self.init_pose = np.array(
-                    [
-                        self.vehicle_logic.gps.position[0],
-                        self.vehicle_logic.gps.position[1],
-                        self.vehicle_logic.gps.orientation[2],
-                    ]
-                )
-                self.logger.logger.info(
-                    f"Initial pose: x={self.init_pose[0]:.2f}, "
-                    f"y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}"
-                )
-                return True
-            time.sleep(0.1)
-
-        self.logger.log_error("GPS timeout - no reading received")
-        return False
+        self.state_data["gps_timeout_at"] = current_time + self.GPS_TIMEOUT
+        self.state_data["next_gps_poll_at"] = current_time
 
     def _initialize_state_estimator(self) -> bool:
         """Initialize local state estimator through VehicleObserver"""
@@ -468,7 +558,6 @@ class InitializingState(StateBase):
                     f"Local estimator initialized at pose: "
                     f"x={self.init_pose[0]:.2f}, y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}"
                 )
-                time.sleep(0.1)
             else:
                 self.logger.log_error("Local estimator initialization failed")
 

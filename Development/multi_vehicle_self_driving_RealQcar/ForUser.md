@@ -40,12 +40,18 @@ python multi_probing.py --car 0
 
 # (In Simulator) # For spawn 2 Qcar
 cd .\Development\QCar2_multi-vehicle_control\
-python .\initCars.py     
+# Spawn 3 vehicle for platoon
+python .\initCars_Studio.py   -u
+# Spawn 1 vehicle   
+python .\initCars_Studio.py   -u -n 1  
+python .\initCars_Studio.py   -u -n 3 
 
 #  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\app_main.py
-
+cd .\GroundStation-Qcar-App\
+# Start the development server
+npm run dev
 
 # Run the real logic of vehicle 0   (another cmd)
 
@@ -56,10 +62,14 @@ python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 0
 
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar      
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
+python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 2
 
 # Should enable probing in the Development\multi_vehicle_self_driving_RealQcar\qcar\fleet_config.yaml
 # For probing
 python multi_probing.py --car 0
+
+
+Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\TrustbasedDistributedObserver
 
 
 (Logs file is in same folder (\Development\multi_vehicle_self_driving_RealQcar\qcar))
@@ -91,41 +101,9 @@ python fake_vehicle_real_logic.py 0
 python fake_vehicle_real_logic.py 1
 
 
-(Logs file is in same folder (GUI))
-```
-### LOGs files (Debug)
-Each vehicle have at least 4 file 
-![alt text](img_readme/files_log.png)
-And the fleet files like 
-![alt text](img_readme/fleet_data_recived.png)
 
 
-### UI Overview
-
-
-![alt text](img_readme/image.png)
-
-Start All : If the vehicle is in state Waiting for start , you will run in Following path mode .
-
-Stop All : Stop the car , go in Stop state
-V2V Active : To activate the Comunication . Should see V2V On in each panel (2 Cars min)
-
-Setup Platoon : You set up who leader , who follower in Platoon Panel , after click Setup Platoon button to send to all vehicle connected 
-
-Trigger platoon : Leader will keep in state "Following path mode" , Followers will go to "Follwoer Leader mode" 
-
-## 🔧 Configuration
-
-Edit `config.txt` for your network:
-
-```txt
-QCAR_IPS=[192.168.137.102 , 192.168.137.208]
-LOCAL_IP=192.168.137.1
-REMOTE_PATH=/home/nvidia/Documents/multi_vehicle_RealCar
-```
-
-
-# Quick Start — Limo System
+# — Limo System ROS
 
 ## Architecture
 
@@ -158,8 +136,13 @@ colcon build --packages-select limo_base limo_bringup limo_nav_huy_test --symlin
 ros2 launch limo_bringup limo_start.launch.py
 ```
 # Terminal 1 (without vehicle_main)
-```bash
+<!-- ```bash
 ros2 launch limo_nav_huy_test navigationV2V_qcar_frames.launch.py start_vehicle_main:=false
+``` -->
+
+-- Slam toolbox localization (new)
+```bash
+ros2 launch limo_nav_huy_test localization_slam_toolbox_qcar.launch.py
 ```
 
 # Terminal 2 (vehicle_main separate)
@@ -180,5 +163,27 @@ ros2 topic pub --once /initialpose_sdc geometry_msgs/msg/PoseStamped \
 "{header: {frame_id: SDCQcar}, pose: {position: {x: -1.28205, y: -0.45991, z: 0.0}, orientation: {x: 0.0, y: 0.0, z: -0.358, w: 0.934}}}"
 ```
 
+## QCAR ROS 
 
+### Terminal 1
 
+```bash
+cd /home/nvidia/Documents/qcar2/Development/ros2
+source install/setup.bash
+ros2 launch ros2test localization_cartographer_qcar.launch.py
+  # pbstream:=/absolute/path/to/your_map.pbstream
+```
+
+### Terminal 2
+
+```bash
+cd /home/nvidia/Documents/qcar2/Development/ros2
+source install/setup.bash
+
+```
+
+Copy-safe one-line equivalent:
+
+```bash
+ros2 run ros2test vehicle_main_ros_qcar --ros-args -p car_id:=3 -p host:=192.168.137.1 -p v_ref:=0.6 -p vehicle_type:=Qcar
+```

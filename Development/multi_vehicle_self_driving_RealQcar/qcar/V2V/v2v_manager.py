@@ -5,7 +5,8 @@ broadcasting logic, message routing, and high-level control operations
 """
 import time
 import threading
-from typing import Dict, List, Optional, Callable
+import copy
+from typing import Dict, List, Optional, Callable, Any
 from queue import Queue, Empty
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ class V2VDataType(Enum):
     """Types of V2V data"""
     LOCAL_STATE = "local_state"
     FLEET_STATE = "fleet_state"
+    TRUST_REPORT = "trust_report"
     INTENT = "intent"
     WARNING = "warning"
     HEARTBEAT = "heartbeat"
@@ -29,7 +31,8 @@ class V2VDataType(Enum):
 class V2VBroadcastConfig:
     """Configuration for V2V broadcasting"""
     local_state_frequency: float = 20.0  # Hz - High frequency for local states
-    fleet_state_frequency: float = 5.0   # Hz - Lower frequency for fleet states
+    fleet_state_frequency: float = 10.0   # Hz - Lower frequency for fleet states
+    trust_report_frequency: float = 2.0  # Hz - Independent trust opinion exchange
     heartbeat_frequency: float = 1.0     # Hz - Very low frequency for heartbeats
     max_queue_size: int = 100
     state_timeout: float = 2.0           # Seconds before state is considered stale
@@ -59,8 +62,10 @@ class V2VManager:
         send_intervals = {
             'local_state': int((1.0 / self.config.local_state_frequency) * 1e9),  # Convert Hz to nanoseconds
             'fleet_state': int((1.0 / self.config.fleet_state_frequency) * 1e9),
+            'trust_report': int((1.0 / self.config.trust_report_frequency) * 1e9),
             'heartbeat': int((1.0 / self.config.heartbeat_frequency) * 1e9),
         }
+        print("send_intervals", send_intervals)
         
         # Initialize V2V Communication system internally with configured intervals
         self.v2v_communication = V2VCommunication(
@@ -77,9 +82,25 @@ class V2VManager:
         # self.intent_queue = Queue(maxsize=self.config.max_queue_size)
         # self.warning_queue = Queue(maxsize=self.config.max_queue_size)
         
-        # Received data storage with timestamps
-        self.received_local_states = defaultdict(lambda: deque(maxlen=50))  # vehicle_id -> deque of (timestamp, data)
-        self.received_fleet_states = defaultdict(lambda: deque(maxlen=20))  # vehicle_id -> deque of (timestamp, data)
+        # Received data storage with timestamps.
+        # Backward-compatible public aliases (`received_local_states`,
+        # `received_fleet_states`) continue to expose the attacked / control-path
+        # channel that the trust observer evaluates.
+        self.received_local_states_attacked = defaultdict(
+            lambda: deque(maxlen=50)
+        )  # vehicle_id -> deque of (timestamp, data)
+        self.received_local_states_clean = defaultdict(
+            lambda: deque(maxlen=50)
+        )  # vehicle_id -> deque of (timestamp, data)
+        self.received_fleet_states_attacked = defaultdict(
+            lambda: deque(maxlen=20)
+        )  # vehicle_id -> deque of (timestamp, data)
+        self.received_fleet_states_clean = defaultdict(
+            lambda: deque(maxlen=20)
+        )  # vehicle_id -> deque of (timestamp, data)
+        self.received_local_states = self.received_local_states_attacked
+        self.received_fleet_states = self.received_fleet_states_attacked
+        self.received_trust_reports = defaultdict(lambda: deque(maxlen=20))  # vehicle_id -> deque of (timestamp, opinions)
         self.received_intents = defaultdict(lambda: deque(maxlen=10))
         self.received_warnings = defaultdict(lambda: deque(maxlen=10))
         
@@ -99,9 +120,12 @@ class V2VManager:
         self.stats = {
             'local_broadcasts': 0,
             'fleet_broadcasts': 0,
+            'trust_broadcasts': 0,
+            'trust_reports_received': 0,
             'messages_received': 0,
             'messages_processed': 0
         }
+        self._time_reference: Optional[Dict[str, Any]] = None
         
         # Setup message handlers
         self._setup_message_handlers()
@@ -119,11 +143,175 @@ class V2VManager:
             "fleet_state", self._handle_fleet_state_message
         )
         self.v2v_communication.register_message_handler(
+            MessageType.TRUST_REPORT.value, self._handle_trust_report_message
+        )
+        self.v2v_communication.register_message_handler(
             MessageType.INTENT.value, self._handle_intent_message
         )
         self.v2v_communication.register_message_handler(
             MessageType.WARNING.value, self._handle_warning_message
         )
+
+    def _normalize_time_reference(
+        self, time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Normalize shared V2V time-reference metadata."""
+        if not isinstance(time_reference, dict):
+            return None
+
+        source = str(time_reference.get("source", "local")).strip() or "local"
+        raw_reference_ns = time_reference.get(
+            "reference_time_ns", time_reference.get("epoch_time_ns")
+        )
+        try:
+            reference_time_ns = (
+                int(raw_reference_ns) if raw_reference_ns is not None else None
+            )
+        except (TypeError, ValueError):
+            reference_time_ns = None
+
+        if reference_time_ns is not None and reference_time_ns < 0:
+            reference_time_ns = None
+
+        normalized = {
+            "source": source,
+            "reference_time_ns": reference_time_ns,
+        }
+
+        for key in ("reference_vehicle_id", "leader_id"):
+            if key not in time_reference or time_reference.get(key) is None:
+                continue
+            try:
+                normalized[key] = int(time_reference[key])
+            except (TypeError, ValueError):
+                continue
+
+        return normalized
+
+    def _set_time_reference(
+        self, time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Persist normalized shared timing metadata for V2V activity."""
+        self._time_reference = self._normalize_time_reference(time_reference)
+        return dict(self._time_reference) if self._time_reference else None
+
+    def _to_reference_time_ns(self, timestamp_ns: int) -> int:
+        """Convert a wall-clock nanosecond timestamp into the active V2V domain."""
+        try:
+            ts_ns = int(timestamp_ns)
+        except (TypeError, ValueError):
+            return 0
+
+        reference_time_ns = None
+        if isinstance(self._time_reference, dict):
+            reference_time_ns = self._time_reference.get("reference_time_ns")
+
+        if reference_time_ns is None:
+            return ts_ns
+        return max(ts_ns - int(reference_time_ns), 0)
+
+    def _resolve_message_timestamp_ns(
+        self, data: Optional[Dict[str, Any]]
+    ) -> Optional[int]:
+        """
+        Resolve the shared-reference timestamp for incoming V2V payloads.
+
+        Local/fleet/trust comparison paths should only use `timestamp_ref_ns`.
+        """
+        if isinstance(data, dict):
+            raw_reference_ts = data.get("timestamp_ref_ns")
+            try:
+                if raw_reference_ts is not None:
+                    return max(int(raw_reference_ts), 0)
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    @staticmethod
+    def _normalize_v2v_channel(channel: Optional[str]) -> str:
+        """Normalize dual-channel V2V selectors."""
+        normalized = str(channel or "attacked").strip().lower()
+        if normalized not in {"attacked", "clean"}:
+            return "attacked"
+        return normalized
+
+    def _get_local_state_store(self, channel: str):
+        """Return the requested local-state history store."""
+        normalized = self._normalize_v2v_channel(channel)
+        if normalized == "clean":
+            return self.received_local_states_clean
+        return self.received_local_states_attacked
+
+    def _get_fleet_state_store(self, channel: str):
+        """Return the requested fleet-state history store."""
+        normalized = self._normalize_v2v_channel(channel)
+        if normalized == "clean":
+            return self.received_fleet_states_clean
+        return self.received_fleet_states_attacked
+
+    def _build_dual_channel_payload(
+        self,
+        clean_payload: Optional[Dict[str, Any]],
+        attacked_payload: Optional[Dict[str, Any]],
+        selected_channel: str = "attacked",
+    ) -> Dict[str, Any]:
+        """
+        Wrap a V2V payload with clean/attacked channels while preserving the
+        selected channel at the top level for legacy consumers.
+        """
+        clean_dict = copy.deepcopy(clean_payload) if isinstance(clean_payload, dict) else {}
+        attacked_dict = (
+            copy.deepcopy(attacked_payload)
+            if isinstance(attacked_payload, dict)
+            else copy.deepcopy(clean_dict)
+        )
+        normalized_channel = self._normalize_v2v_channel(selected_channel)
+        primary_dict = attacked_dict if normalized_channel == "attacked" else clean_dict
+        payload = copy.deepcopy(primary_dict)
+        payload["v2v_channels"] = {
+            "clean": clean_dict,
+            "attacked": attacked_dict,
+        }
+        payload["v2v_selected_channel"] = normalized_channel
+        payload["v2v_attack_active"] = bool(clean_dict != attacked_dict)
+        return payload
+
+    def _extract_dual_channel_payloads(
+        self,
+        data: Optional[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract clean/attacked payload variants from a received V2V message.
+
+        Legacy messages without `v2v_channels` are mirrored into both channels.
+        """
+        if not isinstance(data, dict):
+            return {"clean": {}, "attacked": {}}
+
+        raw_channels = data.get("v2v_channels")
+        if not isinstance(raw_channels, dict):
+            payload = copy.deepcopy(data)
+            payload.pop("v2v_channels", None)
+            return {
+                "clean": copy.deepcopy(payload),
+                "attacked": copy.deepcopy(payload),
+            }
+
+        clean_payload = raw_channels.get("clean")
+        attacked_payload = raw_channels.get("attacked")
+
+        if not isinstance(clean_payload, dict):
+            clean_payload = copy.deepcopy(data)
+        if not isinstance(attacked_payload, dict):
+            attacked_payload = copy.deepcopy(data)
+
+        clean_payload = copy.deepcopy(clean_payload)
+        attacked_payload = copy.deepcopy(attacked_payload)
+
+        for payload in (clean_payload, attacked_payload):
+            payload.pop("v2v_channels", None)
+
+        return {"clean": clean_payload, "attacked": attacked_payload}
     
     def update_broadcast(self) -> bool:
         """
@@ -140,6 +328,10 @@ class V2VManager:
             
             # Attempt to broadcast fleet state (V2VCommunication will rate-limit)
             if self._broadcast_fleet_state():
+                broadcast_sent = True
+
+            # Attempt to broadcast trust report (independent configurable rate)
+            if self._broadcast_trust_report():
                 broadcast_sent = True
             
             # Attempt to broadcast heartbeat (V2VCommunication will rate-limit)
@@ -165,6 +357,11 @@ class V2VManager:
                 return False
             
             local_state = self.vehicle_observer.get_local_state_for_broadcast()
+            dual_channel_payload = self._build_dual_channel_payload(
+                clean_payload=local_state,
+                attacked_payload=local_state,
+                selected_channel="attacked",
+            )
             
             # # Periodically log what we're broadcasting
             # if self.stats['local_broadcasts'] % 100 == 0 and self.logger:  # Every 100 broadcasts (every 5 seconds at 20Hz)
@@ -173,7 +370,7 @@ class V2VManager:
             
             success = self.v2v_communication.send_message(
                 message_type="local_state",
-                data=local_state
+                data=dual_channel_payload
             )
             
             if success:
@@ -252,6 +449,62 @@ class V2VManager:
             if self.logger:
                 self.logger.error(f"Heartbeat broadcast error: {e}")
             return False
+
+    def _extract_trust_opinions(self, data: Dict[str, Any]) -> Dict[int, float]:
+        """
+        Normalize trust report payload into {target_id: score}.
+
+        Preference order:
+        1) generalized_trust_vector
+        2) trust_scores
+        """
+        if not isinstance(data, dict):
+            return {}
+
+        raw_opinions = data.get("generalized_trust_vector")
+        if not isinstance(raw_opinions, dict):
+            raw_opinions = data.get("trust_scores")
+            if not isinstance(raw_opinions, dict):
+                return {}
+
+        opinions: Dict[int, float] = {}
+        for target_id, score in raw_opinions.items():
+            try:
+                tid = int(target_id)
+                trust_score = float(score)
+                if np.isfinite(trust_score):
+                    opinions[tid] = float(np.clip(trust_score, 0.0, 1.0))
+            except (TypeError, ValueError):
+                continue
+
+        return opinions
+
+    def _broadcast_trust_report(self) -> bool:
+        """Broadcast trust opinions for neighbor O_i fusion."""
+        try:
+            if not self.vehicle_observer:
+                return False
+            if not hasattr(self.vehicle_observer, "get_trust_report_for_broadcast"):
+                return False
+
+            trust_report = self.vehicle_observer.get_trust_report_for_broadcast()
+            if not trust_report:
+                return False
+
+            success = self.v2v_communication.send_message(
+                message_type=MessageType.TRUST_REPORT.value,
+                data=trust_report,
+            )
+
+            if success:
+                with self._lock:
+                    self.stats["trust_broadcasts"] += 1
+
+            return success
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Trust report broadcast error: {e}")
+            return False
     
     def _process_received_messages(self):
         """Process messages from the low-level communication layer"""
@@ -287,10 +540,25 @@ class V2VManager:
             sender_id = message.sender_id
             data = message.data
             send_time_ns = message.send_time_ns
+            message_timestamp_ns = self._resolve_message_timestamp_ns(data)
+
+            if message_timestamp_ns is None:
+                if self.logger:
+                    self.logger.warning(
+                        "V2VManager: Dropping local state from vehicle "
+                        f"{sender_id} because timestamp_ref_ns is missing/invalid"
+                    )
+                return
             
             # Validate required fields for local state (acceleration and control_input are optional)
+            channel_payloads = self._extract_dual_channel_payloads(data)
+            attacked_payload = channel_payloads["attacked"]
+            clean_payload = channel_payloads["clean"]
+
             required_fields = ['vehicle_id', 'x', 'y', 'theta', 'velocity']
-            missing_fields = [field for field in required_fields if field not in data]
+            missing_fields = [
+                field for field in required_fields if field not in attacked_payload
+            ]
             
             if missing_fields:
                 if self.logger:
@@ -323,36 +591,51 @@ class V2VManager:
                 
                 # Build a normalized state dict and reuse it for storage, queue, and logging
                 state_dict = {
-                    # 'vehicle_id': data.get('vehicle_id', sender_id),
-                    'x': data.get('x', 0.0),
-                    'y': data.get('y', 0.0),
-                    'theta': data.get('theta', 0.0),
-                    'v': data.get('velocity', data.get('v', 0.0)),
-                    'velocity': data.get('velocity', data.get('v', 0.0)),
-                    'confidence': data.get('confidence', 1.0),
-                    'acceleration': data.get('acceleration', 0.0),
-                    'control_input': data.get('control_input', {}) or {},
-                    # 'source': data.get('source', 'local_sensors'),
-                    # 'timestamp': data.get('timestamp', time.time())
+                    'x': attacked_payload.get('x', 0.0),
+                    'y': attacked_payload.get('y', 0.0),
+                    'theta': attacked_payload.get('theta', 0.0),
+                    'v': attacked_payload.get('velocity', attacked_payload.get('v', 0.0)),
+                    'velocity': attacked_payload.get('velocity', attacked_payload.get('v', 0.0)),
+                    'confidence': attacked_payload.get('confidence', 1.0),
+                    'acceleration': attacked_payload.get('acceleration', 0.0),
+                    'control_input': attacked_payload.get('control_input', {}) or {},
+                }
+                clean_state_dict = {
+                    'x': clean_payload.get('x', 0.0),
+                    'y': clean_payload.get('y', 0.0),
+                    'theta': clean_payload.get('theta', 0.0),
+                    'v': clean_payload.get('velocity', clean_payload.get('v', 0.0)),
+                    'velocity': clean_payload.get('velocity', clean_payload.get('v', 0.0)),
+                    'confidence': clean_payload.get('confidence', 1.0),
+                    'acceleration': clean_payload.get('acceleration', 0.0),
+                    'control_input': clean_payload.get('control_input', {}) or {},
                 }
 
-                # Add to received local states with send time in nanoseconds (store normalized dict)
-                self.received_local_states[sender_id].append((send_time_ns, state_dict))
+                self.received_local_states_attacked[sender_id].append(
+                    (message_timestamp_ns, state_dict)
+                )
+                self.received_local_states_clean[sender_id].append(
+                    (message_timestamp_ns, clean_state_dict)
+                )
 
                 # Log received local estimation to dedicated CSV file
                 if hasattr(self.vehicle_logger, 'log_local_estimation'):
                     self.vehicle_logger.log_local_estimation(
                         sender_id=sender_id,
                         state=state_dict,
-                        source=data.get('source', 'local_sensors'),
+                        source=attacked_payload.get('source', 'local_sensors'),
                         seq_id=message.seq_id,
                         send_time_ns=send_time_ns
                     )
                 
                 # Add to VehicleObserver if available (observer expects a 5D numpy array)
                 if self.vehicle_observer:
-
-                    self.vehicle_observer.add_received_local_state(sender_id, state_dict, send_time_ns)
+                    self.vehicle_observer.add_received_local_state(
+                        sender_id, state_dict, message_timestamp_ns
+                    )
+                    self.vehicle_observer.add_received_clean_local_state(
+                        sender_id, clean_state_dict, message_timestamp_ns
+                    )
                     
                     
             # # Add normalized state to queue for other consumers
@@ -383,10 +666,25 @@ class V2VManager:
             sender_id = message.sender_id
             data = message.data
             send_time_ns = message.send_time_ns
+            message_timestamp_ns = self._resolve_message_timestamp_ns(data)
+
+            if message_timestamp_ns is None:
+                if self.logger:
+                    self.logger.warning(
+                        "V2VManager: Dropping fleet state from vehicle "
+                        f"{sender_id} because timestamp_ref_ns is missing/invalid"
+                    )
+                return
             
-            # Validate required fields for fleet state 
+            channel_payloads = self._extract_dual_channel_payloads(data)
+            attacked_payload = channel_payloads["attacked"]
+            clean_payload = channel_payloads["clean"]
+
+            # Validate required fields for fleet state
             required_fields = ['sender_id', 'fleet_states']
-            missing_fields = [field for field in required_fields if field not in data]
+            missing_fields = [
+                field for field in required_fields if field not in attacked_payload
+            ]
             
             if missing_fields:
                 if self.logger:
@@ -394,11 +692,14 @@ class V2VManager:
                 return
             
             # Validate fleet states structure
-            fleet_states = data.get('fleet_states', {})
+            fleet_states = attacked_payload.get('fleet_states', {})
+            clean_fleet_states = clean_payload.get('fleet_states', {})
             if not isinstance(fleet_states, dict):
                 if self.logger:
                     self.logger.warning(f"V2VManager: Invalid fleet_states format from vehicle {sender_id}")
                 return
+            if not isinstance(clean_fleet_states, dict):
+                clean_fleet_states = {}
             
             # # Validate individual vehicle states in fleet data
             # valid_fleet_count = 0
@@ -413,7 +714,12 @@ class V2VManager:
             
             with self._lock:
                 # Add to received fleet states with send time in nanoseconds
-                self.received_fleet_states[sender_id].append((send_time_ns, data))
+                self.received_fleet_states_attacked[sender_id].append(
+                    (message_timestamp_ns, attacked_payload)
+                )
+                self.received_fleet_states_clean[sender_id].append(
+                    (message_timestamp_ns, clean_payload)
+                )
                 
                 # Log received fleet estimation to dedicated CSV file
                 if hasattr(self.vehicle_logger, 'log_fleet_estimation'):
@@ -421,7 +727,7 @@ class V2VManager:
                         self.vehicle_logger.log_fleet_estimation(
                             sender_id=sender_id,
                             fleet_states=fleet_states,
-                            source=data.get('source', 'unknown'),
+                            source=attacked_payload.get('source', 'unknown'),
                             seq_id=message.seq_id,
                             send_time_ns=send_time_ns
                         )
@@ -453,7 +759,7 @@ class V2VManager:
                     success = self.vehicle_observer.add_received_fleet_state(
                         sender_id=sender_id,
                         fleet_estimates=fleet_states,
-                        timestamp_ns=send_time_ns
+                        timestamp_ns=message_timestamp_ns
                     )
                     
                     if success and self.logger:
@@ -476,6 +782,56 @@ class V2VManager:
         except Exception as e:
             if self.logger:
                 self.logger.error(f"Fleet state message handling error: {e}")
+
+    def _handle_trust_report_message(self, message: V2VMessage):
+        """
+        Handle trust report messages.
+
+        Expected payload:
+        {
+            "reporter_id": int,
+            "trust_scores": {target_id: score},
+            "generalized_trust_vector": {target_id: score},  # optional
+            "source": "trust_estimator"
+        }
+        """
+        try:
+            sender_id = message.sender_id
+            data = message.data
+            message_timestamp_ns = self._resolve_message_timestamp_ns(data)
+
+            if message_timestamp_ns is None:
+                if self.logger:
+                    self.logger.warning(
+                        "V2VManager: Dropping trust report from vehicle "
+                        f"{sender_id} because timestamp_ref_ns is missing/invalid"
+                    )
+                return
+
+            if not isinstance(data, dict):
+                return
+
+            opinions = self._extract_trust_opinions(data)
+            if not opinions:
+                return
+
+            with self._lock:
+                self.received_trust_reports[sender_id].append(
+                    (message_timestamp_ns, opinions)
+                )
+                self.stats["trust_reports_received"] += 1
+
+            if (
+                self.vehicle_observer is not None
+                and hasattr(self.vehicle_observer, "add_received_neighbor_trust_report")
+            ):
+                self.vehicle_observer.add_received_neighbor_trust_report(
+                    reporter_id=sender_id, opinions=opinions
+                )
+
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Trust report message handling error: {e}")
     
     def _validate_local_state_data(self, data: dict, sender_id: int) -> bool:
         """Validate local state data integrity and ranges"""
@@ -616,25 +972,33 @@ class V2VManager:
                 break
         return messages
     
-    def get_latest_local_state_raw(self, vehicle_id: int) -> Optional[dict]:
+    def get_latest_local_state_raw(
+        self, vehicle_id: int, channel: str = "attacked"
+    ) -> Optional[dict]:
         """Get latest local state from a specific vehicle"""
         with self._lock:
-            if vehicle_id in self.received_local_states:
-                states = self.received_local_states[vehicle_id]
+            store = self._get_local_state_store(channel)
+            if vehicle_id in store:
+                states = store[vehicle_id]
                 if states:
                     return states[-1][1]  # Return data part of (timestamp, data)
         return None
     
-    def get_latest_fleet_state_raw(self, vehicle_id: int) -> Optional[dict]:
+    def get_latest_fleet_state_raw(
+        self, vehicle_id: int, channel: str = "attacked"
+    ) -> Optional[dict]:
         """Get latest fleet state from a specific vehicle"""
         with self._lock:
-            if vehicle_id in self.received_fleet_states:
-                states = self.received_fleet_states[vehicle_id]
+            store = self._get_fleet_state_store(channel)
+            if vehicle_id in store:
+                states = store[vehicle_id]
                 if states:
                     return states[-1][1]  # Return data part of (timestamp, data)
         return None
     
-    def get_direct_leader_data(self, current_vehicle_position: int) -> Optional[dict]:
+    def get_direct_leader_data(
+        self, current_vehicle_position: int, channel: str = "attacked"
+    ) -> Optional[dict]:
         """Get direct leader's local state data for the given vehicle position in platoon
         
         Args:
@@ -665,7 +1029,9 @@ class V2VManager:
                     self.logger.debug(f"V2VManager: No position mapping found, using position {leader_position} as vehicle_id")
             
             # Get leader data using the leader's vehicle_id
-            leader_state = self.get_latest_local_state_raw(leader_vehicle_id)
+            leader_state = self.get_latest_local_state_raw(
+                leader_vehicle_id, channel=channel
+            )
             
             if leader_state:
                 if self.logger:
@@ -687,7 +1053,7 @@ class V2VManager:
                 self.logger.warning(f"V2VManager: Error getting direct leader data: {e}")
             return None
     
-    def get_my_direct_leader_data(self) -> Optional[dict]:
+    def get_my_direct_leader_data(self, channel: str = "attacked") -> Optional[dict]:
         """Get direct leader's local state data for this vehicle's position
         
         Returns:
@@ -695,7 +1061,7 @@ class V2VManager:
         """
         # Note: This requires vehicle_logic reference to get vehicle_position
         # For now, use vehicle_id as position (can be improved when vehicle_logic is properly referenced)
-        return self.get_direct_leader_data(self.vehicle_id)
+        return self.get_direct_leader_data(self.vehicle_id, channel=channel)
     
     def cleanup_old_data(self):
         """Clean up old received data"""
@@ -704,24 +1070,32 @@ class V2VManager:
         
         with self._lock:
             # Clean up old local states
-            for vehicle_id in list(self.received_local_states.keys()):
-                states = self.received_local_states[vehicle_id]
-                # Remove states older than timeout
-                while states and current_time - states[0][0] > timeout:
-                    states.popleft()
-                
-                # Remove empty entries
-                if not states:
-                    del self.received_local_states[vehicle_id]
+            for store in (
+                self.received_local_states_attacked,
+                self.received_local_states_clean,
+            ):
+                for vehicle_id in list(store.keys()):
+                    states = store[vehicle_id]
+                    # Remove states older than timeout
+                    while states and current_time - states[0][0] > timeout:
+                        states.popleft()
+
+                    # Remove empty entries
+                    if not states:
+                        del store[vehicle_id]
             
             # Clean up old fleet states
-            for vehicle_id in list(self.received_fleet_states.keys()):
-                states = self.received_fleet_states[vehicle_id]
-                while states and current_time - states[0][0] > timeout:
-                    states.popleft()
-                
-                if not states:
-                    del self.received_fleet_states[vehicle_id]
+            for store in (
+                self.received_fleet_states_attacked,
+                self.received_fleet_states_clean,
+            ):
+                for vehicle_id in list(store.keys()):
+                    states = store[vehicle_id]
+                    while states and current_time - states[0][0] > timeout:
+                        states.popleft()
+
+                    if not states:
+                        del store[vehicle_id]
     
     def send_intent(self, intention: str, parameters: dict) -> bool:
         """Send driving intent to other vehicles"""
@@ -777,8 +1151,10 @@ class V2VManager:
                 # 'warning_queue_size': self.received_warnings.qsize(),
                 'active_local_peers': len(self.received_local_states),
                 'active_fleet_peers': len(self.received_fleet_states),
+                'active_trust_peers': len(self.received_trust_reports),
                 'local_broadcast_rate': self.config.local_state_frequency,
                 'fleet_broadcast_rate': self.config.fleet_state_frequency,
+                'trust_broadcast_rate': self.config.trust_report_frequency,
                 'local_state_messages_received': self._local_state_log_counter,
                 'fleet_state_messages_received': self._fleet_state_log_counter
             })
@@ -789,13 +1165,21 @@ class V2VManager:
         """Check if V2V manager is active"""
         return self.v2v_communication.is_active if self.v2v_communication else False
     
-    def activate(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
+    def activate(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """Activate V2V communication"""
         try:
             if not self.v2v_communication:
                 if self.logger:
                     self.logger.error("V2VManager: No V2V communication instance available")
                 return False
+
+            if time_reference is not None:
+                self._set_time_reference(time_reference)
             
             success = self.v2v_communication.activate(peer_vehicles, peer_ips)
             
@@ -804,7 +1188,8 @@ class V2VManager:
                 self.logger.info(f"V2VManager activated for vehicle {self.vehicle_id} "
                                f"with {len(peer_vehicles)} peers (fleet size: {fleet_size})")
                 self.logger.info(f"Broadcast rates: Local={self.config.local_state_frequency}Hz, "
-                               f"Fleet={self.config.fleet_state_frequency}Hz")
+                               f"Fleet={self.config.fleet_state_frequency}Hz, "
+                               f"Trust={self.config.trust_report_frequency}Hz")
             
             return success
             
@@ -817,10 +1202,17 @@ class V2VManager:
         """Deactivate V2V communication"""
         if self.v2v_communication:
             self.v2v_communication.deactivate()
+        self._time_reference = None
     
     # ===== High-level V2V Control Methods =====
     
-    def activate_v2v(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
+    def activate_v2v(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict[str, Any]] = None,
+        vehicle_manifest: Optional[Dict[Any, Any]] = None,
+    ) -> bool:
         """
         Activate V2V communication with specified peers
         This is the main entry point for V2V activation from external systems
@@ -840,20 +1232,53 @@ class V2VManager:
                 self.logger.info(f"V2VManager: Activating V2V for vehicle {self.vehicle_id}")
                 self.logger.info(f"V2VManager: Connecting to peers: {peer_vehicles}")
                 self.logger.info(f"V2VManager: Peer IPs: {peer_ips}")
+
+            normalized_time_reference = self._set_time_reference(time_reference)
+            if self.logger and normalized_time_reference:
+                self.logger.info(
+                    "V2VManager: Shared time reference "
+                    f"source={normalized_time_reference.get('source')} "
+                    f"reference_time_ns={normalized_time_reference.get('reference_time_ns')}"
+                )
             
             # Reinitialize fleet estimation via vehicle_logic
             # Calculate actual fleet size: peers + this vehicle
             actual_fleet_size = len(peer_vehicles) + 1
-            self.vehicle_observer.reinitialize_fleet_estimation(actual_fleet_size, peer_vehicles)
+            self.vehicle_observer.reinitialize_fleet_estimation(
+                actual_fleet_size,
+                peer_vehicles,
+                time_reference=normalized_time_reference,
+                vehicle_manifest=vehicle_manifest,
+            )
+
+            if (
+                normalized_time_reference
+                and self.vehicle_logic
+                and hasattr(self.vehicle_logic, "vehicle_logger")
+                and hasattr(self.vehicle_logic.vehicle_logger, "set_start_time")
+            ):
+                reference_time_ns = normalized_time_reference.get("reference_time_ns")
+                if reference_time_ns is not None:
+                    self.vehicle_logic.vehicle_logger.set_start_time(
+                        float(reference_time_ns) / 1e9
+                    )
             
             # Activate the underlying V2V communication
-            success = self.activate(peer_vehicles, peer_ips)
+            success = self.activate(
+                peer_vehicles,
+                peer_ips,
+                time_reference=normalized_time_reference,
+            )
             
             if success:
                 fleet_size = len(peer_vehicles) + 1
                 if self.logger:
                     self.logger.info(f"V2VManager: V2V communication activated successfully")
-                    self.logger.info(f"V2VManager: Broadcasting rates - Local: {self.config.local_state_frequency}Hz, Fleet: {self.config.fleet_state_frequency}Hz")
+                    self.logger.info(
+                        f"V2VManager: Broadcasting rates - Local: {self.config.local_state_frequency}Hz, "
+                        f"Fleet: {self.config.fleet_state_frequency}Hz, "
+                        f"Trust: {self.config.trust_report_frequency}Hz"
+                    )
                 
                 # Report activation to Ground Station via vehicle_logic
                 if self.vehicle_logic and hasattr(self.vehicle_logic, 'report_v2v_status_to_gs'):
@@ -865,6 +1290,8 @@ class V2VManager:
                         'vehicle_id': self.vehicle_id,
                         'timestamp': time.time(),
                         'fleet_size': fleet_size,
+                        'time_reference': normalized_time_reference,
+                        'vehicle_manifest': vehicle_manifest,
                         'protocol': 'UDP-Manager'
                     })
                 
@@ -873,15 +1300,23 @@ class V2VManager:
                     self.status_callback('v2v_activated', {
                         'peer_vehicles': peer_vehicles,
                         'peer_ips': peer_ips,
-                        'fleet_size': fleet_size
+                        'fleet_size': fleet_size,
+                        'time_reference': normalized_time_reference,
+                        'vehicle_manifest': vehicle_manifest,
                     })
             else:
+                if self.vehicle_observer is not None:
+                    self.vehicle_observer.reset_fleet_estimation()
+                self._time_reference = None
                 if self.logger:
                     self.logger.error(f"V2VManager: V2V communication activation failed")
             
             return success
             
         except Exception as e:
+            if self.vehicle_observer is not None:
+                self.vehicle_observer.reset_fleet_estimation()
+            self._time_reference = None
             if self.logger:
                 self.logger.error(f"V2VManager: V2V activation error - {e}")
             return False
@@ -963,6 +1398,7 @@ class V2VManager:
                 'broadcast_config': {
                     'local_state_frequency': self.config.local_state_frequency,
                     'fleet_state_frequency': self.config.fleet_state_frequency,
+                    'trust_report_frequency': self.config.trust_report_frequency,
                     'heartbeat_frequency': self.config.heartbeat_frequency
                 }
             }
@@ -1059,6 +1495,14 @@ class V2VManager:
                         if states:
                             latest_data = states[-1][1]
                             self.logger.info(f"  Vehicle {vehicle_id}: {len(states)} states, latest keys: {list(latest_data.keys())}")
+
+                    # Trust reports summary
+                    trust_count = sum(len(states) for states in self.received_trust_reports.values())
+                    self.logger.info(f"Trust reports: {trust_count} total from {len(self.received_trust_reports)} vehicles")
+                    for vehicle_id, states in self.received_trust_reports.items():
+                        if states:
+                            latest_opinions = states[-1][1]
+                            self.logger.info(f"  Vehicle {vehicle_id}: {len(states)} reports, latest opinions: {len(latest_opinions)}")
                     
                     # Position mapping
                     if self.position_to_vehicle_id_map:

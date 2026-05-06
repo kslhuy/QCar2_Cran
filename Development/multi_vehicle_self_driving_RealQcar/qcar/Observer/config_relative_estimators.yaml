@@ -3,13 +3,16 @@
 # Place this file under qcar/Observer/ and load it when starting observers.
 
 relative_estimator_type: sa_acc_uio
-enable_relative: true
+enable_relative: enabled # enable_relative: Master switch for relative estimation.
+                        # true: Enables the relative estimator and all related logic.
+                        # false: Disables the relative estimator entirely, saving compute and ignoring any relative measurement inputs.
 
-# Plotting configuration (optional, for future use)
-enable_plotting: false
-plotting:
-  fps: 30
-  time_window: 20.0
+# Separate relative UIO CSV recording. Files are written asynchronously as
+# relative_uio_log_V{id}.csv so trust logging and relative-observer diagnostics
+# remain independent.
+enable_recording: true
+recording_overwrite: true
+# recording_output_dir: null  # defaults to TrustbasedDistributedObserver/
 
 # Relative estimator defaults
 relative:
@@ -18,13 +21,26 @@ relative:
   # ---------------------------------------------------------------------
   sa_acc_uio:
     Ts: 0.01      # Sample time
-    tau: 0.4      # Time constant
-    li: 5.0       # Vehicle length / safety distance
-    Li: 8.0       # Desired distance (optional use in observer)
+    tau: 0.3      # Time constant
+    li: 0.3       # Vehicle length / safety distance
+    Li: 0.25       # Desired distance (optional use in observer)
     h: 0.5        # Headway time
     k1: -0.8      # Controller gain 1
     k2: 2.5       # Controller gain 2
     alpha_lmi: 0.5 # LMI decay rate
+    prefer_external_relative_measurement: true
+    measurement_max_age_s: 1.0
     
-    # Manual Gains (Optional - use if CVXPY is not available)
-    # K: [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
+    # MATLAB precomputed gains from Relative_obs/SA_ACC_UIO.m.
+    # When K is configured, the Python observer skips CVXPY and uses these
+    # gains directly. If L is omitted, L is derived as K + (Az - K*Ce)*Qz.
+    K:
+      - [0.5, 0.0]
+      - [0.0, 1.0]
+      - [0.5, -100.0]
+      - [-8.3, 1427.2]
+    L:
+      - [0.5, 0.0]
+      - [0.0, 1.0]
+      - [0.5, -100.0]
+      - [-15.3, 2757.1]
