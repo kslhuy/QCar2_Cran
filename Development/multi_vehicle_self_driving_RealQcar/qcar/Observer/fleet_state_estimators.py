@@ -431,6 +431,7 @@ class FleetEstimatorFactory:
     
     # Lazy loading flags
     _distributed_luenberger_loaded = False
+    _distributed_high_gain_loaded = False
     _trust_estimators_loaded = False
     
     @classmethod
@@ -464,6 +465,28 @@ class FleetEstimatorFactory:
         except ImportError as e:
             # Trust-based estimators not available
             pass
+
+    @classmethod
+    def _load_distributed_high_gain(cls):
+        """Lazily load Liqi distributed high-gain estimator."""
+        if cls._distributed_high_gain_loaded:
+            return
+
+        try:
+            from .Liqi_obs.distributed_high_gain_observer import (
+                DistributedHighGainFleetEstimator,
+            )
+
+            cls.ESTIMATOR_TYPES["distributed_high_gain"] = (
+                DistributedHighGainFleetEstimator
+            )
+            cls.ESTIMATOR_TYPES["liqi_distributed_high_gain"] = (
+                DistributedHighGainFleetEstimator
+            )
+            cls._distributed_high_gain_loaded = True
+        except ImportError:
+            # Liqi observer package not available
+            pass
     
     @staticmethod
     def create(estimator_type: str, vehicle_id: int, fleet_size: int,
@@ -472,8 +495,8 @@ class FleetEstimatorFactory:
         Create a fleet state estimator
         
         Args:
-            estimator_type: One of 'consensus', 'distributed_kalman', 
-                           'distributed_luenberger', 'trust_consensus', 'trust_kalman'
+            estimator_type: One of 'consensus', 'distributed_luenberger',
+                           'distributed_high_gain', 'trust_consensus', 'trust_kalman'
             vehicle_id: ID of the host vehicle
             fleet_size: Total number of vehicles in fleet
             state_dim: State dimension (default 5)
@@ -486,6 +509,9 @@ class FleetEstimatorFactory:
         # Load distributed_luenberger lazily when requested
         if estimator_type == 'distributed_luenberger':
             FleetEstimatorFactory._load_distributed_luenberger()
+
+        if estimator_type in ('distributed_high_gain', 'liqi_distributed_high_gain'):
+            FleetEstimatorFactory._load_distributed_high_gain()
         
         # Try to load trust-based estimators if requesting one
         if estimator_type.startswith('trust_'):
@@ -510,5 +536,6 @@ class FleetEstimatorFactory:
     def get_available_types(cls) -> List[str]:
         """Get list of available estimator types"""
         cls._load_distributed_luenberger()
+        cls._load_distributed_high_gain()
         cls._load_trust_estimators()
         return list(cls.ESTIMATOR_TYPES.keys())

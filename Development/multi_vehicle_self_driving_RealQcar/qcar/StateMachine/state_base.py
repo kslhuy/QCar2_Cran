@@ -1580,13 +1580,7 @@ class StateBase:
         try:
             from Observer.fleet_state_estimators import FleetEstimatorFactory
 
-            valid_types = [
-                "consensus",
-                "distributed_kalman",
-                "distributed_luenberger",
-                "trust_consensus",
-                "trust_kalman",
-            ]
+            valid_types = FleetEstimatorFactory.get_available_types()
             if observer_type not in valid_types:
                 self.logger.log_error(
                     f"Invalid fleet observer type: {observer_type}. Valid: {valid_types}"
@@ -1602,13 +1596,19 @@ class StateBase:
 
             vehicle_observer = self.vehicle_logic.vehicle_observer
 
-            # Get observer config
-            obs_config = vehicle_observer._get_observer_config()
+            old_observer_type = vehicle_observer.fleet_estimator_type
+            vehicle_observer.fleet_estimator_type = observer_type
+            try:
+                obs_config = vehicle_observer._resolve_fleet_estimator_config()
+            finally:
+                vehicle_observer.fleet_estimator_type = old_observer_type
 
             # Create new fleet estimator using factory
             new_estimator = FleetEstimatorFactory.create(
                 estimator_type=observer_type,
                 vehicle_id=self.vehicle_logic.vehicle_id,
+                fleet_size=vehicle_observer.fleet_size,
+                state_dim=vehicle_observer.state_dim,
                 config=obs_config,
                 logger=self.logger,
             )

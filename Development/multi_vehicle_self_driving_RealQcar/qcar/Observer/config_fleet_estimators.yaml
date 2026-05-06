@@ -2,8 +2,9 @@
 # Default parameters for the fleet state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-# Options: 'consensus', 'distributed_luenberger', 'trust_consensus', 'trust_kalman'
-fleet_estimator_type: trust_consensus
+# Options: 'consensus', 'distributed_luenberger', 'distributed_high_gain',
+#          'trust_consensus', 'trust_kalman'
+fleet_estimator_type: distributed_high_gain
 
 
 
@@ -62,6 +63,12 @@ fleet:
     Cd_i: 0.035
     AF_i: 0.22
     mu_i: 0.01
+
+  # ---------------------------------------------------------------------
+  # Distributed High-Gain estimator from Liqi_obs/root_review.tex
+  # ---------------------------------------------------------------------
+  distributed_high_gain:
+    config_file: "Liqi_obs/config_distributed_high_gain.yaml"
 
   # ---------------------------------------------------------------------
   # Trust-Based estimators

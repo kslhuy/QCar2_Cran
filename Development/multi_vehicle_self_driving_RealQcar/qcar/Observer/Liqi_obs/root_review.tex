@@ -1,0 +1,873 @@
+%===============================================================================
+% ifacconf.tex 2022-02-11 jpuente  
+% 2022-11-11 jpuente change length of abstract
+% Template for IFAC meeting papers
+% Copyright (c) 2022 International Federation of Automatic Control
+%===============================================================================
+\documentclass{ifacconf}
+\usepackage{svg}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{comment}
+\usepackage[ruled,vlined,algo2e]{algorithm2e}
+% \usepackage{algorithmicx} 
+\usepackage{algpseudocode}
+\usepackage{lipsum}
+\usepackage{graphicx}      % include this line if your document contains figures
+\usepackage{natbib}        % required for bibliography
+\usepackage{color}
+\allowdisplaybreaks
+%===============================================================================
+\begin{document}
+\begin{frontmatter}
+
+\title{Distributed High--Gain Observer Design of Interconnected Nonlinear Systems for Vehicle Platoon Application\thanksref{footnoteinfo}} 
+% Title, preferably not more than 10 words.
+
+\thanks[footnoteinfo]{This work was supported by the ANR agency under the project ArtISMo ANR-20-CE48-0015. 
+Qi L\textsc{i} acknowledges the China Scholarship Council~(No.202506080024) for its support.}
+
+\author[First]{Q. L\sc{i}} 
+\author[First]{S. M\sc{eng}}
+\author[Second]{F. M\sc{eng}}
+\author[First]{C. D\sc{elattre}}
+\author[First]{A. Z\sc{emouche}}
+
+\address[First]{Universit\'e de Lorraine, CNRS, CRAN, F-57000 Metz, France~(e-mail: qi.li@univ-lorraine.fr).}
+\address[Second]{School of Control Engineering, 
+   Northeastern University at Qinhuangdao, 06600, China.}
+
+\begin{abstract}                % Abstract of 50--100 words
+This paper addresses the state estimation problem for a class of interconnected nonlinear multi-agent systems, with a primary motivation from vehicle platoon applications. The triangular dependency inherent to platoons results in highly coupled estimation error dynamics. These coupled dynamics are difficult to analyze directly, presenting a significant challenge for constructive observer design. Our approach begins by decomposing the error into its average and consensus components. The innovation of this work lies in proposing a set of sufficient LMI conditions that enable the transformation of the coupled quadratic forms from the Lyapunov analysis into a tractable convex optimization problem. The obtained solution provides a constructive design of a distributed high--gain observer that ensures exponential convergence of the estimation error while providing explicit lower bounds on all observer gains. The effectiveness of the proposed design is validated through simulations on a nonlinear vehicle platoon model, confirming its relevance for practical automotive applications.
+
+\end{abstract}
+
+\begin{keyword}
+Nonlinear observer, distributed observer, high--gain observer, vehicle platoons
+\end{keyword}
+
+\end{frontmatter}
+%===============================================================================
+
+\section{Introduction}
+\vspace*{-0.3 cm}
+State estimation is essential for the control of large-scale interconnected multi--agent systems (MAS), which is composed of multiple dynamic agents interacting to achieve a common target. 
+As vehicles operate in close proximity, each agent's ability to precisely know the state of all other vehicles in the platoon is critical for cooperative maneuvers and collision avoidance (\cite{wang2023adaptive}).
+In such large-scale interconnected systems, centralized estimation faces significant limitations on communication bandwidth, scalability, and robustness. As a powerful and necessary alternative, the distributed observers enable each agent in a network to reconstruct the full system state using only its local measurements and information exchanged with its neighbors (\cite{olfati2007consensus}).
+
+The research on distributed observers has evolved significantly from its origins in linear systems, where core principles for achieving consensus were first established (\cite{kim2016distributed,han2018simple}). The linear framework has proven robust enough to address complex challenges such as handling locally unknown inputs through geometric decoupling techniques (\cite{yang2022state}). However, the transition to nonlinear systems is far more challenging. To overcome this complexity, approaches range from highly theoretical frameworks for general nonlinearities (\cite{battilotti2019distributed}) to optimization-based methods (\cite{wang2024distributed}). Building on this, recent researches try to improve the practicality of such designs. For instance, LMI methods have been developed to reduce the high--gain parameter's magnitude, though these have been demonstrated for simpler triangular systems where each subsystem’s nonlinearity is self-contained (\cite{meng2025distributed}).
+
+A particular relevant structure for this problem arises from the natural dynamics of MAS under control strategies like vehicle platoons systems (\cite{wang2021leading}). In such a formation, the dynamics of the first vehicle act as an input to the second, the dynamics of the first and second vehicles influence the third, and so on. This creates a block-triangular structure, where the state of $i$th vehicle is a function of all preceding vehicles. While prior works have established the theoretical existence of distributed observers for such interconnected triangular system (\cite{battilotti2019distributed,wu2021design}), a systematic method for designing the observer gains remains an open challenge. The subsequent challenge, which this paper addresses, is the development of a systematic method to construct gains with a tractable upbound, thereby bridging the gap between theoretical existence and practical engineering design.
+
+The obstacle preventing a straightforward constructive design lies in the coupling of the error dynamics. The interconnected nonlinearities of the system generate coupling cross-terms within the Lyapunov derivative, making it challenging to derive explicit conditions for the gains without resorting to non-constructive arguments. This issue is the main motivation of this work.
+
+The main contributions of this paper are summarized as follows:
+\begin{itemize}[leftmargin=*]
+    \item A unified LMI--based synthesis for a general class of interconnected MAS. Unlike methods for simpler triangular forms (\cite{meng2025distributed}), our approach provides a unified design for a more complex interconnected structure, where the dynamics of one subsystem are influenced by all those preceding it.
+    \item A constructive design procedure that yields all observer gains simultaneously. Our work provides the constructive counterpart to the existence proofs of prior work (\cite{wu2021design}) by delivering a tractable convex optimization that computes the local feedback matrices, the high--gain parameter, and the consensus gain in a single, unified step.
+    \item A leading cruise control (LCC)--based platoon strategy (\cite{wang2021leading}) has been combined with the nonlinear longitudinal dynamics (\cite{rajamani2006vehicle}). Practical validation of the methodology on the triangular structure transformation, demonstrating its effectiveness on a canonical example of an interconnected system.
+\end{itemize}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\section{Preliminaries and Problem Description}\label{sec:pre}
+\vspace*{-0.3 cm}
+In this section, the notations and property of strongly connected graph and some useful lemmas has been recalled, then the observed system and distributed high--gain observer structure are introduced to formulate the estimation problem.
+
+\subsection{Notation}
+\vspace*{-0.3 cm}
+For a square real matrix $M$, its symmetric part is denoted by $\mathrm{Sym}(M) \triangleq M + M^{\top}$, and $\|M\|$ represents its Euclidean norm. For a set of matrices $\{M_1, M_2, \cdots, M_N\}$, $\mathrm{diag}(M_1, M_2, \cdots, M_N)$ represents the block diagonal matrix with $M_i$ on the diagonal, and $\mathrm{col}(M_1, M_2, \cdots, M_N)$ denotes the column-stacked matrix $\begin{bmatrix} M_1^{\top}, M_2^{\top}, \cdots, M_N^{\top} \end{bmatrix}^{\top}$. $I_m \in \mathbb{R}^{m \times m}$ is the $m$-dimensional identity matrix, and $\mathbf{1}_{N} \in \mathbb{R}^{N}$ is the column vector of all ones. Let $x,e\in\mathbb{R}^n$ and $u\in\mathbb{R}^r$, for a nonlinear function $\varphi(\cdot):\mathbb{R}^n\times\mathbb{R}^r\mapsto\mathbb{R}$, the difference in its value between $(x+e,u)$ and $(x,u)$ is presented as $\Delta_{\varphi}(x,e)\triangleq\varphi(x+e,u)-\varphi(x,u)$. For a sequence $x_a,\cdots,x_b$ where $a<b$ are two indexes, the sub-vector $x_{[a,b]}$ is denoted by $x_{[a,b]} = \mathrm{col}(x_a, x_{a+1}, \dots, x_b)$. $\max(x_{[a,b]})$ and $\min(x_{[a,b]})$ represent the maximum and minimum value of the subsequence $x_a,\cdots,x_b$, separately, and $\mathrm{sum}(x_{[a,b]})$ denotes $\sum^b_{i=a}x_i$.
+
+\subsection{Preliminaries on graph theory}
+\vspace*{-0.3 cm}
+Firstly some graph theory is reviewed here.
+Consider a directed connected graph $\mathcal{G}(\mathcal{N},\mathcal{E},\mathcal{A})$, where $\mathcal{N}\triangleq\{1,2,\cdots,N\}$ is the node index set with node $i$ denoting the $i$th agent,  $\mathcal{E}\subseteq\mathcal{N}\times\mathcal{N}$ is the edge set of graph $\mathcal{G}$,  and $\mathcal{A}=(a_{ij})\in\mathbb{R}^{N\times N}$ is an adjacency matrix. 
+The adjacency matrix $\mathcal{A} = [a_{ij}] \in \mathbb{R}^{N \times N}$ corresponding to the graph $\mathcal{G}$ is defined such that $a_{ij} = 1$ if $(i,j) \in \mathcal{E}$,  and $a_{ij} = 0$ otherwise. 
+The corresponding Laplacian matrix $\mathcal{L}\triangleq(l_{ij})\in\mathbb{R}^{N\times N}$ is defined as $l_{ii} = \sum^N_{j=1}l_{ij}$ and $l_{ij}=-a_{ij}$, $i\ne j$. 
+Apparently, $\mathcal{L}\mathbf{1}_{N}\equiv0$.
+Therefore, $\mathbf{1}_{N}$ and $0$ are always an eigenvector and an eigenvalue of $\mathcal{L}$, respectively. 
+If there is always a directed path from the $i$th node to the $j$th node for $\forall(i,j)\in\mathcal{N}\times\mathcal{N}$ in $\mathcal{G}$, then graph $\mathcal{G}$ is strongly connected. 
+For a strongly connected graph, the following properties hold in {\it Lemma}~\ref{lemma:laplacian}. 
+\begin{lemma}(\cite{olfati2007consensus}).
+ \label{lemma:laplacian}
+     Assume $\mathcal{G}$ is a strongly connected directed graph. 
+     There exists a unique positive row vector $r \triangleq [r_1,\cdots,r_ N ]$ such that $r\mathbf{1}_N = N $ and $r\mathcal{L}=0$. 
+     Then we have $\hat{\mathcal{L}}\triangleq R\mathcal{L}+\mathcal{L}^\top R$ is positive semidefinite with $R\triangleq\mathrm{diag}(r_1,\cdots,r_N )$, and $\hat{\mathcal{L}}\mathbf{1}_N \equiv0$. 
+     And there exists a orthogonal matrix $U\triangleq[\mathbf{1}_N,\ U_2]$ such that $U^\top\hat{\mathcal{L}}U=\mathrm{diag}(0,\lambda_2,\cdots,\lambda_N )$ and $0\le\lambda_2\le\cdots\le\lambda_N $.
+ \end{lemma}
+
+    \iffalse
+            The following lemmas will be used to demonstrate the main result of this paper:
+            
+            \begin{lemma}
+                (\cite{zemouche2013lmi}).
+                \label{lemma:zemouche_ineq}
+               Considering function $\Psi:\mathbb{R}^n\mapsto\mathbb{R}^n$, two following items are equivalent.
+                \begin{itemize}
+                    \item $\Psi$ is $\gamma_\Psi$-Lipschitz with respect to its argument i.e:
+                    \[\|\Psi(X)-\Psi(Y)\|\le\gamma_\Psi\|X-Y\|,\ \forall X,Y\in\mathbb{R}^n.\]
+                    \item For $\forall i,j=1,\cdots,n$, $\exists \psi_{ij}:\mathbb{R}^n\times\mathbb{R}^n\mapsto \mathbb{R}$, and $\underline{r}_{\psi_{ij}}$, $\bar{r}_{\psi_{ij}}$ such that $\forall X,Y\in\mathbb{R}^n$,
+                    \[\Psi(X)-\Psi(Y)=\sum^n_{i=1}\sum^n_{j=1}\psi_{ij}H_{ij}(X-Y),\]
+                    with
+                    \[ \underline{r}_{\psi_{ij}}\le\psi_{ij}\le\bar{r}_{\psi_{ij}},\]
+                    where $\psi_{ij}\triangleq\psi(X^{Y_{j-1}},X^{Y_j})$ and $H_{ij}=\nu_n(i)\nu_n^\top(j)$, $\nu_n(i)$ means the $i$th vector of the canonical basis of $\mathbb{R}^n$.
+                \end{itemize}
+            \end{lemma}
+            
+            \begin{lemma}
+                (\cite{nguyen2016observer}).
+                \label{lemma:young_ineq}
+                Let $X$ and $Y$ be two matrices of appropriate dimensions. Then for any invertible matrix $S$ and scalar $\mu>0$, we have
+                \[X^\top Y+Y^\top X\le \mu X^\top SX+\mu^{-1}Y^\top S^{-1}Y.\]
+            \end{lemma}
+    \fi
+
+\subsection{Problem formulation}
+\vspace*{-0.3 cm}
+
+We consider a class of interconnected nonlinear MAS composed of $N$ agents, described by:
+\begin{equation}
+    \begin{aligned}
+        \left\{\begin{array}{l}
+                 \dot{x}_i= A_{n_i}x_i+B_{n_i}\varphi_i(x_{[1,i]},u_i) \\
+                 y_{i} = C_{n_{i}}x_{i}
+            \end{array}\right., \ \forall i \in \mathcal{N},
+    \end{aligned}\label{eq:sys}
+\end{equation}
+where $x_i\triangleq\mathrm{col}(x_{i,1},\cdots,x_{i,n_i})\in\mathbb{R}^{n_i}$ is the state vector of each agent, 
+$y_i\in\mathbb{R}$ is the scalar measurement output of agent $i$, meaning each agent measures only a single state component $x_i$.
+The matrices $A_{n_i}$, $B_{n_i}$ and $C_{n_i}$ are
+\begin{equation*}
+    \begin{aligned}
+        &A_{n_i}= \begin{bmatrix}
+        0_{(n_{i}-1) \times 1} & {I_{(n_{i}-1)}} \\
+        0 & 0_{  1 \times (n_{i}-1)}
+    \end{bmatrix},\ B_{n_i}= \begin{bmatrix}
+        0_{(n_{i}-1)\times1 }, \\ 1
+    \end{bmatrix},\\ 
+    &
+    C_{n_i} = \begin{bmatrix}
+        1 & 0_{1 \times (n_{i}-1)}
+    \end{bmatrix}.
+    \end{aligned}
+\end{equation*}
+nonlinear function $\varphi_i : \mathbb{R}^{1+\mathrm{sum}(n_{[1,i]})}\mapsto \mathbb{R}$ is assumed to be globally Lipschitz for any $u\in\mathbb{R}$ and $x,\Delta x\in\mathbb{R}^n$:
+\[\big\|\varphi_i\left(x_{[1,i]}+\Delta x_{[1,i]},u_i\right)-\varphi_i\big(x_{[1,i]},u_i\big)\big\|\le L_{\varphi i}\sum^i_{j=1}\big|\Delta x_{j,k}\big|.\]
+The structure here reflects a triangular dependency among the subsystems' dynamics.
+It also appeared as the nonlinear observable triangular form or state--affine form (\cite{gauthier2001deterministic}).
+In \cite{hammouri2010high}, a multi--output high--gain observer can achieve the state estimation for this class of nonlinear systems.
+
+With the definition of the collective state as $x\triangleq\mathrm{col} (x_1,\cdots,x_N) \in \mathbb{R}^n$, where $n \triangleq \mathrm{sum}(n_{[1,N]})$, the collective dynamic of the system~\eqref{eq:sys} can be obtained as following:
+\begin{equation}
+    \left\{\begin{aligned}
+        \dot{x} &= A x + B \varphi(x,u), \\
+        y_{i} &= C_{i} x,
+    \end{aligned}\right. \quad \forall i\in\mathcal{N},
+    \label{eq:collective_x}
+\end{equation}
+where $\varphi(x,u) \triangleq \mathrm{col} \big( \varphi_1(x_1,u_1), \cdots, \varphi_N(x,u_N)\big)$ and $u\triangleq\mathrm{col}(u_1,\cdots,u_N)$, 
+\begin{equation}
+    \begin{aligned}
+        &A\triangleq\mathrm{diag}(A_{n_1},\cdots,A_{n_{N}}),\
+        B\triangleq\mathrm{diag}(B_{n_1},\cdots,B_{n_{N}}),\\
+        &C_i \triangleq \left[0_{1\times\mathrm{sum}(n_{[1,i-1]})},C_{n_i},0_{1\times\mathrm{sum}(n_{[i+1,N)]}}\right].
+    \end{aligned} 
+\end{equation}
+
+The local high--gain observer implemented at agent $i$ to estimate the collective state $x$ is given by: 
+\begin{equation}
+    \begin{aligned}
+        \dot{\hat{x}}^{(i)}=&A\hat{x}^{(i)}+B\varphi(\hat{x}^{(i)},u)+TL_i\big(y_i-C_i \hat{x}^{(i)}\big)\\
+        &+\gamma T P_i^{-1}T^{-1}r_i\sum^N_{j=1}a_{ij}\big(\hat{x}^{(j)}-\hat{x}^{(i)}\big),\ i \in \mathcal{N},
+    \end{aligned}\label{eq:distributed_HGO}
+\end{equation}
+where $\hat{x}^{(i)} \in \mathbb{R}^{n}$ is the state estimation of system~\eqref{eq:collective_x} at $i$th agent.
+$a_{ij}$ is the entry of the adjacency matrix $\mathcal{A}$ of the communication graph $\mathcal{G}$ and $r_i$ is the $i$th entry of the positive row vector $r$ defined in {\it Lemma}~\ref{lemma:laplacian}.
+The high--gain matrix $T$ is block--diagonal with $T \triangleq \mathrm{diag}(T_1,\cdots, T_N)$, where each block $T_i$ is a dilation matrix: $T_i\triangleq\mathrm{diag}(\theta_i,\cdots,\theta_i^{n_i})$. where $\theta_i$ is the $i$th high--gain parameter. $\gamma$ is the consensu gain.
+To ensure that each agent's measurement feedback only corresponds to its local dynamics, the feedback matrice, $L_i$ and $P_i$ can be described by 
+\begin{equation}
+    \begin{aligned}
+        &L_i\triangleq\left[0_{1\times\mathrm{sum}(n_{[1,i-1]})},\ L_{n_i}^\top,\ 0_{1\times\mathrm{sum}(n_{[i+1,N]})}\right]^\top, \\ 
+        &P_{i}\triangleq\mathrm{diag}\left(I_{\mathrm{sum}(n_{[1,i-1]})},\ P_{n_{i}},\ I_{\mathrm{sum}(n_{[i+1,N]})}\right).
+    \end{aligned}
+\end{equation}
+
+The objective of the paper is to design the parameters $\theta_i$, $\gamma$, $P_{n_i}$, and $L_{n_i}$ to ensure the estimation error $e^{(i)}=\hat{x}^{(i)}-x$ achieves exponential stability.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\section{Stability Analysis}\label{sec:stability}
+\vspace*{-0.3 cm}
+
+In this section, the Lyapunov analysis of estimation error and the observable space decomposition technique are introduced to obtain the observer design conditions.
+
+\subsection{Transformed error dynamics}
+\vspace*{-0.3 cm}
+Denote $e \triangleq \mathrm{col} (e^{(1)},\cdots , e^{(N)})$ as the collective error and 
+\[\Lambda(e,x)\triangleq\mathrm{col}\Big(\Lambda^1\big(e^{(1)},x\big),\ \cdots,\ \Lambda^N\big(e^{(N)},x\big)\Big),\]
+where
+\[\Lambda^i(e^{(i)},x)\triangleq\left(A-TL_iC_i\right)e^{(i)}+B\Delta\varphi(x,e^{(i)}).\]
+
+Then, the collective error dynamic can be written as
+\begin{equation}
+    \begin{aligned}
+        \dot{e}=\Lambda (e,x)-\gamma \hat{T}P^{-1}\hat{T}^{-1}(R\mathcal{L}\otimes I_{n})e,
+    \end{aligned}
+\end{equation}
+where $\hat{T}\triangleq I_N\otimes T$, $P\triangleq\mathrm{diag}(P_1,\cdots,P_N)$, and $R=\mathrm{diag}(r_1,\cdots,r_N)$.
+
+Define the transformed error $\tilde{e}^{(i)}\triangleq T^{-1}e^{(i)}$, then the following transformed error dynamic can be obtained with \eqref{eq:collective_x} and \eqref{eq:distributed_HGO}:
+\begin{equation}
+    \begin{aligned}
+        \dot{\tilde{e}}^{(i)}=&\Theta(A-L_iC_i)\tilde{e}^{(i)}+T^{-1}B\Delta\varphi(T\tilde{e}^{(i)},x)\\
+        &+\gamma r_i P_i^{-1}\sum^N_{j=1}a_{ij}(\tilde{e}^{(j)}-\tilde{e}^{(i)}).
+    \end{aligned}\label{eq:transformed_error_dynamic}
+\end{equation}
+where $\Delta\varphi(T\tilde{e}^{(i)},x) \triangleq \varphi(x + T\tilde{e}^{(i)},u) - \Phi(x,u)$ and $\Theta \triangleq \mathrm{diag}(\theta_1I_{n_1},\cdots,\theta_{N}I_{n_N})$.
+
+Meanwhile, by denoting $\tilde{e} \triangleq \mathrm{col} (\tilde{e}^{(1)}, \cdots , \tilde{e}^{(N)})$ as the collective transformed error, where $\tilde{e}^{(i)}\triangleq T^{-1}e^{(i)}$, the following dynamic can be obtained:
+\begin{equation}
+    \begin{aligned}
+        \dot{\tilde{e}}=\hat{T}^{-1}\Lambda(\hat{T}\tilde{e},x)-\gamma P^{-1}(R\mathcal{L}\otimes I_n)\tilde{e}.
+    \end{aligned}\label{eq:stdhgo_whole_error_dynamic}
+\end{equation}
+
+\subsection{Observable space decomposition}
+\vspace*{-0.3cm}
+Before giving the Lyapunov analysis procedure of the transformed error dynamics~\eqref{eq:stdhgo_whole_error_dynamic}, an error decomposition technique that will be used later should first be discussed.
+The technique is based on the strongly connected graph $\mathcal{G}$ and {\it Lemma}~\ref{lemma:laplacian}, which is commonly used in the distributed nonlinear observer design (\cite{han2018simple,wu2021design, yang2022state, meng2025distributed}).
+
+Define the decomposition of the transformed error $\tilde{e}^{(j)}$ of each agent below:
+\[\eta \triangleq \frac{1}{N}{\rm sum}\big(\tilde{e}^{(k)}_{[1,N]}\big)=\frac{1}{N}(\mathbf{1}_N^\top\otimes I_{n})\tilde{e},\]
+\[ \zeta\triangleq\mathrm{col}(\zeta^{(1)},\ \cdots,\ \zeta^{(N)})=\mathrm{col}(\tilde{e}^{(1)}-\eta,\ \cdots,\ \tilde{e}^{(N)}-\eta),\]
+and noticed that $\mathbf{1}_N$ is a eigenvector of matrix $\hat{\mathcal{L}}$ defined in {\it Lemma}~\ref{lemma:laplacian}, where $\eta$ is the observable state for the jointly observable pair $(C,A)$ and the strongly connected graph $\mathcal{G}$, where the joint output matrix $C$ is defined as:
+\begin{equation}
+    \begin{aligned}
+        C\triangleq \mathrm{col} \left(C_{1}, \cdots , C_{N} \right)=\mathrm{diag}\big(C_{n_1},\cdots,C_{n_N }\big).
+    \end{aligned}
+\end{equation}
+
+And the following inequality can be obtained:
+\[\tilde{e}^\top(\hat{\mathcal{L}}\otimes I_n)\tilde{e}=\zeta^\top\Big[\big(U_2\Lambda_{\hat{\mathcal{L}}}U_2^\top\big)\otimes I_n\Big]\zeta\le-\gamma \lambda_2\zeta^\top\zeta, \]
+where $\Lambda_{\hat{\mathcal{L}}}=\mathrm{diag}(m,\lambda_2,\cdots,\lambda_N)$ and $\lambda_i$ follow the same definition in {\it Lemma}~\ref{lemma:laplacian}, and $m$ is a scalar can be randomly chosed since $\sum^N_{i=1}\zeta^{(i)}\equiv0$.
+
+\subsection{Lyapunov analysis}
+\vspace*{-0.3 cm}
+
+Here the following quadratic Lyapunov candidate function is considered:
+\begin{equation}
+    V\triangleq\sum_{i=1}^N \tilde{e}^{(i)^\top} {P_i} \tilde{e}^{(i)}=\tilde{e}^\top P\tilde{e},
+    \label{eq:lya}
+\end{equation}
+where $P = \mathrm{diag}\big(P_1,\cdots,P_N\big)$ is positive definite and to be designed. Our goal is to show that $\dot{V}\le-\mu V$ for some fixed positive scalar $\mu$, which would prove exponential convergence.
+
+The time derivative of $V$ along the trajectories of \eqref{eq:stdhgo_whole_error_dynamic} is given by \eqref{eq:lya_time_derivative}.
+\begin{equation}
+    \begin{aligned}
+        \dot{V}=\mathrm{Sym}\Big[\tilde{e}^\top P\hat{T}^{-1}\Lambda(\hat{T}\tilde{e},x)\Big]-\gamma \tilde{e}^\top\big(\hat{\mathcal{L}}\otimes I_{n}\big)\tilde{e},
+        \label{eq:lya_time_derivative}
+    \end{aligned}
+\end{equation}
+To make this expression tractable, we substitute the error decomposition $\tilde{e}=\mathbf{1}_N\otimes\eta+\zeta$ into $\dot{V}+\mu V\le0$. This naturally separates the expression into three parts:
+\begin{equation}
+    \begin{aligned}
+      V_\eta+V_\zeta+V_{\rm couple} = \dot{V}+\mu V,
+    \end{aligned}\label{eq:asymptotic target decomposition}
+\end{equation}
+where term $V_\eta$ relates to the stability of the average estimation error, while $V_\zeta$ captures the consensus dynamics, and $V_{\rm couple}$ contains the cross-terms. 
+
+Define $\Psi_{i,k}^{(j)}$ and $\Phi^{(j)}_{i,k}$ as following with scalars $\psi^{(j)}_{k,m},\phi^{(j)}_{i,k,m}$ and $m$th basis vector $\nu_{n_k}^\top(m)$ of space $\mathbb{R}^{n_i}$:
+\[\Psi_{i,k}^{(j)}\triangleq\sum^{n_k}_{m=1}\psi^{(j)}_{k,m}B_{n_i}\nu_{n_k}^\top(m),\ \Phi^{(j)}_{i,k}\triangleq\sum^{n_k}_{m=1}\phi^{(j)}_{i,k,m}B_{n_i}\nu_{n_k}^\top(m),\]
+the full expressions for the three components are given by:
+{\small
+    \begin{align}
+        &\begin{aligned}
+             V_\eta\triangleq&\sum^{N}_{i=1}\bigg\{\eta_i^\top\Big[ \theta_i \mathrm{Sym}\big(P'_{n_i}A_{n_i}-R_{n_i}C_{n_i}\big)+\mu P'_{n_i}\Big]\eta_i\\
+            &+2\theta_i^{-n_i}\eta_i^\top \sum^i_{k=1}\bigg[P_{n_i}\Psi_{i,k}^{(i)}T_k\eta_k+\sum^N_{\substack{j=1\\j\ne i}}\Psi_{i,k}^{(j)}T_k\eta_k\bigg]\bigg\},
+        \end{aligned}\nonumber\\
+        &\begin{aligned}
+            V_\zeta\triangleq&\sum^N_{i=1}\Bigg\{\zeta^{(i)^\top}_i\Big[\theta_i\mathrm{Sym}(P_{n_i}A_{n_i}-R_{n_i}C_{n_i})+\mu P_{n_i}\Big]\zeta^{(i)}_i\\
+            &+\theta_i\sum^N_{\substack{j=1\\j\ne i}}\zeta^{(j)^\top}_i\Big[\mathrm{Sym}(A_{n_i})+\mu I_{n_i}\Big]\zeta^{(j)}_i-\gamma\zeta_i^\top \big(\Lambda_{\hat{\mathcal{L}}}\otimes I_{n_i}\big)\zeta_i\\
+            &+2\theta_i^{-n_i}\sum^i_{k=1}\bigg[\zeta_i^{(i)^\top}P_{n_i}\Phi^{(i)}_{i,k}T_k\zeta_k^{(i)}+\sum^N_{\substack{j=1\\j\ne i}}\zeta_i^{(j)^\top}\Phi^{(j)}_{i,k}T_k\zeta_k^{(j)}\bigg]\Bigg\},
+        \end{aligned}\nonumber\\
+        &\begin{aligned}
+            V_{\rm couple} \triangleq&\sum^N_{i=1}\Bigg\{2\theta_i\eta_i^\top\Big[\sum^N_{\substack{j=1\\j\ne i}}\mathrm{Sym}(A_{n_i})\zeta^{(j)}_{i}\\
+            &\qquad\qquad+\mathrm{Sym}\big(P_{n_i}A_{n_i}-R_{n_i}C_{n_i}\big)\zeta_i^{(i)}\Big]\\
+                &+2\theta_i^{-n_i}\sum^i_{k=1}\eta^\top_i\bigg[P_{n_i}\Phi_{i,k}^{(i)}T_k\zeta_k^{(i)}+\sum^N_{\substack{j=1\\j\ne i}}\Phi^{(j)}_{i,k}T_k\zeta_k^{(j)}\bigg]\\
+                &+2\theta_i^{-n_i}\sum^i_{k=1}\eta^\top_i\bigg[T_k\Psi_{i,k}^{(i)^\top}P_{n_i}\zeta_k^{(i)}+\sum^N_{\substack{j=1\\j\ne i}}T_k\Psi^{(j)^\top}_{i,k}\zeta_k^{(j)}\bigg]\Bigg\}.
+        \end{aligned}\nonumber
+    \end{align}
+    }
+where $P'_{n_i}\triangleq P_{n_i}+(N-1)I_{n_i}$ and 
+\begin{equation}
+    \begin{aligned}
+        &\Delta_{\varphi i}(T_1(\eta_1+\zeta_1^{(j)}),\cdots,T_i(\eta_i+\zeta_i^{(j)}),x)\\
+        =&\sum^i_{k=1}\sum^{n_k}_{m=1}\bigg(\psi^{(j)}_{i,k,m}\nu_{n_k}^\top(m)T_k\eta_k+\phi^{(j)}_{i,k,m}\nu_{n_k}^\top(m)T_k\zeta_k^{(j)}\bigg),
+    \end{aligned}\nonumber
+\end{equation}
+where the scalars satisfy $\psi^{(i)}_{i,m,k}$, $\psi^{(j)}_{i,m,k}$, $\phi^{(i)}_{i,m,k}$, $\phi^{(j)}_{i,m,k}\in[-L_{\varphi i},\ L_{\varphi i}]$ according to the globally Lipschitz assumption and \textit{Lemma}~7 in (\cite{zemouche2013lmi}).
+
+Note that the $V_\eta$ and $V_\zeta$ can be reformulated as the following sum of quadratic terms:
+    
+\begin{equation}
+        \begin{aligned}
+            V_{\eta}=\sum^N_{i=2}\sum^{i-1}_{k=1}\begin{bmatrix}
+            \eta_i\\\eta_k
+        \end{bmatrix}^\top\begin{bmatrix}
+            \frac{1}{N-1}M_i&M_{ik}\\ M_{ik}^\top&\frac{1}{N-1}M_{k}
+        \end{bmatrix}\begin{bmatrix}
+            \eta_i\\\eta_k
+        \end{bmatrix},
+        \end{aligned}\label{eq:quadratic form_eta}
+\end{equation}
+\begin{align}
+    V_\zeta\le&\sum^N_{i=2}\sum^{i-1}_{k=1}\Bigg\{\begin{bmatrix}
+            \zeta^{(i)}_i\\\zeta_k^{(i)}
+        \end{bmatrix}^\top\begin{bmatrix}
+            \frac{1}{N-1}W_i^{(i)}&W_{i,k}^{(i)}\\W_{i,k}^{(i)^\top}&\frac{1}{N-1}W_k^{(i)}
+        \end{bmatrix}\begin{bmatrix}
+            \zeta^{(i)}_i\\\zeta_k^{(i)}
+        \end{bmatrix}       \nonumber\\
+        &+\begin{bmatrix}
+            \zeta^{(k)}_i\\\zeta_k^{(k)}
+        \end{bmatrix}^\top\begin{bmatrix}
+            \frac{1}{N-1}W_i^{(k)}&W_{i,k}^{(k)}\\W_{i,k}^{(k)^\top}&\frac{1}{N-1}W_k^{(k)}
+        \end{bmatrix}\begin{bmatrix}
+            \zeta^{(k)}_i\\\zeta_k^{(k)}
+        \end{bmatrix}       \label{eq:quadratic form_zeta}\\
+        &+\sum^{N}_{\substack{j=1\\j\ne i\\j\ne k}}\begin{bmatrix}
+            \zeta^{(j)}_i\\\zeta_k^{(j)}
+        \end{bmatrix}^\top\begin{bmatrix}
+            \frac{1}{N-1}W_i^{(j)}&W_{i,k}^{(j)}\\W_{i,k}^{(j)^\top}&\frac{1}{N-1}W_k^{(j)}
+        \end{bmatrix}\begin{bmatrix}
+            \zeta^{(j)}_i\\\zeta_k^{(j)}
+        \end{bmatrix}\Bigg\}    \nonumber,
+\end{align}
+with the definition below $\forall i,j,k\in\mathcal{N}; k\in[1,i); j\ne i,k$:
+\begin{align}
+    &\begin{aligned}\nonumber
+         M_i = &\theta_i\mathrm{Sym}\big(P'_{n_i}A_{n_i}-R_{n_i}C_{n_i}\big)+\mu P'_{n_i}\\
+        &+2\theta_i^{-n_i}\Bigg(P_{n_i}\Psi^{(i)}_{i,i}+\sum^{N}_{\substack{j=1\\j\ne i}}\Psi^{(j)}_{i,i}\Bigg)T_i,
+    \end{aligned}\\
+    &\begin{aligned}\nonumber
+        M_{ik}=\theta_i^{-n_i}\Bigg(P_{n_i}\Psi^{(i)}_{i,k}+\sum^{N}_{\substack{j=1\\j\ne i}}\Psi^{(j)}_{i,k}\Bigg)T_k,
+    \end{aligned}\\
+    &\begin{aligned}\nonumber
+        W_{i}^{(i)}=&\theta_i\mathrm{Sym}\big(P_{n_i}A_{n_i}-R_{n_i}C_{n_i}\big)-\gamma\lambda_2 I_{n_i}\\
+        &+\mu P'_{n_i}+2\theta_i^{-n_i}P_{n_i}\Phi^{(i)}_{i,i}T_i,
+    \end{aligned}\\
+    &\begin{aligned}\nonumber
+        W_{i}^{(j)}=&\theta_i\mathrm{Sym}\big(A_{n_i}\big)-\gamma\lambda_2 I_{n_i}+\mu I_{n_i}\\
+        &+2\theta_i^{-n_i}P_{n_i}\Phi^{(j)}_{i,i}T_i,
+    \end{aligned}\\
+    &\begin{aligned}\nonumber
+        W^{(j)}_{i,k}=\theta_i^{-n_i}\Phi^{(j)}_{i,k}T_k,\quad W^{(i)}_{i,k}=\theta_i^{-n_i}P_{n_i}\Phi^{(i)}_{i,k}T_k.
+    \end{aligned}
+\end{align}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\section{New Observer Synthesis Conditions}\label{sec:observer}
+\vspace*{-0.3 cm}
+In this section, the previous analysis will first be used to obtain an intermediate result. Then a LMI-based observer design procedure will be presented. Where the upper bound of both high--gain parameter $\theta_i$ and consensus gain $\gamma$ can be obtained.
+\vspace*{-0.2 cm}
+\subsection{Preliminary result}
+\vspace*{-0.3 cm}
+Before presenting the main theorem, serval intermediate results are presented for improving the readability and clarity of the main theorem.
+
+\begin{proposition}
+    \label{prop:nonlinear bound}
+    Let $x\in\mathbb{R}^n$ be a vector and $\nu_n(i)$ be the $i$th basis vector of $\mathbb{R}^n$.
+    For any set of scalar coefficients $\phi_1,\phi_2,\cdots,\phi_n$ bounded by the closed interval $[-L,L]$, the following inequality holds:
+    \begin{equation}
+        \begin{aligned}
+            x^\top\bigg(\sum^n_{i=1}\psi_i\nu_n(n)\nu_n^\top(i)\bigg)x\le \frac{L}{2}(\sqrt{n}+1)\|x\|^2.
+        \end{aligned}\label{eq:nonlinear bound}
+    \end{equation}
+\end{proposition}
+\begin{proof}
+Let $M = \sum^n_{i=1}\phi_i\nu_n(n)\nu_i^\top(i)$. The quadratic form is bounded by the norm of its symmetric part:
+\[x^\top Mx = \frac{1}{2}x^\top\mathrm{Sym}(M)x\le \frac{1}{2}\big\|\mathrm{Sym}(M)\big\|\|x\|^2.\]
+Applying the coefficient bound  $|\phi_i|\le L$ and factor $L$ out of the norm
+\[\frac{1}{2}\|\mathrm{Sym}(M)\|=\frac{L}{2}\bigg\|\sum^n_{i=1}\mathrm{Sym}\big[\nu_n(n)\nu_n^\top(i)\big]\bigg\|.\]
+Since the euclidean norm can be calculated as \[\Big\|\sum^n_{i=1}\mathrm{Sym}\big[\nu_n(n)\nu_n^\top(i)\big]\Big\|=\sqrt{n}+1.\]
+Therefore, the inequality holds with
+\[x^\top Mx\le \frac{L}{2}(\sqrt{n}+1)\|x\|^2,\]
+and the proof ends.\qed
+\end{proof}
+\begin{proposition}
+    \label{prop:Veta}
+        Let the matrices $M_i$ and $M_{ik}$ be the components of $V_\eta$ as defined in (15). If the following matrix inequality holds for all $i \in \{1, \dots, N\}$:
+    \begin{equation}
+    M_i+N\alpha\cdot I_{n_i} + \sum_{k=1}^{i-1} \big\|M_{ik}\big\| I_{n_i} + \sum_{k=i+1}^{N} \big\|M_{ki}\big\| I_{n_i} \le 0.
+    \label{eq:prop eta}
+    \end{equation}
+    Then the average error component $V_\eta$ is upper bounded by $V_\eta \le -\alpha(\mathbf{1}_N\otimes\eta)^\top(\mathbf{1}_N\otimes\eta)$.    
+\end{proposition}
+\begin{proof}
+Recall from \eqref{eq:quadratic form_eta} that $V_\eta$ is a sum of quadratic terms for all pairs $(i, k)$ with $k < i$, and the cross-term $2\eta_i^\top M_{ik} \eta_k$ can be bounded using Young's Inequality \citep{nguyen2016observer} with $S=I_{n_i}$:
+$$
+2\eta_i^\top M_{ik} \eta_k  \le \big\|M_{ik}\big\| \big(\|\eta_i\|^2 + \|\eta_k\|^2\big).
+$$
+Substituting this bound into the expression for $V_\eta$, we get:
+\begin{align*}
+V_\eta &\le \sum^N_{i=2}\sum^{i-1}_{k=1} \bigg( \frac{1}{N-1}\eta_i^\top (M_i) \eta_i + \frac{1}{N-1}\eta_k^\top M_k \eta_k \\
+& \qquad \qquad  + \big\|M_{ik}\big\| \eta_i^\top \eta_i + \big\|M_{ik}\big\| \eta_k^\top \eta_k \bigg) \\
+&=  \sum^N_{i=2}\sum^{i-1}_{k=1} \eta_i^\top \left( \frac{1}{N-1}M_i + \big\|M_{ik}\big\|I_{n_i} \right) \eta_i \\
+& \quad + \sum^N_{i=2}\sum^{i-1}_{k=1} \eta_k^\top \left( \frac{1}{N-1}M_k +\big\|M_{ik}\big\|I_{n_k} \right) \eta_k.
+\end{align*}
+By swapping the order of summation in the second term and reorganizing, we can collect all terms related to a single $\eta_j$:
+\begin{equation}
+    \begin{aligned}
+        V_\eta+N\alpha\cdot\eta^\top\eta\le&  \sum_{j=1}^{N} \eta_j^\top \bigg[M_j+\bigg(N\alpha+\sum_{k=1}^{j-1}\|M_{jk}\|\\
+        &\qquad\qquad\qquad\quad  + \sum_{k=j+1}^{N}\|M_{kj}\|\bigg)I_{n_j} \bigg] \eta_j.
+    \end{aligned}\nonumber
+\end{equation}
+If the condition~\eqref{eq:prop eta} holds for each $j$, then every term in the summation is less than or equal to zero. Therefore, $V_\eta \le -N\alpha\cdot\eta^\top\eta=-\alpha(\mathbf{1}_N\otimes\eta)^\top(\mathbf{1}_N\otimes\eta)$.\qed
+\end{proof}
+\begin{proposition}
+    \label{prop:Vzeta}
+        Let the matrices $W_i^{(j)}$ and $W_{i,k}^{(j)}$ be the components of $V_\zeta$ as defined in (16). If the following matrix inequality holds for all $i, j \in \mathcal{N}$:
+    \begin{equation}
+    W_i^{(j)}+\beta I_{n_i} + \sum_{k=1}^{i-1} \big\|W_{ik}^{(j)}\big\| I_{n_i} + \sum_{k=i+1}^{N} \big\|W_{ki}^{(j)}\big\| I_{n_i} \le 0.
+    \label{eq:prop zeta}
+    \end{equation}
+    Then the consensus error component $V_\zeta$ is upper bounded by $V_\zeta \le -\beta\zeta^\top\zeta$.
+\end{proposition}
+\begin{proof}
+From \eqref{eq:quadratic form_zeta}, $V_\zeta$ is a sum of quadratic forms. For each fixed $j \in \{1, \dots, N\}$, we can define $V_\zeta^{(j)}$ as the portion of $V_\zeta$ associated with $\zeta^{(j)}$:
+\[V_\zeta^{(j)} = \sum_{i=2}^{N}\sum_{k=1}^{i-1} \begin{bmatrix} 
+\zeta_i^{(j)} \\ \zeta_k^{(j)} \end{bmatrix}^\top \begin{bmatrix} 
+\frac{1}{N-1}W_i^{(j)} & W_{i,k}^{(j)} \\ W_{i,k}^{(j)\top} & 
+\frac{1}{N-1}W_k^{(j)} \end{bmatrix} \begin{bmatrix} \zeta_i^{(j)} \\ 
+\zeta_k^{(j)} \end{bmatrix}. \]
+Using the same application of Young's Inequality as in the proof of {\it Proposition}~\ref{prop:Veta}, we can bound the cross term $2\zeta_i^{(j)\top} W_{i,k}^{(j)} \zeta_k^{(j)} \le \big\|W_{i,k}^{(j)}\big\| (\|\zeta_i^{(j)}\|^2 + \|\zeta_k^{(j)}\|^2)$.
+Substituting this into the expression for $V_\zeta^{(j)}$ and reorganizing the summation gives:
+\begin{equation}
+    \begin{aligned}
+       V_\zeta^{(j)}+\beta\zeta^{(j)^\top}&\zeta^{(j)}\le\sum_{i=1}^{N} \zeta_i^{(j)^\top} \bigg[
+ W_i^{(j)}+ \\
+         & \bigg(\beta+\sum_{k=1}^{i-1}\big\|W_{i,k}^{(j)}\big\|+\sum_{k=i+1}^{N}\big\|W_{k,i}^{(j)}\big\|\bigg)I_{n_i} \bigg]\zeta_i^{(j)}.
+    \end{aligned}\nonumber
+\end{equation}
+If the condition~\eqref{eq:prop zeta} holds for each $i$ and $j$, then $V_\zeta^{(j)} \le -\beta\zeta^{(j)^\top}\zeta^{(j)}$. Since $V_\zeta$ is the sum of all $V_\zeta^{(j)}$ over $j\in\mathcal{N}$, it follows that $V_\zeta \le -\beta\zeta^\top\zeta$.
+    \qed
+\end{proof}
+
+\subsection{Main result}
+\vspace*{-0.3 cm}
+
+Now the following theorem providing the conditions ensuring asymptotic convergence of state estimation can be provided below:
+\begin{theorem}\label{thm:main result}
+    Consider the MAS~\eqref{eq:sys} and distributed high--gain observer~\eqref{eq:distributed_HGO}. 
+    Let the convergence rate $\mu>0$ and $i$th agent's local stability margins $\tau_i>0$ be given. The estimation error $e^{(i)}$ converges exponentially to zero for all $i\in\mathcal{N}$ if there exist symmetric positive definite matrices $P_{n_i}$, full matrices $R_{n_i}$, high--gain parameter $\theta_i>1$ and a consensus gain $\gamma>1$ satifying the following conditions:
+    \begin{equation}
+        \begin{aligned}
+            \mathrm{Sym} \Big( P'_iA_{n_i}  &-R_iC_{n_i}\Big)\le -\tau_iP'_i,
+        \end{aligned}\label{eq:condition_DSTDHGO_LMIs}
+    \end{equation}
+    where $P'_i=(N-1)I_{n_i}+P_{n_i}$.
+    The high--gain parameters $\theta_i$ are chosen to satisfy the following inequality for all $i \in \mathcal{N}$:
+        \begin{align}
+                 \theta_i \ge& \frac{\mu+N+(\sqrt{n_i}+1)L_{\varphi i}}{\tau_i} 
+            + \sum_{k=1}^{i-1}\frac{\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}\|P'_{n_i}\|L_{\varphi i}}{\tau_i\lambda_{\min}(P'_{n_i})} \nonumber\\
+            & + \sum_{k=i+1}^{N}\frac{ \theta_k^{-n_k}\theta_i^{n_i}\sqrt{n_i}\|P'_{n_k}\|L_{\varphi k}}{\tau_i\lambda_{\min}(P'_{n_i})}.
+            \label{eq:condition_theta}
+        \end{align}
+    And the consensus gain $\gamma$ is chosen such that:
+        \begin{equation}
+            \begin{aligned}
+               \gamma \ge \frac{\beta + Y_{\max}}{\lambda_{2}},
+            \end{aligned}\label{eq:condition_gamma}
+        \end{equation}
+where $Y_{\max}$ is an upper bound on the coupled error dynamics. The positive scalars $\beta$ and $Y_{\rm max}$ are functions of the system and observer parameters that arise from the Lyapunov proof. Their explicit definitions are provided in Appendix~\ref{appen:def}.
+\end{theorem}
+\begin{proof}
+The proof will split into 4 steps. The first three steps will prove the upperbound of each component of object convergence. And in the last step, the target convergence can be achieved.
+
+\textbf{Step 1: Upper bound of average error.}
+Since the positive definite property of $P'_{n_i}$ can be verified with its definiton, we can multiply both sides of condition~\eqref{eq:condition_theta} by $P'_{n_i}$ to obtain a linear matrix inequality.
+With the LMI condition~\eqref{eq:condition_DSTDHGO_LMIs} the following quadratic inequality can be obtained : 
+\begin{align}
+            & \eta_i^\top\bigg\{\theta_i\mathrm{Sym}\big(P'_{n_i}A_{n_i}-R_{n_i}C_{n_i}\big) +(\sqrt{n_i}+1)L_{\varphi i}P'_{n_i}  \nonumber\\
+            &+(\mu+N)P'_{n_i}+ \frac{1}{\lambda_{\min}(P'_{n_i})} \sum_{k=1}^{i-1} \theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}\|P'_{n_i}\|L_{\varphi i}P'_{n_i} \nonumber\\
+           & + \frac{1}{\lambda_{\min}(P'_{n_i})} \sum_{k=i+1}^{N} \theta_k^{-n_k}\theta_i^{n_i}\sqrt{n_i}\|P'_{n_k}\|L_{\varphi k}P'_{n_i}\bigg\}\eta_i\le0.
+\end{align}
+Since $P'_{n_i}/\lambda_{\min}(P'_{n_i})-I_{n_i}$, and norm of matrix terms $M_{ik}$ and $M_{ki}$ can be calculated from its definition below:
+\[\|M_{ik}\|=\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}\|P'_{n_i}\|L_{\varphi i},\]
+\[\|M_{ki}\|=\theta_k^{-n_k}\theta_i^{n_i}\sqrt{n_i}\|P'_{n_k}\|L_{\varphi k}.\]
+Thus we have following inequality with {\it Proposition}~\ref{prop:nonlinear bound}:
+\begin{equation}
+    \begin{aligned}
+         & \eta_i^\top\bigg\{M_i +NP'_{n_i}+ \sum_{k=1}^{i-1} \big\|M_{ik}\big\| + \sum_{k=i+1}^{N} \big\|M_{ki}\big\|\bigg\}\eta_i\le0,    
+    \end{aligned}
+\end{equation}
+with $\alpha\|\eta_i\|^2\le\eta_i^\top P'_{n_i}\eta_i$, by using the result in {\it Proposition}~\ref{prop:nonlinear bound},we have $V_\eta\le \alpha\big(\mathbf{1}_N\otimes\eta\big)^\top\big(\mathbf{1}_N\otimes\eta\big)$.
+
+\textbf{Step 2: Upper bound of consensus error.}
+By the defining, $Y_{\max}$ is the maximum possible value of all the destabilizing terms across all $i$ and $j$ (as detailed in the Appendix), which is
+\[Y_{\rm \max}\le \max_{i,j,k\in\mathcal{N}}\Big[\big\|W_i^{(j)}+\gamma\lambda_2 I_{n_i}\big\| + (N-1)\big\|W_{i,k}^{(j)}\big\|\Big].\]
+And the condition~\eqref{eq:condition_gamma} will become
+\begin{align}
+    \begin{aligned}
+       \zeta_i^{(j)^\top}\bigg\{\beta-\gamma\lambda_2+\max_{i,j,k\in\mathcal{N}}\Big[&\big\|W_i^{(j)}+\gamma\lambda_2 I_{n_i}\big\| \\
+       &\quad+ (N-1)\big\|W_{i,k}^{(j)}\big\|\Big]\bigg\}\zeta_i^{(j)}\le0.
+    \end{aligned}\nonumber
+\end{align}
+Since for any square matrix $M\in\mathbb{R}^{n\times n}$ and any vector $x\in\mathbb{R}^n$, $x^\top Mx\le \|M\|\|x\|^2$ always holds. We can obtain the following matrix inequality
+\[\zeta_i^{(j)^\top}\bigg\{\beta I_{n_i}+\max_{i,j,k\in\mathcal{N}}\Big[W_i^{(j)} + (N-1)\big\|W_{i,k}^{(j)}\big\| I_{n_i}\Big]\bigg\}\zeta^{(j)}\le0.\]
+And we have the following matrix sum inequality holds since we choose the maximum value in 
+\begin{align}
+    \begin{aligned}
+       &\zeta^{(j)^\top}_i\bigg[W_i^{(j)}+\bigg(\sum_{k=1}^{i-1}\big\|W_{i,k}^{(j)}\big\|+\sum_{k=i+1}^{N}\big\|W_{k,i}^{(j)}\big\|\bigg) I_{n_i}\bigg]\zeta_i^{(j)}\\
+       \le&\zeta_i^{(j)^\top}\Bigg\{\sum_{\substack{k=1\\k\ne i}}^{N}\max_{i,j,k\in\mathcal{N}}\Big[\frac{1}{N-1}W_i^{(j)} +\big\|W_{i,k}^{(j)}\big\| I_{n_i}\Big]\Bigg\}\zeta_i^{(j)^\top}.
+    \end{aligned}\nonumber
+\end{align}
+Therefore the condition of {\it Proposition}~\ref{prop:Vzeta} holds, and we have $V_\zeta\le \beta\zeta^\top\zeta$.
+
+\textbf{Step 3: Separating the coupling terms.}
+All the cross-products between $\eta$ and $\zeta$ in the term $V_{\rm couple}$ can be expressed conceptually as $(\mathbf{1}_N\otimes\eta)^\top \mathcal{C} \zeta$, where $\mathcal{C}$ is matrix of gains. From the definiton in Appendix, $c\le\big\|\mathcal{C}\big\|$ bound norm of this coupling operator, $V_{\rm couple} \le \alpha  \|\mathbf{1}_N\otimes\eta\|^2 + c^2\|\zeta\|^2/\alpha$ can be obtained with Young's inequality with $S = \alpha$.
+Substituting the definition of $\beta$, $V_{\rm couple}$ can be bounded by $V_{\rm couple} \le \alpha N \|\eta\|^2 + \beta \|\zeta\|^2$.
+
+\textbf{Step 4: Final Result.}
+By using~\eqref{eq:asymptotic target decomposition} and summing the results of previous steps, we get the final bound as follows:
+\[\dot{V} + \mu V
+         \le -\alpha N \|\eta\|^2-\beta \|\zeta\|^2 + (\alpha N \|\eta\|^2 + \beta \|\zeta\|^2)=0.\]
+This implies $\dot{V} \le -\mu V$, which completes the proof of exponential stability.\qed
+\end{proof}
+
+\subsection{Numerical design procedure}
+\vspace*{-0.3cm}
+Note that the stability analysis above yields coupled inequalities for the high--gain parameters $\theta_i$ and $\theta_j$, making it difficult to build a algorithm. An extra constraint is added to avoid this situation: $\theta_i^{n_i} \ge \theta_j^{n_j}$ for any $i\ge j$.
+
+By substituting the new added condition $\theta_k^{n_k}\theta_i^{-n_i} \le 1$ when $i>k$, the requirements for $\theta_i$ reduce to the following two equations:
+\begin{subequations}
+\begin{align}
+\theta_i \ge&\ \theta_k^{\frac{n_k}{n_i}}, \quad \forall i>k, \label{eq:theta_iteration_extra} \\
+\theta_i \ge&\ \frac{N+\mu+(\sqrt{n_i}+1)L_{\varphi i}}{\tau_i} + \sum^{i-1}_{k=1}\frac{\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}\|P'_{n_i}\|L_{\varphi i}}{\tau_i\lambda_{\min}(P'_{n_i})}\nonumber\\
+&\ +\sum^N_{k=i+1} \frac{\sqrt{n_i}\|P'_{n_k}\|L_{\varphi k}}{\tau_i\lambda_{\min}(P'_{n_i})},\ \forall i\in\mathcal{N}, \label{eq:theta_iteration}
+\end{align}
+\end{subequations}
+
+Since all parameters $P'_{n_i}$, $R_{n_i}$ and $\tau_i$ are known from the solving the LMIs, the required $\theta_i$ values can now be determined iteratively from $i=1$ to $N$. And the algorithm is shown in Algorithm~\ref{alg:observer_design_user}.
+
+\begin{algorithm2e}[h!]
+    \SetAlgoLined
+    \label{alg:observer_design_user}
+    \caption{Observer Design Procedure}
+    \SetKwInOut{KwIn}{Inputs}
+    \SetKwInOut{KwOut}{Outputs}
+    \KwIn{
+        $A_{n_i}$, $C_{n_i}$,$\mathcal{L}$, $r$, $\mu > 0$, $\tau_i > 0$, $L_{\varphi i}$ for $i \in \mathcal{N}$, $\alpha\gg 1$, $c=0$, $Y_{\rm max} =0$\;
+    }
+    \KwOut{
+        $P_{n_i}$, $L_{n_i}$, $\theta_i > 1$, $\gamma > 1$\;
+    }
+    
+    Step 1: Calculate feedback matrices:
+    
+    \For{$i = 1$ \KwTo $N$}{
+        Define $P'_{i} = (N-1)I_{n_i} + P_{n_i}$\;
+        Solve the LMI~\eqref{eq:condition_DSTDHGO_LMIs} for $P_{n_i} > 0$ and $R_{n_i}$\;
+        $L_{n_i} \leftarrow P^{-1}_{n_i}R_{n_i}$\;
+    }
+    
+    Step 2: Calculate high--gain parameters:
+    
+    \For{$i = 1$ \KwTo $N$}{
+        \For{$k = 1$ \KwTo $i-1$}{
+            $\theta_i \leftarrow \mathrm{max}(1,\text{RHS of \eqref{eq:theta_iteration_extra}})$\;
+        }
+        $\theta_i \leftarrow \mathrm{max}(1,\text{RHS of \eqref{eq:theta_iteration}})$\;
+    }
+    
+    Step 3: Calculate the consensus gain:
+    
+    \For{$i = 1$ \KwTo $N$}{
+            \For{$k = 1$ \KwTo $i-1$}{
+                $Y_{\max} \leftarrow \text{RHS of \eqref{eq:maxvalue of distributed gain condition}}$\;
+                $c \leftarrow \mathrm{max}(1,\text{RHS of \eqref{eq:max norm of Vcoupling}})$\;
+            }
+        $\alpha \leftarrow \mathrm{min}\Big(\alpha,\lambda_{\min}\big(P_{n_i}+(N-1)I_{n_i}\big)\Big)$\;
+    }
+    $\displaystyle\beta \leftarrow \frac{c^2}{\alpha}$\;
+    $\lambda_2 \leftarrow \mathrm{min}\Big\{\lambda\big(R\mathcal{L}+\mathcal{L}^\top R\big)\Big|\lambda> 0\Big\}$\;
+    $\displaystyle\gamma \leftarrow \mathrm{max}\Big(1,\ \frac{(\beta + Y_{\max})}{\lambda_{2}}\Big)$.
+\end{algorithm2e}
+
+\begin{remark}
+Note that setting of $\alpha$ in the Theorem~\ref{thm:main result} may result in a large distributed gain $\gamma$. By redefining the convergence lower bound as $\displaystyle\alpha=\min_{i=1}^{N}\frac{2\tau_i\theta_i\lambda_{\min}(P'_{n_i})}{N}$, we obtain the following new conditions for $\theta_i$:
+\begin{equation}
+    \begin{aligned}
+        \frac{\theta_i}{2} \ge&\ \frac{\mu+(\sqrt{n_i}+1)L_{\varphi i}}{\tau_i} + \sum^{i-1}_{k=1}\frac{\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}\|P'_{n_i}\|L_{\varphi i}}{\tau_i\lambda_{\min}(P'_{n_i})}\nonumber\\
+        &\ +\sum^N_{k=i+1} \frac{\sqrt{n_i}\|P'_{n_k}\|L_{\varphi k}}{\tau_i\lambda_{\min}(P'_{n_i})},\ \forall k=1,\cdots,i-1\label{eq:theta_iteration_remark}
+    \end{aligned}
+\end{equation}
+It is obvious that the value of $\gamma$ is reduced when $\theta_i$ is large. However, from \eqref{eq:theta_iteration_remark}, the required values for all high--gain parameters are almost doubled compared to the original method. A balance between the value of $\theta_i$ and $\gamma$ is required when solving for the parameters.
+\end{remark}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\section{Validation on a nonlinear vehicle platoon model}\label{sec:application}
+\vspace*{-0.3cm}
+In this section, a vehicle platoon model is introduced to validate the effectiveness of our method, and the simulation results are obtained using MATLAB. 
+
+\vspace*{-0.3cm}
+\subsection{Nonlinear vehicle platoon model}
+\vspace*{-0.3cm}
+We consider an vehicle platoon system operating under a LCC strategy proposed in \cite{wang2021leading}, as shown in Fig.~\ref{fig:LCC system}.
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=8.4cm]{figure/Platoon.png}    % The printed column width is 8.4 cm.
+    % \def\svgwidth{\columnwidth}
+    % \includesvg[width = 8.4cm]{figure/Platoon}
+    \caption{LCC based platooning system structure} 
+    \label{fig:LCC system}
+\end{figure}
+
+The scheme is composed of $N$ HDVs with vehicle longitudinal dynamics model (\cite{rajamani2006vehicle}).
+\begin{equation}
+    \begin{aligned}
+        \left\{\begin{array}{l}
+    \dot{p}_i=v_i\\
+    \dot{v}_i=-\frac{C_{wi}}{m_i} v_i^2-\mu g+\frac{1}{m_iR_{di}}\mathcal{T}_i\\
+    \dot{\mathcal{T}}_i=\frac{1}{\tau_i}\Big[-\mathcal{T}_i+m_iR_{di}F_i(s_i,\dot{s}_i,v_i)\Big]
+\end{array}\right.,\ \forall i\in\mathcal{N}
+    \end{aligned}
+\end{equation}
+where $p_i$, $v_i$, $\mathcal{T}_i$, $m_i$, $C_{wi}$, $R_{di}$, $\tau_i$ separately represent the position, velocity, torque, mass, aerodynamic constant, tire diameter and engine time constant of $i$th HDV. $g$ is the gravitational acceleration. $v_h$ is the velocity of the virtual leader consider as the control input of the system. The control strategy $F_{1}(\cdot)=\alpha_{0}(v_h-v_{0})$ and $F_i(\cdot)=\alpha_i\big(V(s_i)-v_i\big)+\beta_i\dot{s}_i$ for $i\ne1$, where the $s_i=p_{i-1}-p_{i}$ is the measurable gap distance between $(i-1)$th and $i$th HDV, scalars $\alpha_i$ and $\beta_i$ are control parameters of each HDV, and
+\[V(s)=\left\{\begin{array}{l}0,\quad\quad s\le s_{st},\\\frac{v_{\max}}{2}\Big[1-\cos\Big(\pi\frac{s-s_{st}}{s_{go}-s_{st}}\Big)\Big],\quad s_{st}<s<s_{go},
+\\v_{\max},\quad s\ge_{go},\end{array}\right.\] 
+
+To obtain the triangular form, we define $v_{si}$ and $a_{si}$ are the change rate and acceleration of gap $s_i$, separately. And, the state variables $x_1=[p_1,\ v_1,\ a_1]$, $x_i = [s_i,\ v_{si},\ a_{si}]^\top$ for $i\in\mathcal{N}-\{1\}$, the model can be presented as below
+\begin{subequations}
+\begin{align}
+    &\begin{aligned}
+        &\text{Leader HDV:}\left\{\begin{array}{l}
+\dot{x}_1=A_3x_1+B_3\dot{a}_1\\
+y_1=p_1=C_3x_1
+\end{array}\right.,
+    \end{aligned}\\
+    &\begin{aligned}
+        &\text{Follower HDV:}\left\{\begin{array}{l}
+\dot{x}_i=A_3x_i+B_3(\dot{a}_{i-1}-\dot{a}_i)\\
+y_i=s_i=C_3x_i
+\end{array}\right.,
+    \end{aligned}
+\end{align}
+\end{subequations}
+where $\varphi_i(x_1,\cdots,x_i)=\dot{a}_{i-1}-\dot{a}_i$ with
+\begin{equation}
+    \begin{aligned}
+        &\dot{a}_i = -\frac{2 C_{wi}}{m_i}v_ia_i-\frac{C_{wi}}{m_i^2\tau_i}v_i^2-\frac{1}{\tau_i}a_i-\frac{\mu g}{\tau_i}\\
+        &\quad\quad+\frac{1}{\tau_i}\cdot\begin{cases}
+            \alpha_0\big(v_h-v_{i}\big),\quad \mathrm{if}\ i=1,\\
+            \alpha_i\big[V(s_i)-v_{i}\big]+\beta_iv_{si},\quad \mathrm{if}\  i\in \mathcal{N}-\{1\},
+        \end{cases}
+    \end{aligned}\nonumber
+\end{equation}
+where the states of each follower vehicle's state are
+\[v_i=v_1 - \sum_{j=2}^{i} v_{s(j)}, \quad a_i=a_1 - \sum_{j=2}^{i} a_{s(j)}.\]
+\vspace*{-0.3 cm}
+\subsection{Simulation result}
+\vspace*{-0.3 cm}
+Here we consider the vehicle platoon composed of $N=4$ HDVs including the leader vehicle. The vehicle parameters are listed in Table~\ref{tb:parameters}.
+\begin{table}[h!]
+\begin{center}
+\caption{Parameter settings}\label{tb:parameters}
+\begin{tabular}{ccccc}
+\toprule
+Parameters & HDV $1$ & HDV $2$ & HDV $3$ & HDV $4$ \\
+\midrule
+$\mu$ & 0.015 & 0.015 & 0.015 & 0.015 \\
+$C_{wi}$ & 0.6512 & 0.6512 & 0.6512 & 0.6512  \\
+$R_{di}$ & 0.3 & 0.4 & 0.3 & 0.4  \\
+$m_i$ & 2417.0 & 2720.3 & 2000.1 & 2302.3 \\
+$\tau_i$ & 0.30 & 0.33 & 0.36 & 0.4 \\
+$v_{\rm max}$ & 20 & 20 & 20 & 20\\%\multicolumn{4}{c}{20} \\
+$[s_{st},\ s_{sg}]$ & $[5,\ 35]$ & $[5,\ 35]$ & $[5,\ 35]$ & $[5,\ 35]$\\%  \multicolumn{4}{c}{}  \\
+$\alpha_i$ & 0.5500 & 0.5576 & 0.5511 & 0.5624  \\
+$\beta_i$ &  No need & 1.1815 & 1.1876 & 1.2047  \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{table}\vspace*{-0.3cm}
+
+The communication topology between each vehicle is the strongly connected directed graph shown in Fig.~\ref{Fig:Communication Graph}.
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=8.4cm]{figure/Graph.png}    % The printed column width is 8.4 cm.
+    % \includesvg[width=8.4cm]{figure/Graph}
+    \caption{Communication graph}
+    \label{Fig:Communication Graph}
+\end{figure}\vspace*{-0.3cm}
+
+With Lipschitz constant calculated as
+\[L_{\varphi 1} = 3.3441,L_{\varphi 2}=3.0399,L_{\varphi 3}= 2.7908,L_{\varphi 4}=2.5113,\]
+the parameters of the distributed high--gain observer~\eqref{eq:distributed_HGO} can be calculated with Algorithm~\ref{alg:observer_design_user} as
+\begin{equation}
+\begin{aligned}\nonumber
+    L_{n_i} =& \begin{bmatrix}
+        1.5504&
+    3.9223&
+    1.6540
+    \end{bmatrix}^\top,\ \forall i\in\mathcal{N},\\ \theta_1 =&100.0001 ,\text{and } \theta_i =107.7622,\ \forall i\in\mathcal{N}-\{1\},\\
+\end{aligned}
+\end{equation}
+and the consensus gain $\gamma = 31816.7839$.
+
+The initial state of each vehicle are set as below:
+\begin{equation}
+    \begin{aligned}
+        &\text{System: }\begin{cases}
+            x_1(0) = [0,\ 10,\ 0];\ x_2(0) = [20,\ 10,\ 0];\\
+             x_i(0)=[20,\ 0,\ 0],\ i=3,4.
+        \end{cases}\\
+        &\text{Observer:}\begin{cases}
+            \hat{x}_1(0) = [-0.1,\ 12,\ 0];\ \hat{x}_2(0) = [19.9,\ 12,\ 0];
+            \\\hat{x}_i(0)=[20+(-0.1)^i,\ 0,\ 0],\ i=3,4.
+        \end{cases}\nonumber
+    \end{aligned}
+\end{equation}
+The input of the platoon is chosen as $v_h= 0$. Therefore the simulation result can be obtained and shown in Fig.~\ref{fig:LCC estimation result}. From the figure it demonstrates that each vehicle in the platoon can accurately and rapidly estimate the position, velocity, and acceleration of every other vehicle using only local and neighbor information.
+
+\begin{figure*}[h!]
+    \centering
+    % \includesvg[width=16.8cm]{figure/Estimation Result}
+    \includegraphics[width=16.8cm]{figure/Estimation Result.png}    % The printed column width is 8.4 cm.
+    \caption{Real--time data and estimation result of states of all vehicle dynamics.} 
+    \label{fig:LCC estimation result}
+\end{figure*}\vspace*{-0.3cm}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\section{Conclusion}\label{sec:conclusion}
+\vspace*{-0.3cm}
+This paper developed a design procedure for distributed high-gain observers for interconnected nonlinear systems, motivated by applications of vehicle platoons. By decomposing the error into its average and consensus components, a set of sufficient LMI conditions is introduced to decouple the remaining coupled terms in the Lyapunov derivations. This step transforms the observer parameter design into an optimization problem, which yields the lower bound of the high-gain parameter and the consensus gain. The effectiveness of the method is validated through simulations on a nonlinear vehicle platoon model, which is our motivation.
+
+% This paper has developed a complete and systematic methodology for designing distributed high--gain observers for a class of interconnected nonlinear triangular systems. Through a Lyapunov synthesis that unify the gain design, the proposed LMI conditions and lower bound of the gains are sufficient to guarantee the exponential convergence of the estimation error, providing a rigorous theoretical foundation for the design.
+% The effectiveness is validated through simulation on a vehicle platoon model, confirming its practical applicability and convergence performance.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\vspace*{-0.3cm}
+\appendix
+\section{Definition of Terms in Theorem~\ref{thm:main result}}\label{appen:def}
+\vspace*{-0.3cm}
+This appendix is devoted to providing a detailed presentation of the terms involved in Theorem~\ref{thm:main result}, and more specifically, in the consensus gain~\eqref{eq:condition_gamma}. First, the expanded expression of the term $Y_{\rm max}$ is given by
+\begin{equation}
+    \begin{aligned}
+        Y_{\rm max} \triangleq \max_{i,k,p} Y_p,\ \forall i,k\in\mathcal{N},\ k\le i,\ p\in\{1,\cdots,6\},
+    \end{aligned}\label{eq:maxvalue of distributed gain condition}
+\end{equation}
+where the expressions of $Y_p, p=1,\dots,6$, are given by:
+{\small
+\begin{align*}
+    Y_1 =&\theta_i\Big\|\mathrm{Sym}\big(P_{n_i}A_{n_i}-R_{n_i}C_{n_i}\big)\Big\|+\mu\|P_{n_i}\|\\
+        &+\Big[\sqrt{n_i}+1+( N-1)\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}\Big]L_{\varphi i}\|P_{n_i}\|, \\
+    Y_2=&\theta_k\Big\|\mathrm{Sym}\big(P_{n_k}A_{n_k}-R_{n_k}C_{k}\big)\Big\|+\mu\|P_{n_k}\|\\
+            &+(\sqrt{n_k}+1)L_{\varphi k}\|P_{n_k}\|+(N-1)\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}L_{\varphi i}, \\
+    Y_3 =&2\theta_i+\mu+(\sqrt{n_i}+1)L_{\varphi i}+(N-1)\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}L_{\varphi i}, \\
+    Y_4=&2\theta_k+\mu+(\sqrt{n_k}+1)L_{\varphi k}+(N-1)\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}L_{\varphi i}, \\
+    Y_5=&2\theta_i+\mu+(\sqrt{n_i}+1)L_{\varphi i}\\
+    &+(N-1)\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}L_{\varphi i}\|P_{n_i}\|,\\
+    Y_6=&2\theta_k+\mu+(\sqrt{n_k}+1)L_{\varphi k}\\
+    &+(N-1)\theta_i^{-n_i}\theta_k^{n_k}\sqrt{n_k}L_{\varphi i}\|P_{n_i}\|.
+\end{align*}
+}
+
+As for the remaining scalars, we have $\displaystyle\alpha = \min_{i=1}^{N}\lambda_{\min}(P'_{n_i})$, $\displaystyle \beta = \frac{c^2}{\alpha}$, and $c$ is given by:
+\begin{align}
+\label{eq:max norm of Vcoupling}
+    c \triangleq\max_{i=1}^{N}\max_{k=1}^{i-1}\bigg\{& \sqrt{n_k}L_{\varphi i},\ 2\theta_i+\mu+(\sqrt{n_i}+1)L_{\varphi i},\nonumber\\
+    &\sqrt{n_k}L_{\varphi i}\|P_{n_i}\|, \big[(\sqrt{n_i}+1)L_{\varphi i}+\mu\big]\|P_{n_i}\| \nonumber\\
+    &+\theta_i\Big\|\mathrm{Sym}\big(P_{n_i}A_{n_i}-R_{n_i}C_{n_i}\big)\Big\|\bigg\}.
+\end{align}
+
+\vspace*{-0.3cm}
+\bibliography{ifacconf}    
+
+\end{document}
