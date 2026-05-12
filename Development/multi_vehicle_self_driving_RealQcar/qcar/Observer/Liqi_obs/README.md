@@ -8,6 +8,22 @@ The main files are:
 - `config_distributed_high_gain.yaml`: default gains, topology, dynamics, and safety limits.
 - `root_review.tex`: theory notes for the Liqi observer structure.
 
+## Current Design
+
+The observer now keeps the existing public fleet state format:
+
+```text
+[x, y, theta, velocity, acceleration]
+```
+
+but runs the high-gain correction internally in transformed companion-like coordinates:
+
+```text
+z = [x, x_dot, x_ddot, y, y_dot, y_ddot]
+```
+
+This means the rest of the QCar stack still sees the same 5D fleet estimate, while the observer itself uses a more faithful high-gain state for measurement injection and consensus.
+
 ## What The Method Does
 
 Each vehicle runs its own observer. The observer estimates the state of every vehicle in the fleet, including itself and remote vehicles.
@@ -179,21 +195,30 @@ This term makes different vehicles' estimates agree with each other.
 
 ### Current QCar Implementation
 
-The current implementation in `distributed_high_gain_observer.py` is not an exact copy of either paper. It is a fleet-compatible engineering implementation.
+The current implementation in `distributed_high_gain_observer.py` is still a fleet-compatible engineering implementation, but it now includes the missing coordinate transformation.
 
-The current runtime fleet state is fixed by the existing QCar observer system:
-
-```text
-z = y = [x, y, theta, velocity, acceleration]
-```
-
-This is why the code now uses the same-size `z` and `y` vectors. It matches:
+The public runtime fleet state is still fixed by the existing QCar observer system:
 
 ```text
-fleet_states[:, vehicle_id]
+[x, y, theta, velocity, acceleration]
 ```
 
-and the V2V local-state message format.
+Internally, the observer maps that 5D state to:
+
+```text
+z = [x, x_dot, x_ddot, y, y_dot, y_ddot]
+```
+
+using:
+
+```text
+x_dot  = velocity * cos(theta)
+y_dot  = velocity * sin(theta)
+x_ddot = projection of acceleration and turning dynamics on x
+y_ddot = projection of acceleration and turning dynamics on y
+```
+
+The observer then applies the high-gain correction in this transformed `z` state and converts back to the standard 5D fleet state for publication.
 
 The prediction model uses bicycle kinematics:
 
@@ -205,15 +230,19 @@ velocity_next = velocity + acceleration * dt
 acceleration_next = acceleration
 ```
 
-Then the high-gain correction uses the full 5D error:
+Then the local correction uses companion-chain innovation on planar position and velocity:
 
 ```text
-innovation = y_received - z_predicted
+innovation = [x_error, y_error, x_dot_error, y_dot_error]
 ```
 
-with angle wrapping for `theta`.
+This is now closer to the practical local observer in `Compare_method_to_kalman_practical.m`:
 
-Then the distributed consensus correction uses the full 5D neighbor disagreement:
+- position error corrects position, velocity, and acceleration,
+- velocity error corrects velocity and acceleration,
+- heading is corrected separately from predicted yaw toward the velocity direction.
+
+Then the distributed consensus correction uses the transformed-state neighbor disagreement:
 
 ```text
 neighbor_estimate_of_target - my_estimate_of_target
@@ -227,12 +256,12 @@ neighbor_estimate_of_target - my_estimate_of_target
 | Local or distributed | Local | Distributed | Distributed |
 | Uses V2V | No | Yes, theoretically | Yes |
 | Uses consensus | No | Yes | Yes |
-| State form | `z = [X, X_dot, X_ddot, Y, Y_dot, Y_ddot]` | Chain states per subsystem | `z = [x, y, theta, velocity, acceleration]` |
-| Measurement | `y = [X, Y]` | local output `y_i = C_i x_i` | full V2V state report |
-| Model | transformed bicycle companion form | triangular/interconnected companion form | bicycle kinematics |
-| Theory match | Strong local HGO theory | Strong distributed HGO theory | Practical adaptation for fleet code |
+| State form | `z = [X, X_dot, X_ddot, Y, Y_dot, Y_ddot]` | Chain states per subsystem | internal `z = [x, x_dot, x_ddot, y, y_dot, y_ddot]`, public output remains 5D |
+| Measurement | `y = [X, Y]` | local output `y_i = C_i x_i` | direct V2V state report, injected as position-chain innovation |
+| Model | transformed bicycle companion form | triangular/interconnected companion form | bicycle prediction plus transformed high-gain correction |
+| Theory match | Strong local HGO theory | Strong distributed HGO theory | closer practical match than the old raw-5D correction |
 
-### Why We Did Not Directly Use Alai's 6D State
+### Why The Public Interface Is Still 5D
 
 Using Alai's exact state would require each vehicle estimate to be:
 
@@ -264,14 +293,14 @@ That would introduce extra problems:
 - harder consensus because neighbors would need to agree on 6D transformed states,
 - extra conversion back to 5D for controllers and plotting.
 
-So the current implementation keeps the high-gain and distributed ideas, but uses the QCar fleet state's native 5D form.
+So the current implementation keeps the QCar fleet state's native 5D public interface, but the observer no longer performs the correction directly in that mixed coordinate system.
 
 In short:
 
 ```text
 Alai = local high-gain observer after transforming bicycle model to 6D companion form.
 Liqi = distributed high-gain observer for interconnected companion-form systems.
-This code = QCar-compatible distributed high-gain observer using 5D bicycle kinematics.
+This code = QCar-compatible distributed high-gain observer with an internal 6D transformed state and a 5D published fleet state.
 ```
 
 ## Why It Is Called High-Gain
@@ -396,10 +425,10 @@ innovation = y_measured - z_state
 
 The heading error is wrapped so angle differences stay in `[-pi, pi]`.
 
-Then it applies:
+Then it applies a chain-form high-gain injection:
 
 ```text
-measurement_correction = D(theta) * observer_gain * innovation
+measurement_correction = T(theta) * L * [x_error, y_error]
 ```
 
 This is the high-gain part.
@@ -466,9 +495,15 @@ Main observer parameters are in `config_distributed_high_gain.yaml`.
 
 ### `observer`
 
-- `z_dim`: internal observer state size. This implementation expects `5`.
+- `coordinate_mode`: `chain_6d` uses the transformed state `z = [x, x_dot, x_ddot, y, y_dot, y_ddot]`.
+- `z_dim`: internal observer state size. In transformed mode this implementation expects `6`.
 - `high_gain_theta`: high-gain strength. Higher means faster but noisier correction.
-- `observer_gain`: per-state correction gain for `[x, y, theta, velocity, acceleration]`.
+- `measurement_output`: in transformed mode the default is `position_velocity`, so the observer uses both position and derived planar velocity innovation.
+- `use_practical_chain_update`: enables the MATLAB-style discrete chain correction.
+- `position_gain`, `position_to_velocity_gain`, `position_to_acceleration_gain`: gains for position innovation.
+- `velocity_gain`, `acceleration_from_velocity_gain`: gains for velocity innovation.
+- `yaw_correction_gain`, `min_speed_for_heading`: separate heading correction parameters.
+- `observer_gain`: fallback chain injection gain used by the non-practical transformed correction path.
 - `consensus_gain`: how strongly to follow neighbor fleet estimates.
 - `p_matrix`: matrix used in the distributed consensus transform. Default is identity.
 - `set_own_state_from_local`: keep the host vehicle column equal to its local state.
