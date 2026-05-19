@@ -1047,6 +1047,8 @@ class VehicleObserver:
                     "y": self.sensor_data["gps_position"][1],
                     "theta": self.sensor_data["gps_position"][2],
                     "valid": True,
+                    "timestamp": self._last_gps_sample_time,
+                    "age": self.sensor_data.get("gps_age", float("inf")),
                 }
 
             # Update local estimator with sensor data

@@ -9,10 +9,10 @@ local_estimator_type: high_gain_observer # local_estimator_type: Which local est
 enable_plotting: false # enable_plotting: Controls real-time visualization.
                         # true: Opens Matplotlib/MultiScope windows to show real-time plots of state, error, etc.
                         # false: No windows are opened.
-enable_recording: false # enable_recording: Controls data logging to CSV.
+enable_recording: true # enable_recording: Controls data logging to CSV.
                         # true: Logs data to scope_recordings/ (e.g., local_V0_120000.csv).
                         # false: No data is logged to these files.
-recording_overwrite: true # recording_overwrite:
+recording_overwrite: false # recording_overwrite:
                         # true: Overwrites the file (e.g., locl_V0.csv)
                         # false: Creates a new timestamped file every run (e.g., local_V0_123456.csv)
 plotting:
@@ -46,6 +46,28 @@ local:
   # ---------------------------------------------------------------------
   luenberger:
     observer_gain: 0.5  # Observer gain (0-1, higher = more aggressive correction)
+
+  # ---------------------------------------------------------------------
+  # Local High-Gain / practical observer
+  # ---------------------------------------------------------------------
+  high_gain_observer:
+    observer_mode: practical # practical = discrete observer from Liqi_obs/Hichem/Compare_method_to_kalman_practical.m.
+                             # classical = continuous high-gain equation from Hichem/HighGainObserver.m.
+    predict_model: 1
+    LX: [[11.73], [20.25], [-7.3]]
+    LY: [[11.73], [20.25], [-7.3]]
+    theta: 6.7205
+    pos_gain: 0.35
+    pos_to_vel_gain: 0.12
+    pos_to_acc_gain: 0.03
+    vel_gain: 0.30
+    acc_from_vel_gain: 0.10
+    yaw_correction_gain: 0.08
+    gps_heading_gain: 0.05
+    min_speed_for_heading: 0.5
+    max_speed: 5.0
+    max_accel: 8.0
+    max_position_innovation: 1.0
 
 
 
@@ -118,8 +140,3 @@ local:
 #         loss_type: 'composite_uio'
 #         uio_type: 'pi'  # Use PI observer from old system
 
-high_gain_observer:
-  predict_model: 1
-  LX: [[11.73], [20.25], [-7.3]]
-  LY: [[11.73], [20.25], [-7.3]]
-  theta: 6.7205

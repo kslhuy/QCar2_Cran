@@ -404,7 +404,6 @@ class LocalEstimatorFactory:
     ESTIMATOR_TYPES = {
         "ekf": EKFStateEstimator,
         "luenberger": LuenbergerStateEstimator,
-        "high_gain":  HighGainObserver,
     }
 
     @staticmethod
@@ -498,7 +497,7 @@ class LocalEstimatorFactory:
                 initial_pose=initial_pose, config=config, logger=logger
             )
         
-        if estimator_type == "high_gain_observer":
+        if estimator_type in ("high_gain_observer", "high_gain"):
             HighGainObserver = (
                 LocalEstimatorFactory._lazy_load_high_gain_observer()
             )
@@ -510,7 +509,7 @@ class LocalEstimatorFactory:
         if estimator_type not in LocalEstimatorFactory.ESTIMATOR_TYPES:
             raise ValueError(
                 f"Unknown estimator type: {estimator_type}. "
-                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys()) + ['neural_luenberger', 'robust_kalman_net', 'high_gain_observer']}"
+                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys()) + ['neural_luenberger', 'robust_kalman_net', 'high_gain_observer', 'high_gain']}"
             )
 
         estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]
