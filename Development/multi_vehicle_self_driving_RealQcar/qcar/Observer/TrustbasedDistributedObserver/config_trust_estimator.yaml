@@ -215,7 +215,7 @@ observer:
   # When true, clean_data / mixed_clean_data may re-anchor x/y to the clean
   # V2V target pose when attack flags are active. When false, keep x/y
   # continuity from the consensus/rollback estimate even under attack.
-  force_clean_pose_anchor: true
+  force_clean_pose_anchor: false
   # Final output low-pass filter on each target estimate:
   # x_filt = alpha * x_new + (1 - alpha) * x_prev
   # lower alpha = smoother but more lag
@@ -226,7 +226,7 @@ observer:
   attack_output_low_pass_alpha: 1.0
 
   # Trust-triggered contamination rollback
-  rollback_enabled: true
+  rollback_enabled: false
   rollback_window_size: 50
   # Fast rollback triggers:
   # - final_trust        = fallback, slower because Dirichlet/EMA has memory

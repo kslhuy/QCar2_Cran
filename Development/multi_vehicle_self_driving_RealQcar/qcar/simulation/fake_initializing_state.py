@@ -230,8 +230,24 @@ class FakeInitializingState(StateBase):
     def _initialize_telemetry(self) -> bool:
         """Initialize telemetry logging if enabled (matches real InitializingState)"""
         try:
-            if self.config.logging.enable_telemetry_logging:
-                self.vehicle_logic.logger.setup_telemetry_logging(self.config.logging.data_log_dir)
+            logging_cfg = self.config.logging
+            data_logging_enabled = any(
+                bool(getattr(logging_cfg, attr, False))
+                for attr in (
+                    "enable_telemetry_logging",
+                    "enable_fleet_estimation_logging",
+                    "enable_local_estimation_logging",
+                    "enable_following_leader_logging",
+                    "enable_trust_weight_logging",
+                )
+            )
+            if data_logging_enabled:
+                self.vehicle_logic.logger.setup_telemetry_logging(
+                    logging_cfg.data_log_dir,
+                    enable_telemetry=bool(
+                        getattr(logging_cfg, "enable_telemetry_logging", True)
+                    ),
+                )
             return True
         except Exception as e:
             self.logger.log_error("Telemetry initialization failed", e)

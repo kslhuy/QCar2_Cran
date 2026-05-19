@@ -956,6 +956,107 @@ def _fig_weights(times, rows, active, focus, host_id):
     return fig
 
 
+def _fig_fleet_estimation(times, rows, active, host_id):
+    """
+    Figure 3 - Fleet State Estimation.
+
+    This plot uses the observer's final fleet estimate columns (`est_*_<id>`)
+    and does not require a focus vehicle.
+    """
+    fig = plt.figure(figsize=(16, 13))
+    fig.suptitle(
+        f"Fleet State Estimation  (Host V{host_id}, All Observer Targets)",
+        fontsize=13,
+        fontweight="bold",
+    )
+    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.35, wspace=0.25)
+
+    def _plot_fleet_state(ax, prefix, title, ylabel, *, step=False):
+        n = 0
+        for vid in active:
+            arr = _col_to_array(rows, f"{prefix}_{vid}")
+            if not np.any(np.isfinite(arr)):
+                continue
+            if step:
+                ax.step(times, arr, where="post", label=f"V{vid}", lw=1.1, alpha=0.85)
+            else:
+                ax.plot(times, arr, label=f"V{vid}", lw=1.2, alpha=0.85)
+            n += 1
+        if n == 0:
+            _no_data(ax, title)
+        _style(ax, title, ylabel, xlabel="Time [s]")
+
+    ax = fig.add_subplot(gs[0, 0])
+    _plot_fleet_state(ax, "est_x", "Fleet Estimated X", "x [m]")
+
+    ax = fig.add_subplot(gs[0, 1])
+    _plot_fleet_state(ax, "est_y", "Fleet Estimated Y", "y [m]")
+
+    ax = fig.add_subplot(gs[1, 0])
+    _plot_fleet_state(ax, "est_theta", "Fleet Estimated Heading", "theta [rad]")
+
+    ax = fig.add_subplot(gs[1, 1])
+    _plot_fleet_state(ax, "est_v", "Fleet Estimated Velocity", "v [m/s]")
+
+    ax = fig.add_subplot(gs[2, 0])
+    _plot_fleet_state(ax, "est_a", "Fleet Estimated Acceleration", "a [m/s^2]")
+
+    ax = fig.add_subplot(gs[2, 1])
+    n = 0
+    for vid in active:
+        x = _col_to_array(rows, f"est_x_{vid}")
+        y = _col_to_array(rows, f"est_y_{vid}")
+        mask = np.isfinite(x) & np.isfinite(y)
+        if not np.any(mask):
+            continue
+        ax.plot(x[mask], y[mask], label=f"V{vid}", lw=1.3, alpha=0.85)
+        n += 1
+    if n == 0:
+        _no_data(ax, "Fleet Estimated Trajectory XY")
+    else:
+        ax.axis("equal")
+    _style(ax, "Fleet Estimated Trajectory XY", "y [m]", xlabel="x [m]")
+
+    ax = fig.add_subplot(gs[3, 0])
+    n = 0
+    for vid in active:
+        arr = _col_to_array(rows, f"est_conf_{vid}")
+        if not np.any(np.isfinite(arr)):
+            continue
+        ax.plot(times, arr, label=f"Conf V{vid}", lw=1.1, alpha=0.75)
+        n += 1
+    for col, lbl, ls in [
+        ("self_belief", "self_belief", "--"),
+        ("platoon_conf_mean", "platoon_conf_mean", "-"),
+        ("platoon_conf_min", "platoon_conf_min", ":"),
+        ("platoon_conf_max", "platoon_conf_max", ":"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, ls, lw=1.3, label=lbl, color="k")
+            n += 1
+    if n == 0:
+        _no_data(ax, "Estimation Confidence")
+    _style(ax, "Estimation Confidence", "Confidence", xlabel="Time [s]")
+
+    ax = fig.add_subplot(gs[3, 1])
+    n = 0
+    for vid in active:
+        arr = _col_to_array(rows, f"pred_mode_{vid}")
+        if np.any(np.isfinite(arr)):
+            ax.step(times, arr, where="post", label=f"V{vid}", lw=1.1, alpha=0.70)
+            n += 1
+    pred_count = _col_to_array(rows, "prediction_mode_count")
+    if np.any(np.isfinite(pred_count)):
+        ax.plot(times, pred_count, "k--", lw=1.3, label="total_pred_mode")
+        n += 1
+    if n == 0:
+        _no_data(ax, "Prediction Mode")
+    _style(ax, "Prediction Mode Flags", "Mode (0/1)", xlabel="Time [s]")
+
+    return fig
+
+
 def _fig_estimation(times, rows, active, focus, host_id):
     """
     Figure 3 – State Estimation
@@ -2840,7 +2941,7 @@ def main():
     )
     parser.add_argument("--file", "-f", help="path to a specific CSV file to plot")
     parser.add_argument("--all", action="store_true",
-                        help="generate figures for every candidate focus vehicle")
+                        help="generate figures for every candidate focus vehicle (default for static plots)")
     parser.add_argument("--focus", type=int,
                         help="vehicle ID to use as focus (overrides interactive choice)")
     parser.add_argument("--relative-file",
@@ -2974,31 +3075,9 @@ def main():
             )
             focuses = [focus_candidates[0]]
     else:
-        focuses = [focus_candidates[0]]
+        focuses = focus_candidates
 
-    # # Choose focus vehicles according to command-line flags or interactive input
-    # if args.all:
-    #     focuses = focus_candidates
-    # elif args.focus is not None:
-    #     if args.focus in focus_candidates:
-    #         focuses = [args.focus]
-    #     else:
-    #         print(f"Requested focus V{args.focus} not in candidate list; using {focus_candidates[0]}")
-    #         focuses = [focus_candidates[0]]
-    # else:
-    #     # interactive prompt if no CLI preference provided
-    #     focus_selection = input(
-    #         "Enter a focus vehicle ID from the list above, or type 'all' to generate a separate set of figures for every candidate (default = first): "
-    #     ).strip().lower()
-
-    #     if focus_selection == "all":
-    #         focuses = focus_candidates
-    #     else:
-    #         try:
-    #             fid = int(focus_selection)
-    #             focuses = [fid] if fid in focus_candidates else [focus_candidates[0]]
-    #         except ValueError:
-    #             focuses = [focus_candidates[0]]
+    print(f"Focus vehicles for target-specific diagnostics: {focuses}")
 
     # Always compute the motion-test summary, even when matplotlib is unavailable.
     for focus in focuses:
@@ -3024,12 +3103,16 @@ def main():
     if MATPLOTLIB_IMPORT_ERROR is not None:
         return
 
-    # Build the figures (multiple sets if necessary)
+    # Build the fleet state-estimation figure once. Trust/weight diagnostics
+    # below still use a focus vehicle because those relationships are target-specific.
+    print("Plotting fleet state estimation for all observer targets ...")
+    _fig_fleet_estimation(times, rows, active, host_id)
+
+    # Build the target-specific diagnostic figures (multiple sets if necessary)
     for focus in focuses:
         print(f"Plotting figures with focus vehicle: V{focus} ...")
         _fig_trust(times, rows, active, focus, host_id)
         _fig_weights(times, rows, active, focus, host_id)
-        _fig_estimation(times, rows, active, focus, host_id)
         _fig_motion_test(
             times,
             rows,

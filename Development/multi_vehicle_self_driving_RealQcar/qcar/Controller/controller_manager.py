@@ -183,6 +183,10 @@ class ControllerManager:
             Longitudinal controller instance
         """
         ctrl_type = force_type or self._longitudinal_type
+        if self.config and hasattr(
+            self.config, "normalize_longitudinal_controller_type"
+        ):
+            ctrl_type = self.config.normalize_longitudinal_controller_type(ctrl_type)
 
         # Return cached if same type
         if self._longitudinal and self._longitudinal.type_name == ctrl_type:
@@ -409,6 +413,11 @@ class ControllerManager:
             bool: True if switch successful
         """
         try:
+            if self.config and hasattr(
+                self.config, "normalize_longitudinal_controller_type"
+            ):
+                new_type = self.config.normalize_longitudinal_controller_type(new_type)
+
             # Update the state-specific type
             if state == "leader":
                 self._leader_longitudinal_type = new_type

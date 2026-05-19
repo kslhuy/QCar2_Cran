@@ -3,6 +3,7 @@ Logging utilities for QCar Vehicle Control System
 """
 import logging
 import logging.handlers
+import math
 import os
 import time
 from collections import deque
@@ -38,33 +39,37 @@ class VehicleLogger:
         # Fleet estimation logging (received from other vehicles)
         self.fleet_estimation_file = None
         self.fleet_estimation_writer = None
-        self.fleet_estimation_queue = queue.Queue(maxsize=1000)
+        self.csv_flush_rows = 250
+        self.csv_flush_interval_s = 0.5
+        self.csv_queue_timeout_s = 0.05
+
+        self.fleet_estimation_queue = queue.Queue(maxsize=5000)
         self.fleet_estimation_thread = None
         self.fleet_estimation_active = False
         
         # Local estimation logging (received from other vehicles)
         self.local_estimation_file = None
         self.local_estimation_writer = None
-        self.local_estimation_queue = queue.Queue(maxsize=1000)
+        self.local_estimation_queue = queue.Queue(maxsize=5000)
         self.local_estimation_thread = None
         self.local_estimation_active = False
         
         # Following leader state logging
         self.following_leader_file = None
         self.following_leader_writer = None
-        self.following_leader_queue = queue.Queue(maxsize=1000)
+        self.following_leader_queue = queue.Queue(maxsize=5000)
         self.following_leader_thread = None
         self.following_leader_active = False
         
         # Trust and weight logging
         self.trust_weight_file = None
         self.trust_weight_writer = None
-        self.trust_weight_queue = queue.Queue(maxsize=1000)
+        self.trust_weight_queue = queue.Queue(maxsize=5000)
         self.trust_weight_thread = None
         self.trust_weight_active = False
         
         # Non-blocking logging queue and thread
-        self.log_queue = queue.Queue(maxsize=1000)  # Buffer up to 1000 log entries
+        self.log_queue = queue.Queue(maxsize=5000)
         self.logging_thread = None
         self.logging_active = False
         
@@ -132,9 +137,35 @@ class VehicleLogger:
         if self.start_time is None:
             return 0.0
         return time.time() - self.start_time
+
+    def _flush_csv_buffer(self, file_obj, logger_name: str, flush_counter: int,
+                          last_flush_time: float, force: bool = False):
+        """Flush buffered CSV output using cheap batch/time thresholds."""
+        if file_obj is None or flush_counter <= 0:
+            return flush_counter, last_flush_time
+
+        now = time.monotonic()
+        if (
+            not force
+            and flush_counter < self.csv_flush_rows
+            and (now - last_flush_time) < self.csv_flush_interval_s
+        ):
+            return flush_counter, last_flush_time
+
+        try:
+            file_obj.flush()
+            return 0, now
+        except (OSError, IOError) as e:
+            print(f"[{logger_name}] Flush failed: {e}")
+            return flush_counter, now
     
-    def setup_telemetry_logging(self, data_log_dir: str = "data_logs"):
-        """Setup CSV telemetry logging with async thread"""
+    def setup_telemetry_logging(self, data_log_dir: str = "data_logs", enable_telemetry: Optional[bool] = None):
+        """Setup CSV data logging.
+
+        The method name is kept for compatibility, but it also initializes the
+        optional per-feature CSV loggers. Telemetry CSV creation can be disabled
+        while still allowing logs such as following-leader control.
+        """
         os.makedirs(data_log_dir, exist_ok=True)
         
         use_timestamp = True
@@ -149,40 +180,49 @@ class VehicleLogger:
         else:
             run_dir = data_log_dir
             mode = 'a'
-        
-        telemetry_file = os.path.join(run_dir, f"telemetry_vehicle_{self.car_id}.csv")
-        file_exists = os.path.exists(telemetry_file) and os.path.getsize(telemetry_file) > 0
-        
-        self.telemetry_file = open(telemetry_file, mode, newline='', buffering=8192)  # 8KB buffer for better performance
-        
-        fieldnames = [
-            # Core telemetry
-            'timestamp', 'time', 'x', 'y', 'th', 'v', 
-            'u', 'delta', 'v_ref', 'yolo_gain',
-            # 'waypoint_index', 'cross_track_error', 'heading_error',
-            'state', 'gps_valid',
-            # Platoon status (only fields actually returned by _get_platoon_status)
-            'platoon_enabled', 'platoon_is_leader', 'platoon_position', 
-            'platoon_leader_id', 'platoon_setup_complete',
-            # V2V communication status
-            'v2v_active', 'v2v_peers', 'v2v_protocol', 
-            'v2v_local_rate', 'v2v_fleet_rate'
-        ]
-        
-        self.telemetry_writer = csv.DictWriter(self.telemetry_file, fieldnames=fieldnames, extrasaction='ignore')
-        
-        # Write header only if needed (new file or overwrite)
-        if mode == 'w' or not file_exists:
-            self.telemetry_writer.writeheader()
+
+        if enable_telemetry is None:
+            enable_telemetry = (
+                not self.logging_config
+                or getattr(self.logging_config, 'enable_telemetry_logging', True)
+            )
+
+        if enable_telemetry:
+            telemetry_file = os.path.join(run_dir, f"telemetry_vehicle_{self.car_id}.csv")
+            file_exists = os.path.exists(telemetry_file) and os.path.getsize(telemetry_file) > 0
             
-        self.telemetry_file.flush()
-        
-        # Start async logging thread
-        self.logging_active = True
-        self.logging_thread = threading.Thread(target=self._logging_worker, daemon=True)
-        self.logging_thread.start()
-        
-        self.logger.info(f"Telemetry logging initialized (async): {telemetry_file}")
+            self.telemetry_file = open(telemetry_file, mode, newline='', buffering=8192)  # 8KB buffer for better performance
+            
+            fieldnames = [
+                # Core telemetry
+                'timestamp', 'time', 'x', 'y', 'th', 'v', 
+                'u', 'delta', 'v_ref', 'yolo_gain',
+                # 'waypoint_index', 'cross_track_error', 'heading_error',
+                'state', 'gps_valid',
+                # Platoon status (only fields actually returned by _get_platoon_status)
+                'platoon_enabled', 'platoon_is_leader', 'platoon_position', 
+                'platoon_leader_id', 'platoon_setup_complete',
+                # V2V communication status
+                'v2v_active', 'v2v_peers', 'v2v_protocol', 
+                'v2v_local_rate', 'v2v_fleet_rate'
+            ]
+            
+            self.telemetry_writer = csv.DictWriter(self.telemetry_file, fieldnames=fieldnames, extrasaction='ignore')
+            
+            # Write header only if needed (new file or overwrite)
+            if mode == 'w' or not file_exists:
+                self.telemetry_writer.writeheader()
+                
+            self.telemetry_file.flush()
+            
+            # Start async logging thread
+            self.logging_active = True
+            self.logging_thread = threading.Thread(target=self._logging_worker, daemon=True)
+            self.logging_thread.start()
+            
+            self.logger.info(f"Telemetry logging initialized (async): {telemetry_file}")
+        else:
+            self.logger.info(f"Data logging initialized without telemetry CSV: {run_dir}")
         
         # Setup specific loggers based on config
         # Fleet Estimation
@@ -208,32 +248,33 @@ class VehicleLogger:
     def _logging_worker(self):
         """Background thread worker for non-blocking logging"""
         flush_counter = 0
-        while self.logging_active:
+        last_flush_time = time.monotonic()
+        while True:
             try:
                 # Get log entry from queue (timeout to check if we should stop)
-                log_entry = self.log_queue.get(timeout=0.1)
+                log_entry = self.log_queue.get(timeout=self.csv_queue_timeout_s)
                 
                 if log_entry is None:  # Poison pill to stop thread
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.telemetry_file, "Logging Worker",
+                        flush_counter, last_flush_time, force=True
+                    )
                     break
                 
                 # Write to CSV (buffered)
                 if self.telemetry_writer:
                     self.telemetry_writer.writerow(log_entry)
                     flush_counter += 1
-                    
-                    # Periodic flush (every 100 entries for better performance, or when queue is empty)
-                    # Increased from 50 to 100 to reduce flush frequency
-                    if flush_counter >= 100 or (self.log_queue.qsize() == 0 and flush_counter > 0):
-                        try:
-                            # Use os.fsync for guaranteed write (prevents data loss)
-                            self.telemetry_file.flush()
-                            os.fsync(self.telemetry_file.fileno())
-                            flush_counter = 0
-                        except (OSError, IOError) as e:
-                            # Non-blocking: if flush fails (disk full, etc), just continue
-                            print(f"[Logging Worker] Flush failed: {e}")
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.telemetry_file, "Logging Worker",
+                        flush_counter, last_flush_time
+                    )
                 
             except queue.Empty:
+                flush_counter, last_flush_time = self._flush_csv_buffer(
+                    self.telemetry_file, "Logging Worker",
+                    flush_counter, last_flush_time
+                )
                 continue
             except Exception as e:
                 # Use basic print to avoid recursion
@@ -302,26 +343,31 @@ class VehicleLogger:
     def _fleet_estimation_worker(self):
         """Background thread worker for fleet estimation logging"""
         flush_counter = 0
-        while self.fleet_estimation_active:
+        last_flush_time = time.monotonic()
+        while True:
             try:
-                log_entry = self.fleet_estimation_queue.get(timeout=0.1)
+                log_entry = self.fleet_estimation_queue.get(timeout=self.csv_queue_timeout_s)
                 
                 if log_entry is None:  # Poison pill
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.fleet_estimation_file, "Fleet Estimation Logger",
+                        flush_counter, last_flush_time, force=True
+                    )
                     break
                 
                 if self.fleet_estimation_writer:
                     self.fleet_estimation_writer.writerow(log_entry)
                     flush_counter += 1
-                    
-                    if flush_counter >= 100 or (self.fleet_estimation_queue.qsize() == 0 and flush_counter > 0):
-                        try:
-                            self.fleet_estimation_file.flush()
-                            os.fsync(self.fleet_estimation_file.fileno())
-                            flush_counter = 0
-                        except (OSError, IOError) as e:
-                            print(f"[Fleet Estimation Logger] Flush failed: {e}")
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.fleet_estimation_file, "Fleet Estimation Logger",
+                        flush_counter, last_flush_time
+                    )
                 
             except queue.Empty:
+                flush_counter, last_flush_time = self._flush_csv_buffer(
+                    self.fleet_estimation_file, "Fleet Estimation Logger",
+                    flush_counter, last_flush_time
+                )
                 continue
             except Exception as e:
                 print(f"[Fleet Estimation Logger] Error: {e}")
@@ -333,26 +379,31 @@ class VehicleLogger:
     def _local_estimation_worker(self):
         """Background thread worker for local estimation logging"""
         flush_counter = 0
-        while self.local_estimation_active:
+        last_flush_time = time.monotonic()
+        while True:
             try:
-                log_entry = self.local_estimation_queue.get(timeout=0.1)
+                log_entry = self.local_estimation_queue.get(timeout=self.csv_queue_timeout_s)
                 
                 if log_entry is None:  # Poison pill
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.local_estimation_file, "Local Estimation Logger",
+                        flush_counter, last_flush_time, force=True
+                    )
                     break
                 
                 if self.local_estimation_writer:
                     self.local_estimation_writer.writerow(log_entry)
                     flush_counter += 1
-                    
-                    if flush_counter >= 100 or (self.local_estimation_queue.qsize() == 0 and flush_counter > 0):
-                        try:
-                            self.local_estimation_file.flush()
-                            os.fsync(self.local_estimation_file.fileno())
-                            flush_counter = 0
-                        except (OSError, IOError) as e:
-                            print(f"[Local Estimation Logger] Flush failed: {e}")
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.local_estimation_file, "Local Estimation Logger",
+                        flush_counter, last_flush_time
+                    )
                 
             except queue.Empty:
+                flush_counter, last_flush_time = self._flush_csv_buffer(
+                    self.local_estimation_file, "Local Estimation Logger",
+                    flush_counter, last_flush_time
+                )
                 continue
             except Exception as e:
                 print(f"[Local Estimation Logger] Error: {e}")
@@ -372,10 +423,24 @@ class VehicleLogger:
             'timestamp',  # Relative time in seconds
             # Follower state
             'follower_x', 'follower_y', 'follower_theta', 'follower_velocity', 'follower_target_velocity',
+            'along_track_gap', 'sensor_leader_distance', 'sensor_leader_distance_filtered',
             # Leader state
+            'leader_id', 'leader_source',
             'leader_x', 'leader_y', 'leader_theta', 'leader_velocity',
+            'leader_trust', 'leader_trust_source',
+            # Clean V2V baseline for diagnostics
+            'leader_clean_available',
+            'leader_clean_x', 'leader_clean_y', 'leader_clean_theta',
+            'leader_clean_velocity', 'leader_clean_acceleration',
+            'leader_clean_distance', 'leader_clean_along_track_gap',
+            'leader_pos_err_vs_clean', 'leader_vel_err_vs_clean',
+            'leader_heading_err_vs_clean', 'distance_err_vs_clean',
             # Control commands
-            'throttle_u', 'steering_delta',
+            'throttle_u', 'steering_delta', 'raw_throttle_u', 'raw_steering_delta',
+            'u_cacc', 'u_sensor',
+            'trust_fusion_alpha', 'trust_fusion_policy',
+            'multi_predecessor_count', 'multi_predecessor_weight_sum',
+            'multi_predecessor_velocity_term', 'multi_predecessor_acceleration_term',
             # Derived metrics
             'distance_to_leader', 'velocity_difference'
         ]
@@ -397,26 +462,31 @@ class VehicleLogger:
     def _following_leader_worker(self):
         """Background thread worker for following leader state logging"""
         flush_counter = 0
-        while self.following_leader_active:
+        last_flush_time = time.monotonic()
+        while True:
             try:
-                log_entry = self.following_leader_queue.get(timeout=0.1)
+                log_entry = self.following_leader_queue.get(timeout=self.csv_queue_timeout_s)
                 
                 if log_entry is None:  # Poison pill
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.following_leader_file, "Following Leader Logger",
+                        flush_counter, last_flush_time, force=True
+                    )
                     break
                 
                 if self.following_leader_writer:
                     self.following_leader_writer.writerow(log_entry)
                     flush_counter += 1
-                    
-                    if flush_counter >= 100 or (self.following_leader_queue.qsize() == 0 and flush_counter > 0):
-                        try:
-                            self.following_leader_file.flush()
-                            os.fsync(self.following_leader_file.fileno())
-                            flush_counter = 0
-                        except (OSError, IOError) as e:
-                            print(f"[Following Leader Logger] Flush failed: {e}")
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.following_leader_file, "Following Leader Logger",
+                        flush_counter, last_flush_time
+                    )
                 
             except queue.Empty:
+                flush_counter, last_flush_time = self._flush_csv_buffer(
+                    self.following_leader_file, "Following Leader Logger",
+                    flush_counter, last_flush_time
+                )
                 continue
             except Exception as e:
                 print(f"[Following Leader Logger] Error: {e}")
@@ -462,26 +532,31 @@ class VehicleLogger:
     def _trust_weight_worker(self):
         """Background thread worker for trust and weight logging"""
         flush_counter = 0
-        while self.trust_weight_active:
+        last_flush_time = time.monotonic()
+        while True:
             try:
-                log_entry = self.trust_weight_queue.get(timeout=0.1)
+                log_entry = self.trust_weight_queue.get(timeout=self.csv_queue_timeout_s)
                 
                 if log_entry is None:  # Poison pill
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.trust_weight_file, "Trust Weight Logger",
+                        flush_counter, last_flush_time, force=True
+                    )
                     break
                 
                 if self.trust_weight_writer:
                     self.trust_weight_writer.writerow(log_entry)
                     flush_counter += 1
-                    
-                    if flush_counter >= 100 or (self.trust_weight_queue.qsize() == 0 and flush_counter > 0):
-                        try:
-                            self.trust_weight_file.flush()
-                            os.fsync(self.trust_weight_file.fileno())
-                            flush_counter = 0
-                        except (OSError, IOError) as e:
-                            print(f"[Trust Weight Logger] Flush failed: {e}")
+                    flush_counter, last_flush_time = self._flush_csv_buffer(
+                        self.trust_weight_file, "Trust Weight Logger",
+                        flush_counter, last_flush_time
+                    )
                 
             except queue.Empty:
+                flush_counter, last_flush_time = self._flush_csv_buffer(
+                    self.trust_weight_file, "Trust Weight Logger",
+                    flush_counter, last_flush_time
+                )
                 continue
             except Exception as e:
                 print(f"[Trust Weight Logger] Error: {e}")
@@ -657,15 +732,42 @@ class VehicleLogger:
             # relative_time: Time in seconds since vehicle logic started (optional, uses 0.0 if None)
         """
         if self.following_leader_writer and self.following_leader_active:
-            current_time = time.time()
-            
             # Calculate derived metrics
-            import numpy as np
-            distance_to_leader = np.sqrt(
-                (leader_state.get('x', 0.0) - follower_state.get('x', 0.0))**2 +
-                (leader_state.get('y', 0.0) - follower_state.get('y', 0.0))**2
+            distance_to_leader = math.hypot(
+                leader_state.get('x', 0.0) - follower_state.get('x', 0.0),
+                leader_state.get('y', 0.0) - follower_state.get('y', 0.0),
             )
             velocity_difference = leader_state.get('velocity', 0.0) - follower_state.get('velocity', 0.0)
+            clean_available = bool(leader_state.get('leader_clean_available', False))
+            clean_x = leader_state.get('leader_clean_x', '')
+            clean_y = leader_state.get('leader_clean_y', '')
+            clean_theta = leader_state.get('leader_clean_theta', '')
+            clean_velocity = leader_state.get('leader_clean_velocity', '')
+            clean_distance = leader_state.get('leader_clean_distance', '')
+
+            leader_pos_err_vs_clean = ''
+            leader_vel_err_vs_clean = ''
+            leader_heading_err_vs_clean = ''
+            distance_err_vs_clean = ''
+            if clean_available:
+                try:
+                    leader_pos_err_vs_clean = math.hypot(
+                        float(leader_state.get('x', 0.0)) - float(clean_x),
+                        float(leader_state.get('y', 0.0)) - float(clean_y),
+                    )
+                    leader_vel_err_vs_clean = (
+                        float(leader_state.get('velocity', 0.0)) - float(clean_velocity)
+                    )
+                    heading_delta = (
+                        float(leader_state.get('theta', 0.0)) - float(clean_theta) + math.pi
+                    ) % (2.0 * math.pi) - math.pi
+                    leader_heading_err_vs_clean = heading_delta
+                    distance_err_vs_clean = float(distance_to_leader) - float(clean_distance)
+                except (TypeError, ValueError):
+                    leader_pos_err_vs_clean = ''
+                    leader_vel_err_vs_clean = ''
+                    leader_heading_err_vs_clean = ''
+                    distance_err_vs_clean = ''
             
             try:
                 entry = {
@@ -678,14 +780,44 @@ class VehicleLogger:
                     'follower_theta': follower_state.get('theta', 0.0),
                     'follower_velocity': follower_state.get('velocity', 0.0),
                     'follower_target_velocity': follower_state.get('target_velocity', 0.0),
+                    'along_track_gap': follower_state.get('along_track_gap', ''),
+                    'sensor_leader_distance': follower_state.get('sensor_leader_distance', ''),
+                    'sensor_leader_distance_filtered': follower_state.get('sensor_leader_distance_filtered', ''),
                     # Leader state
+                    'leader_id': leader_state.get('vehicle_id', ''),
+                    'leader_source': leader_state.get('source', ''),
                     'leader_x': leader_state.get('x', 0.0),
                     'leader_y': leader_state.get('y', 0.0),
                     'leader_theta': leader_state.get('theta', 0.0),
                     'leader_velocity': leader_state.get('velocity', 0.0),
+                    'leader_trust': leader_state.get('leader_trust', ''),
+                    'leader_trust_source': leader_state.get('leader_trust_source', ''),
+                    # Clean V2V baseline for diagnostics
+                    'leader_clean_available': int(clean_available),
+                    'leader_clean_x': clean_x,
+                    'leader_clean_y': clean_y,
+                    'leader_clean_theta': clean_theta,
+                    'leader_clean_velocity': clean_velocity,
+                    'leader_clean_acceleration': leader_state.get('leader_clean_acceleration', ''),
+                    'leader_clean_distance': clean_distance,
+                    'leader_clean_along_track_gap': leader_state.get('leader_clean_along_track_gap', ''),
+                    'leader_pos_err_vs_clean': leader_pos_err_vs_clean,
+                    'leader_vel_err_vs_clean': leader_vel_err_vs_clean,
+                    'leader_heading_err_vs_clean': leader_heading_err_vs_clean,
+                    'distance_err_vs_clean': distance_err_vs_clean,
                     # Control commands
                     'throttle_u': u,
                     'steering_delta': delta,
+                    'raw_throttle_u': follower_state.get('raw_throttle_u', ''),
+                    'raw_steering_delta': follower_state.get('raw_steering_delta', ''),
+                    'u_cacc': follower_state.get('u_cacc', ''),
+                    'u_sensor': follower_state.get('u_sensor', ''),
+                    'trust_fusion_alpha': follower_state.get('trust_fusion_alpha', ''),
+                    'trust_fusion_policy': follower_state.get('trust_fusion_policy', ''),
+                    'multi_predecessor_count': follower_state.get('multi_predecessor_count', ''),
+                    'multi_predecessor_weight_sum': follower_state.get('multi_predecessor_weight_sum', ''),
+                    'multi_predecessor_velocity_term': follower_state.get('multi_predecessor_velocity_term', ''),
+                    'multi_predecessor_acceleration_term': follower_state.get('multi_predecessor_acceleration_term', ''),
                     # Derived metrics
                     'distance_to_leader': distance_to_leader,
                     'velocity_difference': velocity_difference

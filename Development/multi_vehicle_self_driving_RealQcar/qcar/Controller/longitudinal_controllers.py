@@ -506,6 +506,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         target_velocity_gap_window: float = 0.15,
         target_velocity_turn_scale: float = 0.35,
         close_spacing_deadband: float = 0.03,
+        multi_predecessor: Optional[Dict[str, Any]] = None,
         limo_max_speed: float = 0.8,
         limo_max_accel: float = 0.4,
         limo_max_decel: float = 0.8,
@@ -587,6 +588,9 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.close_spacing_deadband = params.get(
                 "close_spacing_deadband", close_spacing_deadband
             )
+            self.multi_predecessor_config = self._normalize_multi_predecessor_config(
+                params.get("multi_predecessor", multi_predecessor)
+            )
             self.limo_max_speed = params.get("limo_max_speed", limo_max_speed)
             self.limo_max_accel = params.get("limo_max_accel", limo_max_accel)
             self.limo_max_decel = params.get("limo_max_decel", limo_max_decel)
@@ -623,6 +627,9 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.target_velocity_gap_window = target_velocity_gap_window
             self.target_velocity_turn_scale = target_velocity_turn_scale
             self.close_spacing_deadband = close_spacing_deadband
+            self.multi_predecessor_config = self._normalize_multi_predecessor_config(
+                multi_predecessor
+            )
             self.limo_max_speed = limo_max_speed
             self.limo_max_accel = limo_max_accel
             self.limo_max_decel = limo_max_decel
@@ -669,6 +676,85 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         self.reverse_spacing_deadband = max(float(self.spacing_deadband), 0.05)
         self.reverse_velocity_deadband = max(float(self.velocity_deadband), 0.03)
         self.reverse_throttle_smoothing = max(float(self.brake_smoothing), 0.75)
+
+    @staticmethod
+    def _as_bool(value: Any, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return default if value is None else bool(value)
+
+    @staticmethod
+    def _as_float(value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if np.isfinite(parsed) else default
+
+    @staticmethod
+    def _as_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _normalize_multi_predecessor_config(
+        self, cfg: Optional[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Normalize optional multi-predecessor CACC feedforward settings."""
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        order_decay = float(
+            np.clip(self._as_float(cfg.get("order_decay", 0.60), 0.60), 0.0, 1.0)
+        )
+        trust_power = max(self._as_float(cfg.get("trust_power", 1.0), 1.0), 0.0)
+        return {
+            "enabled": self._as_bool(cfg.get("enabled", False), False),
+            "max_predecessors": max(
+                self._as_int(cfg.get("max_predecessors", 3), 3), 0
+            ),
+            "require_trust": self._as_bool(cfg.get("require_trust", True), True),
+            "min_trust": float(
+                np.clip(self._as_float(cfg.get("min_trust", 0.50), 0.50), 0.0, 1.0)
+            ),
+            "missing_trust_weight": float(
+                np.clip(
+                    self._as_float(cfg.get("missing_trust_weight", 0.0), 0.0),
+                    0.0,
+                    1.0,
+                )
+            ),
+            "trust_power": trust_power,
+            "order_decay": order_decay,
+            "distance_decay": max(
+                self._as_float(cfg.get("distance_decay", 0.0), 0.0), 0.0
+            ),
+            "velocity_weight": self._as_float(
+                cfg.get("velocity_weight", 0.25), 0.25
+            ),
+            "acceleration_weight": self._as_float(
+                cfg.get("acceleration_weight", 0.25), 0.25
+            ),
+            "max_velocity_contribution": max(
+                self._as_float(cfg.get("max_velocity_contribution", 0.25), 0.25),
+                0.0,
+            ),
+            "max_acceleration_contribution": max(
+                self._as_float(
+                    cfg.get("max_acceleration_contribution", 0.25), 0.25
+                ),
+                0.0,
+            ),
+            "safe_gap_margin": self._as_float(
+                cfg.get("safe_gap_margin", 0.05), 0.05
+            ),
+            "allow_positive_when_close": self._as_bool(
+                cfg.get("allow_positive_when_close", False), False
+            ),
+        }
 
     def _select_reference_heading(
         self, follower_theta: float, leader_theta: float
@@ -767,6 +853,127 @@ class CACCLongitudinalController(LongitudinalControllerBase):
 
         return float(leader_v - follower_v)
 
+    def _state_longitudinal_velocity(
+        self, state: Dict[str, Any], reference_heading: float
+    ) -> float:
+        velocity = float(state.get("velocity", state.get("v", 0.0)))
+        theta = float(state.get("theta", reference_heading))
+        return float(velocity * np.cos(theta - reference_heading))
+
+    def _trust_weight_for_predecessor(self, state: Dict[str, Any]) -> float:
+        cfg = self.multi_predecessor_config
+        trust_value = state.get("leader_trust")
+        if trust_value is None:
+            trust_value = state.get("generalized_trust", state.get("direct_trust"))
+
+        if trust_value is None:
+            return float(cfg["missing_trust_weight"])
+
+        trust = self._as_float(trust_value, float("nan"))
+        if not np.isfinite(trust):
+            return float(cfg["missing_trust_weight"])
+
+        trust = float(np.clip(trust, 0.0, 1.0))
+        if cfg["require_trust"] and trust < cfg["min_trust"]:
+            return 0.0
+        return float(trust ** cfg["trust_power"])
+
+    def _compute_multi_predecessor_feedforward(
+        self,
+        follower_state: Dict[str, float],
+        leader_state: Dict[str, float],
+        spacing_info: Dict[str, float],
+        spacing_error: float,
+    ) -> Tuple[float, float]:
+        """Compute bounded feedforward from trusted vehicles ahead of the host."""
+        cfg = self.multi_predecessor_config
+        if not cfg.get("enabled", False) or follower_state.get("reverse_follow_active", False):
+            return 0.0, 0.0
+
+        predecessor_states = follower_state.get("multi_predecessor_states", [])
+        if not isinstance(predecessor_states, (list, tuple)):
+            return 0.0, 0.0
+
+        max_predecessors = int(cfg.get("max_predecessors", 0))
+        if max_predecessors <= 0:
+            return 0.0, 0.0
+
+        reference_heading = float(spacing_info["reference_heading"])
+        direct_velocity = self._state_longitudinal_velocity(
+            leader_state, reference_heading
+        )
+        direct_acceleration = float(leader_state.get("acceleration", 0.0))
+
+        weighted_velocity = 0.0
+        weighted_acceleration = 0.0
+        weight_sum = 0.0
+        used_count = 0
+
+        for pred_state in predecessor_states:
+            if used_count >= max_predecessors:
+                break
+            if not isinstance(pred_state, dict):
+                continue
+
+            trust_weight = self._trust_weight_for_predecessor(pred_state)
+            if trust_weight <= 0.0:
+                continue
+
+            order_index = max(self._as_int(pred_state.get("order_index", 1), 1), 1)
+            order_weight = float(cfg["order_decay"] ** max(order_index - 1, 0))
+
+            distance_weight = 1.0
+            distance_decay = float(cfg.get("distance_decay", 0.0))
+            if distance_decay > 0.0 and pred_state.get("distance_ahead") is not None:
+                distance_ahead = max(
+                    self._as_float(pred_state.get("distance_ahead"), 0.0), 0.0
+                )
+                distance_weight = float(np.exp(-distance_decay * distance_ahead))
+
+            weight = trust_weight * order_weight * distance_weight
+            if weight <= 0.0:
+                continue
+
+            pred_velocity = self._state_longitudinal_velocity(
+                pred_state, reference_heading
+            )
+            pred_acceleration = float(pred_state.get("acceleration", 0.0))
+            weighted_velocity += weight * (pred_velocity - direct_velocity)
+            weighted_acceleration += weight * (pred_acceleration - direct_acceleration)
+            weight_sum += weight
+            used_count += 1
+
+        follower_state["multi_predecessor_count"] = used_count
+        follower_state["multi_predecessor_weight_sum"] = float(weight_sum)
+
+        if weight_sum <= 1e-9:
+            follower_state["multi_predecessor_velocity_term"] = 0.0
+            follower_state["multi_predecessor_acceleration_term"] = 0.0
+            return 0.0, 0.0
+
+        velocity_term = float(cfg["velocity_weight"] * weighted_velocity / weight_sum)
+        acceleration_term = float(
+            cfg["acceleration_weight"] * weighted_acceleration / weight_sum
+        )
+
+        max_velocity = float(cfg["max_velocity_contribution"])
+        max_acceleration = float(cfg["max_acceleration_contribution"])
+        velocity_term = float(np.clip(velocity_term, -max_velocity, max_velocity))
+        acceleration_term = float(
+            np.clip(acceleration_term, -max_acceleration, max_acceleration)
+        )
+
+        if (
+            spacing_error <= float(cfg["safe_gap_margin"])
+            and not cfg["allow_positive_when_close"]
+        ):
+            velocity_term = min(velocity_term, 0.0)
+            acceleration_term = min(acceleration_term, 0.0)
+
+        follower_state["multi_predecessor_velocity_term"] = velocity_term
+        follower_state["multi_predecessor_acceleration_term"] = acceleration_term
+        return velocity_term, acceleration_term
+
     def _smooth_to_stop(self) -> float:
         """Gradually reduce throttle to zero when no leader is present."""
         target_throttle = 0.0
@@ -834,6 +1041,11 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             leader_acc = leader_state.get("acceleration", 0.0)
             follower_acc = follower_state.get("acceleration", 0.0)
             velocity_error += self.leader_acceleration_weight * (leader_acc - follower_acc)
+
+        multi_velocity, multi_acceleration = self._compute_multi_predecessor_feedforward(
+            follower_state, leader_state, spacing_info, spacing_error
+        )
+        velocity_error += multi_velocity + multi_acceleration
 
         target_velocity = follower_state.get("target_velocity", None)
         if (
@@ -1066,6 +1278,10 @@ class CACCLongitudinalController(LongitudinalControllerBase):
                 elif param in ("leader_acceleration_gain", "leader_acceleration_weight"):
                     # Ensure numeric conversion for control calculations.
                     self.leader_acceleration_weight = float(value)
+                elif param == "multi_predecessor":
+                    self.multi_predecessor_config = (
+                        self._normalize_multi_predecessor_config(value)
+                    )
                 else:
                     setattr(self, param, value)
 

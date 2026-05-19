@@ -2160,6 +2160,92 @@ class VehicleObserver:
         """
         return self.fleet_estimator
 
+    def get_vehicle_trust_context(self, vehicle_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Return trust context for a vehicle when the active fleet estimator supports it.
+
+        The payload is intentionally small so control code can gate or blend
+        commands without depending on trust-estimator internals.
+        """
+        try:
+            target_id = int(vehicle_id)
+        except (TypeError, ValueError):
+            return None
+
+        with self.lock:
+            estimator = self.fleet_estimator
+            if estimator is None:
+                return None
+
+            direct_trust = None
+            trust_obj = None
+            if hasattr(estimator, "get_trust_score"):
+                try:
+                    trust_obj = estimator.get_trust_score(target_id)
+                    if trust_obj is not None and hasattr(trust_obj, "final_score"):
+                        direct_trust = float(trust_obj.final_score)
+                except Exception:
+                    trust_obj = None
+                    direct_trust = None
+
+            if direct_trust is None and hasattr(estimator, "get_all_trust_scores"):
+                try:
+                    all_scores = estimator.get_all_trust_scores()
+                    if isinstance(all_scores, dict):
+                        raw_direct = all_scores.get(
+                            target_id, all_scores.get(str(target_id))
+                        )
+                        if raw_direct is not None:
+                            direct_trust = float(raw_direct)
+                except Exception:
+                    direct_trust = None
+
+            generalized_trust = None
+            if hasattr(estimator, "get_generalized_trust_vector"):
+                try:
+                    generalized = estimator.get_generalized_trust_vector()
+                    if isinstance(generalized, dict):
+                        raw_generalized = generalized.get(
+                            target_id, generalized.get(str(target_id))
+                        )
+                        if raw_generalized is not None:
+                            generalized_trust = float(raw_generalized)
+                except Exception:
+                    generalized_trust = None
+
+            attack_flags: Dict[str, bool] = {}
+            if hasattr(estimator, "get_attack_flags"):
+                try:
+                    raw_flags = estimator.get_attack_flags()
+                    if isinstance(raw_flags, dict):
+                        flags = raw_flags.get(target_id, raw_flags.get(str(target_id), {}))
+                        if isinstance(flags, dict):
+                            attack_flags = {
+                                str(key): bool(value) for key, value in flags.items()
+                            }
+                except Exception:
+                    attack_flags = {}
+
+            trusted = None
+            if hasattr(estimator, "is_vehicle_trusted"):
+                try:
+                    trusted = bool(estimator.is_vehicle_trusted(target_id))
+                except Exception:
+                    trusted = None
+            elif direct_trust is not None:
+                trusted = bool(direct_trust >= 0.5)
+
+            if direct_trust is None and generalized_trust is None and not attack_flags:
+                return None
+
+            return {
+                "vehicle_id": target_id,
+                "direct_trust": direct_trust,
+                "generalized_trust": generalized_trust,
+                "trusted": trusted,
+                "attack_flags": attack_flags,
+            }
+
     def add_received_local_state(
         self, sender_id: int, state: Dict, timestamp_ns: int
     ) -> bool:

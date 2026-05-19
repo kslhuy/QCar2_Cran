@@ -178,7 +178,7 @@ logging:
   # Granular logging control
   enable_fleet_estimation_logging: false
   enable_local_estimation_logging: false
-  enable_following_leader_logging: false
+  enable_following_leader_logging: true
   enable_trust_weight_logging: false
   
   # File naming strategy

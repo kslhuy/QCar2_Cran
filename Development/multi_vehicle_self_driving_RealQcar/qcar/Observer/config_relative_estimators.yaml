@@ -10,7 +10,7 @@ enable_relative: enabled # enable_relative: Master switch for relative estimatio
 # Separate relative UIO CSV recording. Files are written asynchronously as
 # relative_uio_log_V{id}.csv so trust logging and relative-observer diagnostics
 # remain independent.
-enable_recording: true
+enable_recording: false
 recording_overwrite: true
 # recording_output_dir: null  # defaults to TrustbasedDistributedObserver/
 

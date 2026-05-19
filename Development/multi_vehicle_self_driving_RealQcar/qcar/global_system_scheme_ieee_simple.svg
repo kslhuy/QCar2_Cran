@@ -59,7 +59,7 @@
   <rect class="bg" x="0" y="0" width="1700" height="700"/>
 
   <text class="title" x="60" y="56">Trust-Aware Cooperative State Estimation: Experimental Scheme</text>
-  <text class="subtitle" x="62" y="84">Simplified color figure for IEEE TVT results: platform, V2V information flow, trust-weighted observer, and validation products.</text>
+  <!-- <text class="subtitle" x="62" y="84">Simplified color figure for IEEE TVT results: platform, V2V information flow, trust-weighted observer, and validation products.</text> -->
 
   <!-- Platform photo -->
   <rect class="photoFrame" x="54" y="128" width="330" height="516" rx="12"/>
@@ -148,9 +148,8 @@
 
   <rect x="1474" y="436" width="148" height="88" rx="8" fill="#ffffff" stroke="#15803d"/>
   <text class="boxTitle" x="1492" y="466">Validation</text>
-  <text class="boxText" x="1492" y="490">plots, CSV,</text>
-  <text class="boxText" x="1492" y="510">RMSE, attack</text>
-  <text class="boxText" x="1492" y="530">detection</text>
+  <text class="boxText" x="1492" y="493">plots, RMSE,</text>
+  <text class="boxText" x="1492" y="515">attack flags</text>
 
   <rect class="badgeGreen" x="1474" y="560" width="148" height="40" rx="8"/>
   <text class="badgeText" x="1494" y="584">paper figures</text>
@@ -174,15 +173,15 @@
   <path class="flowGreen" d="M 1360 480 L 1418 480 L 1418 356 L 1474 356"/>
   <path class="flowGreen" d="M 1360 480 L 1474 480"/>
 
-  <path class="flowRed dashed" d="M 976 528 L 1038 528 L 1038 632 L 1418 632 L 1418 500 L 1474 500"/>
-  <rect class="labelBox" x="1108" y="618" width="206" height="26" rx="5"/>
-  <text class="label" x="1122" y="635">attack metadata and replay logs</text>
+  <path class="flowRed dashed" d="M 976 528 L 1028 528 L 1028 686 L 1428 686 L 1428 502 L 1474 502"/>
+  <rect class="labelBox" x="1110" y="672" width="206" height="26" rx="5"/>
+  <text class="label" x="1124" y="689">attack metadata and replay logs</text>
 
   <path class="flowBlue dashed" d="M 1094 586 L 1040 586 L 1040 666 L 560 666 L 560 592"/>
   <rect class="labelBox" x="732" y="652" width="188" height="26" rx="5"/>
   <text class="label" x="746" y="669">fleet estimate to controller</text>
 
-  <path class="flowPurple dashed" d="M 877 202 L 877 102 L 1227 102 L 1227 196"/>
+  <!-- <path class="flowPurple dashed" d="M 877 202 L 877 102 L 1227 102 L 1227 196"/>
   <rect class="labelBox" x="962" y="90" width="164" height="26" rx="5"/>
-  <text class="label" x="976" y="107">neighbor opinions O_j(k)</text>
+  <text class="label" x="976" y="107">neighbor opinions O_j(k)</text> -->
 </svg>
