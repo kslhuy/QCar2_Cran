@@ -2,7 +2,7 @@
 # Default parameters for the local state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-local_estimator_type: robust_kalman_net # local_estimator_type: Which local estimator to use.
+local_estimator_type: high_gain_observer # local_estimator_type: Which local estimator to use.
                         # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
 
 # Plotting configuration
@@ -117,3 +117,9 @@ local:
 #         use_uio: true
 #         loss_type: 'composite_uio'
 #         uio_type: 'pi'  # Use PI observer from old system
+
+high_gain_observer:
+  predict_model: 1
+  LX: [[11.73], [20.25], [-7.3]]
+  LY: [[11.73], [20.25], [-7.3]]
+  theta: 6.7205

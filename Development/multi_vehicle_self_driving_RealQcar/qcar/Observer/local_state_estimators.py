@@ -30,12 +30,10 @@ class LocalStateEstimatorBase(ABC):
         """
         self.logger = logger
         self.state_dim = 4  # [x, y, theta, v]
-
         # Initialize state
         self.state = np.zeros(self.state_dim)
         if initial_pose is not None:
             self.state[:3] = initial_pose
-
         self.last_update_time = 0.0
 
     @abstractmethod
@@ -406,6 +404,7 @@ class LocalEstimatorFactory:
     ESTIMATOR_TYPES = {
         "ekf": EKFStateEstimator,
         "luenberger": LuenbergerStateEstimator,
+        "high_gain":  HighGainObserver,
     }
 
     @staticmethod
@@ -443,6 +442,20 @@ class LocalEstimatorFactory:
             raise ImportError(
                 "Robust KalmanNet estimator requires torch and the "
                 "Observer/KalmaNet/Robust package to be importable. "
+                f"Error: {e}"
+            )
+        
+    @staticmethod
+    def _lazy_load_high_gain_observer():
+        """Lazy load high-gain observer to avoid hard dependencies."""
+        try:
+            import importlib
+
+            module = importlib.import_module("Observer.Liqi_obs.high_gain_observer")
+            return module.HighGainObserver
+        except (ImportError, ModuleNotFoundError) as e:
+            raise ImportError(
+                "High-gain observer requires additional dependencies. "
                 f"Error: {e}"
             )
 
@@ -484,12 +497,20 @@ class LocalEstimatorFactory:
             return RobustKalmanNetStateEstimator(
                 initial_pose=initial_pose, config=config, logger=logger
             )
+        
+        if estimator_type == "high_gain_observer":
+            HighGainObserver = (
+                LocalEstimatorFactory._lazy_load_high_gain_observer()
+            )
+            return HighGainObserver(
+                initial_pose=initial_pose, config=config, logger=logger
+            )
 
         # Standard estimators
         if estimator_type not in LocalEstimatorFactory.ESTIMATOR_TYPES:
             raise ValueError(
                 f"Unknown estimator type: {estimator_type}. "
-                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys()) + ['neural_luenberger', 'robust_kalman_net']}"
+                f"Available: {list(LocalEstimatorFactory.ESTIMATOR_TYPES.keys()) + ['neural_luenberger', 'robust_kalman_net', 'high_gain_observer']}"
             )
 
         estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]
@@ -498,3 +519,4 @@ class LocalEstimatorFactory:
         # Return the estimator instance
         # estimator_class = LocalEstimatorFactory.ESTIMATOR_TYPES[estimator_type]
         # return estimator_class(initial_pose=initial_pose, config=config, logger=logger)
+

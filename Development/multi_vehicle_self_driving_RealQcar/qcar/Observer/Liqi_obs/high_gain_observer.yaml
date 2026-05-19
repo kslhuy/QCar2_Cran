@@ -1,0 +1,67 @@
+observer:
+  # Internal observer state can run in transformed companion coordinates:
+  # z = [x, x_dot, x_ddot, y, y_dot, y_ddot]
+  coordinate_mode: chain_6d
+  z_dim: 6
+  measurement_output: position
+  low_speed_threshold: 0.05
+  min_speed_for_heading: 0.5
+  use_control_in_state_transform: true
+  use_practical_chain_update: true
+
+  # Paper simulation values were theta_1=100.0001, theta_i=107.7622 and
+  # gamma=31816.7839 for a longitudinal triangular chain. The current QCar
+  # observer runs a 5D bicycle model in discrete time, so these defaults are
+  # intentionally milder and should be tuned per experiment.
+  high_gain_theta: 1.2
+  # In chain_6d mode, a 3-vector is reused for both [x, x_dot, x_ddot] and
+  # [y, y_dot, y_ddot] correction chains.
+  observer_gain: [0.35, 0.12, 0.03]
+  position_gain: 0.35
+  position_to_velocity_gain: 0.12
+  position_to_acceleration_gain: 0.03
+  velocity_gain: 0.30
+  acceleration_from_velocity_gain: 0.10
+  yaw_correction_gain: 0.08
+  consensus_gain: 0.4
+  # Current fleet structure expects the host vehicle's own column to equal its
+  # local estimator output. Remote vehicles use direct V2V state reports to
+  # build the position innovation for transformed high-gain correction.
+  set_own_state_from_local: true
+  direct_state_blend: 0.0
+
+  normalize_consensus_by_weight: true
+  max_innovation_norm: 10.0
+  max_measurement_term_norm: 50.0
+  max_consensus_term_norm: 50.0
+  min_dt: 0.001
+  max_dt: 0.2
+
+
+dynamics:
+  # Matches TrustBasedFleetEstimator._predict_dynamics:
+  # x+ = x + v cos(theta) dt
+  # y+ = y + v sin(theta) dt
+  # theta+ = theta + v tan(steering) / wheelbase dt
+  # v+ = v + a dt, unless motor_model_enabled is true.
+  model: bicycle
+  wheelbase: 0.256
+  motor_model_enabled: false
+  motor_tau: 0.318
+  k_th: 4.5795
+  k_br: 4.5772
+  c_v: 5.0
+  c_fric: 2.0
+
+  model: canonical_bicycle
+  
+
+constraints:
+  max_abs_position: 10000.0
+  max_abs_velocity: 5.0
+  max_abs_acceleration: 10.0
+  max_abs_steering: 0.6
+  max_abs_throttle: 1.0
+
+debug:
+  enabled: false
