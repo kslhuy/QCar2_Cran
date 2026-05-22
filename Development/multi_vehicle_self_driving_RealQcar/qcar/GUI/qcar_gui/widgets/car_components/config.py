@@ -391,7 +391,7 @@ class RuntimeSwitchingControl(BaseWidget):
 
         local_obs = self.config.get(
             "local_observers",
-            ["ekf", "luenberger", "neural_luenberger", "robust_kalman_net"],
+            ["ekf", "luenberger", "neural_luenberger", "robust_kalman_net", "high_gain_observer"],
         )
         fleet_obs = self.config.get(
             "fleet_observers",

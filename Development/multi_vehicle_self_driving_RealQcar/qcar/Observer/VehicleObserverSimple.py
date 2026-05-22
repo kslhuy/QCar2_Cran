@@ -716,7 +716,9 @@ class VehicleObserver:
             estimator_params = estimator_params or {}
 
             # Merge with config defaults
-            config_defaults = copy.deepcopy(self.local_config_defaults.get("common", {}))
+            config_defaults = copy.deepcopy(
+                self.local_config_defaults.get("common", {})
+            )
             estimator_defaults = copy.deepcopy(
                 self.local_config_defaults.get(self.local_estimator_type, {})
             )

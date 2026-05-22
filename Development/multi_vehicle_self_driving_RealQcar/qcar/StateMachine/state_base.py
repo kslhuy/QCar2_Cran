@@ -1509,6 +1509,7 @@ class StateBase:
                 "dead_reckoning",
                 "neural_luenberger",
                 "robust_kalman_net",
+                "high_gain_observer",
             ]
             if observer_type not in valid_types:
                 self.logger.log_error(
