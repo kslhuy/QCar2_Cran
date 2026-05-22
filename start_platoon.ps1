@@ -9,6 +9,8 @@ $pythonExe       = Join-Path $projectRoot "env\Scripts\python.exe"
 $platoonFolder   = Join-Path $projectRoot "Development\QCar2_multi-vehicle_control"
 $initScriptPath  = Join-Path $platoonFolder "initPlatoon.py"
 $qcarFolder      = Join-Path $projectRoot "Development\multi_vehicle_self_driving_RealQcar\qcar"
+$guiFolder       = Join-Path $qcarFolder "GUI"
+$guiScriptPath   = Join-Path $guiFolder "app_main.py"
 $activateScript  = Join-Path $projectRoot "env\Scripts\Activate.ps1"
 
 Write-Host "[start_platoon] 使用 Python: $pythonExe" -ForegroundColor Cyan
@@ -29,10 +31,20 @@ if (-not (Test-Path $qcarFolder)) {
     exit 1
 }
 
+if (-not (Test-Path $guiScriptPath)) {
+    Write-Error "找不到 GUI 启动脚本: $guiScriptPath，请检查路径。"
+    exit 1
+}
+
 if (-not (Test-Path $activateScript)) {
     Write-Error "找不到虚拟环境激活脚本: $activateScript，请确认虚拟环境已正确创建。"
     exit 1
 }
+
+# 首先启动 GUI
+$guiCmd = "cd `"$guiFolder`"; & `"$activateScript`"; python .\app_main.py"
+Write-Host "[start_platoon] 首先启动 GUI: $guiScriptPath" -ForegroundColor Cyan
+Start-Process powershell -ArgumentList "-NoExit", "-Command", $guiCmd
 
 # 先运行 initPlatoon.py
 Write-Host "[start_platoon] 正在运行 initPlatoon.py 配置编队参数..." -ForegroundColor Yellow

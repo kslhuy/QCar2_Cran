@@ -119,7 +119,7 @@ timing:
   start_delay: 1.0
   controller_update_rate: 200  # Hz
   observer_rate: 200  # Hz
-  telemetry_send_rate: 10  # Hz
+  telemetry_send_rate: 100  # Hz
 
 # YOLO Detection Configuration
 yolo:

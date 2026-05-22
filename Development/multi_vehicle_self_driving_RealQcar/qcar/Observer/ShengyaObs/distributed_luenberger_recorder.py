@@ -190,6 +190,7 @@ class DistributedLuenbergerRecorder:
                 f'true_position_{vid}',
                 f'true_velocity_{vid}',
                 f'true_acceleration_{vid}',
+                f'true_throttle_{vid}',
             ])
 
         return columns
@@ -296,6 +297,7 @@ class DistributedLuenbergerRecorder:
             row[f'true_position_{vid}'] = debug_data.get(f'true_position_{vid}', 0.0)
             row[f'true_velocity_{vid}'] = debug_data.get(f'true_velocity_{vid}', 0.0)
             row[f'true_acceleration_{vid}'] = debug_data.get(f'true_acceleration_{vid}', 0.0)
+            row[f'true_throttle_{vid}'] = debug_data.get(f'true_throttle_{vid}', 0.0)
 
         return row
     

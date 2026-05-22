@@ -1372,6 +1372,11 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         self.debug_data['true_position_0'] = leader_x  # Leader position (x)
         self.debug_data['true_velocity_0'] = leader_v  # Leader velocity
         self.debug_data['true_acceleration_0'] = leader_a  # Leader acceleration
+        if self.vehicle_id == 0:
+            self.debug_data['true_throttle_0'] = control[1] if len(control) > 1 else np.nan
+        else:
+            leader_control = self._get_latest_received_control(0, current_time_ns)
+            self.debug_data['true_throttle_0'] = leader_control[1] if leader_control is not None else np.nan
         
         # Record follower vehicles' true states
         for vehicle_id in range(1, self.fleet_size):
@@ -1380,20 +1385,24 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 self.debug_data[f'true_position_{vehicle_id}'] = local_state[0]
                 self.debug_data[f'true_velocity_{vehicle_id}'] = local_state[3]
                 self.debug_data[f'true_acceleration_{vehicle_id}'] = local_state[4] if len(local_state) > 4 else 0.0
+                self.debug_data[f'true_throttle_{vehicle_id}'] = control[1] if len(control) > 1 else np.nan
                 continue
             
             # Get latest received state from V2V communication
             other_state = self._get_latest_received_state(vehicle_id, current_time_ns)
+            other_control = self._get_latest_received_control(vehicle_id, current_time_ns)
             
             if other_state is not None:
                 self.debug_data[f'true_position_{vehicle_id}'] = other_state[0]
                 self.debug_data[f'true_velocity_{vehicle_id}'] = other_state[3]
                 self.debug_data[f'true_acceleration_{vehicle_id}'] = other_state[4] if len(other_state) > 4 else 0.0
+                self.debug_data[f'true_throttle_{vehicle_id}'] = other_control[1] if other_control is not None else np.nan
             else:
                 # No V2V data available, use NaN to indicate missing data
                 self.debug_data[f'true_position_{vehicle_id}'] = np.nan
                 self.debug_data[f'true_velocity_{vehicle_id}'] = np.nan
                 self.debug_data[f'true_acceleration_{vehicle_id}'] = np.nan
+                self.debug_data[f'true_throttle_{vehicle_id}'] = np.nan
         
         return x_i_new
 
