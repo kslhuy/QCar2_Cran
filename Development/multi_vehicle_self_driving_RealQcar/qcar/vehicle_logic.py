@@ -547,8 +547,9 @@ class VehicleLogic:
     
     def _build_telemetry_data(self) -> dict:
         """Build telemetry data dictionary - pure data collection"""
-        # Get current state from VehicleObserver
+        # Get current state and raw sensor data from VehicleObserver
         state_info = self.vehicle_observer.get_estimated_state_for_control()
+        sensor_data = self.vehicle_observer.get_sensor_data() if hasattr(self.vehicle_observer, 'get_sensor_data') else {}
         
         # Get controller data safely (controllers may be in state machine, not vehicle_logic)
         # Check if controllers exist (backward compatibility with FollowingPathState setting them)
@@ -563,6 +564,9 @@ class VehicleLogic:
             'y': float(state_info['y']),
             'th': float(state_info['theta']),
             'v': float(state_info['velocity']),
+            'accel_magnitude': float(sensor_data.get('accel_magnitude', state_info.get('acceleration', 0.0))),
+            'accel_x': float(sensor_data.get('accel_x', 0.0)),
+            'accel_y': float(sensor_data.get('accel_y', 0.0)),
             'u': float(getattr(self, '_last_u', 0.0)),
             'delta': float(getattr(self, '_last_steering', 0.0)),
             # 'v_ref': float(self.v_ref * self.yolo_manager.get_yolo_gain()),

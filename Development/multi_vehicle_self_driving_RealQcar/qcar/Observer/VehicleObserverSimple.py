@@ -138,6 +138,8 @@ class VehicleObserver:
             'motor_tach': 0.0,
             'gyro_z': 0.0,
             'accelerometer' : np.zeros(3),
+            'accel_x': 0.0,
+            'accel_y': 0.0,
             'accel_magnitude': 0.0,
             'timestamp': 0.0,
             'gps_valid': False,
@@ -385,8 +387,8 @@ class VehicleObserver:
                 # Update sensor data cache
                 with self.lock:
                     # Read accelerometer (x, y, z axes)
-                    accel_x = qcar.accelerometer[0] if hasattr(qcar, 'accelerometer') else 0.0
-                    accel_y = qcar.accelerometer[1] if hasattr(qcar, 'accelerometer') else 0.0
+                    accel_x = float(qcar.accelerometer[0]) if hasattr(qcar, 'accelerometer') else 0.0
+                    accel_y = float(qcar.accelerometer[1]) if hasattr(qcar, 'accelerometer') else 0.0
                     # Calculate horizontal acceleration magnitude (norm of x and y)
                     accel_magnitude = float(np.sqrt(accel_x**2 + accel_y**2))
                     
@@ -411,6 +413,8 @@ class VehicleObserver:
                         'motor_tach': qcar.motorTach,
                         'gyro_z': qcar.gyroscope[2] if hasattr(qcar, 'gyroscope') else 0.0,
                         'accelerometer': qcar.accelerometer if hasattr(qcar, 'accelerometer') else np.zeros(3),
+                        'accel_x': accel_x,
+                        'accel_y': accel_y,
                         'accel_magnitude': accel_magnitude,
                         'timestamp': time.time(),
                         'gps_valid': gps_valid,

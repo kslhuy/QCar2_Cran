@@ -136,7 +136,8 @@ class VehicleLogger:
         
         fieldnames = [
             # Core telemetry
-            'timestamp', 'time', 'x', 'y', 'th', 'v', 
+            'timestamp', 'time', 'x', 'y', 'th', 'v',
+            'accel_magnitude', 'accel_x', 'accel_y',
             'u', 'delta', 'v_ref', 'yolo_gain',
             # 'waypoint_index', 'cross_track_error', 'heading_error',
             'state', 'gps_valid',
