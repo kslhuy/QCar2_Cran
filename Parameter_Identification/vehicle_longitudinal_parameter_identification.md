@@ -9,7 +9,7 @@
 \begin{aligned}
 \dot{p} &= v, \\
 \dot{v} &= a, \\
-\dot{a} &= -\frac{1}{\tau}a + \frac{1}{m\tau}\bar{u} + f(v,a),
+\dot{a} &= -\frac{1}{\tau}a + \frac{1}{\tau}\bar{u} + f(v,a),
 \end{aligned}
 \right.
 ```
@@ -49,7 +49,7 @@ c_r, \quad c_d
 - `p`：车辆绝对位置；
 - `v`：车辆速度；
 - `a`：车辆加速度；
-- `\bar{u}`：控制输入，即油门/制动命令；
+- `\bar{u}`：车辆纵向等效控制输入；若实际记录的是归一化油门或 PWM，需要额外辨识输入比例系数；
 - `m`：车辆质量；
 - `\tau`：动力系统惯性时间常数；
 - `c_r`：滚动阻力相关系数；
@@ -68,7 +68,7 @@ c_r, \quad c_d
 =
 -\frac{1}{\tau}a
 +
-\frac{1}{m\tau}\bar{u}
+\frac{1}{\tau}\bar{u}
 -
 \frac{1}{\tau}
 \left(
@@ -86,7 +86,7 @@ c_r
 +
 \frac{1}{\tau}a
 -
-\frac{1}{m\tau}\bar{u}
+\frac{1}{\tau}\bar{u}
 =
 -
 \frac{1}{\tau}c_r
@@ -104,7 +104,7 @@ y
 +
 \frac{1}{\tau}a
 -
-\frac{1}{m\tau}\bar{u}
+\frac{1}{\tau}\bar{u}
 ```
 
 则模型可写成线性参数回归形式：
@@ -180,7 +180,7 @@ c_r + \beta(v^2+2\tau a)
 +
 \frac{1}{\tau}a
 -
-\frac{1}{m\tau}\bar{u}
+\frac{1}{\tau}\bar{u}
 =
 -
 \frac{1}{\tau}c_r
@@ -197,7 +197,7 @@ y
 +
 \frac{1}{\tau}a
 -
-\frac{1}{m\tau}\bar{u}
+\frac{1}{\tau}\bar{u}
 ```
 
 ```math
@@ -267,20 +267,15 @@ c_d = \frac{6.6}{\rho A_f}\beta
 m = 3.3
 ```
 
+其中 `m` 不再出现在输入项中，只用于非线性阻力项和由 `\beta` 反算 `c_d`。
+
 因此：
 
 ```math
 \frac{1}{\tau} = 6.25
 ```
 
-```math
-\frac{1}{m\tau}
-=
-\frac{1}{3.3\times0.16}
-\approx 1.8939
-```
-
-若 `\bar{u}` 已经是物理意义上的等效驱动力输入，则输出量为：
+若 `\bar{u}` 已经是模型中的等效纵向控制输入，则输出量为：
 
 ```math
 y_k
@@ -289,7 +284,7 @@ y_k
 +
 6.25a_k
 -
-1.8939\bar{u}_k
+6.25\bar{u}_k
 ```
 
 回归向量为：
@@ -395,12 +390,12 @@ Y = \Psi\theta
 
 ## 6. 输入增益同时辨识方案
 
-在小车实验中，`\bar{u}` 往往是 PWM、归一化油门指令或电机控制命令，而不一定是真实物理驱动力。
+在小车实验中，实际记录的油门量往往是 PWM、归一化油门指令或电机控制命令，而不一定等于模型中的等效纵向控制输入。
 
-此时建议引入输入增益 `k_u`：
+此时建议引入输入比例系数 `k_u`：
 
 ```math
-F = k_u\bar{u}
+u_{eq} = k_u\bar{u}
 ```
 
 动力学模型变为：
@@ -410,7 +405,7 @@ F = k_u\bar{u}
 =
 -\frac{1}{\tau}a
 +
-\frac{k_u}{m\tau}\bar{u}
+\frac{k_u}{\tau}\bar{u}
 -
 \frac{1}{\tau}
 \left(
@@ -425,19 +420,19 @@ c_r + \beta(v^2+2\tau a)
 +
 \frac{1}{\tau}a
 =
-\frac{k_u}{m\tau}\bar{u}
+\frac{k_u}{\tau}\bar{u}
 -
 \frac{1}{\tau}c_r
 -
 \frac{1}{\tau}(v^2+2\tau a)\beta
 ```
 
-代入 `m = 3.3 kg` 和 `\tau = 0.16 s`：
+代入 `\tau = 0.16 s`：
 
 ```math
 \dot{a} + 6.25a
 =
-1.8939k_u\bar{u}
+6.25k_u\bar{u}
 -
 6.25c_r
 -
@@ -454,7 +449,7 @@ y_k = \dot{a}_k + 6.25a_k
 \psi_k
 =
 \begin{bmatrix}
-1.8939\bar{u}_k &
+6.25\bar{u}_k &
 -6.25 &
 -6.25(v_k^2+0.32a_k)
 \end{bmatrix}
@@ -509,10 +504,10 @@ u_c
 \right.
 ```
 
-也就是说，控制器中的 `u` 不是物理驱动力，而是一个与加速度动态同量纲的等效控制输入。实际车辆执行的是归一化油门 `throttle_{raw}`。因此，若直接将 `true_throttle_0` 代入：
+也就是说，控制器中的 `u` 是与加速度动态同量纲的等效控制输入。实际车辆执行的是归一化油门 `throttle_{raw}`。因此，若直接将 `true_throttle_0` 当作模型输入代入：
 
 ```math
-\frac{1}{m\tau}\bar{u}
+\frac{1}{\tau}\bar{u}
 ```
 
 通常会导致模型输入尺度错误。
@@ -581,7 +576,7 @@ c_r \\
 y_k = \psi_k\theta
 ```
 
-该模型比直接使用 `1/(m\tau) true_throttle_0` 更合理，因为 `true_throttle_0` 是归一化油门，而不是牛顿单位驱动力。
+该模型比直接使用 `1/\tau \cdot true_throttle_0` 更合理，因为 `true_throttle_0` 是归一化油门，而不是模型中的等效纵向控制输入。
 
 #### 6.1.2 推荐模型二：可重构前馈时辨识残差动力学
 
@@ -635,10 +630,10 @@ d_3a
 +
 6.25a
 -
-1.8939 true\_throttle\_0
+6.25 true\_throttle\_0
 ```
 
-作为辨识输出。该写法隐含假设 `true_throttle_0` 已经是物理驱动力，但这与当前实验事实不符，因此会导致 `R^2` 较差或阻力参数被迫吸收输入尺度误差。
+作为辨识输出。该写法隐含假设 `true_throttle_0` 已经是模型中的等效纵向控制输入，但这与当前实验事实不符，因此会导致 `R^2` 较差或阻力参数被迫吸收输入尺度误差。
 
 ---
 
@@ -1014,7 +1009,7 @@ y_k
 =
 \dot{\tilde{a}}_k
 +6.25\tilde{a}_k
--1.8939\bar{u}_k
+-6.25\bar{u}_k
 ```
 
 若同时辨识输入增益 `k_u`：
@@ -1054,7 +1049,7 @@ y_k
 \psi_k
 =
 \begin{bmatrix}
-1.8939\bar{u}_k &
+6.25\bar{u}_k &
 -6.25 &
 -6.25(\tilde{v}_k^2+0.32\tilde{a}_k)
 \end{bmatrix}
@@ -1109,7 +1104,7 @@ c_r \\
 =
 -\frac{1}{\tau}a_k
 +
-\frac{1}{m\tau}\bar{u}_k
+\frac{1}{\tau}\bar{u}_k
 -
 \frac{1}{\tau}
 \left(
@@ -1126,7 +1121,7 @@ c_r \\
 =
 -\frac{1}{\tau}a_k
 +
-\frac{\hat{k}_u}{m\tau}\bar{u}_k
+\frac{\hat{k}_u}{\tau}\bar{u}_k
 -
 \frac{1}{\tau}
 \left(
@@ -1224,7 +1219,7 @@ print("cd =", cd_hat)
 对于实际 QCar 或小型无人车，推荐采用以下方案：
 
 1. 不直接辨识 `c_d`，先辨识等效参数 `\beta`；
-2. 当前 `true_throttle_0` 是归一化油门或油门比例，不是牛顿单位驱动力，因此必须辨识输入尺度；
+2. 当前 `true_throttle_0` 是归一化油门或油门比例，不是模型中的等效纵向控制输入，因此必须辨识输入尺度；
 3. 如果使用 `true_throttle_0=throttle_{raw}`，推荐辨识 `k_T,c_r,\beta`，其中 `k_T` 表示归一化油门到线性模型等效输入的比例；
 4. 使用如下辨识模型：
 
@@ -1308,7 +1303,7 @@ k_T, \quad c_r, \quad \beta
 
 其中 `k_T` 用于描述归一化油门 `true_throttle_0` 到线性模型等效输入 `u` 的比例关系。
 
-若控制输入 `\bar{u}` 已经是物理意义上的等效驱动力，则只需辨识：
+若控制输入 `\bar{u}` 已经是模型中的等效纵向控制输入，则只需辨识：
 
 ```math
 c_r, \quad \beta
@@ -1321,3 +1316,4 @@ c_d = \frac{2m}{\rho A_f}\beta
 ```
 
 进一步得到空气阻力系数 `c_d`。
+

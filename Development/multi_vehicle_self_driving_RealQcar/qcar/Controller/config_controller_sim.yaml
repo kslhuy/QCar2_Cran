@@ -245,11 +245,11 @@ per_vehicle_controllers:
       # 关系：throttle = 0.156385 * v_desired + 0.005230
       # 目的：提高滑行初始速度，增加阻力辨识中的 v^2 覆盖范围。
       - {throttle: 0.00, duration: 5}      # 静止基准，确认车辆初始状态
-      - {throttle: 0.22417, duration: 14}  # v_desired ≈ 1.40 m/s
+      - {throttle: 0.5, duration: 14}  # v_desired ≈ 1.40 m/s
       - {throttle: 0.00, duration: 14}     # 从约 1.40 m/s 自然滑行
-      - {throttle: 0.25, duration: 16}  # v_desired ≈ 1.55 m/s，
+      - {throttle: 1.0, duration: 16}  # v_desired ≈ 1.55 m/s，
       - {throttle: 0.00, duration: 18}     # 从约 1.55 m/s 自然滑行
-      - {throttle: 0.5, duration: 16}  # v_desired ≈ 1.55 m/s，
+      - {throttle: 1.5, duration: 16}  # v_desired ≈ 1.55 m/s，
       - {throttle: 0.00, duration: 18}     # 从约 1.55 m/s 自然滑行
 
       # 第一个完整循环：上升 + 下降

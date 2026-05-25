@@ -276,6 +276,8 @@ class ControllerConfig:
            - {throttle: 0.05, duration: 5}, {throttle: 0.06, duration: 5}
         2. Dict format (legacy): Single values and duration dict
            - {'values': [0.05, 0.06], 'duration': 5}
+        3. Dict format with per-step durations
+           - {'values': [0.05, 0.06], 'durations': [5, 10]}
         """
         ts_config = self.config.get('throttle_sequence', {})
         
@@ -284,21 +286,24 @@ class ControllerConfig:
             # Extract throttle values and durations from list
             if isinstance(ts_config[0], dict) and 'throttle' in ts_config[0]:
                 throttle_values = [item.get('throttle', 0.1) for item in ts_config]
-                # Use duration from first item (can vary per item in future)
-                duration = ts_config[0].get('duration', 5.0)
+                durations = [item.get('duration', 5.0) for item in ts_config]
+                duration = durations[0]
             else:
                 # Fallback if list format is unexpected
                 throttle_values = [0.5]
+                durations = [5.0]
                 duration = 5.0
         else:
             # Handle dict format
             throttle_values = ts_config.get('values', [0.5])
             duration = ts_config.get('duration', 5.0)
+            durations = ts_config.get('durations', [duration] * len(throttle_values))
         
         return {
             'throttle_sequence': {
                 'values': throttle_values,
                 'duration': duration,
+                'durations': durations,
             }
         }
     

@@ -21,7 +21,7 @@ class ThrottleSequenceController(LongitudinalControllerBase):
         
         Args:
             throttle_sequence: Dictionary with throttle values and timing info
-                              e.g., {'values': [0.3, 0.5, 0.2], 'duration': 5.0}
+                              e.g., {'values': [0.3, 0.5, 0.2], 'durations': [5.0, 10.0, 5.0]}
             config: Configuration dictionary
             logger: Logger instance
         """
@@ -29,9 +29,20 @@ class ThrottleSequenceController(LongitudinalControllerBase):
         self.config = config
         self.logger = logger
         
-        # Extract sequence values and duration
+        # Extract sequence values and durations
         self.throttle_values = self.throttle_sequence.get('values', [0.5])
-        self.sequence_duration = self.throttle_sequence.get('duration', 5.0)  # 5 seconds per throttle value
+        self.sequence_duration = self.throttle_sequence.get('duration', 5.0)  # Legacy single duration
+        self.sequence_durations = self.throttle_sequence.get('durations')
+
+        if self.sequence_durations is None:
+            self.sequence_durations = [self.sequence_duration] * len(self.throttle_values)
+        elif len(self.sequence_durations) != len(self.throttle_values):
+            if self.logger:
+                self.logger.warning(
+                    "ThrottleSequenceController durations length does not match throttle values; "
+                    "falling back to legacy duration for all steps"
+                )
+            self.sequence_durations = [self.sequence_duration] * len(self.throttle_values)
         
         # Initialize sequence state tracking
         self.current_sequence_index = 0
@@ -39,7 +50,26 @@ class ThrottleSequenceController(LongitudinalControllerBase):
         
         if self.logger:
             self.logger.info(f"ThrottleSequenceController initialized with {len(self.throttle_values)} throttle values, "
-                           f"each lasting {self.sequence_duration}s")
+                           f"durations={self.sequence_durations}s")
+
+    def _current_duration(self) -> float:
+        """Get duration for the current throttle sequence step."""
+        return self.sequence_durations[self.current_sequence_index]
+
+    def _advance_sequence(self, dt: float):
+        """Advance sequence timing and switch steps when the current duration expires."""
+        self.time_in_current_sequence += dt
+        current_duration = self._current_duration()
+        
+        if self.time_in_current_sequence >= current_duration:
+            self.time_in_current_sequence = 0.0
+            self.current_sequence_index = (self.current_sequence_index + 1) % len(self.throttle_values)
+            
+            if self.logger:
+                self.logger.debug(
+                    f"Switching to throttle sequence index: {self.current_sequence_index}, "
+                    f"duration={self._current_duration()}s"
+                )
 
     def compute_throttle(self, follower_state: Dict[str, float], 
                         leader_state: Optional[Dict[str, float]], 
@@ -55,16 +85,7 @@ class ThrottleSequenceController(LongitudinalControllerBase):
         Returns:
             Throttle command to apply
         """
-        # Update time in current sequence
-        self.time_in_current_sequence += dt
-        
-        # Check if we need to switch to the next throttle value
-        if self.time_in_current_sequence >= self.sequence_duration:
-            self.time_in_current_sequence = 0.0
-            self.current_sequence_index = (self.current_sequence_index + 1) % len(self.throttle_values)
-            
-            if self.logger:
-                self.logger.debug(f"Switching to throttle sequence index: {self.current_sequence_index}")
+        self._advance_sequence(dt)
         
         # Get current throttle value
         current_throttle = self.throttle_values[self.current_sequence_index]
@@ -95,16 +116,7 @@ class ThrottleSequenceController(LongitudinalControllerBase):
         Returns:
             Throttle command from the current sequence position
         """
-        # Update time in current sequence
-        self.time_in_current_sequence += dt
-        
-        # Check if we need to switch to the next throttle value
-        if self.time_in_current_sequence >= self.sequence_duration:
-            self.time_in_current_sequence = 0.0
-            self.current_sequence_index = (self.current_sequence_index + 1) % len(self.throttle_values)
-            
-            if self.logger:
-                self.logger.debug(f"Switching to throttle sequence index: {self.current_sequence_index}")
+        self._advance_sequence(dt)
         
         # Get current throttle value
         current_throttle = self.throttle_values[self.current_sequence_index]
