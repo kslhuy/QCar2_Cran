@@ -12,6 +12,10 @@ The project is structured into two main components: the Multi-Vehicle System and
 
 ### [Multi-Vehicle System](Development/multi_vehicle_self_driving_RealQcar)
 
+[![Watch the demo video](https://img.youtube.com/vi/amur0EEShJE/hqdefault.jpg)](https://youtu.be/amur0EEShJE?si=yLor6u1dGCNiYwXE)
+
+[![Watch the demo video](https://img.youtube.com/vi/n3M1J4P6dlQ/hqdefault.jpg)](https://youtu.be/n3M1J4P6dlQ?si=yLor6u1dGCNiYwXE)
+
 Multi-Vehicle System is the core component of the project, responsible for implementing the self-driving logic for both real QCar hardware and simulation. It includes modules for vehicle control, state estimation, path planning, and communication between vehicles. The system is designed to be modular and scalable, allowing for easy integration of new algorithms and functionalities as needed.
 
 The structure of the Multi-Vehicle System is organized as follows:
@@ -41,14 +45,16 @@ Main structure and responsibilities:
 
 
 ### [Ground Station App](Development/ground_station_app)
+[![Watch the demo video](https://img.youtube.com/vi/SraIErZ5QTg/hqdefault.jpg)](https://youtu.be/SraIErZ5QTg?si=rBwIPNAtXIAl1Any
+)
 
-### Fleet Framework (Deprecated)
+
 
 ## Pre-requisites
 
 ### Hardware Requirements
 
-- Quanser QCar 2;
+- Quanser QCar 2 or Limo Agilx (Can ez extend);
 - Computer with at least 8GB RAM and a modern multi-core processor;
 - High-speed internet connection for communication between vehicles and ground station.
 
@@ -72,6 +78,14 @@ We thanks for the following contributors for their valuable contributions to the
 
 - [Huy Quang NGUYEN](https://github.com/kslhuy)
 - [Shengya MENG](https://github.com/shengyameng)
+- [Qi Li](https://github.com/shengyameng)
+- [Shiyu Zhou](https://github.com)
+- [Viet Cong Xuan](https://github.com)
+- [Oussama Sadki](https://github.com)
+- [Selsabil Bougherara](https://github.com)
+- [Tanush Rathakumar](https://github.com)
+- [Melissa Benabdelaziz](https://github.com)
+
 - [Ali ZEMOUCHE](http://w3.cran.univ-lorraine.fr/ali.zemouche/?q=content/curriculum-vitae)
 
 
