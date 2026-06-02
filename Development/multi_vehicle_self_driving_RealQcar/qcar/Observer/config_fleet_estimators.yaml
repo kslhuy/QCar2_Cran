@@ -22,7 +22,7 @@ fleet:
   max_state_age_ns: 1000000000  # (ns) 1 second validity window for received states
   received_local_states_limit: 10
   received_fleet_states_limit: 5
-  fleet_observer_rate: 25    # Hz - how often fleet estimator is updated
+  fleet_observer_rate: 100   # Hz - how often fleet estimator is updated
 
   # ---------------------------------------------------------------------
   # Consensus estimator defaults
@@ -52,6 +52,21 @@ fleet:
     Cd_i: 0.035
     AF_i: 0.22
     mu_i: 0.01
+
+  # ---------------------------------------------------------------------
+  # Leadering observer defaults
+  # ---------------------------------------------------------------------
+  leadering_observer:
+    state_dim: 5
+    debug_recording: true
+    debug_output_dir: "observer_recordings"
+    delay_compensation: true
+    gamma: 1.0
+    eta: 0.16
+    max_hat_tau: 0.147703
+    leader_vehicle_id: 0
+    leader_position_index: 0
+    leader_control_index: 1
 
   # ---------------------------------------------------------------------
   # Trust-Based Consensus estimator defaults

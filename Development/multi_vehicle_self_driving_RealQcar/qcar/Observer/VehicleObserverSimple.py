@@ -68,7 +68,7 @@ class VehicleObserver:
             with open(config_path, 'r') as f:
                 loaded = yaml.safe_load(f)
                 self.fleet_config_defaults = loaded.get('fleet', {})
-                self.fleet_estimator_type = loaded.get('fleet_estimator_type')
+                self.fleet_estimator_type = loaded.get('fleet_estimator_type', self.fleet_estimator_type)
 
                 # Load fleet plotting config
                 self.fleet_plotting_config = {
@@ -90,7 +90,7 @@ class VehicleObserver:
             with open(config_path, 'r') as f:
                 loaded = yaml.safe_load(f)
                 self.local_config_defaults = loaded.get('local', {})
-                self.local_estimator_type = loaded.get('local_estimator_type')
+                self.local_estimator_type = loaded.get('local_estimator_type', self.local_estimator_type)
 
                 # Load local plotting config
                 self.local_plotting_config = {
@@ -111,6 +111,12 @@ class VehicleObserver:
 
         # Observer configuration (external per-vehicle overrides)
         self.observer_config = self._get_observer_config()
+        self.fleet_estimator_type = self.observer_config.get(
+            "fleet_estimator_type", self.fleet_estimator_type
+        )
+        self.local_estimator_type = self.observer_config.get(
+            "local_estimator_type", self.local_estimator_type
+        )
 
 
         
@@ -157,7 +163,7 @@ class VehicleObserver:
         
         # ===== Timing Control =====
         self.local_observer_rate = self.observer_config.get("observer_rate", 100)
-        self.fleet_observer_rate = self.observer_config.get("fleet_observer_rate", 50)
+        self.fleet_observer_rate = self.observer_config.get("fleet_observer_rate", 100)
         self._last_fleet_observer_time = 0.0
         
         # ===== Thread Safety =====
@@ -170,7 +176,7 @@ class VehicleObserver:
         
         self.vehicle_logger.logger.info(
             # f"VehicleObserver initialized: vehicle_id={vehicle_id}, "
-            f"Observer config: {self.config.observer}, "
+            f"Observer config: {self.observer_config}, "
             # f"local_estimator={local_estimator_type}, fleet_estimator={fleet_estimator_type}"
         )
 
@@ -225,13 +231,7 @@ class VehicleObserver:
     def _create_fleet_estimator(self):
         """Create fleet state estimator using factory"""
         try:
-            # Use config from file, fallback to observer_config if not available
-            fleet_config = self.fleet_config_defaults.get(self.fleet_estimator_type, {})
-            if not fleet_config:
-                fleet_config = {
-                    'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
-                    'observer_gain': self.observer_config.get('observer_gain', 0.1),
-                }
+            fleet_config = self._get_fleet_estimator_config()
             print(fleet_config)
             self.fleet_estimator = FleetEstimatorFactory.create(
                 estimator_type=self.fleet_estimator_type,
@@ -334,7 +334,7 @@ class VehicleObserver:
         """
         default_config = {
             "observer_rate": 100,
-            "fleet_observer_rate": 50,
+            "fleet_observer_rate": 100,
         }
 
 
@@ -358,11 +358,25 @@ class VehicleObserver:
             return default_config
 
         merged = default_config.copy()
+        merged.update(cfg_dict)
         merged["observer_rate"] = cfg_dict.get("observer_rate", merged["observer_rate"])
         merged["fleet_observer_rate"] = cfg_dict.get("fleet_observer_rate", merged["fleet_observer_rate"])
 
 
         return merged
+
+    def _get_fleet_estimator_config(self) -> dict:
+        """Merge global fleet estimator defaults with per-vehicle observer overrides."""
+        fleet_config = dict(self.fleet_config_defaults.get(self.fleet_estimator_type, {}) or {})
+        for key, value in self.observer_config.items():
+            if key not in ("local_estimator_type", "fleet_estimator_type"):
+                fleet_config[key] = value
+        if not fleet_config:
+            fleet_config = {
+                'consensus_gain': 0.3,
+                'observer_gain': 0.1,
+            }
+        return fleet_config
 
     def update_sensor_data(self, qcar):
         """
@@ -454,7 +468,8 @@ class VehicleObserver:
             
             # Update fleet observer if it's time (independent rate control)
             if self._should_update_fleet_observer(current_time):
-                self._update_fleet_observer_internal(dt) # Distributed
+                fleet_dt = 1.0 / max(float(self.fleet_observer_rate), 1e-9)
+                self._update_fleet_observer_internal(fleet_dt) # Distributed
             
             return state_info
             
@@ -1005,10 +1020,7 @@ class VehicleObserver:
             
             # Create fresh fleet estimator with new fleet size (no old data to copy)
             try:
-                fleet_config = {
-                    'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
-                    'observer_gain': self.observer_config.get('observer_gain', 0.1),
-                }
+                fleet_config = self._get_fleet_estimator_config()
                 
                 # Create new fleet estimator with correct size
                 self.fleet_estimator = FleetEstimatorFactory.create(
@@ -1220,6 +1232,10 @@ class VehicleObserver:
             if self.fleet_recorder:
                 self.fleet_recorder.stop()
                 self.vehicle_logger.logger.info("Fleet data recorder stopped")
+
+            if self.fleet_estimator and hasattr(self.fleet_estimator, "stop_recording"):
+                self.fleet_estimator.stop_recording()
+                self.vehicle_logger.logger.info("Fleet estimator internal recorder stopped")
                 
         except Exception as e:
             if self.vehicle_logger:

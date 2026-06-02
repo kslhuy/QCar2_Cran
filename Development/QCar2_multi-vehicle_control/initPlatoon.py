@@ -22,7 +22,7 @@ from qvl.walls import QLabsWalls
 from qvl.basic_shape import QLabsBasicShape
 
 # 
-num_cars = 4
+num_cars = 2
 car_type = "QC2"
 init_location = [75, -6.2, 1.131]
 init_distance = 15  # distance between cars

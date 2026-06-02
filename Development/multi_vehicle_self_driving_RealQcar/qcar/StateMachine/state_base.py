@@ -1131,8 +1131,8 @@ class StateBase:
         try:
             from Observer.fleet_state_estimators import FleetEstimatorFactory
             
-            valid_types = ['consensus', 'distributed_kalman', 'distributed_luenberger', 
-                          'trust_consensus', 'trust_kalman']
+            valid_types = ['consensus', 'distributed_kalman', 'distributed_luenberger',
+                          'leadering_observer', 'trust_consensus', 'trust_kalman']
             if observer_type not in valid_types:
                 self.logger.log_error(f"Invalid fleet observer type: {observer_type}. Valid: {valid_types}")
                 return False

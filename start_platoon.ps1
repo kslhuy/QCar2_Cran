@@ -67,7 +67,7 @@ if ($initLines -match $successPattern) {
 
     # 直接在正确路径下启动 4 辆车（car-id 0~3）
     # 添加启动延迟以避免并发访问配置文件导致的 JSON 解析错误
-    for ($carId = 0; $carId -lt 4; $carId++) {
+    for ($carId = 0; $carId -lt 2; $carId++) {
         $cmd = "cd `"$qcarFolder`"; & `"$activateScript`"; python vehicle_main.py --car-id $carId"
         Write-Host "[start_platoon] 启动车辆 car-id=$carId" -ForegroundColor Cyan
         Start-Process powershell -ArgumentList "-NoExit", "-Command", $cmd

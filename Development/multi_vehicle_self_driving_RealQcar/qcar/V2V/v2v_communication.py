@@ -61,7 +61,7 @@ class V2VCommunication:
     
     # Default send intervals per message type (in nanoseconds)
     DEFAULT_SEND_INTERVALS = {
-        'local_state': 50_000_000,    # 50ms = 20 Hz - high frequency for position updates
+        'local_state': 100_000_000,   # 100ms = 10 Hz - local state updates
         'fleet_state': 200_000_000,   # 200ms = 5 Hz - medium frequency for fleet consensus
         'observer_state': 100_000_000,# 100ms = 10 Hz - medium frequency for observer consensus
         'heartbeat': 1_000_000_000,   # 1000ms = 1 Hz - low frequency for health checks
@@ -163,7 +163,7 @@ class V2VCommunication:
                 # Start single receive thread
                 self._start_receive_thread()
                 
-                self.logger.info(f"UDP V2V activated successfully for fleet of {fleet_size} vehicles at 20Hz")
+                self.logger.info(f"UDP V2V activated successfully for fleet of {fleet_size} vehicles")
                 return True
                 
             except Exception as e:

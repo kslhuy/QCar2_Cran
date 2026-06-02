@@ -28,7 +28,7 @@ class V2VDataType(Enum):
 @dataclass
 class V2VBroadcastConfig:
     """Configuration for V2V broadcasting"""
-    local_state_frequency: float = 20.0  # Hz - High frequency for local states
+    local_state_frequency: float = 10.0  # Hz - Local state broadcasts
     fleet_state_frequency: float = 5.0   # Hz - Lower frequency for fleet states
     heartbeat_frequency: float = 1.0     # Hz - Very low frequency for heartbeats
     max_queue_size: int = 100

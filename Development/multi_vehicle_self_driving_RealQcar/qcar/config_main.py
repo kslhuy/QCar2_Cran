@@ -2,10 +2,11 @@
 Configuration Management for QCar Vehicle Control System
 """
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, List, Optional
 import json
 import yaml
 import numpy as np
+import os
 
 
 @dataclass
@@ -142,6 +143,12 @@ class ObserverConfig:
     # Update rates (Hz)
     observer_rate: int = 100
     fleet_observer_rate: int = 30
+    local_estimator_type: str = "ekf"
+    fleet_estimator_type: str = "consensus"
+    observer_gain: Any = 0.1
+    consensus_gain: Any = 0.3
+    K_matrices: Any = None
+    delay_compensation: bool = True
 
 
 
@@ -205,6 +212,15 @@ class VehicleMainConfig:
             'logging': fleet_config.get('logging', {}),
             'observer': fleet_config.get('observer', {}),
         }
+
+        qcar_dir = os.path.dirname(os.path.abspath(__file__))
+        extra_config_path = os.path.join(
+            qcar_dir, 'Observer', 'extra_configs', f'car{car_id}.yaml'
+        )
+        if os.path.exists(extra_config_path):
+            with open(extra_config_path, 'r') as f:
+                extra_config = yaml.safe_load(f) or {}
+            config_dict['observer'].update(extra_config.get('observer', {}) or {})
         
         # Find the vehicle with matching car_id
         vehicles = fleet_config.get('vehicles', [])

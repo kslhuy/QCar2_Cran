@@ -67,7 +67,7 @@ class VehicleLogic:
         
         # V2V Manager - Complete V2V system (handles communication internally)
         v2v_config = V2VBroadcastConfig(
-            local_state_frequency=25.0,  # Hz - High frequency for local states
+            local_state_frequency=10.0,  # Hz - Local state broadcasts
             fleet_state_frequency=10.0,   # Hz - Lower frequency for fleet states
             heartbeat_frequency=1.0      # Hz - Very low frequency for heartbeats
         )
@@ -814,7 +814,7 @@ class VehicleLogic:
                 return
             
             # V2VManager.update_broadcast() handles all rate-limiting:
-            # - Local state: 20Hz, Fleet state: 5Hz, Heartbeat: 1Hz
+            # - Local state, fleet state, and heartbeat use V2VManager's configured rates.
             self.v2v_manager.update_broadcast()
             
             # Periodic logging of V2V activity (every 5 seconds)

@@ -546,6 +546,7 @@ class FleetEstimatorFactory:
     
     # Lazy loading flags
     _distributed_luenberger_loaded = False
+    _leadering_observer_loaded = False
     _trust_estimators_loaded = False
     
     @classmethod
@@ -560,6 +561,19 @@ class FleetEstimatorFactory:
             cls._distributed_luenberger_loaded = True
         except ImportError as e:
             print(f"Warning: Could not load DistributedLuenbergerEstimator: {e}")
+
+    @classmethod
+    def _load_leadering_observer(cls):
+        """Lazily load LeaderingObserverEstimator to avoid circular imports"""
+        if cls._leadering_observer_loaded:
+            return
+
+        try:
+            from .ShengyaObs.leadering_observer import LeaderingObserverEstimator
+            cls.ESTIMATOR_TYPES['leadering_observer'] = LeaderingObserverEstimator
+            cls._leadering_observer_loaded = True
+        except ImportError as e:
+            print(f"Warning: Could not load LeaderingObserverEstimator: {e}")
     
     @classmethod
     def _load_trust_estimators(cls):
@@ -597,9 +611,11 @@ class FleetEstimatorFactory:
         Returns:
             Fleet state estimator instance
         """
-        # Load distributed_luenberger lazily when requested
+        # Load estimator lazily when requested
         if estimator_type == 'distributed_luenberger':
             FleetEstimatorFactory._load_distributed_luenberger()
+        if estimator_type == 'leadering_observer':
+            FleetEstimatorFactory._load_leadering_observer()
         
         # Try to load trust-based estimators if requesting one
         if estimator_type.startswith('trust_'):
@@ -624,5 +640,6 @@ class FleetEstimatorFactory:
     def get_available_types(cls) -> List[str]:
         """Get list of available estimator types"""
         cls._load_distributed_luenberger()
+        cls._load_leadering_observer()
         cls._load_trust_estimators()
         return list(cls.ESTIMATOR_TYPES.keys())
