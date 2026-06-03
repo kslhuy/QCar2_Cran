@@ -63,7 +63,12 @@ fleet:
     delay_compensation: true
     gamma: 1.0
     eta: 0.16
+    use_timestamp_dt: true
+    max_update_dt_s: 0.05
     max_hat_tau: 0.147703
+    hat_tau_attack_enabled: true
+    hat_tau_attack_start_s: 60.0
+    hat_tau_attack_bias_s: 0.08
     leader_vehicle_id: 0
     leader_position_index: 0
     leader_control_index: 1

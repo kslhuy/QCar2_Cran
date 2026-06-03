@@ -14,6 +14,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+INNOVATION_BASELINE_START_S = 50.0
+INNOVATION_BASELINE_END_S = 100.0
+INNOVATION_ATTACK_START_S = 100.0
+INNOVATION_ATTACK_END_S = 125.0
+INNOVATION_SIGMA_MULTIPLIER = 3.0
+
 
 def default_output_dir() -> str:
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +43,47 @@ def _series(df: pd.DataFrame, name: str) -> Optional[pd.Series]:
     return data
 
 
+def _innovation_threshold_from_baseline(t: pd.Series, innovation: pd.Series) -> Optional[dict]:
+    baseline_mask = (t >= INNOVATION_BASELINE_START_S) & (t < INNOVATION_BASELINE_END_S)
+    baseline = innovation[baseline_mask].dropna()
+    if baseline.empty:
+        return None
+
+    mean = float(baseline.mean())
+    std = float(baseline.std(ddof=0))
+    margin = INNOVATION_SIGMA_MULTIPLIER * std
+    return {
+        "mean": mean,
+        "std": std,
+        "upper": mean + margin,
+        "lower": mean - margin,
+    }
+
+
+def _print_innovation_detection_stats(t: pd.Series, innovation: pd.Series, threshold: dict) -> None:
+    windows = [
+        ("baseline", INNOVATION_BASELINE_START_S, INNOVATION_BASELINE_END_S),
+        ("attack", INNOVATION_ATTACK_START_S, INNOVATION_ATTACK_END_S),
+        ("post", INNOVATION_ATTACK_END_S, float(t.max())),
+    ]
+
+    print(
+        "Innovation steady-state threshold: "
+        f"mean={threshold['mean']:.6g}, std={threshold['std']:.6g}, "
+        f"lower={threshold['lower']:.6g}, upper={threshold['upper']:.6g}"
+    )
+    for name, start_s, end_s in windows:
+        mask = (t >= start_s) & (t < end_s)
+        data = innovation[mask].dropna()
+        if data.empty:
+            continue
+        detected = (data < threshold["lower"]) | (data > threshold["upper"])
+        print(
+            f"Innovation detection {name} {start_s:g}-{end_s:g}s: "
+            f"{int(detected.sum())}/{len(data)} = {100.0 * float(detected.mean()):.2f}%"
+        )
+
+
 def plot_leadering_observer(csv_path: str, save: bool = True) -> Optional[str]:
     df = pd.read_csv(csv_path)
     if "time" not in df.columns:
@@ -45,7 +92,7 @@ def plot_leadering_observer(csv_path: str, save: bool = True) -> Optional[str]:
     t = pd.to_numeric(df["time"], errors="coerce")
     t = t - t.min()
 
-    fig, axes = plt.subplots(4, 2, figsize=(13, 10), sharex=True)
+    fig, axes = plt.subplots(5, 2, figsize=(13, 12), sharex=True)
     axs = axes.ravel()
 
     state_specs = [
@@ -94,6 +141,42 @@ def plot_leadering_observer(csv_path: str, save: bool = True) -> Optional[str]:
     axs[7].set_ylabel("Delay [s]")
     axs[7].set_title("Estimated communication delay hat_tau(t)")
     axs[7].legend()
+
+    innovation = _series(df, "innovation")
+    if innovation is not None:
+        axs[8].plot(t, innovation, label="innovation", color="#1f77b4", linewidth=2)
+        threshold = _innovation_threshold_from_baseline(t, innovation)
+    else:
+        threshold = None
+    axs[8].axhline(0.0, label="0", color="#2ca02c", linestyle=":", linewidth=1.8)
+    if threshold is not None:
+        axs[8].axhline(
+            threshold["mean"],
+            label=f"steady mean {threshold['mean']:.3g}",
+            color="#ff7f0e",
+            linestyle="--",
+            linewidth=1.8,
+        )
+        axs[8].axhline(
+            threshold["upper"],
+            label=f"steady + {INNOVATION_SIGMA_MULTIPLIER:g}sigma {threshold['upper']:.3g}",
+            color="#d62728",
+            linestyle="-.",
+            linewidth=1.8,
+        )
+        axs[8].axhline(
+            threshold["lower"],
+            label=f"steady - {INNOVATION_SIGMA_MULTIPLIER:g}sigma {threshold['lower']:.3g}",
+            color="#d62728",
+            linestyle="-.",
+            linewidth=1.8,
+        )
+        _print_innovation_detection_stats(t, innovation, threshold)
+    axs[8].set_ylabel("Innovation")
+    axs[8].set_title("Innovation steady-state detection")
+    axs[8].legend()
+
+    axs[9].axis("off")
 
     for ax in axs:
         ax.grid(True, alpha=0.3)

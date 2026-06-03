@@ -32,7 +32,7 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
                  config: Dict = None, logger=None):
         super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
 
-        self.gamma = float(self.config.get("gamma", 1.0))
+        self.gamma = float(self.config.get("gamma", 1))
         self.eta = float(self.config.get("eta", 0.16))
         self.control_index = int(self.config.get("control_index", 1))
         self.leader_control_index = int(self.config.get("leader_control_index", 1))
@@ -62,6 +62,14 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         self.recorder = None
         self._recording_start_time: Optional[float] = None
         self._update_count = 0
+        self.hat_tau_attack_enabled = bool(self.config.get("hat_tau_attack_enabled", False))
+        self.hat_tau_attack_start_s = float(self.config.get("hat_tau_attack_start_s", 60.0))
+        self.hat_tau_attack_bias_s = float(self.config.get("hat_tau_attack_bias_s", 0.08))
+        self._hat_tau_attack_t0_ns: Optional[int] = None
+        self._hat_tau_attack_used = False
+        self.use_timestamp_dt = bool(self.config.get("use_timestamp_dt", True))
+        self.max_update_dt_s = float(self.config.get("max_update_dt_s", 0.05))
+        self._last_update_time_ns: Optional[int] = None
 
         if self.debug_recording_enabled:
             self._init_recorder()
@@ -129,6 +137,35 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
                 return age_ns * 1e-9
 
         return fallback_hat_tau
+
+    def _apply_hat_tau_attack(self, current_time_ns: int, hat_tau_s: float) -> tuple:
+        """Inject a constant bias into hat_tau once at the configured attack time."""
+        if not self.hat_tau_attack_enabled:
+            return hat_tau_s, False, 0.0
+
+        if self._hat_tau_attack_t0_ns is None:
+            start_delay_ns = int(max(0.0, self.hat_tau_attack_start_s) * 1e9)
+            self._hat_tau_attack_t0_ns = int(current_time_ns) + start_delay_ns
+
+        if self._hat_tau_attack_used or current_time_ns < self._hat_tau_attack_t0_ns:
+            return hat_tau_s, False, 0.0
+
+        self._hat_tau_attack_used = True
+        return hat_tau_s + self.hat_tau_attack_bias_s, True, self.hat_tau_attack_bias_s
+
+    def _compute_update_dt(self, current_time_ns: int, fallback_dt: float) -> float:
+        if not self.use_timestamp_dt:
+            return float(fallback_dt)
+
+        if self._last_update_time_ns is None:
+            self._last_update_time_ns = int(current_time_ns)
+            return float(fallback_dt)
+
+        measured_dt = (int(current_time_ns) - self._last_update_time_ns) * 1e-9
+        self._last_update_time_ns = int(current_time_ns)
+        if measured_dt <= 0.0:
+            return float(fallback_dt)
+        return max(0.0, min(measured_dt, self.max_update_dt_s))
 
     def _extract_control_input(self, current_time_ns: int, control: np.ndarray) -> float:
         leader_control = self._get_latest_received_control(self.leader_vehicle_id, current_time_ns)
@@ -280,9 +317,10 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         return tuple(float(v) for v in truth)
 
     def _record_debug_sample(self, current_time_ns: int, dt: float, hat_tau_s: float,
-                             u_scalar: float, y_zeta: float, innovation: float,
-                             integral_g: float, g_value: float, local_state,
-                             control) -> None:
+                             raw_hat_tau_s: float, hat_tau_attack_active: bool,
+                             hat_tau_attack_bias_s: float, u_scalar: float,
+                             y_zeta: float, innovation: float, integral_g: float,
+                             g_value: float, local_state, control) -> None:
         true_x, true_v, true_a, true_u = self._get_leader_truth(current_time_ns, local_state, control)
         x_hat, v_hat, a_hat = self.zeta_hat[1], self.zeta_hat[2], self.zeta_hat[3]
 
@@ -290,6 +328,9 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
             "time_ns": current_time_ns,
             "dt": dt,
             "hat_tau": hat_tau_s,
+            "raw_hat_tau": raw_hat_tau_s,
+            "hat_tau_attack_active": int(hat_tau_attack_active),
+            "hat_tau_attack_bias": hat_tau_attack_bias_s,
             "u_leader": u_scalar,
             "y_zeta": y_zeta,
             "z_filter": self.z_filter,
@@ -325,14 +366,18 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         try:
             self._ensure_fleet_capacity(self.vehicle_id)
 
+            dt = self._compute_update_dt(current_time_ns, dt)
             current_time_s = float(current_time_ns) * 1e-9
             u_scalar = self._extract_control_input(current_time_ns, control)
             delayed_y = self._extract_y_zeta(current_time_ns, local_state)
-            self.z_filter += dt * self.gamma * delayed_y
             y_zeta = self.z_filter
 
-            hat_tau_s = self.compute_hat_tau(current_time_ns)
-            hat_tau_s = max(0.0, min(hat_tau_s, self.max_hat_tau))
+            raw_hat_tau_s = self.compute_hat_tau(current_time_ns)
+            capped_hat_tau_s = max(0.0, min(raw_hat_tau_s, self.max_hat_tau))
+            hat_tau_s, hat_tau_attack_active, hat_tau_attack_bias_s = self._apply_hat_tau_attack(
+                current_time_ns,
+                capped_hat_tau_s,
+            )
 
             g_value = self._compute_g(self.zeta_hat[1:], u_scalar)
             self._append_g_history(current_time_s, g_value)
@@ -347,7 +392,10 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
 
             zeta_dot = f_zeta + self.B_zeta * integral_g + correction
 
+            self.z_filter = self.z_filter + dt * self.gamma * delayed_y
             self.zeta_hat = self.zeta_hat + dt * zeta_dot
+            recorded_y_zeta = self.z_filter
+            recorded_innovation = recorded_y_zeta - float(self.C @ self.zeta_hat)
 
             self._ensure_fleet_capacity(self.leader_vehicle_id)
             self.fleet_states[0, self.leader_vehicle_id] = self.zeta_hat[1]
@@ -360,9 +408,12 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
                 current_time_ns=current_time_ns,
                 dt=dt,
                 hat_tau_s=hat_tau_s,
+                raw_hat_tau_s=raw_hat_tau_s,
+                hat_tau_attack_active=hat_tau_attack_active,
+                hat_tau_attack_bias_s=hat_tau_attack_bias_s,
                 u_scalar=u_scalar,
-                y_zeta=y_zeta,
-                innovation=innovation,
+                y_zeta=recorded_y_zeta,
+                innovation=recorded_innovation,
                 integral_g=integral_g,
                 g_value=g_value,
                 local_state=local_state,
