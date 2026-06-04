@@ -149,6 +149,9 @@ class ObserverConfig:
     consensus_gain: Any = 0.3
     K_matrices: Any = None
     delay_compensation: bool = True
+    primary_estimator: str = "leadering_observer"
+    observers: Any = None
+    parallel_observers: Any = None
 
 
 

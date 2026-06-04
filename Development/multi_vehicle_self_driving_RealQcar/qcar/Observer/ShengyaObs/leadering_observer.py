@@ -22,7 +22,11 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from ..fleet_state_estimators import FleetStateEstimatorBase
+from ..fleet_state_estimators import (
+    FleetStateEstimatorBase,
+    _normalize_state_array,
+    _state_dict_to_array,
+)
 
 
 class LeaderingObserverEstimator(FleetStateEstimatorBase):
@@ -32,7 +36,7 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
                  config: Dict = None, logger=None):
         super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
 
-        self.gamma = float(self.config.get("gamma", 1))
+        self.gamma = float(self.config.get("gamma", 10))
         self.eta = float(self.config.get("eta", 0.16))
         self.control_index = int(self.config.get("control_index", 1))
         self.leader_control_index = int(self.config.get("leader_control_index", 1))
@@ -40,6 +44,12 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         self.leader_position_index = int(self.config.get("leader_position_index", 0))
         self.z_measurement_index = int(self.config.get("z_measurement_index", 0))
         self.delay_compensation_enabled = bool(self.config.get("delay_compensation", True))
+        self.v2v_measurement_delay_s = float(self.config.get("v2v_measurement_delay_s", 0.0))
+        self.v2v_position_noise_std = float(self.config.get("v2v_position_noise_std", 0.01))
+        noise_seed = self.config.get("measurement_noise_seed")
+        self._measurement_rng = np.random.default_rng(noise_seed)
+        self._last_v2v_position_noise = 0.0
+        self._last_v2v_measurement_age_s = 0.0
 
         self.h_matrix = self._load_row_vector(self.config.get("h_matrix"), default=[1.0, 0.0, 0.0])
         self.dh_dx = self._load_row_vector(self.config.get("dh_dx"), default=self.h_matrix)
@@ -50,12 +60,13 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         self.B_zeta = np.array([-self.gamma, 0.0, 0.0, 0.0])
 
         self.L = np.array([48.66, 23.49, 0.5062, -0.0772])
+        # self.L = np.array([4.67, 1.58, 0.0332, -0.0050])
 
         self.zeta_hat = np.zeros(4)
-        self.z_filter = float(self.config.get("z0", 0.0))
+        self.z_filter = float(self.config.get("z0", 7.5))
+        self.zeta_hat[0] = self.z_filter
         self._g_history = deque()
         self.g_history_seconds = float(self.config.get("g_history_seconds", 5.0))
-        self.max_hat_tau = float(self.config.get("max_hat_tau", 0.147703))
         self.debug_data = {}
         self.debug_recording_enabled = bool(self.config.get("debug_recording", True))
         self.debug_output_dir = self.config.get("debug_output_dir", "observer_recordings")
@@ -81,6 +92,7 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
             self.recorder = LeaderingObserverRecorder(
                 output_dir=self.debug_output_dir,
                 vehicle_id=self.vehicle_id,
+                observer_name=self.config.get("recorder_prefix", "leadering_observer"),
             )
             filepath = self.recorder.start()
             if self.logger:
@@ -190,12 +202,18 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         return float(control_arr[-1])
 
     def _extract_y_zeta(self, current_time_ns: int, local_state) -> float:
-        leader_state = self._get_latest_received_state(self.leader_vehicle_id, current_time_ns)
+        leader_state = self._get_delayed_received_state(
+            self.leader_vehicle_id,
+            current_time_ns,
+            self.v2v_measurement_delay_s,
+        )
         if leader_state is not None:
             leader_arr = np.asarray(leader_state, dtype=float).flatten()
             if leader_arr.size > self.leader_position_index:
-                return float(leader_arr[self.leader_position_index])
+                return self._add_v2v_position_noise(float(leader_arr[self.leader_position_index]))
 
+        self._last_v2v_position_noise = 0.0
+        self._last_v2v_measurement_age_s = 0.0
         if isinstance(local_state, dict):
             if "z" in local_state:
                 return float(local_state["z"])
@@ -209,6 +227,48 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         if arr.size > self.z_measurement_index:
             return float(arr[self.z_measurement_index])
         return float(arr[0]) if arr.size > 0 else 0.0
+
+    def _get_delayed_received_state(self, vehicle_id: int, current_time_ns: int,
+                                    delay_s: float) -> Optional[np.ndarray]:
+        if vehicle_id not in self.received_local_states:
+            return None
+
+        history = self.received_local_states[vehicle_id]
+        if not history:
+            return None
+
+        delay_ns = int(max(0.0, delay_s) * 1e9)
+        target_time_ns = int(current_time_ns) - delay_ns
+        valid_history = [
+            (int(ts_ns), state)
+            for ts_ns, state in history
+            if 0 <= int(current_time_ns) - int(ts_ns) <= self.max_state_age_ns
+        ]
+        if not valid_history:
+            return None
+
+        selected = None
+        for ts_ns, state in reversed(valid_history):
+            if ts_ns <= target_time_ns:
+                selected = (ts_ns, state)
+                break
+        if selected is None:
+            selected = valid_history[0]
+
+        ts_ns, state = selected
+        self._last_v2v_measurement_age_s = (int(current_time_ns) - ts_ns) * 1e-9
+        if isinstance(state, dict):
+            return _state_dict_to_array(state, self.state_dim, logger=self.logger)
+        return _normalize_state_array(state, self.state_dim, logger=self.logger)
+
+    def _add_v2v_position_noise(self, position: float) -> float:
+        if self.v2v_position_noise_std <= 0.0:
+            self._last_v2v_position_noise = 0.0
+            return position
+
+        noise = float(self._measurement_rng.normal(0.0, self.v2v_position_noise_std))
+        self._last_v2v_position_noise = noise
+        return position + noise
 
     def _compute_f_x(self, x_vec: np.ndarray, u_scalar: float) -> np.ndarray:
         x1 = x_vec[0]
@@ -334,6 +394,9 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
             "u_leader": u_scalar,
             "y_zeta": y_zeta,
             "z_filter": self.z_filter,
+            "v2v_measurement_delay": self.v2v_measurement_delay_s,
+            "v2v_measurement_age": self._last_v2v_measurement_age_s,
+            "v2v_position_noise": self._last_v2v_position_noise,
             "innovation": innovation,
             "integral_g": integral_g,
             "g_value": g_value,
@@ -372,11 +435,11 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
             delayed_y = self._extract_y_zeta(current_time_ns, local_state)
             y_zeta = self.z_filter
 
-            raw_hat_tau_s = self.compute_hat_tau(current_time_ns)
-            capped_hat_tau_s = max(0.0, min(raw_hat_tau_s, self.max_hat_tau))
+            raw_hat_tau_s = self.compute_hat_tau(current_time_ns) + self.v2v_measurement_delay_s
+            hat_tau_input_s = max(0.0, raw_hat_tau_s)
             hat_tau_s, hat_tau_attack_active, hat_tau_attack_bias_s = self._apply_hat_tau_attack(
                 current_time_ns,
-                capped_hat_tau_s,
+                hat_tau_input_s,
             )
 
             g_value = self._compute_g(self.zeta_hat[1:], u_scalar)

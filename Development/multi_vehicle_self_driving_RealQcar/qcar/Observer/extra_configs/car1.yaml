@@ -2,7 +2,7 @@ network:
   car_id: 1
   base_port: 5000
 observer:
-  fleet_estimator_type: leadering_observer
+  fleet_estimator_type: parallel_observers
   local_estimator_type: ekf
   fleet_observer_rate: 100
-  delay_compensation: true
+  primary_estimator: leadering_observer

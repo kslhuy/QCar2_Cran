@@ -90,7 +90,13 @@ class FleetStateEstimatorBase(ABC):
         # sender_id -> [(timestamp_ns, observer_state_vector)]
         self.received_observer_states = defaultdict(list)
 
-        self.max_state_age_ns = int(1.0 * 1e9)  # 1 second in nanoseconds
+        max_state_age_ns_cfg = self.config.get("max_state_age_ns")
+        if max_state_age_ns_cfg is None:
+            max_state_age_s = float(self.config.get("max_state_age_s", 1.0))
+            self.max_state_age_ns = int(max_state_age_s * 1e9)
+        else:
+            self.max_state_age_ns = int(max_state_age_ns_cfg)
+        self.received_local_states_limit = int(self.config.get("received_local_states_limit", 10))
     
     @abstractmethod
     def update(self, local_state: np.ndarray, dt: float, 
@@ -139,9 +145,10 @@ class FleetStateEstimatorBase(ABC):
             # Store timestamp in nanoseconds with original data
             self.received_local_states[sender_id].append((timestamp_ns, state_data))
 
-            # Keep only recent history (default 10 entries)
-            if len(self.received_local_states[sender_id]) > 10:
-                self.received_local_states[sender_id] = self.received_local_states[sender_id][-10:]
+            if len(self.received_local_states[sender_id]) > self.received_local_states_limit:
+                self.received_local_states[sender_id] = (
+                    self.received_local_states[sender_id][-self.received_local_states_limit:]
+                )
 
             return True
 
@@ -547,6 +554,9 @@ class FleetEstimatorFactory:
     # Lazy loading flags
     _distributed_luenberger_loaded = False
     _leadering_observer_loaded = False
+    _classical_luenberger_observer_loaded = False
+    _high_gain_luenberger_observer_loaded = False
+    _parallel_observers_loaded = False
     _trust_estimators_loaded = False
     
     @classmethod
@@ -574,6 +584,46 @@ class FleetEstimatorFactory:
             cls._leadering_observer_loaded = True
         except ImportError as e:
             print(f"Warning: Could not load LeaderingObserverEstimator: {e}")
+
+    @classmethod
+    def _load_classical_luenberger_observer(cls):
+        """Lazily load ClassicalLuenbergerObserverEstimator to avoid circular imports"""
+        if cls._classical_luenberger_observer_loaded:
+            return
+
+        try:
+            from .ShengyaObs.classical_luenberger_observer import ClassicalLuenbergerObserverEstimator
+            cls.ESTIMATOR_TYPES['classical_luenberger_observer'] = ClassicalLuenbergerObserverEstimator
+            cls.ESTIMATOR_TYPES['classical_luenberge_observer'] = ClassicalLuenbergerObserverEstimator
+            cls._classical_luenberger_observer_loaded = True
+        except ImportError as e:
+            print(f"Warning: Could not load ClassicalLuenbergerObserverEstimator: {e}")
+
+    @classmethod
+    def _load_high_gain_luenberger_observer(cls):
+        """Lazily load HighGainLuenbergerObserverEstimator to avoid circular imports"""
+        if cls._high_gain_luenberger_observer_loaded:
+            return
+
+        try:
+            from .ShengyaObs.classical_luenberger_observer import HighGainLuenbergerObserverEstimator
+            cls.ESTIMATOR_TYPES['high_gain_luenberger_observer'] = HighGainLuenbergerObserverEstimator
+            cls._high_gain_luenberger_observer_loaded = True
+        except ImportError as e:
+            print(f"Warning: Could not load HighGainLuenbergerObserverEstimator: {e}")
+
+    @classmethod
+    def _load_parallel_observers(cls):
+        """Lazily load ParallelObserverEstimator to avoid circular imports"""
+        if cls._parallel_observers_loaded:
+            return
+
+        try:
+            from .ShengyaObs.parallel_observer_estimator import ParallelObserverEstimator
+            cls.ESTIMATOR_TYPES['parallel_observers'] = ParallelObserverEstimator
+            cls._parallel_observers_loaded = True
+        except ImportError as e:
+            print(f"Warning: Could not load ParallelObserverEstimator: {e}")
     
     @classmethod
     def _load_trust_estimators(cls):
@@ -616,6 +666,12 @@ class FleetEstimatorFactory:
             FleetEstimatorFactory._load_distributed_luenberger()
         if estimator_type == 'leadering_observer':
             FleetEstimatorFactory._load_leadering_observer()
+        if estimator_type in ('classical_luenberger_observer', 'classical_luenberge_observer'):
+            FleetEstimatorFactory._load_classical_luenberger_observer()
+        if estimator_type == 'high_gain_luenberger_observer':
+            FleetEstimatorFactory._load_high_gain_luenberger_observer()
+        if estimator_type == 'parallel_observers':
+            FleetEstimatorFactory._load_parallel_observers()
         
         # Try to load trust-based estimators if requesting one
         if estimator_type.startswith('trust_'):
@@ -641,5 +697,8 @@ class FleetEstimatorFactory:
         """Get list of available estimator types"""
         cls._load_distributed_luenberger()
         cls._load_leadering_observer()
+        cls._load_classical_luenberger_observer()
+        cls._load_high_gain_luenberger_observer()
+        cls._load_parallel_observers()
         cls._load_trust_estimators()
         return list(cls.ESTIMATOR_TYPES.keys())

@@ -20,10 +20,12 @@ class LeaderingObserverRecorder:
 
     def __init__(self, output_dir: str = "observer_recordings",
                  vehicle_id: int = 0,
+                 observer_name: str = "leadering_observer",
                  queue_size: int = 1000,
                  flush_interval: float = 5.0):
         self.output_dir = output_dir
         self.vehicle_id = vehicle_id
+        self.observer_name = observer_name
         self.queue_size = queue_size
         self.flush_interval = flush_interval
 
@@ -47,6 +49,9 @@ class LeaderingObserverRecorder:
             "u_leader",
             "y_zeta",
             "z_filter",
+            "v2v_measurement_delay",
+            "v2v_measurement_age",
+            "v2v_position_noise",
             "innovation",
             "integral_g",
             "g_value",
@@ -67,7 +72,7 @@ class LeaderingObserverRecorder:
         os.makedirs(self.output_dir, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"leadering_observer_v{self.vehicle_id}_{timestamp}.csv"
+        filename = f"{self.observer_name}_v{self.vehicle_id}_{timestamp}.csv"
         self.filepath = os.path.join(self.output_dir, filename)
 
         self.file = open(self.filepath, "w", newline="", buffering=8192)

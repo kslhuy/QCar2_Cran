@@ -1,0 +1,11 @@
+network:
+  car_id: 1
+  base_port: 5000
+observer:
+  fleet_estimator_type: high_gain_luenberger_observer
+  local_estimator_type: ekf
+  fleet_observer_rate: 100
+  delay_compensation: false
+  hat_tau_attack_enabled: false
+  high_gain: 2.0
+  high_gain_exponents: [1, 2, 3]

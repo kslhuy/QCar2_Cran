@@ -243,7 +243,7 @@ per_vehicle_controllers:
     # 最大throttle 为0.3，对应速度约为 2 m/s，最小throttle为0.0，对应速度约为 0 m/s。
         # - {throttle: 0.00, duration: 5}
 
-        - {throttle: 0.1, duration: 6666666}
+        - {throttle: 0.05, duration: 6666666}
         - {throttle: 0.26, duration: 6}
         - {throttle: 0.10, duration: 6}
         - {throttle: 0.30, duration: 6}
@@ -282,7 +282,7 @@ per_vehicle_controllers:
     # 最大throttle 为0.3，对应速度约为 2 m/s，最小throttle为0.0，对应速度约为 0 m/s。
         # - {throttle: 0.00, duration: 5}
 
-        - {throttle: 0.1, duration: 6666666}
+        - {throttle: 0.05, duration: 6666666}
         - {throttle: 0.26, duration: 6}
         - {throttle: 0.10, duration: 6}
         - {throttle: 0.30, duration: 6}

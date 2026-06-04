@@ -248,6 +248,7 @@ class VehicleObserver:
             f"Fleet estimator instance: {type(self.fleet_estimator).__name__} "
             f"(configured type='{self.fleet_estimator_type}')"
         )
+            self._log_fleet_estimator_details()
             
         except Exception as e:
             self.vehicle_logger.log_error(f"Failed to create fleet estimator: {self.fleet_estimator_type}", e)
@@ -358,9 +359,11 @@ class VehicleObserver:
             return default_config
 
         merged = default_config.copy()
-        merged.update(cfg_dict)
-        merged["observer_rate"] = cfg_dict.get("observer_rate", merged["observer_rate"])
-        merged["fleet_observer_rate"] = cfg_dict.get("fleet_observer_rate", merged["fleet_observer_rate"])
+        for key, value in cfg_dict.items():
+            if value is not None:
+                merged[key] = value
+        merged["observer_rate"] = merged.get("observer_rate", default_config["observer_rate"])
+        merged["fleet_observer_rate"] = merged.get("fleet_observer_rate", default_config["fleet_observer_rate"])
 
 
         return merged
@@ -370,6 +373,8 @@ class VehicleObserver:
         fleet_config = dict(self.fleet_config_defaults.get(self.fleet_estimator_type, {}) or {})
         for key, value in self.observer_config.items():
             if key not in ("local_estimator_type", "fleet_estimator_type"):
+                if value is None:
+                    continue
                 fleet_config[key] = value
         if not fleet_config:
             fleet_config = {
@@ -377,6 +382,18 @@ class VehicleObserver:
                 'observer_gain': 0.1,
             }
         return fleet_config
+
+    def _log_fleet_estimator_details(self):
+        """Log resolved child estimators for wrapper estimators."""
+        if not self.vehicle_logger or self.fleet_estimator is None:
+            return
+
+        if hasattr(self.fleet_estimator, "estimators"):
+            child_names = list(getattr(self.fleet_estimator, "estimators", {}).keys())
+            primary = getattr(self.fleet_estimator, "primary_estimator", "unknown")
+            self.vehicle_logger.logger.info(
+                f"Parallel observers loaded: children={child_names}, primary={primary}"
+            )
 
     def update_sensor_data(self, qcar):
         """
@@ -1047,6 +1064,7 @@ class VehicleObserver:
                 
                 # Log the complete fleet state after reinit
                 self.vehicle_logger.logger.info(f"Distributed Fleet Estimation size: {self.fleet_size}, type: {self.fleet_estimator_type}")
+                self._log_fleet_estimator_details()
                 for vid in range(self.fleet_size):
                     fs = self.fleet_states[:, vid]
                     self.vehicle_logger.logger.info(

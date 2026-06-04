@@ -2,7 +2,10 @@
 # Default parameters for the fleet state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-# Options: 'consensus', 'distributed_luenberger', 'trust_consensus', 'trust_kalman'
+# Options: 'consensus', 'distributed_luenberger', 'leadering_observer',
+#          'classical_luenberger_observer', 'high_gain_luenberger_observer',
+#          'parallel_observers',
+#          'trust_consensus', 'trust_kalman'
 fleet_estimator_type: distributed_luenberger
 
 # Plotting configuration for general ouput observer
@@ -61,6 +64,7 @@ fleet:
     debug_recording: true
     debug_output_dir: "observer_recordings"
     delay_compensation: true
+    z0: 0
     gamma: 1.0
     eta: 0.16
     use_timestamp_dt: true
@@ -72,6 +76,100 @@ fleet:
     leader_vehicle_id: 0
     leader_position_index: 0
     leader_control_index: 1
+    max_state_age_s: 6.0
+    received_local_states_limit: 100
+    v2v_measurement_delay_s: 2.5
+    v2v_position_noise_std: 0
+
+  # ---------------------------------------------------------------------
+  # Classical Luenberger observer baseline
+  # Same zeta structure as leadering_observer, without delay compensation.
+  # ---------------------------------------------------------------------
+  classical_luenberger_observer:
+    state_dim: 5
+    debug_recording: true
+    debug_output_dir: "observer_recordings"
+    recorder_prefix: "classical_luenberger_observer"
+    delay_compensation: false
+    gamma: 1.0
+    eta: 0.16
+    use_timestamp_dt: true
+    max_update_dt_s: 0.05
+    max_hat_tau: 0.0
+    hat_tau_attack_enabled: false
+    leader_vehicle_id: 0
+    leader_position_index: 0
+    leader_control_index: 1
+    max_state_age_s: 6.0
+    received_local_states_limit: 100
+    v2v_measurement_delay_s: 2.5
+    v2v_position_noise_std: 0
+
+  # ---------------------------------------------------------------------
+  # High-gain Luenberger observer baseline
+  # Same as classical_luenberger_observer, but each observer gain component
+  # is multiplied by high_gain raised to the corresponding exponent.
+  # L_hg = L .* high_gain^[1, 2, 3] by default.
+  # ---------------------------------------------------------------------
+  high_gain_luenberger_observer:
+    state_dim: 5
+    debug_recording: true
+    debug_output_dir: "observer_recordings"
+    recorder_prefix: "high_gain_luenberger_observer"
+    delay_compensation: false
+    gamma: 1.0
+    eta: 0.16
+    use_timestamp_dt: true
+    max_update_dt_s: 0.05
+    max_hat_tau: 0.0
+    hat_tau_attack_enabled: false
+    leader_vehicle_id: 0
+    leader_position_index: 0
+    leader_control_index: 1
+    max_state_age_s: 6.0
+    received_local_states_limit: 100
+    v2v_measurement_delay_s: 2.5
+    v2v_position_noise_std: 0
+    high_gain: 1.0
+    high_gain_exponents: [1, 2, 3]
+
+  # ---------------------------------------------------------------------
+  # Parallel observer comparison
+  # Runs the delay-compensated observer and classical baseline together.
+  # The primary estimator output is returned to the controller/fleet cache.
+  # ---------------------------------------------------------------------
+  parallel_observers:
+    state_dim: 5
+    debug_recording: true
+    debug_output_dir: "observer_recordings"
+    primary_estimator: leadering_observer
+    z0: 7.5
+    gamma: 1.0
+    eta: 0.16
+    use_timestamp_dt: true
+    max_update_dt_s: 0.05
+    leader_vehicle_id: 0
+    leader_position_index: 0
+    leader_control_index: 1
+    max_state_age_s: 6.0
+    received_local_states_limit: 100
+    v2v_measurement_delay_s: 2.5
+    v2v_position_noise_std: 0.0
+    observers:
+      leadering_observer:
+        type: leadering_observer
+        recorder_prefix: "leadering_observer"
+        delay_compensation: true
+        max_hat_tau: 0.147703
+        hat_tau_attack_enabled: true
+        hat_tau_attack_start_s: 60.0
+        hat_tau_attack_bias_s: 0.00
+      classical_luenberger_observer:
+        type: classical_luenberger_observer
+        recorder_prefix: "classical_luenberger_observer"
+        delay_compensation: false
+        max_hat_tau: 0.0
+        hat_tau_attack_enabled: false
 
   # ---------------------------------------------------------------------
   # Trust-Based Consensus estimator defaults
