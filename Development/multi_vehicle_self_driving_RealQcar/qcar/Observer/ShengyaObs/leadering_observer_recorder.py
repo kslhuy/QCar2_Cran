@@ -41,6 +41,7 @@ class LeaderingObserverRecorder:
 
         self.columns = [
             "time",
+            "timestamp",
             "dt",
             "hat_tau",
             "raw_hat_tau",

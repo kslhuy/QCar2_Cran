@@ -144,6 +144,7 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
                 self._recording_start_time = current_time_ns / 1e9
             row = dict(self.debug_data)
             row["time"] = current_time_ns / 1e9 - self._recording_start_time
+            row["timestamp"] = current_time_ns / 1e9
             row.pop("time_ns", None)
             row.pop("x_hat", None)
             self.recorder.record(row)

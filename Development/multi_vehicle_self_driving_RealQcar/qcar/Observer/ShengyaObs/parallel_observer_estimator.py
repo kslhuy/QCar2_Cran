@@ -5,6 +5,9 @@ The outer VehicleObserver still sees one FleetStateEstimatorBase instance. This
 wrapper fans out identical V2V data and update inputs to each child estimator,
 then returns the configured primary estimator's fleet_states for controller use.
 """
+import os
+import re
+from datetime import datetime
 from typing import Dict
 
 import numpy as np
@@ -14,6 +17,7 @@ from .classical_luenberger_observer import (
     ClassicalLuenbergerObserverEstimator,
     HighGainLuenbergerObserverEstimator,
 )
+from .classical_ekf_observer import ClassicalEKFObserverEstimator
 from .leadering_observer import LeaderingObserverEstimator
 
 
@@ -25,6 +29,7 @@ class ParallelObserverEstimator(FleetStateEstimatorBase):
         "classical_luenberger_observer": ClassicalLuenbergerObserverEstimator,
         "classical_luenberge_observer": ClassicalLuenbergerObserverEstimator,
         "high_gain_luenberger_observer": HighGainLuenbergerObserverEstimator,
+        "classical_ekf_observer": ClassicalEKFObserverEstimator,
     }
 
     def __init__(self, vehicle_id: int, fleet_size: int, state_dim: int = 5,
@@ -32,6 +37,7 @@ class ParallelObserverEstimator(FleetStateEstimatorBase):
         super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
 
         self.primary_estimator = self.config.get("primary_estimator", "leadering_observer")
+        self.experiment_output_dir = self._resolve_experiment_output_dir()
         observer_configs = self.config.get("observers") or self.config.get("parallel_observers")
         if observer_configs is None:
             observer_configs = {
@@ -71,7 +77,33 @@ class ParallelObserverEstimator(FleetStateEstimatorBase):
             shared_cfg.pop(key, None)
         shared_cfg.update(child_cfg)
         shared_cfg.setdefault("recorder_prefix", name)
+        shared_cfg["debug_output_dir"] = self.experiment_output_dir
         return shared_cfg
+
+    def _resolve_experiment_output_dir(self) -> str:
+        base_dir = self.config.get("debug_output_dir", "observer_recordings")
+        if not bool(self.config.get("recording_trial_subdir", True)):
+            os.makedirs(base_dir, exist_ok=True)
+            return base_dir
+
+        explicit_dir = self.config.get("experiment_output_dir")
+        if explicit_dir:
+            os.makedirs(explicit_dir, exist_ok=True)
+            return explicit_dir
+
+        experiment_name = self.config.get("experiment_name")
+        if not experiment_name:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            experiment_name = f"trial_v{self.vehicle_id}_parallel_observers_{timestamp}"
+        experiment_name = self._sanitize_path_name(str(experiment_name))
+        output_dir = os.path.join(base_dir, experiment_name)
+        os.makedirs(output_dir, exist_ok=True)
+        return output_dir
+
+    @staticmethod
+    def _sanitize_path_name(name: str) -> str:
+        name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name.strip())
+        return name.strip("._") or "trial"
 
     def update(self, local_state: np.ndarray, dt: float,
                current_time_ns: int, control: np.ndarray) -> np.ndarray:

@@ -60,6 +60,7 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         self.B_zeta = np.array([-self.gamma, 0.0, 0.0, 0.0])
 
         self.L = np.array([48.66, 23.49, 0.5062, -0.0772])
+        # self.L = np.array([220, 58, 2.4, -0.3656])
         # self.L = np.array([4.67, 1.58, 0.0332, -0.0050])
 
         self.zeta_hat = np.zeros(4)
@@ -419,6 +420,7 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
                 self._recording_start_time = current_time_ns / 1e9
             row = dict(self.debug_data)
             row["time"] = current_time_ns / 1e9 - self._recording_start_time
+            row["timestamp"] = current_time_ns / 1e9
             row.pop("time_ns", None)
             row.pop("zeta_hat", None)
             self.recorder.record(row)

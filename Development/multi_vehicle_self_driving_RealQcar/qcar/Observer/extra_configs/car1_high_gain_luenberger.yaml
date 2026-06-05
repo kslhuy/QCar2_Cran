@@ -7,5 +7,6 @@ observer:
   fleet_observer_rate: 100
   delay_compensation: false
   hat_tau_attack_enabled: false
-  high_gain: 2.0
+  observer_gain: [1.58, 0.0332, -0.0050]
+  high_gain: 10.0
   high_gain_exponents: [1, 2, 3]

@@ -556,6 +556,7 @@ class FleetEstimatorFactory:
     _leadering_observer_loaded = False
     _classical_luenberger_observer_loaded = False
     _high_gain_luenberger_observer_loaded = False
+    _classical_ekf_observer_loaded = False
     _parallel_observers_loaded = False
     _trust_estimators_loaded = False
     
@@ -611,6 +612,19 @@ class FleetEstimatorFactory:
             cls._high_gain_luenberger_observer_loaded = True
         except ImportError as e:
             print(f"Warning: Could not load HighGainLuenbergerObserverEstimator: {e}")
+
+    @classmethod
+    def _load_classical_ekf_observer(cls):
+        """Lazily load ClassicalEKFObserverEstimator to avoid circular imports"""
+        if cls._classical_ekf_observer_loaded:
+            return
+
+        try:
+            from .ShengyaObs.classical_ekf_observer import ClassicalEKFObserverEstimator
+            cls.ESTIMATOR_TYPES['classical_ekf_observer'] = ClassicalEKFObserverEstimator
+            cls._classical_ekf_observer_loaded = True
+        except ImportError as e:
+            print(f"Warning: Could not load ClassicalEKFObserverEstimator: {e}")
 
     @classmethod
     def _load_parallel_observers(cls):
@@ -670,6 +684,8 @@ class FleetEstimatorFactory:
             FleetEstimatorFactory._load_classical_luenberger_observer()
         if estimator_type == 'high_gain_luenberger_observer':
             FleetEstimatorFactory._load_high_gain_luenberger_observer()
+        if estimator_type == 'classical_ekf_observer':
+            FleetEstimatorFactory._load_classical_ekf_observer()
         if estimator_type == 'parallel_observers':
             FleetEstimatorFactory._load_parallel_observers()
         
@@ -699,6 +715,7 @@ class FleetEstimatorFactory:
         cls._load_leadering_observer()
         cls._load_classical_luenberger_observer()
         cls._load_high_gain_luenberger_observer()
+        cls._load_classical_ekf_observer()
         cls._load_parallel_observers()
         cls._load_trust_estimators()
         return list(cls.ESTIMATOR_TYPES.keys())
