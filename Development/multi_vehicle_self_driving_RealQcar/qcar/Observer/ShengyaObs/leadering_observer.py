@@ -13,7 +13,7 @@ Where:
     u: leader control input (from V2V)
     f_zeta = [gamma * x_hat[0];  x_hat[1]; x_hat[2]; -1/eta * x_hat[2] - 1/eta * (c0 + c1 * x_hat[1]) + 1/eta * u]
     gamma = 1
-    g(zeta_hat(s), u(s)) = x_hat[1]
+    g(zeta_hat(s), u(s)) = x_hat[1]/(x_hat[0]+1)^2
     B_zeta = [-gamma; 0; 0; 0]
     C = [1, 0, 0, 0]
 """
@@ -285,8 +285,9 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         return float(self.h_matrix @ x_vec)
 
     def _compute_g(self, x_vec: np.ndarray, u_scalar: float) -> float:
-        """Compute g(zeta_hat, u) = x_hat[1] (second component of x_vec)."""
-        return float(x_vec[1])
+        """Compute g(zeta_hat, u) = x_hat[1] / (x_hat[0] + 1)^2."""
+        denominator = x_vec[0] + 1.0
+        return float(x_vec[1] / (denominator ** 2))
 
     def _append_g_history(self, time_s: float, g_value: float) -> None:
         self._g_history.append((time_s, g_value))

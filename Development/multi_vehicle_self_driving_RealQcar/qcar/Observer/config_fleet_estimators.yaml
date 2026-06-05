@@ -79,7 +79,7 @@ fleet:
     max_state_age_s: 6.0
     received_local_states_limit: 100
     v2v_measurement_delay_s: 0.0
-    v2v_position_noise_std: 0.5
+    v2v_position_noise_std: 0.0
 
   # ---------------------------------------------------------------------
   # Classical Luenberger observer baseline
@@ -103,7 +103,10 @@ fleet:
     max_state_age_s: 6.0
     received_local_states_limit: 100
     v2v_measurement_delay_s: 0.0
-    v2v_position_noise_std: 0.5
+    v2v_position_noise_std: 0.0
+    measurement_denominator_epsilon: 0.000001
+    singularity_position_margin: 0.05
+    initialize_position_from_measurement: true
     observer_gain: [1.58, 0.0332, -0.0050]
 
   # ---------------------------------------------------------------------
@@ -130,7 +133,10 @@ fleet:
     max_state_age_s: 6.0
     received_local_states_limit: 100
     v2v_measurement_delay_s: 0.0
-    v2v_position_noise_std: 0.5
+    v2v_position_noise_std: 0.0
+    measurement_denominator_epsilon: 0.000001
+    singularity_position_margin: 0.05
+    initialize_position_from_measurement: true
     observer_gain: [1.58, 0.0332, -0.0050]
     high_gain: 1.0
     high_gain_exponents: [1, 2, 3]
@@ -154,7 +160,8 @@ fleet:
     max_state_age_s: 6.0
     received_local_states_limit: 100
     v2v_measurement_delay_s: 0.0
-    v2v_position_noise_std: 0.5
+    v2v_position_noise_std: 0.0
+    measurement_denominator_epsilon: 0.000001
     initial_covariance: [1.0, 1.0, 1.0]
     process_noise_covariance: [0.0001, 0.001, 0.01]
     measurement_noise_covariance: 0.000001
@@ -184,7 +191,7 @@ fleet:
     max_state_age_s: 6.0
     received_local_states_limit: 100
     v2v_measurement_delay_s: 0.0
-    v2v_position_noise_std: 0.5
+    v2v_position_noise_std: 0.0
     observers:
       leadering_observer:
         type: leadering_observer
@@ -200,6 +207,9 @@ fleet:
         delay_compensation: false
         max_hat_tau: 0.0
         hat_tau_attack_enabled: false
+        measurement_denominator_epsilon: 0.000001
+        singularity_position_margin: 0.05
+        initialize_position_from_measurement: true
         observer_gain: [1.58, 0.0332, -0.0050]
       high_gain_luenberger_observer:
         type: high_gain_luenberger_observer
@@ -207,6 +217,9 @@ fleet:
         delay_compensation: false
         max_hat_tau: 0.0
         hat_tau_attack_enabled: false
+        measurement_denominator_epsilon: 0.000001
+        singularity_position_margin: 0.05
+        initialize_position_from_measurement: true
         observer_gain: [1.58, 0.0332, -0.0050]
         high_gain: 2.0
         high_gain_exponents: [1, 2, 3]
@@ -214,6 +227,7 @@ fleet:
         type: classical_ekf_observer
         recorder_prefix: "classical_ekf_observer"
         delay_compensation: false
+        measurement_denominator_epsilon: 0.000001
         initial_covariance: [1.0, 1.0, 1.0]
         process_noise_covariance: [0.0001, 0.001, 0.01]
         measurement_noise_covariance: 0.000001

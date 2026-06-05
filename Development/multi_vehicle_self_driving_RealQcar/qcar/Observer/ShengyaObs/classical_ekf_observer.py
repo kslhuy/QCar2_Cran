@@ -3,18 +3,18 @@ Extended Kalman filter for the leader 3-state vehicle dynamics.
 
 Dynamics:
     x_dot = f_x(x, u)
-    y = C x
+    y = h(x) = 1 / (x[0] + 1)
 
 Where:
     x in R^3
-    y: leader position from V2V
+    y: reciprocal leader position output from V2V
     u: leader control input from V2V
     f_x = [
         x[1],
         x[2],
         -1/eta * x[2] - 1/eta * (c0 + c1 * x[1]) + 1/eta * u
     ]
-    C = [1, 0, 0]
+    H = dh/dx = [-1 / (x[0] + 1)^2, 0, 0]
 """
 from typing import Dict
 
@@ -24,7 +24,7 @@ from .classical_luenberger_observer import ClassicalLuenbergerObserverEstimator
 
 
 class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
-    """EKF baseline for leader position-only V2V measurements."""
+    """EKF baseline for nonlinear reciprocal leader-position measurements."""
 
     def __init__(self, vehicle_id: int, fleet_size: int, state_dim: int = 5,
                  config: Dict = None, logger=None):
@@ -32,8 +32,10 @@ class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
         config.setdefault("recorder_prefix", "classical_ekf_observer")
         super().__init__(vehicle_id, fleet_size, state_dim, config, logger)
 
-        self.H = self.C.reshape(1, 3)
         self.I3 = np.eye(3)
+        self.measurement_denominator_epsilon = float(
+            self.config.get("measurement_denominator_epsilon", 1e-6)
+        )
         self.P = self._load_covariance(
             self.config.get("initial_covariance", self.config.get("P0")),
             default_diag=[1.0, 1.0, 1.0],
@@ -123,6 +125,28 @@ class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
             dtype=float,
         )
 
+    def _safe_measurement_denominator(self, position: float) -> float:
+        denominator = float(position) + 1.0
+        if abs(denominator) >= self.measurement_denominator_epsilon:
+            return denominator
+        if denominator >= 0.0:
+            return self.measurement_denominator_epsilon
+        return -self.measurement_denominator_epsilon
+
+    def _compute_measurement(self, x_vec: np.ndarray) -> float:
+        """Nonlinear output h(x) = 1 / (x1 + 1), where x1 is leader position."""
+        denominator = self._safe_measurement_denominator(float(x_vec[0]))
+        return 1.0 / denominator
+
+    def _compute_measurement_jacobian(self, x_vec: np.ndarray) -> np.ndarray:
+        """Measurement Jacobian H = dh/dx evaluated at x_vec."""
+        denominator = self._safe_measurement_denominator(float(x_vec[0]))
+        return np.array([[-1.0 / (denominator ** 2), 0.0, 0.0]], dtype=float)
+
+    def _extract_y(self, current_time_ns: int, local_state) -> float:
+        leader_position = super()._extract_y(current_time_ns, local_state)
+        return 1.0 / self._safe_measurement_denominator(leader_position)
+
     def _record_ekf_debug_sample(self, current_time_ns: int, dt: float, u_scalar: float,
                                  y: float, innovation: float, innovation_covariance: float,
                                  kalman_gain: np.ndarray, local_state, control) -> None:
@@ -189,20 +213,21 @@ class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
             F = self.I3 + dt * A
             P_pred = F @ self.P @ F.T + self.Q
 
-            innovation = y - float(self.H @ x_pred)
-            S = self.H @ P_pred @ self.H.T + self.R
+            H = self._compute_measurement_jacobian(x_pred)
+            innovation = y - self._compute_measurement(x_pred)
+            S = H @ P_pred @ H.T + self.R
             S_scalar = float(S[0, 0])
             if S_scalar <= 0.0:
                 S_scalar = 1e-9
-            K = (P_pred @ self.H.T / S_scalar).flatten()
+            K = (P_pred @ H.T / S_scalar).flatten()
 
             self.x_hat = x_pred + K * innovation
-            KH = K.reshape(3, 1) @ self.H
+            KH = K.reshape(3, 1) @ H
             self.P = (self.I3 - KH) @ P_pred @ (self.I3 - KH).T
             self.P += K.reshape(3, 1) @ self.R @ K.reshape(1, 3)
             self.P = 0.5 * (self.P + self.P.T)
 
-            recorded_innovation = y - float(self.H @ self.x_hat)
+            recorded_innovation = y - self._compute_measurement(self.x_hat)
 
             self._ensure_fleet_capacity(self.leader_vehicle_id)
             self.fleet_states[0, self.leader_vehicle_id] = self.x_hat[0]

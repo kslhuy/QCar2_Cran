@@ -49,6 +49,8 @@ class LeaderingObserverRecorder:
             "hat_tau_attack_bias",
             "u_leader",
             "y_zeta",
+            "leader_position_measurement",
+            "y_hat",
             "z_filter",
             "v2v_measurement_delay",
             "v2v_measurement_age",

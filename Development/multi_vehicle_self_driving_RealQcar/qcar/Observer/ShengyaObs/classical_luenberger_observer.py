@@ -2,18 +2,18 @@
 Classical Luenberger observer for the leader 3-state vehicle dynamics.
 
 Dynamics:
-    x_hat_dot = f_x(x_hat, u) + L (y - C x_hat)
+    x_hat_dot = f_x(x_hat, u) + L (y - y_hat)
 
 Where:
     x_hat in R^3
-    y: leader position from V2V
+    y = 1 / (x1 + 1), where x1 is the leader position from V2V
+    y_hat = 1 / (x_hat[0] + 1)
     u: leader control input from V2V
     f_x = [
         x_hat[1],
         x_hat[2],
         -1/eta * x_hat[2] - 1/eta * (c0 + c1 * x_hat[1]) + 1/eta * u
     ]
-    C = [1, 0, 0]
 """
 from typing import Dict, Optional
 
@@ -45,6 +45,16 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
 
         self.c0 = float(self.config.get("c0", 0.007023))
         self.c1 = float(self.config.get("c1", 0.14878))
+        self.measurement_denominator_epsilon = float(
+            self.config.get("measurement_denominator_epsilon", 1e-6)
+        )
+        self.singularity_position_margin = float(
+            self.config.get("singularity_position_margin", self.measurement_denominator_epsilon)
+        )
+        self.initialize_position_from_measurement = bool(
+            self.config.get("initialize_position_from_measurement", True)
+        )
+        self._position_initialized_from_measurement = False
         self.C = np.array([1.0, 0.0, 0.0])
         self.L = self._load_observer_gain(
             self.config.get("observer_gain", self.config.get("L"))
@@ -96,6 +106,35 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
     def _extract_y(self, current_time_ns: int, local_state) -> float:
         return self._extract_y_zeta(current_time_ns, local_state)
 
+    def _safe_measurement_denominator(self, position: float) -> float:
+        denominator = float(position) + 1.0
+        if abs(denominator) >= self.measurement_denominator_epsilon:
+            return denominator
+        if denominator >= 0.0:
+            return self.measurement_denominator_epsilon
+        return -self.measurement_denominator_epsilon
+
+    def _measurement_output(self, position: float) -> float:
+        return 1.0 / self._safe_measurement_denominator(position)
+
+    def _project_away_from_singularity(self) -> None:
+        min_position = -1.0 + max(self.singularity_position_margin, 0.0)
+        if self.x_hat[0] <= min_position:
+            self.x_hat[0] = min_position
+
+    def _initialize_position_if_needed(self, position_measurement: float) -> None:
+        if self._position_initialized_from_measurement:
+            return
+        if not self.initialize_position_from_measurement:
+            self._position_initialized_from_measurement = True
+            return
+        if not np.isfinite(position_measurement):
+            return
+
+        self.x_hat[0] = float(position_measurement)
+        self._project_away_from_singularity()
+        self._position_initialized_from_measurement = True
+
     def _compute_f_x(self, x_vec: np.ndarray, u_scalar: float) -> np.ndarray:
         x2 = x_vec[1]
         x3 = x_vec[2]
@@ -106,8 +145,8 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
         return np.array([x1_dot, x2_dot, x3_dot], dtype=float)
 
     def _record_debug_sample(self, current_time_ns: int, dt: float, u_scalar: float,
-                             y: float, innovation: float, local_state,
-                             control) -> None:
+                             y: float, y_position: float, y_hat: float,
+                             innovation: float, local_state, control) -> None:
         true_x, true_v, true_a, true_u = self._get_leader_truth(current_time_ns, local_state, control)
         x_hat, v_hat, a_hat = self.x_hat
 
@@ -120,6 +159,8 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
             "hat_tau_attack_bias": 0.0,
             "u_leader": u_scalar,
             "y_zeta": y,
+            "leader_position_measurement": y_position,
+            "y_hat": y_hat,
             "v2v_measurement_delay": self.v2v_measurement_delay_s,
             "v2v_measurement_age": self._last_v2v_measurement_age_s,
             "v2v_position_noise": self._last_v2v_position_noise,
@@ -157,12 +198,17 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
 
             dt = self._compute_update_dt(current_time_ns, dt)
             u_scalar = self._extract_control_input(current_time_ns, control)
-            y = self._extract_y(current_time_ns, local_state)
-            innovation = y - float(self.C @ self.x_hat)
+            y_position = self._extract_y(current_time_ns, local_state)
+            self._initialize_position_if_needed(y_position)
+            y = self._measurement_output(y_position)
+            y_hat = self._measurement_output(self.x_hat[0])
+            innovation = y - y_hat
 
             x_hat_dot = self._compute_f_x(self.x_hat, u_scalar) + self.L * innovation
             self.x_hat = self.x_hat + dt * x_hat_dot
-            recorded_innovation = y - float(self.C @ self.x_hat)
+            self._project_away_from_singularity()
+            recorded_y_hat = self._measurement_output(self.x_hat[0])
+            recorded_innovation = y - recorded_y_hat
 
             self._ensure_fleet_capacity(self.leader_vehicle_id)
             self.fleet_states[0, self.leader_vehicle_id] = self.x_hat[0]
@@ -176,6 +222,8 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
                 dt=dt,
                 u_scalar=u_scalar,
                 y=y,
+                y_position=y_position,
+                y_hat=recorded_y_hat,
                 innovation=recorded_innovation,
                 local_state=local_state,
                 control=control,
