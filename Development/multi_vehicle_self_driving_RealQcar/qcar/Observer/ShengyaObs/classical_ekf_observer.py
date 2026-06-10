@@ -3,18 +3,22 @@ Extended Kalman filter for the leader 3-state vehicle dynamics.
 
 Dynamics:
     x_dot = f_x(x, u)
-    y = h(x) = 1 / (x[0] + 1)
+    y = h(x), selected by output_mode:
+        nonlinear: h(x) = 1 / (x[0] + 1)
+        linear: h(x) = x[0]
 
 Where:
     x in R^3
-    y: reciprocal leader position output from V2V
+    y: leader position output from V2V, transformed according to output_mode
     u: leader control input from V2V
     f_x = [
         x[1],
         x[2],
-        -1/eta * x[2] - 1/eta * (c0 + c1 * x[1]) + 1/eta * u
+        -1/eta * x[2]
+        - K_th/eta * (c0 + c1 * x[1])
+        + K_th/eta * u
     ]
-    H = dh/dx = [-1 / (x[0] + 1)^2, 0, 0]
+    H = dh/dx
 """
 from typing import Dict
 
@@ -24,7 +28,7 @@ from .classical_luenberger_observer import ClassicalLuenbergerObserverEstimator
 
 
 class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
-    """EKF baseline for nonlinear reciprocal leader-position measurements."""
+    """EKF baseline for configurable leader-position measurements."""
 
     def __init__(self, vehicle_id: int, fleet_size: int, state_dim: int = 5,
                  config: Dict = None, logger=None):
@@ -120,7 +124,7 @@ class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
             [
                 [0.0, 1.0, 0.0],
                 [0.0, 0.0, 1.0],
-                [0.0, -self.c1 / self.eta, -1.0 / self.eta],
+                [0.0, -self.K_th * self.c1 / self.eta, -1.0 / self.eta],
             ],
             dtype=float,
         )
@@ -134,22 +138,24 @@ class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
         return -self.measurement_denominator_epsilon
 
     def _compute_measurement(self, x_vec: np.ndarray) -> float:
-        """Nonlinear output h(x) = 1 / (x1 + 1), where x1 is leader position."""
-        denominator = self._safe_measurement_denominator(float(x_vec[0]))
-        return 1.0 / denominator
+        """Output h(x) selected by output_mode."""
+        return self._measurement_output(float(x_vec[0]))
 
     def _compute_measurement_jacobian(self, x_vec: np.ndarray) -> np.ndarray:
         """Measurement Jacobian H = dh/dx evaluated at x_vec."""
+        if self.output_mode == "linear":
+            return np.array([[1.0, 0.0, 0.0]], dtype=float)
         denominator = self._safe_measurement_denominator(float(x_vec[0]))
         return np.array([[-1.0 / (denominator ** 2), 0.0, 0.0]], dtype=float)
 
     def _extract_y(self, current_time_ns: int, local_state) -> float:
         leader_position = super()._extract_y(current_time_ns, local_state)
-        return 1.0 / self._safe_measurement_denominator(leader_position)
+        return self._measurement_output(leader_position)
 
     def _record_ekf_debug_sample(self, current_time_ns: int, dt: float, u_scalar: float,
-                                 y: float, innovation: float, innovation_covariance: float,
-                                 kalman_gain: np.ndarray, local_state, control) -> None:
+                                 y: float, y_position: float, innovation: float,
+                                 innovation_covariance: float, kalman_gain: np.ndarray,
+                                 local_state, control) -> None:
         true_x, true_v, true_a, true_u = self._get_leader_truth(current_time_ns, local_state, control)
         x_hat, v_hat, a_hat = self.x_hat
 
@@ -162,6 +168,8 @@ class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
             "hat_tau_attack_bias": 0.0,
             "u_leader": u_scalar,
             "y_zeta": y,
+            "leader_position_measurement": y_position,
+            "output_mode": self.output_mode,
             "v2v_measurement_delay": self.v2v_measurement_delay_s,
             "v2v_measurement_age": self._last_v2v_measurement_age_s,
             "v2v_position_noise": self._last_v2v_position_noise,
@@ -206,7 +214,9 @@ class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
 
             dt = self._compute_update_dt(current_time_ns, dt)
             u_scalar = self._extract_control_input(current_time_ns, control)
-            y = self._extract_y(current_time_ns, local_state)
+            y_position = super()._extract_y(current_time_ns, local_state)
+            self._initialize_position_if_needed(y_position)
+            y = self._measurement_output(y_position)
 
             x_pred = self.x_hat + dt * self._compute_f_x(self.x_hat, u_scalar)
             A = self._compute_state_jacobian()
@@ -241,6 +251,7 @@ class ClassicalEKFObserverEstimator(ClassicalLuenbergerObserverEstimator):
                 dt=dt,
                 u_scalar=u_scalar,
                 y=y,
+                y_position=y_position,
                 innovation=recorded_innovation,
                 innovation_covariance=S_scalar,
                 kalman_gain=K,

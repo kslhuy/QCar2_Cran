@@ -67,15 +67,19 @@ fleet:
     z0: 0
     gamma: 1.0
     eta: 0.16
+    K_th: 1.00
+    g_mode: linear               # 'nonlinear': x_hat[1]/(x_hat[0]+1)^2, 'linear': x_hat[1]
     use_timestamp_dt: true
     max_update_dt_s: 0.05
     max_hat_tau: 0.0
     hat_tau_attack_enabled: false
-    hat_tau_attack_start_s: 60.0
-    hat_tau_attack_bias_s: 0.0
+    hat_tau_attack_start_s: 40.0
+    hat_tau_attack_duration_s: 0.5
+    hat_tau_attack_bias_s: 0.5
     leader_vehicle_id: 0
     leader_position_index: 0
     leader_control_index: 1
+    leader_control_delay_s: 0.0
     max_state_age_s: 6.0
     received_local_states_limit: 100
     v2v_measurement_delay_s: 0.0
@@ -93,6 +97,7 @@ fleet:
     delay_compensation: false
     gamma: 1.0
     eta: 0.16
+    K_th: 1.00
     use_timestamp_dt: true
     max_update_dt_s: 0.05
     max_hat_tau: 0.0
@@ -104,6 +109,7 @@ fleet:
     received_local_states_limit: 100
     v2v_measurement_delay_s: 0.0
     v2v_position_noise_std: 0.0
+    output_mode: linear           # Gain is designed for direct leader-position output
     measurement_denominator_epsilon: 0.000001
     singularity_position_margin: 0.05
     initialize_position_from_measurement: true
@@ -123,6 +129,7 @@ fleet:
     delay_compensation: false
     gamma: 1.0
     eta: 0.16
+    K_th: 1.00
     use_timestamp_dt: true
     max_update_dt_s: 0.05
     max_hat_tau: 0.0
@@ -134,11 +141,14 @@ fleet:
     received_local_states_limit: 100
     v2v_measurement_delay_s: 0.0
     v2v_position_noise_std: 0.0
+    output_mode: linear           # HG gain is designed for direct leader-position output
     measurement_denominator_epsilon: 0.000001
     singularity_position_margin: 0.05
     initialize_position_from_measurement: true
-    observer_gain: [1.58, 0.0332, -0.0050]
-    high_gain: 1.0
+    # Standard third-order high-gain base vector. With high_gain=2,
+    # the effective gain is [6, 12, 8].
+    observer_gain: [3.0, 3.0, 1.0]
+    high_gain: 2.0
     high_gain_exponents: [1, 2, 3]
 
   # ---------------------------------------------------------------------
@@ -152,6 +162,7 @@ fleet:
     recorder_prefix: "classical_ekf_observer"
     delay_compensation: false
     eta: 0.16
+    K_th: 1.00
     use_timestamp_dt: true
     max_update_dt_s: 0.05
     leader_vehicle_id: 0
@@ -161,6 +172,7 @@ fleet:
     received_local_states_limit: 100
     v2v_measurement_delay_s: 0.0
     v2v_position_noise_std: 0.0
+    output_mode: nonlinear        # 'nonlinear': 1/(x_leader+1), 'linear': V2V leader position
     measurement_denominator_epsilon: 0.000001
     initial_covariance: [1.0, 1.0, 1.0]
     process_noise_covariance: [0.0001, 0.001, 0.01]
@@ -180,9 +192,10 @@ fleet:
     # parallel observer creates trial_v{vehicle_id}_parallel_observers_YYYYmmdd_HHMMSS.
     # experiment_name: "trial_v1_delay_attack"
     primary_estimator: leadering_observer
-    z0: 7.5
+    z0: 0
     gamma: 1.0
     eta: 0.16
+    g_mode: linear               # 'nonlinear': x_hat[1]/(x_hat[0]+1)^2, 'linear': x_hat[1]
     use_timestamp_dt: true
     max_update_dt_s: 0.05
     leader_vehicle_id: 0
@@ -197,36 +210,51 @@ fleet:
         type: leadering_observer
         recorder_prefix: "leadering_observer"
         delay_compensation: true
+        leader_control_delay_s: 0
         max_hat_tau: 0.0
         hat_tau_attack_enabled: false
-        hat_tau_attack_start_s: 60.0
-        hat_tau_attack_bias_s: 0.0
+        hat_tau_attack_start_s: 40.0
+        hat_tau_attack_duration_s: 0.5
+        hat_tau_attack_bias_s: 0.5
+        K_th: 8.6993
+        eta: 0.16
       classical_luenberger_observer:
         type: classical_luenberger_observer
         recorder_prefix: "classical_luenberger_observer"
         delay_compensation: false
+        K_th: 8.6993
         max_hat_tau: 0.0
         hat_tau_attack_enabled: false
+        output_mode: linear
         measurement_denominator_epsilon: 0.000001
         singularity_position_margin: 0.05
         initialize_position_from_measurement: true
-        observer_gain: [1.58, 0.0332, -0.0050]
+        # With K_th=8.6993, the error poles are approximately
+        # [-3.122557 +/- 2.341080j, -0.492290].
+        # observer_gain: [0.48740358, 7.16989079, -41.25647017]
+        observer_gain: [3.0,3.0,1.0]
       high_gain_luenberger_observer:
         type: high_gain_luenberger_observer
         recorder_prefix: "high_gain_luenberger_observer"
         delay_compensation: false
+        K_th: 8.6993
         max_hat_tau: 0.0
         hat_tau_attack_enabled: false
+        output_mode: linear
         measurement_denominator_epsilon: 0.000001
         singularity_position_margin: 0.05
         initialize_position_from_measurement: true
-        observer_gain: [1.58, 0.0332, -0.0050]
-        high_gain: 2.0
+        # Standard third-order HG design: [3*l, 3*l^2, l^3].
+        # At l=2 the effective gain is [6, 12, 8].
+        observer_gain: [3.0, 3.0, 1.0]
+        high_gain: 5.0
         high_gain_exponents: [1, 2, 3]
       classical_ekf_observer:
         type: classical_ekf_observer
         recorder_prefix: "classical_ekf_observer"
         delay_compensation: false
+        K_th: 8.6993
+        output_mode: linear
         measurement_denominator_epsilon: 0.000001
         initial_covariance: [1.0, 1.0, 1.0]
         process_noise_covariance: [0.0001, 0.001, 0.01]

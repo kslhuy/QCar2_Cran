@@ -241,26 +241,48 @@ per_vehicle_controllers:
       steering: 0.0
     throttle_sequence:
     # 最大throttle 为0.3，对应速度约为 2 m/s，最小throttle为0.0，对应速度约为 0 m/s。
-        # - {throttle: 0.00, duration: 5}
-
-        - {throttle: 0.08, duration: 8888888}
-        - {throttle: 0.01, duration: 3}
-        - {throttle: 0.02, duration: 3}
-        - {throttle: 0.03, duration: 3}
-        - {throttle: 0.04, duration: 3}
-        - {throttle: 0.05, duration: 20}
-        - {throttle: 0.04, duration: 3}
-        - {throttle: 0.03, duration: 3}
-        - {throttle: 0.02, duration: 3}
-        - {throttle: 0.01, duration: 3}
+        # 两个启动-停止周期：第一个缓和，第二个较快但峰值速度约 1 m/s；估算总距离 < 30 m。
+        - {throttle: 0.00, duration: 2}
+        # - {throttle: 0.02, duration: 0.5}
+        # - {throttle: 0.06, duration: 0.5}
+        # - {throttle: 0.08, duration: 0.5}
+        # - {throttle: 0.10, duration: 0.5}
+        # - {throttle: 0.12, duration: 0.5}
+        # - {throttle: 0.14, duration: 0.5}
+        - {throttle: 0.15, duration: 10000}
+        - {throttle: 0.14, duration: 0.5}
+        - {throttle: 0.12, duration: 0.5}
+        - {throttle: 0.10, duration: 0.5}
+        - {throttle: 0.08, duration: 0.5}
+        - {throttle: 0.06, duration: 0.5}
+        - {throttle: 0.04, duration: 0.5}
+        - {throttle: 0.02, duration: 0.5}
+        - {throttle: 0.00, duration: 3}
+        - {throttle: 0.01, duration: 2}
+        - {throttle: 0.02, duration: 2}
+        - {throttle: 0.03, duration: 2}
+        - {throttle: 0.04, duration: 2}
+        - {throttle: 0.05, duration: 40}
+        - {throttle: 0.04, duration: 2}
+        - {throttle: 0.03, duration: 2}
+        - {throttle: 0.02, duration: 2}
+        - {throttle: 0.01, duration: 2}
+        - {throttle: 0.00, duration: 4}
+        - {throttle: 0.04, duration: 0.5}
+        - {throttle: 0.06, duration: 0.5}
+        - {throttle: 0.08, duration: 0.5}
+        - {throttle: 0.10, duration: 6}
+        - {throttle: 0.12, duration: 0.5}
+        - {throttle: 0.14, duration: 0.5}
+        - {throttle: 0.15, duration: 6}
+        - {throttle: 0.14, duration: 0.5}
+        - {throttle: 0.12, duration: 0.5}
+        - {throttle: 0.10, duration: 0.5}
+        - {throttle: 0.08, duration: 0.5}
+        - {throttle: 0.06, duration: 0.5}
+        - {throttle: 0.04, duration: 0.5}
+        - {throttle: 0.02, duration: 0.5}
         - {throttle: 0.00, duration: 88888}
-        - {throttle: 0.22, duration: 6}
-        - {throttle: 0.16, duration: 6}
-        - {throttle: 0.28, duration: 6}
-        - {throttle: 0.08, duration: 6}
-        - {throttle: 0.20, duration: 6}
-
-        - {throttle: 0.00, duration: 8}
 
 
     pid:
@@ -286,7 +308,7 @@ per_vehicle_controllers:
     # 最大throttle 为0.3，对应速度约为 2 m/s，最小throttle为0.0，对应速度约为 0 m/s。
         # - {throttle: 0.00, duration: 5}
 
-        - {throttle: 0.08, duration: 88888}
+        - {throttle: 0.00, duration: 33333}
         - {throttle: 0.01, duration: 3}
         - {throttle: 0.02, duration: 3}
         - {throttle: 0.03, duration: 3}

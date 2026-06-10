@@ -5,9 +5,7 @@ Usage:
     python plot_leadering_observer.py --vehicle-id 1
     python plot_leadering_observer.py --csv path/to/leadering_observer_v1_*.csv
     python plot_leadering_observer.py --csv path/to/leadering.csv --leader-csv path/to/telemetry_vehicle_0.csv
-    python plot_leadering_observer.py --csv path/to/leadering.csv --compare-csv path/to/classical.csv
-    python plot_leadering_observer.py --csv path/to/leadering.csv --high-gain-csv path/to/high_gain.csv
-    python plot_leadering_observer.py --csv path/to/leadering.csv --ekf-csv path/to/classical_ekf.csv
+    python plot_leadering_observer.py --include-baselines
 """
 import argparse
 import glob
@@ -19,13 +17,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-INNOVATION_BASELINE_START_S = 50.0
-INNOVATION_BASELINE_END_S = 100.0
-INNOVATION_ATTACK_START_S = 100.0
-INNOVATION_ATTACK_END_S = 125.0
+INNOVATION_BASELINE_START_S = 30.0
+INNOVATION_BASELINE_END_S = 40.0
+INNOVATION_ATTACK_START_S = 40.0
+INNOVATION_ATTACK_END_S = 40.5
 INNOVATION_SIGMA_MULTIPLIER = 3.0
-ERROR_STATS_START_S = 30.0
-ERROR_STATS_END_S = 40.0
+ERROR_STATS_START_S = 40.0
+ERROR_STATS_END_S = 40.5
+HAT_TAU_ATTACK_START_S = 40.0
+HAT_TAU_ATTACK_DURATION_S = 0.5
+HAT_TAU_ATTACK_BIAS_S = 2.5
 
 
 def default_output_dir() -> str:
@@ -224,7 +225,7 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
                             high_gain_csv_path: Optional[str] = None,
                             ekf_csv_path: Optional[str] = None,
                             leader_csv_path: Optional[str] = None) -> Optional[str]:
-    datasets = [_load_dataset(csv_path, "delay compensated")]
+    datasets = [_load_dataset(csv_path, "leadering observer")]
     if compare_csv_path:
         datasets.append(_load_dataset(compare_csv_path, "classical Luenberger"))
     if high_gain_csv_path:
@@ -274,6 +275,10 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
                 )
         axs[idx].set_ylabel(ylabel)
         axs[idx].set_title(f"Leader state vs estimates {name} ({true_source_label})")
+        if name == "v":
+            axs[idx].set_ylim(0.0, 1.25)
+        elif name == "a":
+            axs[idx].set_ylim(-1.0, 1.0)
         axs[idx].legend()
 
         error_stats = []
@@ -293,6 +298,8 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
                 error_stats.append(_format_error_stats(dataset["label"], data_t, err_data))
 
         error_ax.axhline(0.0, label="0", color="#2ca02c", linestyle=":", linewidth=1.4)
+        if name in ("v", "a"):
+            error_ax.set_ylim(-0.5, 0.5)
         error_ax.axvspan(
             ERROR_STATS_START_S,
             ERROR_STATS_END_S,
@@ -334,6 +341,13 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
         hat_tau = _series(dataset["df"], "hat_tau")
         if hat_tau is not None:
             axs[7].plot(dataset["t"], hat_tau, label=f"{dataset['label']} hat_tau", linewidth=2)
+    axs[7].axvspan(
+        HAT_TAU_ATTACK_START_S,
+        HAT_TAU_ATTACK_START_S + HAT_TAU_ATTACK_DURATION_S,
+        label=f"hat_tau attack +{HAT_TAU_ATTACK_BIAS_S:g}s",
+        color="#d62728",
+        alpha=0.16,
+    )
     axs[7].set_ylabel("Delay [s]")
     axs[7].set_title("Estimated communication delay hat_tau(t)")
     axs[7].legend()
@@ -347,32 +361,19 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
                 threshold = _innovation_threshold_from_baseline(dataset["t"], innovation)
     axs[8].axhline(0.0, label="0", color="#2ca02c", linestyle=":", linewidth=1.8)
     if threshold is not None:
-        axs[8].axhline(
-            threshold["mean"],
-            label=f"steady mean {threshold['mean']:.3g}",
-            color="#ff7f0e",
-            linestyle="--",
-            linewidth=1.8,
-        )
-        axs[8].axhline(
-            threshold["upper"],
-            label=f"steady + {INNOVATION_SIGMA_MULTIPLIER:g}sigma {threshold['upper']:.3g}",
-            color="#d62728",
-            linestyle="-.",
-            linewidth=1.8,
-        )
-        axs[8].axhline(
-            threshold["lower"],
-            label=f"steady - {INNOVATION_SIGMA_MULTIPLIER:g}sigma {threshold['lower']:.3g}",
-            color="#d62728",
-            linestyle="-.",
-            linewidth=1.8,
-        )
         primary_innovation = _series(df, "innovation")
         if primary_innovation is not None:
             _print_innovation_detection_stats(t, primary_innovation, threshold)
     axs[8].set_ylabel("Innovation")
     axs[8].set_title("Innovation steady-state detection")
+    axs[8].set_ylim(-0.1, 0.1)
+    axs[8].axvspan(
+        HAT_TAU_ATTACK_START_S,
+        HAT_TAU_ATTACK_START_S + HAT_TAU_ATTACK_DURATION_S,
+        label=f"hat_tau attack {HAT_TAU_ATTACK_START_S:g}-{HAT_TAU_ATTACK_START_S + HAT_TAU_ATTACK_DURATION_S:g}s",
+        color="#d62728",
+        alpha=0.12,
+    )
     axs[8].legend()
 
     axs[9].axis("off")
@@ -383,8 +384,8 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
         ax.set_xlabel("Time [s]")
 
     fig.suptitle(
-        "Leadering Observer comparison: delay-compensated, Luenberger, high-gain, and EKF\n"
-        f"State comparison uses leader telemetry ({timebase_label}); error plots use V2V-aligned truth.",
+        "Leadering Observer\n"
+        f"State comparison uses leader telemetry ({timebase_label}).",
         fontsize=12,
     )
     fig.tight_layout(rect=[0, 0.03, 1, 0.94])
@@ -408,6 +409,11 @@ def main():
     parser.add_argument("--high-gain-csv", type=str, help="Path to a high_gain_luenberger_observer_v*.csv file.")
     parser.add_argument("--ekf-csv", type=str, help="Path to a classical_ekf_observer_v*.csv file.")
     parser.add_argument(
+        "--include-baselines",
+        action="store_true",
+        help="Also auto-load classical, high-gain, and EKF baseline CSV files when paths are omitted.",
+    )
+    parser.add_argument(
         "--leader-csv",
         type=str,
         help=(
@@ -430,21 +436,21 @@ def main():
             print(f"No leadering observer recording found in {output_dir}")
             return
     compare_csv_path = args.compare_csv
-    if compare_csv_path is None:
+    if args.include_baselines and compare_csv_path is None:
         compare_csv_path = find_latest_file(
             output_dir,
             args.vehicle_id,
             prefix="classical_luenberger_observer",
         )
     high_gain_csv_path = args.high_gain_csv
-    if high_gain_csv_path is None:
+    if args.include_baselines and high_gain_csv_path is None:
         high_gain_csv_path = find_latest_file(
             output_dir,
             args.vehicle_id,
             prefix="high_gain_luenberger_observer",
         )
     ekf_csv_path = args.ekf_csv
-    if ekf_csv_path is None:
+    if args.include_baselines and ekf_csv_path is None:
         ekf_csv_path = find_latest_file(
             output_dir,
             args.vehicle_id,

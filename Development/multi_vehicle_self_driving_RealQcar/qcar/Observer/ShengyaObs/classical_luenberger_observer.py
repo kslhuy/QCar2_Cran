@@ -6,13 +6,16 @@ Dynamics:
 
 Where:
     x_hat in R^3
-    y = 1 / (x1 + 1), where x1 is the leader position from V2V
-    y_hat = 1 / (x_hat[0] + 1)
+    y is selected by output_mode:
+        nonlinear: 1 / (x1 + 1), where x1 is the leader position from V2V
+        linear: x1, the leader position read from V2V
     u: leader control input from V2V
     f_x = [
         x_hat[1],
         x_hat[2],
-        -1/eta * x_hat[2] - 1/eta * (c0 + c1 * x_hat[1]) + 1/eta * u
+        -1/eta * x_hat[2]
+        - K_th/eta * (c0 + c1 * x_hat[1])
+        + K_th/eta * u
     ]
 """
 from typing import Dict, Optional
@@ -33,6 +36,10 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
         self.eta = float(self.config.get("eta", 0.16))
         self.control_index = int(self.config.get("control_index", 1))
         self.leader_control_index = int(self.config.get("leader_control_index", 1))
+        self.leader_control_delay_s = max(
+            0.0,
+            float(self.config.get("leader_control_delay_s", 0.0)),
+        )
         self.leader_vehicle_id = int(self.config.get("leader_vehicle_id", 0))
         self.leader_position_index = int(self.config.get("leader_position_index", 0))
         self.z_measurement_index = int(self.config.get("z_measurement_index", 0))
@@ -42,9 +49,26 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
         self._measurement_rng = np.random.default_rng(noise_seed)
         self._last_v2v_position_noise = 0.0
         self._last_v2v_measurement_age_s = 0.0
+        self._last_leader_control_age_s = 0.0
 
         self.c0 = float(self.config.get("c0", 0.007023))
         self.c1 = float(self.config.get("c1", 0.14878))
+        self.K_th = float(self.config.get("K_th", 8.6993))
+        self.output_mode = str(
+            self.config.get(
+                "output_mode",
+                self.config.get("measurement_output_mode", self.config.get("measurement_mode", "nonlinear")),
+            )
+        ).lower()
+        if self.output_mode == "position":
+            self.output_mode = "linear"
+        if self.output_mode not in ("nonlinear", "linear"):
+            if self.logger:
+                self.logger.logger.warning(
+                    f"ClassicalLuenbergerObserverEstimator: output_mode {self.output_mode!r} "
+                    "invalid, using nonlinear"
+                )
+            self.output_mode = "nonlinear"
         self.measurement_denominator_epsilon = float(
             self.config.get("measurement_denominator_epsilon", 1e-6)
         )
@@ -115,9 +139,13 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
         return -self.measurement_denominator_epsilon
 
     def _measurement_output(self, position: float) -> float:
+        if self.output_mode == "linear":
+            return float(position)
         return 1.0 / self._safe_measurement_denominator(position)
 
     def _project_away_from_singularity(self) -> None:
+        if self.output_mode == "linear":
+            return
         min_position = -1.0 + max(self.singularity_position_margin, 0.0)
         if self.x_hat[0] <= min_position:
             self.x_hat[0] = min_position
@@ -140,8 +168,9 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
         x3 = x_vec[2]
         x1_dot = x2
         x2_dot = x3
-        x3_dot = (-1.0 / self.eta) * x3 - (1.0 / self.eta) * (self.c0 + self.c1 * x2)
-        x3_dot += (1.0 / self.eta) * u_scalar
+        x3_dot = (-1.0 / self.eta) * x3
+        x3_dot -= (self.K_th / self.eta) * (self.c0 + self.c1 * x2)
+        x3_dot += (self.K_th / self.eta) * u_scalar
         return np.array([x1_dot, x2_dot, x3_dot], dtype=float)
 
     def _record_debug_sample(self, current_time_ns: int, dt: float, u_scalar: float,
@@ -158,8 +187,11 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
             "hat_tau_attack_active": 0,
             "hat_tau_attack_bias": 0.0,
             "u_leader": u_scalar,
+            "leader_control_delay": self.leader_control_delay_s,
+            "leader_control_age": self._last_leader_control_age_s,
             "y_zeta": y,
             "leader_position_measurement": y_position,
+            "output_mode": self.output_mode,
             "y_hat": y_hat,
             "v2v_measurement_delay": self.v2v_measurement_delay_s,
             "v2v_measurement_age": self._last_v2v_measurement_age_s,

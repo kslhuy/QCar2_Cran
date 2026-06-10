@@ -11,11 +11,13 @@ Where:
     zeta_hat= [z_hat; x_hat] in R^4
     y_zeta = z_filter
     u: leader control input (from V2V)
-    f_zeta = [gamma * x_hat[0];  x_hat[1]; x_hat[2]; -1/eta * x_hat[2] - 1/eta * (c0 + c1 * x_hat[1]) + 1/eta * u]
+    f_zeta = [gamma * x_hat[0];  x_hat[1]; x_hat[2]; -1/eta * x_hat[2] - K_th/eta * (c0 + c1 * x_hat[1]) + K_th/eta * u]
     gamma = 1
-    g(zeta_hat(s), u(s)) = x_hat[1]/(x_hat[0]+1)^2
+    g(zeta_hat(s), u(s)) = x_hat[1]/(x_hat[0]+1)^2 by default
+                           or x_hat[1] when g_mode = "linear"
     B_zeta = [-gamma; 0; 0; 0]
     C = [1, 0, 0, 0]
+    K_th = 8.6993
 """
 from collections import deque
 from typing import Dict, Optional
@@ -40,6 +42,10 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         self.eta = float(self.config.get("eta", 0.16))
         self.control_index = int(self.config.get("control_index", 1))
         self.leader_control_index = int(self.config.get("leader_control_index", 1))
+        self.leader_control_delay_s = max(
+            0.0,
+            float(self.config.get("leader_control_delay_s", 0.0)),
+        )
         self.leader_vehicle_id = int(self.config.get("leader_vehicle_id", 0))
         self.leader_position_index = int(self.config.get("leader_position_index", 0))
         self.z_measurement_index = int(self.config.get("z_measurement_index", 0))
@@ -50,21 +56,32 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         self._measurement_rng = np.random.default_rng(noise_seed)
         self._last_v2v_position_noise = 0.0
         self._last_v2v_measurement_age_s = 0.0
+        self._last_leader_control_age_s = 0.0
 
         self.h_matrix = self._load_row_vector(self.config.get("h_matrix"), default=[1.0, 0.0, 0.0])
         self.dh_dx = self._load_row_vector(self.config.get("dh_dx"), default=self.h_matrix)
         self.c0 = float(self.config.get("c0", 0.007023))
         self.c1 = float(self.config.get("c1", 0.14878))
+        self.K_th = float(self.config.get("K_th", 8.6993))
+        self.g_mode = str(self.config.get("g_mode", "nonlinear")).lower()
+        if self.g_mode not in ("nonlinear", "linear"):
+            if self.logger:
+                self.logger.logger.warning(
+                    f"LeaderingObserverEstimator: g_mode {self.g_mode!r} invalid, using nonlinear"
+                )
+            self.g_mode = "nonlinear"
 
         self.C = np.array([1.0, 0.0, 0.0, 0.0])
         self.B_zeta = np.array([-self.gamma, 0.0, 0.0, 0.0])
 
-        self.L = np.array([48.66, 23.49, 0.5062, -0.0772])
-        # self.L = np.array([220, 58, 2.4, -0.3656])
+        # self.L = np.array([48.66, 23.49, 0.5062, -0.0772])
+        # self.L = np.array([63.4628, 30.0136, 3.5888, -0.5448])
+        self.L = np.array([64.9878, 25.7977, 5.7502, -0.8735])
+        # self.L = np.array([86.9516, 25.2519, -0.0009, -0.0000])
         # self.L = np.array([4.67, 1.58, 0.0332, -0.0050])
 
         self.zeta_hat = np.zeros(4)
-        self.z_filter = float(self.config.get("z0", 7.5))
+        self.z_filter = float(self.config.get("z0", 0))
         self.zeta_hat[0] = self.z_filter
         self._g_history = deque()
         self.g_history_seconds = float(self.config.get("g_history_seconds", 5.0))
@@ -76,9 +93,9 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         self._update_count = 0
         self.hat_tau_attack_enabled = bool(self.config.get("hat_tau_attack_enabled", False))
         self.hat_tau_attack_start_s = float(self.config.get("hat_tau_attack_start_s", 60.0))
+        self.hat_tau_attack_duration_s = float(self.config.get("hat_tau_attack_duration_s", 0.0))
         self.hat_tau_attack_bias_s = float(self.config.get("hat_tau_attack_bias_s", 0.08))
         self._hat_tau_attack_t0_ns: Optional[int] = None
-        self._hat_tau_attack_used = False
         self.use_timestamp_dt = bool(self.config.get("use_timestamp_dt", True))
         self.max_update_dt_s = float(self.config.get("max_update_dt_s", 0.05))
         self._last_update_time_ns: Optional[int] = None
@@ -152,7 +169,7 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         return fallback_hat_tau
 
     def _apply_hat_tau_attack(self, current_time_ns: int, hat_tau_s: float) -> tuple:
-        """Inject a constant bias into hat_tau once at the configured attack time."""
+        """Inject a constant bias into hat_tau during the configured attack window."""
         if not self.hat_tau_attack_enabled:
             return hat_tau_s, False, 0.0
 
@@ -160,10 +177,11 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
             start_delay_ns = int(max(0.0, self.hat_tau_attack_start_s) * 1e9)
             self._hat_tau_attack_t0_ns = int(current_time_ns) + start_delay_ns
 
-        if self._hat_tau_attack_used or current_time_ns < self._hat_tau_attack_t0_ns:
+        attack_duration_ns = int(max(0.0, self.hat_tau_attack_duration_s) * 1e9)
+        attack_end_ns = self._hat_tau_attack_t0_ns + attack_duration_ns
+        if current_time_ns < self._hat_tau_attack_t0_ns or current_time_ns >= attack_end_ns:
             return hat_tau_s, False, 0.0
 
-        self._hat_tau_attack_used = True
         return hat_tau_s + self.hat_tau_attack_bias_s, True, self.hat_tau_attack_bias_s
 
     def _compute_update_dt(self, current_time_ns: int, fallback_dt: float) -> float:
@@ -181,7 +199,11 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         return max(0.0, min(measured_dt, self.max_update_dt_s))
 
     def _extract_control_input(self, current_time_ns: int, control: np.ndarray) -> float:
-        leader_control = self._get_latest_received_control(self.leader_vehicle_id, current_time_ns)
+        leader_control = self._get_delayed_received_control(
+            self.leader_vehicle_id,
+            current_time_ns,
+            getattr(self, "leader_control_delay_s", 0.0),
+        )
         if leader_control is not None:
             leader_arr = np.asarray(leader_control, dtype=float).flatten()
             if leader_arr.size == 1:
@@ -201,6 +223,54 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         if 0 <= self.control_index < control_arr.size:
             return float(control_arr[self.control_index])
         return float(control_arr[-1])
+
+    @staticmethod
+    def _control_from_received_state(state) -> Optional[np.ndarray]:
+        if not isinstance(state, dict) or "control_input" not in state:
+            return None
+
+        control_dict = state["control_input"]
+        try:
+            return np.array([
+                float(control_dict.get("steering", 0.0)),
+                float(control_dict.get("throttle", 0.0)),
+            ])
+        except (TypeError, ValueError, AttributeError):
+            return None
+
+    def _get_delayed_received_control(self, vehicle_id: int, current_time_ns: int,
+                                      delay_s: float) -> Optional[np.ndarray]:
+        history = self.received_local_states.get(vehicle_id)
+        if not history:
+            self._last_leader_control_age_s = 0.0
+            return None
+
+        target_time_ns = int(current_time_ns) - int(max(0.0, delay_s) * 1e9)
+        valid_controls = []
+        for ts_ns, state in history:
+            ts_ns = int(ts_ns)
+            age_ns = int(current_time_ns) - ts_ns
+            if age_ns < 0 or age_ns > self.max_state_age_ns:
+                continue
+            control_arr = self._control_from_received_state(state)
+            if control_arr is not None:
+                valid_controls.append((ts_ns, control_arr))
+
+        if not valid_controls:
+            self._last_leader_control_age_s = 0.0
+            return None
+
+        selected = None
+        for ts_ns, control_arr in reversed(valid_controls):
+            if ts_ns <= target_time_ns:
+                selected = (ts_ns, control_arr)
+                break
+        if selected is None:
+            selected = valid_controls[0]
+
+        ts_ns, control_arr = selected
+        self._last_leader_control_age_s = (int(current_time_ns) - ts_ns) * 1e-9
+        return control_arr.copy()
 
     def _extract_y_zeta(self, current_time_ns: int, local_state) -> float:
         leader_state = self._get_delayed_received_state(
@@ -277,15 +347,19 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         x3 = x_vec[2]
         x1_dot = x2
         x2_dot = x3
-        x3_dot = (-1.0 / self.eta) * x3 - (1.0 / self.eta) * (self.c0 + self.c1 * x2)
-        x3_dot += (1.0 / self.eta) * u_scalar
+        x3_dot = (-1.0 / self.eta) * x3
+        x3_dot -= (self.K_th / self.eta) * (self.c0 + self.c1 * x2)
+        x3_dot += (self.K_th / self.eta) * u_scalar
         return np.array([x1_dot, x2_dot, x3_dot], dtype=float)
 
     def _compute_h(self, x_vec: np.ndarray) -> float:
         return float(self.h_matrix @ x_vec)
 
     def _compute_g(self, x_vec: np.ndarray, u_scalar: float) -> float:
-        """Compute g(zeta_hat, u) = x_hat[1] / (x_hat[0] + 1)^2."""
+        """Compute g(zeta_hat, u) according to the configured g_mode."""
+        if self.g_mode == "linear":
+            return float(x_vec[1])
+
         denominator = x_vec[0] + 1.0
         return float(x_vec[1] / (denominator ** 2))
 
@@ -335,10 +409,16 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         return total
 
     def _compute_f_zeta(self, zeta_hat: np.ndarray, u_scalar: float) -> np.ndarray:
-        """Compute f_zeta = [gamma*x_hat[0]; x_hat[1]; x_hat[2]; -1/eta*x_hat[2] - 1/eta*(c0+c1*x_hat[1]) + 1/eta*u]."""
+        """Compute f_zeta for zeta_hat = [z_hat; x_hat]."""
         x_vec = zeta_hat[1:]
-        f_x = self._compute_f_x(x_vec, u_scalar)
-        return np.array([self.gamma * x_vec[0], f_x[0], f_x[1], f_x[2]], dtype=float)
+        return np.array([
+            self.gamma * x_vec[0],
+            x_vec[1],
+            x_vec[2],
+            (-1.0 / self.eta) * x_vec[2]
+            - (self.K_th / self.eta) * (self.c0 + self.c1 * x_vec[1])
+            + (self.K_th / self.eta) * u_scalar,
+        ], dtype=float)
 
     def _get_leader_truth(self, current_time_ns: int, local_state, control) -> tuple:
         """Return latest available leader truth as (x, v, a, u). Missing values are NaN."""
@@ -394,6 +474,8 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
             "hat_tau_attack_active": int(hat_tau_attack_active),
             "hat_tau_attack_bias": hat_tau_attack_bias_s,
             "u_leader": u_scalar,
+            "leader_control_delay": self.leader_control_delay_s,
+            "leader_control_age": self._last_leader_control_age_s,
             "y_zeta": y_zeta,
             "z_filter": self.z_filter,
             "v2v_measurement_delay": self.v2v_measurement_delay_s,

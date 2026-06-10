@@ -67,7 +67,7 @@ class VehicleLogic:
         
         # V2V Manager - Complete V2V system (handles communication internally)
         v2v_config = V2VBroadcastConfig(
-            local_state_frequency=10,  # Hz - Local state broadcasts
+            local_state_frequency=100,  # Hz - Local state broadcasts
             fleet_state_frequency=10,   # Hz - Lower frequency for fleet states
             heartbeat_frequency=1.0      # Hz - Very low frequency for heartbeats
         )
