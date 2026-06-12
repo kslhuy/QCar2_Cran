@@ -395,20 +395,20 @@ class RuntimeSwitchingControl(BaseWidget):
         )
         fleet_obs = self.config.get(
             "fleet_observers",
-            ["consensus", "distributed_luenberger", "trust_consensus", "trust_kalman"],
+            ["consensus", "distributed_luenberger", "trust_consensus", "trust_kalman", "distributed_longitudinal_high_gain"],
         )
         path_long = self.config.get(
-            "path_longitudinal_controllers", ["pid", "qcar2_speed", "cacc", "sa_acc"]
+            "path_longitudinal_controllers", ["pid", "qcar2_speed", "cacc", "sa_acc", "lcc"]
         )
         path_lat = self.config.get(
-            "path_lateral_controllers", ["pp_map", "path", "stanley", "mpc"]
+            "path_lateral_controllers", ["pp_map", "path", "stanley", "mpc", "dummy"]
         )
         leader_long = self.config.get(
-            "leader_longitudinal_controllers", ["cacc", "pid", "qcar2_speed", "sa_acc"]
+            "leader_longitudinal_controllers", ["cacc", "pid", "qcar2_speed", "sa_acc", "lcc"]
         )
         leader_lat = self.config.get(
             "leader_lateral_controllers",
-            ["pure_pursuit", "stanley", "lookahead", "hybrid", "fusion", "mpc"],
+            ["pure_pursuit", "stanley", "lookahead", "hybrid", "fusion", "mpc", "dummy"],
         )
 
         self.frame = ThemedLabelFrame(

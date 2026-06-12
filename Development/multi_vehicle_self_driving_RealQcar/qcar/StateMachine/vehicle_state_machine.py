@@ -93,23 +93,8 @@ class VehicleStateMachine:
             Tuple[float, float]: (throttle_command, steering_command)
         """
         try:
-            # # Ensure event system is initialized
-            # if hasattr(self.vehicle_logic, 'command_handler') and not hasattr(self.vehicle_logic.command_handler, 'state_machine'):
-            #     self.initialize_event_system()
-
             # Get current state handler
             current_state = self.state_handlers[self.state]
-
-            # # Log current state periodically (every 5 seconds)
-            # if (
-            #     hasattr(self.vehicle_logic, "loop_counter")
-            #     and self.vehicle_logic.loop_counter % 1000 == 0
-            # ):
-            #     if self.logger:
-            #         time_in_state = self.get_time_in_state()
-            #         self.logger.logger.info(
-            #             f"[STATE] Current: {self.state.name} (for {time_in_state:.1f}s)"
-            #         )
 
             # Update the current state
             throttle, steering, transition = current_state.update(dt, sensor_data)

@@ -26,7 +26,6 @@ if parent_dir not in sys.path:
 
 try:
     from command_handler import CommandType
-
     COMMAND_TYPE_AVAILABLE = True
 except ImportError as e:
     print(f"ERROR: Cannot import CommandType: {e}")
@@ -356,13 +355,10 @@ class InitializingState(StateBase):
             ):
                 self.logger.logger.info("QCar Simulation mode detected")
                 from qvl.multi_agent import readRobots
-
                 self._initialize_simulated_qcar(readRobots)
-            
             else:
                 self._initialize_physical_qcar()
 
-            # Wait for GPS and initialize state estimator
             if not self._wait_for_gps():
                 return False
 
@@ -444,7 +440,6 @@ class InitializingState(StateBase):
                 )
                 return True
             time.sleep(0.1)
-
         self.logger.log_error("GPS timeout - no reading received")
         return False
 
@@ -461,7 +456,6 @@ class InitializingState(StateBase):
                     "use_qcar_ekf": self.vehicle_logic.controller_manager.config.enable_steering_control
                 },
             )
-
             if success:
                 self.logger.logger.info(
                     f"Local estimator initialized at pose: "

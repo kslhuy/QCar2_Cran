@@ -180,11 +180,6 @@ class V2VManager:
             
             local_state = self.vehicle_observer.get_local_state_for_broadcast()
             
-            # # Periodically log what we're broadcasting
-            # if self.stats['local_broadcasts'] % 100 == 0 and self.logger:  # Every 100 broadcasts (every 5 seconds at 20Hz)
-            #     self.logger.info(f"V2VManager: Broadcasting local state #{self.stats['local_broadcasts']} from vehicle {self.vehicle_id}:")
-            #     self.logger.info(f"  Data: {local_state}")
-            
             success = self.v2v_communication.send_message(
                 message_type="local_state",
                 data=local_state
@@ -215,17 +210,6 @@ class V2VManager:
                 return False
             
             fleet_state = self.vehicle_observer.get_fleet_state_for_broadcast()
-            
-            # # Periodically log what we're broadcasting
-            # self._fleet_state_log_counter += 1
-            # if self._fleet_state_log_counter % 25 == 0 and self.logger:  # Every 25 broadcasts (every 5 seconds at 5Hz)
-            #     self.logger.info(f"V2VManager: Broadcasting fleet state #{self._fleet_state_log_counter} from vehicle {self.vehicle_id}:")
-            #     if 'fleet_states' in fleet_state:
-            #         for vid, vstate in fleet_state['fleet_states'].items():
-            #             self.logger.info(
-            #                 f"  vehicle_{vid}: x={vstate['x']:.3f}, y={vstate['y']:.3f}, "
-            #                 f"theta={vstate['theta']:.3f}, v={vstate['velocity']:.3f}, conf={vstate['confidence']:.2f}"
-            #             )
             
             success = self.v2v_communication.send_message(
                 message_type="fleet_state",

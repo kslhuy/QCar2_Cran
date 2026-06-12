@@ -77,26 +77,19 @@ class FleetStateEstimatorBase(ABC):
         self.config = config or {}
         self.logger = logger
         
-        # Fleet state estimates [state_dim x fleet_size]
-        # self.fleet_states = np.zeros((self.state_dim, fleet_size))
-        # Initialized with size 1 usually, will expand as needed
         self.fleet_states = np.zeros((self.state_dim, fleet_size))
-        # self.logger.logger.debug(f"fleet_states initialized with shape: {self.fleet_states.shape}")
-        
-        # Communication data storage
-        self.received_local_states = defaultdict(list)  # vehicle_id -> [(timestamp_ns, state)]
 
-        self.received_fleet_states = defaultdict(list) # vehicle_sender_id -> [(timestamp_ns, fleet_state)]
-
+        self.received_local_states = defaultdict(list)
+        self.received_fleet_states = defaultdict(list)
 
         self.max_state_age_ns = int(1.0 * 1e9)  # 1 second in nanoseconds
-    
+
     @abstractmethod
     def update(self, local_state: np.ndarray, dt: float, 
                current_time_ns: int, control: np.ndarray) -> np.ndarray:
         """
         Update fleet state estimates
-        
+        0
         Args:
             local_state: Host vehicle's local state estimate [state_dim]
             dt: Time step
@@ -106,6 +99,7 @@ class FleetStateEstimatorBase(ABC):
         Returns:
             Updated fleet states [state_dim x fleet_size]
         """
+
         pass
     
     def add_received_local_state(self, sender_id: int, state: Dict, timestamp_ns: int) -> bool:
@@ -152,8 +146,7 @@ class FleetStateEstimatorBase(ABC):
         try:
             if sender_id == self.vehicle_id:
                 return False
-
-            # Check for new vehicle IDs and expand capacity if required
+            
             try:
                 max_id_in_msg = max((int(vid) for vid in fleet_estimates.keys()), default=0)
             except Exception:
@@ -162,17 +155,15 @@ class FleetStateEstimatorBase(ABC):
             if max_id_in_msg >= self.fleet_size:
                 self._ensure_fleet_capacity(max_id_in_msg)
 
-            # Convert keys to int (handles JSON serialization which makes all keys strings)
+
             try:
                 fleet_estimates = {int(k): v for k, v in fleet_estimates.items()}
             except (ValueError, TypeError):
                 pass
 
-            # Store the raw fleet dictionary with timestamp
+
             self.received_fleet_states[sender_id].append((timestamp_ns, fleet_estimates))
 
-
-            # Limit history for fleet snapshots per neighbor (default 5)
             if len(self.received_fleet_states[sender_id]) > 5:
                 self.received_fleet_states[sender_id] = self.received_fleet_states[sender_id][-5:]
 
@@ -248,19 +239,6 @@ class FleetStateEstimatorBase(ABC):
             return self.fleet_states[:, vehicle_id].copy()
         return None
     
-    # Problem: Car_2 was trying to access index 2 in a fleet_states array that only had size 2 (indices 0-1), 
-    # causing IndexError: index 2 is out of bounds for axis 1 with size 2.
-
-    # Root Cause: When V2V activated with 2 cars (Car_0 and Car_1), the fleet was initialized with size 2. 
-    # When Car_2 later joined, it tried to write its state to index 2, which didn't exist.
-
-    # Solution: Added auto-expansion logic to fleet state estimators:
-
-        # 1  Added _ensure_fleet_capacity() helper method to base class
-        # 2  Modified ConsensusFleetEstimator.update() to auto-expand before writing
-        # 3  Modified DistributedKalmanEstimator.update() to auto-expand and also update weights array
-        # 4  The fleet_states array now dynamically grows to accommodate new vehicles with higher IDs
-    
     def _ensure_fleet_capacity(self, min_vehicle_id: int):
         """
         Ensure fleet_states array can accommodate the given vehicle_id.
@@ -323,6 +301,9 @@ class FleetStateEstimatorBase(ABC):
         except Exception as e:
             if self.logger:
                 self.logger.log_error("Data cleanup error", e)
+
+
+
 class ConsensusFleetEstimator(FleetStateEstimatorBase):
     """
     Consensus-based distributed fleet estimator
@@ -431,8 +412,9 @@ class FleetEstimatorFactory:
     
     # Lazy loading flags
     _distributed_luenberger_loaded = False
-    _distributed_high_gain_loaded = False
+    _distributed_longitudinal_high_gain_loaded = False
     _trust_estimators_loaded = False
+    _longitudinal_high_gain_loaded = False
     
     @classmethod
     def _load_distributed_luenberger(cls):
@@ -467,23 +449,15 @@ class FleetEstimatorFactory:
             pass
 
     @classmethod
-    def _load_distributed_high_gain(cls):
-        """Lazily load Liqi distributed high-gain estimator."""
-        if cls._distributed_high_gain_loaded:
+    def _load_distributed_longitudinal_high_gain(cls):
+        """Lazily load Liqi distributed longitudinal high-gain estimator."""
+        if cls._distributed_longitudinal_high_gain_loaded:
             return
 
         try:
-            from .Liqi_obs.distributed_high_gain_observer import (
-                DistributedHighGainFleetEstimator,
-            )
-
-            cls.ESTIMATOR_TYPES["distributed_high_gain"] = (
-                DistributedHighGainFleetEstimator
-            )
-            cls.ESTIMATOR_TYPES["liqi_distributed_high_gain"] = (
-                DistributedHighGainFleetEstimator
-            )
-            cls._distributed_high_gain_loaded = True
+            from .Liqi_obs.longitudinal_high_gain_observer import LongitudinalHighGainFleetStateEstimator
+            cls.ESTIMATOR_TYPES['distributed_longitudinal_high_gain'] = LongitudinalHighGainFleetStateEstimator
+            cls._distributed_longitudinal_high_gain_loaded = True
         except ImportError:
             # Liqi observer package not available
             pass
@@ -496,7 +470,7 @@ class FleetEstimatorFactory:
         
         Args:
             estimator_type: One of 'consensus', 'distributed_luenberger',
-                           'distributed_high_gain', 'trust_consensus', 'trust_kalman'
+                           'distributed_longitudinal_high_gain', 'trust_consensus', 'trust_kalman'
             vehicle_id: ID of the host vehicle
             fleet_size: Total number of vehicles in fleet
             state_dim: State dimension (default 5)
@@ -510,8 +484,8 @@ class FleetEstimatorFactory:
         if estimator_type == 'distributed_luenberger':
             FleetEstimatorFactory._load_distributed_luenberger()
 
-        if estimator_type in ('distributed_high_gain', 'liqi_distributed_high_gain'):
-            FleetEstimatorFactory._load_distributed_high_gain()
+        if estimator_type == 'distributed_longitudinal_high_gain':
+            FleetEstimatorFactory._load_distributed_longitudinal_high_gain()
         
         # Try to load trust-based estimators if requesting one
         if estimator_type.startswith('trust_'):
@@ -536,6 +510,6 @@ class FleetEstimatorFactory:
     def get_available_types(cls) -> List[str]:
         """Get list of available estimator types"""
         cls._load_distributed_luenberger()
-        cls._load_distributed_high_gain()
+        cls._load_distributed_longitudinal_high_gain()
         cls._load_trust_estimators()
         return list(cls.ESTIMATOR_TYPES.keys())

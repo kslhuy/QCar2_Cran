@@ -1580,7 +1580,7 @@ class StateBase:
         """
         try:
             from Observer.fleet_state_estimators import FleetEstimatorFactory
-
+            
             valid_types = FleetEstimatorFactory.get_available_types()
             if observer_type not in valid_types:
                 self.logger.log_error(

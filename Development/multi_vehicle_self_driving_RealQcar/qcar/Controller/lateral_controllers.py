@@ -898,6 +898,26 @@ class FusionLateralController(LateralControllerBase):
         self.pure_pursuit.reset()
 
 
+class DummyLateralController(LateralControllerBase):
+    """Returns zero steering — placeholder for pure longitudinal studies."""
+
+    def __init__(self, config=None, logger=None):
+        self.logger = logger
+
+    def compute_steering(self,
+                         follower_state: Dict[str, float],
+                         leader_state: Optional[Dict[str, float]],
+                         dt: float) -> float:
+        return 0.0
+
+    def update_params(self, params: Dict[str, Any]):
+        pass
+
+    def reset(self):
+        pass
+
+
+
 class LateralControllerFactory:
     """Factory to create lateral controllers by name"""
 
@@ -907,6 +927,7 @@ class LateralControllerFactory:
         "lookahead": LookaheadController,
         "fusion": FusionLateralController,
         "fusion_lateral": FusionLateralController,
+        'dummy': DummyLateralController,
         # MPC will be added dynamically when mpc_wrappers is imported
     }
 

@@ -994,7 +994,7 @@ class FollowingPathState(StateBase):
 
         return u, delta
 
-    def _init_lane_fusion(self, config: dict = None):
+    def _init_lane_fusion(self, config: dict):
         """
         Initialize the modular lane fusion system from YAML config.
 
@@ -1040,7 +1040,6 @@ class FollowingPathState(StateBase):
             # Override with provided config (for programmatic changes)
             if config:
                 fusion_settings.update(config)
-
             # Create fusion config
             fusion_config = LaneFusionConfig(
                 strategy=FusionStrategy(fusion_settings["strategy"]),
@@ -1051,9 +1050,7 @@ class FollowingPathState(StateBase):
                 max_steering=fusion_settings["max_steering"],
                 deadband=fusion_settings["deadband"],
                 switch_threshold=fusion_settings["switch_threshold"],
-                enable_curvature_compensation=fusion_settings[
-                    "enable_curvature_compensation"
-                ],
+                enable_curvature_compensation=fusion_settings["enable_curvature_compensation"],
                 debug_logging=fusion_settings["debug_logging"],
             )
 

@@ -8,6 +8,7 @@ from .longitudinal_controllers import (
     CACCLongitudinalController,
     SA_ACCController,
     FixConstantController,
+    LeaderCruiseController,
     ControllerFactory,
 )
 
@@ -18,9 +19,11 @@ from .lateral_controllers import (
     StanleyController,
     LookaheadController,
     FusionLateralController,
+    DummyLateralController,
     LateralControllerFactory,
     wrap_to_pi,
 )
+
 
 # MPC controllers (optional - requires casadi)
 try:
@@ -48,6 +51,7 @@ __all__ = [
     "CACCLongitudinalController",
     "SA_ACCController",
     "FixConstantController",
+    "LeaderCruiseController",
     "ControllerFactory",
     # Lateral
     "LateralControllerBase",
@@ -56,6 +60,7 @@ __all__ = [
     "LookaheadController",
     "HybridLateralController",
     "FusionLateralController",
+    "DummyLateralController",
     "LateralControllerFactory",
     "wrap_to_pi",
     # MPC (if available)

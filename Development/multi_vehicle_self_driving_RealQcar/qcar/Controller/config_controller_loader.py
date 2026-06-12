@@ -103,6 +103,8 @@ class ControllerConfig:
         # coupled MPC may also be listed even though typically selected via lateral
         if "mpc" in self.config:
             types.append("mpc")
+        if "lcc" in self.config:
+            types.append("lcc")
         return types
 
     def get_available_lateral_types(self) -> list:
@@ -122,6 +124,8 @@ class ControllerConfig:
         # MPC behaves like pp_map: coupled controller handled via lateral selection
         if "mpc" in self.config:
             types.append("mpc")
+        if "dummy" in self.config:
+            types.append("dummy")
         return types
 
     def get_longitudinal_params(

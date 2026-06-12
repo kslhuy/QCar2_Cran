@@ -212,7 +212,7 @@ def load_fleet_observer_config() -> Dict[str, Any]:
 
 # Known longitudinal and lateral controller names to classify them.
 # These are used to split the flat YAML into longitudinal vs lateral lists.
-_KNOWN_LONGITUDINAL = {"pid", "qcar2_speed", "cacc", "sa_acc", "fix"}
+_KNOWN_LONGITUDINAL = {"pid", "qcar2_speed", "cacc", "sa_acc", "fix", "lcc"}
 _KNOWN_LATERAL = {
     "pure_pursuit",
     "pp_map",
@@ -223,6 +223,7 @@ _KNOWN_LATERAL = {
     "hybrid_lateral",
     "fusion_lateral",
     "path",
+    "dummy",
     "mpc",
 }
 

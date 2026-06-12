@@ -79,7 +79,7 @@ class VehicleControlFullSystemQCar(Node):
                 ('car_id', 3),
                 ('vehicle_type', 'Limo'),
                 ('programme_type', 'Ros'),
-                ('v_ref', 0.6),
+                ('v_ref', 0.38),
                 ('controller_rate', 100),
                 ('calibrate', False),
                 ('path_number', 0),
@@ -97,10 +97,10 @@ class VehicleControlFullSystemQCar(Node):
                 ('enable_sdc_map_tf_broadcaster', True),
                 ('sdc_map_update_topic', '/sdc_map_tf_update'),
                 ('sdc_map_tf_publish_rate', 20.0),
-                ('sdc_map_x', -0.1),
-                ('sdc_map_y', 0.0),
+                ('sdc_map_x', 0.04),
+                ('sdc_map_y', -0.07),
                 ('sdc_map_z', 0.0),
-                ('sdc_map_yaw', 1.3701),
+                ('sdc_map_yaw', 1.5446),
                 ('sdc_map_pitch', 0.0),
                 ('sdc_map_roll', 0.0),
                 ('enable_external_path_subscriber', False),
@@ -723,7 +723,8 @@ class VehicleControlFullSystemQCar(Node):
 
     def _publish_pending_initial_pose_when_ready(self):
         """Publish queued /initialpose once AMCL subscriber is available."""
-        if self.pending_initial_pose_xyz_deg is None:
+        pending_pose = self.pending_initial_pose_xyz_deg
+        if pending_pose is None:
             return
 
         if len(self.get_subscriptions_info_by_topic('/initialpose')) == 0:
@@ -733,7 +734,7 @@ class VehicleControlFullSystemQCar(Node):
                 self.pending_initial_pose_wait_logged = True
             return
 
-        x, y, yaw_deg = self.pending_initial_pose_xyz_deg
+        x, y, yaw_deg = pending_pose
         self.gps_adapter.send_initial_pose(x, y, yaw_deg)
         self.get_logger().info(
             f"Published initial pose to AMCL ({self.pending_initial_pose_source}): "

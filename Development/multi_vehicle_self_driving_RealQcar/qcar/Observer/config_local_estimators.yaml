@@ -50,13 +50,22 @@ local:
   # ---------------------------------------------------------------------
   # Local High-Gain / practical observer
   # ---------------------------------------------------------------------
+  longitudinal_high_gain_observer:
+    L: [[5], [10], [5]]
+    theta: 5.0
+    gamma: 1.0
+    max_accel: 8.0
+    max_position_innovation: 0.5
+    
+    
+
   high_gain_observer:
-    observer_mode: classical # practical = discrete observer from Liqi_obs/Hichem/Compare_method_to_kalman_practical.m.
-                             # classical = continuous high-gain equation from Hichem/HighGainObserver.m.
+    observer_mode: classical
     predict_model: 2
-    LX: [[5], [10], [5]]
-    LY: [[5], [10], [5]]
-    theta: 3
+    N: [[4.72, 9.72], [8.14, 1.14], [4.71, 0.71], [4.72, 9.72], [8.14, 1.14], [4.71, 0.71]] 
+    LX: [[1], [2], [1]]
+    LY: [[1], [2], [1]]
+    theta: 8.0
     pos_gain: 0.35
     pos_to_vel_gain: 0.12
     pos_to_acc_gain: 0.03
@@ -67,7 +76,7 @@ local:
     min_speed_for_heading: 0.5
     max_speed: 5.0
     max_accel: 8.0
-    max_position_innovation: 1.0
+    max_position_innovation: 0.5
 
 
 

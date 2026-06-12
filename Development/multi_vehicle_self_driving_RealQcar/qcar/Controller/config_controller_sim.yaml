@@ -107,9 +107,17 @@ sa_acc:
 fix:
   throttle: 0.075
 
+
+leading_cruise_control:
+  desired_speed: 0.5         # Desired cruising speed when no leader is detected (m/s)
+  acc_to_throttle_gain: 0.4  # Conversion gain from acceleration to throttle
+  max_throttle: 0.25         # Maximum throttle output in leading mode
+
 # ============================================================================
 # LATERAL CONTROLLER CONFIGURATION
 # ============================================================================
+
+
 
 # Controller type options: 'pure_pursuit', 'stanley', 'lookahead', 'hybrid', 'fusion', 'path', 'pp_map'
 lateral_controller_type: 'pp_map'  # legacy fallback
@@ -207,6 +215,8 @@ lookahead:
   k1: 1.0                    # Lateral control gain
   k2: 1.0                    # Yaw rate control gain
   max_steering: 0.5         # Maximum steering angle (radians)
+
+dummy:
 
 
 # Fusion Lateral Controller Parameters (combines path + leader tracking)
