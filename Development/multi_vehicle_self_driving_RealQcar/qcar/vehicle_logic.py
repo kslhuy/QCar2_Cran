@@ -67,8 +67,8 @@ class VehicleLogic:
         
         # V2V Manager - Complete V2V system (handles communication internally)
         v2v_config = V2VBroadcastConfig(
-            local_state_frequency=25.0,  # Hz - High frequency for local states
-            fleet_state_frequency=10.0,   # Hz - Lower frequency for fleet states
+            local_state_frequency=200.0,  # Hz - High frequency for local states
+            fleet_state_frequency=100.0,   # Hz - Lower frequency for fleet states
             heartbeat_frequency=1.0      # Hz - Very low frequency for heartbeats
         )
         self.v2v_manager = V2VManager(
@@ -129,8 +129,8 @@ class VehicleLogic:
         self.telemetry_counter = 0
         
         # Component update rates and timing
-        self.controller_rate = config.timing.controller_update_rate if IS_PHYSICAL_QCAR else 100  # 200 for real vehicle, 100 for sim
-        self.observer_rate = config.timing.observer_rate if IS_PHYSICAL_QCAR else 100  # 200 for real vehicle, 100 for sim
+        self.controller_rate = config.timing.controller_update_rate
+        self.observer_rate = config.timing.observer_rate
         self.telemetry_send_rate = getattr(config.timing, 'telemetry_send_rate', 10)
         
         # Timing trackers for different update rates

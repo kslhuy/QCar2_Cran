@@ -546,6 +546,7 @@ class FleetEstimatorFactory:
     
     # Lazy loading flags
     _distributed_luenberger_loaded = False
+    _distributed_hg_loaded = False
     _trust_estimators_loaded = False
     
     @classmethod
@@ -560,6 +561,19 @@ class FleetEstimatorFactory:
             cls._distributed_luenberger_loaded = True
         except ImportError as e:
             print(f"Warning: Could not load DistributedLuenbergerEstimator: {e}")
+
+    @classmethod
+    def _load_distributed_hg(cls):
+        """Lazily load DistributedHGEstimator to avoid circular imports."""
+        if cls._distributed_hg_loaded:
+            return
+
+        try:
+            from .ShengyaObs.distributed_HG_LMI_Adptive_estimator import DistributedHGEstimator
+            cls.ESTIMATOR_TYPES['distributed_HG'] = DistributedHGEstimator
+            cls._distributed_hg_loaded = True
+        except ImportError as e:
+            print(f"Warning: Could not load DistributedHGEstimator: {e}")
     
     @classmethod
     def _load_trust_estimators(cls):
@@ -586,8 +600,8 @@ class FleetEstimatorFactory:
         Create a fleet state estimator
         
         Args:
-            estimator_type: One of 'consensus', 'distributed_kalman', 
-                           'distributed_luenberger', 'trust_consensus', 'trust_kalman'
+            estimator_type: One of 'consensus', 'distributed_luenberger',
+                           'distributed_HG', 'trust_consensus', 'trust_kalman'
             vehicle_id: ID of the host vehicle
             fleet_size: Total number of vehicles in fleet
             state_dim: State dimension (default 5)
@@ -600,6 +614,9 @@ class FleetEstimatorFactory:
         # Load distributed_luenberger lazily when requested
         if estimator_type == 'distributed_luenberger':
             FleetEstimatorFactory._load_distributed_luenberger()
+
+        if estimator_type == 'distributed_HG':
+            FleetEstimatorFactory._load_distributed_hg()
         
         # Try to load trust-based estimators if requesting one
         if estimator_type.startswith('trust_'):
@@ -624,5 +641,6 @@ class FleetEstimatorFactory:
     def get_available_types(cls) -> List[str]:
         """Get list of available estimator types"""
         cls._load_distributed_luenberger()
+        cls._load_distributed_hg()
         cls._load_trust_estimators()
         return list(cls.ESTIMATOR_TYPES.keys())

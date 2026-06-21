@@ -261,7 +261,7 @@ per_vehicle_controllers:
 
         - {throttle: 0.00, duration: 5}
 
-        - {throttle: 0.12, duration: 6}
+        - {throttle: 0.12, duration: 666666}
         - {throttle: 0.26, duration: 6}
         - {throttle: 0.10, duration: 6}
         - {throttle: 0.30, duration: 6}
@@ -276,37 +276,6 @@ per_vehicle_controllers:
 
         - {throttle: 0.00, duration: 8}
 
-      # Throttle sweep: 0.01 to 0.3, step 0.01, duration 15 each
-      # - {throttle: 0.01, duration: 10}
-      # - {throttle: 0.02, duration: 10}
-      # - {throttle: 0.03, duration: 10}
-      # - {throttle: 0.04, duration: 10}
-      # - {throttle: 0.05, duration: 10}
-      # - {throttle: 0.06, duration: 10}
-      # - {throttle: 0.07, duration: 10}
-      # - {throttle: 0.08, duration: 10}
-      # - {throttle: 0.09, duration: 10}
-      # - {throttle: 0.10, duration: 10}
-      # - {throttle: 0.11, duration: 10}
-      # - {throttle: 0.12, duration: 10}
-      # - {throttle: 0.13, duration: 10}
-      # - {throttle: 0.14, duration: 10}
-      # - {throttle: 0.15, duration: 10}
-      # - {throttle: 0.16, duration: 10}
-      # - {throttle: 0.17, duration: 10}
-      # - {throttle: 0.18, duration: 10}
-      # - {throttle: 0.19, duration: 10}
-      # - {throttle: 0.20, duration: 10}
-      # - {throttle: 0.21, duration: 10}
-      # - {throttle: 0.22, duration: 10}
-      # - {throttle: 0.23, duration: 10}
-      # - {throttle: 0.24, duration: 10}
-      # - {throttle: 0.25, duration: 10}
-      # - {throttle: 0.26, duration: 10}
-      # - {throttle: 0.27, duration: 10}
-      # - {throttle: 0.28, duration: 10}
-      # - {throttle: 0.29, duration: 10}
-      # - {throttle: 0.30, duration: 10}
     pid:
       kp: 0.3                    # Proportional gain
       ki: 0.2                    # Integral gain
@@ -322,7 +291,7 @@ per_vehicle_controllers:
   
   # Vehicle 1 (First Follower)
   1:
-    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
+    longitudinal_controller_type: 'throttle_sequence'  # Uses true V2V states for control
     lateral_controller_type: 'stanley_y_hold'
     fix:
       throttle: 0.00  # Constant speed
@@ -339,10 +308,13 @@ per_vehicle_controllers:
     lookahead:
         ri: 0.4              # Desired inter-vehicle spacing (meters)
         hi: 0.3                # Time headway (seconds)
+    throttle_sequence:
+        - {throttle: 0.00, duration: 5}
+        - {throttle: 0.12, duration: 666666}
   
   # Vehicle 2 (Second Follower)
   2:
-    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
+    longitudinal_controller_type: 'throttle_sequence'  # Uses true V2V states for control
     lateral_controller_type: 'stanley_y_hold'
     fix:
       throttle: 0.0  # Constant speed
@@ -359,10 +331,13 @@ per_vehicle_controllers:
     lookahead:
         ri: 0.4              # Desired inter-vehicle spacing (meters)
         hi: 0.3                # Time headway (seconds)
+    throttle_sequence:
+        - {throttle: 0.00, duration: 5}
+        - {throttle: 0.12, duration: 666666}
 
   # Vehicle 3 (Third Follower)
   3:
-    longitudinal_controller_type: 'state_feedback'  # Uses true V2V states for control
+    longitudinal_controller_type: 'throttle_sequence'  # Uses true V2V states for control
     lateral_controller_type: 'stanley_y_hold'
     fix:
       throttle: 0.0  # Constant speed
@@ -379,6 +354,9 @@ per_vehicle_controllers:
     lookahead:
         ri: 0.4              # Desired inter-vehicle spacing (meters)
         hi: 0.3                # Time headway (seconds)
+    throttle_sequence:
+        - {throttle: 0.00, duration: 5}
+        - {throttle: 0.12, duration: 666666}
 
 # Notes on per-vehicle configuration:
 # 1. Any parameter not specified for a vehicle uses the global default

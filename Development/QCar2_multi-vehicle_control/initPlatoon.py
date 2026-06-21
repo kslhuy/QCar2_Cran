@@ -21,6 +21,33 @@ from qvl.free_camera import QLabsFreeCamera
 from qvl.walls import QLabsWalls
 from qvl.basic_shape import QLabsBasicShape
 
+
+class StaggeredMultiAgent(MultiAgent):
+    """Start QCar RT models sequentially with a settling delay."""
+
+    def __init__(self, agent_list, model_start_delay=2.0):
+        self.model_start_delay = model_start_delay
+        self.qcar_model_count = sum(
+            agent.get("RobotType", "").lower() in ("qc2", "qcar2", "qcar 2")
+            for agent in agent_list
+        )
+        self.started_qcar_models = 0
+        super().__init__(agent_list)
+
+    def _createQC2(self, actor_number, scale):
+        name, robot_config = super()._createQC2(actor_number, scale)
+
+        self.started_qcar_models += 1
+        print(
+            f"[RT] QCar {actor_number} started "
+            f"({self.started_qcar_models}/{self.qcar_model_count}); "
+            f"settling for {self.model_start_delay:.1f}s..."
+        )
+        time.sleep(self.model_start_delay)
+
+        return name, robot_config
+
+
 # 
 num_cars = 4
 car_type = "QC2"
@@ -28,6 +55,10 @@ init_location = [75, -6.2, 1.131]
 init_distance = 15  # distance between cars
 init_rotation = [0, 0, 0]
 wave_road  = False  # Set to True to create wavy road at 500m, False for flat road
+rt_model_start_delay = 2.0
+rt_models_settle_delay = 3.0
+rt_models_shutdown_delay = 2.0
+actor_cleanup_delay = 1.0
 
 # ===== Global Variables - Exported for Other Modules =====
 # These will be set during initialization and made available for import
@@ -41,23 +72,21 @@ qlabs = QuanserInteractiveLabs()
 print("Connecting to QLabs...")
 try:
     qlabs.open("localhost")
-    # Only destroy actors if this is the main script (first initialization)
-    # If imported by another script, skip destruction to preserve actor state
-    if __name__ == "__main__":
-        qlabs.destroy_all_spawned_actors()
-        QLabsRealTime().terminate_all_real_time_models()
     print("Connected to QLabs")
+
+    print("[INIT] Terminating existing RT models...")
+    QLabsRealTime().terminate_all_real_time_models()
+    time.sleep(rt_models_shutdown_delay)
+
+    print("[INIT] Destroying all existing spawned actors...")
+    qlabs.destroy_all_spawned_actors()
+    time.sleep(actor_cleanup_delay)
+    print("[INIT] Existing RT models and actors cleared")
 except:
     print("Unable to connect to QLabs")
     quit() 
 
 print("Connected")  
-
-# NOTE: Removed the second destroy_all_spawned_actors() call
-# Keeping connection active for multi-process usage
-# QLabsRealTime().terminate_all_real_time_models()
-# time.sleep(1)
-# qlabs.destroy_all_spawned_actors()
 
 hSystem = QLabsSystem(qlabs)
 ### Outdoor Environment
@@ -158,7 +187,16 @@ for i in range(num_cars):
 
 
 
-mySpawns = MultiAgent(QCars)
+mySpawns = StaggeredMultiAgent(
+    QCars,
+    model_start_delay=rt_model_start_delay,
+)
+print(
+    f"[RT] All QCar models started; waiting "
+    f"{rt_models_settle_delay:.1f}s before configuring actors..."
+)
+time.sleep(rt_models_settle_delay)
+
 mySpawns.robotActors[0].set_led_strip_uniform(color=[40,0,0])
 mySpawns.robotActors[1].set_led_strip_uniform(color=[0,40,0])
 

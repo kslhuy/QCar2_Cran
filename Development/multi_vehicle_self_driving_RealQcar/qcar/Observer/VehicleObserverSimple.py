@@ -18,6 +18,7 @@ import threading
 import time
 import yaml
 import os
+import copy
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
@@ -221,18 +222,58 @@ class VehicleObserver:
             self.vehicle_logger.log_error("Failed to initialize recorders", e)
 
     # ===== Factory Methods for Creating Estimators =====
+
+    def _merge_dicts(self, base: Dict, override: Dict) -> Dict:
+        """Recursively merge override into base without mutating either input."""
+        merged = copy.deepcopy(base) if isinstance(base, dict) else {}
+        if not isinstance(override, dict):
+            return merged
+
+        for key, value in override.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = self._merge_dicts(merged[key], value)
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
+
+    def _get_vehicle_fleet_config(self, estimator_type: str) -> Dict:
+        """Return estimator config with optional per-vehicle override applied."""
+        fleet_config = self.fleet_config_defaults.get(estimator_type, {})
+        if not fleet_config:
+            return {
+                'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
+                'observer_gain': self.observer_config.get('observer_gain', 0.1),
+            }
+
+        fleet_config = copy.deepcopy(fleet_config)
+        vehicle_configs = fleet_config.pop('vehicles', {}) or {}
+
+        vehicle_override = {}
+        for key in (self.vehicle_id, str(self.vehicle_id), f"car{self.vehicle_id}"):
+            if key in vehicle_configs:
+                vehicle_override = vehicle_configs[key]
+                break
+
+        return self._merge_dicts(fleet_config, vehicle_override)
+
+    def _sync_fleet_states_capacity(self):
+        """Keep cached fleet_states aligned with fleet_size before indexed access."""
+        if self.fleet_estimator is not None:
+            estimator_states = self.fleet_estimator.get_fleet_states()
+            if estimator_states is not None:
+                self.fleet_states = estimator_states.copy()
+                self.fleet_size = max(self.fleet_size, self.fleet_states.shape[1])
+
+        if self.fleet_states.shape[1] < self.fleet_size:
+            old_size = self.fleet_states.shape[1]
+            expanded = np.zeros((self.state_dim, self.fleet_size))
+            expanded[:, :old_size] = self.fleet_states
+            self.fleet_states = expanded
     
     def _create_fleet_estimator(self):
         """Create fleet state estimator using factory"""
         try:
-            # Use config from file, fallback to observer_config if not available
-            fleet_config = self.fleet_config_defaults.get(self.fleet_estimator_type, {})
-            if not fleet_config:
-                fleet_config = {
-                    'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
-                    'observer_gain': self.observer_config.get('observer_gain', 0.1),
-                }
-            print(fleet_config)
+            fleet_config = self._get_vehicle_fleet_config(self.fleet_estimator_type)
             self.fleet_estimator = FleetEstimatorFactory.create(
                 estimator_type=self.fleet_estimator_type,
                 vehicle_id=self.vehicle_id,
@@ -334,7 +375,7 @@ class VehicleObserver:
         """
         default_config = {
             "observer_rate": 100,
-            "fleet_observer_rate": 50,
+            "fleet_observer_rate": self.fleet_config_defaults.get("fleet_observer_rate", 50),
         }
 
 
@@ -845,12 +886,14 @@ class VehicleObserver:
     def get_fleet_states(self) -> np.ndarray:
         """Get current fleet state estimates."""
         with self.lock:
+            self._sync_fleet_states_capacity()
             return self.fleet_states.copy()
 
     def get_vehicle_state(self, vehicle_id: int) -> Optional[np.ndarray]:
         """Get state estimate for a specific vehicle."""
-        if 0 <= vehicle_id < self.fleet_size:
-            with self.lock:
+        with self.lock:
+            self._sync_fleet_states_capacity()
+            if 0 <= vehicle_id < self.fleet_size:
                 return self.fleet_states[:, vehicle_id].copy()
         return None
 
@@ -935,6 +978,7 @@ class VehicleObserver:
         Now includes acceleration: [x, y, theta, v, a]
         """
         with self.lock:
+            self._sync_fleet_states_capacity()
             fleet_data = {}
             for vehicle_id in range(self.fleet_size):
                 # Include all vehicles in fleet (zeros or not) for proper fleet estimation
@@ -975,7 +1019,7 @@ class VehicleObserver:
             
             try:
                 observer_state = self.fleet_estimator.get_observer_state()
-                observer_size = getattr(self.fleet_estimator, 'observer_size', self.fleet_size - 1)
+                observer_size = getattr(self.fleet_estimator, 'observer_size', self.fleet_size)
                 
                 return {
                     'vehicle_id': self.vehicle_id,
@@ -1005,10 +1049,7 @@ class VehicleObserver:
             
             # Create fresh fleet estimator with new fleet size (no old data to copy)
             try:
-                fleet_config = {
-                    'consensus_gain': self.observer_config.get('consensus_gain', 0.3),
-                    'observer_gain': self.observer_config.get('observer_gain', 0.1),
-                }
+                fleet_config = self._get_vehicle_fleet_config(self.fleet_estimator_type)
                 
                 # Create new fleet estimator with correct size
                 self.fleet_estimator = FleetEstimatorFactory.create(

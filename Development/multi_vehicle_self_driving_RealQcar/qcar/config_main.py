@@ -141,7 +141,7 @@ class ObserverConfig:
     """
     # Update rates (Hz)
     observer_rate: int = 100
-    fleet_observer_rate: int = 30
+    fleet_observer_rate: int = 200
 
 
 
