@@ -10,7 +10,7 @@ observer:
   output_mode: linear
   measurement_denominator_epsilon: 0.000001
   singularity_position_margin: 0.05
-  initialize_position_from_measurement: true
+  initialize_position_from_measurement: false
   observer_gain: [3.0, 3.0, 1.0]
   high_gain: 2.0
   high_gain_exponents: [1, 2, 3]

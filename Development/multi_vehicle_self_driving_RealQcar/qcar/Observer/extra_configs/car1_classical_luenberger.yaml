@@ -7,4 +7,5 @@ observer:
   fleet_observer_rate: 100
   delay_compensation: false
   hat_tau_attack_enabled: false
-  output_mode: linear
+  output_mode: nonlinear
+  initialize_position_from_measurement: false

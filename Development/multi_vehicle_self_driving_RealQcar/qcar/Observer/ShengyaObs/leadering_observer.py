@@ -74,11 +74,11 @@ class LeaderingObserverEstimator(FleetStateEstimatorBase):
         self.C = np.array([1.0, 0.0, 0.0, 0.0])
         self.B_zeta = np.array([-self.gamma, 0.0, 0.0, 0.0])
 
-        # self.L = np.array([48.66, 23.49, 0.5062, -0.0772])
+        self.L = np.array([87.0, 23.0, 5.7502, 3.5888])
         # self.L = np.array([63.4628, 30.0136, 3.5888, -0.5448])
-        self.L = np.array([64.9878, 25.7977, 5.7502, -0.8735])
+        # self.L = np.array([64.9878, 25.7977, 5.7502, -0.8735]) # For the paper
         # self.L = np.array([86.9516, 25.2519, -0.0009, -0.0000])
-        # self.L = np.array([4.67, 1.58, 0.0332, -0.0050])
+        # self.L = np.array([36.67, 16.58, 0.0002, 0.0005])
 
         self.zeta_hat = np.zeros(4)
         self.z_filter = float(self.config.get("z0", 0))

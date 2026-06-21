@@ -76,7 +76,7 @@ class ClassicalLuenbergerObserverEstimator(LeaderingObserverEstimator):
             self.config.get("singularity_position_margin", self.measurement_denominator_epsilon)
         )
         self.initialize_position_from_measurement = bool(
-            self.config.get("initialize_position_from_measurement", True)
+            self.config.get("initialize_position_from_measurement", False)
         )
         self._position_initialized_from_measurement = False
         self.C = np.array([1.0, 0.0, 0.0])

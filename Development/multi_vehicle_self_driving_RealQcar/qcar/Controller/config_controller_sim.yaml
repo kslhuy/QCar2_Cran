@@ -242,7 +242,7 @@ per_vehicle_controllers:
     throttle_sequence:
     # 最大throttle 为0.3，对应速度约为 2 m/s，最小throttle为0.0，对应速度约为 0 m/s。
         # 两个启动-停止周期：第一个缓和，第二个较快但峰值速度约 1 m/s；估算总距离 < 30 m。
-        - {throttle: 0.00, duration: 2}
+        - {throttle: 0.00, duration: 5}
         # - {throttle: 0.02, duration: 0.5}
         # - {throttle: 0.06, duration: 0.5}
         # - {throttle: 0.08, duration: 0.5}

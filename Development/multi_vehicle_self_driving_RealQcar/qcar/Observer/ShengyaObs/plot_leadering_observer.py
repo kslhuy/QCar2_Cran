@@ -22,8 +22,8 @@ INNOVATION_BASELINE_END_S = 40.0
 INNOVATION_ATTACK_START_S = 40.0
 INNOVATION_ATTACK_END_S = 40.5
 INNOVATION_SIGMA_MULTIPLIER = 3.0
-ERROR_STATS_START_S = 40.0
-ERROR_STATS_END_S = 40.5
+ERROR_STATS_START_S = 30.0
+ERROR_STATS_END_S = 40.0
 HAT_TAU_ATTACK_START_S = 40.0
 HAT_TAU_ATTACK_DURATION_S = 0.5
 HAT_TAU_ATTACK_BIAS_S = 2.5
@@ -220,18 +220,56 @@ def _format_error_stats(label: str, t: pd.Series, err_data: pd.Series) -> str:
     return f"{label}: RMSE={rmse:.4g}, mean={mean:.4g}, MAE={mae:.4g}"
 
 
+def _format_norm_stats(label: str, t: pd.Series, norm_data: pd.Series) -> str:
+    t_arr = np.asarray(t, dtype=float)
+    norm_arr = np.asarray(norm_data, dtype=float)
+    mask = (
+        np.isfinite(t_arr)
+        & np.isfinite(norm_arr)
+        & (t_arr >= ERROR_STATS_START_S)
+        & (t_arr < ERROR_STATS_END_S)
+    )
+    valid = norm_arr[mask]
+    if valid.size == 0:
+        return f"{label}: no valid norm {ERROR_STATS_START_S:g}-{ERROR_STATS_END_S:g}s"
+
+    mean = float(np.mean(valid))
+    max_value = float(np.max(valid))
+    rms = float(np.sqrt(np.mean(valid ** 2)))
+    return f"{label}: RMS={rms:.4g}, mean={mean:.4g}, max={max_value:.4g}"
+
+
+def _state_error_norm(df: pd.DataFrame, state_specs) -> Optional[pd.Series]:
+    errors = []
+    for _, _, _, true_col, hat_col, err_col in state_specs:
+        err_data = _series(df, err_col)
+        data_true = _series(df, true_col)
+        hat_data = _series(df, hat_col)
+        if err_data is None and data_true is not None and hat_data is not None:
+            err_data = hat_data - data_true
+        if err_data is None:
+            return None
+        errors.append(np.asarray(err_data, dtype=float))
+
+    error_matrix = np.column_stack(errors)
+    finite_rows = np.all(np.isfinite(error_matrix), axis=1)
+    norm_data = np.full(len(df), np.nan, dtype=float)
+    norm_data[finite_rows] = np.linalg.norm(error_matrix[finite_rows], axis=1)
+    return pd.Series(norm_data, index=df.index)
+
+
 def plot_leadering_observer(csv_path: str, save: bool = True,
                             compare_csv_path: Optional[str] = None,
                             high_gain_csv_path: Optional[str] = None,
                             ekf_csv_path: Optional[str] = None,
                             leader_csv_path: Optional[str] = None) -> Optional[str]:
-    datasets = [_load_dataset(csv_path, "leadering observer")]
+    datasets = [_load_dataset(csv_path, "Lead")]
     if compare_csv_path:
-        datasets.append(_load_dataset(compare_csv_path, "classical Luenberger"))
+        datasets.append(_load_dataset(compare_csv_path, "CL"))
     if high_gain_csv_path:
-        datasets.append(_load_dataset(high_gain_csv_path, "high-gain Luenberger"))
+        datasets.append(_load_dataset(high_gain_csv_path, "HG"))
     if ekf_csv_path:
-        datasets.append(_load_dataset(ekf_csv_path, "classical EKF"))
+        datasets.append(_load_dataset(ekf_csv_path, "EKF"))
 
     df = datasets[0]["df"]
     t = datasets[0]["t"]
@@ -253,11 +291,11 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
     for idx, (name, ylabel, err_ylabel, true_col, hat_col, err_col) in enumerate(state_specs):
         true_t = t
         true_data = _series(df, true_col)
-        true_label = f"leader true {name} (V2V)"
+        true_label = f"true {name}"
         if raw_leader is not None and name in raw_leader["truth"]:
             true_t = raw_leader["t"]
             true_data = raw_leader["truth"][name]
-            true_label = f"leader telemetry {name}"
+            true_label = f"tel {name}"
 
         if true_data is not None:
             axs[idx].plot(true_t, true_data, label=true_label, linewidth=2.2, color="#111111")
@@ -269,7 +307,7 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
                 axs[idx].plot(
                     data_t,
                     hat_data,
-                    label=f"{dataset['label']} {name}_hat",
+                    label=f"{dataset['label']} {name}hat",
                     linestyle="--",
                     linewidth=2,
                 )
@@ -294,7 +332,7 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
             if err_data is None and data_true is not None and hat_data is not None:
                 err_data = hat_data - data_true
             if err_data is not None:
-                error_ax.plot(data_t, err_data, label=f"{dataset['label']} error")
+                error_ax.plot(data_t, err_data, label=f"{dataset['label']} err")
                 error_stats.append(_format_error_stats(dataset["label"], data_t, err_data))
 
         error_ax.axhline(0.0, label="0", color="#2ca02c", linestyle=":", linewidth=1.4)
@@ -305,7 +343,7 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
             ERROR_STATS_END_S,
             color="#f2c94c",
             alpha=0.13,
-            label="RMSE window" if idx == 0 else None,
+            label="RMSE" if idx == 0 else None,
         )
         error_ax.set_title(f"Estimation error {name} (hat - V2V truth)")
         error_ax.set_ylabel(err_ylabel)
@@ -328,11 +366,11 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
 
     y_zeta = _series(df, "y_zeta")
     if y_zeta is not None:
-        axs[3].plot(t, y_zeta, label="filtered delayed output y_zeta", linewidth=2.2, color="#111111")
+        axs[3].plot(t, y_zeta, label="y_zeta", linewidth=2.2, color="#111111")
     for dataset in datasets:
         zeta0 = _series(dataset["df"], "zeta_hat_0")
         if zeta0 is not None:
-            axs[3].plot(dataset["t"], zeta0, label=f"{dataset['label']} zeta_hat_0", linestyle="--", linewidth=2)
+            axs[3].plot(dataset["t"], zeta0, label=f"{dataset['label']} zeta0", linestyle="--", linewidth=2)
     axs[3].set_ylabel("Integral output")
     axs[3].set_title("Output state reconstruction")
     axs[3].legend()
@@ -340,11 +378,11 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
     for dataset in datasets:
         hat_tau = _series(dataset["df"], "hat_tau")
         if hat_tau is not None:
-            axs[7].plot(dataset["t"], hat_tau, label=f"{dataset['label']} hat_tau", linewidth=2)
+            axs[7].plot(dataset["t"], hat_tau, label=f"{dataset['label']} tau", linewidth=2)
     axs[7].axvspan(
         HAT_TAU_ATTACK_START_S,
         HAT_TAU_ATTACK_START_S + HAT_TAU_ATTACK_DURATION_S,
-        label=f"hat_tau attack +{HAT_TAU_ATTACK_BIAS_S:g}s",
+        label=f"atk +{HAT_TAU_ATTACK_BIAS_S:g}s",
         color="#d62728",
         alpha=0.16,
     )
@@ -356,7 +394,7 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
     for dataset in datasets:
         innovation = _series(dataset["df"], "innovation")
         if innovation is not None:
-            axs[8].plot(dataset["t"], innovation, label=f"{dataset['label']} innovation", linewidth=2)
+            axs[8].plot(dataset["t"], innovation, label=f"{dataset['label']} innov", linewidth=2)
             if threshold is None:
                 threshold = _innovation_threshold_from_baseline(dataset["t"], innovation)
     axs[8].axhline(0.0, label="0", color="#2ca02c", linestyle=":", linewidth=1.8)
@@ -370,13 +408,50 @@ def plot_leadering_observer(csv_path: str, save: bool = True,
     axs[8].axvspan(
         HAT_TAU_ATTACK_START_S,
         HAT_TAU_ATTACK_START_S + HAT_TAU_ATTACK_DURATION_S,
-        label=f"hat_tau attack {HAT_TAU_ATTACK_START_S:g}-{HAT_TAU_ATTACK_START_S + HAT_TAU_ATTACK_DURATION_S:g}s",
+        label=f"atk {HAT_TAU_ATTACK_START_S:g}-{HAT_TAU_ATTACK_START_S + HAT_TAU_ATTACK_DURATION_S:g}s",
         color="#d62728",
         alpha=0.12,
     )
     axs[8].legend()
 
-    axs[9].axis("off")
+    norm_stats = []
+    for dataset in datasets:
+        norm_data = _state_error_norm(dataset["df"], state_specs)
+        if norm_data is not None:
+            axs[9].plot(
+                dataset["t"],
+                norm_data,
+                label=f"{dataset['label']} norm",
+                linewidth=2,
+            )
+            norm_stats.append(_format_norm_stats(dataset["label"], dataset["t"], norm_data))
+    axs[9].axhline(0.0, label="0", color="#2ca02c", linestyle=":", linewidth=1.4)
+    axs[9].axvspan(
+        ERROR_STATS_START_S,
+        ERROR_STATS_END_S,
+        color="#f2c94c",
+        alpha=0.13,
+        label="stats",
+    )
+    axs[9].set_ylabel("State error norm")
+    axs[9].set_title("State estimation error norm ||hat x - x||2")
+    if norm_stats:
+        axs[9].text(
+            0.01,
+            0.98,
+            f"Stats {ERROR_STATS_START_S:g}-{ERROR_STATS_END_S:g}s\n" + "\n".join(norm_stats),
+            transform=axs[9].transAxes,
+            va="top",
+            ha="left",
+            fontsize=8,
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "#d0d0d0",
+                "alpha": 0.82,
+                "boxstyle": "round,pad=0.25",
+            },
+        )
+    axs[9].legend()
 
     for ax in axs:
         ax.grid(True, alpha=0.3)
