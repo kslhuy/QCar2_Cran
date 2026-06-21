@@ -156,6 +156,40 @@ class MockQCar:
         # qLPV Matrix State: [v_x, v_y, ψ, r, X, Y]
         self.state_obs = np.array([v0, 0.0, psi0, 0.0, x0, y0])
 
+    def reset_pose(self, pose, velocity: Optional[float] = None):
+        """Reset all model states, public state, and GPS to the same pose."""
+        pose = np.asarray(pose, dtype=float).reshape(-1)
+        if pose.size < 3:
+            raise ValueError("pose must contain [x, y, theta]")
+
+        x0, y0, psi0 = float(pose[0]), float(pose[1]), float(pose[2])
+        if velocity is None:
+            velocity = float(self.config.get('initial_state', {}).get('v', 0.0))
+        v0 = float(velocity)
+
+        self.state_ks = np.array([x0, y0, 0.0, v0, psi0])
+        self.state_st = np.array([x0, y0, 0.0, v0, psi0, 0.0, 0.0])
+        self.state_qlpv = np.array([x0, y0, 0.0, v0, psi0, 0.0, 0.0])
+        self.state_obs = np.array([v0, 0.0, psi0, 0.0, x0, y0])
+
+        self._throttle = 0.0
+        self._steering = 0.0
+        self.control_input = np.array([0.0, 0.0])
+        self.current_steering_angle = 0.0
+        self.true_disturbances = [0.0, 0.0, 0.0]
+        self.w_r_true = 0.0
+        self.w_f_true = 0.0
+        self.last_time = time.time()
+
+        self._sync_state()
+        self.motorTach = self.velocity
+        self.gyroscope[2] = self.angular_velocity
+        self.accelerometer = np.array([0.0, 0.0, 9.81])
+        self.gps.update_true_state(self.x, self.y, self.heading)
+        self.gps.last_data = np.array([self.x, self.y, self.heading])
+        self.gps.last_update_time = time.time()
+        self.gps.new_data_ready = True
+
     def write(self, throttle: float, steering: float):
         """Set control inputs."""
         self._throttle = np.clip(throttle, -1.0, 1.0)
@@ -501,6 +535,7 @@ class MockQCar:
         acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
             self._throttle, self._steering, current_obs_state, self.state_qlpv[2], dt
         )
+        self.current_steering_angle = new_steer
         control = np.array([steer_rate, acc])
         
         # Sub-stepping
@@ -554,6 +589,7 @@ class MockQCar:
         acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
             self._throttle, self._steering, current_st_obs, self.state_st[2], dt
         )
+        self.current_steering_angle = new_steer
         
         self.control_input[0] = steer_rate
         self.control_input[1] = acc
@@ -635,6 +671,7 @@ class MockQCar:
         acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
             self._throttle, self._steering, current_ks_obs, self.state_ks[2], dt
         )
+        self.current_steering_angle = new_steer
         
         self.control_input = np.array([steer_rate, acc])
         

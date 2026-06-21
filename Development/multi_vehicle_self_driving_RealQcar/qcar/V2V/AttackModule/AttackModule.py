@@ -34,6 +34,7 @@ class AttackType(Enum):
     NONE = "None"
     BOGUS = "Bogus"           # Falsified data injection
     DOS = "DoS"               # Denial of Service
+    MIX_TEST = "Mix_test"     # MATLAB Mix_test scenario family
     COLLUSION = "Collusion"   # Coordinated multi-attacker
     POS = "POS"               # Position-specific attack
     VEL = "VEL"               # Velocity-specific attack
@@ -62,6 +63,7 @@ class ModificationType(Enum):
     CONSTANT = "constant"         # Set to constant value
     RANDOM = "random"             # Random value in range
     STEP = "step"                 # Step change at specific time
+    DROP = "drop"                 # Drop the outgoing V2V packet probabilistically
 
 
 @dataclass
@@ -127,6 +129,10 @@ class AttackScenario:
     def should_attack_heartbeat(self) -> bool:
         """Check if this scenario attacks heartbeat messages."""
         return self.data_type == DataType.HEARTBEAT
+
+    def is_drop_attack(self) -> bool:
+        """Check if this scenario represents a packet drop attack."""
+        return self.modification_type == ModificationType.DROP
     
     def get_attack_progress(self, current_time: float) -> float:
         """Get attack progress as fraction (0.0 to 1.0)."""
@@ -300,7 +306,9 @@ class AttackModule:
             return False
         
         return any(
-            s.attacker_id == self.vehicle_id and s.should_attack_local()
+            s.attacker_id == self.vehicle_id
+            and s.should_attack_local()
+            and not s.is_drop_attack()
             for s in self.current_scenarios
         )
     
@@ -310,10 +318,106 @@ class AttackModule:
             return False
         
         return any(
-            s.attacker_id == self.vehicle_id and s.should_attack_fleet()
+            s.attacker_id == self.vehicle_id
+            and s.should_attack_fleet()
+            and not s.is_drop_attack()
             for s in self.current_scenarios
         )
     
+    def should_drop_local_message(self) -> bool:
+        """Check whether the current local-state broadcast should be dropped."""
+        if not self.attack_active:
+            return False
+
+        drop_scenarios = [
+            s for s in self.current_scenarios
+            if (
+                s.attacker_id == self.vehicle_id
+                and s.should_attack_local()
+                and s.is_drop_attack()
+            )
+        ]
+        return self._should_drop_message(drop_scenarios, is_fleet=False)
+
+    def should_drop_fleet_message(self) -> bool:
+        """Check whether the current fleet-state broadcast should be dropped."""
+        if not self.attack_active:
+            return False
+
+        drop_scenarios = [
+            s for s in self.current_scenarios
+            if (
+                s.attacker_id == self.vehicle_id
+                and s.should_attack_fleet()
+                and s.is_drop_attack()
+            )
+        ]
+        return self._should_drop_message(drop_scenarios, is_fleet=True)
+
+    @staticmethod
+    def _drop_probability(intensity: Any) -> float:
+        """Normalize a drop scenario intensity into a probability in [0, 1]."""
+        if isinstance(intensity, dict):
+            raw_probability = intensity.get(
+                'probability',
+                intensity.get('drop_probability', intensity.get('p', 1.0)),
+            )
+        else:
+            raw_probability = intensity
+
+        try:
+            probability = float(raw_probability)
+        except (TypeError, ValueError):
+            probability = 1.0
+        return float(np.clip(probability, 0.0, 1.0))
+
+    def _should_drop_message(
+        self, scenarios: List[AttackScenario], is_fleet: bool = False
+    ) -> bool:
+        """Apply probabilistic drop scenarios and record actual dropped packets."""
+        for scenario in scenarios:
+            if np.random.random() >= self._drop_probability(scenario.intensity):
+                continue
+
+            self._record_drop_attack(scenario, is_fleet=is_fleet)
+            return True
+
+        return False
+
+    def _record_drop_attack(
+        self, scenario: AttackScenario, is_fleet: bool = False
+    ) -> None:
+        """Update statistics/logs for a packet dropped by an active scenario."""
+        self.stats['total_attacks_applied'] += 1
+        if is_fleet:
+            self.stats['fleet_attacks'] += 1
+            channel = "FLEET"
+        else:
+            self.stats['local_attacks'] += 1
+            channel = "LOCAL"
+
+        attack_key = f"{scenario.attack_type.value}_{scenario.modification_type.value}"
+        self.stats['attacks_by_type'][attack_key] = \
+            self.stats['attacks_by_type'].get(attack_key, 0) + 1
+        self.stats['attacks_by_scenario'][scenario.scenario_name] = \
+            self.stats['attacks_by_scenario'].get(scenario.scenario_name, 0) + 1
+        scenario._attack_count += 1
+
+        self.last_attack_snapshot['clock_s'] = float(self.current_time)
+
+        if not self.logger:
+            return
+
+        current_time = self.current_time
+        if current_time - self._last_log_time < self.log_interval:
+            return
+
+        self._last_log_time = current_time
+        self.logger.warning(
+            f"DROP {channel} STATE ATTACK - Vehicle {self.vehicle_id} "
+            f"at t={current_time:.2f}s via {scenario.scenario_name}"
+        )
+
     def apply_attack_to_local_state(self, local_state: Dict) -> Dict:
         """
         Apply active attacks to local state before V2V broadcasting.
@@ -661,8 +765,17 @@ class AttackModule:
             return original_value + offset
         
         elif scenario.modification_type == ModificationType.FAULTY:
-            # Random noise: value + N(0, σ)
-            noise = np.random.normal(0, float(intensity))
+            # Random noise: value + N(0, sigma), optionally intermittent.
+            if isinstance(intensity, dict):
+                probability = self._drop_probability(intensity)
+                if np.random.random() >= probability:
+                    return original_value
+                sigma = intensity.get(
+                    'intensity', intensity.get('sigma', intensity.get('std', 1.0))
+                )
+            else:
+                sigma = intensity
+            noise = np.random.normal(0, float(sigma))
             return original_value + noise
         
         elif scenario.modification_type == ModificationType.ZERO:

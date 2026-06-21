@@ -61,8 +61,9 @@ class V2VAttackInjector:
         self.logger = v2v_manager.logger
         self.enabled = enabled
         
-        # Timing
-        self.start_time = start_time or time.time()
+        # Timing. By default this is the local activation time, but fleet
+        # activation can reset it to the shared V2V reference timestamp.
+        self.start_time = float(start_time) if start_time is not None else time.time()
         
         # Initialize attack module
         if attack_module is not None:
@@ -117,14 +118,45 @@ class V2VAttackInjector:
                     self.logger.warning(f"Attack config not found: {config_path}")
     
     def get_elapsed_time(self) -> float:
-        """Get elapsed time since injector start."""
-        return time.time() - self.start_time
+        """Get elapsed time since the active attack timing reference."""
+        return max(time.time() - self.start_time, 0.0)
     
     def reset_start_time(self, new_start_time: Optional[float] = None) -> None:
         """Reset the reference start time for attack timing."""
-        self.start_time = new_start_time or time.time()
+        self.start_time = float(new_start_time) if new_start_time is not None else time.time()
         if self.logger:
             self.logger.info(f"V2VAttackInjector: Reset start time to {self.start_time}")
+
+    @staticmethod
+    def _start_time_from_time_reference(
+        time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[float]:
+        """Return epoch seconds from shared V2V timing metadata, if valid."""
+        if not isinstance(time_reference, dict):
+            return None
+
+        raw_reference_ns = time_reference.get(
+            "reference_time_ns", time_reference.get("epoch_time_ns")
+        )
+        try:
+            reference_ns = int(raw_reference_ns)
+        except (TypeError, ValueError):
+            return None
+
+        if reference_ns < 0:
+            return None
+        return float(reference_ns) / 1e9
+
+    def _resolve_activation_start_time(
+        self, time_reference: Optional[Dict[str, Any]]
+    ) -> Optional[float]:
+        """Resolve the best attack timing anchor for a V2V activation."""
+        start_time = self._start_time_from_time_reference(time_reference)
+        if start_time is not None or time_reference is None:
+            return start_time
+
+        manager_reference = getattr(self.v2v_manager, "_time_reference", None)
+        return self._start_time_from_time_reference(manager_reference)
     
     # =====================================================================
     # V2VManager Interface Proxy Methods
@@ -190,6 +222,12 @@ class V2VAttackInjector:
             if not self.v2v_manager.vehicle_observer:
                 return False
             
+            if self.attack_module and self.enabled and self.attack_module.should_drop_local_message():
+                with self._lock:
+                    self.stats['broadcasts_modified'] += 1
+                    self.stats['local_modifications'] += 1
+                return False
+
             # Get original local state from observer
             local_state = self.v2v_manager.vehicle_observer.get_local_state_for_broadcast()
             
@@ -233,6 +271,12 @@ class V2VAttackInjector:
             if not self.v2v_manager.vehicle_observer:
                 return False
             
+            if self.attack_module and self.enabled and self.attack_module.should_drop_fleet_message():
+                with self._lock:
+                    self.stats['broadcasts_modified'] += 1
+                    self.stats['fleet_modifications'] += 1
+                return False
+
             # Get original fleet state from observer
             fleet_state = self.v2v_manager.vehicle_observer.get_fleet_state_for_broadcast()
             
@@ -342,8 +386,7 @@ class V2VAttackInjector:
             peer_vehicles, peer_ips, time_reference=time_reference
         )
         if result:
-            # Reset start time when V2V is activated
-            self.reset_start_time()
+            self.reset_start_time(self._resolve_activation_start_time(time_reference))
         return result
     
     def deactivate(self) -> None:
@@ -365,7 +408,7 @@ class V2VAttackInjector:
             vehicle_manifest=vehicle_manifest,
         )
         if result:
-            self.reset_start_time()
+            self.reset_start_time(self._resolve_activation_start_time(time_reference))
         return result
     
     def disable_v2v(self) -> bool:

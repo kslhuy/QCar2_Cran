@@ -352,7 +352,7 @@ class ControllerManager:
             Longitudinal controller instance for FOLLOWING_PATH
         """
         ctrl_type = self._path_longitudinal_type
-        if ctrl_type not in {"pid", "qcar2_speed"}:
+        if ctrl_type not in {"pid", "qcar2_speed", "fix"}:
             ctrl_type = "pid"
         return self.get_longitudinal_controller(ctrl_type)
 

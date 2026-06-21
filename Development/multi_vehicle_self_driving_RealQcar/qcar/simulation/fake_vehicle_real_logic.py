@@ -87,6 +87,7 @@ class FakeVehicleWithRealLogic:
         self.running = True
         self.ground_station_client = None
         self.start_time = time.time()
+        self._fake_initialization_replaced = False
         
         print(f"✅ Real VehicleLogic initialized for Car {car_id} using modular MockQCar")
 
@@ -107,6 +108,9 @@ class FakeVehicleWithRealLogic:
     def _replace_initialization_state_only(self):
         """Replace only the INITIALIZING state with fake version"""
         try:
+            if self._fake_initialization_replaced:
+                return
+
             import time
             start_time = time.time()
             while not hasattr(self.vehicle_logic, 'state_machine') and (time.time() - start_time) < 5.0:
@@ -119,6 +123,7 @@ class FakeVehicleWithRealLogic:
             from fake_initializing_state import FakeInitializingState
             fake_init_state = FakeInitializingState(self.vehicle_logic)
             self.vehicle_logic.state_machine.state_handlers[VehicleState.INITIALIZING] = fake_init_state
+            self._fake_initialization_replaced = True
             
             if self.vehicle_logic.state_machine.state == VehicleState.INITIALIZING:
                 print(f"[!] State machine already in INITIALIZING - calling fake enter() now")
@@ -176,6 +181,7 @@ class FakeVehicleWithRealLogic:
     def run(self):
         """Run the real VehicleLogic directly"""
         try:
+            self._replace_initialization_state_only()
             self.vehicle_logic.run()
         except Exception as e:
             print(f"❌ Car {self.car_id}: VehicleLogic error - {e}")

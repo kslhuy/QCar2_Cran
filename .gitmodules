@@ -1,0 +1,3 @@
+[submodule "GroundStation-Qcar-App"]
+	path = GroundStation-Qcar-App
+	url = https://github.com/kslhuy/GroundStation-Qcar-App.git

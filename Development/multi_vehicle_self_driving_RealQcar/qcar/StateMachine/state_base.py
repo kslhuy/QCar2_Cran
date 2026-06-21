@@ -15,10 +15,14 @@ import time
 import sys
 import os
 
-from pal.products.qcar import QCarGPS
 import numpy as np
 """Get time spent in current state"""
 import time
+
+try:
+    from pal.products.qcar import QCarGPS
+except Exception:
+    QCarGPS = None
 
 
 # Add parent directory to sys.path to import command_types
@@ -1174,6 +1178,10 @@ class StateBase:
                 self.logger.logger.info("GPS recalibrated (simulated/Fake mode)")
             else:
                 # Physical QCar
+                if QCarGPS is None:
+                    raise RuntimeError(
+                        "QCarGPS is unavailable; install Quanser PAL to recalibrate physical QCar GPS"
+                    )
                 self.vehicle_logic.gps = QCarGPS(
                     initialPose=calibration_pose, calibrate=calibrate
                 )

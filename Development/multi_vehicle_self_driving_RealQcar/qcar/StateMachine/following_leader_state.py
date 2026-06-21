@@ -341,6 +341,14 @@ class FollowingLeaderState(StateBase):
         ):
             cfg.update(controller_config.get_multi_predecessor_cacc_config())
 
+        selected_longitudinal = ""
+        if controller_manager and hasattr(controller_manager, "get_longitudinal_type"):
+            selected_longitudinal = str(
+                controller_manager.get_longitudinal_type(state="leader") or ""
+            ).strip().lower()
+        if selected_longitudinal == "multi_predecessor_cacc":
+            cfg["enabled"] = True
+
         enabled = cfg.get("enabled", False)
         if isinstance(enabled, str):
             enabled = enabled.strip().lower() in {"1", "true", "yes", "on"}

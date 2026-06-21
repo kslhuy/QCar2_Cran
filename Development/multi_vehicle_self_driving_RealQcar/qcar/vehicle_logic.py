@@ -10,7 +10,10 @@ import os
 from typing import Optional
 from threading import Event
 
-from pal.products.qcar import IS_PHYSICAL_QCAR
+try:
+    from pal.products.qcar import IS_PHYSICAL_QCAR
+except Exception:
+    IS_PHYSICAL_QCAR = False
 # from hal.products.mats import SDCSRoadMap
 
 from config_main import VehicleMainConfig

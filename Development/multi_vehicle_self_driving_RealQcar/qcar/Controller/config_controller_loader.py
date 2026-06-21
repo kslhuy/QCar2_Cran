@@ -9,7 +9,10 @@ import yaml
 import os
 import numpy as np
 from typing import Dict, Any, Optional
-from pal.products.qcar import IS_PHYSICAL_QCAR
+try:
+    from pal.products.qcar import IS_PHYSICAL_QCAR
+except Exception:
+    IS_PHYSICAL_QCAR = False
 
 
 class ControllerConfig:
@@ -63,6 +66,9 @@ class ControllerConfig:
         normalized = str(controller_type or "").strip().lower()
         aliases = {
             "trust_longitudinal_fusion": "cacc",
+            "multi_cacc": "multi_predecessor_cacc",
+            "multipredecessor_cacc": "multi_predecessor_cacc",
+            "multi-predecessor-cacc": "multi_predecessor_cacc",
         }
         return aliases.get(normalized, normalized or "cacc")
 
@@ -242,6 +248,7 @@ class ControllerConfig:
         types = []
         if "cacc" in self.config:
             types.append("cacc")
+            types.append("multi_predecessor_cacc")
         if "pid" in self.config:
             types.append("pid")
         if "qcar2_speed" in self.config:
@@ -292,6 +299,8 @@ class ControllerConfig:
 
         if controller_type == "cacc":
             return self._get_cacc_params()
+        elif controller_type == "multi_predecessor_cacc":
+            return self._get_multi_predecessor_cacc_params()
         elif controller_type == "pid":
             return self._get_pid_params()
         elif controller_type == "qcar2_speed":
@@ -393,6 +402,14 @@ class ControllerConfig:
             ),
             "limo_close_gap_gain": cacc_config.get("limo_close_gap_gain", 0.8),
         }
+
+    def _get_multi_predecessor_cacc_params(self) -> Dict[str, Any]:
+        """Get CACC parameters with multi-predecessor cooperation enabled."""
+        params = self._get_cacc_params()
+        multi_cfg = dict(params.get("multi_predecessor", {}) or {})
+        multi_cfg["enabled"] = True
+        params["multi_predecessor"] = multi_cfg
+        return params
 
     def _get_pid_params(self) -> Dict[str, Any]:
         """Get PID controller parameters"""

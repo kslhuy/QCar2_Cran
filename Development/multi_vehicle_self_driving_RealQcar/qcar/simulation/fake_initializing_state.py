@@ -160,6 +160,9 @@ class FakeInitializingState(StateBase):
             if not parent_fake_vehicle:
                 self.logger.log_error("Parent fake vehicle not found!")
                 return False
+
+            initial_pose = self._resolve_initial_pose(parent_fake_vehicle)
+            parent_fake_vehicle.mock_qcar.reset_pose(initial_pose)
             
             # Inject mock hardware from the fake vehicle
             self.vehicle_logic.qcar = parent_fake_vehicle.mock_qcar
@@ -172,7 +175,7 @@ class FakeInitializingState(StateBase):
                 self.vehicle_logic.yolo_manager.yolo_drive = None
                 self.logger.logger.info("Mock perception disabled (fake vehicle has no camera)")
             
-            self.init_pose = self.vehicle_logic.gps.last_data
+            self.init_pose = np.asarray(self.vehicle_logic.gps.last_data, dtype=float).copy()
             self.logger.logger.info(
                 f"Initial pose: x={self.init_pose[0]:.2f}, "
                 f"y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}"
@@ -191,6 +194,22 @@ class FakeInitializingState(StateBase):
             traceback.print_exc()
             return False
     
+    def _resolve_initial_pose(self, parent_fake_vehicle) -> np.ndarray:
+        """Use the same path calibration pose as real initialization."""
+        try:
+            pose = getattr(self.config.path, 'calibration_pose', None)
+            if pose is not None:
+                return np.asarray(pose, dtype=float)
+        except Exception:
+            pass
+
+        sim_initial = getattr(parent_fake_vehicle, 'sim_config', {}).get('initial_state', {})
+        return np.array([
+            float(sim_initial.get('x', 0.0)),
+            float(sim_initial.get('y', 0.0)),
+            float(sim_initial.get('theta', 0.0)),
+        ], dtype=float)
+
 
     
     def _initialize_state_estimator(self) -> bool:

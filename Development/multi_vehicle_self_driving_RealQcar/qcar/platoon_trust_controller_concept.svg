@@ -1,0 +1,168 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">Trust-aware platoon controller architecture</title>
+  <desc id="desc">A clean layered architecture diagram for a follower QCar platoon controller. Inputs and trusted leader data feed a PlatoonController, which plans longitudinal and lateral references for low-level controllers. The follower vehicle returns state and trust feedback.</desc>
+
+  <defs>
+    <filter id="softShadow" x="-12%" y="-12%" width="124%" height="124%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+
+    <marker id="arrowNeutral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+<marker id="arrowTeal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f766e"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#15803d"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309"/>
+    </marker>
+
+    <style>
+      .bg { fill: #f6f8fb; }
+      .rail { fill: none; stroke: #e2e8f0; stroke-width: 1.4; }
+      .title { font: 700 30px Arial, Helvetica, sans-serif; fill: #0f172a; }
+      .subtitle { font: 400 15px Arial, Helvetica, sans-serif; fill: #475569; }
+      .columnLabel { font: 700 13px Arial, Helvetica, sans-serif; fill: #64748b; letter-spacing: 0.4px; }
+      .panel { fill: #ffffff; stroke: #d7dee8; stroke-width: 1.4; filter: url(#softShadow); }
+      .panelBlue { fill: #f8fbff; stroke: #2563eb; stroke-width: 1.8; filter: url(#softShadow); }
+      .panelTeal { fill: #f0fdfa; stroke: #0f766e; stroke-width: 1.8; filter: url(#softShadow); }
+      .panelGreen { fill: #f0fdf4; stroke: #15803d; stroke-width: 1.8; filter: url(#softShadow); }
+      .card { fill: #ffffff; stroke: #d7dee8; stroke-width: 1.2; }
+      .cardTeal { fill: #f0fdfa; stroke: #14b8a6; stroke-width: 1.35; }
+      .step { fill: #ffffff; stroke: #bfdbfe; stroke-width: 1.3; }
+      .stepAccent { fill: #dbeafe; }
+      .chip { fill: #ffffff; stroke: #cbd5e1; stroke-width: 1.1; }
+      .chipBlue { fill: #dbeafe; stroke: #93c5fd; stroke-width: 1.1; }
+      .chipGreen { fill: #dcfce7; stroke: #86efac; stroke-width: 1.1; }
+      .chipTeal { fill: #ccfbf1; stroke: #5eead4; stroke-width: 1.1; }
+      .header { font: 700 20px Arial, Helvetica, sans-serif; fill: #111827; }
+      .boxTitle { font: 700 15px Arial, Helvetica, sans-serif; fill: #111827; }
+      .boxText { font: 400 13px Arial, Helvetica, sans-serif; fill: #374151; }
+      .small { font: 400 12px Arial, Helvetica, sans-serif; fill: #64748b; }
+      .label { font: 700 11.5px Arial, Helvetica, sans-serif; fill: #334155; }
+      .chipText { font: 700 12px Arial, Helvetica, sans-serif; fill: #111827; }
+      .number { font: 700 12px Arial, Helvetica, sans-serif; fill: #1d4ed8; }
+      .flowNeutral { fill: none; stroke: #475569; stroke-width: 2.4; marker-end: url(#arrowNeutral); }
+      .flowBlue { fill: none; stroke: #2563eb; stroke-width: 2.8; marker-end: url(#arrowBlue); }
+      .flowTeal { fill: none; stroke: #0f766e; stroke-width: 2.8; marker-end: url(#arrowTeal); }
+      .flowGreen { fill: none; stroke: #15803d; stroke-width: 2.8; marker-end: url(#arrowGreen); }
+      .flowAmber { fill: none; stroke: #b45309; stroke-width: 2.6; marker-end: url(#arrowAmber); }
+      .dashed { stroke-dasharray: 9 7; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="760"/>
+  <path class="rail" d="M 70 112 L 1330 112"/>
+
+  <text class="title" x="70" y="54">Trust-Aware Platoon Control Architecture</text>
+  <text class="subtitle" x="72" y="81">Follower-side control loop with trusted leader filtering, spacing estimation, reference planning, and vehicle feedback.</text>
+
+  <text class="columnLabel" x="84" y="134">INPUTS</text>
+  <text class="columnLabel" x="438" y="134">DECISION LAYER</text>
+  <text class="columnLabel" x="936" y="134">CONTROL LAYER</text>
+  <text class="columnLabel" x="936" y="508">PLANT AND FEEDBACK</text>
+
+  <!-- Inputs -->
+  <rect class="panel" x="70" y="154" width="285" height="382" rx="10"/>
+  <text class="header" x="96" y="190">Follower context</text>
+  <text class="small" x="96" y="213">data used at each controller tick</text>
+
+  <rect class="card" x="96" y="244" width="233" height="78" rx="8"/>
+  <text class="boxTitle" x="118" y="272">Formation</text>
+  <text class="boxText" x="118" y="295">role, order, platoon id</text>
+  <text class="small" x="118" y="313">d_ref, d_min</text>
+
+  <rect class="card" x="96" y="344" width="233" height="82" rx="8"/>
+  <text class="boxTitle" x="118" y="372">Host estimate</text>
+  <text class="boxText" x="118" y="395">x_hat_i, y_hat_i, theta_hat_i</text>
+  <text class="small" x="118" y="413">v_i</text>
+
+  <rect class="cardTeal" x="96" y="448" width="233" height="64" rx="8"/>
+  <text class="boxTitle" x="118" y="475">Trusted leader packet</text>
+  <text class="boxText" x="118" y="497">state Vi-1, score, confidence</text>
+
+  <!-- Supervisor -->
+  <rect class="panelBlue" x="430" y="154" width="430" height="382" rx="12"/>
+  <text class="header" x="462" y="190">PlatoonController</text>
+  <text class="small" x="462" y="213">trust-aware follower supervisor</text>
+
+  <rect class="step" x="470" y="246" width="350" height="72" rx="8"/>
+  <rect class="stepAccent" x="492" y="268" width="28" height="28" rx="14"/>
+  <text class="number" x="499" y="287">01</text>
+  <text class="boxTitle" x="536" y="276">Select and validate leader</text>
+  <text class="boxText" x="536" y="298">direct leader Vi-1, trust gate</text>
+
+  <rect class="step" x="470" y="346" width="350" height="72" rx="8"/>
+  <rect class="stepAccent" x="492" y="368" width="28" height="28" rx="14"/>
+  <text class="number" x="499" y="387">02</text>
+  <text class="boxTitle" x="536" y="376">Estimate spacing error</text>
+  <text class="boxText" x="536" y="398">e_d = gap - d_ref, relative speed</text>
+
+  <rect class="step" x="470" y="446" width="350" height="72" rx="8"/>
+  <rect class="stepAccent" x="492" y="468" width="28" height="28" rx="14"/>
+  <text class="number" x="499" y="487">03</text>
+  <text class="boxTitle" x="536" y="476">Plan references</text>
+  <text class="boxText" x="536" y="498">v_ref and lookahead point</text>
+
+  <!-- Low-level controllers -->
+  <rect class="panel" x="930" y="154" width="350" height="136" rx="10"/>
+  <text class="header" x="962" y="190">Longitudinal control</text>
+  <text class="boxText" x="962" y="217">ACC / CACC speed tracking</text>
+  <rect class="chipBlue" x="962" y="238" width="120" height="28" rx="6"/>
+  <text class="chipText" x="982" y="257">throttle u</text>
+
+  <rect class="panel" x="930" y="334" width="350" height="136" rx="10"/>
+  <text class="header" x="962" y="370">Lateral control</text>
+  <text class="boxText" x="962" y="397">pure-pursuit path tracking</text>
+  <rect class="chipBlue" x="962" y="418" width="142" height="28" rx="6"/>
+  <text class="chipText" x="982" y="437">steering delta</text>
+
+  <rect class="panelGreen" x="930" y="536" width="350" height="100" rx="10"/>
+  <text class="header" x="962" y="574">Follower vehicle Vi</text>
+  <text class="boxText" x="962" y="600">QCar dynamics, sensors, localization</text>
+  <rect class="chipGreen" x="1130" y="580" width="116" height="28" rx="6"/>
+  <text class="chipText" x="1150" y="599">state update</text>
+
+  <!-- Input to supervisor flows -->
+  <path class="flowNeutral" d="M 329 283 L 430 283"/>
+  <path class="flowNeutral" d="M 329 385 L 430 385"/>
+  <path class="flowTeal" d="M 329 480 L 430 480"/>
+
+  <!-- Supervisor to controller flows -->
+  <path class="flowBlue" d="M 820 476 L 888 476 L 888 222 L 930 222"/>
+  <rect class="chip" x="842" y="236" width="64" height="26" rx="6"/>
+  <text class="label" x="854" y="253">v_ref</text>
+
+  <path class="flowBlue" d="M 820 496 L 902 496 L 902 402 L 930 402"/>
+  <rect class="chip" x="840" y="414" width="94" height="26" rx="6"/>
+  <text class="label" x="853" y="431">lookahead</text>
+
+  <!-- Controller commands to vehicle -->
+  <path class="flowGreen" d="M 1105 290 L 1105 536"/>
+  <rect class="chip" x="1122" y="308" width="34" height="26" rx="6"/>
+  <text class="label" x="1134" y="325">u</text>
+
+  <path class="flowGreen" d="M 1162 470 L 1162 536"/>
+  <rect class="chip" x="1180" y="488" width="54" height="26" rx="6"/>
+  <text class="label" x="1193" y="505">delta</text>
+
+  <!-- Feedback loops -->
+  <path class="flowGreen dashed" d="M 1105 636 L 1105 692 L 48 692 L 48 385 L 96 385"/>
+  <rect class="chipGreen" x="582" y="676" width="128" height="26" rx="6"/>
+  <text class="label" x="600" y="693">host state feedback</text>
+
+  <path class="flowTeal dashed" d="M 930 586 L 888 586 L 888 654 L 48 654 L 48 480 L 96 480"/>
+  <rect class="chipTeal" x="546" y="638" width="126" height="26" rx="6"/>
+  <text class="label" x="564" y="655">trust feedback</text>
+</svg>
+
+
+
+
+

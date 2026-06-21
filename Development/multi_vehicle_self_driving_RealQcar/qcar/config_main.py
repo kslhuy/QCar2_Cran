@@ -111,7 +111,7 @@ class PathPlanningConfig:
 class VehicleConfig:
     """Vehicle-specific configuration"""
 
-    vehicle_type: str = "Qcar"  # "Qcar" or "Limo"
+    vehicle_type: str = "Qcar"  # "Qcar", "Limo", or "Carla"
     programme_type: str = "Py"  # "Ros" or "Py"
     probing: bool = False  # Enable YOLO perception system
     limo_gear_multiplier: float = 3.5  # Gear multiplier for Limo velocity limits
@@ -119,11 +119,14 @@ class VehicleConfig:
 
     def __post_init__(self):
         """Validate vehicle type"""
-        if str(self.vehicle_type).strip().lower() == "limo":
+        normalized = str(self.vehicle_type).strip().lower()
+        if normalized == "limo":
             self.vehicle_type = "Limo"
+        elif normalized == "carla":
+            self.vehicle_type = "Carla"
         else:
             self.vehicle_type = "Qcar"
-        valid_types = ["Qcar", "Limo"]
+        valid_types = ["Qcar", "Limo", "Carla"]
         if self.vehicle_type not in valid_types:
             raise ValueError(
                 f"Invalid vehicle_type: {self.vehicle_type}. Must be one of {valid_types}"
@@ -198,11 +201,13 @@ class VehicleMainConfig:
     def from_dict(cls, config_dict: dict) -> "VehicleMainConfig":
         """Create config from dictionary"""
         vehicle_dict = config_dict.get("vehicle", {}) or {}
-        vehicle_type = (
-            "Limo"
-            if str(vehicle_dict.get("vehicle_type", "Qcar")).strip().lower() == "limo"
-            else "Qcar"
-        )
+        raw_vehicle_type = str(vehicle_dict.get("vehicle_type", "Qcar")).strip().lower()
+        if raw_vehicle_type == "limo":
+            vehicle_type = "Limo"
+        elif raw_vehicle_type == "carla":
+            vehicle_type = "Carla"
+        else:
+            vehicle_type = "Qcar"
         return cls(
             timing=TimingConfig(**config_dict.get("timing", {})),
             yolo=YOLODetectionConfig(**config_dict.get("yolo", {})),
@@ -266,12 +271,13 @@ class VehicleMainConfig:
 
         # Build vehicle config from per-vehicle entry
         if vehicle_entry:
-            vehicle_type = (
-                "Limo"
-                if str(vehicle_entry.get("vehicle_type", "Qcar")).strip().lower()
-                == "limo"
-                else "Qcar"
-            )
+            raw_vehicle_type = str(vehicle_entry.get("vehicle_type", "Qcar")).strip().lower()
+            if raw_vehicle_type == "limo":
+                vehicle_type = "Limo"
+            elif raw_vehicle_type == "carla":
+                vehicle_type = "Carla"
+            else:
+                vehicle_type = "Qcar"
             config_dict["vehicle"] = {
                 "vehicle_type": vehicle_type,
                 "probing": vehicle_entry.get("probing", False),

@@ -588,8 +588,14 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             self.close_spacing_deadband = params.get(
                 "close_spacing_deadband", close_spacing_deadband
             )
+            multi_predecessor_cfg = params.get("multi_predecessor", {})
+            if isinstance(multi_predecessor, dict):
+                multi_predecessor_cfg = {
+                    **(multi_predecessor_cfg if isinstance(multi_predecessor_cfg, dict) else {}),
+                    **multi_predecessor,
+                }
             self.multi_predecessor_config = self._normalize_multi_predecessor_config(
-                params.get("multi_predecessor", multi_predecessor)
+                multi_predecessor_cfg
             )
             self.limo_max_speed = params.get("limo_max_speed", limo_max_speed)
             self.limo_max_accel = params.get("limo_max_accel", limo_max_accel)
@@ -713,6 +719,13 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         trust_power = max(self._as_float(cfg.get("trust_power", 1.0), 1.0), 0.0)
         return {
             "enabled": self._as_bool(cfg.get("enabled", False), False),
+            "spacing_weight": self._as_float(
+                cfg.get("spacing_weight", 0.20), 0.20
+            ),
+            "max_spacing_contribution": max(
+                self._as_float(cfg.get("max_spacing_contribution", 0.35), 0.35),
+                0.0,
+            ),
             "max_predecessors": max(
                 self._as_int(cfg.get("max_predecessors", 3), 3), 0
             ),
@@ -884,19 +897,19 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         leader_state: Dict[str, float],
         spacing_info: Dict[str, float],
         spacing_error: float,
-    ) -> Tuple[float, float]:
-        """Compute bounded feedforward from trusted vehicles ahead of the host."""
+    ) -> Tuple[float, float, float]:
+        """Compute bounded correction terms from trusted vehicles ahead of the host."""
         cfg = self.multi_predecessor_config
         if not cfg.get("enabled", False) or follower_state.get("reverse_follow_active", False):
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
 
         predecessor_states = follower_state.get("multi_predecessor_states", [])
         if not isinstance(predecessor_states, (list, tuple)):
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
 
         max_predecessors = int(cfg.get("max_predecessors", 0))
         if max_predecessors <= 0:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
 
         reference_heading = float(spacing_info["reference_heading"])
         direct_velocity = self._state_longitudinal_velocity(
@@ -904,6 +917,7 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         )
         direct_acceleration = float(leader_state.get("acceleration", 0.0))
 
+        weighted_spacing = 0.0
         weighted_velocity = 0.0
         weighted_acceleration = 0.0
         weight_sum = 0.0
@@ -934,6 +948,20 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             if weight <= 0.0:
                 continue
 
+            pred_gap = pred_state.get("distance_ahead")
+            if pred_gap is None:
+                pred_gap = (
+                    (float(pred_state.get("x", 0.0)) - float(follower_state.get("x", 0.0)))
+                    * np.cos(reference_heading)
+                    + (float(pred_state.get("y", 0.0)) - float(follower_state.get("y", 0.0)))
+                    * np.sin(reference_heading)
+                )
+            pred_gap = max(float(pred_gap), 0.0)
+            desired_gap = float(order_index) * (
+                self.s0 + self.h * max(float(follower_state.get("velocity", 0.0)), 0.0)
+            )
+            weighted_spacing += weight * (pred_gap - desired_gap)
+
             pred_velocity = self._state_longitudinal_velocity(
                 pred_state, reference_heading
             )
@@ -947,17 +975,21 @@ class CACCLongitudinalController(LongitudinalControllerBase):
         follower_state["multi_predecessor_weight_sum"] = float(weight_sum)
 
         if weight_sum <= 1e-9:
+            follower_state["multi_predecessor_spacing_term"] = 0.0
             follower_state["multi_predecessor_velocity_term"] = 0.0
             follower_state["multi_predecessor_acceleration_term"] = 0.0
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
 
+        spacing_term = float(cfg["spacing_weight"] * weighted_spacing / weight_sum)
         velocity_term = float(cfg["velocity_weight"] * weighted_velocity / weight_sum)
         acceleration_term = float(
             cfg["acceleration_weight"] * weighted_acceleration / weight_sum
         )
 
+        max_spacing = float(cfg["max_spacing_contribution"])
         max_velocity = float(cfg["max_velocity_contribution"])
         max_acceleration = float(cfg["max_acceleration_contribution"])
+        spacing_term = float(np.clip(spacing_term, -max_spacing, max_spacing))
         velocity_term = float(np.clip(velocity_term, -max_velocity, max_velocity))
         acceleration_term = float(
             np.clip(acceleration_term, -max_acceleration, max_acceleration)
@@ -967,12 +999,14 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             spacing_error <= float(cfg["safe_gap_margin"])
             and not cfg["allow_positive_when_close"]
         ):
+            spacing_term = min(spacing_term, 0.0)
             velocity_term = min(velocity_term, 0.0)
             acceleration_term = min(acceleration_term, 0.0)
 
+        follower_state["multi_predecessor_spacing_term"] = spacing_term
         follower_state["multi_predecessor_velocity_term"] = velocity_term
         follower_state["multi_predecessor_acceleration_term"] = acceleration_term
-        return velocity_term, acceleration_term
+        return spacing_term, velocity_term, acceleration_term
 
     def _smooth_to_stop(self) -> float:
         """Gradually reduce throttle to zero when no leader is present."""
@@ -1042,9 +1076,10 @@ class CACCLongitudinalController(LongitudinalControllerBase):
             follower_acc = follower_state.get("acceleration", 0.0)
             velocity_error += self.leader_acceleration_weight * (leader_acc - follower_acc)
 
-        multi_velocity, multi_acceleration = self._compute_multi_predecessor_feedforward(
+        multi_spacing, multi_velocity, multi_acceleration = self._compute_multi_predecessor_feedforward(
             follower_state, leader_state, spacing_info, spacing_error
         )
+        spacing_error += multi_spacing
         velocity_error += multi_velocity + multi_acceleration
 
         target_velocity = follower_state.get("target_velocity", None)
@@ -1643,6 +1678,7 @@ class ControllerFactory:
         "pid": PIDVelocityController,
         "qcar2_speed": QCar2SpeedController,
         "cacc": CACCLongitudinalController,
+        "multi_predecessor_cacc": CACCLongitudinalController,
         "sensor_acc": SensorAdaptiveCruiseController,
         "sa_acc": SA_ACCController,
         "fix": FixConstantController,

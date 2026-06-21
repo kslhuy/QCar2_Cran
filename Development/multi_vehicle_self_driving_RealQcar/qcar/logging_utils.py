@@ -440,6 +440,7 @@ class VehicleLogger:
             'u_cacc', 'u_sensor',
             'trust_fusion_alpha', 'trust_fusion_policy',
             'multi_predecessor_count', 'multi_predecessor_weight_sum',
+            'multi_predecessor_spacing_term',
             'multi_predecessor_velocity_term', 'multi_predecessor_acceleration_term',
             # Derived metrics
             'distance_to_leader', 'velocity_difference'
@@ -816,6 +817,7 @@ class VehicleLogger:
                     'trust_fusion_policy': follower_state.get('trust_fusion_policy', ''),
                     'multi_predecessor_count': follower_state.get('multi_predecessor_count', ''),
                     'multi_predecessor_weight_sum': follower_state.get('multi_predecessor_weight_sum', ''),
+                    'multi_predecessor_spacing_term': follower_state.get('multi_predecessor_spacing_term', ''),
                     'multi_predecessor_velocity_term': follower_state.get('multi_predecessor_velocity_term', ''),
                     'multi_predecessor_acceleration_term': follower_state.get('multi_predecessor_acceleration_term', ''),
                     # Derived metrics

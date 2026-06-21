@@ -62,6 +62,7 @@ def make_scenario(
             - 'zero': set to 0
             - 'constant': set to fixed value
             - 'random': random value in range
+            - 'drop': probabilistically drop outgoing V2V packets
         intensity: Modification intensity (float or dict for sinusoidal/random)
         data_type: Data type to attack:
             - 'local': Attack local state broadcasts
@@ -72,7 +73,7 @@ def make_scenario(
             - 'theta': Heading angle (radians)
             - 'velocity': Velocity (m/s)
             - 'acceleration': Acceleration (m/s²)
-        attack_type: Attack type ('Bogus', 'DoS', 'POS', 'VEL', 'ACC', 'Collusion')
+        attack_type: Attack type ('Bogus', 'DoS', 'Mix_test', 'POS', 'VEL', 'ACC', 'Collusion')
         scenario_name: Human-readable name for the scenario
         description: Description of the attack
         
@@ -236,6 +237,79 @@ def create_bogus_scenarios(
     if case_number not in scenarios:
         raise ValueError(f"Invalid Bogus case number: {case_number}. Must be 1-10.")
     
+    attack_module.add_scenario(scenarios[case_number])
+    return attack_module
+
+
+
+# =============================================================================
+# MATLAB Mix_test Attack Scenarios
+# =============================================================================
+
+def create_mix_test_scenarios(
+    attack_module: AttackModule,
+    case_number: int,
+    attacker_id: int = 1,
+    victim_id: int = -1,
+    t_start: float = 10.0,
+    t_end: float = 15.0,
+    data_type: str = "local"
+) -> AttackModule:
+    """
+    Create the MATLAB-style Mix_test scenarios requested for V2V attacks.
+
+    Cases:
+        1: X position bias -5 m
+        2: X position intermittent faulty noise, sigma=10, p=0.5
+        3: Velocity bias -2.5 m/s
+        4: Velocity intermittent faulty noise, sigma=2.5, p=0.5
+        5: Packet drop for all attacked data, p_drop=0.5
+    """
+    scenarios = {
+        1: make_scenario(
+            attacker_id, victim_id, t_start, t_end,
+            'bias', -5.0, data_type, ['X'],
+            attack_type="Mix_test",
+            scenario_name="Mix_test_Case1_XBiasNeg5",
+            description="Mix_test case 1: X position bias -5 m"
+        ),
+
+        2: make_scenario(
+            attacker_id, victim_id, t_start, t_end,
+            'faulty', {'intensity': 10.0, 'probability': 0.5}, data_type, ['X'],
+            attack_type="Mix_test",
+            scenario_name="Mix_test_Case2_XFaulty10Prob50",
+            description="Mix_test case 2: intermittent X position noise, sigma=10 m, p=0.5"
+        ),
+
+        3: make_scenario(
+            attacker_id, victim_id, t_start, t_end,
+            'bias', -2.5, data_type, ['velocity'],
+            attack_type="Mix_test",
+            scenario_name="Mix_test_Case3_VelBiasNeg2p5",
+            description="Mix_test case 3: velocity bias -2.5 m/s"
+        ),
+
+        4: make_scenario(
+            attacker_id, victim_id, t_start, t_end,
+            'faulty', {'intensity': 2.5, 'probability': 0.5}, data_type, ['velocity'],
+            attack_type="Mix_test",
+            scenario_name="Mix_test_Case4_VelFaulty2p5Prob50",
+            description="Mix_test case 4: intermittent velocity noise, sigma=2.5 m/s, p=0.5"
+        ),
+
+        5: make_scenario(
+            attacker_id, victim_id, t_start, t_end,
+            'drop', 0.5, data_type, ['all'],
+            attack_type="Mix_test",
+            scenario_name="Mix_test_Case5_DropAllProb50",
+            description="Mix_test case 5: drop all attacked V2V data with probability 0.5"
+        ),
+    }
+
+    if case_number not in scenarios:
+        raise ValueError(f"Invalid Mix_test case number: {case_number}. Must be 1-5.")
+
     attack_module.add_scenario(scenarios[case_number])
     return attack_module
 
@@ -599,6 +673,7 @@ def atk_scenarios(
             - 'VEL': Velocity-specific attacks (3 cases)
             - 'ACC': Acceleration-specific attacks (3 cases)
             - 'Heading': Heading-specific attacks (3 cases)
+            - 'Mix_test': MATLAB Mix_test attacks (5 cases)
             - 'None': No attack
         data_type: Data type to attack ('local', 'fleet', 'both')
         case_number: Case number for the specific attack variant
@@ -614,10 +689,11 @@ def atk_scenarios(
         >>> attack_module = AttackModule(vehicle_id=1)
         >>> atk_scenarios(attack_module, "Bogus", "local", 2, 10.0, 15.0, 1, -1)
     """
-    attack_type_upper = attack_type.upper()
+    attack_type_upper = str(attack_type).strip().upper().replace(" ", "_").replace("-", "_")
     
     dispatch = {
         "BOGUS": create_bogus_scenarios,
+        "MIX_TEST": create_mix_test_scenarios,
         "DOS": create_dos_scenarios,
         "POS": create_position_attack,
         "VEL": create_velocity_attack,
@@ -655,9 +731,11 @@ def build_attack_scenario(
     generated from the existing case library but managed separately from
     config-loaded scheduled scenarios.
     """
-    normalized_type = str(attack_type).strip().upper()
+    normalized_type = str(attack_type).strip().upper().replace(" ", "_").replace("-", "_")
     type_aliases = {
         "BOGUS": "BOGUS",
+        "MIX_TEST": "MIX_TEST",
+        "MIXTEST": "MIX_TEST",
         "DOS": "DOS",
         "POSITION": "POS",
         "POS": "POS",
@@ -669,6 +747,7 @@ def build_attack_scenario(
     }
     dispatch = {
         "BOGUS": create_bogus_scenarios,
+        "MIX_TEST": create_mix_test_scenarios,
         "DOS": create_dos_scenarios,
         "POS": create_position_attack,
         "VEL": create_velocity_attack,

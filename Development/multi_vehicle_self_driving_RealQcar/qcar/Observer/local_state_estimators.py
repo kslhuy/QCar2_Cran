@@ -9,7 +9,11 @@ import numpy as np
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Dict, Tuple
-from hal.content.qcar_functions import QCarEKF
+
+try:
+    from hal.content.qcar_functions import QCarEKF
+except Exception:
+    QCarEKF = None
 
 
 def wrap_to_pi(angle: float) -> float:
@@ -375,6 +379,9 @@ class EKFStateEstimator(LocalStateEstimatorBase):
     def _initialize_qcar_ekf(self, initial_pose: Optional[np.ndarray]):
         """Initialize QCarEKF"""
         try:
+            if QCarEKF is None:
+                raise RuntimeError("QCarEKF is unavailable")
+
             if initial_pose is None:
                 initial_pose = np.array([0.0, 0.0, 0.0])
 
