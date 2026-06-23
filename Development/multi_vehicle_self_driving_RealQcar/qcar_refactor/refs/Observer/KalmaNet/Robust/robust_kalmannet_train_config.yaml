@@ -1,0 +1,146 @@
+# Robust KalmaNet offline training config
+#
+# State order used by the training loss:
+# [x, y, psi, v, w]
+# x   : global x position
+# y   : global y position
+# psi : heading / yaw angle
+# v   : speed
+# w   : yaw rate
+
+# Recorded .npz files used to build the training windows.
+# Replace these example paths with your real datasets.
+datasets:
+  - "datasets/robust_kalmannet_dataset_V0_20260401_170829.npz"
+  - "datasets/robust_kalmannet_dataset_V0_20260405_180043.npz"
+  - "datasets/robust_kalmannet_dataset_V0_20260328_211545.npz"
+
+# Base checkpoint output path, relative to this folder.
+# The trainer also writes best/final variants derived from this name.
+output: "models/robust_kalmannet.pt"
+
+training:
+  # Phase A: predictor-only training. Updater is frozen.
+  phase_a_epochs: 30
+
+  # Phase B: updater-only training. Predictor is frozen.
+  phase_b_epochs: 30
+
+  # Phase C: end-to-end fine tuning of the full model.
+  phase_c_epochs: 30
+
+  # Mini-batch size.
+  batch_size: 64
+
+  # Sliding-window length for Phases A/B.
+  sequence_length: 20
+
+  # Optional longer sequence for Phase C.
+  # Helps reduce autoregressive drift mismatch.
+  sequence_length_phase_c: 30
+
+  # Sliding-window step. 1 means maximum overlap.
+  stride: 2
+
+  # Fraction of data reserved for validation.
+  val_split: 0.2
+
+  # Initial learning rate.
+  lr: 1.0e-4
+
+  # Learning rate used when Phase C starts.
+  # null means use lr / 5 automatically.
+  lr_phase2: null
+
+  # Gradient clipping threshold. Set 0 to disable.
+  grad_clip: 1.0
+
+  # Number of background DataLoader workers.
+  # 0 = load batches in the main process.
+  num_workers: 2
+
+  # Use pinned host memory to speed up CPU -> GPU copies.
+  # Only has an effect when training on CUDA.
+  pin_memory: true
+
+  # Random seed for reproducibility.
+  seed: 7
+
+  # auto = CUDA if available, else CPU.
+  device: "auto"
+
+  # false = train on early time segment, validate on later segment.
+  # true  = validate on early time segment, train on later segment.
+  reverse_split: false
+
+loss:
+  # Weight for predictor mask supervision loss.
+  # Encourages the prediction-side mask to suppress attacked sensor branches.
+  lambda_mask: 1.0
+
+  # Weight for measurement mask supervision loss.
+  # Encourages the update-side mask to suppress corrupted measurement channels.
+  lambda_meas_mask: 0.2
+
+  # Weight of prediction-state loss in Phase C.
+  # Higher = care more about x_pred quality.
+  lambda_pred: 0.2
+
+  # Weight of update-state loss in Phase C.
+  # Higher = care more about final corrected state x_upd.
+  lambda_upd: 0.8
+
+  # Per-state weights inside the state MSE:
+  # [x, y, psi, v, w]
+  #
+  # Current setting means:
+  # x   -> 1.0
+  # y   -> 1.0
+  # psi -> 6.0   (heading error is penalized 6x more)
+  # v   -> 1.0
+  # w   -> 1.0
+  #
+  # Increase a value if that state matters more.
+  # Decrease a value if that state is noisy or dominates training too much.
+  state_weights: [1.0, 1.0, 6.0, 1.0, 1.0]
+
+  # Weight for Kalman gain magnitude regularization.
+  # Penalizes large gains to encourage conservative corrections.
+  lambda_gain: 0.001
+
+augmentation:
+  # true  = apply synthetic attacks during training.
+  # false = train on clean data only.
+  enabled: false
+
+  # Probability that one sample receives attack augmentation.
+  attack_prob: 0.3
+
+  # Available synthetic attack types:
+  # bias     = add constant offset
+  # scale    = multiply signal
+  # freeze   = hold signal constant
+  # noise    = add random noise
+  # ramp     = add drifting corruption
+  # zero_out = set signal to zero
+  attack_types: ["bias", "scale", "freeze", "noise", "ramp", "zero_out"]
+
+  # Maximum number of sensor branches attacked at once.
+  max_branches_attacked: 1
+
+model:
+  # Predictor implementation:
+  # nn        = learned neural predictor
+  # kinematic = analytical motion model
+  #
+  # Note: if set to kinematic, Phase A is skipped automatically.
+  predictor_mode: "kinematic"
+
+  # Hidden sizes. Keep these aligned with
+  # qcar/Observer/config_local_estimators.yaml at runtime.
+  pred_hidden: 32
+  upd_hidden: 32
+  gain_hidden: 32
+  pred_mlp_hidden: 32
+  mask_hidden: 32
+  update_mask_init_bias: 0.5

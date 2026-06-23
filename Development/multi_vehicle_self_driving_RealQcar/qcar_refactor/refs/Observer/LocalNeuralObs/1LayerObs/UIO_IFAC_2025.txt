@@ -1,0 +1,1261 @@
+Learning with Unknown Input Observers
+for Robust Nonlinear Estimation
+Q.H. Nguyen ∗ A. Zemouche ∗ H. Rafaralahy ∗ M. Haddad ∗∗
+∗
+
+Université de Lorraine, CNRS, CRAN, F-57000 Metz (e-mail:
+quang-huy.nguyen@univ-lorraine.fr).
+∗∗
+SEGULA Engineering, 19 rue d’Arras, 92000 Nanterre, France
+(e-mail: madjid.haddad@segula.fr)
+Abstract: This work introduces a robust hybrid state estimation framework for vehicle motion
+tracking that combines physics-based guarantees with data-driven adaptability. Standard modelbased observers often fail when strict rank conditions are not met, while pure neural network
+approaches lack stability guarantees. To address this, we propose a two-stage architecture. First,
+we develop a Generalized Unknown Input Observer (UIO) that utilizes output derivatives to
+relax the standard rank condition, ensuring the existence of a bounded estimation of unmodeled
+dynamics. Second, we introduce a Neural Adaptive Observer that treats the UIO estimates as
+a ”teacher” signal. Unlike the UIO, which provides instantaneous signal estimation, the neural
+observer learns the underlying structure of the uncertainty as a function of the state. This allows
+the system to predict disturbances along reference trajectories and refine the estimation error
+asymptotically. The approach is validated via Linear Matrix Inequalities (LMIs) ensuring H1
+and L2 stability.
+Keywords: Robust estimation , Model Learning , Neural network.
+1. INTRODUCTION
+State estimation is a cornerstone of autonomous vehicle control, where safety depends on accurate knowledge
+of system states and external disturbances. Traditional
+methods rely on explicit physics-based models (Barfoot,
+2017). However, in vehicle dynamics, highly nonlinear
+phenomena-such as variable tire-road friction or aerodynamic drag are difficult to model mathematically, leading
+to estimation errors that compromise control performance.
+Data-driven methods, particularly Neural Networks (NNs),
+have emerged as powerful tools for approximating these
+complex nonlinear functions (Abdollahi et al., 2006;
+Buisson-Fenet et al., 2021). While NNs offer superior
+adaptability, they pose significant risks in safety-critical
+applications. In online learning scenarios, small shifts in
+input data can cause NNs to behave unpredictably or diverge, lacking the stability guarantees provided by control
+theory. Consequently, recent research has shifted toward
+hybrid architectures that embed learning within observer
+frameworks.
+A major limitation in existing hybrid observers is their
+reliance on the standard observer matching condition. For
+many vehicle systems, this condition does not hold, making
+it theoretically impossible to decouple the unknown input
+from the state using standard techniques. While some
+methods attempt to bypass this using approximations,
+they often result in unbounded errors or require expensive
+additional sensors.
+⋆ This work was supported by SEGULA Engineering.
+
+To overcome these limitations, this paper proposes a
+layered Teacher-Student estimation architecture consisting
+of two distinct observers:
+• A Generalized UIO (The Teacher): We introduce a
+regularization technique using output derivatives that
+ensures the observer exists even when the rank condition fails. This observer provides a robust, physicsguaranteed signal of the unknown input, ensuring the
+estimation error remains bounded.
+• A Neural Adaptive Observer (The Student): While
+the UIO estimates the current value of the disturbance, it cannot predict how that disturbance behaves
+at future states (e.g., along a reference trajectory).
+The Neural Observer utilizes the UIO’s signal to learn
+the unknown dynamics as a function of the state
+(µθ (x)). This allows for refined precision and enables
+the controller to anticipate unmodeled dynamics.
+This combination offers a specific advantage: the Generalized UIO guarantees the system never diverges (safety),
+while the Neural Network minimizes the residual error over
+time (performance). The contributions of this paper are:
+• A Generalized UIO design that relaxes the rank
+condition using output derivatives ;
+• A hybrid learning framework where the UIO acts
+as a supervisor, enforcing consistency in the neural
+training loop;
+• LMI-based stability conditions that guarantee joint
+convergence of both the state and model parameters.
+
+2. PROBLEM FORMULATION AND MOTIVATION
+In this paper, we consider the class of continuous-time
+nonlinear systems in state-space form described by the
+following equations:
+ẋ = φ(x, u) + Bµx
+(1)
+y = Cx,
+where x ∈ X ⊆ Rnx is the state vector, y ∈ Rny is
+the output measurement, u ∈ U ⊆ Rnu is the control
+input, and µx ∈ Rnµ is an unknown nonlinear function
+that encapsulates the system uncertainty including both
+unmodeled dynamics and external disturbances. The matrices C ∈ Rny × Rnx and B ∈ Rnx × Rnµ are constant and
+known matrices. The function φ : X × U → Rnx represents
+the known nonlinearity of the system.
+Remark 1. For simplicity, we consider systems with linear output. Otherwise, if we have nonlinear output y =
+h(x), we introduce a new state η(t), with η̇ ≜ Aη η+γy and
+η0 = η(0) known.
+  Then, a new system with the augmented
+η
+vector ζ =
+may be considered, which has as linear
+x
+output the vector η.
+Now, let us introduce the following assumptions which are
+required for our unknown input observer design methods.
+Assumption 1. The output vector y has dimension
+greater than or equal to the number of unknown terms µx ;
+equivalently, nµ ≤ ny .
+Assumption 2. The nonlinear function φ(.) is γφ −Lipschitz
+continuous on X , uniformly on u ∈ U.
+Assumption 3. The unknown nonlinearity µx (.) is Lebesgue
+measurable and L2 −bounded.
+The objective of this paper is to estimate the unmodeled
+dynamics µx . More specifically, we propose to estimate µx
+by combining an unknown input observer (UIO) with a
+neural network–based approach, leveraging gradient-based
+methods to better capture the unmodeled components
+of the system. The key idea is to incorporate the UIObased estimation into the loss function of the neural
+network, thereby enhancing residual regularization and
+ensuring consistency with the UIO. This, in turn, improves
+the robustness and performance of the overall estimation
+scheme. Unfortunately, it is not possible to estimate the
+unknown input, µx , if the system fails to satisfy the
+following main necessary condition:
+rank(CB) = rank(B).
+(2)
+In addition, to be able to directly construct a UIO for
+system (1) to estimate simultaneously x and µx , the
+constraint (2) is not sufficient. For this, we should be able
+to write the system under the form:
+Eζ̇ = φζ (ζ, u)
+y = Hζ
+
+(3)
+
+with
+ 
+E
+= nx + nµ .
+(4)
+H
+For further details on this requirement, the reader is
+referred to Chaouche et al. (2022); Trinh and Fernando
+(2011); Zemouche and Boutayeb (2009); Hassan et al.
+(2013); Trinh et al. (2008) and the references therein.
+rank
+
+To address this challenge, various techniques have been
+proposed in the literature, each offering a different approach to the problem. Without aiming for exhaustiveness, these techniques can be summarized as follows. Nevertheless, the problem remains open, and new ideas or
+improvements are still possible, although often at the cost
+of additional assumptions:
+• Inverting the system dynamics: The system state is
+first estimated, and the unknown inputs are then
+obtained by inverting the dynamics (Phanomchoeng
+and Rajamani, 2014; Benallouch et al., 2017; Charandabi and Marquez, 2014). However, the presence
+of disturbances and nonlinearities in the output signal
+or in the dynamics can make the problem particularly
+challenging.
+• Deriving the output vector y(t): In some cases,
+the derivatives of the output measurements are required (Hou and Muller, 1992; Phanomchoeng and
+Rajamani, 2014). This leads to the construction of a
+pseudo-output vector ynew , which enables the simultaneous estimation of x and µx . For instance, in the
+linear case without disturbances, one obtains
+ynew = Cnew x + Cµ µx ,
+where rank(Cµ ) = nµ . However, this approach is not
+suitable for nonlinear disturbed systems, since differentiating y(t) introduces additional variables arising
+from the derivatives of the disturbance vector, as well
+as new nonlinearities in the pseudo-output vector.
+Consequently, satisfying the rank condition (2) with
+the new matrices becomes very difficult.
+• Adding sensors: In some cases, augmenting the system with additional sensors is a natural way to overcome the rank condition (2). This approach introduces a new measurement vector ynew , where the
+original output y(t) is used to estimate the state
+x(t), and the additional outputs ynew are exploited
+to estimate the unknown input, µx . For example,
+in Phanomchoeng and Rajamani (2014) (and references therein), four sensors (i.e., four output measurements) were employed to estimate only two unknown
+inputs. However, the presence of disturbances can
+significantly decrease estimation performance. Moreover, additional sensors may be very expensive or, in
+some cases, unavailable.
+• Proportional–Integral Observer and Null Dynamics:
+Some works in the literature have employed a
+Proportional–Integral Observer (PIO) together with
+null dynamics imposed on the estimated unknown
+input (Söffker et al., 1995; Bakhshande and Söffker,
+2015). However, this assumption does not reflect the
+true dynamics of the unknown input, leading to inaccurate estimation. Other approaches assume constant
+inputs (Jeon et al., 2020), i.e., µ̇x ≡ 0, but this
+restriction is overly conservative. Recently, a method
+for discrete-time systems was proposed in Nguyen
+et al. (2024); however, this approach yields delayed
+estimates of both the system state and the unknown
+inputs, which is often impractical to design reliable
+controllers.
+The limitations of the aforementioned methods motivated
+us to adopt a different approach and propose a simple
+strategy to estimate the system state and the unknown
+
+input without relying on conservative assumptions. The
+key idea is to recognize that this initial estimation is
+not final. Rather, the objective is to provide a first-level
+approximation of x and µx , which will subsequently be
+refined through the neuro-adaptive observer we introduce
+later. This refinement enhances estimation accuracy and
+ultimately yields a definitive estimate of the unmodeled
+nonlinearity, µx .
+The strategy consists in rewriting system (1) without
+modifying it. Then, the UIO we will propose will be based
+on reliable approximation of (1).
+ẋ + Eδ1 µ̇x = φ(x, u) + Bµx + Eωδ1
+(5)
+y = Cx + Dδ2 µx + D ωδ2
+where D ∈ Rny ×nµ and E ∈ Rnx ×nµ are given constant,
+full-column-rank matrix specified by the user; Eδ1 =
+δ1 E, Dδ2 = δ2 D; and ωδ1 (t) = δ1 µ̇x (t), ωδ2 (t) = δ2 µx (t),
+with δj ≥ 0, with (δ1 , δ2 ) ̸= (0, 0), chosen sufficiently small
+to ensure the feasibility of some sufficient conditions that
+will be stated later. The purpose of this reformulation
+is to recover the rank condition (4), at the expense of
+introducing the additive terms ωδj (t), j = 1, 2, which are
+handled as disturbances.
+The next section presents LMI conditions that guarantee
+accurate estimation of x and µx while satisfying an H∞
+criterion, or more specifically, an L2 -optimality criterion—
+where the performance bound is proportional to δj , j =
+1, 2.
+3. LMI-BASED H1 UIO DESIGN
+
+φζ (ζ, u) := φ(x, u) + Bµx .
+(7d)
+Now, let us introduce the following necessary assumption:
+Assumption 4. The matrices E and D are chosen such
+that E and H satisfy the rank condition (4).
+The objective is to design a state observer that provides
+an estimate ζ̂ of ζ, such that the following H1 -optimality
+inequality holds:
+∥ζ̃∥H1 ≤ λδ ∥µx ∥H1 + β ∥ξ0 ∥
+
+where ζ̃ := ζ − ζ̂, λδ is the disturbance attenuation level,
+explicitly depending on δ1 and δ2 , β > 0 is a weighting real
+constant, and ξ0 is a vector depending on ζ̃(0) and µx (0).
+3.2 UIO structure and error dynamics
+From Assumption 4, there exist two matrices Pζ and Qζ
+such that
+Pζ E + Q ζ H = I n ζ .
+(9)
+where nζ := nx + nµ . These matrices are exploited in the
+following observer structure:
+
+
+(
+η̇ = Pζ φζ (ζ̂, u) + K y − Hζ̂
+(10)
+ζ̂ = η + Qζ y
+where ζ̂ is the estimate of ζ and K ∈ Rnζ × Rny is the
+observer gain to be determined such that the estimation
+error, ζ̃ := ζ − ζ̂, satisfies the H1 -optimality criterion (8)
+with appropriate λδ , β, and ξ0 .
+We have
+
+This section is devoted to the numerical LMI-based design
+procedure ensuring the asymptotic estimation of the system state x and the unmodeled dynamics µx following a
+H1 −optimality criterion.
+
+Recall that H1 is the Hilbert space corresponding to
+the Sobolev space, W 1,2 , of square–integrable functions
+whose weak first derivatives are also square–integrable.
+Mathematically, we define the set H1 (Ω) as
+
+
+dψ
+1
+2
+2
+H (Ω) := ψ ∈ L (Ω)
+∈ L (Ω)
+dt
+with Ω = [0 + ∞[ in our case. This space is endowed by
+the norm ∥.∥H1 defined as follows:
+!1/2
+2
+dψ
+∥ψ∥H1 := ∥ψ∥2L2 +
+.
+dt L2
+First, system (5) can be rewritten under the compact form:
+(6)
+
+where
+E := [Inx Eδ1 ] , H := [C Dδ2 ] ,
+
+
+
+
+Ē := E 0nx ×nµ , D̄ := 0ny ×nµ D ,
+ 
+ 
+x
+ω
+ζ :=
+, ωδ := δ1 ,
+µx
+ωδ2
+
+ζ̃ = ζ − η − Qζ y
+
+= Inζ − Qζ H ζ − η − Qζ D̄ωδ
+(9)
+
+z}|{
+= Pζ Eζ − η − Qζ D̄ωδ
+which gives equivalently
+
+3.1 System transformation
+
+Eζ̇ = φζ (ζ, u) + Ēωδ
+y = Hζ + D̄ωδ
+
+(8)
+
+(7a)
+(7b)
+(7c)
+
+(11)
+
+ξ(t)
+
+}|
+{
+z
+ζ̃ + Qζ D̄ωδ = Pζ Eζ(t) − η(t).
+(12)
+It is worth noting that the reformulation (12) conveniently
+avoids the derivative of ωδ in the derivation of the error
+dynamics.
+By using the dynamics (6) and (10), we obtain
+h
+i
+ξ˙ = Pζ φζ (ζ, u) − φζ (ζ̂, u) − KHζ̃
+
++ Pζ Ē − K D̄ ωδ
+
+
+φ
+= Pζ ∇ζ ζ (z, u) − KH ξ
+
+
++ E (z, u) − KD ωδ
+where
+
+φ
+
+(13)
+
+E (z, u) := Ē − Pζ ∇ζ ζ (z, u)Qζ D̄
+
+D := Iny + HQζ D̄.
+and from the differential mean value theorem (Arezki
+et al., 2023), we have
+
+
+φ
+φζ (ζ, u) − φζ ζ̂, u = ∇ζ ζ (z, u)ζ̃
+for a given z.
+
+From this point onward, the analysis will be carried out
+with the vector ξ instead of ζ̃, and we will return to ζ̃ at
+the end to derive the final H1 bound (8).
+
+and
+q
+2
+2
+δ12 ∥µ̇x ∥L2 + δ22 ∥µx ∥L2
+q
+2
+2
+≤ max (δ1 , δ2 ) ∥µ̇x ∥L2 + ∥µx ∥L2
+
+∥ωδ ∥L2 =
+
+3.3 New LMI-based UIO design conditions
+Before presenting the proposed LMI-based UIO design
+procedure, we state an intermediate and general result in
+the following proposition. Le ϑ(.) be a Lyapunov function
+such that there exists ϑmax > 0 such that ϑ(z) ≤
+ϑmax ∥z∥2 , for all z ∈ Rnζ . Consider a matrix S = S ⊤ > 0
+and a real constant λ > 0 such that the following inequality
+holds:
+ϑ̇(z) + ∥z∥2 + ż ⊤ S ż − λ∥w∥2 ≤ 0,
+∀z ∈ Rnζ , w ∈ R2nµ (14)
+with z ∈ H1 and w ∈ L2 . Then, the following inequality is
+satisfied: s
+λ
+∥z∥H1 ≤
+∥w∥L2
+min (1, λmin (S))
+s
+ϑmax
++
+∥z0 ∥. (15)
+min (1, λmin (S))
+Moreover, if (14) is satisfied with z := ξ and w := ωδ ,
+where ξ and ωδ are defined by (12) and (7c), respectively,
+then the estimation error, ζ̃, satisfies the H1 bound (8)
+with λδ , β, and ξ0 given as follows:
+λδ := δ2 σmax (Qζ D)
+s
+λ
+(16a)
++ max (δ1 , δ2 )
+min (1, λmin (S))
+s
+ϑmax
+β :=
+(16b)
+min (1, λmin (S))
+
+ξ0 := ζ̃(0) + Qζ Dµx (0).
+(16c)
+where σmax (Qζ D) represents the largest singular value of
+the matrix Qζ D.
+Proof. The first part of the proof is relatively straightforward. Before integrating (14) to get the norms ∥.∥H1 and
+∥.∥L2 , take in mind that
+
+min (1, λmin (S)) ∥z∥2 + ∥ż∥2 ≤ ∥z∥2 + ż ⊤ S ż.
+Hence, since
+Z +∞
+
+∥z(s)∥2 + ∥ż(s)∥2 ds = ∥z∥2H1 ,
+0
+Z +∞
+∥w(s)∥2 ds = ∥w∥2L2 ,
+0
+
+and because ϑ(z(t)) ≥ 0 for all t ≥ 0, implying that
+Z +∞
+ϑ(z(s)) ds ≥ −ϑ(z(0)),
+
+Before stating the main theorem, notice that from Assumption 2, there exist constant matrices Aj ∈ Rnζ ×nζ
+and functions αj (z), j = 1, . . . n̄ζ such that the Jacobian
+φ
+∇ζ ζ (z, u) belongs to the convex polytopic set defined as:
+
+
+n̄ζ
+n̄ζ
+X
+
+X
+Hφ ≜
+αj (z)Aj ,
+αj (z) = 1, αj (z) ≥ 0
+(19)
+
+
+j=1
+
+j=1
+
+nζ ×nζ
+
+where Aj ∈ R
+
+, are the vertices of the polytope Hφ .
+
+Now, we are ready to state the main theorem, which
+provides new LMI conditions ensuring the bound (8).
+Theorem 1. Suppose that Assumptions 1, 2, and 3 hold.
+Let the matrices E and D, together with the scalars δ1 and
+δ2 , be chosen such that the Assumption 4 is satisfied. For
+a given constant ϵ > 0, assume further that there exist
+a symmetric positive definite matrix P ∈ Rnζ ×nζ and a
+matrix Q ∈ Rny ×nζ such that the LMI conditions (26) are
+fulfilled. Then, the estimation error ζ̃, with K = P −1 Q⊤ ,
+satisfies the H1 -optimality bound (8) with the parameters
+given in (16a)–(16c), where ϑmax = λmax (P) and S = ϵP
+with λmin (S) = ϵ λmin (P).
+Proof. Consider the quadratic Lyapunov function ϑ(ξ) :=
+ξ ⊤ Pξ. Then, the derivative of ϑ(.) along the trajectories
+of (13) is given as follows:
+
+⊤
+φ
+⊤
+Pζ ∇ζ ζ (z, u) − KH P
+ϑ̇(ξ) = ξ
+
+i
+φ
++ P Pζ ∇ζ ζ (z, u) − KH ξ
+
+
++ ξ ⊤ P E (z, u) − KD ωδ
+
+⊤
++ ωδ⊤ E (z, u) − KD Pξ. (20)
+and
+φ
+
+ξ̇ ⊤ S ξ̇ = ξ ⊤ Pζ ∇ζ ζ (z, u) − KH
+
+⊤
+
+S×
+
+φ
+
+
+
+Pζ ∇ζ ζ (z, u) − KH ξ
+
+
+
++ ωδ⊤ E (z, u) − KD
+
+⊤ 
+
+
+
+S E (z, u) − KD ωδ
+
+φ
+
++ 2ξ ⊤ Pζ ∇ζ ζ (z, u) − KH
+
+⊤ 
+
+
+
+S E (z, u) − KD ωδ .
+
+(21)
+
+Then, we have
+
+0
+
+we can readily conclude (15).
+As for the second part of the proof, we will exploit the
+structure of ξ and ωδ . First, ξ and ωδ satisfy (15) proved
+in the first part. In addition, we have
+∥ζ̃∥H1 = ξ − Qζ D̄ωδ H1
+≤ ∥ξ∥H1 + Qζ D̄ωδ H1
+= ∥ξ∥H1 + ∥[0 Qζ D] ωδ ∥H1
+= ∥ξ∥H1 + δ2 ∥Qζ Dµx ∥H1
+≤ ∥ξ∥H1 + δ2 σmax (Qζ D) ∥µx ∥H1
+
+= max (δ1 , δ2 ) ∥µx ∥H1 .
+(18)
+Hence, by substituting (17) and (18) in (15), the bound (8)
+is inferred with the parameters given in (16a)–(16c).
+
+(17)
+
+ϑ̇(ξ) + ∥ξ∥2 + ξ̇ ⊤ S ξ̇ − λ∥ωδ ∥2 =
+
+h
+
+ξ
+ωδ
+
+i⊤
+
+M (z, u)
+
+h
+
+ξ
+ωδ
+
+i
+
+(22)
+
+where M (z, u) is defined in (24). By applying Schur
+lemma, we deduce that M(z, u) < 0 whenever inequality (25) holds. Consequently, by setting S = ϵP, introducing the change of variables Q := K ⊤ P, and invoking
+the convexity principle, we conclude that the inequality
+M(z, u) < 0 is satisfied provided that the LMI conditions (26) hold. This, in turn, yields
+ϑ̇(ξ) + ∥ξ∥2 + ξ˙⊤ S ξ˙ − λ∥ωδ ∥2 ≤ 0.
+(23)
+
+Hence, Proposition 3.3 applies and the desired result
+follows.
+Remark 2. It is worth emphasizing that the choice S =
+ϵP is neither arbitrary nor overly restrictive, although
+it represents a specific selection. The introduction of the
+matrix P serves to recover the decision variable Q and then
+to avoid bilinear matrix inequalities, which are generally
+unsuitable for numerical solvers. The scalar parameter ϵ is
+included as a feasibility factor to improve the feasibility of
+the LMI conditions (26), and it should be chosen a priori.
+4. OUTPUT DERIVATIVE-BASED GENERALIZED
+UIO
+The main limitation of the previous result is that the proposed method does not guarantee exponential convergence
+of the estimation error, even when condition (2) is satisfied.
+This represents a drawback of the proposed regularization
+technique and has motivated the development of a more
+general and robust method that overcomes this shortcoming.
+4.1 Output derivative-based generalized model
+The key idea consists in introducing a generalized system
+imbedding the original model, the output y and its derivative. To this end, let us consider χ1 ≜ y and χ2 ≜ ẏ, which
+leads to the following generalized system:
+
+χ̇ = χ2
+
+ 1
+χ̇2 = C φ̄x (x, u) + C ∂φ
+∂x (x, u)Bµx + CB µ̇x
+(27)
+
+ ẋ = φ(x, u) + Bµx
+yχ = χ1 + Cχ χ2 + Cx
+ny ×ny
+where φ̄x (x, u) ≜ ∂φ
+is
+∂x (x, u)φ(x, u), and Cχ ∈ R
+a given weighting matrix associated with the measured
+derivative ẏ.
+
+Clearly, if (2) is satisfied, then (27) can be rewritten in the
+form of (6), for which Assumption 4 holds. In this case,
+an exponential UIO for (27) can be directly constructed
+if we add χ2 as output measurement. However, if (2) is
+not satisfied, the construction of an exponential UIO is
+not possible. In this situation, we can proceed as in the
+previous section by first regularizing the system (27). This
+approach leads to a design method that is more general
+than that of the previous section, as it ensures exponential
+convergence of the UIO whenever condition (2) is satisfied
+and the derivative ẏ is used as a measurement.
+4.2 Regularization of the generalized model
+System (27) can be regularized as follows
+
+χ̇ =
+χ
+
+ χ̇ + (E − CB) µ̇ 1 = C φ̄ (x, u)2 + E ω
+
+
+2
+δ
+x
+x
+δ1
+1
+
+
+
+∂φ
+(x, u)Bµx
++C
+(28)
+∂x
+
+
+ẋ = φ(x, u) + Bµx
+
+
+
+yχ = χ1 + Cχ χ2 + Cx
+
+
++Dδ2 µx + D ωδ2
+where the scalars δ1 ≥ 0, δ2 ≥ 0, and the matrices E ∈
+Rny ×nµ and D ∈ Rny ×nµ are the regularization parameters, with E and D chosen to be binary, i.e., their entries
+
+are restricted to {0, 1}. This choice is motivated by the
+aim of controlling the estimation error bound exclusively
+through the scalar parameters δ1 and δ2 . Moreover, E and
+D are selected to satisfy an appropriate rank condition,
+which will be specified later.
+First, system (5) can be rewritten under the compact form:
+Eζ̇ = φζ (ζ, u) + Ēωδ
+yχ = Hζ + D̄ωδ
+
+(29)
+
+where
+
+
+Iny 0 0
+0
+
+
+E :=  0 Iny 0 −CB  , H := Iny Cχ C Dδ2 ,
+0 0 Inx 0
+(30a)
+
+0 0ny ×nµ
+
+
+Ē := E 0ny ×nµ  , D̄ := 0ny ×nµ D ,
+0 0nx ×nµ
+ 
+χ1
+ 
+ω
+χ2 
+ζ :=   , ωδ := δ1 ,
+x
+ωδ2
+µx
+
+
+χ2
+
+
+
+
+φζ (ζ, u) := C φ̄x (x, u) + C ∂φ
+(x,
+u)Bµ
+x
+∂x
+
+
+
+
+(30b)
+
+(30c)
+
+(30d)
+
+φ(x, u) + Bµx .
+with Eδ1 , Dδ2 , ωδ1 , and ωδ2 defined as in (5).
+4.3 Generalized UIO
+Here we provide the generalized UIO corresponding to the
+generalized and regularized system (29).
+Assumption 5. The matrices E, D, and Cχ , and the
+scalars δ1 and δ2 are chosen such that E and H satisfy
+the rank condition (4).
+Assumption 6. The function φζ (., u) defined in (30d) is
+globally Lipschitz, uniformly on u.
+As in the previous section, from Assumption 5, there exist
+two matrices Pζ and Qζ such that
+Pζ E + Q ζ H = I n ζ .
+(31)
+where nζ := 2ny + nx + nµ , and then an observer is
+constructed as in (10) as follows:
+
+
+(
+η̇ = Pζ φζ (ζ̂, u) + K yχ − Hζ̂
+(32)
+ζ̂ = η + Qζ yχ
+To avoid repetitions, under Assumption 6, assume that the
+φ
+Jacobian ∇ζ ζ (z, u) belongs to the convex polytopic set Hφ
+defined in (19).
+It is unnecessary to restate a new theorem or proposition
+here. Since we use the same notation as in Section 3, the
+results of Proposition 3.3 and Theorem 1 apply directly
+under Assumptions 5 and 6. Specifically, the observer (32)
+with K = P −1 Q⊤ satisfies the H1 -optimality bound (8),
+with parameters given in (16a)–(16c), where ϑmax =
+λmax (P) and S = ϵP, with λmin (S) = ϵ λmin (P). The
+matrices P, Q, and the scalar ϵ are defined in Theorem 1.
+
+⊤
+
+ 
+
+⊤  
+
+φζ
+φζ
+φζ
+P
+∇
+(z,
+u)
+−
+KH
+P
++
+P
+P
+∇
+(z,
+u)
+−
+KH
+P
++
+P
+∇
+(z,
+u)
+−
+KH
+S
+E
+(z,
+u)
+−
+KD
+ζ ζ
+ζ ζ
+ ζ ζ
+
+
+
+
+
+ 
+⊤ h
+
+i
+
+⊤ 
+ 
+φζ
+E (z, u) − KD
+P + S Pζ ∇ζ (z, u) − KH
+−λI2nµ + E (z, u) − KD S E (z, u) − KD
+
+
+
+
+
+
+
+
+
+
+
+
+φ
+
+(24)
+
+⊤
+
+
+
+
+ 
+⊤ 
+φ
+φ
+P + P Pζ ∇ζ ζ (z, u) − KH P E (z, u) − KD
+Pζ ∇ζ ζ (z, u) − KH S
+
+
+
+
+⊤
+
+⊤
+
+<0
+E (z, u) − KD P
+−λI2nµ
+E (z, u) − KD S 
+
+
+
+
+
+
+
+φ
+S Pζ ∇ζ ζ (z, u) − KH
+S E (z, u) − KD
+−S
+
+(25)
+
+
+
+⊤
+⊤
+(Pζ Aj ) P + P (Pζ Aj ) − H⊤ Q − Q⊤ H PEj − Q⊤ D (Pζ Aj ) P − H⊤ Q
+
+
+
+
+⊤
+⊤
+⊤
+⊤
+
+
+E
+P
+−
+D
+Q
+−λI
+E
+P
+−
+D
+Q
+2n
+µ
+j
+j
+
+<0
+
+
+
+
+1
+⊤
+⊤
+P (Pζ Aj ) − Q H
+PEj − Q D
+− P
+ϵ
+
+(26)
+
+Pζ ∇ζ ζ (z, u) − KH
+
+where
+Ej := Ē − Pζ Aj Qζ D̄
+4.4 Specific cases and discussion
+This section is devoted to discussing the general result
+established in Section 4. In addition, several specific cases
+are analyzed to illustrate the benefits of the generalized
+UIO in Section 4.3 relative to that of Section 3.
+Case rank(CB) = rank(B) We show that in this case,
+exponential convergence of the estimation error to zero can
+be guaranteed. Indeed, if rank(CB) = rank(B), then to
+satisfy Assumption 5, it suffices to choose an appropriate
+matrix Cχ , independently of δ1 and δ2 . We can then set
+δ1 = δ2 = 0, which implies λδ = 0 in (16a) and ωδ (t) ≡ 0
+in (23). Under these conditions, the bound (8) reduces to
+∥ζ̃∥H1 ≤ β ∥ξ0 ∥,
+
+(33)
+
+which, combined with the uniform continuity of ζ̃(·),
+implies
+lim ζ̃(t) = 0.
+t→+∞
+
+In other words, we have ξ(t) = ζ̃(t), and the LMIs (26)
+ensure (23), which reduces to
+ϑ̇(ζ̃(t)) + ∥ζ̃(t)∥2 ≤ 0,
+thus guaranteeing the exponential convergence of ζ̃(t) to
+zero.
+Case Cχ = 0: In this case, the derivative of the output
+measurement, ẏ, is not used as an additional input to the
+observer. Unfortunately, even when rank(CB) = rank(B),
+the only way to satisfy Assumption 5 is to choose an
+appropriate nonzero matrix D and δ2 > 0. Consequently,
+we may set δ1 = 0 to achieve a tighter H1 bound; however,
+exponential convergence of the estimation error to zero
+cannot be guaranteed.
+Case rank(CB) < rank(B): In this case, exponential
+convergence of ζ̃ to zero cannot be guaranteed; however,
+an H1 bound can still be obtained through regularization.
+By appropriately selecting the matrices E and D, and
+choosing the scalars δ1 and δ2 such that Assumption 5
+
+is satisfied, the H1 bound (8) can be effectively adjusted
+by tuning the parameters δ1 and δ2 .
+On the use of ẏ: The generalized UIO (32) requires realtime knowledge of the derivative ẏ, which can be viewed
+as a drawback since this derivative must be estimated online. Nevertheless, the structure of the proposed observer
+naturally incorporates the estimation of ẏ through the auxiliary state variable χ2 . In particular, when rank(CB) =
+rank(B), the estimate χ̂2 converges exponentially to χ2 ,
+thereby providing an accurate estimation of ẏ. This represents a major improvement over conventional UIO design
+approaches, which typically estimate the unknown inputs
+by differentiating the estimated states or the measured
+output y a posteriori.
+5. UIO-BASED NEURAL ONLINE APPROXIMATION
+OF UNMODELED NONLINEARITY µx
+As noted in the previous section, the approximation of
+the unmodeled nonlinearity µx is not yet final. We will
+employ neural network–based modeling to approximate
+it explicitly for control design purposes. The earlier UIO
+scheme serves only as a foundation for the online learning
+of µx . Regarding the estimation of the system state x, two
+approaches are possible: (1) use x̂ from the existing UIO,
+or (2) introduce a neuro-adaptive observer to simultaneously re-estimate x and the weighting parameters in the
+neural network representation of µx . In this paper, we will
+examine the first approach in detail.
+First, we introduce the following assumption;
+Assumption 7. The system can track the known trajectory x under the observer-based controller as
+u := κ (x, u, x̂)
+
+(34)
+
+where x̂ is the estimation of x and u is a reference controller such that the pair (x, u) is an admissible trajectory
+of system (1).
+
+5.1 Fully UIO-based learning
+The generalized UIO derived in Section IV yields the
+augmented estimate ζ̂. To facilitate the proposed learning
+strategy, we decompose this vector to isolate the physicsbased state estimate, denoted x̂UIO , and the unknown
+input estimate, µ̂x . This partition is defined as:
+
+
+χ̂1
+ χ̂ 
+ζ̂ =  2  ∈ R2ny +nx +nµ
+(35)
+x̂UIO
+µ̂x
+Leveraging these physics-based priors, we introduce a
+neural network approximation µθ (·) to capture the residual
+unmodeled dynamics. This data-driven term is integrated
+into the observer structure to refine the estimation of µx
+online.
+Let us consider µθ (x), the neural network based approximation of µ̂x (t). In a general manner, we write
+µθ (x) = Nθ (x, x̂, µ̂x , u)
+(36)
+where Nθ (.) represents the neural network function and θ
+is the neural network parameters. Then, this approximation is substituted into an observer to improve estimation,
+as follows:
+x̂˙ = φ(x̂, u) + Bµθ (x̂) + (y − y)
+(37)
+y = C x̂
+where x̂ ∈ X ⊆ Rnx is the state of the observer (37) and
+y is its output vector.
+The proposed hybrid strategy is depicted in Figure 1. This
+framework combines a physics-based UIO, which exploits
+the measured output y to provide reliable initial estimates
+x̂U IO and µ̂x , with a data-driven Neural Observer. A
+neural network learns the unmodeled dynamics µθ to refine
+the state estimate x̂N N . This refined estimate is utilized
+by the controller for trajectory tracking, while the network
+parameters θ are updated online via a composite loss
+function that enforces consistency between the physicsbased and data-driven models.
+
+the estimation error, ϵ ≜ x − x̂, satisfies the following
+L2 −optimality criterion:
+∥ϵ∥L2 ≤ λ ∥∆x ∥L2 + β ∥ϵ(0)∥
+(39)
+where λ and β are positive scalars. Towards this end, we
+employ the usual Lyapunov-based technique by using the
+quadratic Lyapunov function
+ϑ (ϵ) ≜ ϵ⊤ Pϵ
+where P = P ⊤ > 0. Then, to satisfy (39), we need to have
+ϑ̇ (ϵ) + ϵ⊤ ϵ − λ2 ∆⊤
+x ∆x < 0.
+First, the estimation error dynamic is expressed by the
+following equation:
+
+
+ϵ̇ = ∇φ
+(40)
+x (zx , u) − C ϵ + B∆x (t)
+nx
+where ∇φ
+x (zx , u) = φ(x, u) − φ(x̂, u) for a given zx ∈ R ,
+from the differential mean value theorem. According to
+Assumption 2, there exist constant matrices Axj ∈ Rnx ×nx
+and functions αj (zx ), j = 1, . . . n̄x such that the Jacobian
+∇φ
+x (zx , u) belongs to the convex polytopic set defined as:
+
+
+n̄x
+n̄x
+X
+
+X
+x
+Hφ
+≜
+αj (zx )Axj ,
+αj (zx ) = 1, αj (zx ) ≥ 0 (41)
+
+
+j=1
+
+j=1
+
+x
+.
+where Axj ∈ Rnx ×nx , are the vertices of the polytope Hφ
+
+Now, we are ready to state the sufficient LMI conditions
+guaranteeing the criterion (39).
+Theorem 2. Under the Assumption 2, if there exist a
+symmetric positive definite matrix P ∈ Rnx ×nx , a matrix
+Q ∈ Rny ×nx , and a positive scalar σ such that the
+following LMI conditions (42) are fulfilled:
+
+
+⊤
+
+Axj P + P Axj − C ⊤ Q − Q⊤ C PB
+
+ < 0 (42)
+⊤
+B P
+−σInµ
+then, the estimation error ϵ, with = P −1√
+Q⊤ , satisfies
+2
+the
+L
+−optimality
+criterion
+(39)
+with
+λ
+=
+σ and β =
+p
+λmax (P).
+Proof. The proof is omitted, as it is straightforward
+and well-established in the literature on L2 −optimality
+stability analysis.
+Computation of the learning parameter θ: To approximate µx (t) via µθ (·), the parameter θ is optimized to minimize a specific loss function. Unlike classical supervised
+learning, where the ground truth µx (t) is accessible, we
+must rely on the UIO estimate µ̂x (t) as a proxy target (see
+Fig. 1). Consequently, we define a composite loss function
+that incorporates tracking errors and regularization terms
+to ensure robust convergence:
+
+Fig. 1. Diagram of the proposed hybrid estimation strategy.
+The original system (1) can be written under the form:
+
+L(x̂(θ)) = (x̂ − xref )⊤ T (x̂ − xref )
+{z
+}
+|
+Tracking error
++ (y − y)⊤ Ty (y − y)
+
+|
+ẋ = φ(x, u) + Bµθ (x̂) + B∆x (t)
+
+(38)
+
+where ∆x (t) ≜ µx (t) − µθ (x̂(t)) represents the learning
+approximation error.
+Design of the learning-based observer (37): The objective consists in determining the observer gain such that
+
+{z
+
+Output error
+⊤
+
+}
+
++ (x̂ − x̂) T(x̂ − x̂)
+|
+{z
+}
+
+Consistency with UIO
+
++ λ∥µθ (x̂) − µ̂x ∥2
+|
+{z
+}
+
+Residual regularization
+
+(43)
+
+where T, Ty , and T are symmetric and positive definite
+weight matrices of appropriate dimensions, and λ > 0 is a
+regularization gain.
+Each quadratic term in the loss function (43) serves a
+specific purpose:
+• Tracking error term (x̂ − xref )⊤ T (x̂ − xref ): this term,
+retained from the original loss, penalizes deviations
+of the estimated state x̂ from the reference trajectory
+xref , ensuring the observer meets its primary objective
+of accurate tracking.
+• Output error term (y − y)⊤ Ty (y − y): by aligning
+the neural network predicted output y with actual
+measurements y, this term provides direct supervision
+from sensor data. It stabilizes training, particularly
+in early stages, and enhances the observer ability to
+adapt to real-time conditions.
+• Consistency with UIO associated term (x̂ − x̂)⊤ T(x̂ −
+x̂): this term forces the neural network state estimate
+x̂ to remain consistent with the UIO-based estimate,
+leveraging the stability of the physics-based model.
+It facilitates a smooth transition from the UIO estimate to the neural network data-driven refinement,
+preventing significant divergence when the neural network is still learning.
+• Residual regularization term λ∥µθ (x̂) − µ̂x ∥2 : this
+term regularizes the neural network learned dynamics
+µθ (x̂) to stay plausible relative to the estimate µ̂x ,
+mitigating overfitting and ensuring robustness.
+6. CONCLUSION
+This paper presented a robust hybrid estimation framework designed to address the challenges of vehicle motion
+tracking in the presence of unmodeled nonlinearities. We
+proposed a layered architecture that integrates a physicsbased Generalized Unknown Input Observer (UIO) with a
+data-driven Neural Adaptive Observer. To overcome the
+structural limitations of standard observers, specifically
+when the rank condition rank(CB) = rank(B) is not met,
+we introduced a regularization technique combined with
+an output-derivative based generalized model. This approach ensures the existence of the observer and provides
+a reliable initial estimate of the unknown dynamics. This
+estimate subsequently serves as a supervisor for a neural network, which refines the approximation of complex
+nonlinearities, such as variable tire-road friction, through
+online learning. Theoretical analysis demonstrated that
+the proposed method guarantees H1 and L2 stability for
+the estimation errors, provided that the derived Linear
+Matrix Inequality (LMI) conditions are satisfied. Future
+work will focus on the experimental validation of this
+framework using real driving data and its extension to
+discrete-time formulations for embedded implementation.
+REFERENCES
+Abdollahi, F., Talebi, H., and Patel, R. (2006). A stable neural network-based observer with application to
+flexible-joint manipulators. IEEE Transactions on Neural Networks, 17(1), 118–129. doi:10.1109/TNN.2005.
+863458.
+Arezki, H., Zemouche, A., Alessandri, A., and Bagnerini, P. (2023). LMI design procedure for incremental input/output-to-state stability in nonlinear systems.
+
+IEEE Control Systems Letters, 7, 3403–3408. doi:10.
+1109/LCSYS.2023.3331684.
+Bakhshande, F. and Söffker, D. (2015). Proportional–
+integral–observer: A brief survey with special attention to the actual methods using acc benchmark. volume 48. doi:10.3182/20150218-3-AU-30250/
+/978-3-902823-71-70058.
+Barfoot, T.D. (2017). State estimation for robotics.
+URL https://api.semanticscholar.org/CorpusID:
+65172180.
+Benallouch, M., Outbib, R., Boutayeb, M., and Laroche,
+E. (2017). Robust observers for a class of nonlinear systems using PEM fuel cells as a simulated case
+study. IEEE Transactions on Control Systems Technology. DOI: 10.1109/TCST.2017.2658181.
+Buisson-Fenet, M., Morgenthaler, V., Trimpe, S., and
+Di Meglio, F. (2021). Joint state and dynamics estimation with high-gain observers and gaussian process
+models. IEEE Control Systems Letters, 5(5), 1627–1632.
+doi:10.1109/LCSYS.2020.3042412.
+Chaouche, A., Zemouche, A., Ramdani, M., Chaib Draa,
+K., and Delattre, D. (2022). Unknown input estimation
+algorithms for a class of LPV/nonlinear systems with
+application to wastewater treatment process. Proceedings of the Institution of Mechanical Engineers, Part I:
+Journal of Syst. and Cont. Eng., 236(7), 1372–1385.
+Charandabi, B. and Marquez, H. (2014). A novel approach
+to unknown input filter design for discrete-time linear
+systems. Automatica, 50(2), 2835–2839.
+Hassan, L., Zemouche, A., and Boutayeb, M. (2013). Robust unknown input observers for nonlinear time-delay
+systems. SIAM Journal on Control and Optimization,
+51(4), 2735–2752.
+Hou, M. and Muller, P.C. (1992). Design of observers for
+linear systems with unknown inputs. IEEE Transactions
+on Automatic Control, 37(6), 871–875.
+Jeon, W., Xie, Z., Zemouche, A., and Rajamani, R. (2020).
+Simultaneous cyber-attack detection and radar sensor
+health monitoring in connected acc vehicles. IEEE
+Sensors Journal, 21(14), 15741–15752.
+Nguyen, Q., Sadki, O., Rafaralahy, H., Haddad, M., and
+Zemouche, A. (2024). Cyberattack detection by using
+a discrete-time model-based unknown input observer.
+IEEE Control Systems Letters, 8, 856–861.
+Phanomchoeng, G. and Rajamani, R. (2014). Real-time
+estimation of rollover index for tripped rollovers with a
+novel unknown input nonlinear observer. IEEE/ASME
+Transactions on Mechatronics, 19(2), 743–754.
+Söffker, D., Yu, T.J., and Müller, P.C. (1995). State
+estimation of dynamical systems with nonlinearities
+by using proportional-integral observer. International
+Journal of Systems Science, 26, 1571–1582.
+Trinh, H. and Fernando, T. (2011). Functional observers
+for dynamical systems, volume 420. Springer Science &
+Business Media.
+Trinh, H., Tran, T., and Fernando, T. (2008). Disturbance
+decoupled observers for systems with unknown inputs.
+IEEE Transactions on Automatic Control, 53(10), 2397–
+2402.
+Zemouche, A. and Boutayeb, M. (2009). Nonlinearobserver-based H∞ synchronization and unknown input
+recovery. IEEE Trans. Circuits Syst. I. Regul. Pap.,
+56(8), 1720–1731.
+
+

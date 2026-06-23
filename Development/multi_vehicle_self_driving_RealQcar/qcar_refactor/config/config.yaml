@@ -1,0 +1,29 @@
+vehicle:
+  car_id: 0
+  vehicle_type: Qcar       # "Qcar", "QcarROS" or "Limo"
+  max_throttle: 0.10       # safety clip for minimal runtime
+  max_steering: 0.48       # radians, hardware limit
+
+timing:
+  loop_rate_hz: 100        # main loop frequency
+  observer_rate_hz: 100    # same as loop rate for now
+  controller_rate_hz: 100
+  gui_rate_hz: 10
+  v2v_rate_hz: 25
+
+control:
+  target_velocity: 0.6     # m/s default
+  longitudinal: pid        # simple PID velocity control
+  lateral: pure_pursuit    # path-following algorithm
+
+path:
+  default_path: path_rich_output/pp_waypoints.csv   # relative to qcar_refactor/
+
+gui:
+  enabled: true
+  host: 0.0.0.0
+  base_port: 5000
+
+v2v:
+  enabled: true
+  base_port: 8000

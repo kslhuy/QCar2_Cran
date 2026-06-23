@@ -12,7 +12,7 @@ import numpy as np
 @dataclass
 class TimingConfig:
     """Timing and rate parameters"""
-
+    
     tf: float = 6000  # Experiment duration in seconds
     start_delay: float = 1  # Delay before starting control
     controller_update_rate: int = 200  # Hz

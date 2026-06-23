@@ -1,0 +1,151 @@
+# Local Estimator Configuration
+# Default parameters for the local state estimators used by VehicleObserver
+# Place this file under qcar/Observer/ and load it when starting observers.
+
+local_estimator_type: high_gain_observer # local_estimator_type: Which local estimator to use.
+                        # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
+
+# Plotting configuration
+enable_plotting: false # enable_plotting: Controls real-time visualization.
+                        # true: Opens Matplotlib/MultiScope windows to show real-time plots of state, error, etc.
+                        # false: No windows are opened.
+enable_recording: true # enable_recording: Controls data logging to CSV.
+                        # true: Logs data to scope_recordings/ (e.g., local_V0_120000.csv).
+                        # false: No data is logged to these files.
+recording_overwrite: false # recording_overwrite:
+                        # true: Overwrites the file (e.g., locl_V0.csv)
+                        # false: Creates a new timestamped file every run (e.g., local_V0_123456.csv)
+plotting:
+  fps: 30 # fps: Refresh rate for the plots.
+  time_window: 20.0 # time_window: How much history (in seconds) to show on the moving plots.
+  save_only: true # save_only: If enable_plotting is true and this is true, it runs in "headless" mode (no window, but still processes the scope logic, useful if you wanted to save video frames or verify logic without GUI).
+
+
+# Local estimator defaults
+local:
+  # ---------------------------------------------------------------------
+  # Shared sensor filtering defaults
+  # ---------------------------------------------------------------------
+  common:
+    v_lpf_alpha: 0.15  # LPF coefficient for motor_tach applied in VehicleObserver.
+    accel_ema_alpha: 0.25  # EMA coefficient for IMU acceleration applied in VehicleObserver.
+    gps_valid_hold_mode: adaptive  # adaptive = derive freshness window from measured GPS packet interval; fixed = use gps_valid_hold_seconds below.
+    gps_valid_hold_seconds: 0.20  # Fixed fallback only; for 5 Hz GPS this should not be below the packet interval.
+    gps_valid_hold_scale: 1.15  # Adaptive hold = scale * measured GPS period.
+    gps_valid_hold_min_seconds: 0.08  # Lower clamp for adaptive/fixed hold window.
+    gps_valid_hold_max_seconds: 0.35  # Upper clamp for adaptive/fixed hold window.
+
+  # ---------------------------------------------------------------------
+  # EKF estimator defaults
+  # ---------------------------------------------------------------------
+  ekf:
+    use_qcar_ekf: true  # Whether to use QCarEKF (if available)
+
+  # ---------------------------------------------------------------------
+  # Luenberger estimator defaults
+  # ---------------------------------------------------------------------
+  luenberger:
+    observer_gain: 0.5  # Observer gain (0-1, higher = more aggressive correction)
+
+  # ---------------------------------------------------------------------
+  # Local High-Gain / practical observer
+  # ---------------------------------------------------------------------
+  longitudinal_high_gain_observer:
+    L: [[5], [10], [5]]
+    theta: 5.0
+    gamma: 1.0
+    max_accel: 8.0
+    max_position_innovation: 0.5
+    
+    
+
+  high_gain_observer:
+    observer_mode: classical
+    predict_model: 2
+    N: [[4.72, 9.72], [8.14, 1.14], [4.71, 0.71], [4.72, 9.72], [8.14, 1.14], [4.71, 0.71]] 
+    LX: [[1], [2], [1]]
+    LY: [[1], [2], [1]]
+    theta: 8.0
+    pos_gain: 0.35
+    pos_to_vel_gain: 0.12
+    pos_to_acc_gain: 0.03
+    vel_gain: 0.30
+    acc_from_vel_gain: 0.10
+    yaw_correction_gain: 0.08
+    gps_heading_gain: 0.05
+    min_speed_for_heading: 0.5
+    max_speed: 5.0
+    max_accel: 8.0
+    max_position_innovation: 0.5
+
+
+
+  # ---------------------------------------------------------------------
+  # Neural Luenberger estimator
+  # ---------------------------------------------------------------------
+  # Full configuration is in: LocalNeuralObs/2LayerObs/neural_obs_params.yaml
+  # Runtime overrides can be passed via estimator_params in initialize_local_estimator()
+  neural_luenberger: {}
+
+  # ---------------------------------------------------------------------
+  # Robust KalmanNet estimator
+  # ---------------------------------------------------------------------
+  robust_kalman_net:
+    predictor_mode: kinematic    # Explicitly use kinematic model for prediction, leaving only the update step to use the GRU NN
+    use_model: true              # Create the network adapter and try to use learned inference.
+    load_pretrained: true       # Set true after training and saving a checkpoint.
+    model_path: models/robust_kalmannet.pt # Relative to Observer/KalmaNet/Robust/
+    allow_untrained_model: false # Keep false for runtime use; random weights are not useful.
+    use_fallback: false           # Use GPS-corrected kinematic fallback when no checkpoint is available.
+    enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
+    comparator_use_qcar_ekf: true # Use QCarEKF inside the comparator when available.
+    comparator_console_log: false # Keep console quiet during runtime.
+    comparator_log_interval: 100  # If console logging is enabled, log every N updates.
+    comparator_history_size: 200 # Keep the last N comparison snapshots in memory.
+    comparator_record_to_file: true # File logging adds jitter; enable only for short debug runs.
+    comparator_record_interval: 10 # Record every N updates to the CSV file.
+    comparator_flush_interval: 200 # Flush the comparator CSV every N recorded rows.
+    comparator_output_dir: logs/comparator # Relative to Observer/KalmaNet/Robust/
+    comparator_file_prefix: rknet_comparison
+    comparator_overwrite: false
+    mask_branch_active_threshold: 0.5 # For log interpretation only; marks a branch as "active" when mean mask >= threshold.
+    sequence_length: 10          # Rolling window length for sequence inference.
+    min_history: 5               # Minimum history before running the network.
+    streaming_inference: true    # Reuse hidden state and run one model step per tick instead of replaying the whole window.
+    dt: 0.02                     # Nominal sample time used by the trained model. Keep this aligned with the real inference cadence.
+    velocity_lpf_alpha: 0.25     # Blend tachometer with estimated velocity.
+    gps_position_gain: 0.35      # GPS correction gain for x/y.
+    gps_heading_gain: 0.40       # GPS correction gain for heading.
+    yaw_rate_blend: 0.20         # Blend gyro_z into the model yaw-rate state.
+    heading_filter_enabled: true # Run a small yaw-angle pre-filter using gyro_z prediction and GPS heading correction.
+    heading_filter_q_psi: 0.001  # Process noise on heading angle inside the pre-filter.
+    heading_filter_q_bias: 0.0001 # Process noise on gyro bias inside the pre-filter.
+    heading_filter_r_gps: 0.0025 # Measurement noise for GPS heading inside the pre-filter.
+    heading_output_gain: 0.0     # Backward-compatible fallback if per-mode gains below are omitted.
+    heading_output_gain_gps_valid: 0.35 # Pull model heading toward filtered heading when GPS heading is available.
+    heading_output_gain_gps_invalid: 0.12 # Keep some gyro-based heading anchoring during GPS dropout without fully overriding the network.
+    heading_output_max_correction: 0.35 # Limit one-step heading correction (rad) to avoid snaps.
+    wheel_speed_scale: 1.0       # Proxy conversion from motor tach to wheel-speed channels.
+    device: cpu                  # Tiny 1-step streaming inference is usually more stable on CPU than auto/GPU.
+    pred_hidden: 32
+    upd_hidden: 32
+    gain_hidden: 32
+    pred_mlp_hidden: 32
+    mask_hidden: 32
+    update_mask_init_bias: 2.0   # Positive bias keeps the updater mask closer to pass-through at initialization.
+    use_hard_mask: false
+
+# Example override (when loading config into VehicleObserver):
+# vehicle_observer_config:
+#   observer:
+#     local_estimator_type: neural_luenberger
+#     local:
+#       neural_luenberger:
+#         learning_rate: 0.01
+#         batch_size: 5
+#         load_pretrained: true
+#         # Enable two-layer architecture with PI observer
+#         use_uio: true
+#         loss_type: 'composite_uio'
+#         uio_type: 'pi'  # Use PI observer from old system
+

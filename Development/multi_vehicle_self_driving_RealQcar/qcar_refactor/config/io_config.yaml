@@ -1,0 +1,32 @@
+# IO configuration for vehicles. This file is used to set the read and write rates for sensors and GPS, as well as the maximum throttle and steering limits for safety.
+vehicle_example:
+  write:
+    max_throttle: 1       # safety clip for minimal runtime
+    max_steering: 1       # radians, hardware limit
+  read:
+    sensor_rate_hz: 100
+    gps_rate_hz: 10
+
+qcar:
+  write:
+    max_throttle: 0.10       # safety clip for minimal runtime
+    max_steering: 0.48       # radians, hardware limit
+  read:
+    sensor_rate_hz: 100
+    gps_rate_hz: 10
+
+qcar_ros:
+  write:
+    max_throttle: 0.10       # safety clip for minimal runtime
+    max_steering: 0.48       # radians, hardware limit
+  read:
+    sensor_rate_hz: 100
+    gps_rate_hz: 10
+
+limo_ros:
+  write:
+    max_throttle: 0.10       # safety clip for minimal runtime
+    max_steering: 0.48       # radians, hardware limit
+  read:
+    sensor_rate_hz: 100
+    gps_rate_hz: 10

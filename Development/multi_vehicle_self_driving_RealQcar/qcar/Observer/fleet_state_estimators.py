@@ -33,9 +33,7 @@ def _normalize_state_array(state_array, expected_dim: int, logger=None) -> Optio
             return arr[:expected_dim]
         # Pad with zeros when shorter than expected
         if logger:
-            logger.logger.debug(
-                f"State dim {arr.shape[0]} smaller than expected {expected_dim}, padding with zeros"
-            )
+            logger.logger.debug(f"State dim {arr.shape[0]} smaller than expected {expected_dim}, padding with zeros")
         return np.pad(arr, (0, expected_dim - arr.shape[0]), mode="constant")
     except Exception as exc:
         if logger:
@@ -176,7 +174,7 @@ class FleetStateEstimatorBase(ABC):
 
     def _get_latest_fleet_data(self, neighbor_id: int, current_time_ns: int) -> Optional[Dict]:
         """Return the newest fleet dictionary from a neighbor that is still valid.
-
+        
         Returns None if there is no recent valid snapshot.
         """
         if neighbor_id not in self.received_fleet_states:
@@ -198,8 +196,7 @@ class FleetStateEstimatorBase(ABC):
         Returns None if no recent state is available or conversion fails.
         """
         if vehicle_id not in self.received_local_states:
-            if self.logger:
-                #TODO: Better fall out the distributed estimator when its happen too much. 
+            if self.logger: 
                 self.logger.logger.warning(f"vehicle_id {vehicle_id} not in self.received_local_states")
             return None
 
@@ -223,9 +220,6 @@ class FleetStateEstimatorBase(ABC):
 
             if state_vec is not None:
                 return state_vec
-            
-        # if self.logger:
-        #     self.logger.logger.debug(f"No valid recent state for vehicle_id {vehicle_id}")
         return None
 
     

@@ -1,0 +1,31 @@
+mass: float = 3.4,
+C_w: float = 0.3,
+R_d: float = 0.03,
+tau: float = 0.1,
+mu: float = 0.8,
+g: float = 9.81,
+# --- Leader desired speed ---
+v_h1: float = 0.0,
+# --- control parameters for vehicle 1 ---
+alpha1: float = 1,
+beta1: float = 2,
+v_max1: float = 0.3,
+s_st1: float = 0.1,
+s_go1: float = 0.3,
+# --- control parameters for vehicle 2 ---
+alpha2: float = 1,
+beta2: float = 2,
+v_h2: float = 0.0,
+v_max2: float = 0.3,
+s_st2: float = 0.1,
+s_go2: float = 0.3,
+# --- control parameters for vehicle 3 ---
+alpha3: float = 1,
+beta3: float = 2,
+v_h3: float = 0.0,
+v_max3: float = 0.3,
+s_st3: float = 0.1,
+s_go3: float = 0.3,
+# --- output mapping ---
+max_throttle: float = 0.3,
+torque_to_throttle: float = 0.02,

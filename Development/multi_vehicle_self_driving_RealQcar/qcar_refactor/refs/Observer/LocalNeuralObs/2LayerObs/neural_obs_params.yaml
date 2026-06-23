@@ -1,0 +1,465 @@
+# ============================================================================
+# Neural Observer Configuration File
+# ============================================================================
+#
+# This file contains all parameters for the NeuralLuenbergerEstimator.
+# Modify these values to tune observer and neural network performance.
+#
+# ============================================================================
+
+# ============================================================================
+# Neural Network Architecture
+# ============================================================================
+neural_network:
+  # Input dimension (6 for [v_x, v_y, ψ, r, δ, a], 8 with acceleration)
+  input_dim: 6 # When using acceleration, automatic set to 8
+  
+  # Hidden layer dimension
+  hidden_dim: 24
+  
+  # Output dimension (tire residuals [w_r, w_f])
+  output_dim: 2
+  
+  # Network architecture type:
+  #   - 'mlp': Original 3-layer feedforward (NeuralObserverNet) with spectral norm
+  #   - 'gru': GRU-based recurrent network (GRUTireResidualNet) with temporal memory
+  #            RECOMMENDED: Captures tire relaxation dynamics, load transfer memory.
+  #            Uses LayerNorm + Tanh scaling instead of spectral norm.
+  network_type: gru
+  
+  # Output scale: maximum NN output magnitude (Tanh * output_scale)
+  # Should match expected tire residual range. QCar2: typically 5-25 N.
+  # Lower values constrain the NN architecturally, preventing overshoot.
+  output_scale: 50.0
+
+  # Sign flip: negate NN output if it learns opposite sign of expected residual
+  # ENABLED: The NN learns correct pattern/magnitude but wrong sign.
+  # This is a physics mismatch - tire saturation means F_true < F_linear,
+  # so residual w = F_true - F_linear < 0, but the loss function is symmetric
+  # and doesn't encode this constraint. Hard flip fixes it.
+  nn_output_sign_flip: false
+
+  # Include IMU acceleration [a_x, a_y] in NN input (changes input_dim to 8)
+  # RECOMMENDED: true when using 'physics_tire' loss — gives the NN access to
+  # load-transfer and transient dynamics information that improves tire residual
+  # prediction during braking, fast steering, and surface changes.
+  use_acceleration: false
+
+  # Disturbance estimation mode: 'tire' (default 2D: [w_r, w_f]) or 'general' (3D: [d_vx, d_vy, d_r])
+  disturbance_mode: 'tire'
+
+# ============================================================================
+# Learning Parameters
+# ============================================================================
+learning:
+  # Learning rate for optimizer
+  learning_rate: 0.002
+  
+  # Batch size for gradient accumulation
+  # Smaller = more frequent updates. With open-loop prediction loss,
+  # each sample gives a strong gradient signal.
+  batch_size: 2
+  
+  # Weight decay (L2 regularization adam optimizer)
+  weight_decay: 0.0
+  
+  # Regularization coefficient for f_nn - f_uk term
+  # NOTE: For 'physics_tire' loss, this is NOT used (replaced by w_ay, w_smooth, lambda_bound).
+  #       For 'composite_uio' and 'measurement_full', high values pull NN toward Layer 1 estimate.
+  #       If Layer 1 is inaccurate, set this LOW or use 'prediction_error' loss instead.
+  lambda_regularization: 100.0
+  
+  # Learning mode: 'learningby_dict' (batch) or 'continuous_learning' (online)
+  learning_mode: learningby_dict
+  
+  # Dictionary size for learningby_dict mode
+  # Larger = more training data per batch cycle. 100+ recommended for prediction_error.
+  dict_size: 50
+  
+  # Gradient computation method:
+  #   - 'autodiff': PyTorch automatic differentiation (recommended, requires PyTorch)
+  #   - 'analytical': Manual sensitivity propagation (faster, no PyTorch needed)
+  gradient_method: autodiff
+  
+  # Gradient clipping max norm (0 = disabled)
+  # Prevents exploding gradients, especially important for GRU networks
+  # NOTE: 1.0 was too aggressive — with ~4500 GRU params, each param got
+  # only ~0.015 gradient, making learning impossibly slow.
+  # Recommended: 10.0 for GRU, 20.0 for MLP, 0 to disable
+  grad_clip_norm: 10.0
+
+  # ---- Selective Data Curation (for learningby_dict mode) ----
+  # These parameters control WHAT data enters the learning dictionary.
+  # Goal: only train on rich, informative data (turning, lateral dynamics)
+  # and skip redundant straight-line samples.
+  #
+  # NOTE: When first debugging, set novelty_threshold=0 and min_excitation=0
+  #       to accept ALL data. Re-enable once the loss converges.
+
+  # Minimum normalized distance to existing dict entries for acceptance.
+  # Higher = more selective, only very different data accepted.
+  # 0.0 = disabled (accept everything, like original LearningBatch).
+  # Recommended: 0.03 - 0.10 (set 0.0 for initial debugging)
+  novelty_threshold: 0.0
+
+  # Minimum excitation score to accept a sample.
+  # Based on |δ|, |r|, |v_y| — measures how much tire nonlinearity is excited.
+  # Samples below this threshold (e.g., straight-line driving) are rejected.
+  # 0.0 = disabled. Recommended: 0.01 - 0.05 (set 0.0 for initial debugging)
+  min_excitation: 0.0
+
+  # Weight for excitation score when deciding which entry to replace.
+  # Higher = prefer replacing low-excitation entries over high-excitation ones.
+  excitation_bonus_weight: 2.0
+
+  # Replacement strategy when dictionary is full:
+  #   true: Replace most similar entry (maximize diversity)
+  #   false: Replace entry with lowest excitation score
+  use_diversity_replacement: false
+
+# ============================================================================
+# Observer Parameters
+# ============================================================================
+observer:
+  # Observer gain coefficient (for diagonal L matrix)
+  observer_gain: 0.5
+  
+  # Sample time [seconds]
+  sample_time: 0.01
+  
+  # Minimum velocity threshold to avoid singularities [m/s]
+  # NOTE: Lower values allow estimation closer to zero but may cause numerical issues
+  min_vx: 0.1
+
+# ============================================================================
+# Observer Gain Design Configuration
+# ============================================================================
+# Advanced LMI-based gain design with H∞/L2/H2 performance criteria
+# Now supports discrete-time Schur-form LMI for robust observer design.
+#
+observer_gain_design:
+
+  # Use common Lyapunov matrix for robust stability guarantee
+  #   - true: Solves for a single P matrix common to all vertices.
+  #           Guarantees Quadratic Stability under arbitrary fast switching.
+  #           More conservative (harder to find a solution).
+  #   - false: Solves for a different P_i matrix for each vertex.
+  #            Guarantees stability at each frozen operating point.
+  #            Less conservative (easier to find solution) but theoretically 
+  #            permits instability during very fast transitions.
+  use_common_lyapunov: false
+
+  # C matrix mode for gain design (measurement configuration)
+  # Options: '7D_FULL', '6D_WITH_AY', '5D_GPS_IMU', '4D_IMU_ONLY'
+  # Default is '7D_FULL' for compatibility with previous versions.
+  c_matrix_mode: '7D_FULL'
+  
+  # Optional: manually specify default gain matrix as 2D list
+  # Shape must be (6, meas_dim) matching the c_matrix_mode
+  # If not set, a reasonable default is generated automatically
+  # default_gain_matrix: null
+
+  # Gain design method:
+  #   - 'default': Simple diagonal gains (fastest, no external dependencies)
+  #   - 'lmi': Standard LMI-based Lyapunov design (requires CVXPY)
+  #   - 'hinf': H∞ LMI design with bounded disturbance attenuation (recommended)
+  #   - 'l2': L2-gain bounded LMI design
+  #   - 'h2': H2 norm minimization (energy-optimal)
+  #   - 'contraction': Pure stability with contraction rate
+  #   - 'qlpv_scheduled': Polytopic qLPV gain scheduling (robust across operating range)
+  method: "qlpv_scheduled"
+  
+  # H∞ performance bound γ: ||error|| ≤ γ||disturbance||
+  # Smaller = better attenuation but harder to satisfy (typical: 1.0-5.0)
+  # NOTE: Higher values needed for 'general' (3D) disturbance mode
+  hinf_gamma: 50.0
+  
+  # L2 gain bound (for 'l2' method, typical: 1.0-3.0)
+  l2_gamma: 50.0
+  
+  # Minimum exponential decay rate α for continuous LMI (controls convergence speed)
+  # Larger = faster convergence but may be infeasible (typical: 0.1-2.0)
+  lmi_decay_rate: 0.5
+  
+  # Contraction rate λ for discrete-time design (0 < λ < 1)
+  # Smaller = faster error decay, but may be infeasible (typical: 0.9-0.99)
+  contraction_rate: 0.96
+  
+  # Nominal velocity for single-point LMI design [m/s]
+  nominal_vx: 0.5
+  
+  # Enable qLPV polytopic gain scheduling (works with any method as enhancement)
+  use_gain_scheduling: true
+  
+  # Velocity range for gain scheduling [m/s]
+  # NOTE: min_vx >= 0.5 recommended to avoid numerical issues in tire model
+  vx_range: [0.2, 2.0]
+  
+  # Maximum steering angle for scheduling [rad]
+  delta_max: 0.5
+  
+  # Number of polytope vertices
+  n_vx_vertices: 3
+  n_delta_vertices: 3
+  
+
+
+# ============================================================================
+# Prediction Error Loss Weights (for loss type: 'prediction_error')
+# ============================================================================
+# These weights control the self-supervised prediction error loss:
+#
+#   L = L_pred + L_l2 + L_smooth + L_bound + L_warmstart + L_corr [+ L_uio]
+#
+#   L_pred:      Innovation   — ||y - (C·x̂_prior + D·u + F·f_nn)||²_W
+#   L_l2:        Magnitude    — lambda_l2 · ||f_nn||²  (prevents overshoot)
+#   L_smooth:    Temporal      — w_smooth · ||f_nn(k) - f_nn(k-1)||²
+#   L_bound:     Soft bound    — lambda_bound · max(0, |f_i| - f_max)²
+#   L_warmstart: Warm start    — decaying pull toward Layer 1 estimate
+#   L_corr:      Correlation   — w_corr · (w_r - w_f)²  (same-sign coupling)
+#   L_uio:       Consistency   — w_uio · ||x̂_nn - x̂_uio||²
+#
+weights_prediction_error:
+  # Scale-aware measurement weights for prediction error
+  # Now ALL channels provide gradient (through differentiable x_new),
+  # not just ay/ax. vx and r are particularly informative for tire dynamics.
+  w_vx: 5.0     # Velocity — important, affected by tire residuals via E matrix
+  w_r: 15.0     # Yaw rate — strongest tire residual signal via E matrix
+  w_psi: 1.0    # Heading
+  w_X: 0.5      # Position X
+  w_Y: 0.5      # Position Y
+  w_ay: 30.0    # Lateral acceleration (F feedthrough) — direct tire signal
+  w_ax: 5.0     # Longitudinal acceleration (F feedthrough)
+
+  # L2 magnitude penalty: lambda_l2 * ||f_nn||²
+  # REDUCED: was fighting the learning signal and pulling toward zero.
+  # Set very low — the prediction error gradient is now strong enough to self-regulate.
+  lambda_l2: 0.02
+
+  # Temporal smoothness: w_smooth * ||f_nn(k) - f_nn(k-1)||²
+  # REDUCED: was resisting movement away from zero initialization.
+  # Still needed to prevent oscillation, but lower so NN can converge to negative values.
+  w_smooth: 0.5
+
+  # Soft physical bound: lambda_bound * max(0, |f_i| - f_max)²
+  # Only activates when |f_nn| > f_max, so doesn't suppress small values
+  lambda_bound: 0.1
+  f_max: 25.0
+
+  # Warm start: decaying pull toward Layer 1 tire estimate
+  # lambda_warmstart * exp(-step/warmstart_decay) * ||f_nn - w_hat_L1||²
+  # REDUCED: If Layer 1 estimates are near zero, this was reinforcing zero.
+  # Faster decay (100 steps) so NN can learn independently sooner.
+  lambda_warmstart: 1
+  warmstart_decay: 100
+
+  # Tire residual correlation: w_corr * (w_r - w_f)²
+  # Both tires saturate in the same direction during cornering, so w_r and w_f
+  # should have similar sign and magnitude. This coupling prevents the NN from
+  # learning opposite-sign residuals (observability fix).
+  # INCREASED: With architectural coupling in GRU (80% shared), this provides
+  # additional gradient signal to keep outputs aligned.
+  w_corr: 5.0
+
+  # UIO consistency weight (low — advisory only, too high fights prediction error)
+  w_uio: 0.2
+
+# ============================================================================
+# Loss Function Configuration
+# ============================================================================
+# Available types:
+#   - 'measurement_full': Standard measurement tracking loss
+#   - 'composite_uio': Two-layer UIO loss with trajectory reference
+#   - 'physics_tire': Physics-informed tire residual loss
+#     Adds direct IMU lateral acceleration constraint on tire residuals,
+#     temporal smoothness, and soft physical bounds.
+#     WARNING: Requires accurate r_dot (yaw acceleration) which is noisy.
+#              Now uses Butterworth filter + confidence weighting to mitigate.
+#   - 'prediction_error': Self-supervised 1-step prediction error (RECOMMENDED)
+#     No need for noisy physics target w*. Trains NN to minimize how well
+#     the observer predicts the next measurement. Works with noisy sensors.
+#     Does NOT require r_dot computation.
+#   - 'simple_residual': SIMPLEST - Pure supervised learning (DEBUGGING/TESTING)
+#     Loss: ||f_nn - f_target||²
+#     Just tries to match the target tire residual directly.
+#     No observer dynamics, no sensitivity propagation.
+#     Use this to test if the NN can learn tire residuals at all.
+#     Target source configured by 'simple_residual_target' below.
+#
+loss:
+  # Loss function type
+  type: simple_residual
+
+# ============================================================================
+# Simple Residual Learning Configuration (for loss type: 'simple_residual')
+# ============================================================================
+# Simplest possible loss with smoothness:
+#   L = weight * ||f_nn - f_target||² + smooth * ||f_nn - f_nn_prev||²
+# Use this to verify the NN architecture can learn tire residuals before
+# adding complex observer dynamics.
+#
+simple_residual:
+  # Target source:
+  #   - 'layer1': Use Layer 1 observer's tire residual estimate (w_hat)
+  #   - 'ground_truth': Use true tire residual from simulator (if available)
+  #   - 'mix': Average of Layer 1 estimate and ground truth (for noisy sim data) 
+  target: mix
+  
+  # Loss weight for target matching (higher = faster learning but may overshoot)
+  weight: 6.0
+  
+  # Smoothness weight: penalizes rapid changes in f_nn
+  # Higher = smoother output but slower response to changing dynamics
+  # Recommended: 0.3 - 1.0
+  smooth: 1
+
+# ============================================================================
+# Physics-Informed Tire Loss Weights (for loss type: 'physics_tire')
+# ============================================================================
+# These weights directly control how the NN learns tire residuals:
+#
+#   L = L_state + L_physics + L_smooth + L_bound + L_warmstart [+ L_ref]
+#
+#   L_state:     UIO consistency    — keeps NN close to Layer 1 state
+#   L_physics:   2D physics target  — solved from lateral force + yaw moment equations
+#                w* = A^{-1} b, where A = [[1, cos(d)],[-lr, lf*cos(d)]]
+#   L_smooth:    temporal smooth    — prevents wild oscillation of [w_r, w_f]
+#   L_bound:     soft magnitude     — penalizes |f| > f_max (physical plausibility)
+#   L_warmstart: warm start         — decaying pull toward Layer 1 estimate
+#   L_ref:       reference track    — optional trajectory tracking (uses weights_ref)
+#
+weights_physics_tire:
+  # Solved 2D physics target weight (replaces old 1D w_ay)
+  # Uses both lateral force AND yaw moment equations to uniquely solve (w_r*, w_f*)
+  # Higher = stronger direct supervision from physics
+  # WARNING: Target w* is noisy due to finite-difference r_dot.
+  # Reduced from 30 to 5 to avoid fitting noise. The Butterworth filter + confidence
+  # weighting in the solver further mitigates, but keep this moderate.
+  # Recommended: 3-10 (was 30 before fix)
+  w_physics_target: 5.0
+
+  # Legacy 1D lateral acceleration constraint (DISABLED by default)
+  # Set > 0 to re-enable old behavior alongside the 2D target
+  w_ay: 0.0
+
+  # Temporal smoothness weight
+  # Penalizes |f_nn(k) - f_nn(k-1)|² to prevent oscillation
+  # Recommended: 0.3-1.0 (reduced from 2 to allow faster adaptation)
+  w_smooth: 0.5
+
+  # Soft physical bound penalty weight
+  # Penalizes max(0, |f_i| - f_max)² for each residual component
+  lambda_bound: 0.1
+
+  # Maximum expected tire residual magnitude [N]
+  # QCar2 typical range: 10-80 N depending on speed and surface
+  f_max: 50.0
+
+  # Warm start: initial pull toward Layer 1 residual estimate
+  # Decays exponentially: lambda_warmstart * exp(-step/warmstart_decay)
+  # Reduced to avoid pulling NN toward potentially wrong Layer 1 estimate
+  lambda_warmstart: 1.0
+  warmstart_decay: 200
+
+  # r_dot EMA smoothing factor for finite-difference yaw acceleration
+  # NOTE: Now using 2nd-order Butterworth filter internally (much better).
+  # This parameter is kept for backward compatibility but is no longer the
+  # primary filter. The Butterworth cutoff is ~3 Hz at 100 Hz sample rate.
+  # 0 = full smoothing (no change), 1 = no smoothing (pure finite diff)
+  rdot_ema_alpha: 0.3
+
+# ============================================================================
+# Weight Matrices for Loss Functions
+# ============================================================================
+# Higher weights = more importance in loss function
+#
+
+# Weights for standard measurement loss (6D state)
+weights_measurement:
+  v_x: 3.0
+  v_y: 3.0 ## Seem not used , dont have v_y in measurement
+  psi: 3.0
+  psi_dot: 3.0
+  X: 1.0
+  Y: 1.0
+
+# Weights for composite UIO loss - reference tracking term
+weights_ref:
+  v_x: 5.0  ## Seem not used 
+  v_y: 5.0  ## Seem not used 
+  psi: 0.5
+  psi_dot: 3.0  ## Seem not used 
+  X: 1.0
+  Y: 1.0
+
+# Weights for composite UIO loss - UIO agreement term
+weights_uio:
+  v_x: 5.0
+  v_y: 5.0
+  psi: 1.0
+  psi_dot: 1.0
+  X: 1.0
+  Y: 1.0
+
+# ============================================================================
+# First-Layer Observer Configuration
+# ============================================================================
+# Available first-layer observer types:
+#   - 'huy_uio': Linear observer with LMI-based gain design
+#             Best for: Well-understood dynamics, robust stability guarantees
+#   - 'qlpv': qLPV Augmented-State Observer with LMI-based gain design
+#             Best for: Well-understood dynamics, robust stability guarantees
+#   - 'qlpv_kalman': qLPV Augmented-State Observer with EKF-style Kalman gains
+#             Best for: Dynamic gain adaptation, handling varying noise levels
+#   - 'differentiator_uio': Differentiator + UIO observer with LMI gains
+#             Best for: Direct residual estimation, simpler structure
+#   - 'differentiator_uio_ekf': Differentiator + UIO observer with EKF gains
+#             Best for: Combining UIO robustness with EKF optimality
+#
+first_layer:
+  # Enable two-layer architecture with first-layer observer
+  enabled: true
+  
+  # First-layer observer type (see options above)
+  type: qlpv_kalman
+  
+  # If true, bypasses the neural network and returns only the first-layer estimate.
+  # Use this to run without neural correction/training while keeping logging structure.
+  output_first_layer_only: false
+
+  # Use 8D system (accelerations as states) for first-layer observer
+  use_8d_system: false
+
+  # Velocity threshold below which 1st layer observer overrides 2nd layer [m/s]
+  # Useful for start/stop scenarios where NN might be unstable.
+  override_threshold: 0.1
+
+# ============================================================================
+# Model Persistence
+# ============================================================================
+model:
+  # Path to save/load trained model weights
+  path: trained_data/neural_observer_model.pt
+  
+  # Load pretrained model on initialization
+  load_pretrained: false
+
+# ============================================================================
+# Data Recording Configuration
+# ============================================================================
+# Record all observer data for offline analysis and plotting
+#
+recording:
+  # Enable data recording to CSV
+  enable_recording: true
+  
+  # Output directory for recordings (relative to LocalNeuralObs directory)
+  output_dir: "neural_obs_recordings"
+  
+  # Specific filename (optional). If set, saves to this file instead of timestamped one.
+  # If append_mode is true, appends to this file.
+  filename: "neural_obs_2layer"
+  
+  # Append to existing file instead of creating new one
+  append_mode: false
+# ============================================================================
