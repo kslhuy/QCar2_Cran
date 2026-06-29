@@ -1,5 +1,5 @@
 """
-Unit tests for core.vehicle_io — BaseVehicleIO (via test stub) and NullVehicleIO.
+Unit tests for utils.IO.BaseIO — BaseVehicleIO (via test stub) and NullVehicleIO.
 
 Run from the qcar_refactor directory:
     python -m unittest test.unit_test_vehicle_io
@@ -14,9 +14,9 @@ import numpy as np
 # Ensure the qcar_refactor package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.vehicle_io import BaseVehicleIO, NullVehicleIO
-from core.types import SensorData, ControlCommand
-import core.vehicle_io as vio_mod
+from core.Types import SensorData, ControlCommand
+from utils.IO.BaseIO import BaseVehicleIO, NullVehicleIO
+import utils.IO.BaseIO as vio_mod
 
 # ---------------------------------------------------------------------------
 # Concrete stub that lets us test BaseVehicleIO without real hardware
@@ -152,7 +152,7 @@ class TestVehicleIO(unittest.TestCase):
     # 3. read_sensors rate limiting (mutates cache in-place, returns None)
     # ------------------------------------------------------------------
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_sensors_polls_on_first_call(self, mock_time):
         mock_time.return_value = 100.0
         self.io.read_sensors()
@@ -160,7 +160,7 @@ class TestVehicleIO(unittest.TestCase):
         self.assertEqual(self.io._sensor_data_cache.motor_tach, 1.0)
         self.assertEqual(self.io._sensor_data_cache.sensor_timestamp, 100.0)
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_sensors_skips_within_rate_window(self, mock_time):
         mock_time.return_value = 100.0
         self.io.read_sensors()
@@ -169,7 +169,7 @@ class TestVehicleIO(unittest.TestCase):
         self.io.read_sensors()
         self.assertEqual(self.io.poll_sensor_count, 1)  # still 1
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_sensors_polls_after_rate_elapsed(self, mock_time):
         mock_time.return_value = 100.0
         self.io.read_sensors()
@@ -182,14 +182,14 @@ class TestVehicleIO(unittest.TestCase):
     # 4. read_gps rate limiting
     # ------------------------------------------------------------------
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_gps_polls_on_first_call(self, mock_time):
         mock_time.return_value = 100.0
         self.io.read_gps()
         self.assertEqual(self.io.poll_gps_count, 1)
         self.assertTrue(self.io._sensor_data_cache.gps_valid)
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_gps_skips_within_rate_window(self, mock_time):
         mock_time.return_value = 100.0
         self.io.read_gps()
@@ -202,7 +202,7 @@ class TestVehicleIO(unittest.TestCase):
         interval = 1.0 / self.config["read"]["gps_rate_hz"]  # 0.1
         self.io._sensor_data_cache.gps_timestamp = 100.0
         self.io.poll_gps_count = 0
-        with patch("core.vehicle_io.time.time", return_value=100.0 + 2 * interval):
+        with patch("utils.IO.BaseIO.time.time", return_value=100.0 + 2 * interval):
             self.io.read_gps()
         self.assertEqual(self.io.poll_gps_count, 1)
 
@@ -210,7 +210,7 @@ class TestVehicleIO(unittest.TestCase):
     # 5. read_to_cache() + read() — poll then snapshot
     # ------------------------------------------------------------------
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_to_cache_polls_both(self, mock_time):
         """read_to_cache() triggers both sensor and GPS polls."""
         mock_time.return_value = 200.0
@@ -221,7 +221,7 @@ class TestVehicleIO(unittest.TestCase):
         self.assertEqual(self.io._sensor_data_cache.motor_tach, 1.0)
         self.assertEqual(self.io._sensor_data_cache.gyro_z, 0.5)
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_returns_snapshot_after_poll(self, mock_time):
         """read() returns a copy of whatever read_to_cache() populated."""
         mock_time.return_value = 200.0
@@ -233,7 +233,7 @@ class TestVehicleIO(unittest.TestCase):
         self.assertTrue(data.gps_valid)
         np.testing.assert_array_equal(data.gps_position, np.array([10.0, 20.0, 0.0]))
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_is_pure_snapshot_no_side_effect(self, mock_time):
         """read() must NEVER trigger a poll — it's a pure getter."""
         mock_time.return_value = 200.0
@@ -248,7 +248,7 @@ class TestVehicleIO(unittest.TestCase):
         self.assertEqual(data.motor_tach, 0.0)
         self.assertFalse(data.gps_valid)
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_returns_copy_not_reference(self, mock_time):
         """Mutating returned arrays must not affect internal cache."""
         mock_time.return_value = 200.0
@@ -326,7 +326,7 @@ class TestVehicleIO(unittest.TestCase):
     # 8. NullVehicleIO
     # ------------------------------------------------------------------
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_null_io_read_returns_defaults(self, mock_time):
         mock_time.return_value = 300.0
         data = self.null_io.read()
@@ -344,7 +344,7 @@ class TestVehicleIO(unittest.TestCase):
     def test_null_io_stop_is_noop(self):
         self.null_io.stop()  # no exception
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_null_io_never_polls(self, mock_time):
         """NullVehicleIO always keeps defaults in cache."""
         mock_time.return_value = 100.0
@@ -359,7 +359,7 @@ class TestVehicleIO(unittest.TestCase):
     # 9. Edge: rate limiting at exact boundary
     # ------------------------------------------------------------------
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_sensors_polls_at_exact_boundary(self, mock_time):
         mock_time.return_value = 100.0
         self.io.read_sensors()
@@ -368,7 +368,7 @@ class TestVehicleIO(unittest.TestCase):
         self.io.read_sensors()
         self.assertEqual(self.io.poll_sensor_count, 2)
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_read_sensors_skips_just_before_boundary(self, mock_time):
         mock_time.return_value = 100.0
         self.io.read_sensors()
@@ -381,7 +381,7 @@ class TestVehicleIO(unittest.TestCase):
     # 10. Continuous read loop — single-thread baseline
     # ------------------------------------------------------------------
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_single_thread_continuous_read_loop(self, mock_time):
         """Simulate a control loop: poll → read → poll → read with advancing time."""
         mock_time.return_value = 100.0
@@ -398,7 +398,7 @@ class TestVehicleIO(unittest.TestCase):
         self.assertGreater(self.io.poll_sensor_count, iterations * 0.8)
         self.assertGreater(self.io.poll_gps_count, 5)
 
-    @patch("core.vehicle_io.time.time")
+    @patch("utils.IO.BaseIO.time.time")
     def test_single_thread_poll_then_read_separation(self, mock_time):
         """Source polls hardware, then multiple readers each take a snapshot."""
         mock_time.return_value = 200.0

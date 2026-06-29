@@ -1,0 +1,35 @@
+vehicle_model_parameters:
+  mass: 1.0
+  inertia: 0.1
+  wheelbase: 0.3
+  air_resistance: 0.1
+  friction_coefficient: 0.1
+
+observer:
+  common:
+    initial_pose:
+      x: 0.0
+      y: 0.0
+      theta: 0.0
+  Luenberger:
+
+  EKF:
+
+  HighGain:
+
+pathplanner:
+  common:
+    lookahead_distance: 0.5
+    max_steering_angle: 0.48
+    max_throttle: 0.10
+    min_throttle: -0.10
+    max_speed: 1.0
+    min_speed: -1.0
+  
+controller:
+  common:
+    max_steering_angle: 0.48
+    max_throttle: 0.10
+    min_throttle: -0.10
+    max_speed: 1.0
+    min_speed: -1.0

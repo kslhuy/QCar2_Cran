@@ -62,8 +62,8 @@ class GuiCommand:
 
 ## V2V data structures
 @dataclass
-class VBoradcastState:
-    "vehicle's state broadcasted in the V2V"
+class V2VState:
+    "vehicle state shared through V2V broadcast/vehicle-to-vehicle messages"
     vehicle_id: int
     timestamp: float
     x: float
@@ -71,10 +71,18 @@ class VBoradcastState:
     theta: float
     velocity: float
 
+
+# Backward-compatible alias for old imports. Prefer V2VState in new code.
+VBoradcastState = V2VState
+
 @dataclass
-class VBroadcastMessage:
+class V2VMessage:
     "V2V message structure"
     vehicle_id: int
     timestamp: float
     message_type: str    
     payload: dict         
+
+
+# Backward-compatible alias for old imports. Prefer V2VMessage in new code.
+VBroadcastMessage = V2VMessage
