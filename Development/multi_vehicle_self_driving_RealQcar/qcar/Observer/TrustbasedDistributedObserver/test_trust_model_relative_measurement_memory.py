@@ -110,6 +110,41 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
         self.assertAlmostEqual(trust.y_local_distance, 7.0, places=6)
         self.assertAlmostEqual(trust.y_local_rel_velocity, 0.25, places=6)
 
+    def test_gamma_self_uses_clean_v2v_bearing_when_range_matches(self):
+        self.estimator.trust_model.config.use_relative_velocity_in_relative_trust = False
+        self.estimator.trust_model.config.use_relative_bearing_in_gamma_self = True
+        self.estimator.trust_model.config.gamma_self_bearing_tau2 = 0.25
+        self.estimator.add_received_local_state(
+            sender_id=0,
+            state={
+                "x": 0.0,
+                "y": 5.0,
+                "theta": 0.0,
+                "velocity": 1.0,
+                "acceleration": 0.0,
+            },
+            timestamp_ns=self.current_time_ns,
+        )
+        self.estimator.add_received_clean_local_state(
+            sender_id=0,
+            state={
+                "x": 0.0,
+                "y": 5.0,
+                "theta": 0.0,
+                "velocity": 1.0,
+                "acceleration": 0.0,
+            },
+            timestamp_ns=self.current_time_ns,
+        )
+        self.estimator.fleet_states[:, 0] = np.array([5.0, 0.0, 0.0, 1.0, 0.0])
+
+        self.estimator._update_trust_scores(self.current_time_ns)
+
+        trust = self.estimator.get_trust_score(0)
+        self.assertIsNotNone(trust)
+        self.assertAlmostEqual(trust.y_local_distance, 5.0, places=6)
+        self.assertLess(trust.gamma_self, 0.01)
+
     def test_direct_channel_recovers_from_local_trust_even_if_final_trust_is_low(self):
         self.estimator.add_received_local_state(
             sender_id=0,
@@ -145,6 +180,58 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
         self.assertGreater(components["direct"]["weight"], 0.0)
         self.assertIsNotNone(components["direct"]["state"])
         self.assertGreater(updated_state[0], 0.0)
+
+
+    def test_global_only_low_trust_does_not_trigger_rollback_quarantine(self):
+        self.estimator.trust_model.trust_scores[0] = TrustScore(
+            vehicle_id=0,
+            final_score=0.05,
+            local_trust_sample=0.98,
+            global_trust_sample=0.01,
+            flag_target_attack=False,
+            flag_global_est_check=True,
+            flag_local_est_check=False,
+        )
+
+        signals = self.estimator._build_rollback_trigger_signals({0: 0.05})
+
+        self.assertFalse(signals[0]["trust_below_threshold"])
+        self.assertFalse(signals[0]["flag_global_est_check"])
+        self.assertEqual(self.estimator._get_current_malicious_vehicle_ids({0: 0.05}), set())
+        self.assertFalse(
+            self.estimator._has_active_attack_flags(
+                self.estimator.trust_model.get_trust_score(0)
+            )
+        )
+
+
+    def test_attack_recovery_reset_reanchors_to_clean_v2v_state(self):
+        self.estimator.fleet_states[:, 0] = np.array([100.0, 0.0, 0.0, 1.0, 0.0])
+        self.estimator.add_received_clean_local_state(
+            sender_id=0,
+            state={
+                "x": 5.0,
+                "y": 0.0,
+                "theta": 0.0,
+                "velocity": 1.0,
+                "acceleration": 0.0,
+            },
+            timestamp_ns=self.current_time_ns,
+        )
+        self.estimator.trust_model.trust_scores[0] = TrustScore(
+            vehicle_id=0,
+            final_score=0.1,
+            local_trust_sample=1.0,
+            global_trust_sample=0.0,
+            flag_global_est_check=True,
+        )
+        self.estimator.rollback.malicious_vehicles.add(0)
+
+        self.estimator.reset_attack_recovery_state()
+
+        self.assertAlmostEqual(self.estimator.fleet_states[0, 0], 5.0, places=6)
+        self.assertEqual(self.estimator.rollback.malicious_vehicles, set())
+        self.assertIsNone(self.estimator.get_trust_score(0))
 
 
 if __name__ == "__main__":

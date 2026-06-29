@@ -500,32 +500,6 @@ class VehicleLogic:
         else:
             self.vehicle_logger.logger.warning("V2V Attack Module is not available.")
 
-    def disable_attack_module(self):
-        """Disable V2V attack injection if available."""
-        if hasattr(self.v2v_manager, "disable_attacks"):
-            disable_time = self._get_v2v_log_time_s()
-            status = (
-                dict(self._latest_gui_attack_status)
-                if self._latest_gui_attack_status is not None
-                else (
-                    self.v2v_manager.get_attack_status()
-                    if hasattr(self.v2v_manager, "get_attack_status")
-                    else {}
-                )
-            )
-            if isinstance(status, dict):
-                status = status.copy()
-                status["enabled"] = False
-                status["attack_active"] = False
-                status["elapsed_time"] = disable_time
-                status["current_time"] = disable_time
-                status["manual_disable_time"] = disable_time
-                self._sync_v2v_attack_status_to_observer(status)
-            self.v2v_manager.disable_attacks()
-            self.vehicle_logger.logger.info("V2V Attack Module DISABLED.")
-        else:
-            self.vehicle_logger.logger.warning("V2V Attack Module is not available.")
-
     def trigger_v2v_attack(self, data: dict):
         """Trigger a specific V2V attack from Ground Station"""
         try:
@@ -617,8 +591,8 @@ class VehicleLogic:
         except Exception as e:
             self.vehicle_logger.log_error(f"Failed to trigger V2V attack", e)
 
-    def disable_v2v_attack(self):
-        """Disable all V2V attacks"""
+    def disable_v2v_attack(self, data: dict = None):
+        """Stop V2V attack injection without resetting observer trust state."""
         try:
             if hasattr(self, 'v2v_manager') and hasattr(self.v2v_manager, 'disable_attacks'):
                 disable_time = self._get_v2v_log_time_s()
@@ -642,7 +616,10 @@ class VehicleLogic:
                 self.v2v_manager.disable_attacks()
                 if hasattr(self.v2v_manager, 'clear_attack_scenarios'):
                     self.v2v_manager.clear_attack_scenarios()
-                self.vehicle_logger.logger.info("Disabled all V2V attacks via Ground Station command")
+                self.vehicle_logger.logger.info(
+                    "Disabled V2V attack injection via Ground Station; "
+                    "observer trust/rollback recovery remains automatic"
+                )
         except Exception as e:
             self.vehicle_logger.log_error("Failed to disable V2V attack", e)
 
@@ -771,7 +748,9 @@ class VehicleLogic:
                 status["manual_disable_time"] = disable_time
                 self._sync_v2v_attack_status_to_observer(status)
             self.v2v_manager.disable_attacks()
-            self.vehicle_logger.logger.info("V2V Attack Module DISABLED.")
+            self.vehicle_logger.logger.info(
+                "V2V Attack Module DISABLED; observer trust/rollback recovery remains automatic."
+            )
         else:
             self.vehicle_logger.logger.warning("V2V Attack Module is not available.")
 

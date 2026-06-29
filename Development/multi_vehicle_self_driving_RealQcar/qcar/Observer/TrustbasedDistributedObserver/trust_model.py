@@ -148,6 +148,9 @@ class TrustConfig:
     gamma_sigmoid_thresh: float = 3.0
     gamma_chi2_dof_local: int = 2
     gamma_chi2_dof_global: int = 5
+    use_relative_bearing_in_gamma_self: bool = True
+    gamma_self_bearing_tau2: float = 0.25
+    distributed_self_tau2_diag: Tuple[float, ...] = ()
     gamma_self_penalty_floor: float = 0.35
     gamma_self_penalty_exponent: float = 1.0
 
@@ -187,6 +190,7 @@ class VehicleData:
     distance_from_host: float = float("nan")
     relative_velocity_from_host: float = float("nan")
     relative_measurement_confidence: float = float("nan")
+    relative_bearing_from_host: float = float("nan")
     relative_heading: float = 0.0
     relative_measurement_source: str = ""
     relative_measurement_timestamp_ns: int = 0
@@ -542,6 +546,7 @@ class TriPTrustModel:
             distance_from_host=target_data.distance_from_host,
             relative_velocity_from_host=target_data.relative_velocity_from_host,
             relative_measurement_confidence=target_data.relative_measurement_confidence,
+            relative_bearing_from_host=target_data.relative_bearing_from_host,
             relative_heading=target_data.relative_heading,
             relative_measurement_source=target_data.relative_measurement_source,
             relative_measurement_timestamp_ns=target_data.relative_measurement_timestamp_ns,
@@ -803,7 +808,10 @@ class TriPTrustModel:
                 self._estimate_radial_relative_velocity(host_state, target_data)
             )
 
-        self.recent_relative_measurements[int(target_data.vehicle_id)] = {
+        relative_bearing = float(
+            getattr(target_data, "relative_bearing_from_host", float("nan"))
+        )
+        entry = {
             "distance": float(target_data.distance_from_host),
             "relative_velocity": (
                 relative_velocity if np.isfinite(relative_velocity) else float("nan")
@@ -811,6 +819,10 @@ class TriPTrustModel:
             "timestamp_ns": float(measurement_time_ns),
             "source": str(getattr(target_data, "relative_measurement_source", "")),
         }
+        if np.isfinite(relative_bearing):
+            entry["bearing"] = float(self._wrap_angle(relative_bearing))
+
+        self.recent_relative_measurements[int(target_data.vehicle_id)] = entry
 
     def _resolve_pose_distance_reference(
         self, host_state: Dict, target_data: VehicleData
@@ -1554,6 +1566,35 @@ class TriPTrustModel:
 
         return self._estimate_radial_relative_velocity(host_state, target_data)
 
+    def _relative_bearing_from_geometry(
+        self, host_state: Dict, target_data: VehicleData
+    ) -> float:
+        """Return target bearing in the host body frame."""
+        host_x = float(host_state.get("x", host_state.get(0, 0.0)))
+        host_y = float(host_state.get("y", host_state.get(1, 0.0)))
+        host_theta = float(host_state.get("theta", host_state.get(2, 0.0)))
+        dx = float(target_data.x) - host_x
+        dy = float(target_data.y) - host_y
+        return self._wrap_angle(float(np.arctan2(dy, dx)) - host_theta)
+
+    def _resolve_relative_bearing(
+        self, host_state: Dict, target_data: VehicleData, use_sensor: bool = True
+    ) -> Tuple[float, bool]:
+        """
+        Resolve host-target bearing.
+
+        A measured bearing is used only when a relative channel explicitly
+        provides it. Otherwise the fallback is geometric and should be treated
+        as estimate-derived, not independent sensor evidence.
+        """
+        measured_bearing = float(
+            getattr(target_data, "relative_bearing_from_host", float("nan"))
+        )
+        if use_sensor and np.isfinite(measured_bearing):
+            return self._wrap_angle(measured_bearing), True
+
+        return self._relative_bearing_from_geometry(host_state, target_data), False
+
     def _compute_relative_from_estimates(
         self, est_host: VehicleData, est_target: VehicleData
     ) -> np.ndarray:
@@ -1581,6 +1622,9 @@ class TriPTrustModel:
         yaw_rate: float = 0.0,
         distance_turn_gain: float = 0.0,
         velocity_turn_gain: float = 0.0,
+        tau2_diag: Optional[np.ndarray] = None,
+        angle_indices: Tuple[int, ...] = (),
+        velocity_index: Optional[int] = 1,
     ) -> float:
         """
         Mahalanobis distance between measured and estimated relative state,
@@ -1598,7 +1642,12 @@ class TriPTrustModel:
         y_measured = y_measured[:n]
         y_estimated = y_estimated[:n]
 
-        tau2_diag = np.asarray(self.config.distributed_local_tau2_diag, dtype=float).flatten()
+        if tau2_diag is None:
+            tau2_diag = np.asarray(
+                self.config.distributed_local_tau2_diag, dtype=float
+            ).flatten()
+        else:
+            tau2_diag = np.asarray(tau2_diag, dtype=float).flatten()
         if tau2_diag.size == 0:
             tau2_diag = np.ones(n, dtype=float)
         elif tau2_diag.size < n:
@@ -1607,12 +1656,89 @@ class TriPTrustModel:
         yaw_rate = max(float(yaw_rate), 0.0)
         if tau2_diag.size > 0 and distance_turn_gain > 0.0 and yaw_rate > 0.0:
             tau2_diag[0] *= 1.0 + float(distance_turn_gain) * yaw_rate
-        if tau2_diag.size > 1 and velocity_turn_gain > 0.0 and yaw_rate > 0.0:
-            tau2_diag[1] *= 1.0 + float(velocity_turn_gain) * yaw_rate
+        if (
+            velocity_index is not None
+            and 0 <= int(velocity_index) < tau2_diag.size
+            and velocity_turn_gain > 0.0
+            and yaw_rate > 0.0
+        ):
+            tau2_diag[int(velocity_index)] *= 1.0 + float(velocity_turn_gain) * yaw_rate
         tau2_inv = 1.0 / np.maximum(tau2_diag, 1e-9)
 
         e = y_estimated - y_measured
+        for idx in angle_indices:
+            idx = int(idx)
+            if 0 <= idx < e.size:
+                e[idx] = self._wrap_angle(float(e[idx]))
         return float(np.dot(e * e, tau2_inv))
+
+    def _build_gamma_self_measurements(
+        self,
+        host_state: Dict,
+        target_data: VehicleData,
+        host_est_as_vd: VehicleData,
+    ) -> Tuple[np.ndarray, np.ndarray, Tuple[int, ...], Optional[int], np.ndarray]:
+        """
+        Build the self-consistency vectors.
+
+        The legacy distance/relative-velocity terms stay first. If a clean or
+        external relative channel gives a measured bearing, append that bearing
+        for gamma_self only so same-range wrong-side estimates are penalized.
+        """
+        y_measured = list(self._compute_relative_measurement(host_state, target_data))
+        y_estimated = list(
+            self._compute_relative_measurement(host_state, host_est_as_vd)
+        )
+        include_velocity = bool(self.config.use_relative_velocity_in_relative_trust)
+        velocity_index = 1 if include_velocity else None
+        angle_indices: List[int] = []
+
+        if bool(self.config.use_relative_bearing_in_gamma_self):
+            measured_bearing, bearing_is_measured = self._resolve_relative_bearing(
+                host_state, target_data, use_sensor=True
+            )
+            if bearing_is_measured:
+                estimated_bearing, _ = self._resolve_relative_bearing(
+                    host_state, host_est_as_vd, use_sensor=False
+                )
+                angle_indices.append(len(y_measured))
+                y_measured.append(float(measured_bearing))
+                y_estimated.append(float(estimated_bearing))
+
+        tau2_diag = self._gamma_self_tau2_diag(
+            include_velocity=include_velocity,
+            include_bearing=bool(angle_indices),
+        )
+        return (
+            np.asarray(y_measured, dtype=float),
+            np.asarray(y_estimated, dtype=float),
+            tuple(angle_indices),
+            velocity_index,
+            tau2_diag,
+        )
+
+    def _gamma_self_tau2_diag(
+        self, include_velocity: bool, include_bearing: bool
+    ) -> np.ndarray:
+        configured = np.asarray(
+            self.config.distributed_self_tau2_diag, dtype=float
+        ).flatten()
+        if configured.size > 0:
+            return configured
+
+        local_tau2 = np.asarray(
+            self.config.distributed_local_tau2_diag, dtype=float
+        ).flatten()
+        if local_tau2.size == 0:
+            local_tau2 = np.ones(2, dtype=float)
+
+        values = [float(local_tau2[0])]
+        if include_velocity:
+            velocity_tau = local_tau2[1] if local_tau2.size > 1 else local_tau2[-1]
+            values.append(float(velocity_tau))
+        if include_bearing:
+            values.append(max(float(self.config.gamma_self_bearing_tau2), 1e-9))
+        return np.asarray(values, dtype=float)
 
     def _compute_gamma_self_penalty(
         self, gamma_self: float, threshold: float
@@ -1797,17 +1923,29 @@ class TriPTrustModel:
             velocity=float(host_target_estimate[3]) if len(host_target_estimate) > 3 else 0.0,
             acceleration=float(host_target_estimate[4]) if len(host_target_estimate) > 4 else 0.0,
         )
-        # Host's global estimate implies a relative state:
-        #   y_self_est = [dist(host_local, host_global_est_of_target),
-        #                 v_target_est - v_host]
-        y_self_est = self._compute_relative_measurement(host_state, host_est_as_vd)
-        local_relative_dof = max(1, int(y_local.size))
+        # Host's global estimate implies a relative state. Keep the legacy
+        # distance/velocity terms and append measured bearing when available.
+        (
+            y_self_measured,
+            y_self_est,
+            self_angle_indices,
+            self_velocity_index,
+            self_tau2_diag,
+        ) = self._build_gamma_self_measurements(
+            host_state=host_state,
+            target_data=target_data,
+            host_est_as_vd=host_est_as_vd,
+        )
+        local_relative_dof = max(1, int(y_self_measured.size))
         d_self = self._relative_mahalanobis(
-            y_local,
+            y_self_measured,
             y_self_est,
             yaw_rate=turn_context,
             distance_turn_gain=float(self.config.distributed_self_turn_distance_gain),
             velocity_turn_gain=float(self.config.distributed_self_turn_velocity_gain),
+            tau2_diag=self_tau2_diag,
+            angle_indices=self_angle_indices,
+            velocity_index=self_velocity_index,
         )
         gamma_self = self._distance_to_gamma(d_self, dof=local_relative_dof)
 

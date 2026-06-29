@@ -284,6 +284,7 @@ class VehicleObserver:
         self._filtered_accelerometer = np.zeros(3)
         self._accel_filter_initialized = False
         self.control_input = {"steering": 0.0, "throttle": 0.0}
+        self.controller_debug_snapshot: Dict[str, Any] = {}
         # Lateral velocity fallback estimate for SysID when 6D observer state is unavailable.
         self._vy_estimate = 0.0
         self._vy_est_last_time = 0.0
@@ -296,6 +297,7 @@ class VehicleObserver:
         self.local_observer_rate = self.observer_config.get("observer_rate", 100)
         self.fleet_observer_rate = self.observer_config.get("fleet_observer_rate", 50)
         self._last_fleet_observer_time = 0.0
+        self._last_fleet_observer_dt = 1.0 / max(float(self.fleet_observer_rate), 1e-6)
 
         # ===== Thread Safety =====
         self.lock = threading.RLock()
@@ -588,6 +590,16 @@ class VehicleObserver:
             value = getattr(vehicle_cfg, "is_physical_qcar", None)
         return self._config_bool(value, False)
 
+    def _observer_model_source_entry_path(self, entry: Any) -> str:
+        """Resolve one observer-model source entry into a path string."""
+        if isinstance(entry, str):
+            return entry.strip()
+        if not isinstance(entry, dict):
+            return ""
+        if not self._config_bool(entry.get("enabled", True), True):
+            return ""
+        return str(entry.get("path", entry.get("file", ""))).strip()
+
     def _resolve_model_source_path(self, source_cfg: Any) -> str:
         """
         Resolve observer_model_source into a concrete YAML path.
@@ -596,6 +608,12 @@ class VehicleObserver:
           observer_model_source: relative/path.yaml
           observer_model_source:
             path: relative/path.yaml
+          observer_model_source:
+            profile: real_car_61
+            profiles:
+              real_car_61: relative/path.yaml
+              qlabs_velocity:
+                path: relative/path.yaml
           observer_model_source:
             qcar_real: extra_configs/throttle_acceleration_observer_model_real.yaml
             qcar_sim: extra_configs/throttle_acceleration_observer_model_sim.yaml
@@ -609,9 +627,35 @@ class VehicleObserver:
         if not self._config_bool(source_cfg.get("enabled", True), True):
             return ""
 
-        direct_path = str(source_cfg.get("path", source_cfg.get("file", ""))).strip()
+        direct_path = self._observer_model_source_entry_path(source_cfg)
         if direct_path:
             return direct_path
+
+        raw_profile = source_cfg.get(
+            "profile",
+            source_cfg.get("selected_profile", source_cfg.get("selected", "")),
+        )
+        profile = str(raw_profile or "").strip()
+        if profile and profile.lower() not in {"auto", "default"}:
+            profiles = source_cfg.get("profiles", {})
+            profile_path = ""
+            if isinstance(profiles, dict):
+                profile_path = self._observer_model_source_entry_path(
+                    profiles.get(profile)
+                )
+            if not profile_path:
+                profile_path = self._observer_model_source_entry_path(
+                    source_cfg.get(profile)
+                )
+            if profile_path:
+                return profile_path
+            if profile.lower().endswith((".yaml", ".yml")):
+                return profile
+            if self.vehicle_logger:
+                self.vehicle_logger.log_warning(
+                    f"Unknown observer_model_source profile '{profile}'"
+                )
+            return ""
 
         host_vehicle_type = self._get_host_vehicle_type()
         if host_vehicle_type == "Limo":
@@ -1337,15 +1381,21 @@ class VehicleObserver:
 
     # ===== Timing Control =====
 
-    def _should_update_fleet_observer(self, current_time: float) -> bool:
-        """Check if fleet observer should update based on its rate (independent of local observer)"""
-        if (
-            current_time - self._last_fleet_observer_time
-            >= 1.0 / self.fleet_observer_rate
-        ):
-            self._last_fleet_observer_time = current_time
-            return True
-        return False
+    def _fleet_observer_interval(self) -> float:
+        """Configured fleet observer period in seconds."""
+        return 1.0 / max(float(self.fleet_observer_rate), 1e-6)
+
+    def _get_due_fleet_observer_dt(self, current_time: float) -> Optional[float]:
+        """Return actual fleet-observer dt when due; otherwise return None."""
+        target_interval = self._fleet_observer_interval()
+        elapsed = current_time - self._last_fleet_observer_time
+        if elapsed < target_interval:
+            return None
+
+        fleet_dt = elapsed if self._last_fleet_observer_time > 0.0 else target_interval
+        self._last_fleet_observer_dt = max(float(fleet_dt), 1e-4)
+        self._last_fleet_observer_time = current_time
+        return self._last_fleet_observer_dt
 
     # ===== Configuration =====
 
@@ -1582,8 +1632,9 @@ class VehicleObserver:
             state_info = self._update_local_observer(dt, last_steering, throttle)
 
             # Update fleet observer if it's time (independent rate control)
-            if self._should_update_fleet_observer(current_time):
-                self._update_fleet_observer_internal(dt)  # Distributed
+            fleet_dt = self._get_due_fleet_observer_dt(current_time)
+            if fleet_dt is not None:
+                self._update_fleet_observer_internal(fleet_dt)  # Distributed
 
             # Update relative observer (if enabled and measurements available)
             self._update_relative_observer(dt)
@@ -1594,6 +1645,16 @@ class VehicleObserver:
             self.vehicle_logger.log_error("Observer update error", e)
             # Return last known state instead of zeros
             return self._get_last_known_state()
+
+    def set_controller_debug_snapshot(
+        self, snapshot: Optional[Dict[str, Any]]
+    ) -> None:
+        """Cache controller diagnostics for the next fleet estimator update."""
+        with self.lock:
+            if not isinstance(snapshot, dict):
+                self.controller_debug_snapshot = {}
+                return
+            self.controller_debug_snapshot = dict(snapshot)
 
     def _update_local_observer(
         self, dt: float, last_steering: float = 0.0, last_u: float = 0.0
@@ -1765,6 +1826,16 @@ class VehicleObserver:
             ])
 
             # Update fleet estimates using pluggable estimator
+            if hasattr(self.fleet_estimator, "set_controller_debug_snapshot"):
+                with self.lock:
+                    controller_snapshot = dict(self.controller_debug_snapshot)
+                controller_snapshot.setdefault("host_steering", float(control[0]))
+                controller_snapshot.setdefault(
+                    "host_throttle",
+                    float(control[1]) if control.size > 1 else 0.0,
+                )
+                self.fleet_estimator.set_controller_debug_snapshot(controller_snapshot)
+
             current_local = self.local_state.copy()
             self.fleet_states = self.fleet_estimator.update(
                 local_state=current_local,
@@ -2954,6 +3025,7 @@ class VehicleObserver:
             self._filtered_accelerometer = np.zeros(3)
             self._accel_filter_initialized = False
             self.control_input = {"steering": 0.0, "throttle": 0.0}
+            self.controller_debug_snapshot = {}
             self._vy_estimate = 0.0
             self._vy_est_last_time = 0.0
             self.relative_target_id = None

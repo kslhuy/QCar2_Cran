@@ -170,9 +170,7 @@ class FakeInitializingState(StateBase):
             
             # Disable YOLO for fake vehicles (no camera/perception)
             if hasattr(self.vehicle_logic, 'yolo_manager'):
-                self.vehicle_logic.yolo_manager.yolo_enabled = False
-                self.vehicle_logic.yolo_manager.yolo = None
-                self.vehicle_logic.yolo_manager.yolo_drive = None
+                self._initialize_mock_perception()
                 self.logger.logger.info("Mock perception disabled (fake vehicle has no camera)")
             
             self.init_pose = np.asarray(self.vehicle_logic.gps.last_data, dtype=float).copy()
@@ -193,9 +191,41 @@ class FakeInitializingState(StateBase):
             self.logger.log_error("Mock QCar initialization failed", e)
             traceback.print_exc()
             return False
+
+    def _initialize_mock_perception(self) -> bool:
+        """Disable YOLO and provide empty perception data for fake vehicles."""
+        try:
+            yolo_manager = getattr(self.vehicle_logic, 'yolo_manager', None)
+            if yolo_manager is None:
+                return True
+
+            if hasattr(yolo_manager, 'disable'):
+                yolo_manager.disable()
+            else:
+                yolo_manager.yolo_enabled = False
+                yolo_manager.yolo = None
+                yolo_manager.yolo_drive = None
+
+            try:
+                from Yolo.YoLo import YOLOData
+                yolo_manager._cached_data = YOLOData()
+            except Exception:
+                pass
+
+            self.logger.logger.info("Mock perception initialized with default YOLOData")
+            return True
+
+        except Exception as e:
+            self.logger.log_error("Mock perception initialization failed", e)
+            traceback.print_exc()
+            return False
     
     def _resolve_initial_pose(self, parent_fake_vehicle) -> np.ndarray:
-        """Use the same path calibration pose as real initialization."""
+        """Resolve the fake reset pose using the selected spawn source."""
+        pose_override = getattr(parent_fake_vehicle, 'initial_pose_override', None)
+        if pose_override is not None:
+            return np.asarray(pose_override, dtype=float)
+
         try:
             pose = getattr(self.config.path, 'calibration_pose', None)
             if pose is not None:

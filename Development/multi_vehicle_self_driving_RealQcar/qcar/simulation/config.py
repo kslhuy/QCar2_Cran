@@ -45,6 +45,8 @@ class SimulationConfig:
             'vehicle': {
                 'id': 0,
                 'model_type': 'kinematic',
+                'longitudinal_model': 'default',
+                'steering_model': 'default',
                 'params_file': 'qcar',
                 'dt': 0.05
             },

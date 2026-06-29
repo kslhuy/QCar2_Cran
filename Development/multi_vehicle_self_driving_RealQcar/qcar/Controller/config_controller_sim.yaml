@@ -63,13 +63,14 @@ trust_longitudinal_fusion:
   enabled: true
   trust_low: 0.40
   trust_high: 0.70
-  unavailable_policy: legacy_cacc
-  low_trust_policy: sensor_acc_or_cacc
+  alpha_mode: direct_opinion      # direct_opinion = gamma_i equals min opinion; threshold_map keeps the old trust_low/trust_high mapping
+  opinion_scope: used_predecessors # direct leader plus upstream predecessor states used by multi-predecessor CACC
+  unavailable_policy: sensor_acc_or_stop
+  low_trust_policy: sensor_acc_or_stop
 
-leader_longitudinal_state_source:
-  mode: 'fleet_estimator' # 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'
-  fallback_to_v2v: true       # If fleet estimate is unavailable, keep current direct V2V behavior
-
+# Shared leader source for FOLLOWING_LEADER. Both longitudinal and lateral use this same state.
+# Options: 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'.
+leader_source: 'fleet_estimator'
 # Legacy fallback (used if state-specific keys are missing)
 # ============================================================================
 # LONGITUDINAL CONTROLLER CONFIGURATION
@@ -92,8 +93,8 @@ command_smoothing:
 cacc:
   s0: 0.25                    # Minimum spacing (meters)
   h: 0.45                     # Time headway (seconds)
-  K_spacing: 0.35             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
-  K_velocity: 0.15           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
+  K_spacing: 0.45             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
+  K_velocity: 0.18           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
   spacing_mode: "path_or_projected"  # 'euclidean', 'projected', 'blended', 'path', 'path_or_projected'
   projection_heading_source: "leader" # Heading source for longitudinal projection ,  Assume the road's direction is the exact direction the "projection_heading_source" here is the leader car is currently pointing."
   blend_heading_deg: 20.0    # Used only when spacing_mode: 'blended'
@@ -105,7 +106,7 @@ cacc:
   # error term rather than a feedforward command, making the controller
   # respond when the leader changes acceleration faster/slower than the
   # follower. Set to 0 (default) to ignore acceleration information.
-  leader_acceleration_weight: 0.8
+  leader_acceleration_weight: 0.6
   multi_predecessor:
     enabled: false             # false = current single direct-leader CACC behavior
     include_direct_leader: false # false avoids double-counting the direct leader; true includes every vehicle ahead
@@ -114,10 +115,10 @@ cacc:
     min_trust: 0.50
     missing_trust_weight: 0.0  # 0.0 ignores vehicles without trust; raise only for non-trust experiments
     trust_power: 1.0           # Higher = sharper preference for high-trust vehicles
-    order_decay: 0.60          # Weight decay by platoon order: direct=1, next=2, etc.
+    order_decay: 0.70          # Weight decay by platoon order: direct=1, next=2, etc.
     distance_decay: 0.0        # Optional exp(-distance_decay * distance_ahead); 0 disables distance decay
-    spacing_weight: 0.20       # Extra projected spacing correction from trusted upstream predecessors
-    max_spacing_contribution: 0.35
+    spacing_weight: 0.25       # Extra projected spacing correction from trusted upstream predecessors
+    max_spacing_contribution: 0.30
     velocity_weight: 0.25      # Feedforward from upstream velocity trend relative to direct leader
     acceleration_weight: 0.25  # Feedforward from upstream acceleration trend relative to direct leader
     max_velocity_contribution: 0.25
@@ -125,9 +126,9 @@ cacc:
     safe_gap_margin: 0.05      # Suppress positive upstream push when direct-leader gap is not safely open
     allow_positive_when_close: false
   target_velocity_weight: 0.6   # Extra straight-road catch-up toward v_ref when the gap is open. Up = reaches cruise speed faster. Down = follows the leader more conservatively.
-  target_velocity_gap_window: 0.0  # [m] Extra gap needed before the cruise-speed bias becomes strong. Up = waits for a larger safe gap. Down = starts accelerating sooner.
+  target_velocity_gap_window: 0.10  # [m] Extra gap needed before the cruise-speed bias becomes strong. Up = waits for a larger safe gap. Down = starts accelerating sooner.
   target_velocity_turn_scale: 0.5  # Scale applied to that cruise-speed bias in turns. Up = more push remains in corners. Down = corners stay more conservative.
-  spacing_deadband: 0.22      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
+  spacing_deadband: 0.08      # Spacing error deadband in meters. Prevents micro-oscillations and throttle twitching when the follower is already very close to the target gap distance.
   close_spacing_deadband: 0.03  # Smaller deadband used only when spacing error is negative (too close). Lower = reacts sooner to back off near the leader.
   velocity_deadband: 0.05    # Velocity error deadband in m/s. Prevents micro-oscillations when cruising at perfectly matched speed with the leader.
   throttle_smoothing: 0.0    # Exponential smoothing factor for final throttle [0-1]. 0.0 = raw commands. 0.9 = very smooth but delayed pedal response.

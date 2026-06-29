@@ -29,16 +29,32 @@ from fake_initializing_state import FakeInitializingState
 from simulation.mock_vehicle import MockQCar
 from simulation.config import SimulationConfig
 
+DIRECT_SPAWN_POSES_DEGREES = [
+    (-1.064, -0.673, -39.775),
+    (-1.491, -0.264, -39.775),
+    (-1.884, 0.222, -80.0),
+]
+
+
 class FakeVehicleWithRealLogic:
     """Fake vehicle that uses the real VehicleLogic class with modular MockQCar"""
     
     def __init__(self, car_id: int, host_ip: str, base_port: int, 
                  dynamic_model_type: Optional[int] = None, 
                  vehicle_params: Optional[str] = None, 
-                 tire_model: Optional[str] = None):
+                 tire_model: Optional[str] = None,
+                 longitudinal_model: Optional[str] = None,
+                 steering_model: Optional[str] = None,
+                 use_direct_poses: bool = False):
         self.car_id = car_id
         self.host_ip = host_ip
         self.base_port = base_port
+        self.initial_pose_override = self._get_direct_spawn_pose() if use_direct_poses else None
+        self.initial_pose_source = (
+            "initCars_Studio.py -u direct pose"
+            if self.initial_pose_override is not None
+            else "path calibration pose"
+        )
         
         # 1. Load and Configure MockQCar
         self.sim_config = SimulationConfig.get_default_config()
@@ -62,6 +78,24 @@ class FakeVehicleWithRealLogic:
             
         if tire_model is not None:
             self.sim_config['vehicle']['tire_model'] = tire_model
+
+        if longitudinal_model is not None:
+            self.sim_config['vehicle']['longitudinal_model'] = longitudinal_model
+
+        if steering_model is not None:
+            self.sim_config['vehicle']['steering_model'] = steering_model
+
+        if self.initial_pose_override is not None:
+            self.sim_config.setdefault('initial_state', {})
+            self.sim_config['initial_state']['x'] = float(self.initial_pose_override[0])
+            self.sim_config['initial_state']['y'] = float(self.initial_pose_override[1])
+            self.sim_config['initial_state']['theta'] = float(self.initial_pose_override[2])
+            print(
+                f"[SIM] Car {self.car_id}: using initCars_Studio.py -u pose "
+                f"x={self.initial_pose_override[0]:.3f}, "
+                f"y={self.initial_pose_override[1]:.3f}, "
+                f"theta={self.initial_pose_override[2]:.3f} rad"
+            )
         
         # Create mock hardware
         self.mock_qcar = MockQCar(self.sim_config)
@@ -92,8 +126,22 @@ class FakeVehicleWithRealLogic:
         print(f"✅ Real VehicleLogic initialized for Car {car_id} using modular MockQCar")
 
     def _create_real_config(self) -> VehicleMainConfig:
-        """Create real configuration for VehicleLogic"""
-        config = VehicleMainConfig()
+        """Create real configuration for VehicleLogic."""
+        fleet_config_path = os.path.join(parent_dir, "fleet_config.yaml")
+        if os.path.exists(fleet_config_path):
+            try:
+                config = VehicleMainConfig.from_fleet_yaml(fleet_config_path, self.car_id)
+                print(
+                    f"[CONFIG] Loaded fleet_config.yaml for fake car {self.car_id} "
+                    f"(path_number={config.path.path_number})"
+                )
+            except Exception as e:
+                print(f"[WARN] Could not load fleet_config.yaml for fake car {self.car_id}: {e}")
+                config = VehicleMainConfig()
+        else:
+            print(f"[WARN] fleet_config.yaml not found at {fleet_config_path}; using defaults")
+            config = VehicleMainConfig()
+
         config.network.car_id = self.car_id
         config.network.host_ip = self.host_ip
         config.network.base_port = self.base_port
@@ -102,8 +150,19 @@ class FakeVehicleWithRealLogic:
         config.timing.telemetry_send_rate = 20
         config.timing.tf = 500.0
 
-        config.path.path_number = 2 
         return config
+
+    def _get_direct_spawn_pose(self) -> Optional[np.ndarray]:
+        """Return the same direct pose used by initCars_Studio.py -u."""
+        if self.car_id < 0 or self.car_id >= len(DIRECT_SPAWN_POSES_DEGREES):
+            print(
+                f"[WARN] No initCars_Studio.py -u direct pose for car {self.car_id}; "
+                "falling back to path calibration pose"
+            )
+            return None
+
+        x, y, theta_deg = DIRECT_SPAWN_POSES_DEGREES[self.car_id]
+        return np.array([x, y, math.radians(theta_deg)], dtype=float)
     
     def _replace_initialization_state_only(self):
         """Replace only the INITIALIZING state with fake version"""
@@ -212,6 +271,9 @@ def main():
     dynamic_model_type = None 
     vehicle_params = None
     tire_model = None
+    longitudinal_model = None
+    steering_model = None
+    use_direct_poses = False
     
     # Parse args (Backward functionality)
     args = sys.argv[1:]
@@ -221,13 +283,37 @@ def main():
 
     for arg in args:
         val = arg.lower()
+        if val.startswith("--longitudinal-model=") or val.startswith("longitudinal_model="):
+            longitudinal_model = arg.split("=", 1)[1]
+            continue
+        if val.startswith("--steering-model=") or val.startswith("steering_model="):
+            steering_model = arg.split("=", 1)[1]
+            continue
+
         if val in ['0', 'kinematic', 'ks']: dynamic_model_type = 0
         elif val in ['1', 'dynamic', 'st']: dynamic_model_type = 1
         elif val in ['2', 'qlpv']: dynamic_model_type = 2
         elif val in ['3', 'qlpv_matrix']: dynamic_model_type = 3
+        elif val in ['-u', '--use-direct-poses', 'use_direct_poses', 'direct_poses', 'direct']:
+            use_direct_poses = True
         
         elif val in ['pacejka', 'dynamic_linear', 'static_linear']: tire_model = val
         elif val in ['qcar', 'vehicle1', 'vehicle2', 'vehicle3', 'vehicle4']: vehicle_params = val
+        elif val in [
+            'default',
+            'direct_acceleration',
+            'simple_acceleration',
+            'qcar_real',
+            'qcar_sim',
+            'limo',
+            'real_car_61',
+            'qcar_real_61',
+            'qlabs_velocity',
+            'qlabs'
+        ]:
+            longitudinal_model = val
+        elif val in ['qlabs_steering', 'steering_qlabs']:
+            steering_model = val
         
         elif arg.isdigit() and int(arg) > 1000: base_port = int(arg)
         elif '.' in arg or val == 'localhost': host_ip = arg
@@ -237,7 +323,10 @@ def main():
         vehicle = FakeVehicleWithRealLogic(car_id, host_ip, base_port, 
                                           dynamic_model_type=dynamic_model_type,
                                           vehicle_params=vehicle_params,
-                                          tire_model=tire_model)
+                                          tire_model=tire_model,
+                                          longitudinal_model=longitudinal_model,
+                                          steering_model=steering_model,
+                                          use_direct_poses=use_direct_poses)
     except Exception as e:
         print(f"❌ Failed to create vehicle: {e}")
         import traceback

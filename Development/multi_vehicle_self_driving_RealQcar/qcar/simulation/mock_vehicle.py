@@ -63,6 +63,8 @@ class MockQCar:
             vehicle_params=params_dict,
             disturbance_mode=self.disturbance_mode
         )
+        self._load_longitudinal_plant_model()
+        self._load_steering_plant_model()
 
         
         # State Initialization
@@ -110,6 +112,12 @@ class MockQCar:
         print("   Vehicle dynamics from vehiclemodels folder (CommonRoad models)")
         print(f"Car ID: {self.car_id}")
         print(f"Vehicle Model: {self.model_type}")
+        print(f"Longitudinal Plant Model: {self.longitudinal_model}")
+        if self.longitudinal_model_source_path:
+            print(f"Longitudinal Model Source: {self.longitudinal_model_source_path}")
+        print(f"Steering Plant Model: {self.steering_model}")
+        if self.steering_model_source_path:
+            print(f"Steering Model Source: {self.steering_model_source_path}")
         print(f"Tire Model: {self.tire_model}")
         print(f"Disturbance Mode: {self.disturbance_mode}")
         print("="*70)
@@ -119,21 +127,399 @@ class MockQCar:
         params_file = self.vehicle_conf.get('params_file', 'qcar')
         try:
             if params_file == 'qcar':
-                # Load custom QCar parameters
-                # vehiclemodels is now in the same directory as this file (qcar/simulation/vehiclemodels)
-                base_dir = Path(__file__).parent / "vehiclemodels" / "parameters"
-                qcar_conf = OmegaConf.load(str(base_dir / "parameters_qcar.yaml"))
-                tire_conf = OmegaConf.load(str(base_dir / "parameters_tire.yaml"))
-                structured_conf = OmegaConf.structured(VehicleParameters)
-                self.params = OmegaConf.to_object(OmegaConf.merge(structured_conf, tire_conf, qcar_conf))
+                self.params = setup_vehicle_parameters(vehicle_id='qcar')
             elif params_file.startswith('vehicle'):
                 vid = int(params_file.replace('vehicle', ''))
                 self.params = setup_vehicle_parameters(vehicle_id=vid)
             else:
-                self.params = setup_vehicle_parameters(vehicle_id=1) # Fallback
+                self.params = setup_vehicle_parameters(vehicle_id='qcar') # Fallback
         except Exception as e:
-            print(f"Error loading parameters: {e}. Using default.")
-            self.params = setup_vehicle_parameters(vehicle_id=1)
+            print(f"Error loading parameters: {e}. Using QCar parameters.")
+            self.params = setup_vehicle_parameters(vehicle_id='qcar')
+
+    def _load_yaml_dict(self, path: Path) -> Dict[str, Any]:
+        """Load a YAML file as a plain dictionary."""
+        loaded = OmegaConf.to_object(OmegaConf.load(str(path)))
+        return loaded if isinstance(loaded, dict) else {}
+
+    def _resolve_longitudinal_source_path(self, profile: str) -> Optional[Path]:
+        """Resolve a named fake-plant longitudinal profile to a YAML path."""
+        qcar_dir = Path(__file__).resolve().parents[1]
+        simulation_dir = Path(__file__).resolve().parent
+        built_in_profiles = {
+            "qcar_real": qcar_dir / "Observer" / "extra_configs" / "throttle_acceleration_observer_model_real.yaml",
+            "qcar_sim": qcar_dir / "Observer" / "extra_configs" / "throttle_acceleration_observer_model_sim.yaml",
+            "limo": qcar_dir / "Observer" / "extra_configs" / "throttle_acceleration_observer_model_limo.yaml",
+            "real_car_61": qcar_dir / "Calibration" / "results" / "online_throttle_acceleration" / "calibration" / "61" / "throttle_acceleration_observer_model_latest.yaml",
+            "qcar_real_61": qcar_dir / "Calibration" / "results" / "online_throttle_acceleration" / "calibration" / "61" / "throttle_acceleration_observer_model_latest.yaml",
+            "qlabs_velocity": qcar_dir / "Observer" / "extra_configs" / "throttle_velocity_observer_model_qlabs.yaml",
+        }
+
+        source_cfg = self.vehicle_conf.get("longitudinal_model_source", {})
+        profiles = source_cfg.get("profiles", {}) if isinstance(source_cfg, dict) else {}
+        raw_path = None
+        if isinstance(profiles, dict):
+            profile_entry = profiles.get(profile)
+            if isinstance(profile_entry, dict):
+                raw_path = profile_entry.get("path", profile_entry.get("file"))
+            elif profile_entry is not None:
+                raw_path = profile_entry
+
+        if raw_path is not None:
+            path = Path(str(raw_path))
+            if not path.is_absolute():
+                path = simulation_dir / path
+            return path
+
+        if profile in built_in_profiles:
+            return built_in_profiles[profile]
+
+        if profile.lower().endswith((".yaml", ".yml")):
+            path = Path(profile)
+            if not path.is_absolute():
+                path = simulation_dir / path
+            return path
+
+        return None
+
+    @staticmethod
+    def _normalized_longitudinal_profile(value: Any) -> str:
+        """Normalize fake-plant longitudinal model aliases."""
+        normalized = str(value or "default").strip().lower().replace("-", "_")
+        aliases = {
+            "": "default",
+            "auto": "default",
+            "legacy": "default",
+            "direct": "default",
+            "direct_accel": "default",
+            "direct_acceleration": "default",
+            "simple": "default",
+            "simple_accel": "default",
+            "simple_acceleration": "default",
+            "real": "qcar_real",
+            "qcar_real_61": "real_car_61",
+            "real_car": "real_car_61",
+            "qlabs": "qlabs_velocity",
+            "qlab": "qlabs_velocity",
+            "qlabs_velocity_lookup": "qlabs_velocity",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _load_longitudinal_plant_model(self):
+        """Load optional calibrated fake-plant throttle-to-velocity behavior."""
+        raw_profile = self.vehicle_conf.get(
+            "longitudinal_model",
+            self.vehicle_conf.get("longitudinal_model_profile", "default"),
+        )
+        source_cfg = self.vehicle_conf.get("longitudinal_model_source", {})
+        if (
+            isinstance(source_cfg, dict)
+            and self._normalized_longitudinal_profile(raw_profile) == "default"
+        ):
+            raw_profile = source_cfg.get("profile", raw_profile)
+
+        profile = self._normalized_longitudinal_profile(raw_profile)
+        self.longitudinal_model_profile = profile
+        self.longitudinal_model = "default"
+        self.longitudinal_model_source_path = ""
+        self.velocity_lag_tau = 0.301
+        self.velocity_gain = 6.598
+        self.velocity_lag_deadband = 0.0
+        self.velocity_lag_lookup_tau = 0.301
+        self.velocity_lag_lookup_throttle_breakpoints = np.asarray([], dtype=float)
+        self.velocity_lag_lookup_velocity_breakpoints = np.asarray([], dtype=float)
+
+        if profile == "default":
+            return
+
+        source_path = self._resolve_longitudinal_source_path(profile)
+        observer_model: Dict[str, Any] = {}
+        if source_path is not None:
+            try:
+                loaded = self._load_yaml_dict(source_path)
+                self.longitudinal_model_source_path = str(source_path)
+                observer_model = loaded.get("observer_model", loaded)
+                if not isinstance(observer_model, dict):
+                    observer_model = {}
+            except Exception as exc:
+                print(f"[WARN] Could not load longitudinal model '{source_path}': {exc}")
+
+        vehicle_lag_cfg = self.vehicle_conf.get("velocity_lag_model")
+        vehicle_lookup_cfg = self.vehicle_conf.get("velocity_lag_lookup_model")
+        if isinstance(vehicle_lag_cfg, dict):
+            observer_model["velocity_lag_model"] = vehicle_lag_cfg
+        if isinstance(vehicle_lookup_cfg, dict):
+            observer_model["velocity_lag_lookup_model"] = vehicle_lookup_cfg
+
+        recommended = self._normalized_longitudinal_profile(
+            observer_model.get("recommended_longitudinal_model", profile)
+        )
+        if recommended not in {"velocity_lag", "velocity_lag_lookup"}:
+            recommended = profile if profile in {"velocity_lag", "velocity_lag_lookup"} else "default"
+
+        lag_cfg = observer_model.get("velocity_lag_model", {})
+        lookup_cfg = observer_model.get("velocity_lag_lookup_model", {})
+        if not isinstance(lag_cfg, dict):
+            lag_cfg = {}
+        if not isinstance(lookup_cfg, dict):
+            lookup_cfg = {}
+
+        self.velocity_lag_tau = max(float(lag_cfg.get("tau", self.velocity_lag_tau)), 1e-6)
+        self.velocity_gain = float(lag_cfg.get("velocity_gain", self.velocity_gain))
+        self.velocity_lag_deadband = max(
+            float(lag_cfg.get("throttle_deadband", self.velocity_lag_deadband)),
+            0.0,
+        )
+        self.velocity_lag_lookup_tau = max(
+            float(lookup_cfg.get("tau", self.velocity_lag_tau)),
+            1e-6,
+        )
+        self.velocity_lag_lookup_throttle_breakpoints = np.asarray(
+            lookup_cfg.get("throttle_breakpoints", []),
+            dtype=float,
+        ).reshape(-1)
+        self.velocity_lag_lookup_velocity_breakpoints = np.asarray(
+            lookup_cfg.get("steady_state_velocity_breakpoints", []),
+            dtype=float,
+        ).reshape(-1)
+
+        has_lookup = (
+            self.velocity_lag_lookup_throttle_breakpoints.size >= 2
+            and self.velocity_lag_lookup_throttle_breakpoints.size
+            == self.velocity_lag_lookup_velocity_breakpoints.size
+        )
+        if recommended == "velocity_lag_lookup" and has_lookup:
+            self.longitudinal_model = "velocity_lag_lookup"
+        elif recommended in {"velocity_lag", "velocity_lag_lookup"}:
+            self.longitudinal_model = "velocity_lag"
+        else:
+            self.longitudinal_model = "default"
+
+        if self.longitudinal_model == "default":
+            print(
+                f"[WARN] Longitudinal profile '{profile}' was not usable; "
+                "falling back to default direct-acceleration fake plant"
+            )
+
+    def _effective_velocity_lag_throttle(self, throttle: float) -> float:
+        """Apply the calibrated throttle deadband used by velocity_lag."""
+        deadband = float(self.velocity_lag_deadband)
+        if deadband <= 0.0:
+            return float(throttle)
+        return float(np.sign(throttle) * max(abs(float(throttle)) - deadband, 0.0))
+
+    def _velocity_lag_lookup_target(self, throttle: float) -> float:
+        """Lookup steady-state velocity for a throttle command."""
+        if (
+            self.velocity_lag_lookup_throttle_breakpoints.size >= 2
+            and self.velocity_lag_lookup_throttle_breakpoints.size
+            == self.velocity_lag_lookup_velocity_breakpoints.size
+        ):
+            return float(
+                np.interp(
+                    float(throttle),
+                    self.velocity_lag_lookup_throttle_breakpoints,
+                    self.velocity_lag_lookup_velocity_breakpoints,
+                )
+            )
+        return self.velocity_gain * self._effective_velocity_lag_throttle(throttle)
+
+    def _calibrated_longitudinal_accel(
+        self, throttle: float, current_vx: float, fallback_accel: float
+    ) -> float:
+        """Return calibrated longitudinal acceleration, or the legacy fallback."""
+        if self.longitudinal_model == "velocity_lag":
+            v_target = self.velocity_gain * self._effective_velocity_lag_throttle(throttle)
+            accel = (v_target - float(current_vx)) / self.velocity_lag_tau
+        elif self.longitudinal_model == "velocity_lag_lookup":
+            v_target = self._velocity_lag_lookup_target(throttle)
+            accel = (v_target - float(current_vx)) / self.velocity_lag_lookup_tau
+        else:
+            return float(fallback_accel)
+
+        if abs(float(throttle)) < 0.01 and abs(float(current_vx)) < 0.03:
+            return 0.0
+        return float(np.clip(accel, -5.0, 5.0))
+
+    def _resolve_steering_source_path(self, profile: str) -> Optional[Path]:
+        """Resolve a named fake-plant steering profile to a YAML path."""
+        qcar_dir = Path(__file__).resolve().parents[1]
+        simulation_dir = Path(__file__).resolve().parent
+        built_in_profiles = {
+            "qlabs_steering": qcar_dir / "Calibration" / "results" / "03_steering_calibration" / "steering_calibration_qlabs.yaml",
+            "steering_qlabs": qcar_dir / "Calibration" / "results" / "03_steering_calibration" / "steering_calibration_qlabs.yaml",
+        }
+
+        source_cfg = self.vehicle_conf.get("steering_model_source", {})
+        profiles = source_cfg.get("profiles", {}) if isinstance(source_cfg, dict) else {}
+        raw_path = None
+        if isinstance(profiles, dict):
+            profile_entry = profiles.get(profile)
+            if isinstance(profile_entry, dict):
+                raw_path = profile_entry.get("path", profile_entry.get("file"))
+            elif profile_entry is not None:
+                raw_path = profile_entry
+
+        if raw_path is not None:
+            path = Path(str(raw_path))
+            if not path.is_absolute():
+                path = simulation_dir / path
+            return path
+
+        if profile in built_in_profiles:
+            return built_in_profiles[profile]
+
+        if profile.lower().endswith((".yaml", ".yml")):
+            path = Path(profile)
+            if not path.is_absolute():
+                path = simulation_dir / path
+            return path
+
+        return None
+
+    @staticmethod
+    def _normalized_steering_profile(value: Any) -> str:
+        """Normalize fake-plant steering model aliases."""
+        normalized = str(value or "default").strip().lower().replace("-", "_")
+        aliases = {
+            "": "default",
+            "auto": "default",
+            "legacy": "default",
+            "direct": "default",
+            "direct_angle": "default",
+            "qlabs": "qlabs_steering",
+            "qlab": "qlabs_steering",
+            "qlabs_curvature": "qlabs_steering",
+            "steering_qlabs": "qlabs_steering",
+        }
+        return aliases.get(normalized, normalized)
+
+    def _load_steering_plant_model(self):
+        """Load optional calibrated fake-plant steering-to-curvature behavior."""
+        raw_profile = self.vehicle_conf.get(
+            "steering_model",
+            self.vehicle_conf.get("steering_model_profile", "default"),
+        )
+        source_cfg = self.vehicle_conf.get("steering_model_source", {})
+        if (
+            isinstance(source_cfg, dict)
+            and self._normalized_steering_profile(raw_profile) == "default"
+        ):
+            raw_profile = source_cfg.get("profile", raw_profile)
+
+        profile = self._normalized_steering_profile(raw_profile)
+        self.steering_model_profile = profile
+        self.steering_model = "default"
+        self.steering_model_source_path = ""
+        self.steering_curvature_poly = np.asarray([], dtype=float)
+        self.steering_curvature_poly_by_throttle: Dict[float, np.ndarray] = {}
+
+        if profile == "default":
+            return
+
+        source_path = self._resolve_steering_source_path(profile)
+        loaded: Dict[str, Any] = {}
+        if source_path is not None:
+            try:
+                loaded = self._load_yaml_dict(source_path)
+                self.steering_model_source_path = str(source_path)
+            except Exception as exc:
+                print(f"[WARN] Could not load steering model '{source_path}': {exc}")
+
+        vehicle_steering_cfg = self.vehicle_conf.get("steering_curvature_model")
+        if isinstance(vehicle_steering_cfg, dict):
+            loaded.update(vehicle_steering_cfg)
+
+        coeffs = loaded.get("poly_coefficients_global", loaded.get("poly_coefficients", []))
+        try:
+            self.steering_curvature_poly = np.asarray(coeffs, dtype=float).reshape(-1)
+        except Exception:
+            self.steering_curvature_poly = np.asarray([], dtype=float)
+
+        per_throttle = loaded.get("poly_coefficients_per_throttle", {})
+        if isinstance(per_throttle, dict):
+            for raw_key, raw_coeffs in per_throttle.items():
+                try:
+                    throttle_key = float(str(raw_key).split("_")[-1])
+                    coeff_array = np.asarray(raw_coeffs, dtype=float).reshape(-1)
+                except Exception:
+                    continue
+                if coeff_array.size >= 2:
+                    self.steering_curvature_poly_by_throttle[throttle_key] = coeff_array
+
+        if self.steering_curvature_poly.size >= 2 or self.steering_curvature_poly_by_throttle:
+            self.steering_model = "curvature_poly"
+        else:
+            print(
+                f"[WARN] Steering profile '{profile}' was not usable; "
+                "falling back to default direct-angle fake plant"
+            )
+
+    def _steering_curvature_coefficients(self, throttle: float) -> np.ndarray:
+        """Return global or nearest-throttle steering curvature polynomial."""
+        if self.steering_curvature_poly_by_throttle:
+            nearest = min(
+                self.steering_curvature_poly_by_throttle.keys(),
+                key=lambda key: abs(float(key) - float(throttle)),
+            )
+            return self.steering_curvature_poly_by_throttle[nearest]
+        return self.steering_curvature_poly
+
+    def _calibrated_steering_target_angle(
+        self, steering_cmd: float, throttle_cmd: float
+    ) -> Optional[float]:
+        """Convert calibrated steering command to an equivalent model steering angle."""
+        if self.steering_model != "curvature_poly":
+            return None
+
+        coeffs = self._steering_curvature_coefficients(throttle_cmd)
+        if coeffs.size < 2:
+            return None
+
+        curvature = float(np.polyval(coeffs, float(steering_cmd)))
+        wheelbase = max(float(self.params.a + self.params.b), 1e-6)
+        target_angle = math.atan(wheelbase * curvature)
+        max_steering_angle = (
+            float(self.qlpv_obs_model.params["steering"]["max"])
+            if "steering" in self.qlpv_obs_model.params
+            else 0.5
+        )
+        return float(np.clip(target_angle, -max_steering_angle, max_steering_angle))
+
+    def _process_control_inputs(
+        self,
+        throttle_cmd: float,
+        steering_cmd: float,
+        current_state_obs: np.ndarray,
+        current_steering_angle: float,
+        dt: float,
+    ) -> Tuple[float, float, float]:
+        """Process steering normally and optionally replace longitudinal acceleration."""
+        acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
+            throttle_cmd,
+            steering_cmd,
+            current_state_obs,
+            current_steering_angle,
+            dt,
+        )
+        current_vx = float(np.asarray(current_state_obs).reshape(-1)[0])
+        acc = self._calibrated_longitudinal_accel(throttle_cmd, current_vx, acc)
+        calibrated_target_angle = self._calibrated_steering_target_angle(
+            steering_cmd, throttle_cmd
+        )
+        if calibrated_target_angle is not None:
+            max_steering_rate = (
+                float(self.qlpv_obs_model.params["steering"]["v_max"])
+                if "steering" in self.qlpv_obs_model.params
+                else 5.0
+            )
+            steering_error = calibrated_target_angle - float(current_steering_angle)
+            steering_rate = float(np.clip(10.0 * steering_error, -max_steering_rate, max_steering_rate))
+            steer_rate = steering_rate
+            new_steer = float(current_steering_angle) + steering_rate * float(dt)
+            if abs(calibrated_target_angle - new_steer) < 1e-4:
+                new_steer = calibrated_target_angle
+        return acc, steer_rate, new_steer
 
 
     def _init_states(self):
@@ -400,7 +786,7 @@ class MockQCar:
             return
         
         # --- Control inputs (shared by both models) ---
-        acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
+        acc, steer_rate, new_steer = self._process_control_inputs(
             self._throttle, self._steering, self.state_obs, self.current_steering_angle, dt
         )
         self.current_steering_angle = new_steer
@@ -532,7 +918,7 @@ class MockQCar:
             self.state_qlpv[5], self.state_qlpv[0], self.state_qlpv[1]
         ])
         
-        acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
+        acc, steer_rate, new_steer = self._process_control_inputs(
             self._throttle, self._steering, current_obs_state, self.state_qlpv[2], dt
         )
         self.current_steering_angle = new_steer
@@ -586,7 +972,7 @@ class MockQCar:
             self.state_st[3], 0.0, 0.0, 0.0, 0.0, 0.0
         ])
         
-        acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
+        acc, steer_rate, new_steer = self._process_control_inputs(
             self._throttle, self._steering, current_st_obs, self.state_st[2], dt
         )
         self.current_steering_angle = new_steer
@@ -668,7 +1054,7 @@ class MockQCar:
             self.state_ks[3], 0.0, 0.0, 0.0, 0.0, 0.0
         ])
         
-        acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
+        acc, steer_rate, new_steer = self._process_control_inputs(
             self._throttle, self._steering, current_ks_obs, self.state_ks[2], dt
         )
         self.current_steering_angle = new_steer
@@ -780,7 +1166,11 @@ class MockQCar:
         BRAKE_RATE = 20.0      # 1/s — exponential decay rate when no throttle
         
         # 1. Velocity: smooth braking when no throttle, otherwise integrate acceleration
-        if abs(throttle_input) < 0.01:
+        if self.longitudinal_model in {"velocity_lag", "velocity_lag_lookup"}:
+            vx_new = vx + acc * dt
+            if abs(throttle_input) < 0.01 and abs(vx_new) < STOP_THRESHOLD:
+                vx_new = 0.0
+        elif abs(throttle_input) < 0.01:
             # Exponential decay: vx * e^(-k*dt), snaps to 0 below threshold
             vx_new = vx * math.exp(-BRAKE_RATE * dt)
             if abs(vx_new) < STOP_THRESHOLD:
@@ -816,7 +1206,7 @@ class MockQCar:
         Uses common _compute_kinematic_step.
         """
         # 1. Control Inputs
-        acc, steer_rate, new_steer = self.qlpv_obs_model.process_control_inputs(
+        acc, steer_rate, new_steer = self._process_control_inputs(
             self._throttle, self._steering, self.state_obs, self.current_steering_angle, dt
         )
         self.current_steering_angle = new_steer

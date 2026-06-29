@@ -16,6 +16,25 @@ from typing import Dict, Any, Iterable, List
 
 class TrustWeightLogger:
     ATTACK_VALUE_FIELDS = ("x", "y", "theta", "velocity", "acceleration", "confidence")
+    CONTROLLER_POLICY_CODES = {
+        "legacy_cacc": 1,
+        "legacy_sensor_acc_blend": 2,
+        "high_trust_cacc": 3,
+        "trust_blend": 4,
+        "low_trust_sensor_acc": 5,
+        "low_trust_stop_no_sensor": 6,
+        "low_trust_no_sensor_cacc": 7,
+        "low_trust_legacy_cacc": 8,
+        "no_sensor_legacy_cacc": 9,
+        "trust_unavailable_sensor_acc": 10,
+        "trust_unavailable_stop_no_sensor": 11,
+        "trust_unavailable_legacy_cacc": 12,
+        "reverse_follow": 13,
+        "reverse_blocked": 14,
+        "no_v2v_stop": 15,
+        "no_controller_stop": 17,
+        "hold_stop": 16,
+    }
 
     def __init__(self, output_dir: str = None, max_vehicles: int = 5):
         if output_dir is None:
@@ -65,6 +84,16 @@ class TrustWeightLogger:
         if isinstance(value, (list, tuple, set)):
             return "|".join(str(v) for v in value)
         return str(value)
+
+    @classmethod
+    def _controller_policy_code(cls, value: Any) -> float:
+        if value is None:
+            return cls._nan()
+        policy = str(value).strip().lower()
+        if not policy:
+            return cls._nan()
+        base_policy = policy.split("+", 1)[0]
+        return float(cls.CONTROLLER_POLICY_CODES.get(base_policy, 99))
 
     @staticmethod
     def _nan_stats(values: Iterable[float]) -> Dict[str, float]:
@@ -117,6 +146,35 @@ class TrustWeightLogger:
             "yolo_rel_meas_used_global_count",
             "is_turning",
             "host_steering",
+            "host_throttle",
+            "ctrl_state",
+            "ctrl_long_type",
+            "ctrl_lat_type",
+            "ctrl_leader_source",
+            "ctrl_leader_id",
+            "ctrl_leader_trust",
+            "ctrl_leader_trust_source",
+            "ctrl_policy",
+            "ctrl_policy_code",
+            "ctrl_hold_stop",
+            "ctrl_alpha",
+            "ctrl_u_final",
+            "ctrl_delta_final",
+            "ctrl_u_raw",
+            "ctrl_delta_raw",
+            "ctrl_u_cacc",
+            "ctrl_u_sensor",
+            "ctrl_sensor_gap",
+            "ctrl_along_track_gap",
+            "ctrl_distance_to_leader",
+            "ctrl_velocity_difference",
+            "ctrl_reverse_follow_active",
+            "ctrl_reverse_follow_blocked",
+            "ctrl_multi_predecessor_count",
+            "ctrl_multi_predecessor_weight_sum",
+            "ctrl_multi_predecessor_spacing_term",
+            "ctrl_multi_predecessor_velocity_term",
+            "ctrl_multi_predecessor_acceleration_term",
             "v2v_attack_enabled",
             "v2v_attack_active",
             "v2v_attack_clock_s",
@@ -303,6 +361,9 @@ class TrustWeightLogger:
         if not isinstance(v2v_attack, dict):
             v2v_attack = {}
         rollback = data.get("rollback", {})
+        controller = data.get("controller", {})
+        if not isinstance(controller, dict):
+            controller = {}
         if not isinstance(rollback, dict):
             rollback = {}
         attack_by_vehicle = self._normalize_vehicle_dict(v2v_attack.get("by_vehicle", {}))
@@ -355,6 +416,35 @@ class TrustWeightLogger:
             "yolo_rel_meas_used_global_count": 0,
             "is_turning": int(data.get("is_turning", 0)),
             "host_steering": self._to_float_or_nan(data.get("host_steering", nan_val)),
+            "host_throttle": self._to_float_or_nan(data.get("host_throttle", nan_val)),
+            "ctrl_state": self._to_csv_text(controller.get("state", "")),
+            "ctrl_long_type": self._to_csv_text(controller.get("longitudinal_type", "")),
+            "ctrl_lat_type": self._to_csv_text(controller.get("lateral_type", "")),
+            "ctrl_leader_source": self._to_csv_text(controller.get("leader_source", "")),
+            "ctrl_leader_id": self._to_float_or_nan(controller.get("leader_id", nan_val)),
+            "ctrl_leader_trust": self._to_float_or_nan(controller.get("leader_trust", nan_val)),
+            "ctrl_leader_trust_source": self._to_csv_text(controller.get("leader_trust_source", "")),
+            "ctrl_policy": self._to_csv_text(controller.get("policy", "")),
+            "ctrl_policy_code": self._controller_policy_code(controller.get("policy", "")),
+            "ctrl_hold_stop": int("hold_stop" in str(controller.get("policy", "")).strip().lower()),
+            "ctrl_alpha": self._to_float_or_nan(controller.get("alpha", nan_val)),
+            "ctrl_u_final": self._to_float_or_nan(controller.get("u_final", nan_val)),
+            "ctrl_delta_final": self._to_float_or_nan(controller.get("delta_final", nan_val)),
+            "ctrl_u_raw": self._to_float_or_nan(controller.get("u_raw", nan_val)),
+            "ctrl_delta_raw": self._to_float_or_nan(controller.get("delta_raw", nan_val)),
+            "ctrl_u_cacc": self._to_float_or_nan(controller.get("u_cacc", nan_val)),
+            "ctrl_u_sensor": self._to_float_or_nan(controller.get("u_sensor", nan_val)),
+            "ctrl_sensor_gap": self._to_float_or_nan(controller.get("sensor_gap", nan_val)),
+            "ctrl_along_track_gap": self._to_float_or_nan(controller.get("along_track_gap", nan_val)),
+            "ctrl_distance_to_leader": self._to_float_or_nan(controller.get("distance_to_leader", nan_val)),
+            "ctrl_velocity_difference": self._to_float_or_nan(controller.get("velocity_difference", nan_val)),
+            "ctrl_reverse_follow_active": int(bool(controller.get("reverse_follow_active", False))),
+            "ctrl_reverse_follow_blocked": int(bool(controller.get("reverse_follow_blocked", False))),
+            "ctrl_multi_predecessor_count": self._to_float_or_nan(controller.get("multi_predecessor_count", nan_val)),
+            "ctrl_multi_predecessor_weight_sum": self._to_float_or_nan(controller.get("multi_predecessor_weight_sum", nan_val)),
+            "ctrl_multi_predecessor_spacing_term": self._to_float_or_nan(controller.get("multi_predecessor_spacing_term", nan_val)),
+            "ctrl_multi_predecessor_velocity_term": self._to_float_or_nan(controller.get("multi_predecessor_velocity_term", nan_val)),
+            "ctrl_multi_predecessor_acceleration_term": self._to_float_or_nan(controller.get("multi_predecessor_acceleration_term", nan_val)),
             "v2v_attack_enabled": int(bool(v2v_attack.get("enabled", False))),
             "v2v_attack_active": int(bool(v2v_attack.get("active", False))),
             "v2v_attack_clock_s": self._to_float_or_nan(

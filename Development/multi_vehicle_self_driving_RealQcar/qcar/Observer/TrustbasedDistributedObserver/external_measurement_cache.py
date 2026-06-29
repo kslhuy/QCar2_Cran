@@ -29,6 +29,7 @@ class ExternalMeasurementCache:
         timestamp_ns: Optional[int] = None,
         source: str = "external_sensor",
         measurement_confidence: Optional[float] = None,
+        relative_bearing: Optional[float] = None,
     ) -> bool:
         """Store externally measured host-target relative states."""
         try:
@@ -51,10 +52,21 @@ class ExternalMeasurementCache:
             else:
                 rel_conf = float("nan")
 
+            rel_bearing = (
+                float(relative_bearing)
+                if relative_bearing is not None
+                else float("nan")
+            )
+            if np.isfinite(rel_bearing):
+                rel_bearing = float(np.arctan2(np.sin(rel_bearing), np.cos(rel_bearing)))
+            else:
+                rel_bearing = float("nan")
+
             ts_ns = int(timestamp_ns) if timestamp_ns is not None else int(time.time_ns())
             self._data[tid] = {
                 "distance": dist,
                 "relative_velocity": rel_vel,
+                "relative_bearing": rel_bearing,
                 "confidence": rel_conf,
                 "timestamp_ns": float(ts_ns),
                 "source": str(source),

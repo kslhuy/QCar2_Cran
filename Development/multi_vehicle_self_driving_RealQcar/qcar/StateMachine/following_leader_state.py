@@ -63,7 +63,7 @@ class FollowingLeaderState(StateBase):
         self._route_track_length = 0.0
         self.reverse_follow_config: Dict[str, Any] = {}
         self.sensor_acc_config: Dict[str, Any] = {}
-        self.leader_state_source_config: Dict[str, Any] = {}
+        self.leader_source_config: Dict[str, Any] = {}
         self.trust_longitudinal_fusion_config: Dict[str, Any] = {}
         self.multi_predecessor_cacc_config: Dict[str, Any] = {}
         self.sensor_acc_controller = None
@@ -117,7 +117,7 @@ class FollowingLeaderState(StateBase):
         self._load_reverse_follow_config()
         self._load_trust_longitudinal_fusion_config()
         self._load_sensor_acc_config()
-        self._load_leader_state_source_config()
+        self._load_leader_source_config()
         self._load_multi_predecessor_cacc_config()
 
         return True
@@ -244,12 +244,44 @@ class FollowingLeaderState(StateBase):
         }:
             low_trust_policy = "sensor_acc_or_stop"
 
+        alpha_mode = str(
+            fusion_cfg.get("alpha_mode", "threshold_map")
+        ).strip().lower()
+        alpha_mode_aliases = {
+            "threshold": "threshold_map",
+            "threshold_mapping": "threshold_map",
+            "trust_threshold": "threshold_map",
+            "opinion": "direct_opinion",
+            "raw_opinion": "direct_opinion",
+            "direct": "direct_opinion",
+        }
+        alpha_mode = alpha_mode_aliases.get(alpha_mode, alpha_mode)
+        if alpha_mode not in {"threshold_map", "direct_opinion"}:
+            alpha_mode = "threshold_map"
+
+        opinion_scope = str(
+            fusion_cfg.get("opinion_scope", "direct_leader")
+        ).strip().lower()
+        opinion_scope_aliases = {
+            "leader": "direct_leader",
+            "direct": "direct_leader",
+            "leader_only": "direct_leader",
+            "predecessors": "used_predecessors",
+            "all_predecessors": "used_predecessors",
+            "paper": "used_predecessors",
+        }
+        opinion_scope = opinion_scope_aliases.get(opinion_scope, opinion_scope)
+        if opinion_scope not in {"direct_leader", "used_predecessors"}:
+            opinion_scope = "direct_leader"
+
         self.trust_longitudinal_fusion_config = {
             "enabled": fusion_enabled,
             "trust_low": trust_low,
             "trust_high": trust_high,
             "unavailable_policy": unavailable_policy,
             "low_trust_policy": low_trust_policy,
+            "alpha_mode": alpha_mode,
+            "opinion_scope": opinion_scope,
         }
         self.logger.logger.info(
             "[FOLLOW] Trust longitudinal fusion: "
@@ -304,25 +336,18 @@ class FollowingLeaderState(StateBase):
             )
             self.sensor_acc_controller = None
 
-    def _load_leader_state_source_config(self):
-        """Load leader-state source selection for controller inputs."""
-        source_cfg = {
-            "mode": "direct_v2v_attacked",
-            "fallback_to_v2v": True,
-        }
+    def _load_leader_source_config(self):
+        """Load the single leader source used by longitudinal and lateral control."""
+        source_cfg = {"mode": "direct_v2v_attacked"}
 
         controller_manager = getattr(self.vehicle_logic, "controller_manager", None)
         controller_config = getattr(controller_manager, "config", None)
-        if controller_config and hasattr(
-            controller_config, "get_leader_longitudinal_state_source_config"
-        ):
-            source_cfg.update(
-                controller_config.get_leader_longitudinal_state_source_config()
-            )
+        if controller_config and hasattr(controller_config, "get_leader_source_config"):
+            source_cfg.update(controller_config.get_leader_source_config())
 
-        self.leader_state_source_config = source_cfg
+        self.leader_source_config = source_cfg
         self.logger.logger.info(
-            "[FOLLOW] Leader state source: "
+            "[FOLLOW] Leader source: "
             f"{source_cfg.get('mode', 'direct_v2v_attacked')}"
         )
 
@@ -902,6 +927,118 @@ class FollowingLeaderState(StateBase):
             return None
         return float(np.clip((trust - low) / (high - low), 0.0, 1.0))
 
+    @staticmethod
+    def _coerce_trust_opinion(value: Any) -> Optional[float]:
+        """Return a finite opinion in [0, 1], or None when unavailable."""
+        if value is None:
+            return None
+        try:
+            opinion = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not np.isfinite(opinion):
+            return None
+        return float(np.clip(opinion, 0.0, 1.0))
+
+    def _get_state_trust_opinion(self, state: Dict[str, Any]) -> Optional[float]:
+        """Read the controller opinion O_i(j), preferring generalized trust."""
+        if not isinstance(state, dict):
+            return None
+        for key in (
+            "leader_generalized_trust",
+            "generalized_trust",
+            "gtrust",
+            "leader_trust",
+            "leader_direct_trust",
+            "direct_trust",
+            "trust",
+        ):
+            opinion = self._coerce_trust_opinion(state.get(key))
+            if opinion is not None:
+                return opinion
+        return None
+
+    def _predecessor_used_by_cacc(self, pred_state: Dict[str, Any]) -> bool:
+        """Mirror the trust gate used by multi-predecessor CACC feedforward."""
+        cfg = self.multi_predecessor_cacc_config or {}
+        opinion = self._get_state_trust_opinion(pred_state)
+        if opinion is None:
+            try:
+                missing_weight = float(cfg.get("missing_trust_weight", 0.0))
+            except (TypeError, ValueError):
+                missing_weight = 0.0
+            return missing_weight > 0.0
+
+        require_trust = bool(cfg.get("require_trust", True))
+        try:
+            min_trust = float(cfg.get("min_trust", 0.50))
+        except (TypeError, ValueError):
+            min_trust = 0.50
+        return (not require_trust) or opinion >= float(np.clip(min_trust, 0.0, 1.0))
+
+    def _get_trust_fusion_opinion(
+        self,
+        follower_state: Dict[str, Any],
+        leader_state: Dict[str, Any],
+    ) -> Optional[float]:
+        """Select the opinion used by the local/coop command fusion."""
+        cfg = self.trust_longitudinal_fusion_config
+        scope = str(cfg.get("opinion_scope", "direct_leader")).strip().lower()
+
+        candidate_states = [leader_state]
+        seen_ids = set()
+        leader_id = leader_state.get("vehicle_id")
+        try:
+            seen_ids.add(int(leader_id))
+        except (TypeError, ValueError):
+            pass
+
+        if scope == "used_predecessors":
+            predecessor_states = follower_state.get("multi_predecessor_states", [])
+            if isinstance(predecessor_states, (list, tuple)):
+                for pred_state in predecessor_states:
+                    if not isinstance(pred_state, dict):
+                        continue
+                    pred_id = pred_state.get("vehicle_id")
+                    try:
+                        pred_id_int = int(pred_id)
+                    except (TypeError, ValueError):
+                        pred_id_int = None
+                    if pred_id_int is not None and pred_id_int in seen_ids:
+                        continue
+                    if not self._predecessor_used_by_cacc(pred_state):
+                        continue
+                    if pred_id_int is not None:
+                        seen_ids.add(pred_id_int)
+                    candidate_states.append(pred_state)
+
+        opinions = []
+        for state in candidate_states:
+            opinion = self._get_state_trust_opinion(state)
+            if opinion is None:
+                return None
+            opinions.append(opinion)
+
+        if not opinions:
+            return None
+        return float(min(opinions))
+
+    def _compute_trust_fusion_alpha_for_mode(
+        self,
+        opinion: Optional[float],
+        trust_low: float,
+        trust_high: float,
+    ) -> Optional[float]:
+        """Map the selected opinion into the cooperative-command weight."""
+        if opinion is None:
+            return None
+        alpha_mode = str(
+            self.trust_longitudinal_fusion_config.get("alpha_mode", "threshold_map")
+        ).strip().lower()
+        if alpha_mode == "direct_opinion":
+            return self._coerce_trust_opinion(opinion)
+        return self._compute_trust_fusion_alpha(opinion, trust_low, trust_high)
+
     def _get_direct_leader_vehicle_id(self) -> Optional[int]:
         """Resolve the direct platoon leader id when formation metadata is available."""
         platoon_controller = getattr(self.vehicle_logic, "platoon_controller", None)
@@ -1027,13 +1164,7 @@ class FollowingLeaderState(StateBase):
         """Read a predecessor state from the same source family as direct CACC."""
         source_mode = str(source_mode or "direct_v2v_attacked").strip().lower()
         if source_mode == "fleet_estimator":
-            data = self._get_vehicle_data_from_fleet_estimator(vehicle_id)
-            if data is not None:
-                return data
-            if not bool(self.leader_state_source_config.get("fallback_to_v2v", True)):
-                return None
-            source_mode = "direct_v2v_attacked"
-
+            return self._get_vehicle_data_from_fleet_estimator(vehicle_id)
         v2v_manager = getattr(self.vehicle_logic, "v2v_manager", None)
         if v2v_manager is None or not hasattr(v2v_manager, "get_latest_local_state_raw"):
             return None
@@ -1062,7 +1193,7 @@ class FollowingLeaderState(StateBase):
         if max_predecessors <= 0:
             return []
 
-        source_mode = self.leader_state_source_config.get(
+        source_mode = self.leader_source_config.get(
             "mode", "direct_v2v_attacked"
         )
         include_direct = bool(cfg.get("include_direct_leader", False))
@@ -1159,6 +1290,115 @@ class FollowingLeaderState(StateBase):
         )
         follower_state["trust_fusion_policy"] = policy
 
+    def _publish_controller_debug_snapshot(
+        self,
+        follower_state: Dict[str, Any],
+        leader_state: Optional[Dict[str, Any]],
+        u: float,
+        delta: float,
+    ) -> None:
+        """Publish controller diagnostics into the observer trust-log path."""
+        leader_state = leader_state or {}
+        controller_manager = getattr(self.vehicle_logic, "controller_manager", None)
+        longitudinal_type = ""
+        lateral_type = str(self.lateral_controller_type or "")
+
+        if controller_manager is not None:
+            try:
+                if hasattr(controller_manager, "get_longitudinal_type"):
+                    longitudinal_type = str(
+                        controller_manager.get_longitudinal_type(state="leader") or ""
+                    )
+            except Exception:
+                longitudinal_type = ""
+            if not lateral_type:
+                try:
+                    if hasattr(controller_manager, "get_lateral_type"):
+                        lateral_type = str(
+                            controller_manager.get_lateral_type(state="leader") or ""
+                        )
+                except Exception:
+                    lateral_type = ""
+
+        if not longitudinal_type and self.longitudinal_controller is not None:
+            longitudinal_type = type(self.longitudinal_controller).__name__
+        if not lateral_type and self.lateral_controller is not None:
+            lateral_type = type(self.lateral_controller).__name__
+
+        distance_to_leader = float("nan")
+        velocity_difference = float("nan")
+        if leader_state:
+            try:
+                distance_to_leader = float(
+                    np.hypot(
+                        float(leader_state.get("x", 0.0))
+                        - float(follower_state.get("x", 0.0)),
+                        float(leader_state.get("y", 0.0))
+                        - float(follower_state.get("y", 0.0)),
+                    )
+                )
+                velocity_difference = float(leader_state.get("velocity", 0.0)) - float(
+                    follower_state.get("velocity", 0.0)
+                )
+            except (TypeError, ValueError):
+                distance_to_leader = float("nan")
+                velocity_difference = float("nan")
+
+        snapshot = {
+            "state": "following_leader",
+            "longitudinal_type": longitudinal_type,
+            "lateral_type": lateral_type,
+            "leader_source": leader_state.get("source", ""),
+            "leader_id": leader_state.get("vehicle_id"),
+            "leader_trust": leader_state.get("leader_trust"),
+            "leader_trust_source": leader_state.get("leader_trust_source", ""),
+            "policy": follower_state.get("trust_fusion_policy", ""),
+            "alpha": follower_state.get("trust_fusion_alpha"),
+            "u_final": float(u),
+            "delta_final": float(delta),
+            "u_raw": follower_state.get("raw_throttle_u"),
+            "delta_raw": follower_state.get("raw_steering_delta"),
+            "u_cacc": follower_state.get("u_cacc"),
+            "u_sensor": follower_state.get("u_sensor"),
+            "sensor_gap": follower_state.get(
+                "sensor_leader_distance_filtered",
+                follower_state.get("sensor_leader_distance"),
+            ),
+            "along_track_gap": follower_state.get("along_track_gap"),
+            "distance_to_leader": distance_to_leader,
+            "velocity_difference": velocity_difference,
+            "reverse_follow_active": bool(
+                follower_state.get("reverse_follow_active", False)
+            ),
+            "reverse_follow_blocked": bool(
+                follower_state.get("reverse_follow_blocked", False)
+            ),
+            "multi_predecessor_count": follower_state.get(
+                "multi_predecessor_count"
+            ),
+            "multi_predecessor_weight_sum": follower_state.get(
+                "multi_predecessor_weight_sum"
+            ),
+            "multi_predecessor_spacing_term": follower_state.get(
+                "multi_predecessor_spacing_term"
+            ),
+            "multi_predecessor_velocity_term": follower_state.get(
+                "multi_predecessor_velocity_term"
+            ),
+            "multi_predecessor_acceleration_term": follower_state.get(
+                "multi_predecessor_acceleration_term"
+            ),
+        }
+
+        observer = getattr(self.vehicle_logic, "vehicle_observer", None)
+        if observer is None or not hasattr(observer, "set_controller_debug_snapshot"):
+            return
+        try:
+            observer.set_controller_debug_snapshot(snapshot)
+        except Exception:
+            pass
+
+
     def _apply_trust_longitudinal_fusion(
         self,
         u_cacc: float,
@@ -1168,11 +1408,13 @@ class FollowingLeaderState(StateBase):
     ) -> float:
         """Blend CACC with local sensor ACC according to leader trust."""
         cfg = self.trust_longitudinal_fusion_config
-        trust_value = leader_state.get("leader_trust")
         trust_low = float(cfg.get("trust_low", 0.50))
         trust_high = float(cfg.get("trust_high", 0.80))
-        alpha = self._compute_trust_fusion_alpha(
-            trust_value, trust_low, trust_high
+        fusion_opinion = self._get_trust_fusion_opinion(
+            follower_state, leader_state
+        )
+        alpha = self._compute_trust_fusion_alpha_for_mode(
+            fusion_opinion, trust_low, trust_high
         )
 
         u_sensor = self._compute_sensor_acc_command(
@@ -1212,7 +1454,7 @@ class FollowingLeaderState(StateBase):
             return float(u_cacc)
 
         if (
-            float(trust_value) < trust_low
+            float(fusion_opinion) < trust_low
             and str(cfg.get("low_trust_policy", "sensor_acc_or_stop")).strip().lower()
             == "legacy_cacc"
         ):
@@ -1226,7 +1468,7 @@ class FollowingLeaderState(StateBase):
             return float(u_cacc)
 
         if u_sensor is None:
-            if float(trust_value) < trust_low:
+            if float(fusion_opinion) < trust_low:
                 if (
                     str(cfg.get("low_trust_policy", "sensor_acc_or_stop"))
                     .strip()
@@ -1357,17 +1599,10 @@ class FollowingLeaderState(StateBase):
             return None
 
         source_mode = str(
-            self.leader_state_source_config.get("mode", "direct_v2v_attacked")
+            self.leader_source_config.get("mode", "direct_v2v_attacked")
         ).strip().lower()
         if source_mode == "fleet_estimator":
-            leader_data = self._get_leader_data_from_fleet_estimator()
-            if leader_data is not None:
-                return leader_data
-
-            if not bool(self.leader_state_source_config.get("fallback_to_v2v", True)):
-                return None
-            source_mode = "direct_v2v_attacked"
-
+            return self._get_leader_data_from_fleet_estimator()
         v2v_channel = "clean" if source_mode == "direct_v2v_clean" else "attacked"
         v2v_data = self.vehicle_logic.platoon_controller.get_direct_leader_data_from_v2v(
             self.vehicle_logic.v2v_manager,
@@ -1591,6 +1826,23 @@ class FollowingLeaderState(StateBase):
                 and self.vehicle_logic.loop_counter % 200 == 0
             ):
                 self.logger.logger.warning("[FOLLOW] V2V data is None - stopping")
+            self._publish_controller_debug_snapshot(
+                {
+                    "x": x,
+                    "y": y,
+                    "theta": theta,
+                    "velocity": velocity,
+                    "acceleration": acceleration,
+                    "target_velocity": 0.0,
+                    "trust_fusion_policy": "no_v2v_stop",
+                    "trust_fusion_alpha": 0.0,
+                    "raw_throttle_u": 0.0,
+                    "raw_steering_delta": 0.0,
+                },
+                {},
+                0.0,
+                0.0,
+            )
             return 0.0, 0.0
 
         if self.longitudinal_controller is None:
@@ -1601,6 +1853,23 @@ class FollowingLeaderState(StateBase):
                 self.logger.logger.error(
                     "[FOLLOW] No longitudinal controller available - holding stop"
                 )
+            self._publish_controller_debug_snapshot(
+                {
+                    "x": x,
+                    "y": y,
+                    "theta": theta,
+                    "velocity": velocity,
+                    "acceleration": acceleration,
+                    "target_velocity": 0.0,
+                    "trust_fusion_policy": "no_controller_stop",
+                    "trust_fusion_alpha": 0.0,
+                    "raw_throttle_u": 0.0,
+                    "raw_steering_delta": 0.0,
+                },
+                {},
+                0.0,
+                0.0,
+            )
             return 0.0, 0.0
 
         # Get leader theta for turning detection
@@ -1680,6 +1949,7 @@ class FollowingLeaderState(StateBase):
             follower_state["reverse_follow_active"] = True
             follower_state["reverse_follow_config"] = dict(self.reverse_follow_config)
             follower_state["target_velocity"] = -reverse_speed_target
+            follower_state["trust_fusion_policy"] = "reverse_follow"
 
             u = self.longitudinal_controller.compute_throttle(
                 follower_state, leader_state, dt
@@ -1690,6 +1960,7 @@ class FollowingLeaderState(StateBase):
         elif reverse_follow_blocked:
             follower_state["reverse_follow_active"] = False
             follower_state["reverse_follow_blocked"] = True
+            follower_state["trust_fusion_policy"] = "reverse_blocked"
             follower_state["target_velocity"] = 0.0
             u = 0.0
             delta = 0.0
@@ -1723,20 +1994,11 @@ class FollowingLeaderState(StateBase):
                     else "legacy_cacc",
                 )
 
-            # Compute steering based on lateral control mode
-            if self.lateral_controller_type in ("path", "pp_map"):
-                # Path-following mode: use steering controller with waypoints
-                delta = self._compute_path_steering(x, y, theta, velocity)
-            elif self.lateral_controller_type in ("fusion", "fusion_lateral"):
-                # Fusion mode: combines path steering with leader tracking
-                delta = self._compute_fusion_steering(
-                    follower_state, leader_state, dt
-                )
-            else:
-                # Leader-following mode: use lateral controller to follow leader position
-                delta = self.lateral_controller.compute_steering(
-                    follower_state, leader_state, dt
-                )
+            delta = self._compute_lateral_control(
+                follower_state=follower_state,
+                leader_state=leader_state,
+                dt=dt,
+            )
 
             # Record actual target speed for scope display
             self.vehicle_logic.v_ref_actual = base_velocity
@@ -1773,6 +2035,7 @@ class FollowingLeaderState(StateBase):
                                          lat_cfg.get("fall_rate", 1.0))
 
         # Log final command after smoothing, plus raw pre-smoothing values.
+        self._publish_controller_debug_snapshot(follower_state, leader_state, u, delta)
         self.logger.log_following_leader_control(
             follower_state=follower_state, leader_state=leader_state, u=u, delta=delta
         )
@@ -1783,6 +2046,31 @@ class FollowingLeaderState(StateBase):
         # u = 0.05
         # delta = 0
         return u, delta
+
+    def _compute_lateral_control(
+        self,
+        follower_state: Dict[str, Any],
+        leader_state: Optional[Dict[str, Any]],
+        dt: float,
+    ) -> float:
+        """Compute steering from the same leader state used by longitudinal control."""
+        x = float(follower_state["x"])
+        y = float(follower_state["y"])
+        theta = float(follower_state["theta"])
+        velocity = float(follower_state["velocity"])
+
+        if self.lateral_controller_type in ("path", "pp_map"):
+            return self._compute_path_steering(x, y, theta, velocity)
+
+        if self.lateral_controller_type in ("fusion", "fusion_lateral"):
+            return self._compute_fusion_steering(follower_state, leader_state, dt)
+
+        if leader_state is None or self.lateral_controller is None:
+            return self._compute_path_steering(x, y, theta, velocity)
+
+        return self.lateral_controller.compute_steering(
+            follower_state, leader_state, dt
+        )
 
     def _compute_path_steering(
         self, x: float, y: float, theta: float, velocity: float
@@ -1800,7 +2088,7 @@ class FollowingLeaderState(StateBase):
     def _compute_fusion_steering(
         self,
         follower_state: Dict[str, Any],
-        leader_state: Dict[str, float],
+        leader_state: Optional[Dict[str, float]],
         dt: float,
     ) -> float:
         """
@@ -1825,6 +2113,9 @@ class FollowingLeaderState(StateBase):
             follower_state["theta"],
             follower_state["velocity"],
         )
+
+        if leader_state is None:
+            return path_steering
 
         if self.lateral_controller is not None:
             return self.lateral_controller.compute_steering(

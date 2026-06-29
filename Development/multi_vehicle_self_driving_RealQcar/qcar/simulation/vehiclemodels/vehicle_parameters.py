@@ -123,9 +123,15 @@ def setup_vehicle_parameters(vehicle_id: int, dir_params: str = None) -> Vehicle
         path_root = Path(__file__).parent / "parameters"
 
     # load configurations from yaml files
-    # Try parameters_vehicle{id}.yaml first, then parameters_{id}.yaml
-    conf_file_primary = path_root / f'parameters_vehicle{vehicle_id}.yaml'
-    conf_file_secondary = path_root / f'parameters_{vehicle_id}.yaml'
+    # Try parameters_vehicle{id}.yaml first, then parameters_{id}.yaml.
+    # The local fake-vehicle setup normally uses the QCar-specific file only.
+    vehicle_key = str(vehicle_id).lower()
+    if vehicle_key == 'qcar':
+        conf_file_primary = path_root / 'parameters_qcar.yaml'
+        conf_file_secondary = path_root / 'parameters_qcar.yaml'
+    else:
+        conf_file_primary = path_root / f'parameters_vehicle{vehicle_id}.yaml'
+        conf_file_secondary = path_root / f'parameters_{vehicle_id}.yaml'
     
     if conf_file_primary.exists():
         conf_vehicle = OmegaConf.load(conf_file_primary)
@@ -139,7 +145,11 @@ def setup_vehicle_parameters(vehicle_id: int, dir_params: str = None) -> Vehicle
     # else:
     #     raise FileNotFoundError(f"{conf_file_secondary} not found.")
 
-    conf_tires = OmegaConf.load(path_root / "parameters_tire.yaml")
+    tire_file = path_root / "parameters_tire.yaml"
+    if tire_file.exists():
+        conf_tires = OmegaConf.load(tire_file)
+    else:
+        conf_tires = OmegaConf.create({})
 
     # create merged configuration and set as Read-only
     p = OmegaConf.merge(structured_conf, conf_tires, conf_vehicle)
@@ -168,12 +178,17 @@ def get_qcar_parameters(path_to_yaml: Optional[str] = None) -> VehicleParameters
         raise FileNotFoundError(f"QCar parameters file not found at: {yaml_file}")
         
     conf = OmegaConf.load(yaml_file)
+    tire_file = yaml_file.parent / "parameters_tire.yaml"
+    if tire_file.exists():
+        tire_conf = OmegaConf.load(tire_file)
+    else:
+        tire_conf = OmegaConf.create({})
     
     # Create structured config
     structured_conf = OmegaConf.structured(VehicleParameters)
     
     # Merge (config overwrites defaults)
-    p = OmegaConf.merge(structured_conf, conf)
+    p = OmegaConf.merge(structured_conf, tire_conf, conf)
     OmegaConf.set_readonly(p, True)
     
     return OmegaConf.to_object(p)

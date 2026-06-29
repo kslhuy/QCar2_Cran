@@ -49,8 +49,8 @@ python .\initCars_Studio.py   -u -n 3
 #  Start GUI  (another cmd)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI\      
 python .\app_main.py
-cd .\GroundStation-Qcar-App\
 # Start the development server
+cd .\GroundStation-Qcar-App\
 npm run dev
 
 # Run the real logic of vehicle 0   (another cmd)
@@ -59,6 +59,10 @@ cd .\Development\multi_vehicle_self_driving_RealQcar\qcar
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 0
 
 # Run the real logic of vehicle 1 (another cmd) 
+cd .\Development\multi_vehicle_self_driving_RealQcar      
+
+.\quick_test_3_vehicles.bat
+.\quick_stop_3_vehicles.bat
 
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar      
 python .\vehicle_main.py --host 127.0.0.1 --port 5000 --car-id 1
@@ -163,14 +167,31 @@ python online_sysid_zmq_worker.py --sample-port 18880 --control-port 18881 --sta
 
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\GUI     
 python .\app_main.py
-
+# Start the development server
+cd .\GroundStation-Qcar-App\
+npm run dev
 
 # Test with fake vehicles (no hardware , no Qlabs , math equation)
 cd .\Development\multi_vehicle_self_driving_RealQcar\qcar\simulation    
 python fake_vehicle_real_logic.py 0
+python fake_vehicle_real_logic.py 0 --use-direct-poses
 
 # Test with fake vehicles (with parameter Qcar ) (no hardware , no Qlabs)
 python fake_vehicle_real_logic.py 1
+
+# Start 3 fake vehicles in separate terminals
+# Default uses the same initial direct poses as: python .\initCars_Studio.py -u
+cd .\Development\multi_vehicle_self_driving_RealQcar
+.\quick_test_fake_3_vehicles.bat
+
+# Stop 3 fake vehicles
+.\quick_stop_fake_3_vehicles.bat
+
+# Optional variants
+.\quick_test_fake_3_vehicles.bat -Model dynamic
+.\quick_test_fake_3_vehicles.bat -Model kinematic -VehicleParams qcar
+.\quick_test_fake_3_vehicles.bat -CarIds 0,1
+.\quick_test_fake_3_vehicles.bat -UseFleetPose
 
 
 

@@ -238,7 +238,7 @@ class CommandHandler:
             if command_type == CommandType.TRIGGER_ATTACK:
                 self.state_machine.vehicle_logic.trigger_v2v_attack(data)
             elif command_type == CommandType.DISABLE_ATTACK:
-                self.state_machine.vehicle_logic.disable_v2v_attack()
+                self.state_machine.vehicle_logic.disable_v2v_attack(data)
             return True
 
         return False

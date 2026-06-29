@@ -182,5 +182,5 @@ logging:
   enable_trust_weight_logging: false
   
   # File naming strategy
-  use_timestamped_log_files: false  # true = create new timestamped file/folder, false = use single static file (append/overwrite)
+  use_timestamped_log_files: true  # true = create new timestamped file/folder, false = use single static file (append/overwrite)
 

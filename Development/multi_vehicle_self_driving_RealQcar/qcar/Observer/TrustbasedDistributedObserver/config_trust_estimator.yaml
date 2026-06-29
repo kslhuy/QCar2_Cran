@@ -9,14 +9,17 @@
 fleet_estimator_type: trust_consensus
 
 # Calibration-derived longitudinal model source.
-# VehicleObserverSimple resolves this using:
-# - `config.vehicle.vehicle_type`
-# - `config.vehicle.is_physical_qcar`
-# so QCar hardware, QCar simulation, and Limo can each use different files.
+# profile: auto           -> choose qcar_real/qcar_sim/limo from runtime vehicle config.
+# profile: real_car_61    -> force the exported real-car acceleration calibration 61.
+# profile: qlabs_velocity -> force the QLabs steady-state throttle-velocity lookup.
 observer_model_source:
+  profile: auto
   qcar_real: ../extra_configs/throttle_acceleration_observer_model_real.yaml
   qcar_sim: ../extra_configs/throttle_acceleration_observer_model_sim.yaml
   limo: ../extra_configs/throttle_acceleration_observer_model_limo.yaml
+  profiles:
+    real_car_61: ../../Calibration/results/online_throttle_acceleration/calibration/61/throttle_acceleration_observer_model_latest.yaml
+    qlabs_velocity: ../extra_configs/throttle_velocity_observer_model_qlabs.yaml
 
 # =====================================================================
 # Global Fleet Settings (inherited from base estimators)
@@ -68,7 +71,7 @@ trust:
   
   # Dirichlet-based trust level parameters
   num_trust_levels: 5             # [Untrusted, Suspicious, Neutral, Trusted, Highly Trusted]
-  dirichlet_update_rate: 0.1      # How fast trust levels update (0-1) — used by "ema" method
+  dirichlet_update_rate: 0.1      # How fast trust levels update (0-1) - used by "ema" method
   dirichlet_type: "Dual"          # "Single" (local only) or "Dual" (local + cross-validation)
   # Dirichlet method: "ema" (simple EMA update) or "matlab" (aging-factor + regularized score)
   dirichlet_method: "matlab"
@@ -123,6 +126,9 @@ trust:
   distributed_local_tau2_diag: [1.5, 0.6]  # Tau^2 for gamma_local_peer/gamma_self [distance, velocity] (MATLAB tau2_matrix_gamma_local)
   distributed_self_turn_distance_gain: 1.5
   distributed_self_turn_velocity_gain: 1.0
+  use_relative_bearing_in_gamma_self: true
+  gamma_self_bearing_tau2: 0.25  # rad^2; appended only when clean/external relative bearing is available
+  distributed_self_tau2_diag: []  # optional override for gamma_self [distance, (velocity), bearing]
   gamma_self_penalty_floor: 0.4  # if gamma_self can stay low but you do not want global_trust to fall much, increase
   gamma_self_penalty_exponent: 0.9 # punishment curve is still too sharp, lower gamma_self_penalty_exponent
   # Relative-trust mode:
@@ -155,6 +161,7 @@ weight:
   # Neighbor weight constraints
   w_cap: 0.4                      # Maximum weight per neighbor (influence cap - 40%)
   kappa: 3                        # Smaller kappa gives stronger direct/neighbor corrections in small fleets
+  local_bad_zero_w0_neighbor_total_cap: 0.08 # Keep some trusted neighbor pull during local-channel quarantine
   
   # Temporal smoothing (EMA)
   eta: 0.15                       # EMA smoothing factor
@@ -163,14 +170,9 @@ weight:
   use_gamma_self_weight_adaptation: true
   gamma_self_weight_floor: 0.25
   
-  # Flag-driven w₀ adaptation factors
-  # These multiply w₀ when an attack flag fires for the target being estimated
-  flag_w0_target_attack_factor: 1.0     # Keep w₀ full when target under attack (local is reliable)
-  flag_w0_global_est_check_factor: 0.3  # Reduce w₀ when local sensors are faulty
-  flag_w0_local_est_check_factor: 0.5   # Reduce w₀ when local measurements unreliable
-
-  # Semantics-aligned overrides for trust-based target weighting.
-  # YAML parsers typically honor the last duplicate key in a mapping.
+  # Flag-driven w0 adaptation factors for trust-based target weighting.
+  # target_attack/local_est_check imply a bad direct/local channel; global_est_check
+  # means the direct channel looks good while fleet cross-checking is suspicious.
   flag_w0_target_attack_factor: 0.25
   flag_w0_global_est_check_factor: 1.25
   flag_w0_local_est_check_factor: 0.5
@@ -200,7 +202,7 @@ observer:
   #                   target x/y from host pose plus the latest trusted
   #                   host-target distance, blend clean target theta with host
   #                   theta, and fall back to host velocity
-  dynamics_prediction_mode: clean_data
+  dynamics_prediction_mode: relative_host_anchor_mixed
   # Attack-time blend used only by relative_host_anchor_mixed:
   # theta_attack = circular_mean(clean_theta, host_theta)
   # with the weights below, and
@@ -212,6 +214,17 @@ observer:
   relative_host_anchor_host_velocity_weight: 0.9
   relative_host_anchor_target_acceleration_weight: 0.1
   relative_host_anchor_host_acceleration_weight: 0.9
+  relative_host_anchor_use_bearing: true
+  # Direct-channel recovery latch/ramp after local attack flags.
+  # At ~25 Hz fleet rate, this is about 0.6 s hold, 0.4 s clean confirmation,
+  # then ~1.2 s linear w0 recovery.
+  # w0_effective = s * w0_normal
+  # w_self_effective = w_self_normal + (1 - s) * w0_normal
+  direct_recovery_enabled: true
+  direct_recovery_hold_steps: 15             # 0.6 s wait after last bad flag
+  direct_recovery_required_good_steps: 10    # 0.4 s of clean evidence
+  direct_recovery_ramp_steps: 30             # 1.2 s linear reopening
+  direct_recovery_min_local_trust: 0.5       # local trust must be >= this
   # When true, clean_data / mixed_clean_data may re-anchor x/y to the clean
   # V2V target pose when attack flags are active. When false, keep x/y
   # continuity from the consensus/rollback estimate even under attack.
@@ -226,12 +239,12 @@ observer:
   attack_output_low_pass_alpha: 1.0
 
   # Trust-triggered contamination rollback
-  rollback_enabled: false
+  rollback_enabled: true
   rollback_window_size: 50
   # Fast rollback triggers:
   # - final_trust        = fallback, slower because Dirichlet/EMA has memory
   # - local_est_check    = fastest reaction to local/direct channel corruption
-  # - global_est_check   = react when fleet cross-check fails even before final
+  # - global_est_check   = fleet-source inconsistency; rollback/quarantine the bad fleet source
   rollback_on_final_trust: true
   rollback_on_local_est_check: true
   rollback_on_global_est_check: true
@@ -240,7 +253,7 @@ observer:
   # many trusted samples first so replay starts from an older, safer pose.
   # This is safer against contamination, but it also adds temporal lag because
   # replay does not start from the most recent trusted sample.
-  rollback_trusted_state_guard_steps: 15
+  rollback_trusted_state_guard_steps: 5
   # Optional cap for cached trusted snapshots per target. Keep this at least
   # guard_steps + 1; default code also falls back to rollback_window_size.
   rollback_trusted_state_history_size: 60
@@ -282,8 +295,8 @@ vehicle_models:
   #   velocity_command_tau: 0.35
 
 timestamp_alignment:
-  enabled: false
-  max_extrapolation_s: 0.5
+  enabled: true
+  max_extrapolation_s: 0.25
 
 # =====================================================================
 # Logging and Debugging

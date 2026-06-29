@@ -46,9 +46,7 @@ trust_longitudinal_fusion:
   unavailable_policy: legacy_cacc
   low_trust_policy: sensor_acc_or_stop
 
-leader_longitudinal_state_source:
-  mode: 'fleet_estimator' # 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'
-  fallback_to_v2v: true       # If fleet estimate is unavailable, keep current direct V2V behavior
+leader_source: 'fleet_estimator' # 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'
 
 # Legacy fallbacks
 longitudinal_controller_type: 'cacc'

@@ -144,9 +144,14 @@ class ControllerConfig:
             "distance_smoothing": sensor_acc_cfg.get("distance_smoothing", 0.6),
         }
 
-    def get_leader_longitudinal_state_source_config(self) -> Dict[str, Any]:
-        """Get leader-state source selection for FOLLOWING_LEADER longitudinal control."""
-        source_cfg = self.config.get("leader_longitudinal_state_source", {})
+    def get_leader_source_config(self) -> Dict[str, Any]:
+        """Get the single leader-state source used by FOLLOWING_LEADER control."""
+        source_cfg = self.config.get("leader_source", {})
+        if isinstance(source_cfg, str):
+            source_cfg = {"mode": source_cfg}
+        if not isinstance(source_cfg, dict):
+            source_cfg = {}
+
         mode = str(source_cfg.get("mode", "direct_v2v_attacked")).strip().lower()
         legacy_mode_map = {
             "direct_v2v": "direct_v2v_attacked",
@@ -162,10 +167,7 @@ class ControllerConfig:
         }:
             mode = "direct_v2v_attacked"
 
-        return {
-            "mode": mode,
-            "fallback_to_v2v": source_cfg.get("fallback_to_v2v", True),
-        }
+        return {"mode": mode}
 
     def get_trust_longitudinal_fusion_config(self) -> Dict[str, Any]:
         """Get trust-aware longitudinal command-fusion settings."""
@@ -209,12 +211,44 @@ class ControllerConfig:
         }:
             low_trust_policy = "sensor_acc_or_stop"
 
+        alpha_mode = str(
+            cfg.get("alpha_mode", "threshold_map")
+        ).strip().lower()
+        alpha_mode_aliases = {
+            "threshold": "threshold_map",
+            "threshold_mapping": "threshold_map",
+            "trust_threshold": "threshold_map",
+            "opinion": "direct_opinion",
+            "raw_opinion": "direct_opinion",
+            "direct": "direct_opinion",
+        }
+        alpha_mode = alpha_mode_aliases.get(alpha_mode, alpha_mode)
+        if alpha_mode not in {"threshold_map", "direct_opinion"}:
+            alpha_mode = "threshold_map"
+
+        opinion_scope = str(
+            cfg.get("opinion_scope", "direct_leader")
+        ).strip().lower()
+        opinion_scope_aliases = {
+            "leader": "direct_leader",
+            "direct": "direct_leader",
+            "leader_only": "direct_leader",
+            "predecessors": "used_predecessors",
+            "all_predecessors": "used_predecessors",
+            "paper": "used_predecessors",
+        }
+        opinion_scope = opinion_scope_aliases.get(opinion_scope, opinion_scope)
+        if opinion_scope not in {"direct_leader", "used_predecessors"}:
+            opinion_scope = "direct_leader"
+
         return {
             "enabled": _as_bool(cfg.get("enabled", False), False),
             "trust_low": trust_low,
             "trust_high": trust_high,
             "unavailable_policy": unavailable_policy,
             "low_trust_policy": low_trust_policy,
+            "alpha_mode": alpha_mode,
+            "opinion_scope": opinion_scope,
         }
 
     def get_multi_predecessor_cacc_config(self) -> Dict[str, Any]:

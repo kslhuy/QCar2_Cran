@@ -17,7 +17,6 @@ Features:
 - Compatible with the new Observer system architecture
 """
 
-import json
 import numpy as np
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -53,6 +52,20 @@ from Observer.TrustbasedDistributedObserver.external_measurement_cache import (
 )
 from Observer.TrustbasedDistributedObserver.contamination_rollback import (
     ContaminationRollback,
+)
+from Observer.TrustbasedDistributedObserver.estimator_config import (
+    ObserverSettings,
+    PredictionSettings,
+    RollbackSettings,
+    as_float,
+    dict_section,
+    load_vehicle_model_overrides,
+    normalize_dynamics_prediction_mode,
+    normalize_vehicle_model_config,
+    vehicle_model_for_target,
+)
+from Observer.TrustbasedDistributedObserver.v2v_attack_status import (
+    V2VAttackStatusTracker,
 )
 
 
@@ -112,12 +125,21 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             logger=logger,
         )
 
-        # Observer gains (for dynamics correction)
-        self.observer_gain = self.config.get("observer_gain", 0.1)
-        self.consensus_gain = self.config.get("consensus_gain", 0.2)
+        self.observer_settings = ObserverSettings.from_config(
+            self.config, trust_config_dict
+        )
+        self.observer_gain = self.observer_settings.observer_gain
+        self.consensus_gain = self.observer_settings.consensus_gain
+        self.attack_mitigation_enabled = (
+            self.observer_settings.attack_mitigation_enabled
+        )
+        self.turn_steering_threshold = (
+            self.observer_settings.turn_steering_threshold
+        )
 
         # Cache for host state (for trust evaluation)
         self.host_state: Dict = {}
+        self.controller_debug_snapshot: Dict[str, Any] = {}
         self.received_clean_local_states: Dict[int, List[Tuple[int, np.ndarray]]] = (
             defaultdict(list)
         )
@@ -132,50 +154,30 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         # Generalized trust vector O_i(j)
         self.generalized_trust_vector: Dict[int, float] = {self.vehicle_id: 1.0}
-
-        # Attack mitigation enabled
-        self.attack_mitigation_enabled = self.config.get("attack_mitigation", True)
-        self.turn_steering_threshold = trust_config_dict.get(
-            "turn_steering_threshold", 0.1
-        )
+        self._direct_recovery_state: Dict[int, Dict[str, float]] = {}
 
         # Prediction/output settings
         self._init_prediction_settings(vehicle_config)
 
         # Contamination rollback (trust-triggered replay)
-        rollback_window_size = max(int(self.config.get("rollback_window_size", 15)), 1)
-        self.rollback_trusted_state_guard_steps = max(
-            int(self.config.get("rollback_trusted_state_guard_steps", 0)), 0
+        self.rollback_settings = RollbackSettings.from_config(self.config)
+        self.rollback_trusted_state_guard_steps = (
+            self.rollback_settings.trusted_state_guard_steps
         )
-        configured_trusted_history_size = self.config.get(
-            "rollback_trusted_state_history_size", rollback_window_size
+        self.rollback_trusted_state_history_size = (
+            self.rollback_settings.trusted_state_history_size
         )
-        try:
-            configured_trusted_history_size = int(configured_trusted_history_size)
-        except (TypeError, ValueError):
-            configured_trusted_history_size = rollback_window_size
-        self.rollback_trusted_state_history_size = max(
-            configured_trusted_history_size,
-            self.rollback_trusted_state_guard_steps + 1,
-            1,
-        )
-        self.rollback_on_final_trust = bool(
-            self.config.get("rollback_on_final_trust", True)
-        )
-        self.rollback_on_local_est_check = bool(
-            self.config.get("rollback_on_local_est_check", True)
-        )
-        self.rollback_on_global_est_check = bool(
-            self.config.get("rollback_on_global_est_check", True)
-        )
+        self.rollback_on_final_trust = self.rollback_settings.on_final_trust
+        self.rollback_on_local_est_check = self.rollback_settings.on_local_est_check
+        self.rollback_on_global_est_check = self.rollback_settings.on_global_est_check
         self._rollback_trusted_state_history: Dict[int, deque] = {}
         self._rollback_trusted_relative_anchor_history: Dict[int, deque] = {}
         self.rollback = ContaminationRollback(
             state_dim=self.state_dim,
             vehicle_id=self.vehicle_id,
             fleet_size=self.fleet_size,
-            enabled=bool(self.config.get("rollback_enabled", False)),
-            window_size=rollback_window_size,
+            enabled=self.rollback_settings.enabled,
+            window_size=self.rollback_settings.window_size,
             trust_threshold=self.trust_config.trust_threshold,
             predict_fn=self._predict_dynamics,
             constraints_fn=self._apply_state_constraints,
@@ -211,101 +213,53 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         value = self.config.get(key, {})
         return value if isinstance(value, dict) else {}
 
+    def set_controller_debug_snapshot(
+        self, snapshot: Optional[Dict[str, Any]]
+    ) -> None:
+        """Cache the latest controller command snapshot for trust CSV logging."""
+        if not isinstance(snapshot, dict):
+            self.controller_debug_snapshot = {}
+            return
+        self.controller_debug_snapshot = dict(snapshot)
+
     def _init_prediction_settings(self, vehicle_config: Dict[str, Any]) -> None:
         """Initialize prediction/output configuration."""
-        self.enable_output_low_pass = bool(
-            self.config.get("enable_output_low_pass", False)
+        self.prediction_settings = PredictionSettings.from_config(
+            self.config,
+            vehicle_config,
+            trust_threshold=self.trust_config.trust_threshold,
         )
-        self.output_low_pass_alpha = float(
-            np.clip(self.config.get("output_low_pass_alpha", 1.0), 0.0, 1.0)
-        )
-        self.attack_output_low_pass_alpha = float(
-            np.clip(
-                self.config.get(
-                    "attack_output_low_pass_alpha", self.output_low_pass_alpha
-                ),
-                0.0,
-                1.0,
-            )
-        )
-        self.force_clean_pose_anchor = bool(
-            self.config.get("force_clean_pose_anchor", True)
-        )
-        self.relative_host_anchor_clean_theta_weight = float(
-            np.clip(
-                self.config.get("relative_host_anchor_clean_theta_weight", 0.8),
-                0.0,
-                1.0,
-            )
-        )
-        self.relative_host_anchor_host_theta_weight = float(
-            np.clip(
-                self.config.get("relative_host_anchor_host_theta_weight", 0.2),
-                0.0,
-                1.0,
-            )
-        )
-        self.relative_host_anchor_target_velocity_weight = float(
-            np.clip(
-                self.config.get("relative_host_anchor_target_velocity_weight", 0.1),
-                0.0,
-                1.0,
-            )
-        )
-        self.relative_host_anchor_host_velocity_weight = float(
-            np.clip(
-                self.config.get("relative_host_anchor_host_velocity_weight", 0.9),
-                0.0,
-                1.0,
-            )
-        )
-        self.relative_host_anchor_target_acceleration_weight = float(
-            np.clip(
-                self.config.get("relative_host_anchor_target_acceleration_weight", 0.1),
-                0.0,
-                1.0,
-            )
-        )
-        self.relative_host_anchor_host_acceleration_weight = float(
-            np.clip(
-                self.config.get("relative_host_anchor_host_acceleration_weight", 0.9),
-                0.0,
-                1.0,
-            )
-        )
-        self.dynamics_prediction_mode = self._normalize_dynamics_prediction_mode(
-            self.config.get(
-                "dynamics_prediction_mode",
-                self.config.get(
-                    "prediction_mode",
-                    vehicle_config.get("dynamics_prediction_mode", "model"),
-                ),
-            )
-        )
+        for name in self.prediction_settings.__dataclass_fields__:
+            setattr(self, name, getattr(self.prediction_settings, name))
 
     def _init_vehicle_model_settings(self, vehicle_config: Dict[str, Any]) -> None:
         """Initialize vehicle-model config used by prediction."""
         self._raw_default_vehicle_config = dict(vehicle_config)
-        self.default_vehicle_model = self._normalize_vehicle_model_config(vehicle_config)
-        self.vehicle_model_overrides = self._load_vehicle_model_overrides(
-            self.config.get("vehicle_models", {})
+        self.default_vehicle_model = normalize_vehicle_model_config(
+            vehicle_config, self.dynamics_prediction_mode
         )
-        self.control_timeout_s = float(
+        self.vehicle_model_overrides = load_vehicle_model_overrides(
+            self.config.get("vehicle_models", {}),
+            self._raw_default_vehicle_config,
+            self.dynamics_prediction_mode,
+        )
+        self.control_timeout_s = as_float(
             self.config.get(
                 "control_timeout_s",
                 vehicle_config.get("control_timeout_s", 1.0),
-            )
+            ),
+            1.0,
         )
         self.timestamp_alignment_config = self._get_config_section(
             "timestamp_alignment"
         )
 
-        velocity_lag_cfg = self._nested_dict(vehicle_config, "velocity_lag_model")
+        velocity_lag_cfg = dict_section(vehicle_config, "velocity_lag_model")
         self.velocity_lag_enabled = bool(velocity_lag_cfg.get("enabled", False))
         self.velocity_lag_tau = max(float(velocity_lag_cfg.get("tau", 0.301)), 1e-6)
         self.velocity_lag_gain = float(velocity_lag_cfg.get("velocity_gain", 6.598))
 
-        accel_lag_cfg = self._nested_dict(vehicle_config, "accel_lag_model")
+        accel_lag_cfg = dict_section(vehicle_config, "accel_lag_model")
         self.accel_lag_enabled = bool(accel_lag_cfg.get("enabled", False))
         self.accel_lag_tau = max(float(accel_lag_cfg.get("tau", 0.318)), 1e-6)
         self.accel_lag_gain = float(accel_lag_cfg.get("input_gain", 1.0))
@@ -347,12 +301,15 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             self.relative_host_anchor_target_acceleration_weight,
             self.relative_host_anchor_host_acceleration_weight,
         )
-
-    @staticmethod
-    def _nested_dict(cfg: Dict[str, Any], key: str) -> Dict[str, Any]:
-        """Return a nested dictionary value or `{}` when missing/malformed."""
-        value = cfg.get(key, {})
-        return value if isinstance(value, dict) else {}
+        self.logger.logger.info(
+            "Relative host-anchor 2D bearing=%s; direct recovery enabled=%s hold=%s good=%s ramp=%s min_local=%s",
+            self.relative_host_anchor_use_bearing,
+            self.direct_recovery_enabled,
+            self.direct_recovery_hold_steps,
+            self.direct_recovery_required_good_steps,
+            self.direct_recovery_ramp_steps,
+            self.direct_recovery_min_local_trust,
+        )
 
     @staticmethod
     def _make_default_stats() -> Dict[str, int]:
@@ -373,14 +330,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
     def _reset_v2v_attack_tracking(self) -> None:
         """Reset V2V-attack metadata mirrored into trust logs."""
-        self._v2v_attack_status = {}
-        self._v2v_attack_scenarios = {}
-        self._v2v_attack_enable_time_s = None
-        self._v2v_attack_disable_time_s = None
-        self._v2v_attack_last_event = ""
-        self._v2v_attack_last_event_time_s = None
-        self._v2v_attack_events = []
-        self._v2v_attack_value_snapshot = {}
+        if not hasattr(self, "_v2v_attack_tracker"):
+            self._v2v_attack_tracker = V2VAttackStatusTracker()
+        else:
+            self._v2v_attack_tracker.reset()
 
     def _init_runtime_tracking(self) -> None:
         """Initialize transient runtime caches and tracking state."""
@@ -529,27 +482,190 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             self._startup_target_weights_cache[int(target_id)] = cached
         return self._copy_target_weights(cached)
 
+    def _is_local_channel_untrusted(self, target_id: int, trust_val: float) -> bool:
+        """Return true only when low trust is evidence against the direct/local channel."""
+        trust_obj = self.trust_model.get_trust_score(int(target_id))
+        threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+        if trust_obj is None:
+            return float(trust_val) < threshold
+
+        local_trust = getattr(trust_obj, "local_trust_sample", None)
+        try:
+            local_trust_f = float(local_trust)
+        except (TypeError, ValueError):
+            local_trust_f = float("nan")
+
+        return bool(
+            getattr(trust_obj, "flag_local_est_check", False)
+            or getattr(trust_obj, "flag_target_attack", False)
+            or (np.isfinite(local_trust_f) and local_trust_f < threshold)
+        )
+
     def _get_current_malicious_vehicle_ids(
         self, trust_scores: Dict[int, float]
     ) -> Set[int]:
-        """Return currently untrusted external vehicles using the active trust threshold."""
-        threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
-        return {
+        """Return external vehicles currently quarantined from fleet-source use."""
+        malicious_ids = {
             int(vehicle_id)
             for vehicle_id, trust_val in trust_scores.items()
-            if int(vehicle_id) != self.vehicle_id and float(trust_val) < threshold
+            if int(vehicle_id) != self.vehicle_id
+            and self._is_local_channel_untrusted(int(vehicle_id), float(trust_val))
         }
+
+        rollback = getattr(self, "rollback", None)
+        if rollback is not None and getattr(rollback, "enabled", False):
+            malicious_ids.update(
+                int(vehicle_id)
+                for vehicle_id in getattr(rollback, "malicious_vehicles", set())
+                if int(vehicle_id) != self.vehicle_id
+            )
+
+        return malicious_ids
 
     @staticmethod
     def _has_active_attack_flags(trust_obj) -> bool:
-        """True when any target attack-detection flag is currently active."""
+        """True when direct/local-channel evidence indicates an active attack."""
         if trust_obj is None:
             return False
         return bool(
             getattr(trust_obj, "flag_target_attack", False)
-            or getattr(trust_obj, "flag_global_est_check", False)
             or getattr(trust_obj, "flag_local_est_check", False)
         )
+
+    def _direct_recovery_scale(self, target_id: int) -> float:
+        """Return the current direct-channel recovery gain for a target."""
+        if not getattr(self, "direct_recovery_enabled", True):
+            return 1.0
+        state = self._direct_recovery_state.get(int(target_id))
+        if not state:
+            return 1.0
+        return float(np.clip(state.get("scale", 1.0), 0.0, 1.0))
+
+    def _local_trust_ready_for_direct_recovery(self, trust_obj) -> bool:
+        """Whether local-channel trust is strong enough to begin reopening w0."""
+        if trust_obj is None:
+            return True
+        local_trust = getattr(trust_obj, "local_trust_sample", None)
+        if local_trust is None:
+            return True
+        try:
+            local_trust_f = float(local_trust)
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            np.isfinite(local_trust_f)
+            and local_trust_f >= self.direct_recovery_min_local_trust
+        )
+
+    def _update_direct_channel_recovery_states(
+        self, trust_scores: Dict[int, float]
+    ) -> None:
+        """Latch local-channel attack recovery and ramp direct-measurement gain."""
+        if not getattr(self, "direct_recovery_enabled", True):
+            self._direct_recovery_state.clear()
+            return
+
+        good_required = int(self.direct_recovery_required_good_steps)
+        ramp_steps = int(self.direct_recovery_ramp_steps)
+
+        for raw_target_id in trust_scores.keys():
+            target_id = int(raw_target_id)
+            if target_id == self.vehicle_id:
+                continue
+
+            trust_obj = self.trust_model.get_trust_score(target_id)
+            local_bad = self._has_active_attack_flags(trust_obj)
+            quarantined = self._is_target_quarantined_by_rollback(target_id)
+            local_ready = self._local_trust_ready_for_direct_recovery(trust_obj)
+            state = self._direct_recovery_state.get(target_id)
+
+            if state is None and not (local_bad or quarantined) and local_ready:
+                self._direct_recovery_state[target_id] = {
+                    "hold": 0.0,
+                    "good": float(good_required),
+                    "ramp": float(ramp_steps),
+                    "scale": 1.0,
+                }
+                continue
+
+            if state is None:
+                state = {"hold": 0.0, "good": 0.0, "ramp": 0.0, "scale": 1.0}
+
+            if local_bad or quarantined or not local_ready:
+                state["hold"] = float(self.direct_recovery_hold_steps)
+                state["good"] = 0.0
+                state["ramp"] = 0.0
+                state["scale"] = 0.0
+                self._direct_recovery_state[target_id] = state
+                continue
+
+            hold = max(int(state.get("hold", 0.0)), 0)
+            if hold > 0:
+                state["hold"] = float(hold - 1)
+                state["good"] = 0.0
+                state["ramp"] = 0.0
+                state["scale"] = 0.0
+                self._direct_recovery_state[target_id] = state
+                continue
+
+            good = min(int(state.get("good", 0.0)) + 1, good_required)
+            state["good"] = float(good)
+            if good < good_required:
+                state["ramp"] = 0.0
+                state["scale"] = 0.0
+                self._direct_recovery_state[target_id] = state
+                continue
+
+            if ramp_steps <= 0:
+                state["ramp"] = 0.0
+                state["scale"] = 1.0
+            else:
+                ramp = min(int(state.get("ramp", 0.0)) + 1, ramp_steps)
+                state["ramp"] = float(ramp)
+                state["scale"] = float(np.clip(ramp / float(ramp_steps), 0.0, 1.0))
+            self._direct_recovery_state[target_id] = state
+
+    def _apply_direct_recovery_weight_scale(
+        self, target_id: int, weights: Dict[str, object]
+    ) -> Dict[str, object]:
+        """Scale w0 during direct-channel recovery and move freed gain to self."""
+        scale = self._direct_recovery_scale(target_id)
+        if scale >= 1.0 - 1e-12:
+            return weights
+
+        scaled = {
+            "w0": max(0.0, float(weights.get("w0", 0.0))) * scale,
+            "neighbors": {
+                int(neighbor_id): max(0.0, float(weight))
+                for neighbor_id, weight in weights.get("neighbors", {}).items()
+            },
+            "w_self": max(0.0, float(weights.get("w_self", 0.0))),
+        }
+        old_w0 = max(0.0, float(weights.get("w0", 0.0)))
+        scaled["w_self"] += max(0.0, old_w0 - scaled["w0"])
+
+        used = scaled["w0"] + scaled["w_self"] + sum(scaled["neighbors"].values())
+        if abs(1.0 - used) > 1e-12:
+            scaled["w_self"] = max(0.0, scaled["w_self"] + (1.0 - used))
+        return scaled
+
+    def _is_target_quarantined_by_rollback(self, target_id: int) -> bool:
+        """True when rollback evidence says this target's direct channel is bad."""
+        rollback = getattr(self, "rollback", None)
+        if (
+            rollback is None
+            or not getattr(rollback, "enabled", False)
+            or int(target_id) not in getattr(rollback, "malicious_vehicles", set())
+        ):
+            return False
+
+        event = getattr(rollback, "last_event", {}) or {}
+        active_reasons = event.get("active_trigger_reasons", {}) or {}
+        reasons = active_reasons.get(int(target_id), [])
+        if not reasons:
+            return True
+
+        return any(reason in ("final_trust", "local_est_check") for reason in reasons)
 
     def _is_direct_measurement_allowed(
         self, target_id: int, trust_scores: Dict[int, float]
@@ -560,8 +676,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         This gate is intentionally local-channel driven. A low combined/final
         trust score can persist after a fleet inconsistency or mitigation event,
         but that should not keep `w0` at zero once the target's local trust has
-        recovered. Only a bad local channel should suppress the direct packet.
+        recovered. Rollback only blocks the direct packet when its trigger
+        reason points at the target's direct/local channel.
         """
+        if self._is_target_quarantined_by_rollback(target_id):
+            return False
+        if self._direct_recovery_scale(target_id) <= 1e-9:
+            return False
+
         trust_obj = self.trust_model.get_trust_score(int(target_id))
         if trust_obj is None:
             threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
@@ -600,8 +722,18 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         )
 
     @staticmethod
+    def _body_relative_from_world_delta(
+        dx_world: float, dy_world: float, host_theta: float
+    ) -> Tuple[float, float]:
+        """Convert a world-frame host-target delta into the host body frame."""
+        cos_h = float(np.cos(host_theta))
+        sin_h = float(np.sin(host_theta))
+        rel_x = cos_h * dx_world + sin_h * dy_world
+        rel_y = -sin_h * dx_world + cos_h * dy_world
+        return float(rel_x), float(rel_y)
+
     def _copy_host_anchor_snapshot(
-        snapshot: Optional[Dict[str, Any]]
+        self, snapshot: Optional[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
         """Normalize a replayable host-anchor snapshot."""
         if not isinstance(snapshot, dict):
@@ -617,6 +749,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "distance",
             "sign",
             "relative_velocity",
+            "bearing",
+            "relative_x",
+            "relative_y",
         ):
             if key not in snapshot or snapshot.get(key) is None:
                 continue
@@ -640,6 +775,16 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         copied["distance"] = max(float(copied["distance"]), 0.1)
         copied["sign"] = 1.0 if float(copied.get("sign", 1.0)) >= 0.0 else -1.0
+        if "bearing" in copied:
+            copied["bearing"] = self._wrap_angle(float(copied["bearing"]))
+        if "relative_x" not in copied and "bearing" in copied:
+            copied["relative_x"] = copied["distance"] * float(
+                np.cos(copied["bearing"])
+            )
+        if "relative_y" not in copied and "bearing" in copied:
+            copied["relative_y"] = copied["distance"] * float(
+                np.sin(copied["bearing"])
+            )
         return copied
 
     def _resolve_relative_host_anchor_sign(
@@ -691,7 +836,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         reference_state: Optional[np.ndarray] = None,
         clean_state: Optional[np.ndarray] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Build a host-relative anchor from trusted memory or current geometry."""
+        """Build a 2D host-relative anchor from clean/relative/fleet geometry."""
         if not self.host_state:
             return None
 
@@ -703,13 +848,41 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         distance = float("nan")
         relative_velocity = float("nan")
+        bearing = float("nan")
+        relative_x = float("nan")
+        relative_y = float("nan")
         timestamp_ns = int(current_time_ns)
         source = ""
+
+        if clean_state is None:
+            clean_state = self._get_latest_clean_aligned_state(
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+            )
+
+        if clean_state is not None:
+            clean_arr = np.asarray(clean_state, dtype=float).reshape(-1)
+            if clean_arr.size >= 2:
+                dx_world = float(clean_arr[0]) - host_x
+                dy_world = float(clean_arr[1]) - host_y
+                clean_distance = float(np.hypot(dx_world, dy_world))
+                if np.isfinite(clean_distance) and clean_distance > 0.0:
+                    distance = clean_distance
+                    relative_x, relative_y = self._body_relative_from_world_delta(
+                        dx_world=dx_world,
+                        dy_world=dy_world,
+                        host_theta=host_theta,
+                    )
+                    bearing = self._wrap_angle(float(np.arctan2(relative_y, relative_x)))
+                    timestamp_ns = int(current_time_ns)
+                    source = "clean_geometry"
 
         remembered = getattr(self.trust_model, "recent_relative_measurements", {}).get(
             int(target_id)
         )
-        if isinstance(remembered, dict):
+        if not (np.isfinite(distance) and distance > 0.0) and isinstance(
+            remembered, dict
+        ):
             try:
                 remembered_distance = float(remembered.get("distance", float("nan")))
             except (TypeError, ValueError):
@@ -735,6 +908,17 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     and age_s <= float(getattr(self.trust_config, "max_message_age_s", 0.5))
                 ):
                     distance += relative_velocity * age_s
+                try:
+                    remembered_bearing = float(remembered.get("bearing", float("nan")))
+                except (TypeError, ValueError):
+                    remembered_bearing = float("nan")
+                if (
+                    np.isfinite(remembered_bearing)
+                    and getattr(self, "relative_host_anchor_use_bearing", True)
+                ):
+                    bearing = self._wrap_angle(remembered_bearing)
+                    relative_x = float(distance) * float(np.cos(bearing))
+                    relative_y = float(distance) * float(np.sin(bearing))
 
         if not (np.isfinite(distance) and distance > 0.0):
             target_state = reference_state
@@ -748,6 +932,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     geometric_distance = float(np.hypot(dx, dy))
                     if np.isfinite(geometric_distance) and geometric_distance > 0.0:
                         distance = geometric_distance
+                        relative_x, relative_y = self._body_relative_from_world_delta(
+                            dx_world=dx,
+                            dy_world=dy,
+                            host_theta=host_theta,
+                        )
+                        bearing = self._wrap_angle(
+                            float(np.arctan2(relative_y, relative_x))
+                        )
                         timestamp_ns = int(current_time_ns)
                         source = "fleet_geometry"
 
@@ -762,20 +954,27 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             reference_state=reference_state,
             clean_state=clean_state,
         )
-        return self._copy_host_anchor_snapshot(
-            {
-                "host_x": host_x,
-                "host_y": host_y,
-                "host_theta": host_theta,
-                "host_velocity": host_velocity,
-                "host_acceleration": host_acceleration,
-                "distance": distance,
-                "sign": sign,
-                "relative_velocity": relative_velocity,
-                "timestamp_ns": timestamp_ns,
-                "source": source or "relative_host_anchor",
-            }
-        )
+        if np.isfinite(relative_x) and abs(relative_x) > 1e-6:
+            sign = 1.0 if relative_x >= 0.0 else -1.0
+
+        snapshot = {
+            "host_x": host_x,
+            "host_y": host_y,
+            "host_theta": host_theta,
+            "host_velocity": host_velocity,
+            "host_acceleration": host_acceleration,
+            "distance": distance,
+            "sign": sign,
+            "relative_velocity": relative_velocity,
+            "timestamp_ns": timestamp_ns,
+            "source": source or "relative_host_anchor",
+        }
+        if np.isfinite(bearing) and getattr(self, "relative_host_anchor_use_bearing", True):
+            snapshot["bearing"] = bearing
+        if np.isfinite(relative_x) and np.isfinite(relative_y):
+            snapshot["relative_x"] = relative_x
+            snapshot["relative_y"] = relative_y
+        return self._copy_host_anchor_snapshot(snapshot)
 
     def _get_latest_trusted_relative_anchor_entry(
         self, target_id: int, current_time_ns: Optional[int] = None
@@ -800,6 +999,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 snapshot["distance"] = max(
                     float(snapshot["distance"]) + relative_velocity * age_s, 0.1
                 )
+                bearing = float(snapshot.get("bearing", float("nan")))
+                if np.isfinite(bearing):
+                    snapshot["relative_x"] = float(snapshot["distance"]) * float(
+                        np.cos(bearing)
+                    )
+                    snapshot["relative_y"] = float(snapshot["distance"]) * float(
+                        np.sin(bearing)
+                    )
         return snapshot
 
     def _build_relative_host_anchor_snapshot(
@@ -810,9 +1017,24 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         clean_state: Optional[np.ndarray] = None,
     ) -> Optional[Dict[str, Any]]:
         """Resolve the live host-relative anchor snapshot for prediction/replay."""
-        snapshot = self._get_latest_trusted_relative_anchor_entry(
-            target_id, current_time_ns=current_time_ns
-        )
+        if clean_state is None:
+            clean_state = self._get_latest_clean_aligned_state(
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+            )
+
+        snapshot = None
+        if clean_state is not None:
+            snapshot = self._build_relative_host_anchor_entry(
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+                reference_state=reference_state,
+                clean_state=clean_state,
+            )
+        if snapshot is None:
+            snapshot = self._get_latest_trusted_relative_anchor_entry(
+                target_id, current_time_ns=current_time_ns
+            )
         if snapshot is None:
             snapshot = self._build_relative_host_anchor_entry(
                 target_id=target_id,
@@ -916,7 +1138,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             trust_obj = self.trust_model.get_trust_score(target_id)
             signals[target_id] = {
                 "trust_below_threshold": bool(
-                    self.rollback_on_final_trust and float(trust_val) < threshold
+                    self.rollback_on_final_trust
+                    and float(trust_val) < threshold
+                    and self._is_local_channel_untrusted(target_id, float(trust_val))
                 ),
                 "flag_local_est_check": bool(
                     self.rollback_on_local_est_check
@@ -936,198 +1160,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     # ------------------------------------------------------------------
     # V2V attack metadata for trust-log ground truth
     # ------------------------------------------------------------------
-    @staticmethod
-    def _enum_value(value: Any) -> Any:
-        return getattr(value, "value", value)
-
-    @staticmethod
-    def _float_or_none(value: Any) -> Optional[float]:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    @classmethod
-    def _list_or_empty(cls, value: Any) -> List[Any]:
-        if value is None:
-            return []
-        if isinstance(value, list):
-            return value
-        if isinstance(value, tuple):
-            return list(value)
-        return [value]
-
-    def _normalize_attack_scenario(
-        self,
-        raw_scenario: Any,
-        clock_s: Optional[float],
-        enabled: bool,
-        manual_disable_time: Optional[float],
-    ) -> Optional[Dict[str, Any]]:
-        """Normalize injected-attack scenario metadata for CSV logging."""
-        if isinstance(raw_scenario, dict):
-            getter = raw_scenario.get
-        else:
-            getter = lambda key, default=None: getattr(raw_scenario, key, default)
-
-        t_start = self._float_or_none(getter("t_start", getter("start_s")))
-        t_end = self._float_or_none(getter("t_end", getter("end_s")))
-        if t_start is None:
-            return None
-        if t_end is None:
-            t_end = float("inf")
-
-        if manual_disable_time is not None and (
-            not np.isfinite(t_end) or t_end > manual_disable_time
-        ):
-            t_end = max(float(manual_disable_time), t_start)
-
-        fields = [str(v) for v in self._list_or_empty(getter("target_fields", []))]
-        victims = []
-        for victim in self._list_or_empty(getter("victim_ids", [])):
-            try:
-                victims.append(int(victim))
-            except (TypeError, ValueError):
-                continue
-
-        attacker_id = getter("attacker_id")
-        try:
-            attacker_id = int(attacker_id)
-        except (TypeError, ValueError):
-            attacker_id = None
-
-        name = str(getter("name", getter("scenario_name", "")) or "")
-        attack_type = str(self._enum_value(getter("type", getter("attack_type", ""))) or "")
-        modification = str(
-            self._enum_value(getter("modification", getter("modification_type", ""))) or ""
-        )
-        data_type = str(self._enum_value(getter("data_type", "")) or "").lower()
-
-        interval_active = False
-        if clock_s is not None:
-            interval_active = bool(t_start <= clock_s <= t_end)
-        active = bool(getter("active", False) or interval_active) and bool(enabled)
-
-        return {
-            "name": name,
-            "type": attack_type,
-            "modification": modification,
-            "data_type": data_type,
-            "target_fields": fields,
-            "t_start": float(t_start),
-            "t_end": float(t_end),
-            "attacker_id": attacker_id,
-            "victim_ids": victims,
-            "active": active,
-        }
-
-    def _normalize_attack_value_snapshot(
-        self, raw_snapshot: Any
-    ) -> Dict[int, Dict[str, Any]]:
-        """Normalize live per-vehicle attack values for CSV logging."""
-        if not isinstance(raw_snapshot, dict):
-            return {}
-
-        by_vehicle_raw = raw_snapshot.get("by_vehicle", raw_snapshot)
-        if not isinstance(by_vehicle_raw, dict):
-            return {}
-
-        normalized: Dict[int, Dict[str, Any]] = {}
-        for raw_vehicle_id, raw_entry in by_vehicle_raw.items():
-            try:
-                vehicle_id = int(raw_vehicle_id)
-            except (TypeError, ValueError):
-                continue
-            if not isinstance(raw_entry, dict):
-                continue
-
-            raw_values = raw_entry.get("values", {})
-            if not isinstance(raw_values, dict):
-                raw_values = {}
-
-            values: Dict[str, Dict[str, float]] = {}
-            for raw_field, raw_value_triplet in raw_values.items():
-                if not isinstance(raw_value_triplet, dict):
-                    continue
-                field = str(raw_field)
-                original = self._finite_or_none(raw_value_triplet.get("original"))
-                modified = self._finite_or_none(raw_value_triplet.get("modified"))
-                delta = self._finite_or_none(raw_value_triplet.get("delta"))
-                if original is None and modified is None and delta is None:
-                    continue
-                values[field] = {
-                    "original": original,
-                    "modified": modified,
-                    "delta": delta,
-                }
-
-            attacker_id = raw_entry.get("attacker_id")
-            try:
-                attacker_id = int(attacker_id)
-            except (TypeError, ValueError):
-                attacker_id = None
-
-            fields = [str(v) for v in self._list_or_empty(raw_entry.get("fields", []))]
-            if values:
-                fields = sorted(set(fields) | set(values.keys()))
-
-            normalized[vehicle_id] = {
-                "active": bool(raw_entry.get("active", False)),
-                "attacker_id": attacker_id,
-                "types": [str(v) for v in self._list_or_empty(raw_entry.get("types", []))],
-                "names": [str(v) for v in self._list_or_empty(raw_entry.get("names", []))],
-                "modifications": [
-                    str(v) for v in self._list_or_empty(raw_entry.get("modifications", []))
-                ],
-                "data_types": [
-                    str(v) for v in self._list_or_empty(raw_entry.get("data_types", []))
-                ],
-                "fields": fields,
-                "values": values,
-            }
-        return normalized
-
-    @staticmethod
-    def _attack_scenario_key(scenario: Dict[str, Any]) -> str:
-        fields = ",".join(str(v) for v in scenario.get("target_fields", []))
-        return (
-            f"{scenario.get('name', '')}|{scenario.get('attacker_id')}|"
-            f"{scenario.get('t_start')}|{scenario.get('data_type')}|"
-            f"{scenario.get('type')}|{fields}"
-        )
-
-    @staticmethod
-    def _finite_or_none(value: Any) -> Optional[float]:
-        try:
-            fvalue = float(value)
-        except (TypeError, ValueError):
-            return None
-        if not np.isfinite(fvalue):
-            return None
-        return fvalue
-
-    def _append_v2v_attack_event(self, event: str, event_time_s: Optional[float]) -> None:
-        """Remember exact attack enable/disable commands for CSV plotting."""
-        if event_time_s is None:
-            return
-
-        event_time_s = float(event_time_s)
-        if self._v2v_attack_events:
-            last = self._v2v_attack_events[-1]
-            if (
-                last.get("event") == event
-                and abs(float(last.get("time_s", -1.0)) - event_time_s) < 1e-6
-            ):
-                return
-
-        self._v2v_attack_events.append({"event": event, "time_s": event_time_s})
-        self._v2v_attack_last_event = event
-        self._v2v_attack_last_event_time_s = event_time_s
-        if event == "enable":
-            self._v2v_attack_enable_time_s = event_time_s
-        elif event == "disable":
-            self._v2v_attack_disable_time_s = event_time_s
-
     def set_v2v_attack_status(self, status: Optional[Dict[str, Any]]) -> None:
         """
         Store V2V attack metadata supplied by VehicleLogic.
@@ -1135,258 +1167,15 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         This is GUI-command ground truth for the trust CSV. The trust model's
         detection flag remains separate as flag_attack_<vehicle_id>.
         """
-        if not isinstance(status, dict):
-            return
-
-        clock_s = self._float_or_none(status.get("elapsed_time"))
-        if clock_s is None:
-            clock_s = self._float_or_none(status.get("current_time"))
-
-        manual_disable_time = self._float_or_none(status.get("manual_disable_time"))
-        enabled = bool(status.get("enabled", True))
-        attack_active = bool(status.get("attack_active", False)) and enabled
-        previous_enabled = self._v2v_attack_status.get("enabled")
-        event_time_s = manual_disable_time if manual_disable_time is not None else clock_s
-
-        if enabled:
-            if previous_enabled is not True:
-                self._append_v2v_attack_event("enable", event_time_s)
-        elif previous_enabled is True or manual_disable_time is not None:
-            self._append_v2v_attack_event("disable", event_time_s)
-
-        value_snapshot = self._normalize_attack_value_snapshot(
-            status.get("attack_value_snapshot")
-        )
-        if value_snapshot:
-            self._v2v_attack_value_snapshot = value_snapshot
-        elif not attack_active or not enabled:
-            self._v2v_attack_value_snapshot = {}
-
-        raw_scenarios: List[Any] = []
-        for key in (
-            "all_scenario_details",
-            "scenario_details",
-            "configured_scenarios",
-            "active_scenario_details",
-        ):
-            raw_value = status.get(key)
-            if isinstance(raw_value, list):
-                raw_scenarios.extend(raw_value)
-
-        for raw_scenario in raw_scenarios:
-            scenario = self._normalize_attack_scenario(
-                raw_scenario=raw_scenario,
-                clock_s=clock_s,
-                enabled=enabled,
-                manual_disable_time=manual_disable_time,
-            )
-            if scenario is None:
-                continue
-            scenario_key = self._attack_scenario_key(scenario)
-            existing = self._v2v_attack_scenarios.get(scenario_key)
-            if existing is not None and not enabled:
-                existing_end = float(existing.get("t_end", float("inf")))
-                scenario_end = float(scenario.get("t_end", float("inf")))
-                if np.isfinite(existing_end) and (
-                    not np.isfinite(scenario_end) or scenario_end > existing_end
-                ):
-                    scenario["t_end"] = existing_end
-            self._v2v_attack_scenarios[scenario_key] = scenario
-
-        if not raw_scenarios and not attack_active:
-            close_time = manual_disable_time if manual_disable_time is not None else clock_s
-            if close_time is not None:
-                for scenario in self._v2v_attack_scenarios.values():
-                    if scenario.get("active", False) or not np.isfinite(
-                        float(scenario.get("t_end", float("inf")))
-                    ):
-                        scenario["t_end"] = max(float(close_time), scenario["t_start"])
-                    scenario["active"] = False
-
-        self._v2v_attack_status = {
-            "enabled": enabled,
-            "attack_active": attack_active,
-            "elapsed_time": clock_s,
-        }
-
-    def _v2v_attack_intervals_json(self, scenarios: List[Dict[str, Any]]) -> str:
-        """Serialize all known attack intervals in a compact, plot-friendly form."""
-        intervals: List[Dict[str, Any]] = []
-        for scenario in sorted(
-            scenarios,
-            key=lambda s: (
-                float(s.get("t_start", 0.0)),
-                str(s.get("name", "")),
-                str(s.get("data_type", "")),
-            ),
-        ):
-            fields = scenario.get("target_fields", [])
-            if not isinstance(fields, (list, tuple)):
-                fields = [fields] if fields is not None else []
-            victims = scenario.get("victim_ids", [])
-            if not isinstance(victims, (list, tuple)):
-                victims = [victims] if victims is not None else []
-            intervals.append(
-                {
-                    "name": str(scenario.get("name", "")),
-                    "type": str(scenario.get("type", "")),
-                    "modification": str(scenario.get("modification", "")),
-                    "data_type": str(scenario.get("data_type", "")),
-                    "target_fields": list(fields),
-                    "start_s": self._finite_or_none(scenario.get("t_start")),
-                    "end_s": self._finite_or_none(scenario.get("t_end")),
-                    "attacker_id": scenario.get("attacker_id"),
-                    "victim_ids": list(victims),
-                    "active": bool(scenario.get("active", False)),
-                }
-            )
-        return json.dumps(intervals, separators=(",", ":"))
-
-    def _v2v_attack_events_json(self) -> str:
-        return json.dumps(self._v2v_attack_events, separators=(",", ":"))
-
-    @staticmethod
-    def _unique_values(scenarios: List[Dict[str, Any]], key: str) -> List[str]:
-        values: List[str] = []
-        for scenario in scenarios:
-            value = scenario.get(key)
-            if value is None or value == "":
-                continue
-            value = str(value)
-            if value not in values:
-                values.append(value)
-        return values
-
-    @staticmethod
-    def _scenario_targets_vehicle(scenario: Dict[str, Any], vehicle_id: int) -> bool:
-        data_type = str(scenario.get("data_type", "")).lower()
-        attacker_id = scenario.get("attacker_id")
-        victims = scenario.get("victim_ids", [])
-
-        local_target = data_type in ("local", "both") and attacker_id == vehicle_id
-        fleet_target = data_type in ("fleet", "both") and (
-            -1 in victims or vehicle_id in victims
-        )
-        return bool(local_target or fleet_target)
-
-    @staticmethod
-    def _scenario_is_active_at_clock(
-        scenario: Dict[str, Any], clock_s: Optional[float], enabled: bool
-    ) -> bool:
-        if not enabled or clock_s is None:
-            return False
-        return bool(scenario["t_start"] <= clock_s <= scenario["t_end"])
+        self._v2v_attack_tracker.set_status(status)
 
     def _get_v2v_attack_log_data(self, current_time_ns: int) -> Dict[str, Any]:
         """Build flattened V2V attack metadata for TrustWeightLogger."""
-        clock_s = self._float_or_none(self._v2v_attack_status.get("elapsed_time"))
-        if clock_s is None:
-            clock_s = self._get_log_time_s(current_time_ns)
-
-        enabled = bool(self._v2v_attack_status.get("enabled", False))
-        attack_value_snapshot = (
-            self._v2v_attack_value_snapshot
-            if enabled and bool(self._v2v_attack_status.get("attack_active", False))
-            else {}
+        return self._v2v_attack_tracker.get_log_data(
+            current_time_ns=current_time_ns,
+            fleet_size=self.fleet_size,
+            fallback_clock_s=self._get_log_time_s(current_time_ns),
         )
-        scenarios = list(self._v2v_attack_scenarios.values())
-        active_scenarios = [
-            s for s in scenarios if self._scenario_is_active_at_clock(s, clock_s, enabled)
-        ]
-        display_scenarios = active_scenarios if active_scenarios else scenarios
-
-        by_vehicle: Dict[int, Dict[str, Any]] = {}
-        for vehicle_id in range(self.fleet_size):
-            vehicle_scenarios = [
-                s for s in scenarios if self._scenario_targets_vehicle(s, vehicle_id)
-            ]
-            vehicle_snapshot = attack_value_snapshot.get(vehicle_id, {})
-            if not vehicle_scenarios and not vehicle_snapshot:
-                continue
-            active_for_vehicle = [
-                s
-                for s in vehicle_scenarios
-                if self._scenario_is_active_at_clock(s, clock_s, enabled)
-            ]
-            scenario_fields = {
-                str(field)
-                for scenario in vehicle_scenarios
-                for field in scenario.get("target_fields", [])
-            }
-            snapshot_values = vehicle_snapshot.get("values", {})
-            snapshot_fields = set(vehicle_snapshot.get("fields", [])) | set(
-                snapshot_values.keys()
-            )
-            start_s = (
-                min(float(s["t_start"]) for s in vehicle_scenarios)
-                if vehicle_scenarios
-                else float("nan")
-            )
-            end_s = (
-                max(float(s["t_end"]) for s in vehicle_scenarios)
-                if vehicle_scenarios
-                else float("nan")
-            )
-
-            combined_types = self._unique_values(vehicle_scenarios, "type")
-            combined_names = self._unique_values(vehicle_scenarios, "name")
-            combined_data_types = self._unique_values(vehicle_scenarios, "data_type")
-            combined_modifications = self._unique_values(vehicle_scenarios, "modification")
-            for key, dest in (
-                ("types", combined_types),
-                ("names", combined_names),
-                ("data_types", combined_data_types),
-                ("modifications", combined_modifications),
-            ):
-                for value in vehicle_snapshot.get(key, []):
-                    value = str(value)
-                    if value and value not in dest:
-                        dest.append(value)
-
-            by_vehicle[vehicle_id] = {
-                "active": bool(active_for_vehicle) or bool(vehicle_snapshot.get("active", False)),
-                "types": combined_types,
-                "names": combined_names,
-                "data_types": combined_data_types,
-                "modifications": combined_modifications,
-                "fields": sorted(scenario_fields | snapshot_fields),
-                "start_s": start_s,
-                "end_s": end_s,
-                "attacker_id": (
-                    vehicle_scenarios[0].get("attacker_id")
-                    if vehicle_scenarios
-                    else vehicle_snapshot.get("attacker_id")
-                ),
-                "values": snapshot_values,
-            }
-
-        return {
-            "enabled": enabled,
-            "active": bool(active_scenarios),
-            "clock_s": float(clock_s),
-            "scenario_count": len(scenarios),
-            "active_count": len(active_scenarios),
-            "types": self._unique_values(display_scenarios, "type"),
-            "names": self._unique_values(display_scenarios, "name"),
-            "data_types": self._unique_values(display_scenarios, "data_type"),
-            "enable_time_s": self._v2v_attack_enable_time_s,
-            "disable_time_s": self._v2v_attack_disable_time_s,
-            "last_event": self._v2v_attack_last_event,
-            "last_event_time_s": self._v2v_attack_last_event_time_s,
-            "events": self._v2v_attack_events_json(),
-            "intervals": self._v2v_attack_intervals_json(scenarios),
-            "start_s": (
-                min(float(s["t_start"]) for s in display_scenarios)
-                if display_scenarios
-                else float("nan")
-            ),
-            "end_s": (
-                max(float(s["t_end"]) for s in display_scenarios)
-                if display_scenarios
-                else float("nan")
-            ),
-            "by_vehicle": by_vehicle,
-        }
 
     # ------------------------------------------------------------------
     # External relative measurement delegation
@@ -1399,11 +1188,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         timestamp_ns: Optional[int] = None,
         source: str = "external_sensor",
         measurement_confidence: Optional[float] = None,
+        relative_bearing: Optional[float] = None,
     ) -> bool:
         """Store externally measured host-target relative states (e.g., YOLO/radar)."""
         return self._ext_cache.set(
             target_id, distance, relative_velocity,
-            timestamp_ns, source, measurement_confidence,
+            timestamp_ns, source, measurement_confidence, relative_bearing,
         )
 
     def clear_external_relative_measurement(self, target_id: Optional[int] = None) -> None:
@@ -1413,212 +1203,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     # ------------------------------------------------------------------
     # Control input helpers
     # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
-    # Vehicle-model helpers
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _as_float(value: Any, default: float) -> float:
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return float(default)
-
-    @staticmethod
-    def _as_bool(value: Any, default: bool = False) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        if value is None:
-            return bool(default)
-        return bool(value)
-
-    @staticmethod
-    def _normalize_dynamics_prediction_mode(value: Any) -> str:
-        mode = str(value or "model").strip().lower()
-        aliases = {
-            "model": "model",
-            "current": "model",
-            "current_model": "model",
-            "default": "model",
-            "kinematic": "model",
-            "clean_data": "clean_data",
-            "clean-data": "clean_data",
-            "clean": "clean_data",
-            "pure_prediction_self": "clean_data",
-            "pure-prediction-self": "clean_data",
-            "pure_self_prediction": "clean_data",
-            "pure-self-prediction": "clean_data",
-            "mixed_clean_data": "mixed_clean_data",
-            "mixed-clean-data": "mixed_clean_data",
-            "mixed_clean": "mixed_clean_data",
-            "mixed-clean": "mixed_clean_data",
-            "relative_host_anchor_mixed": "relative_host_anchor_mixed",
-            "relative-host-anchor-mixed": "relative_host_anchor_mixed",
-            "host_anchor_mixed": "relative_host_anchor_mixed",
-            "host-anchor-mixed": "relative_host_anchor_mixed",
-            "dead_reckoning": "dead_reckoning",
-            "dead_reckon": "dead_reckoning",
-            "dead-reckoning": "dead_reckoning",
-            "dead-reckon": "dead_reckoning",
-            "dr": "dead_reckoning",
-            "none": "none",
-            "no_prediction": "none",
-            "no-prediction": "none",
-            "disabled": "none",
-            "disable": "none",
-            "off": "none",
-        }
-        return aliases.get(mode, "model")
-
-    def _normalize_vehicle_model_config(self, cfg: Dict[str, Any]) -> Dict[str, Any]:
-        """Normalize a vehicle model dictionary used by prediction."""
-        cfg = cfg if isinstance(cfg, dict) else {}
-        vehicle_type = str(cfg.get("vehicle_type", cfg.get("type", "Qcar")) or "Qcar")
-        vehicle_type_norm = "Limo" if vehicle_type.strip().lower() == "limo" else "Qcar"
-
-        velocity_lag = cfg.get("velocity_lag_model", {})
-        velocity_lag_lookup = cfg.get("velocity_lag_lookup_model", {})
-        accel_lag = cfg.get("accel_lag_model", {})
-        if not isinstance(velocity_lag, dict):
-            velocity_lag = {}
-        if not isinstance(velocity_lag_lookup, dict):
-            velocity_lag_lookup = {}
-        if not isinstance(accel_lag, dict):
-            accel_lag = {}
-
-        longitudinal_model = str(cfg.get("longitudinal_model", "") or "").strip().lower()
-        if not longitudinal_model:
-            if vehicle_type_norm == "Limo":
-                longitudinal_model = "velocity_command"
-            elif self._as_bool(velocity_lag_lookup.get("enabled"), False):
-                longitudinal_model = "velocity_lag_lookup"
-            elif self._as_bool(velocity_lag.get("enabled"), False):
-                longitudinal_model = "velocity_lag"
-            elif self._as_bool(accel_lag.get("enabled"), False):
-                longitudinal_model = "acceleration_lag"
-            else:
-                longitudinal_model = "constant_velocity"
-
-        return {
-            "vehicle_type": vehicle_type_norm,
-            "dynamics_prediction_mode": self._normalize_dynamics_prediction_mode(
-                cfg.get(
-                    "dynamics_prediction_mode",
-                    cfg.get("prediction_mode", self.dynamics_prediction_mode),
-                )
-            ),
-            "wheelbase": self._as_float(cfg.get("wheelbase"), 0.256),
-            "max_velocity": self._as_float(cfg.get("max_velocity"), 2.0),
-            "max_acceleration": self._as_float(cfg.get("max_acceleration"), 5.0),
-            "max_steering": self._as_float(cfg.get("max_steering"), 0.5),
-            "longitudinal_model": longitudinal_model,
-            "velocity_lag_tau": max(
-                self._as_float(velocity_lag.get("tau"), cfg.get("velocity_lag_tau", 0.301)),
-                1e-6,
-            ),
-            "velocity_gain": self._as_float(
-                velocity_lag.get("velocity_gain"), cfg.get("velocity_gain", 6.598)
-            ),
-            "velocity_lag_deadband": max(
-                self._as_float(
-                    velocity_lag.get("throttle_deadband"),
-                    cfg.get("velocity_lag_deadband", 0.0),
-                ),
-                0.0,
-            ),
-            "velocity_lag_lookup_tau": max(
-                self._as_float(
-                    velocity_lag_lookup.get("tau"),
-                    cfg.get("velocity_lag_lookup_tau", 0.301),
-                ),
-                1e-6,
-            ),
-            "velocity_lag_lookup_throttle_breakpoints": [
-                float(v)
-                for v in velocity_lag_lookup.get("throttle_breakpoints", [])
-            ],
-            "velocity_lag_lookup_velocity_breakpoints": [
-                float(v)
-                for v in velocity_lag_lookup.get(
-                    "steady_state_velocity_breakpoints", []
-                )
-            ],
-            "velocity_command_tau": max(
-                self._as_float(cfg.get("velocity_command_tau"), velocity_lag.get("tau", 0.301)),
-                1e-6,
-            ),
-            "accel_lag_tau": max(
-                self._as_float(accel_lag.get("tau"), cfg.get("accel_lag_tau", 0.318)),
-                1e-6,
-            ),
-            "accel_lag_gain": self._as_float(
-                accel_lag.get("input_gain"), cfg.get("accel_lag_gain", 1.0)
-            ),
-            "allow_host_control_fallback": self._as_bool(
-                cfg.get("allow_host_control_fallback"), False
-            ),
-        }
-
-    def _load_vehicle_model_overrides(self, raw_models: Any) -> Dict[int, Dict[str, Any]]:
-        """Load optional per-vehicle model overrides from config."""
-        if not isinstance(raw_models, dict):
-            return {}
-        overrides: Dict[int, Dict[str, Any]] = {}
-        for raw_id, raw_cfg in raw_models.items():
-            try:
-                vid = int(raw_id)
-            except (TypeError, ValueError):
-                continue
-            if isinstance(raw_cfg, dict):
-                merged_raw = dict(self._raw_default_vehicle_config)
-                raw_vehicle_type = raw_cfg.get("vehicle_type", raw_cfg.get("type"))
-                default_vehicle_type = self._raw_default_vehicle_config.get(
-                    "vehicle_type", self._raw_default_vehicle_config.get("type", "Qcar")
-                )
-                type_changed = (
-                    raw_vehicle_type is not None
-                    and str(raw_vehicle_type).strip().lower()
-                    != str(default_vehicle_type).strip().lower()
-                )
-                if type_changed and "longitudinal_model" not in raw_cfg:
-                    merged_raw.pop("longitudinal_model", None)
-                for key, value in raw_cfg.items():
-                    if (
-                        isinstance(value, dict)
-                        and isinstance(merged_raw.get(key), dict)
-                    ):
-                        nested = dict(merged_raw[key])
-                        nested.update(value)
-                        merged_raw[key] = nested
-                    else:
-                        merged_raw[key] = value
-                normalized = self._normalize_vehicle_model_config(merged_raw)
-                normalized["_explicit_prediction_mode"] = bool(
-                    "dynamics_prediction_mode" in raw_cfg
-                    or "prediction_mode" in raw_cfg
-                )
-                overrides[vid] = normalized
-        return overrides
-
     def _get_vehicle_model_config(self, target_id: int = -1) -> Dict[str, Any]:
-        # Observer-level prediction mode is the global default for the fleet
-        # estimator. Per-target `vehicle_models` entries may override it
-        # explicitly, but the shared `vehicle:` block should not silently
-        # re-enable prediction when observer mode says "none".
-        base_cfg = dict(self.default_vehicle_model)
-        base_cfg["dynamics_prediction_mode"] = self.dynamics_prediction_mode
-
-        override_cfg = self.vehicle_model_overrides.get(int(target_id))
-        if override_cfg is None:
-            return base_cfg
-
-        merged_cfg = dict(base_cfg)
-        merged_cfg.update(override_cfg)
-        if not bool(override_cfg.get("_explicit_prediction_mode", False)):
-            merged_cfg["dynamics_prediction_mode"] = self.dynamics_prediction_mode
-        merged_cfg.pop("_explicit_prediction_mode", None)
-        return merged_cfg
+        return vehicle_model_for_target(
+            default_vehicle_model=self.default_vehicle_model,
+            vehicle_model_overrides=self.vehicle_model_overrides,
+            target_id=target_id,
+            global_prediction_mode=self.dynamics_prediction_mode,
+        )
 
     def _get_target_control(
         self,
@@ -1686,6 +1277,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             if self.attack_mitigation_enabled:
                 self._apply_attack_mitigation(trust_scores, current_time_ns)
 
+            self._update_direct_channel_recovery_states(trust_scores)
+
             # 2.5 Build generalized trust vector O_i(j) when enabled
             if self.trust_config.use_generalized_trust_vector:
                 self.generalized_trust_vector = (
@@ -1720,6 +1313,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             step_targets: Dict[int, Dict] = {}
             target_confidence: Dict[int, float] = {}
             target_prediction_mode: Dict[int, bool] = {}
+            consensus_estimates: Dict[int, Dict[str, float]] = {}
+            post_prediction_estimates: Dict[int, Dict[str, float]] = {}
+            clean_reference_estimates: Dict[int, Dict[str, float]] = {}
+            prediction_debugs: Dict[int, Dict[str, float]] = {}
 
             for target_id in trust_scores.keys():
                 if target_id == self.vehicle_id:
@@ -1742,22 +1339,37 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 )
                 target_trust_obj = self.trust_model.get_trust_score(target_id)
                 target_model_cfg = self._get_vehicle_model_config(target_id)
-                prediction_mode = self._normalize_dynamics_prediction_mode(
+                prediction_mode = normalize_dynamics_prediction_mode(
                     target_model_cfg.get(
                         "dynamics_prediction_mode", self.dynamics_prediction_mode
                     )
+                )
+                target_attack_or_quarantine = bool(
+                    self._has_active_attack_flags(target_trust_obj)
+                    or self._is_target_quarantined_by_rollback(target_id)
                 )
                 force_clean_pose_anchor = bool(
                     self.force_clean_pose_anchor
                     and prediction_mode
                     in ("clean_data", "mixed_clean_data", "relative_host_anchor_mixed")
-                    and self._has_active_attack_flags(target_trust_obj)
+                    and target_attack_or_quarantine
                 )
                 attack_relative_host_anchor_active = bool(
                     prediction_mode == "relative_host_anchor_mixed"
-                    and self._has_active_attack_flags(target_trust_obj)
+                    and target_attack_or_quarantine
                 )
+                target_prediction_mode[target_id] = bool(prediction_mode != "none")
                 consensus_est = normal_est.copy()
+                consensus_estimates[target_id] = self._state_vector_to_log_dict(
+                    consensus_est
+                )
+                clean_reference = self._get_clean_reference_log_state(
+                    target_id=target_id,
+                    current_time_ns=current_time_ns,
+                )
+                if clean_reference is not None:
+                    clean_reference_estimates[target_id] = clean_reference
+
                 host_anchor_snapshot = None
                 if attack_relative_host_anchor_active:
                     host_anchor_snapshot = self._build_relative_host_anchor_snapshot(
@@ -1779,7 +1391,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         host_anchor_snapshot
                     ),
                 }
-                normal_est = self._apply_state_constraints(
+                predicted_est = self._apply_state_constraints(
                     self._predict_dynamics(
                         consensus_est,
                         target_ctrl,
@@ -1792,7 +1404,19 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     ),
                     target_id=target_id,
                 )
-
+                normal_est = predicted_est
+                post_prediction_estimates[target_id] = self._state_vector_to_log_dict(
+                    normal_est
+                )
+                prediction_debugs[target_id] = self._build_prediction_debug(
+                    prediction_mode=prediction_mode,
+                    consensus_state=consensus_est,
+                    predicted_state=normal_est,
+                    target_control=target_ctrl,
+                    host_control=control,
+                    dt=dt,
+                    attack_relative_host_anchor_active=attack_relative_host_anchor_active,
+                )
                 attack_alpha_override = None
                 if force_clean_pose_anchor:
                     attack_alpha_override = 1.0
@@ -1846,6 +1470,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 current_time_ns=current_time_ns,
                 target_components=step_targets,
                 rollback_status=self.rollback.get_status(),
+                consensus_estimates=consensus_estimates,
+                post_prediction_estimates=post_prediction_estimates,
+                clean_reference_estimates=clean_reference_estimates,
+                prediction_debugs=prediction_debugs,
             )
 
             # 6. Cleanup old data
@@ -1911,6 +1539,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 target_data.relative_measurement_confidence = float(
                     external_rel.get("confidence", float("nan"))
                 )
+                target_data.relative_bearing_from_host = float(
+                    external_rel.get("relative_bearing", float("nan"))
+                )
+                if np.isfinite(target_data.relative_bearing_from_host):
+                    target_data.relative_heading = float(
+                        target_data.relative_bearing_from_host
+                    )
                 target_data.relative_measurement_source = str(
                     external_rel.get("source", "external_sensor")
                 )
@@ -2053,6 +1688,23 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 return int(ts_ns), state_vec
         return None
 
+    def _get_latest_clean_aligned_state(
+        self, target_id: int, current_time_ns: int
+    ) -> Optional[np.ndarray]:
+        """Return the latest clean-channel target state aligned to current time."""
+        clean_entry = self._get_latest_clean_received_state_with_timestamp(
+            int(target_id), current_time_ns
+        )
+        if clean_entry is None:
+            return None
+        clean_ts_ns, clean_state_raw = clean_entry
+        return self._align_state_array_to_time(
+            clean_state_raw,
+            snapshot_ts_ns=clean_ts_ns,
+            current_time_ns=current_time_ns,
+            target_id=target_id,
+        )
+
     def _attach_clean_v2v_relative_measurement(
         self, target_data: VehicleData, current_time_ns: int
     ) -> None:
@@ -2084,10 +1736,15 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         rel_velocity = self.trust_model._estimate_radial_relative_velocity(
             self.host_state, clean_target
         )
+        rel_bearing = self.trust_model._relative_bearing_from_geometry(
+            self.host_state, clean_target
+        )
 
         target_data.distance_from_host = float(rel_distance)
         target_data.relative_velocity_from_host = float(rel_velocity)
         target_data.relative_measurement_confidence = 1.0
+        target_data.relative_bearing_from_host = float(rel_bearing)
+        target_data.relative_heading = float(rel_bearing)
         target_data.relative_measurement_source = "v2v_clean_local_state"
         target_data.relative_measurement_timestamp_ns = int(clean_ts_ns)
 
@@ -2151,10 +1808,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             return dict(state_dict)
 
         aligned = dict(state_dict)
-        theta = self._as_float(aligned.get("theta"), 0.0)
-        velocity = self._as_float(aligned.get("velocity", aligned.get("v")), 0.0)
-        aligned["x"] = self._as_float(aligned.get("x"), 0.0) + velocity * np.cos(theta) * dt
-        aligned["y"] = self._as_float(aligned.get("y"), 0.0) + velocity * np.sin(theta) * dt
+        theta = as_float(aligned.get("theta"), 0.0)
+        velocity = as_float(aligned.get("velocity", aligned.get("v")), 0.0)
+        aligned["x"] = as_float(aligned.get("x"), 0.0) + velocity * np.cos(theta) * dt
+        aligned["y"] = as_float(aligned.get("y"), 0.0) + velocity * np.sin(theta) * dt
         aligned["timestamp_aligned_dt_s"] = float(dt)
 
         # Acceleration is often model-defined rather than measured; do not
@@ -2210,6 +1867,79 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 target_id=vid,
             )
         return aligned
+
+    def _state_vector_to_log_dict(self, state: np.ndarray) -> Dict[str, float]:
+        """Convert a state vector into the logger's state dictionary shape."""
+        arr = np.asarray(state, dtype=float).reshape(-1)
+        if arr.size < self.state_dim:
+            arr = np.pad(arr, (0, self.state_dim - arr.size), mode="constant")
+        return {
+            "x": float(arr[0]),
+            "y": float(arr[1]),
+            "theta": float(arr[2]) if arr.size > 2 else 0.0,
+            "velocity": float(arr[3]) if arr.size > 3 else 0.0,
+            "acceleration": float(arr[4]) if arr.size > 4 else 0.0,
+        }
+
+    def _get_clean_reference_log_state(
+        self, target_id: int, current_time_ns: int
+    ) -> Optional[Dict[str, float]]:
+        """Return time-aligned clean-channel target state for diagnostics."""
+        clean_entry = self._get_latest_clean_received_state_with_timestamp(
+            int(target_id), current_time_ns
+        )
+        if clean_entry is None:
+            return None
+        clean_ts_ns, clean_state_raw = clean_entry
+        clean_state = self._align_state_array_to_time(
+            clean_state_raw,
+            snapshot_ts_ns=clean_ts_ns,
+            current_time_ns=current_time_ns,
+            target_id=target_id,
+        )
+        return self._state_vector_to_log_dict(clean_state)
+
+    def _build_prediction_debug(
+        self,
+        prediction_mode: str,
+        consensus_state: np.ndarray,
+        predicted_state: np.ndarray,
+        target_control: Optional[np.ndarray],
+        host_control: np.ndarray,
+        dt: float,
+        attack_relative_host_anchor_active: bool,
+    ) -> Dict[str, float]:
+        """Build compact prediction-step diagnostics for the trust CSV."""
+        consensus = np.asarray(consensus_state, dtype=float)
+        predicted = np.asarray(predicted_state, dtype=float)
+        target_ctrl = (
+            None if target_control is None else np.asarray(target_control, dtype=float)
+        )
+        host_ctrl = np.asarray(host_control, dtype=float)
+        source = str(prediction_mode)
+        if attack_relative_host_anchor_active:
+            source = f"{source}+host_anchor"
+        return {
+            "source": source,
+            "dt": float(dt),
+            "dx": float(predicted[0] - consensus[0]),
+            "dy": float(predicted[1] - consensus[1]),
+            "steering_used": (
+                float(target_ctrl[0])
+                if target_ctrl is not None and target_ctrl.size > 0
+                else float("nan")
+            ),
+            "host_steering_used": (
+                float(host_ctrl[0]) if host_ctrl.size > 0 else float("nan")
+            ),
+            "theta_in": float(consensus[2]) if consensus.size > 2 else float("nan"),
+            "theta_out": float(predicted[2]) if predicted.size > 2 else float("nan"),
+            "v_in": float(consensus[3]) if consensus.size > 3 else float("nan"),
+            "v_out": float(predicted[3]) if predicted.size > 3 else float("nan"),
+            "host_v": float(self.host_state.get("velocity", float("nan")))
+            if self.host_state
+            else float("nan"),
+        }
 
     # ==================================================================
     #   TRUST-WEIGHTED UPDATE (unified paper / non-paper)
@@ -2314,6 +2044,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 direct_measurement=direct_state,
                 target_trust_obj=target_trust_obj,
             )
+        target_weights = self._apply_direct_recovery_weight_scale(
+            target_id=target_id,
+            weights=target_weights,
+        )
 
         # === Flag-Driven w₀ Adaptation ===
         components["weights"] = {
@@ -2327,7 +2061,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
 
         # === Direct Measurement Correction ===
         if direct_state is not None and target_weights["w0"] > 0:
-            direct_delta = target_weights["w0"] * (direct_state - current_est)
+            direct_delta = target_weights["w0"] * self._state_residual(
+                direct_state, current_est
+            )
             total_correction += direct_delta
             components["direct"] = {
                 "source": target_id,
@@ -2350,7 +2086,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     neigh_est_dict.get("acceleration", 0.0),
                 ]
             )
-            neighbor_delta = w_neighbor * (neigh_est - current_est)
+            neighbor_delta = w_neighbor * self._state_residual(neigh_est, current_est)
             total_correction += neighbor_delta
             components["neighbors"][neighbor_id] = {
                 "weight": float(w_neighbor),
@@ -2624,8 +2360,20 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             host_y = float(anchor_snapshot.get("host_y", base_y))
             distance = max(float(anchor_snapshot.get("distance", 0.1)), 0.1)
             sign = 1.0 if float(anchor_snapshot.get("sign", 1.0)) >= 0.0 else -1.0
-            base_x = host_x + sign * distance * np.cos(host_theta)
-            base_y = host_y + sign * distance * np.sin(host_theta)
+            relative_x = float(anchor_snapshot.get("relative_x", float("nan")))
+            relative_y = float(anchor_snapshot.get("relative_y", float("nan")))
+            if (
+                getattr(self, "relative_host_anchor_use_bearing", True)
+                and np.isfinite(relative_x)
+                and np.isfinite(relative_y)
+            ):
+                cos_h = float(np.cos(host_theta))
+                sin_h = float(np.sin(host_theta))
+                base_x = host_x + cos_h * relative_x - sin_h * relative_y
+                base_y = host_y + sin_h * relative_x + cos_h * relative_y
+            else:
+                base_x = host_x + sign * distance * np.cos(host_theta)
+                base_y = host_y + sign * distance * np.sin(host_theta)
         elif force_clean_pose_anchor and clean_state is not None:
             if clean_state.shape[0] > 0:
                 base_x = float(clean_state[0])
@@ -2655,7 +2403,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     ) -> np.ndarray:
         """Predict next state using bicycle kinematics + configured longitudinal model."""
         model_cfg = self._get_vehicle_model_config(target_id)
-        prediction_mode = self._normalize_dynamics_prediction_mode(
+        prediction_mode = normalize_dynamics_prediction_mode(
             model_cfg.get("dynamics_prediction_mode", self.dynamics_prediction_mode)
         )
         state = np.asarray(state, dtype=float).copy()
@@ -2725,7 +2473,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         x, y, theta, v = state[:4]
         a = state[4] if len(state) > 4 else 0.0
 
-        if self._normalize_dynamics_prediction_mode(
+        if normalize_dynamics_prediction_mode(
             model_cfg.get("dynamics_prediction_mode", self.dynamics_prediction_mode)
         ) == "dead_reckoning":
             state[0] = x + v * np.cos(theta) * dt
@@ -2831,6 +2579,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         """Wrap an angle to [-pi, pi]."""
         return float(np.arctan2(np.sin(angle), np.cos(angle)))
 
+    def _state_residual(self, measurement: np.ndarray, reference: np.ndarray) -> np.ndarray:
+        """Return measurement-reference residual with circular heading error."""
+        residual = np.asarray(measurement, dtype=float) - np.asarray(reference, dtype=float)
+        if residual.shape[0] > 2:
+            residual[2] = self._wrap_angle(float(residual[2]))
+        return residual
+
     def _apply_output_low_pass_filter(
         self,
         previous_state: np.ndarray,
@@ -2907,6 +2662,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         current_time_ns: int,
         target_components: Optional[Dict[int, Dict]] = None,
         rollback_status: Optional[Dict[str, object]] = None,
+        consensus_estimates: Optional[Dict[int, Dict[str, float]]] = None,
+        post_prediction_estimates: Optional[Dict[int, Dict[str, float]]] = None,
+        clean_reference_estimates: Optional[Dict[int, Dict[str, float]]] = None,
+        prediction_debugs: Optional[Dict[int, Dict[str, float]]] = None,
     ) -> None:
         """Build and emit per-step trust/weight log data."""
         target_components = target_components or {}
@@ -2939,8 +2698,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             ),
             "is_turning": int(abs(control[0]) >= self.turn_steering_threshold),
             "host_steering": float(control[0]),
+            "host_throttle": float(control[1]) if len(control) > 1 else float("nan"),
+            "controller": dict(self.controller_debug_snapshot),
             "neighbors": {},
             "final_target_weights": final_target_weights,
+            "consensus_estimates": consensus_estimates or {},
+            "post_prediction_estimates": post_prediction_estimates or {},
+            "clean_reference_estimates": clean_reference_estimates or {},
+            "prediction_debugs": prediction_debugs or {},
             "v2v_attack": self._get_v2v_attack_log_data(current_time_ns),
             "rollback": rollback_status or self.rollback.get_status(),
         }
@@ -3098,6 +2863,66 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         """Get current consensus weights."""
         return self.weight_module.get_weights_array()
 
+    def _restore_fleet_states_from_latest_direct_states(self) -> List[int]:
+        """Seed external estimates from latest clean/direct V2V state after attack disable."""
+        restored: List[int] = []
+        for target_id in range(self.fleet_size):
+            target_id = int(target_id)
+            if target_id == self.vehicle_id:
+                continue
+
+            history = self.received_clean_local_states.get(target_id)
+            if not history:
+                history = self.received_local_states.get(target_id)
+            if not history:
+                continue
+
+            try:
+                _, state = history[-1]
+                arr = np.asarray(state, dtype=float).reshape(-1)
+                if arr.size < self.state_dim:
+                    arr = np.pad(arr, (0, self.state_dim - arr.size), mode="constant")
+                restored_state = self._apply_state_constraints(
+                    arr[: self.state_dim], target_id=target_id
+                )
+                self._ensure_fleet_capacity(target_id)
+                self.fleet_states[:, target_id] = restored_state
+                restored.append(target_id)
+            except Exception as exc:
+                if self.logger:
+                    self.logger.logger.debug(
+                        "Skipping attack-recovery state restore for target %s: %s",
+                        target_id,
+                        exc,
+                    )
+        return restored
+
+    def reset_attack_recovery_state(self) -> None:
+        """
+        Clear trust/rollback memory and re-anchor estimates after attack restore.
+
+        The latest clean V2V state is used when available so stale attack-era
+        fleet estimates do not immediately re-trigger global rollback.
+        """
+        restored_targets = self._restore_fleet_states_from_latest_direct_states()
+        self.trust_model.reset()
+        self.weight_module.reset()
+        self.current_weight_result = None
+        self.generalized_trust_vector = {self.vehicle_id: 1.0}
+        self.stats = self._make_default_stats()
+        self.rollback.reset()
+        self._rollback_trusted_state_history.clear()
+        self._rollback_trusted_relative_anchor_history.clear()
+        self._direct_recovery_state.clear()
+        self._ext_cache.clear()
+        self._reset_startup_weight_tracking()
+
+        if self.logger:
+            self.logger.logger.info(
+                "Trust/rollback recovery state reset after manual V2V attack restore; restored_targets=%s",
+                restored_targets,
+            )
+
     def get_statistics(self) -> Dict[str, object]:
         """Get estimator statistics."""
         data = self.stats.copy()
@@ -3116,6 +2941,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.trust_model.reset()
         self.weight_module.reset()
         self.host_state = {}
+        self.controller_debug_snapshot = {}
         self.received_clean_local_states.clear()
         self._ext_cache.clear()
         self.current_weight_result = None
@@ -3124,6 +2950,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.rollback.reset()
         self._rollback_trusted_state_history.clear()
         self._rollback_trusted_relative_anchor_history.clear()
+        self._direct_recovery_state.clear()
         self._received_control_inputs.clear()
         self._init_runtime_tracking()
 

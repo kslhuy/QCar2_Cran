@@ -263,7 +263,7 @@ def create_mix_test_scenarios(
         2: X position intermittent faulty noise, sigma=10, p=0.5
         3: Velocity bias -2.5 m/s
         4: Velocity intermittent faulty noise, sigma=2.5, p=0.5
-        5: Packet drop for all attacked data, p_drop=0.5
+        5: Packet drop for all attacked data
     """
     scenarios = {
         1: make_scenario(
@@ -300,10 +300,10 @@ def create_mix_test_scenarios(
 
         5: make_scenario(
             attacker_id, victim_id, t_start, t_end,
-            'drop', 0.5, data_type, ['all'],
+            'drop', 1.0, data_type, ['all'],
             attack_type="Mix_test",
-            scenario_name="Mix_test_Case5_DropAllProb50",
-            description="Mix_test case 5: drop all attacked V2V data with probability 0.5"
+            scenario_name="Mix_test_Case5_DropAll",
+            description="Mix_test case 5: drop all attacked V2V data"
         ),
     }
 

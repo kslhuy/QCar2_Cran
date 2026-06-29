@@ -13,14 +13,17 @@ recording_overwrite: true # recording_overwrite:
                         # false: Creates a new timestamped file every run (e.g., local_V0_123456.csv)
 
 # Calibration-derived longitudinal model source.
-# VehicleObserverSimple resolves this using:
-# - `config.vehicle.vehicle_type`
-# - `config.vehicle.is_physical_qcar`
-# so QCar hardware, QCar simulation, and Limo can each use different files.
+# profile: auto           -> choose qcar_real/qcar_sim/limo from runtime vehicle config.
+# profile: real_car_61    -> force the exported real-car acceleration calibration 61.
+# profile: qlabs_velocity -> force the QLabs steady-state throttle-velocity lookup.
 observer_model_source:
+  profile: auto
   qcar_real: extra_configs/throttle_acceleration_observer_model_real.yaml
   qcar_sim: extra_configs/throttle_acceleration_observer_model_sim.yaml
   limo: extra_configs/throttle_acceleration_observer_model_limo.yaml
+  profiles:
+    real_car_61: ../Calibration/results/online_throttle_acceleration/calibration/61/throttle_acceleration_observer_model_latest.yaml
+    qlabs_velocity: extra_configs/throttle_velocity_observer_model_qlabs.yaml
 
 
 # Local estimator defaults

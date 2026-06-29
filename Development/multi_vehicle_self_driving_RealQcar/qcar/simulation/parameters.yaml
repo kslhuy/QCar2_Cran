@@ -3,6 +3,18 @@
 vehicle:
   id: 0
   model_type: "kinematic"   # Options: kinematic, dynamic, qlpv_legacy, qlpv_matrix
+  longitudinal_model: "qlabs_velocity" # Options: default, qcar_real, qcar_sim, limo, real_car_61, qlabs_velocity
+  longitudinal_model_source:
+    profiles:
+      qcar_real: "../Observer/extra_configs/throttle_acceleration_observer_model_real.yaml"
+      qcar_sim: "../Observer/extra_configs/throttle_acceleration_observer_model_sim.yaml"
+      limo: "../Observer/extra_configs/throttle_acceleration_observer_model_limo.yaml"
+      real_car_61: "../Calibration/results/online_throttle_acceleration/calibration/61/throttle_acceleration_observer_model_latest.yaml"
+      qlabs_velocity: "../Observer/extra_configs/throttle_velocity_observer_model_qlabs.yaml"
+  steering_model: "default" # Options: default, qlabs_steering
+  steering_model_source:
+    profiles:
+      qlabs_steering: "../Calibration/results/03_steering_calibration/steering_calibration_qlabs.yaml"
   params_file: "qcar"         # Options: qcar, vehicle1, vehicle2...
   tire_model: "static_linear"       # Options: static_linear, dynamic_linear, pacejka
   dt: 0.01                    # Simulation timestep (s)
