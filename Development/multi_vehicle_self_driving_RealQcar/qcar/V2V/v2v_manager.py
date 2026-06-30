@@ -556,13 +556,23 @@ class V2VManager:
             clean_payload = channel_payloads["clean"]
 
             required_fields = ['vehicle_id', 'x', 'y', 'theta', 'velocity']
-            missing_fields = [
+            missing_attacked_fields = [
                 field for field in required_fields if field not in attacked_payload
             ]
+            missing_clean_fields = [
+                field for field in required_fields if field not in clean_payload
+            ]
+            attacked_available = not missing_attacked_fields
+            clean_available = not missing_clean_fields
             
-            if missing_fields:
+            if not attacked_available and not clean_available:
                 if self.logger:
-                    self.logger.warning(f"V2VManager: Local state message from vehicle {sender_id} missing fields: {missing_fields}")
+                    self.logger.warning(
+                        "V2VManager: Local state message from vehicle "
+                        f"{sender_id} has no valid clean or attacked channel "
+                        f"(attacked missing: {missing_attacked_fields}, "
+                        f"clean missing: {missing_clean_fields})"
+                    )
                 return
             
             # # Validate data types and ranges
@@ -589,37 +599,40 @@ class V2VManager:
             with self._lock:
 
                 
-                # Build a normalized state dict and reuse it for storage, queue, and logging
-                state_dict = {
-                    'x': attacked_payload.get('x', 0.0),
-                    'y': attacked_payload.get('y', 0.0),
-                    'theta': attacked_payload.get('theta', 0.0),
-                    'v': attacked_payload.get('velocity', attacked_payload.get('v', 0.0)),
-                    'velocity': attacked_payload.get('velocity', attacked_payload.get('v', 0.0)),
-                    'confidence': attacked_payload.get('confidence', 1.0),
-                    'acceleration': attacked_payload.get('acceleration', 0.0),
-                    'control_input': attacked_payload.get('control_input', {}) or {},
-                }
-                clean_state_dict = {
-                    'x': clean_payload.get('x', 0.0),
-                    'y': clean_payload.get('y', 0.0),
-                    'theta': clean_payload.get('theta', 0.0),
-                    'v': clean_payload.get('velocity', clean_payload.get('v', 0.0)),
-                    'velocity': clean_payload.get('velocity', clean_payload.get('v', 0.0)),
-                    'confidence': clean_payload.get('confidence', 1.0),
-                    'acceleration': clean_payload.get('acceleration', 0.0),
-                    'control_input': clean_payload.get('control_input', {}) or {},
-                }
-
-                self.received_local_states_attacked[sender_id].append(
-                    (message_timestamp_ns, state_dict)
-                )
-                self.received_local_states_clean[sender_id].append(
-                    (message_timestamp_ns, clean_state_dict)
-                )
+                state_dict = None
+                clean_state_dict = None
+                if attacked_available:
+                    # Build a normalized state dict and reuse it for storage, queue, and logging
+                    state_dict = {
+                        'x': attacked_payload.get('x', 0.0),
+                        'y': attacked_payload.get('y', 0.0),
+                        'theta': attacked_payload.get('theta', 0.0),
+                        'v': attacked_payload.get('velocity', attacked_payload.get('v', 0.0)),
+                        'velocity': attacked_payload.get('velocity', attacked_payload.get('v', 0.0)),
+                        'confidence': attacked_payload.get('confidence', 1.0),
+                        'acceleration': attacked_payload.get('acceleration', 0.0),
+                        'control_input': attacked_payload.get('control_input', {}) or {},
+                    }
+                    self.received_local_states_attacked[sender_id].append(
+                        (message_timestamp_ns, state_dict)
+                    )
+                if clean_available:
+                    clean_state_dict = {
+                        'x': clean_payload.get('x', 0.0),
+                        'y': clean_payload.get('y', 0.0),
+                        'theta': clean_payload.get('theta', 0.0),
+                        'v': clean_payload.get('velocity', clean_payload.get('v', 0.0)),
+                        'velocity': clean_payload.get('velocity', clean_payload.get('v', 0.0)),
+                        'confidence': clean_payload.get('confidence', 1.0),
+                        'acceleration': clean_payload.get('acceleration', 0.0),
+                        'control_input': clean_payload.get('control_input', {}) or {},
+                    }
+                    self.received_local_states_clean[sender_id].append(
+                        (message_timestamp_ns, clean_state_dict)
+                    )
 
                 # Log received local estimation to dedicated CSV file
-                if hasattr(self.vehicle_logger, 'log_local_estimation'):
+                if state_dict is not None and hasattr(self.vehicle_logger, 'log_local_estimation'):
                     self.vehicle_logger.log_local_estimation(
                         sender_id=sender_id,
                         state=state_dict,
@@ -630,12 +643,14 @@ class V2VManager:
                 
                 # Add to VehicleObserver if available (observer expects a 5D numpy array)
                 if self.vehicle_observer:
-                    self.vehicle_observer.add_received_local_state(
-                        sender_id, state_dict, message_timestamp_ns
-                    )
-                    self.vehicle_observer.add_received_clean_local_state(
-                        sender_id, clean_state_dict, message_timestamp_ns
-                    )
+                    if state_dict is not None:
+                        self.vehicle_observer.add_received_local_state(
+                            sender_id, state_dict, message_timestamp_ns
+                        )
+                    if clean_state_dict is not None:
+                        self.vehicle_observer.add_received_clean_local_state(
+                            sender_id, clean_state_dict, message_timestamp_ns
+                        )
                     
                     
             # # Add normalized state to queue for other consumers

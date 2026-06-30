@@ -116,7 +116,7 @@ decorations.pathreplacing}
 \maketitle
 
 \begin{abstract}
-Connected vehicle platoons depend on distributed state estimation, but vehicle-to-vehicle data can be corrupted by falsified states, replayed or delayed packets, packet drops, and compromised vehicles. This paper proposes a trust-aware resilient distributed observer for vehicles described by a discrete kinematic bicycle model. The observer converts local and distributed consistency checks into online observer weights. The resulting observer builds a time-varying trusted-neighbor set while preserving a local-observer anchor, so unreliable data are down-weighted without discarding useful cooperation from reliable vehicles. Checkable local nonlinear input-to-state stability conditions are given for bounded model uncertainty, input mismatch, nonlinear remainders, bounded accepted attack values, and trust-induced switching along bounded trajectories. A finite-window rollback mechanism is also formulated to mitigate contamination caused by delayed trust decisions. Simulations on a five-vehicle platoon under position, speed, and packet-drop attacks show bounded estimation degradation; in the tested closed-loop attack interval, the trust-modulated IDM/CACC controller preserves positive inter-vehicle spacing through longitudinal projection.
+Connected vehicle platoons depend on distributed state estimation, but vehicle-to-vehicle data can be corrupted by falsified states, replayed or delayed packets, packet drops, and compromised vehicles. This paper proposes a trust-aware resilient distributed observer for vehicles described by a discrete kinematic bicycle model. The observer converts local and distributed consistency checks into online observer weights. The resulting observer builds a time-varying trusted-neighbor set while preserving a local-observer anchor, so unreliable data are down-weighted without discarding useful cooperation from reliable vehicles. Checkable local nonlinear input-to-state stability conditions are given for bounded model uncertainty, input mismatch, nonlinear remainders, bounded accepted attack values, and trust-induced switching along bounded trajectories. A finite-window rollback mechanism is also formulated to mitigate contamination caused by delayed trust decisions. Simulations on a five-vehicle platoon under position, speed, and packet-drop attacks show bounded estimation degradation; in the tested closed-loop attack interval, the trust-modulated ACC/CACC controller preserves positive inter-vehicle spacing through longitudinal projection.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -138,7 +138,7 @@ The main contributions are summarized as follows:
     \item A behavioral trust framework that combines local consistency, distributed-estimate consistency, freshness, and temporal smoothing to construct a trusted-neighbor set.
     \item A trust-adaptive observer-weight design with admissible mixing coefficients and checkable local nonlinear input-to-state stability (ISS) conditions for bounded modeling, input, attack, and nonlinear mismatch terms in the bicycle-error dynamics.
     \item A finite-window rollback mechanism, stated as an implementable replay procedure, that can re-propagate recent observer updates after delayed trust decisions.
-    \item Simulation evidence under position, velocity, and packet-drop attack cases, together with a closed-loop spacing check during the attack interval using the current IDM/CACC structure through path-longitudinal projection.
+    \item Simulation evidence under position, velocity, and packet-drop attack cases, together with a closed-loop spacing check during the attack interval using the current ACC/CACC structure through path-longitudinal projection.
 \end{itemize}
 
 The remainder of the paper is organized as follows. Section~\ref{sec_related_work} reviews related work and motivates the proposed approach. Section~\ref{sec_vehiclemodel} introduces the graph notation, vehicle model, and threat model. Section~\ref{sec_distributed_observer} presents the distributed observer architecture. Section~\ref{sec_trust_score} defines the trust framework. Section~\ref{sec_weight_design} develops the trust-based weight design and stability analysis. Section~\ref{sec_rollback} presents the delayed-decision rollback module. Section~\ref{sec_simulation} reports the simulation study, QCar/LIMO platform implementation, and controller spacing check, and Section~\ref{sec_conclusion} concludes the paper.
@@ -248,10 +248,6 @@ Throughout the observer and analysis, state differences are denoted by ordinary 
 %     v_{x_i}-v_{x_j}
 %     \end{bmatrix}.
 % \end{equation}}
-% 为了避免$\mathrm{wrap}_{\pi}(\cdot)$ 引起的跳变，有如下假设
-
-
-
 Let $x=\col{x_1,\ldots,x_N}$, $u=\col{u_1,\ldots,u_N}$, $\Delta=\col{\Delta_1,\ldots,\Delta_N}$, and $f_N(x,u)=\col{f_{\text{b}}(x_1,u_1),\ldots,f_{\text{b}}(x_N,u_N)}$. The overall vehicle dynamics are
 \begin{equation}\label{eq_platoon}
 \left\{
@@ -829,7 +825,7 @@ Therefore,
 \]
 \end{proof}
 
-The lemma provides bounded mixing, but bounded mixing alone is not sufficient for convergence because the bicycle model contains prediction dynamics. The accepted trust-induced weights must also provide enough anchor or multi-step information flow to contract the distributed prediction error. Let
+The lemma provides bounded mixing, but bounded mixing alone is not sufficient for convergence because the bicycle model contains prediction dynamics. The accepted trust-induced weights must also provide enough local-anchor mass, or enough rooted multi-step information flow, to contract the distributed prediction error. Let
 \begin{equation}
     M^{(j)}(t)=I_N-\bar{\L}^{(j)}(t).
 \end{equation}
@@ -840,29 +836,58 @@ By Lemma~\ref{lem_weight_admissible}, $M^{(j)}(t)$ is nonnegative and its $i$th 
     \max_{i\in\V}\big(1-w_{i0}^{(j)}(t)\big).
     \label{eq_M_inf_norm}
 \end{equation}
-A simple checkable sufficient condition for the one-step contraction used in Theorem~\ref{thm_observer} is that there exists $\underline w_0^{(j)}>0$ such that
+The proposed weight law gives a direct lower bound on this missing row mass whenever the target-local anchor packet is accepted.
+
+\begin{lemma}[Anchor-induced one-step contraction]\label{lem_anchor_contraction}
+Suppose that, for target $j$, the accepted anchor packet is available to every host at time $t$ and satisfies $\chi_{i0}^{(j)}(t)=1$ and $\LT_{i,j}(t)\ge\theta_{\min}$ for all $i\in\V$. Then the weight law~\eqref{eq_anchor_weight} gives
 \begin{equation}
-    w_{i0}^{(j)}(t)\ge \underline w_0^{(j)},\qquad
-    L_{x,j}\big(1-\underline w_0^{(j)}\big)<1
+    w_{i0}^{(j)}(t)\ge \underline w_0,
+    \qquad
+    \underline w_0:=\eta_0\theta_{\min} .
+\end{equation}
+Consequently,
+\begin{equation}
+    \|M^{(j)}(t)\|_{\infty}\le 1-\underline w_0.
+\end{equation}
+If the bicycle map is Lipschitz on the admissible compact region in the same state norm with constant $L_{x,j}$ and
+\begin{equation}
+    L_{x,j}\big(1-\underline w_0\big)<1,
     \label{eq_anchor_contraction_check}
 \end{equation}
-for all hosts $i$ and all admissible times. If direct target-anchor packets are not available at every time step, the same idea can be checked over a finite window by verifying a product contraction,
+then the homogeneous distributed prediction error is a one-step contraction.
+\end{lemma}
+\begin{proof}
+Under the stated acceptance condition,~\eqref{eq_anchor_weight} gives $w_{i0}^{(j)}(t)=\eta_0\LT_{i,j}(t)\ge\eta_0\theta_{\min}$. The row-sum identity~\eqref{eq_M_inf_norm} then gives $\|M^{(j)}(t)\|_{\infty}\le1-\underline w_0$. Combining this with~\eqref{eq_nonlinear_lipschitz} yields the contraction factor in~\eqref{eq_anchor_contraction_check}.
+\end{proof}
+
+When direct anchors are intermittent, the same argument must be applied over a window. These weights induce a switching communication graph because the trusted-neighbor set changes online. A plain union spanning tree is not enough unless the anchor information can move through the matrix product in time order. We therefore use the following sequential rooted accepted-graph condition, where an edge $l\to i$ means that the accepted weight $w_{il}^{(j)}$ is positive.
+\begin{assumption}[Sequentially rooted accepted graph]\label{ass_graph}
+There exist an integer $T_c>0$ and a scalar $\underline w>0$ such that, for every target $j$, every start time $t\ge0$, and every host $i\in\V$, there are nodes $v_0=0,v_1,\ldots,v_m=i$ and times $t\le \tau_1<\cdots<\tau_m\le t+T_c-1$ for which the accepted edge $v_{r-1}\to v_r$ is present in $\bar{\G}^{(j)}(\tau_r)$. Each accepted edge weight on these temporal paths is at least $\underline w$, and each implicit self-prediction weight used to carry information between two consecutive path times is also at least $\underline w$.
+\end{assumption}
+Assumption~\ref{ass_graph} means that every host estimate of target $j$ receives anchor information either directly or through trusted intermediate estimates within each window. This is stronger than ordinary connectivity: the root must be the target-local observer node, the links must be accepted by the trust layer, and the path must be ordered along the product. A standard jointly rooted union condition implies this assumption after enlarging the window when accepted links recur in every joint-connectivity interval and the implicit self-prediction weights are uniformly positive; otherwise the product condition below must be verified directly.
+
+\begin{lemma}[Rooted block contraction]\label{lem_rooted_block_contraction}
+If Assumption~\ref{ass_graph} holds, then the grounded trust-mixing product satisfies
 \begin{equation}
     \left\|
-    \prod_{\tau=t}^{t+T_c-1} L_{x,j}M^{(j)}(\tau)
-    \right\|_* \le \alpha_c<1,
+    M^{(j)}(t+T_c-1)\cdots M^{(j)}(t)
+    \right\|_{\infty}
+    \le 1-\underline w^{T_c} .
+    \label{eq_grounded_product_bound}
+\end{equation}
+Let $G_{x,j}(T_c)$ be an upper bound, in the chosen state norm, on the nonlinear bicycle prediction gain over any admissible $T_c$-step block. If
+\begin{equation}
+    G_{x,j}(T_c)\big(1-\underline w^{T_c}\big)
+    \le \alpha_c<1,
     \label{eq_window_contraction_check}
 \end{equation}
-with the factors ordered in time. Equation~\eqref{eq_window_contraction_check} is the natural multi-step counterpart of the one-step condition and is the condition to use for sparse or intermittent anchor availability.
+then the distributed homogeneous error is contractive over every window of length $T_c$. The one-step condition~\eqref{eq_anchor_contraction_check} is the special case $T_c=1$ with direct anchor acceptance at every step.
+\end{lemma}
+\begin{proof}
+The matrices $M^{(j)}(\tau)$ are nonnegative and substochastic. A positive anchor weight creates a strict row-sum deficit in the row receiving that anchor. For any host $i$, Assumption~\ref{ass_graph} gives a temporal accepted path from the anchor to $i$. Each accepted edge transmits at least a factor $\underline w$ of the existing deficit to the next node, and each waiting step preserves at least a factor $\underline w$ through the implicit self-prediction weight. Since the path transmissions and waiting steps occupy no more than $T_c$ time instants, the $i$th row sum of $M^{(j)}(t+T_c-1)\cdots M^{(j)}(t)$ is at most $1-\underline w^{T_c}$. Taking the maximum row sum gives~\eqref{eq_grounded_product_bound}. Multiplying by the bounded $T_c$-step bicycle prediction gain gives~\eqref{eq_window_contraction_check}.
+\end{proof}
 
-These weights induce a switching communication graph because the trusted-neighbor set changes online. We assume:
-\begin{assumption}[\it Jointly connected graph]%\label{def1}
-\label{ass_graph}
-There exists an integer $T_c > 0$ such that for all $t\geq 0$, the union graph $\bigcup_{\tau\in[t,\,t+T_c]}\bar{\G}^{(j)}(\tau)$ contains a spanning tree.
-\end{assumption}
-Assumption~\ref{ass_graph} means that every node $i \in\V$ is reachable from node ``0'' over each time window $[t,t+T_c]$, ensuring enough connectivity for the observer design~\cite{hao2024eventtriggered}.
-
-This condition is not guaranteed by trust scoring alone; it is a runtime admissibility condition on the accepted trust-induced switches. In implementation, the trust layer must preserve at least one anchored trusted path from node ``0'' to each target over every window $[t,t+T_c]$ and must verify either the one-step contraction check~\eqref{eq_anchor_contraction_check} or the windowed product check~\eqref{eq_window_contraction_check}. If all reliable paths to a target are rejected, the theorem applies only to the reachable part of the platoon, and that target cannot be reconstructed from communication alone.
+Thus, contraction is not assumed from trust scoring alone. The weight law supplies the anchor lower bound through $\eta_0\theta_{\min}$ when anchor packets are directly accepted, and Assumption~\ref{ass_graph} supplies the corresponding lower bound for sparse or intermittent trusted paths. If all reliable paths to a target are rejected, the theorem applies only to the reachable part of the platoon, and that target cannot be reconstructed from communication alone.
 
 \subsection{Observer design procedure}
 The complete design can be implemented through the following steps.
@@ -1117,17 +1142,24 @@ The local nonlinear error map is locally Lipschitz in the error and in the bound
 
 
 \begin{lemma}[Nonlinear distributed-error contraction]\label{lem_dist_contraction}
-Suppose that condition~\eqref{assume3} holds. If the local-observer error is ISS and Assumption~\ref{assum_distur} holds, then the nonlinear distributed error~\eqref{eq_raw_eDO} is ISS with respect to $e_0^{(j)}$ and $d_{\DO}^{(j)}$. Under the additive attack model, the attacked distributed error is ISS with respect to $e_0^{(j)}$ and $\tilde d_{\DO}^{(j)}$.
+Suppose that the block contraction condition~\eqref{assume3} below holds. If the local-observer error is ISS and Assumption~\ref{assum_distur} holds, then the nonlinear distributed error~\eqref{eq_raw_eDO} is ISS with respect to $e_0^{(j)}$ and $d_{\DO}^{(j)}$. Under the additive attack model, the attacked distributed error is ISS with respect to $e_0^{(j)}$ and $\tilde d_{\DO}^{(j)}$.
 \end{lemma}
 \begin{proof}
-Let $M^{(j)}(t)=I_N-\bar{\L}^{(j)}(t)$. Combining the nonlinear Lipschitz bound~\eqref{eq_nonlinear_lipschitz} with the correction bound~\eqref{eq_nonlinear_consensus_bound} gives
+Let $M^{(j)}(t)=I_N-\bar{\L}^{(j)}(t)$ and denote $E(t)=\|e_{\DO}^{(j)}(t)\|_*$. Combining the nonlinear Lipschitz bound~\eqref{eq_nonlinear_lipschitz} with the correction bound~\eqref{eq_nonlinear_consensus_bound} gives
 \begin{align*}
-\|e_{\DO}^{(j)}(t+1)\|_*
-&\le L_{x,j}\|M^{(j)}(t)\|_*\|e_{\DO}^{(j)}(t)\|_*\\
-&\quad+L_{x,j}\|w_0^{(j)}(t)\|_*\|e_0^{(j)}(t)\|_*\\
-&\quad+\|\tilde d_{\DO}^{(j)}(t)\|_* .
+E(t+1)
+&\le L_{x,j}\|M^{(j)}(t)\|_*E(t)\\
+&\quad+L_{x,j}\|w_0^{(j)}(t)\|_*\|e_0^{(j)}(t)\|_*+\|\tilde d_{\DO}^{(j)}(t)\|_* .
 \end{align*}
-Condition~\eqref{assume3} makes the homogeneous distributed part a uniform contraction with factor at most $\alpha<1$. The weights are bounded by Lemma~\ref{lem_weight_admissible}, while Lemma~\ref{lem_local_iss} and Assumption~\ref{assum_distur} bound the two inputs. Iterating the scalar inequality above yields a geometric ISS bound. In the nominal case, $d_{\mathrm{att}}^{(j)}=0$ and $\tilde d_{\DO}^{(j)}=d_{\DO}^{(j)}$.
+Because the weights, local-anchor gains, and one-step bicycle Lipschitz constants are bounded on the compact admissible region, the input gain accumulated over any finite block of length $T_c$ is finite. Condition~\eqref{assume3} contracts the homogeneous part by at most $\alpha_c<1$ over each block, hence for $k=0,1,\ldots$,
+\begin{align*}
+E((k+1)T_c)
+&\le \alpha_c E(kT_c)\\
+&\quad+c_b\sup_{\tau\in[kT_c,(k+1)T_c-1]}
+\Big(\|e_0^{(j)}(\tau)\|\\
+&\qquad\qquad\qquad\qquad+\|\tilde d_{\DO}^{(j)}(\tau)\|\Big)
+\end{align*}
+for some finite $c_b>0$. Iterating this block inequality gives a geometric ISS bound at the block times. The intermediate samples inside each block are bounded by the same compact-region one-step gains, so the bound extends to all $t$. Lemma~\ref{lem_local_iss} and Assumption~\ref{assum_distur} bound the two inputs. In the nominal case, $d_{\mathrm{att}}^{(j)}=0$ and $\tilde d_{\DO}^{(j)}=d_{\DO}^{(j)}$.
 \end{proof}
 
 The main ISS result is stated as follows.
@@ -1139,11 +1171,13 @@ Consider a vehicle platoon~\eqref{eq_platoon} over a directed weighted communica
     \begin{equation}\label{thm_W}%\label{sum_w_il}
     \sum_{l\in \N_i\cup\{0\}} w_{il}^{(j)}(t) \leq 1.
     \end{equation}
-    \item There exists $\alpha \in (0,1)$ and a matrix norm $\| \cdot \|_*$ such that, uniformly over all admissible switches,
-	\begin{equation} \label{assume3}
-        L_{x,j}\left\| I_{N} - \bar{\L}^{(j)}(t) \right\|_* \leq \alpha < 1.
-	\end{equation}
-    A checkable sufficient condition is~\eqref{eq_anchor_contraction_check} with $\|\cdot\|_*=\|\cdot\|_{\infty}$; for intermittent anchors, the same result can be applied over blocks using~\eqref{eq_window_contraction_check}.
+    \item There exist a window length $T_c\ge1$, a scalar $\alpha_c\in(0,1)$, and a matrix norm $\|\cdot\|_*$ such that, uniformly over all admissible switches,
+    \begin{equation} \label{assume3}
+    G_{x,j}(T_c)
+    \left\|M^{(j)}(t+T_c-1)\cdots M^{(j)}(t)\right\|_*
+    \le \alpha_c<1.
+    \end{equation}
+    Here $G_{x,j}(T_c)$ is the $T_c$-step bicycle prediction gain on the compact admissible region. A checkable sufficient condition for $T_c=1$ is Lemma~\ref{lem_anchor_contraction}; for intermittent anchors or sparse graphs, Assumption~\ref{ass_graph} and Lemma~\ref{lem_rooted_block_contraction} give the corresponding block check~\eqref{eq_window_contraction_check}.
 \end{enumerate}
 Then, the original nonlinear error dynamics~\eqref{eq_raw_e0}--\eqref{eq_raw_eDO} are locally ISS on $\Omega_x\times\Omega_u$. Under the additive attack model, the attacked estimation error is also locally ISS. In particular, there exist constants $c_0, c_1 > 0$ and $\lambda \in (0,1)$ such that
 \begin{align}
@@ -1154,11 +1188,11 @@ Then, the original nonlinear error dynamics~\eqref{eq_raw_e0}--\eqref{eq_raw_eDO
 
 \end{theorem}
 \begin{proof}
-Condition~1 and Assumption~\ref{assum_distur} give the local-observer ISS bound by Lemma~\ref{lem_local_iss}. Condition~2 is satisfied by the proposed trust-weight law according to Lemma~\ref{lem_weight_admissible}, and it prevents each row of the trust-weighted mixing step from amplifying all incoming corrections beyond unit mass. Condition~3 gives the distributed nonlinear contraction used in Lemma~\ref{lem_dist_contraction}. Applying that lemma and taking $\lambda=\max\{\alpha,\lambda_{\ell}\}$ gives the stated bounds after absorbing norm-equivalence constants, bounded Lipschitz constants, and bounded weight gains into $c_0$ and $c_1$. In the nominal case, $d_{\mathrm{att}}^{(j)}=0$ and $\bar{\tilde d}_{\DO}=\bar d_{\DO}$.
+Condition~1 and Assumption~\ref{assum_distur} give the local-observer ISS bound by Lemma~\ref{lem_local_iss}. Condition~2 is satisfied by the proposed trust-weight law according to Lemma~\ref{lem_weight_admissible}, and it prevents each row of the trust-weighted mixing step from amplifying all incoming corrections beyond unit mass. Condition~3 gives the distributed block contraction used in Lemma~\ref{lem_dist_contraction}. Applying that lemma and taking $\lambda=\max\{\alpha_c^{1/T_c},\lambda_{\ell}\}$ gives the stated bounds after absorbing norm-equivalence constants, bounded Lipschitz constants, finite within-block gains, and bounded weight gains into $c_0$ and $c_1$. In the nominal case, $d_{\mathrm{att}}^{(j)}=0$ and $\bar{\tilde d}_{\DO}=\bar d_{\DO}$.
 \end{proof}
 
 \begin{remark}
-The conditions of Theorem~\ref{thm_observer} are nonlinear and local. The compact-region requirement excludes the steering singularity, yaw wrap discontinuities, and unbounded velocities or inputs. In practice, the constants $L_{x,j}$ and $L_{u,j}$ can be conservatively estimated from the Jacobians in~\eqref{eq_bicycle_jacobian}, and the local gain $F_j(t)$ can be checked with the linearized bicycle model. Thus, the proof is stated for the nonlinear observer, while the linearized model remains a computable design tool. For sparse switching graphs, Assumption~\ref{ass_graph} defines the windows over which the product condition~\eqref{eq_window_contraction_check} is verified. Bounded attacks produce bounded estimation degradation, and trust rejection reduces the corresponding input gain by driving the malicious weights to zero.
+The conditions of Theorem~\ref{thm_observer} are nonlinear and local. The compact-region requirement excludes the steering singularity, yaw wrap discontinuities, and unbounded velocities or inputs. In practice, the constants $L_{x,j}$, $L_{u,j}$, and $G_{x,j}(T_c)$ can be conservatively estimated from the Jacobians in~\eqref{eq_bicycle_jacobian}; the local gain $F_j(t)$ can be checked with the linearized bicycle model. Thus, the proof is stated for the nonlinear observer, while the linearized model remains a computable design tool. For dense all-to-all communication with accepted target anchors, $T_c=1$ and the contraction follows directly from $\eta_0\theta_{\min}$. For sparse switching graphs, Assumption~\ref{ass_graph} defines the windows over which the product condition~\eqref{eq_window_contraction_check} is verified. Bounded attacks produce bounded estimation degradation, and trust rejection reduces the corresponding input gain by driving the malicious weights to zero.
 \end{remark}
 
 \section{Contamination Rollback Under Delayed Trust Decisions}\label{sec_rollback}
@@ -1222,10 +1256,35 @@ This section is organized in three validation layers. First, the numerical simul
 
 \subsection{Numerical Simulation Setup}
 
-The numerical simulation uses five vehicles with all-to-all V2V communication. The observer runs onboard each vehicle, and small modeling variations are treated as uncertainties. The main parameters are $N=5$, $T_s=0.1$~s, wheelbase $L_w=2.8$~m, local-trust exponents $(\omega_p,\omega_v,\omega_\psi,\omega_u)=(1.4,1.0,1.2,0.8)$, class-filter decay $\beta_{\text{trust}}=0.5$, class confidence $C_{\mathrm{tr}}=0.2$, $q=5$ trust classes, heading tolerance $\psi_{\mathrm{th}}=0.15$~rad, and $\theta_{\min}=0.5$.
+The numerical simulation uses five vehicles with all-to-all V2V communication. The observer runs onboard each vehicle, and small modeling variations are treated as uncertainties. The main parameters are $N=5$, $T_s=0.1$~s, wheelbase $L_w=2.8$~m, local-trust exponents $(\omega_p,\omega_v,\omega_\psi,\omega_u)=(1.4,1.0,1.2,0.8)$, class-filter decay $\beta_{\text{trust}}=0.5$, class confidence $C_{\mathrm{tr}}=0.2$, $q=5$ trust classes, heading tolerance $\psi_{\mathrm{th}}=0.15$~rad, $\theta_{\min}=0.5$, and observer-weight budgets $(\eta_0,\eta_N)=(0.4,0.4)$, leaving at least $0.2$ self-prediction mass.
+
+Table~\ref{tab:contraction_check} reports the contraction constants used to verify the direct-anchor case of Theorem~\ref{thm_observer} for the five-vehicle numerical campaign. Because the bicycle state mixes meters, radians, and meters per second, the check uses the scaled infinity norm $\|z\|_* = \|D_x z\|_\infty$ with $D_x=\mathrm{diag}(0.01,0.01,1,0.2)$. On the stated compact operating envelope, the induced one-step bicycle gain is $L_{x,\max}=1.066$. Since the accepted anchor mass is lower bounded by $\underline w_0=\eta_0\theta_{\min}=0.20$, Lemma~\ref{lem_anchor_contraction} gives $\alpha=L_{x,\max}(1-\underline w_0)=0.853<1$ for the all-to-all accepted-anchor topology. When a target anchor is rejected by the trust gate, the theorem is not used to claim reconstruction of that rejected target from communication alone; the implementation holds or marks the corresponding estimate as temporarily unreachable until an accepted anchored path returns.
+
+\begin{table}[!t]
+\centering
+\caption{Contraction-condition verification for the numerical campaign.}
+\label{tab:contraction_check}
+\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{p{2.0cm}p{3.05cm}p{1.95cm}}
+\toprule
+\textbf{Quantity} & \textbf{Value} & \textbf{Role} \\
+\midrule
+State norm & $\|z\|_* = \|D_x z\|_\infty$ & Scaling \\
+$D_x$ & $\mathrm{diag}(0.01,0.01,1,0.2)$ & State weights \\
+Envelope & $v\le33$~m/s, $|\delta|\le0.35$~rad & Compact region \\
+$G_{x,j}(1)=L_{x,\max}$ & $1.066$ & Bicycle gain \\
+$(\eta_0,\eta_N)$ & $(0.4,0.4)$ & Anchor/neighbor budgets \\
+$\theta_{\min}$ & $0.5$ & Acceptance threshold \\
+$\underline w_0=\eta_0\theta_{\min}$ & $0.20$ & Minimum anchor mass \\
+$T_c$ & $1$ & All-to-all accepted anchor \\
+$\alpha$ & $1.066(1-0.20)=0.853<1$ & Verified \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{Evaluation Metrics}
-To make the contribution identifiable, the numerical validation separates the value of trust weighting, local-observer anchoring, rollback, and closed-loop fallback through matched baseline configurations.
+The numerical validation reports estimation accuracy, trust response, source-weight suppression, and the most severe residual-error cases; the platform and control subsections then isolate rollback behavior and spacing preservation.
 
 % \begin{table*}[!t]
 % \centering
@@ -1252,7 +1311,7 @@ The estimation metrics are root-mean-square error (RMSE), peak error, trust dete
 \left(q_i(t)-\hat q_i(t)\right)^2}.
 \end{equation}
 For the yaw channel, $q_i-\hat q_i$ is interpreted as $\mathrm{wrap}_{\pi}(\psi_i-\hat\psi_i)$. 
-In the saved-run analysis, attack-window RMSE is computed over $[10,15]$~s for non-attacker vehicle/case/run entries. Trust detection delay is measured from the attack onset at $10$~s to the first time at which the mean trust assigned to the attacker falls below the reporting threshold $\theta_{\mathrm{op}}=0.50$. 
+In the saved-run analysis, attack-window RMSE is computed over $[10,15]$~s for non-attacker vehicle/case/run entries. Trust detection delay is measured from the attack onset at $10$~s to the first time at which the mean trust assigned to the attacker falls below the reporting threshold $\theta_{\mathrm{op}}=0.70$. 
 Trust recovery delay is measured from the attack end at $15$~s to the first time at which the mean attacker trust remains above $\theta_{\mathrm{op}}$ for $0.5$~s. The attacker-source influence is the neighbor or global-source weight assigned to the attacker, excluding the direct self-weight. Source-suppression delay is the first attack-window time at which this source influence remains below $10\%$ of its pre-attack mean for $0.5$~s. The saved result set used here does not contain the full post-attack state/input histories required to compute estimation-error recovery, so post-attack recovery is reported only for trust and source-weight traces. The present closed-loop check focuses on whether the inter-vehicle spacing remains positive during the attack interval. A deeper closed-loop study can add spacing RMSE, lateral deviation, heading error, maximum acceleration, maximum jerk, and string amplification.
 
 % \begin{table*}[!t]
@@ -1426,7 +1485,7 @@ The simulation evidence supports three conclusions. First, the trust layer react
 
 The proposed observer is also implemented for a mixed QCar/LIMO small-scale vehicle platform, where each vehicle runs the same onboard estimation and communication stack. This implementation checks whether the trust-aware observer can operate with real sensor timing, packet exchange, and controller execution rather than only with offline simulation data. Each vehicle broadcasts its local state estimate, fleet estimate, trust summary, and packet status through the V2V layer. The receiving host stores these packets, evaluates physical and temporal consistency, updates the trust weights, and then runs the distributed observer with the local observer as an anchor.
 
-Figure~\ref{fig:qcar_limo_scheme} summarizes the experimental flow. The host vehicle stack contains the sensor interface, local observer, vehicle logic, and control loop. Peer vehicles run the same stack and exchange UDP packets containing local estimates and trust reports. The trust-based observer converts consistency checks into adaptive fusion weights and produces a resilient fleet-state estimate for visualization, validation, and controller use. In this platform validation, however, the longitudinal controller is the existing CACC implementation; it does not yet blend CACC with an IDM or ACC fallback. The attack channel can inject corrupted, delayed, or replayed packets so that the no-rollback and rollback cases can be compared under the same vehicle trajectory and communication structure.
+Figure~\ref{fig:qcar_limo_scheme} summarizes the experimental flow. The host vehicle stack contains the sensor interface, local observer, vehicle logic, and control loop. Peer vehicles run the same stack and exchange UDP packets containing local estimates and trust reports. The trust-based observer converts consistency checks into adaptive fusion weights and produces a resilient fleet-state estimate for visualization, validation, and controller use. The rollback-focused platform validation uses the existing CACC implementation, while the closed-loop spacing check below uses the current trust-blended CACC/ACC implementation. The attack channel can inject corrupted, delayed, or replayed packets so that the no-rollback and rollback cases can be compared under the same vehicle trajectory and communication structure.
 
 \begin{figure*}[!t]
     \centering
@@ -1586,12 +1645,12 @@ The platform validation focuses on rollback rather than deterministic RMSE ranki
 To make the platform results easier to inspect and reproduce, the QCar/LIMO source code and experimental resources used in this study are openly available at \url{https://github.com/kslhuy/QCar2_Cran}. An accompanying rollback-estimation demonstration video is provided at \url{https://youtu.be/t6-soznp6ks}.
 
 \subsection{Distributed State Estimation for Platoon Control}
-Motivated by the residual deviation observed in the CACC-only platform rollback test, this subsection formulates a mixed local/cooperative longitudinal controller. The purpose is to combine the cooperative following benefit of CACC with a local IDM/ACC fallback when the distributed estimates become unreliable. The bicycle-state observer remains in planar coordinates, and the spacing controller uses the road-aligned projection
+Motivated by the residual deviation observed in the CACC-only platform rollback test, this subsection formulates a mixed local/cooperative longitudinal controller. The purpose is to combine the cooperative following benefit of CACC with a local ACC fallback when the distributed estimates become unreliable. The bicycle-state observer remains in planar coordinates, and the spacing controller uses the road-aligned projection
 \begin{align}
     e_{\parallel}(k)&=[\cos\psi_{\mathrm{ref}}(k),\sin\psi_{\mathrm{ref}}(k)]^\top,\\
     s_i(k)&=p_i(k)^\top e_{\parallel}(k),
 \end{align}
-where $p_i=[X_i,Y_i]^\top$. For each follower $i\ge2$, the controller computes two commands: a local IDM command driven by onboard information and a cooperative CACC command driven by the distributed observer estimates of the predecessors $\mathcal{P}_i=\{1,\ldots,i-1\}$. The final acceleration is obtained by trust-based command fusion, so unreliable V2V estimates affect only the cooperative channel.
+where $p_i=[X_i,Y_i]^\top$. For each follower $i\ge2$, the controller computes two commands: a local ACC command driven by the measured or synthesized direct-leader gap and a cooperative CACC command driven by the distributed observer estimates of the predecessors $\mathcal{P}_i=\{1,\ldots,i-1\}$. The final longitudinal command is obtained by trust-based command fusion, so unreliable V2V estimates affect only the cooperative channel.
 
 The closed-loop validation uses the worst numerical attack condition identified by the RMSE analysis. Let $i^\star$ denote the vehicle with the largest attack-window estimation degradation. The main safety metric is the minimum projected bumper-to-bumper spacing
 \begin{equation}
@@ -1600,20 +1659,26 @@ The closed-loop validation uses the worst numerical attack condition identified 
 \end{equation}
 The tested interval is considered collision-free when $s_{\min}>0$.
 
-The local command is the standard IDM acceleration
-\begin{align}
-    u_{\mathrm{loc},i}
-    &\equiv a_{\text{IDM},i} \notag\\
-    &=\alpha\Bigg[
-    1-\left(\frac{\hat{v}_0^{(i)}}{v_0}\right)^{\delta_{\mathrm{IDM}}}
-    -\left(\frac{s^*(\hat{v}_0^{(i)},\Delta v_{i-1,i})}{s_{i-1,i}}\right)^2
-    \Bigg],
-\end{align}
-where $s_{i-1,i}$ is the measured/projected bumper spacing to the immediate predecessor, $\Delta v_{i-1,i}=v_{i-1}-\hat{v}_0^{(i)}$, and
+The local ACC branch uses the measured or trusted synthesized gap to the immediate predecessor. Let $s_{i-1,i}$ denote this projected gap and define the constant-time-headway local ACC target
 \begin{equation}
-    s^*(\hat{v}_0^{(i)},\Delta v_{i-1,i})=s_0+T\hat{v}_0^{(i)}+\frac{\hat{v}_0^{(i)}\Delta v_{i-1,i}}{2\sqrt{\alpha\beta}}.
+    s_{\mathrm{ACC},i}^{\star}(k)
+    =d_{\mathrm{ACC}}+h_{\mathrm{ACC}}\max\{\hat{v}_0^{(i)}(k),0\}.
 \end{equation}
-The parameters $\alpha$, $\beta$, $\delta_{\mathrm{IDM}}$, $v_0$, $s_0$, and $T$ are the maximum acceleration, comfortable deceleration, free-flow exponent, desired velocity, minimum spacing, and time headway. Since $u_{\mathrm{loc},i}$ does not use V2V packets, it provides the fallback when the distributed layer is down-weighted.
+The local gap error is
+\begin{equation}
+    e_{\mathrm{ACC},i}(k)=s_{i-1,i}(k)-s_{\mathrm{ACC},i}^{\star}(k).
+\end{equation}
+The ACC branch maps this error into a local target speed
+\begin{equation}
+v_{\mathrm{ACC},i}^{\star}(k)=
+\begin{cases}
+0, & s_{i-1,i}(k)\le s_{\mathrm{stop}},\\
+\mathrm{sat}_{[v_{\min},v_{\max}]}
+\left(v_{\mathrm{base},i}(k)+k_d e_{\mathrm{ACC},i}(k)\right),
+& s_{i-1,i}(k)>s_{\mathrm{stop}},
+\end{cases}
+\end{equation}
+and the low-level speed loop converts $v_{\mathrm{ACC},i}^{\star}$ into the local command $u_{\mathrm{loc},i}$. The parameters $d_{\mathrm{ACC}}$, $h_{\mathrm{ACC}}$, $k_d$, $s_{\mathrm{stop}}$, $v_{\min}$, and $v_{\max}$ are the stand-off distance, time headway, gap-error speed gain, stop distance, and speed bounds. Since $u_{\mathrm{loc},i}$ does not depend on distributed V2V estimates, it provides the fallback when the cooperative layer is down-weighted.
 
 The cooperative command uses the distributed estimates
 $\hat p_i^{(j)}=[\hat X_i^{(j)},\hat Y_i^{(j)}]^\top$ and $\hat v_i^{(j)}$ of each predecessor $j\in\mathcal{P}_i$, together with the host's local ego estimate
@@ -1634,9 +1699,9 @@ where
 \end{align*}
 Here $d_{i,j}(k)$ is the CTHS distance from vehicle $i$ to predecessor $j$; for a homogeneous platoon it can be chosen as $d_{i,j}(k)=(i-j)(d+h\hat{v}_0^{(i)}(k))$. The gains $\kappa_s$, $\kappa_v$, and $\kappa_{\psi}$ weight projected position, speed, and heading-alignment errors. Thus, unreliable distributed estimates affect only $u_{\mathrm{coop},i}$ and are attenuated by the trust fusion below.
 
-The final target acceleration blends the local and cooperative commands as
+The final target command blends the local and cooperative commands as
 \begin{equation}
-    a_{\text{target},i}=(1-\gamma_i(t))u_{\mathrm{loc},i}+\gamma_i(t)u_{\mathrm{coop},i},
+    u_{\text{target},i}=(1-\gamma_i(t))u_{\mathrm{loc},i}+\gamma_i(t)u_{\mathrm{coop},i},
 \end{equation}
 where $\gamma_i(t)\in[0,1]$ is selected from the opinion vector defined in Section~\ref{sec_trust_score}. In the current controller version,
 \begin{equation}
@@ -1644,7 +1709,7 @@ where $\gamma_i(t)\in[0,1]$ is selected from the opinion vector defined in Secti
 \end{equation}
 This conservative choice makes the cooperative channel small if any predecessor used by the CACC layer has low opinion. A first-order filter then smooths transitions between the two command sources:
 \begin{equation}
-    u_i(t)=u_i(t-1)+\tau_f\big(a_{\text{target},i}-u_i(t-1)\big),
+    u_i(t)=u_i(t-1)+\tau_f\big(u_{\text{target},i}-u_i(t-1)\big),
 \end{equation}
 where $\tau_f$ is the filter time constant.
 This validation should therefore be interpreted as a spacing-preservation check during the tested attack interval, not as a complete string-stability proof.
@@ -1659,7 +1724,7 @@ The proposed method is designed to protect the platoon estimate and controller f
 The ISS result also depends on bounded disturbances, bounded input mismatch, and sufficient trusted connectivity over time. If an attack removes all reliable paths to a target vehicle, no distributed observer can recover that target state from communication alone. Similarly, the rollback module improves delayed-decision recovery only when the required packets and weights remain inside the finite buffer and when trust-triggered resets do not occur arbitrarily fast. The current closed-loop evidence is limited to spacing preservation during the attack interval; string stability, sparse-topology operation, coordinated attacks, Monte Carlo noise/dropout behavior, and sensitivity to trust parameters require deeper validation.
 
 \section{Conclusion and Future Work}\label{sec_conclusion}
-This paper presented a trust-aware distributed observer for resilient state estimation in connected vehicle platoons. The proposed architecture combines local observer anchoring, distributed observer consensus, online trust evaluation, and an optional rollback module for delayed trust decisions. The trust scores define a time-varying trusted-neighbor set used directly in the observer-weight design, and sufficient ISS conditions were stated for bounded disturbances, input mismatch, and trust-induced switching. The evaluation is organized as a five-vehicle numerical RMSE campaign, a QCar/LIMO rollback validation for non-deterministic real-vehicle delays, and an estimation-based control check. Simulations under multiple attack cases show that the method can identify unreliable data and preserve bounded estimation errors. In the tested closed-loop scenario, the trust-modulated IDM/CACC controller preserves positive spacing during the attack interval.
+This paper presented a trust-aware distributed observer for resilient state estimation in connected vehicle platoons. The proposed architecture combines local observer anchoring, distributed observer consensus, online trust evaluation, and an optional rollback module for delayed trust decisions. The trust scores define a time-varying trusted-neighbor set used directly in the observer-weight design, and sufficient ISS conditions were stated for bounded disturbances, input mismatch, and trust-induced switching. The evaluation is organized as a five-vehicle numerical RMSE campaign, a QCar/LIMO rollback validation for non-deterministic real-vehicle delays, and an estimation-based control check. Simulations under multiple attack cases show that the method can identify unreliable data and preserve bounded estimation errors. In the tested closed-loop scenario, the trust-modulated ACC/CACC controller preserves positive spacing during the attack interval.
 
 Future work will focus on a deeper string-stability study of the closed loop, broader Monte Carlo validation, matrix-valued trust weights for channel-wise attack isolation, tighter dwell-time and contraction conditions for rollback-triggered resets, and stronger coupling between trust and control under dynamic communication topologies. Extending the QCar/LIMO validation to larger fleets and richer vehicle models is also a natural next step.
 

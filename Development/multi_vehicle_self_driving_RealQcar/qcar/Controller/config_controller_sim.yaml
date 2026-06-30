@@ -18,7 +18,7 @@ path_longitudinal_controller_type: 'pid'   # Speed loop used in FOLLOWING_PATH
 path_lateral_controller_type: 'pp_map'     # Lateral controller for FOLLOWING_PATH
 
 # "Following Leader" state controllers (platoon / leader-tracking)
-leader_longitudinal_controller_type: 'multi_predecessor_cacc'      # Options: 'cacc' or 'multi_predecessor_cacc'; trust fusion wraps either when enabled below
+leader_longitudinal_controller_type: 'cacc'      # Options: 'cacc' or 'multi_predecessor_cacc'; trust fusion wraps either when enabled below
 leader_lateral_controller_type: 'fusion_lateral'   # Keep fusion lateral, but bias toward path tracking
 
 leader_reverse_follow:
@@ -91,9 +91,9 @@ command_smoothing:
 
 # CACC Controller Parameters
 cacc:
-  s0: 0.25                    # Minimum spacing (meters)
+  s0: 0.3                    # Minimum spacing (meters)
   h: 0.45                     # Time headway (seconds)
-  K_spacing: 0.45             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
+  K_spacing: 0.65             # Spacing error gain , High values make the car lurch forward aggressively if it falls slightly behind.
   K_velocity: 0.18           # Velocity error gain ,  Low values make the car ignore the leader's smooth speedometer and act purely based on the distance gap.
   spacing_mode: "path_or_projected"  # 'euclidean', 'projected', 'blended', 'path', 'path_or_projected'
   projection_heading_source: "leader" # Heading source for longitudinal projection ,  Assume the road's direction is the exact direction the "projection_heading_source" here is the leader car is currently pointing."

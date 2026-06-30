@@ -221,15 +221,30 @@ class V2VAttackInjector:
         try:
             if not self.v2v_manager.vehicle_observer:
                 return False
-            
+
+            # Get original local state from observer. Even when the attacked
+            # local channel is dropped, keep the clean side-channel alive for
+            # validation/debug consumers.
+            local_state = self.v2v_manager.vehicle_observer.get_local_state_for_broadcast()
+
             if self.attack_module and self.enabled and self.attack_module.should_drop_local_message():
                 with self._lock:
                     self.stats['broadcasts_modified'] += 1
                     self.stats['local_modifications'] += 1
-                return False
-
-            # Get original local state from observer
-            local_state = self.v2v_manager.vehicle_observer.get_local_state_for_broadcast()
+                dual_channel_payload = self.v2v_manager._build_dual_channel_payload(
+                    clean_payload=local_state,
+                    attacked_payload={},
+                    selected_channel="clean",
+                )
+                dual_channel_payload["v2v_attacked_local_dropped"] = True
+                success = self.v2v_manager.v2v_communication.send_message(
+                    message_type="local_state",
+                    data=dual_channel_payload
+                )
+                if success:
+                    with self.v2v_manager._lock:
+                        self.v2v_manager.stats['local_broadcasts'] += 1
+                return success
             
             # Apply attack modification if active
             if self.attack_module and self.enabled and self.attack_module.should_attack_local_data():

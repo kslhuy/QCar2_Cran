@@ -202,7 +202,7 @@ observer:
   #                   target x/y from host pose plus the latest trusted
   #                   host-target distance, blend clean target theta with host
   #                   theta, and fall back to host velocity
-  dynamics_prediction_mode: relative_host_anchor_mixed
+  dynamics_prediction_mode: model
   # Attack-time blend used only by relative_host_anchor_mixed:
   # theta_attack = circular_mean(clean_theta, host_theta)
   # with the weights below, and
@@ -221,9 +221,9 @@ observer:
   # w0_effective = s * w0_normal
   # w_self_effective = w_self_normal + (1 - s) * w0_normal
   direct_recovery_enabled: true
-  direct_recovery_hold_steps: 15             # 0.6 s wait after last bad flag
-  direct_recovery_required_good_steps: 10    # 0.4 s of clean evidence
-  direct_recovery_ramp_steps: 30             # 1.2 s linear reopening
+  direct_recovery_hold_steps: 10             # 0.6 s wait after last bad flag
+  direct_recovery_required_good_steps: 8    # 0.4 s of clean evidence
+  direct_recovery_ramp_steps: 20             # 1.2 s linear reopening
   direct_recovery_min_local_trust: 0.5       # local trust must be >= this
   # When true, clean_data / mixed_clean_data may re-anchor x/y to the clean
   # V2V target pose when attack flags are active. When false, keep x/y
@@ -239,7 +239,7 @@ observer:
   attack_output_low_pass_alpha: 1.0
 
   # Trust-triggered contamination rollback
-  rollback_enabled: true
+  rollback_enabled: false
   rollback_window_size: 50
   # Fast rollback triggers:
   # - final_trust        = fallback, slower because Dirichlet/EMA has memory
