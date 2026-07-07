@@ -41,6 +41,7 @@ class WeightConfig:
     startup_fixed_duration_s: float = 5.0  # Use fixed non-trust weights during startup
     use_gamma_self_weight_adaptation: bool = True
     gamma_self_weight_floor: float = 0.25
+    include_target_self_fleet_estimate: bool = False  # Include target's fleet_state[target] as an extra neighbor-like source.
     local_bad_zero_w0_neighbor_total_cap: float = 0.01 # Cap on total neighbor weight when local measurement is flagged bad (w0=0) , Good for prediction-only fallback but still allowing some neighbor influence if all neighbors are good.
 
     # Flag-driven w₀ adaptation factors
@@ -557,6 +558,14 @@ class WeightTrustModule:
             return float(default)
         return float(np.clip(value, 0.0, 1.0))
 
+    def _allow_fleet_source_for_target(self, neighbor_id: int, target_id: int) -> bool:
+        """Return whether neighbor_id may provide a fleet estimate for target_id."""
+        if int(neighbor_id) == self.vehicle_id:
+            return False
+        if int(neighbor_id) == int(target_id):
+            return bool(self.config.include_target_self_fleet_estimate)
+        return True
+
     def _resolve_flag_group_factors(self, trust_score) -> Tuple[float, float, float]:
         """
         Resolve raw-score multipliers for direct, self, and neighbor channels.
@@ -723,8 +732,7 @@ class WeightTrustModule:
             for neighbor_id, fleet_est in neighbor_fleet_estimates.items():
                 if (
                     target_id in fleet_est
-                    and neighbor_id != self.vehicle_id
-                    and neighbor_id != target_id
+                    and self._allow_fleet_source_for_target(neighbor_id, target_id)
                 ):
                     trust = trust_scores.get(neighbor_id, 0.0)
                     if trust >= self.config.trust_threshold:
@@ -752,8 +760,7 @@ class WeightTrustModule:
         for neighbor_id, fleet_est in neighbor_fleet_estimates.items():
             if (
                 target_id in fleet_est
-                and neighbor_id != self.vehicle_id
-                and neighbor_id != target_id
+                and self._allow_fleet_source_for_target(neighbor_id, target_id)
             ):
                 trust = trust_scores.get(neighbor_id, 0.0)
                 if trust >= self.config.trust_threshold:
@@ -852,9 +859,8 @@ class WeightTrustModule:
         available_neighbors = []
         for neighbor_id, fleet_est in neighbor_fleet_estimates.items():
             if (
-                neighbor_id == self.vehicle_id
-                or neighbor_id == target_id
-                or target_id not in fleet_est
+                target_id not in fleet_est
+                or not self._allow_fleet_source_for_target(neighbor_id, target_id)
             ):
                 continue
             available_neighbors.append(int(neighbor_id))
@@ -885,7 +891,7 @@ class WeightTrustModule:
         # Build candidate neighbors who actually provide target estimates
         candidates = []
         for neighbor_id, fleet_est in neighbor_fleet_estimates.items():
-            if neighbor_id == self.vehicle_id:
+            if not self._allow_fleet_source_for_target(neighbor_id, target_id):
                 continue
             if target_id in fleet_est:
                 candidates.append(neighbor_id)

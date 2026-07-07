@@ -808,6 +808,7 @@ def load_scenarios_from_config(
           enabled: true
           dt: 0.01
           log_level: "WARNING"
+          random_seed: 12345  # optional; makes random/drop/faulty attacks repeatable
         
         scenarios:
           - name: "Scenario_Name"
@@ -833,7 +834,7 @@ def load_scenarios_from_config(
     
     try:
         with open(config_file, 'r') as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f) or {}
     except yaml.YAMLError as e:
         if logger:
             logger.error(f"Error parsing YAML config: {e}")
@@ -841,6 +842,14 @@ def load_scenarios_from_config(
     
     # Check global enable
     attack_settings = config.get('attack_settings', {})
+    raw_seed = attack_settings.get('random_seed', attack_settings.get('seed'))
+    if raw_seed not in (None, "", "null"):
+        try:
+            attack_module.set_random_seed(int(raw_seed))
+        except (TypeError, ValueError):
+            if logger:
+                logger.error(f"Invalid attack random seed in config: {raw_seed!r}")
+
     if not attack_settings.get('enabled', False) and enabled_only:
         if logger:
             logger.info("Attacks globally disabled in config")

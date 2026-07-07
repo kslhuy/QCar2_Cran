@@ -205,6 +205,43 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
         )
 
 
+    def test_startup_duration_suppresses_initial_rollback_trigger(self):
+        estimator = TrustBasedFleetEstimator(
+            vehicle_id=1,
+            fleet_size=2,
+            config={
+                "trust": {"max_message_age_s": 1.0},
+                "observer": {
+                    "rollback_startup_suppress_duration_s": 5.0,
+                    "rollback_on_local_est_check": True,
+                },
+            },
+            logger=None,
+        )
+        estimator.trust_model.trust_scores[0] = TrustScore(
+            vehicle_id=0,
+            final_score=0.05,
+            local_trust_sample=0.05,
+            global_trust_sample=0.05,
+            flag_local_est_check=True,
+        )
+
+        startup_signals = estimator._build_rollback_trigger_signals(
+            {0: 0.05},
+            current_time_ns=1_000_000_000,
+        )
+        after_startup_signals = estimator._build_rollback_trigger_signals(
+            {0: 0.05},
+            current_time_ns=6_100_000_000,
+        )
+
+        self.assertFalse(startup_signals[0]["trust_below_threshold"])
+        self.assertFalse(startup_signals[0]["flag_local_est_check"])
+        self.assertTrue(startup_signals[0]["startup_trigger_suppressed"])
+        self.assertTrue(after_startup_signals[0]["trust_below_threshold"])
+        self.assertTrue(after_startup_signals[0]["flag_local_est_check"])
+
+
     def test_attack_recovery_reset_reanchors_to_clean_v2v_state(self):
         self.estimator.fleet_states[:, 0] = np.array([100.0, 0.0, 0.0, 1.0, 0.0])
         self.estimator.add_received_clean_local_state(

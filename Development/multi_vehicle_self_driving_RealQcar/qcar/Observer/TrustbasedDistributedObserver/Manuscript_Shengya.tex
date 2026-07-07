@@ -342,6 +342,7 @@ will be treated as part of the disturbance vector. % $\Delta$. %%$B_b \delta u_j
 The distributed observer $\DO_i^{(j)}$ estimates the state of vehicle $j \in \mathcal{V}$ from vehicle $i$.
 The neighbor-consensus term in~\eqref{eq_consensus_state} aligns $\hat{x}_i^{(j)}(t)$ with estimates received from $l \in \N_i$, while $w_{il}^{(j)}(t)$ sets each neighbor's influence. Since consensus alone may drive all estimates to a common biased value under disturbances or model mismatch, the anchoring term $w_{i0}^{(j)}(t)(\hat{x}_0^{(j)}(t)-\hat{x}_i^{(j)}(t))$ injects vehicle $j$'s target-local anchor as a reference before the bicycle prediction in~\eqref{eq_DO}. 
 
+
 % In the nominal case, the desired objectives are to design $F_i(t)$ and the weights $w_{il}^{(j)}(t)$ such that
 % \begin{align}
 %     \lim_{t \rightarrow \infty} \left( \hat{x}_{0}^{(i)}(t) - x_i(t) \right) &= 0,
@@ -736,11 +737,12 @@ The observer uses $\VT_{i,l}(t)$ to weigh information received from vehicle $l$.
 \subsection{Practical parameter selection}\label{subsec_trust_tuning}
 The trust parameters are selected from nominal data and physical limits rather than tuned directly on attack cases. First, the receiver defines the admissible packet set $\Omega_z$ in~\eqref{eq_received_packet_gate} from vehicle limits, road geometry, timestamp tolerance, maximum speed, acceleration, steering angle, and feasible inter-sample motion. Second, the covariance matrices $\Sigma_{\text{self}}$, $\Sigma_{\text{host}}$, and $\Sigma_{\text{local}}$ are estimated from an attack-free calibration window and regularized with positive lower bounds on every diagonal entry. Third, the exponents $\omega_p,\omega_v,\omega_\psi,\omega_u$ encode channel confidence: a channel with lower nominal noise or higher safety relevance receives a larger exponent, while an unavailable channel is removed from the product. Fourth, the threshold $\theta_{\min}$ is chosen from nominal validation data so that benign packets are rarely rejected, then checked under representative faults. Finally, $\beta_{\text{trust}}$ and $C_{\mathrm{tr}}$ set the detection--recovery tradeoff: larger $\beta_{\text{trust}}$ reacts faster to repeated low-trust evidence, while larger $C_{\mathrm{tr}}$ prevents short histories from dominating the prior. After these values are fixed, the observer weights are checked against the stability conditions in Section~\ref{sec_weight_design}.
 
-For the controller interface, each host vehicle also forms an opinion vector
-\begin{equation}
-    \O_i(t)=[\O_i(1,t),\ldots,\O_i(N,t)],
-\end{equation}
-where $\O_i(i,t)=1$ and $\O_i(l,t)=\VT_{i,l}(t)$ for trusted neighbors. For non-neighboring vehicles, $\O_i(j,t)$ can be obtained from one-hop propagated opinions or assigned a conservative default when no credible propagated opinion is available. This vector is used only as a compact reliability summary for the controller blending factor in Section~\ref{sec_simulation}; the observer-weight design below uses the pairwise trust values directly.
+
+% For the controller interface, each host vehicle also forms an opinion vector
+% \begin{equation}
+%     \O_i(t)=[\O_i(1,t),\ldots,\O_i(N,t)],
+% \end{equation}
+% where $\O_i(i,t)=1$ and $\O_i(l,t)=\VT_{i,l}(t)$ for trusted neighbors. For non-neighboring vehicles, $\O_i(j,t)$ can be obtained from one-hop propagated opinions or assigned a conservative default when no credible propagated opinion is available. This vector is used only as a compact reliability summary for the controller blending factor in Section~\ref{sec_simulation}; the observer-weight design below uses the pairwise trust values directly.
 
 \section{Trust-Based Observer Weight Design}\label{sec_weight_design}
 The trust framework provides each vehicle with smoothed vehicle-trust scores $\VT_{i,l}(t)$ representing the reliability of information from other vehicles.
@@ -1250,6 +1252,61 @@ induced by~\eqref{eq_rollback_replay} is bounded. If successive rollback trigger
 For fixed finite $K$, the replay map is a finite composition of the clipped packet map, the bounded weighted correction step, and the bicycle prediction map on a compact set. This composition is bounded, hence $\zeta_i^{(j)}(t)$ is bounded. The dwell-time condition prevents infinitely many reset jumps from accumulating over a finite time interval. Between two reset times, Theorem~\ref{thm_observer} gives the usual ISS decay and bounded-input response; at a reset time, the bounded jump is added as another bounded input. Iterating over the dwell-time intervals gives the same ISS form with a larger constant that depends on the reset bound and $T_{\mathrm r}$.
 \end{proof}
 
+\subsection{Pose propagation and relative-measurement re-anchoring}
+Rollback mitigates short-term contamination caused by delayed trust decisions, whereas anchoring provides a repeated pose reference that limits long-term propagation of accumulated offsets when a trusted anchor or relative measurement is available. This motivates the distinction between ordinary pose propagation and optional relative-measurement re-anchoring.
+
+Let $p=[X,Y]^\top$ and write the consensus-corrected state as
+$\hat{x}_{i,c}^{(j)}=\col{\hat p_{i,c}^{(j)},\hat\psi_{i,c}^{(j)},\hat v_{i,c}^{(j)}}$.
+The usual observer prediction propagates the corrected pose as
+\begin{equation}
+    \hat p_i^{(j)}(t+1)
+    =
+    \hat p_{i,c}^{(j)}(t)
+    +T_s\hat v_{i,c}^{(j)}(t)
+    \begin{bmatrix}
+        \cos \hat\psi_{i,c}^{(j)}(t)\\
+        \sin \hat\psi_{i,c}^{(j)}(t)
+    \end{bmatrix}.
+    \label{eq_pose_propagation}
+\end{equation}
+Equation~\eqref{eq_pose_propagation} is a motion update, not a position reset. If $\hat p_{i,c}^{(j)}$ is biased by contaminated cooperative data, then clean velocity or heading only gives a cleaner motion vector from a biased starting point. The position offset remains.
+
+Re-anchoring is an optional correction before prediction. If host vehicle $i$ has an onboard relative measurement to target $j$, and this measurement passes the same validity and trust checks used in the local-trust layer, then the host can build an independent pose reference for $j$. With the measured relative position expressed in the global frame,
+\begin{equation}
+    p_{\mathrm{rel},i}^{(j)}(t)
+    =
+    \hat p_0^{(i)}(t)+r_{i,j}^{\mathrm{meas}}(t),
+    \label{eq_relative_pose_anchor}
+\end{equation}
+where $\hat p_0^{(i)}$ is the host local-observer position and $r_{i,j}^{\mathrm{meas}}$ is the measured relative position from $i$ to $j$. This reference does not come from the received distributed estimate of target $j$; it comes from host sensing and the host's own local pose.
+
+The host may then blend the propagated base pose with this relative-measurement reference:
+\begin{equation}
+\begin{aligned}
+    p_{\mathrm b,i}^{(j)}(t)
+    &=
+    \big(1-\rho_{i,\mathrm{rel}}^{(j)}(t)\big)\hat p_{i,c}^{(j)}(t)
+    +\rho_{i,\mathrm{rel}}^{(j)}(t)p_{\mathrm{rel},i}^{(j)}(t),
+    \\
+    \rho_{i,\mathrm{rel}}^{(j)}(t)&\in[0,1],
+\end{aligned}
+    \label{eq_pose_reanchor_base}
+\end{equation}
+and predict from the resulting base pose,
+\begin{equation}
+    \hat p_i^{(j)}(t+1)
+    =
+    p_{\mathrm b,i}^{(j)}(t)
+    +T_s \hat v_{i,c}^{(j)}(t)
+    \begin{bmatrix}
+        \cos \hat\psi_{i,c}^{(j)}(t)\\
+        \sin \hat\psi_{i,c}^{(j)}(t)
+    \end{bmatrix}.
+    \label{eq_pose_reanchor_prediction}
+\end{equation}
+The scalar $\rho_{i,\mathrm{rel}}^{(j)}$ determines how strongly the relative measurement is used. The case $\rho_{i,\mathrm{rel}}^{(j)}=0$ gives the standard observer prediction, $0<\rho_{i,\mathrm{rel}}^{(j)}<1$ gives a soft re-anchor, and $\rho_{i,\mathrm{rel}}^{(j)}=1$ resets the position base to the relative-measurement pose. If the relative measurement is missing, rejected, or outside the sensing range, then $\rho_{i,\mathrm{rel}}^{(j)}=0$ and the observer reduces to the trust-weighted prediction and rollback mechanism already analyzed above. Thus, re-anchoring is not used as an additional proof assumption; it is a practical add-on for cases where an independent onboard relative measurement is available and accepted.
+
+
 \section{Simulation and Platform Results}\label{sec_simulation}
 
 This section is organized in three validation layers. First, the numerical simulation uses a five-vehicle platoon and the complete 15-run sweep over local, global, and simultaneous local--global attack modes; these results report RMSE, trust response, source suppression, and the most damaging attack cases. Second, the QCar/LIMO platform validation focuses on rollback, because real packet timing, sensing jitter, and communication delays are not deterministic; this part compares the observer with and without finite-window replay after delayed trust decisions. Third, the estimated states are injected into the longitudinal platoon controller to check whether the most affected vehicle can keep positive inter-vehicle spacing and avoid collision during the attack interval.
@@ -1380,13 +1437,13 @@ The complete numerical campaign contains 15 saved runs: three attack modes, name
 
 \subsection{Numerical Simulation Results}
 
-The following numerical results summarize the 15-run campaign. Across all non-attacker vehicle/case/run entries, the mean raw combined RMSE over $X$, $Y$, $\psi$, and $v$ is $0.1479$, and the maximum observed raw combined RMSE is $0.3175$. Figure~\ref{fig:hybrid_heatmap} visualizes the normalized impact score, defined as the raw combined estimation error divided by the maximum error over the saved campaign. The quantitative rankings below use the raw RMSE values because they preserve the relative severity of each channel and attack case.
-\begin{figure}[!ht]
-    \centering
-    \includegraphics[width=0.8\linewidth]{fig/hybrid.jpg}
-    \caption{Heatmap of normalized impact scores for all vehicles and bicycle-state attack cases.}
-    \label{fig:hybrid_heatmap}
-\end{figure}
+% The following numerical results summarize the 15-run campaign. Across all non-attacker vehicle/case/run entries, the mean raw combined RMSE over $X$, $Y$, $\psi$, and $v$ is $0.1479$, and the maximum observed raw combined RMSE is $0.3175$. Figure~\ref{fig:hybrid_heatmap} visualizes the normalized impact score, defined as the raw combined estimation error divided by the maximum error over the saved campaign. The quantitative rankings below use the raw RMSE values because they preserve the relative severity of each channel and attack case.
+% \begin{figure}[!ht]
+%     \centering
+%     \includegraphics[width=0.8\linewidth]{fig/hybrid.jpg}
+%     \caption{Heatmap of normalized impact scores for all vehicles and bicycle-state attack cases.}
+%     \label{fig:hybrid_heatmap}
+% \end{figure}
 
 % \begin{figure}[!ht]
 %     \centering
@@ -1555,12 +1612,12 @@ Figure~\ref{fig:qcar_limo_scheme} summarizes the experimental flow. The host veh
         \node[badge, draw=usergreen!65, fill=usergreen!12, text width=1.56cm, minimum width=1.78cm] at (15.38,0.72)
             {paper figures};
 
-        \draw[flow, userorange] (localobs.east) -- ++(0.44,0) |- ([yshift=-0.16cm]udp.west);
-        \node[flowlabel] at (6.66,5.36) {broadcast};
-        \draw[flow, userorange] ([yshift=-0.10cm]peers.west) -- ++(-0.52,0) |- ([yshift=0.16cm]localobs.east);
-        \node[flowlabel] at (6.66,2.66) {received};
-        \draw[flow, userpurple] (udp.east) -- (trusteval.west);
-        \draw[flow, userpurple] (attack.east) -- ++(0.58,0) |- (distobs.west);
+        \draw[flow, userorange] ([yshift=0.18cm]localobs.east) -- ++(0.36,0) |- ([yshift=-0.18cm]udp.west);
+        \node[flowlabel] at (6.62,4.58) {broadcast};
+        \draw[flow, userorange] ([yshift=0.12cm]peers.west) -- ++(-0.42,0) |- ([yshift=-0.18cm]localobs.east);
+        \node[flowlabel] at (6.62,3.12) {received};
+        \draw[flow, userpurple] ([yshift=0.13cm]udp.east) -- ([yshift=-0.08cm]trusteval.west);
+        \draw[flow, userpurple] ([yshift=0.05cm]attack.east) -- ++(0.58,0) |- ([yshift=-0.22cm]distobs.west);
         \coordinate (resultbuslow) at (13.98,2.05);
         \coordinate (resultbusmid) at (13.98,3.58);
         \coordinate (resultbustop) at (13.98,5.03);
@@ -1568,14 +1625,14 @@ Figure~\ref{fig:qcar_limo_scheme} summarizes the experimental flow. The host veh
         \draw[flow, usergreen] (resultbustop) -- (stateout.west);
         \draw[flow, usergreen] (resultbusmid) -- (trustout.west);
         \draw[flow, usergreen] (resultbuslow) -- (validout.west);
-        \draw[feedback, userblue] (fleetest.south) -- ++(0,-0.22) -| (closedloop.south);
-        \node[flowlabel, text width=2.05cm, align=center] at (8.65,0.47) {fleet estimate to controller};
+        \draw[feedback, userblue] (fleetest.south) -- ++(0,-0.66) -| (closedloop.south);
+        \node[flowlabel, text width=2.05cm, align=center, anchor=north] at (8.45,-0.14) {fleet estimate to controller};
     \end{tikzpicture}}
     \caption{QCar/LIMO experimental scheme for trust-aware cooperative state estimation. Each vehicle runs a local observer and vehicle-logic loop, exchanges V2V estimates and trust reports, and computes trust-weighted distributed estimates with optional rollback.}
     \label{fig:qcar_limo_scheme}
 \end{figure*}
 
-At the vehicle level, the controller separates longitudinal and lateral behavior while keeping both channels connected to the same planar bicycle state. In the rollback experiment, the longitudinal branch projects the estimated planar position onto the road tangent and applies the CACC law directly. Therefore, if an attack biases the distributed estimate before the trust decision and rollback correction take effect, the CACC command can still be affected by the corrupted estimate. The trust framework and rollback reduce this contamination by down-weighting unreliable sources and replaying the recent observer window, but they do not guarantee complete rejection for every attack realization. Some attack cases can still produce visible trajectory deviation, especially when the corrupted information enters the controller during the detection delay. The lateral branch uses the estimated lateral position and heading, or equivalently the cross-track and heading errors with respect to the path, to compute the steering command. The resulting acceleration and steering inputs drive the 2D kinematic update of $(X,Y,\psi,v)$. The QCar and LIMO vehicles are therefore connected to the same normalized state interface, so the mixed platform can report position, velocity, yaw, trust score, and rollback-correction histories using the observer variables of this paper.
+At the vehicle level, the controller separates longitudinal and lateral behavior while keeping both channels connected to the same planar bicycle state, as summarized in Fig.~\ref{fig:qcar_limo_vehicle_structure}. In the rollback experiment, the longitudinal branch projects the estimated planar position onto the road tangent and applies the CACC law directly. Therefore, if an attack biases the distributed estimate before the trust decision and rollback correction take effect, the CACC command can still be affected by the corrupted estimate. The trust framework and rollback reduce this contamination by down-weighting unreliable sources and replaying the recent observer window, but they do not guarantee complete rejection for every attack realization. Some attack cases can still produce visible trajectory deviation, especially when the corrupted information enters the controller during the detection delay. The lateral branch uses the estimated lateral position and heading, or equivalently the cross-track and heading errors with respect to the path, to compute the steering command. The resulting acceleration and steering inputs are applied to the QCar/LIMO vehicle represented by the 2D kinematic bicycle model, which updates $(X,Y,\psi,v)$. The QCar and LIMO vehicles are therefore connected to the same normalized state interface, so the mixed platform can report position, velocity, yaw, trust score, and rollback-correction histories using the observer variables of this paper.
 
 \begin{figure}[!t]
     \centering
@@ -1613,8 +1670,9 @@ At the vehicle level, the controller separates longitudinal and lateral behavior
             $\delta_i$
         };
 
-        \node[box, right=0.65cm of long, yshift=-0.42cm] (plant) {
-            \textbf{2D bicycle}\\
+        \node[box, right=0.65cm of long, yshift=-0.42cm] (vehicle) {
+            \textbf{Vehicle}\\
+            2D bicycle\\
             $(X,Y,\psi,v)$\\
             state update
         };
@@ -1622,15 +1680,17 @@ At the vehicle level, the controller separates longitudinal and lateral behavior
         \draw[arrow] (context) -- (controller);
         \draw[arrow, blue!70!black] (controller.east) -- ++(0.32,0) |- (long.west);
         \draw[arrow, blue!70!black] (controller.east) -- ++(0.32,0) |- (lateral.west);
-        \draw[arrow, green!50!black] (long.east) -- (plant.west |- long.east);
-        \draw[arrow, orange!80!black] (lateral.east) -- (plant.west |- lateral.east);
-        \draw[fb] (plant.south) -- ++(0,-0.9cm) -| (context.south);
+        \draw[arrow, green!50!black] (long.east) -- (vehicle.west |- long.east);
+        \draw[arrow, orange!80!black] (lateral.east) -- (vehicle.west |- lateral.east);
+        \draw[fb] (vehicle.south) -- ++(0,-0.9cm) -| (context.south);
     \end{tikzpicture}}
-    \caption{Compact vehicle-level controller for the QCar/LIMO 2D kinematic model used in the rollback validation. The current platform test applies CACC for $a_i$, while lateral tracking produces $\delta_i$.}
+    \caption{Compact vehicle-level controller for the QCar/LIMO rollback validation. The longitudinal command $a_i$ and lateral command $\delta_i$ are applied to the vehicle represented by the 2D kinematic bicycle model.}
     \label{fig:qcar_limo_vehicle_structure}
 \end{figure}
 
 The platform validation focuses on rollback rather than deterministic RMSE ranking. Unlike the numerical simulator, the real vehicles have non-deterministic packet delays, asynchronous sensing, and execution jitter. These effects can allow corrupted packets to enter the observer before the trust score falls below the rejection threshold, so the relevant comparison is between the same platform run without rollback and with finite-window rollback enabled. In the rollback case, once the delayed trust decision identifies the corrupted source, the host replays the recent observer window using the corrected trusted-neighbor set. The resulting behavior should be interpreted as mitigation, not perfect attack rejection: rollback improves the estimate after delayed detection, but the CACC-only controller may already have reacted to contaminated states. This limitation motivates the mixed local/cooperative control structure introduced next.
+
+The implementation also separates diagnostic clean-motion tests from realistic observer operation. A clean-motion replay can use the uncorrupted heading and speed to propagate~\eqref{eq_pose_propagation}, but it keeps the estimator's current base position and therefore exposes residual pose contamination. A hard re-anchor according to~\eqref{eq_relative_pose_anchor}--\eqref{eq_pose_reanchor_prediction} is realistic only when the host has an accepted onboard relative measurement to the target, or another independently validated pose source. Re-anchoring to a clean reference channel that bypasses the attack injector is therefore used only as an ablation or debugging mode, not as evidence that the deployed observer has access to ground truth during an attack.
 
 % Add QCar/LIMO rollback result figures here after the real-vehicle runs.
 % Suggested figure 1: no-rollback versus rollback estimation error around the delayed detection time.
@@ -1645,44 +1705,48 @@ The platform validation focuses on rollback rather than deterministic RMSE ranki
 To make the platform results easier to inspect and reproduce, the QCar/LIMO source code and experimental resources used in this study are openly available at \url{https://github.com/kslhuy/QCar2_Cran}. An accompanying rollback-estimation demonstration video is provided at \url{https://youtu.be/t6-soznp6ks}.
 
 \subsection{Distributed State Estimation for Platoon Control}
-Motivated by the residual deviation observed in the CACC-only platform rollback test, this subsection formulates a mixed local/cooperative longitudinal controller. The purpose is to combine the cooperative following benefit of CACC with a local ACC fallback when the distributed estimates become unreliable. The bicycle-state observer remains in planar coordinates, and the spacing controller uses the road-aligned projection
+The proposed trust scores are useful at two levels. In the observer, they adapt the fusion weights so that unreliable V2V data have limited influence on the fleet-state estimate. In the controller, the same reliability information can gate how much the vehicle relies on cooperative CACC. This second use is important for safety: even after trust-aware estimation and rollback, a corrupted distributed estimate may still affect the command before a delayed trust decision is corrected. The longitudinal controller is therefore split into two channels: a local ACC channel based on direct sensing of the immediate predecessor, and a cooperative CACC channel based on the distributed estimates of the platoon. A trust gate fuses the two commands, so cooperation is used when the fleet estimate is credible and the controller falls back toward local ACC when it is not.
+
+The planar bicycle states are first projected onto the road tangent,
 \begin{align}
     e_{\parallel}(k)&=[\cos\psi_{\mathrm{ref}}(k),\sin\psi_{\mathrm{ref}}(k)]^\top,\\
     s_i(k)&=p_i(k)^\top e_{\parallel}(k),
 \end{align}
-where $p_i=[X_i,Y_i]^\top$. For each follower $i\ge2$, the controller computes two commands: a local ACC command driven by the measured or synthesized direct-leader gap and a cooperative CACC command driven by the distributed observer estimates of the predecessors $\mathcal{P}_i=\{1,\ldots,i-1\}$. The final longitudinal command is obtained by trust-based command fusion, so unreliable V2V estimates affect only the cooperative channel.
+where $p_i=[X_i,Y_i]^\top$. For follower $i\ge2$, let $\mathcal{P}_i=\{1,\ldots,i-1\}$ denote the set of predecessors used by the cooperative channel.
 
-The closed-loop validation uses the worst numerical attack condition identified by the RMSE analysis. Let $i^\star$ denote the vehicle with the largest attack-window estimation degradation. The main safety metric is the minimum projected bumper-to-bumper spacing
+The closed-loop validation uses the worst numerical attack condition identified by the RMSE analysis. Let $i^\star$ denote the vehicle with the largest attack-window estimation degradation. Safety is checked through the minimum projected bumper-to-bumper spacing
 \begin{equation}
     s_{\min}=\min_{k\in\mathcal{T}_{\mathrm{att}}}\min_{i=2,\ldots,N}
     \left((p_{i-1}(k)-p_i(k))^\top e_{\parallel}(k)-L\right).
 \end{equation}
 The tested interval is considered collision-free when $s_{\min}>0$.
 
-The local ACC branch uses the measured or trusted synthesized gap to the immediate predecessor. Let $s_{i-1,i}$ denote this projected gap and define the constant-time-headway local ACC target
+The ACC branch is the local safety channel. Let $s_{i-1,i}(k)$ denote the projected bumper-to-bumper gap to the immediate predecessor obtained from onboard sensing. If direct sensing is unavailable, the same quantity may be built from an independently trusted relative measurement:
+\begin{equation}
+    s_{i-1,i}(k)
+    =\big(r^{\mathrm{meas}}_{i,i-1}(k)\big)^\top e_{\parallel}(k)-L.
+\end{equation}
+The local constant-time-headway spacing target is
 \begin{equation}
     s_{\mathrm{ACC},i}^{\star}(k)
     =d_{\mathrm{ACC}}+h_{\mathrm{ACC}}\max\{\hat{v}_0^{(i)}(k),0\}.
 \end{equation}
-The local gap error is
+Here $\hat v_0^{(i)}$ is vehicle $i$'s current ego-speed estimate from its local observer; the subscript $0$ denotes the local-observer channel, not a target vehicle.
+The ideal ACC law uses only this local gap error:
+\begin{align}
+    e_{\mathrm{ACC},i}(k)
+    &=s_{i-1,i}(k)-s_{\mathrm{ACC},i}^{\star}(k),\notag\\
+    v_{\mathrm{ACC},i}^{\star}(k)
+    &=v_{\mathrm{base},i}(k)+k_d e_{\mathrm{ACC},i}(k).
+\end{align}
+Thus, $v_{\mathrm{ACC},i}^{\star}$ is the ACC target speed. The low-level speed loop compares it with the current ego speed and maps the speed error to the local acceleration command,
 \begin{equation}
-    e_{\mathrm{ACC},i}(k)=s_{i-1,i}(k)-s_{\mathrm{ACC},i}^{\star}(k).
+    u_{\mathrm{loc},i}(k)
+    =F_v\!\left(v_{\mathrm{ACC},i}^{\star}(k)-\hat v_0^{(i)}(k)\right),
 \end{equation}
-The ACC branch maps this error into a local target speed
-\begin{equation}
-v_{\mathrm{ACC},i}^{\star}(k)=
-\begin{cases}
-0, & s_{i-1,i}(k)\le s_{\mathrm{stop}},\\
-\mathrm{sat}_{[v_{\min},v_{\max}]}
-\left(v_{\mathrm{base},i}(k)+k_d e_{\mathrm{ACC},i}(k)\right),
-& s_{i-1,i}(k)>s_{\mathrm{stop}},
-\end{cases}
-\end{equation}
-and the low-level speed loop converts $v_{\mathrm{ACC},i}^{\star}$ into the local command $u_{\mathrm{loc},i}$. The parameters $d_{\mathrm{ACC}}$, $h_{\mathrm{ACC}}$, $k_d$, $s_{\mathrm{stop}}$, $v_{\min}$, and $v_{\max}$ are the stand-off distance, time headway, gap-error speed gain, stop distance, and speed bounds. Since $u_{\mathrm{loc},i}$ does not depend on distributed V2V estimates, it provides the fallback when the cooperative layer is down-weighted.
+where $F_v$ denotes the speed controller. Saturation and emergency-stop limits are implementation details and are omitted here to keep the control structure clear. Because this branch does not use V2V estimates, it remains available when the cooperative channel is down-weighted.
 
-The cooperative command uses the distributed estimates
-$\hat p_i^{(j)}=[\hat X_i^{(j)},\hat Y_i^{(j)}]^\top$ and $\hat v_i^{(j)}$ of each predecessor $j\in\mathcal{P}_i$, together with the host's local ego estimate
-$\hat p_0^{(i)}=[\hat X_0^{(i)},\hat Y_0^{(i)}]^\top$ and $\hat v_0^{(i)}$:
+The CACC branch is the cooperative performance channel. Host vehicle $i$ uses its distributed estimates $\hat p_i^{(j)}=[\hat X_i^{(j)},\hat Y_i^{(j)}]^\top$, $\hat v_i^{(j)}$, and $\hat\psi_i^{(j)}$ of each predecessor $j\in\mathcal{P}_i$. These estimates are compared with the host's local ego estimate $\hat p_0^{(i)}=[\hat X_0^{(i)},\hat Y_0^{(i)}]^\top$, $\hat v_0^{(i)}$, and $\hat\psi_0^{(i)}$:
 \begin{align}
     u_{\mathrm{coop},i}
     &\equiv u_{\text{CACC},i}(k) \notag\\
@@ -1697,22 +1761,23 @@ where
     e_{v,ij}(k)&=\hat{v}_i^{(j)}(k)-\hat{v}_0^{(i)}(k),\\
     e_{\psi,ij}(k)&=\mathrm{wrap}_{\pi}\big(\hat\psi_i^{(j)}(k)-\hat\psi_0^{(i)}(k)\big).
 \end{align*}
-Here $d_{i,j}(k)$ is the CTHS distance from vehicle $i$ to predecessor $j$; for a homogeneous platoon it can be chosen as $d_{i,j}(k)=(i-j)(d+h\hat{v}_0^{(i)}(k))$. The gains $\kappa_s$, $\kappa_v$, and $\kappa_{\psi}$ weight projected position, speed, and heading-alignment errors. Thus, unreliable distributed estimates affect only $u_{\mathrm{coop},i}$ and are attenuated by the trust fusion below.
+Here $d_{i,j}(k)$ is the constant-time-headway spacing from vehicle $i$ to predecessor $j$; for a homogeneous platoon, $d_{i,j}(k)=(i-j)(d+h\hat{v}_0^{(i)}(k))$. The gains $\kappa_s$, $\kappa_v$, and $\kappa_{\psi}$ weight projected position, speed, and heading alignment.
 
-The final target command blends the local and cooperative commands as
+The final acceleration command is obtained by trust fusion:
 \begin{equation}
-    u_{\text{target},i}=(1-\gamma_i(t))u_{\mathrm{loc},i}+\gamma_i(t)u_{\mathrm{coop},i},
+    u_{\text{target},i}(k)
+    =u_{\mathrm{loc},i}(k)
+    +\gamma_i(k)\big(u_{\mathrm{coop},i}(k)-u_{\mathrm{loc},i}(k)\big),
 \end{equation}
-where $\gamma_i(t)\in[0,1]$ is selected from the opinion vector defined in Section~\ref{sec_trust_score}. In the current controller version,
+where $\gamma_i(k)\in[0,1]$ is selected from the opinion vector defined in Section~\ref{sec_trust_score}. In the current implementation,
 \begin{equation}
-    \gamma_i(t)=\min_{j\in\mathcal{P}_i}\O_i(j,t).
+    \gamma_i(k)=\min_{j\in\mathcal{P}_i}\O_i(j,k).
 \end{equation}
-This conservative choice makes the cooperative channel small if any predecessor used by the CACC layer has low opinion. A first-order filter then smooths transitions between the two command sources:
+Thus, $\gamma_i=1$ recovers the cooperative CACC command, whereas $\gamma_i=0$ gives the local ACC fallback. The minimum operator is conservative: one low-trust predecessor is sufficient to reduce the cooperative contribution. A first-order filter smooths the applied command,
 \begin{equation}
-    u_i(t)=u_i(t-1)+\tau_f\big(u_{\text{target},i}-u_i(t-1)\big),
+    u_i(k)=u_i(k-1)+\tau_f\big(u_{\text{target},i}(k)-u_i(k-1)\big),
 \end{equation}
-where $\tau_f$ is the filter time constant.
-This validation should therefore be interpreted as a spacing-preservation check during the tested attack interval, not as a complete string-stability proof.
+where $\tau_f\in[0,1]$ is the filter gain. The fusion controller should therefore be viewed as a safety-oriented use of the resilient estimator: improved fleet estimation supports cooperation, while local ACC limits the effect of unreliable distributed information. The present validation checks spacing preservation during the tested attack interval; a complete string-stability proof is left for future work.
 
 % Add the closed-loop control figure/table here after running the physical or high-fidelity closed-loop test.
 % Suggested report: worst attack case, most affected vehicle i^\star, minimum spacing s_min,

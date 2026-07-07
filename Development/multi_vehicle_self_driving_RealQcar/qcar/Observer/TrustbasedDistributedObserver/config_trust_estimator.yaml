@@ -90,7 +90,7 @@ trust:
   expected_beacon_interval_s: 0.1 # Expected beacon interval (10 Hz)
   
   # EMA smoothing for trust scores
-  ema_alpha: 0.3                  # Smoothing factor (0-1, higher = less smoothing)
+  ema_alpha: 0.5                  # Smoothing factor (0-1, higher = less smoothing)
 
   # Validation and decay (MATLAB-parity features)
   use_physical_constraints_check: false
@@ -161,12 +161,14 @@ weight:
   # Neighbor weight constraints
   w_cap: 0.4                      # Maximum weight per neighbor (influence cap - 40%)
   kappa: 3                        # Smaller kappa gives stronger direct/neighbor corrections in small fleets
-  local_bad_zero_w0_neighbor_total_cap: 0.08 # Keep some trusted neighbor pull during local-channel quarantine
+  include_target_self_fleet_estimate: true # false: w0 uses target local_state only; true also uses target fleet_state[target]
+                                              #if true : self prediction = + w0 * V2 local_state + w_neighbor * V0 fleet_state[V2] + w_neighbor * V2 fleet_state[V2]
+  local_bad_zero_w0_neighbor_total_cap: 0.05 # Keep some trusted neighbor pull during local-channel quarantine
   
   # Temporal smoothing (EMA)
   eta: 0.15                       # EMA smoothing factor
   enable_smoothing: false         # Enable weight smoothing between updates
-  startup_fixed_duration_s: 5.0   # Keep fixed non-trust weights while platoon forms
+  startup_fixed_duration_s: 0.5   # Keep fixed non-trust weights while platoon forms
   use_gamma_self_weight_adaptation: true
   gamma_self_weight_floor: 0.25
   
@@ -194,20 +196,38 @@ observer:
   # model           = existing bicycle + longitudinal model
   # clean_data      = test mode: keep current x/y continuity but use the clean
   #                   target V2V theta/velocity/acceleration as the motion source
-  # mixed_clean_data = use clean target V2V theta, but keep velocity and
-  #                   acceleration from the current estimator state; under
-  #                   attack-triggered clean anchoring, x/y starts from clean pose
+  # mixed_clean_data = use the same attack-time host-relative anchor logic as
+  #                   relative_host_anchor_mixed; force_clean_pose_anchor toggles
+  #                   that anchor on/off for this mode
   # relative_host_anchor_mixed = normal operation uses the standard vehicle
-  #                   model; only while attack flags are active does it rebuild
-  #                   target x/y from host pose plus the latest trusted
-  #                   host-target distance, blend clean target theta with host
-  #                   theta, and fall back to host velocity
-  dynamics_prediction_mode: model
-  # Attack-time blend used only by relative_host_anchor_mixed:
+  #                   model; only while attack flags are active does it build a
+  #                   host-anchored target x/y from host pose plus trusted
+  #                   host-target distance, blend that prediction with the
+  #                   normal model prediction, blend clean target theta with
+  #                   host theta, and fall back to host velocity/acceleration
+  dynamics_prediction_mode: mixed_clean_data
+
+  # When true, clean_data may re-anchor x/y to the clean V2V target pose when
+  # attack flags are active. For mixed_clean_data, this enables the same
+  # host-relative anchor used by relative_host_anchor_mixed; false disables it.
+  force_clean_pose_anchor: true
+
+  # When true, a rollback event gets one final current-time anchor/alignment
+  # pass after replay finishes. This does not run during normal/no-attack
+  # operation and it does not advance the state by another dt; it only aligns
+  # the rollback-corrected state to the active clean/host-relative anchor.
+  post_rollback_anchor_enabled: true
+
+  # Attack-time blend used by relative_host_anchor_mixed, and by
+  # mixed_clean_data when force_clean_pose_anchor enables the anchor:
+  # pos_attack = blend(host_anchor_prediction, normal_model_prediction)
+  # with anchor/estimate weights below. 1.0/0.0 gives the old hard anchor.
   # theta_attack = circular_mean(clean_theta, host_theta)
   # with the weights below, and
   # v_attack = target_w * last_target_v + host_w * host_v
   # a_attack = target_w * last_target_a + host_w * host_a
+  relative_host_anchor_anchor_position_weight: 0.8
+  relative_host_anchor_estimate_position_weight: 0.2
   relative_host_anchor_clean_theta_weight: 1.0
   relative_host_anchor_host_theta_weight: 0.0
   relative_host_anchor_target_velocity_weight: 0.1
@@ -220,15 +240,17 @@ observer:
   # then ~1.2 s linear w0 recovery.
   # w0_effective = s * w0_normal
   # w_self_effective = w_self_normal + (1 - s) * w0_normal
-  direct_recovery_enabled: true
+  direct_recovery_enabled: false
   direct_recovery_hold_steps: 10             # 0.6 s wait after last bad flag
   direct_recovery_required_good_steps: 8    # 0.4 s of clean evidence
   direct_recovery_ramp_steps: 20             # 1.2 s linear reopening
   direct_recovery_min_local_trust: 0.5       # local trust must be >= this
-  # When true, clean_data / mixed_clean_data may re-anchor x/y to the clean
-  # V2V target pose when attack flags are active. When false, keep x/y
-  # continuity from the consensus/rollback estimate even under attack.
-  force_clean_pose_anchor: false
+  # Test-only artificial delay for rollback experiments. When > 0, a newly bad
+  # local/direct trust signal is logged immediately but its effect on the direct
+  # measurement gate and w0 weighting is delayed by this many estimator steps.
+  # Example: 8 steps ~= 0.32 s at 25 Hz, allowing attacked direct packets to
+  # contaminate the estimate before trust rejection closes w0.
+  direct_trust_application_delay_steps: 4
   # Final output low-pass filter on each target estimate:
   # x_filt = alpha * x_new + (1 - alpha) * x_prev
   # lower alpha = smoother but more lag
@@ -239,8 +261,11 @@ observer:
   attack_output_low_pass_alpha: 1.0
 
   # Trust-triggered contamination rollback
-  rollback_enabled: false
-  rollback_window_size: 50
+  rollback_enabled: true
+  # One-time startup grace period: rollback triggers are ignored for this many
+  # seconds after the first observer update, while trust diagnostics still log.
+  rollback_startup_suppress_duration_s: 5.0
+  rollback_window_size: 16
   # Fast rollback triggers:
   # - final_trust        = fallback, slower because Dirichlet/EMA has memory
   # - local_est_check    = fastest reaction to local/direct channel corruption
@@ -248,12 +273,16 @@ observer:
   rollback_on_final_trust: true
   rollback_on_local_est_check: true
   rollback_on_global_est_check: true
+  # Test-only artificial rollback trigger delay. When > 0, rollback trigger
+  # reasons must remain active for this many estimator steps before rollback
+  # fires. This does not delay trust logging or direct-channel w0 gating.
+  rollback_trigger_delay_steps: 0
   # Extra safety margin for delayed trust detection:
   # when rollback seeds from the last trusted target snapshot, step back this
   # many trusted samples first so replay starts from an older, safer pose.
   # This is safer against contamination, but it also adds temporal lag because
   # replay does not start from the most recent trusted sample.
-  rollback_trusted_state_guard_steps: 5
+  rollback_trusted_state_guard_steps: 8
   # Optional cap for cached trusted snapshots per target. Keep this at least
   # guard_steps + 1; default code also falls back to rollback_window_size.
   rollback_trusted_state_history_size: 60
@@ -306,6 +335,7 @@ logging:
   log_weight_updates: true        # Log weight calculations
   log_attack_flags: true          # Log attack detection flags
   log_interval_s: 1.0             # Logging interval in seconds
+  trust_recording_overwrite: false # false: create results/dd-mm-yy/trust_weight_log_V{id}_HH-MM-SS_ffffff.csv each run
 
 # =====================================================================
 # Example: Different Configurations for Different Scenarios

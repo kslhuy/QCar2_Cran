@@ -3162,10 +3162,16 @@ def main():
     args = parser.parse_args()
 
     directory = os.path.dirname(os.path.abspath(__file__))
-    csv_files = sorted(glob.glob(os.path.join(directory,
-                                              "trust_weight_log_V*.csv")))
+    csv_files = sorted(
+        set(
+            glob.glob(os.path.join(directory, "trust_weight_log_V*.csv"))
+            + glob.glob(os.path.join(directory, "results", "*", "trust_weight_log_V*.csv"))
+        ),
+        key=os.path.getmtime,
+    )
     if not csv_files:
         print("No trust log files found in:", directory)
+        print("Also checked:", os.path.join(directory, "results", "*"))
         return
 
     if args.file:
@@ -3176,7 +3182,7 @@ def main():
     else:
         print("Found files:")
         for i, f in enumerate(csv_files):
-            print(f"[{i}] {os.path.basename(f)}")
+            print(f"[{i}] {os.path.relpath(f, directory)}")
 
         choice = input(f"Select file to plot [0-{len(csv_files) - 1}]: ").strip()
         try:
@@ -3200,7 +3206,7 @@ def main():
         return
 
     # Determine host vehicle from filename
-    host_match = re.search(r"V(\d+)\.csv$", os.path.basename(file_to_plot))
+    host_match = re.search(r"V(\d+)(_[^.]*)?\.csv$", os.path.basename(file_to_plot))
     host_id = int(host_match.group(1)) if host_match else -1
 
     # Determine list of candidate focus vehicles (exclude host if possible)

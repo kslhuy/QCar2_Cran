@@ -153,6 +153,9 @@ class PredictionSettings:
     output_low_pass_alpha: float = 1.0
     attack_output_low_pass_alpha: float = 1.0
     force_clean_pose_anchor: bool = True
+    post_rollback_anchor_enabled: bool = False
+    relative_host_anchor_anchor_position_weight: float = 1.0
+    relative_host_anchor_estimate_position_weight: float = 0.0
     relative_host_anchor_clean_theta_weight: float = 0.8
     relative_host_anchor_host_theta_weight: float = 0.2
     relative_host_anchor_target_velocity_weight: float = 0.1
@@ -165,6 +168,7 @@ class PredictionSettings:
     direct_recovery_required_good_steps: int = 10
     direct_recovery_ramp_steps: int = 30
     direct_recovery_min_local_trust: float = 0.5
+    direct_trust_application_delay_steps: int = 0
     dynamics_prediction_mode: str = "model"
 
     @classmethod
@@ -197,6 +201,22 @@ class PredictionSettings:
             ),
             force_clean_pose_anchor=as_bool(
                 observer_value(config, "force_clean_pose_anchor", True), True
+            ),
+            post_rollback_anchor_enabled=as_bool(
+                observer_value(config, "post_rollback_anchor_enabled", False),
+                False,
+            ),
+            relative_host_anchor_anchor_position_weight=clipped_float(
+                observer_value(
+                    config, "relative_host_anchor_anchor_position_weight", 1.0
+                ),
+                1.0,
+            ),
+            relative_host_anchor_estimate_position_weight=clipped_float(
+                observer_value(
+                    config, "relative_host_anchor_estimate_position_weight", 0.0
+                ),
+                0.0,
             ),
             relative_host_anchor_clean_theta_weight=clipped_float(
                 observer_value(config, "relative_host_anchor_clean_theta_weight", 0.8),
@@ -249,6 +269,9 @@ class PredictionSettings:
                 ),
                 trust_threshold,
             ),
+            direct_trust_application_delay_steps=nonnegative_int(
+                observer_value(config, "direct_trust_application_delay_steps", 0), 0
+            ),
             dynamics_prediction_mode=normalize_dynamics_prediction_mode(raw_mode),
         )
 
@@ -264,6 +287,8 @@ class RollbackSettings:
     on_final_trust: bool = True
     on_local_est_check: bool = True
     on_global_est_check: bool = False
+    trigger_delay_steps: int = 0
+    startup_suppress_duration_s: float = 0.0
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> "RollbackSettings":
@@ -292,6 +317,18 @@ class RollbackSettings:
             ),
             on_global_est_check=as_bool(
                 observer_value(config, "rollback_on_global_est_check", False), False
+            ),
+            trigger_delay_steps=nonnegative_int(
+                observer_value(config, "rollback_trigger_delay_steps", 0), 0
+            ),
+            startup_suppress_duration_s=max(
+                as_float(
+                    observer_value(
+                        config, "rollback_startup_suppress_duration_s", 0.0
+                    ),
+                    0.0,
+                ),
+                0.0,
             ),
         )
 

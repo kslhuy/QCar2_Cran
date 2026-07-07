@@ -11,6 +11,7 @@ import csv
 import math
 import threading
 import queue
+from datetime import datetime
 from typing import Dict, Any, Iterable, List
 
 
@@ -230,6 +231,12 @@ class TrustWeightLogger:
                     f"b_score_{i}",
                     f"q_factor_{i}",
                     f"w_neighbor_{i}",
+                    f"direct_delay_active_{i}",
+                    f"direct_delay_count_{i}",
+                    f"direct_delay_steps_{i}",
+                    f"direct_delay_clean_local_trust_{i}",
+                    f"rollback_delay_count_{i}",
+                    f"rollback_delay_steps_{i}",
                     f"w0_final_{i}",
                     f"w_self_final_{i}",
                     f"w_neighbor_sum_final_{i}",
@@ -307,25 +314,40 @@ class TrustWeightLogger:
                 )
         return columns
 
-    def start(self, vehicle_id: int):
-        if self.recording:
-            return
+    def _log_filepath(self, vehicle_id: int, overwrite: bool) -> str:
+        if overwrite:
+            filename = f"trust_weight_log_V{vehicle_id}.csv"
+            return os.path.join(self.output_dir, filename)
+        else:
+            now = datetime.now()
+            date_dir = now.strftime("%d-%m-%y")
+            time_tag = now.strftime("%H-%M-%S_%f")
+            filename = f"trust_weight_log_V{vehicle_id}_{time_tag}.csv"
+            return os.path.join(self.output_dir, "results", date_dir, filename)
 
-        os.makedirs(self.output_dir, exist_ok=True)
-        # Always overwrite the file for this vehicle
-        filepath = os.path.join(self.output_dir, f"trust_weight_log_V{vehicle_id}.csv")
+    def start(self, vehicle_id: int, overwrite: bool = True) -> str:
+        if self.recording:
+            return ""
+
+        filepath = self._log_filepath(vehicle_id, overwrite=overwrite)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
         try:
-            self.file = open(filepath, "w", newline="", buffering=8192)
+            mode = "w" if overwrite else "x"
+            self.file = open(filepath, mode, newline="", buffering=8192)
             self.writer = csv.DictWriter(self.file, fieldnames=self.columns)
             self.writer.writeheader()
 
             self.recording = True
             self.thread = threading.Thread(target=self._write_loop, daemon=True)
             self.thread.start()
+            return filepath
         except Exception as e:
             print(f"[TrustLogger] Failed to open log file: {e}")
             self.recording = False
+            self.file = None
+            self.writer = None
+            return ""
 
     def record(self, t: float, data: Dict[str, Any]):
         """
@@ -355,6 +377,12 @@ class TrustWeightLogger:
         )
         prediction_debugs = self._normalize_vehicle_dict(
             data.get("prediction_debugs", {})
+        )
+        direct_trust_delay = self._normalize_vehicle_dict(
+            data.get("direct_trust_delay", {})
+        )
+        rollback_trigger_delay = self._normalize_vehicle_dict(
+            data.get("rollback_trigger_delay", {})
         )
         fleet_estimates = self._normalize_vehicle_dict(data.get("fleet_estimates", {}))
         v2v_attack = data.get("v2v_attack", {})
@@ -538,6 +566,12 @@ class TrustWeightLogger:
             row[f"b_score_{i}"] = nan_val
             row[f"q_factor_{i}"] = nan_val
             row[f"w_neighbor_{i}"] = nan_val
+            row[f"direct_delay_active_{i}"] = 0
+            row[f"direct_delay_count_{i}"] = 0
+            row[f"direct_delay_steps_{i}"] = 0
+            row[f"direct_delay_clean_local_trust_{i}"] = nan_val
+            row[f"rollback_delay_count_{i}"] = 0
+            row[f"rollback_delay_steps_{i}"] = 0
             row[f"w0_final_{i}"] = nan_val
             row[f"w_self_final_{i}"] = nan_val
             row[f"w_neighbor_sum_final_{i}"] = nan_val
@@ -799,6 +833,36 @@ class TrustWeightLogger:
                 row["yolo_rel_meas_used_global_count"] += int(
                     row[f"yolo_rel_meas_used_global_{i}"]
                 )
+
+            if i in direct_trust_delay:
+                delay_data = direct_trust_delay[i]
+                if isinstance(delay_data, dict):
+                    row[f"direct_delay_active_{i}"] = int(
+                        bool(delay_data.get("active", False))
+                    )
+                    row[f"direct_delay_count_{i}"] = self._to_float_or_nan(
+                        delay_data.get("bad_count", nan_val)
+                    )
+                    row[f"direct_delay_steps_{i}"] = self._to_float_or_nan(
+                        delay_data.get("delay_steps", nan_val)
+                    )
+                    row[f"direct_delay_clean_local_trust_{i}"] = (
+                        self._to_float_or_nan(
+                            delay_data.get("clean_local_trust", nan_val)
+                        )
+                    )
+                    present = True
+
+            if i in rollback_trigger_delay:
+                delay_data = rollback_trigger_delay[i]
+                if isinstance(delay_data, dict):
+                    row[f"rollback_delay_count_{i}"] = self._to_float_or_nan(
+                        delay_data.get("count", nan_val)
+                    )
+                    row[f"rollback_delay_steps_{i}"] = self._to_float_or_nan(
+                        delay_data.get("delay_steps", nan_val)
+                    )
+                    present = True
 
             if i in final_target_weights:
                 weight_data = final_target_weights[i]

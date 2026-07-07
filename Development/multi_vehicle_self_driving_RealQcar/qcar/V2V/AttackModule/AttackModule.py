@@ -192,7 +192,8 @@ class AttackModule:
     SNAPSHOT_FIELDS = ('x', 'y', 'theta', 'velocity', 'acceleration', 'confidence')
     
     def __init__(self, vehicle_id: int, logger: Optional[logging.Logger] = None,
-                 dt: float = 0.01, log_interval: float = 1.0):
+                 dt: float = 0.01, log_interval: float = 1.0,
+                 random_seed: Optional[int] = None):
         """
         Initialize the Attack Module.
         
@@ -201,11 +202,14 @@ class AttackModule:
             logger: Logger instance for attack events
             dt: Simulation time step (seconds)
             log_interval: Minimum interval between detailed attack logs (seconds)
+            random_seed: Optional NumPy RNG seed for repeatable random attacks
         """
         self.vehicle_id = vehicle_id
         self.logger = logger
         self.dt = dt
         self.log_interval = log_interval
+        self.random_seed = int(random_seed) if random_seed is not None else None
+        self.rng = np.random.default_rng(self.random_seed)
         
         # Attack scenarios
         self.scenarios: List[AttackScenario] = []
@@ -233,6 +237,14 @@ class AttackModule:
         
         if self.logger:
             self.logger.info(f"AttackModule initialized for vehicle {vehicle_id}")
+
+    def set_random_seed(self, random_seed: Optional[int]) -> None:
+        """Reset the attack RNG seed. Use None to return to non-deterministic RNG."""
+        self.random_seed = int(random_seed) if random_seed is not None else None
+        self.rng = np.random.default_rng(self.random_seed)
+        if self.logger:
+            seed_label = self.random_seed if self.random_seed is not None else "system entropy"
+            self.logger.info(f"AttackModule RNG seed set to {seed_label}")
     
     def add_scenario(self, scenario: AttackScenario) -> None:
         """Add an attack scenario to the module."""
@@ -376,7 +388,7 @@ class AttackModule:
     ) -> bool:
         """Apply probabilistic drop scenarios and record actual dropped packets."""
         for scenario in scenarios:
-            if np.random.random() >= self._drop_probability(scenario.intensity):
+            if self.rng.random() >= self._drop_probability(scenario.intensity):
                 continue
 
             self._record_drop_attack(scenario, is_fleet=is_fleet)
@@ -768,14 +780,14 @@ class AttackModule:
             # Random noise: value + N(0, sigma), optionally intermittent.
             if isinstance(intensity, dict):
                 probability = self._drop_probability(intensity)
-                if np.random.random() >= probability:
+                if self.rng.random() >= probability:
                     return original_value
                 sigma = intensity.get(
                     'intensity', intensity.get('sigma', intensity.get('std', 1.0))
                 )
             else:
                 sigma = intensity
-            noise = np.random.normal(0, float(sigma))
+            noise = self.rng.normal(0, float(sigma))
             return original_value + noise
         
         elif scenario.modification_type == ModificationType.ZERO:
@@ -792,7 +804,7 @@ class AttackModule:
             else:
                 min_val = 0
                 max_val = float(intensity)
-            return np.random.uniform(min_val, max_val)
+            return self.rng.uniform(min_val, max_val)
         
         elif scenario.modification_type == ModificationType.STEP:
             # Step change: apply intensity after certain fraction

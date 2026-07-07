@@ -19,6 +19,7 @@ Features:
 
 import numpy as np
 import time
+from copy import copy
 from typing import Any, Dict, List, Optional, Set, Tuple
 from collections import defaultdict, deque
 
@@ -57,6 +58,7 @@ from Observer.TrustbasedDistributedObserver.estimator_config import (
     ObserverSettings,
     PredictionSettings,
     RollbackSettings,
+    as_bool,
     as_float,
     dict_section,
     load_vehicle_model_overrides,
@@ -155,6 +157,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         # Generalized trust vector O_i(j)
         self.generalized_trust_vector: Dict[int, float] = {self.vehicle_id: 1.0}
         self._direct_recovery_state: Dict[int, Dict[str, float]] = {}
+        self._direct_trust_delay_state: Dict[int, Dict[str, float]] = {}
+        self._rollback_trigger_delay_state: Dict[int, int] = {}
 
         # Prediction/output settings
         self._init_prediction_settings(vehicle_config)
@@ -170,6 +174,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.rollback_on_final_trust = self.rollback_settings.on_final_trust
         self.rollback_on_local_est_check = self.rollback_settings.on_local_est_check
         self.rollback_on_global_est_check = self.rollback_settings.on_global_est_check
+        self.rollback_trigger_delay_steps = self.rollback_settings.trigger_delay_steps
+        self.rollback_startup_suppress_duration_s = (
+            self.rollback_settings.startup_suppress_duration_s
+        )
         self._rollback_trusted_state_history: Dict[int, deque] = {}
         self._rollback_trusted_relative_anchor_history: Dict[int, deque] = {}
         self.rollback = ContaminationRollback(
@@ -201,11 +209,24 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self._log_prediction_settings()
 
         # Initialize specialized logger for trusts & weights
+        logging_config = self._get_config_section("logging")
+        trust_recording_overwrite = as_bool(
+            logging_config.get(
+                "trust_recording_overwrite",
+                logging_config.get("recording_overwrite", True),
+            ),
+            True,
+        )
         self.trust_weight_logger = TrustWeightLogger(
             output_dir=os.path.dirname(os.path.abspath(__file__)),
             max_vehicles=max(1, fleet_size),
         )
-        self.trust_weight_logger.start(vehicle_id)
+        filepath = self.trust_weight_logger.start(
+            vehicle_id,
+            overwrite=trust_recording_overwrite,
+        )
+        if filepath and self.logger:
+            self.logger.logger.info(f"Trust weight recording to {filepath}")
         self._init_runtime_tracking()
 
     def _get_config_section(self, key: str) -> Dict[str, Any]:
@@ -290,10 +311,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             self.attack_output_low_pass_alpha,
         )
         self.logger.logger.info(
-            "Force clean pose anchor=%s", self.force_clean_pose_anchor
+            "Force clean pose anchor=%s, post-rollback anchor=%s",
+            self.force_clean_pose_anchor,
+            self.post_rollback_anchor_enabled,
         )
         self.logger.logger.info(
-            "Relative host-anchor attack blend: theta(clean=%s, host=%s), velocity(target=%s, host=%s), acceleration(target=%s, host=%s)",
+            "Relative host-anchor attack blend: position(anchor=%s, estimate=%s), theta(clean=%s, host=%s), velocity(target=%s, host=%s), acceleration(target=%s, host=%s)",
+            self.relative_host_anchor_anchor_position_weight,
+            self.relative_host_anchor_estimate_position_weight,
             self.relative_host_anchor_clean_theta_weight,
             self.relative_host_anchor_host_theta_weight,
             self.relative_host_anchor_target_velocity_weight,
@@ -309,6 +334,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             self.direct_recovery_required_good_steps,
             self.direct_recovery_ramp_steps,
             self.direct_recovery_min_local_trust,
+        )
+        self.logger.logger.info(
+            "Test delays: direct_trust_application_delay_steps=%s, rollback_trigger_delay_steps=%s, rollback_startup_suppress_duration_s=%s",
+            self.direct_trust_application_delay_steps,
+            self.rollback_trigger_delay_steps,
+            self.rollback_startup_suppress_duration_s,
         )
 
     @staticmethod
@@ -439,6 +470,20 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             and self._get_startup_elapsed_s(current_time_ns) < duration_s
         )
 
+    def _suppress_rollback_triggers_during_startup(
+        self, current_time_ns: Optional[int]
+    ) -> bool:
+        """Whether rollback trigger reasons should be ignored during startup."""
+        if current_time_ns is None:
+            return False
+        duration_s = float(
+            max(getattr(self, "rollback_startup_suppress_duration_s", 0.0), 0.0)
+        )
+        return (
+            duration_s > 0.0
+            and self._get_startup_elapsed_s(current_time_ns) < duration_s
+        )
+
     @staticmethod
     def _copy_target_weights(weights: Dict[str, Any]) -> Dict[str, Any]:
         """Copy cached target weights so per-step logging cannot mutate them."""
@@ -532,6 +577,126 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             or getattr(trust_obj, "flag_local_est_check", False)
         )
 
+    def _apply_generalized_trust_attack_flags(self) -> None:
+        """OR low generalized trust into each target's attack flag."""
+        threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+
+        for raw_target_id, gtrust_value in self.generalized_trust_vector.items():
+            target_id = int(raw_target_id)
+            if target_id == self.vehicle_id:
+                continue
+
+            trust_obj = self.trust_model.get_trust_score(target_id)
+            if trust_obj is None:
+                continue
+
+            gtrust = self._safe_float_or_nan(gtrust_value)
+            if np.isfinite(gtrust) and gtrust < threshold:
+                trust_obj.flag_target_attack = True
+
+    @staticmethod
+    def _safe_float_or_nan(value: Any) -> float:
+        """Convert scalar-like values to float, returning NaN on failure."""
+        try:
+            value_f = float(value)
+        except (TypeError, ValueError):
+            return float("nan")
+        return value_f if np.isfinite(value_f) else float("nan")
+
+    def _update_direct_trust_delay_states(
+        self, trust_scores: Dict[int, float]
+    ) -> None:
+        """Track test-only delay of local/direct trust application to w0."""
+        delay_steps = int(
+            max(getattr(self, "direct_trust_application_delay_steps", 0), 0)
+        )
+        if delay_steps <= 0:
+            self._direct_trust_delay_state.clear()
+            return
+
+        threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+        active_targets = set()
+
+        for raw_target_id, trust_val in trust_scores.items():
+            target_id = int(raw_target_id)
+            if target_id == self.vehicle_id:
+                continue
+            active_targets.add(target_id)
+
+            trust_obj = self.trust_model.get_trust_score(target_id)
+            direct_bad = self._is_local_channel_untrusted(
+                target_id, float(trust_val)
+            )
+            state = dict(self._direct_trust_delay_state.get(target_id, {}))
+
+            if not direct_bad:
+                local_trust = (
+                    self._safe_float_or_nan(
+                        getattr(trust_obj, "local_trust_sample", float("nan"))
+                    )
+                    if trust_obj is not None
+                    else float("nan")
+                )
+                final_trust = self._safe_float_or_nan(trust_val)
+                if not np.isfinite(local_trust):
+                    local_trust = final_trust
+                if not np.isfinite(local_trust):
+                    local_trust = 1.0
+                state = {
+                    "bad_count": 0.0,
+                    "active": 0.0,
+                    "delay_steps": float(delay_steps),
+                    "clean_local_trust": float(max(local_trust, threshold)),
+                    "clean_final_trust": float(max(final_trust, threshold))
+                    if np.isfinite(final_trust)
+                    else float(max(local_trust, threshold)),
+                }
+            else:
+                bad_count = int(state.get("bad_count", 0.0)) + 1
+                if "clean_local_trust" not in state:
+                    state["clean_local_trust"] = 1.0
+                if "clean_final_trust" not in state:
+                    state["clean_final_trust"] = 1.0
+                state["bad_count"] = float(bad_count)
+                state["delay_steps"] = float(delay_steps)
+                state["active"] = 1.0 if bad_count <= delay_steps else 0.0
+
+            self._direct_trust_delay_state[target_id] = state
+
+        for target_id in list(self._direct_trust_delay_state.keys()):
+            if target_id not in active_targets:
+                del self._direct_trust_delay_state[target_id]
+
+    def _is_direct_trust_delay_active(self, target_id: int) -> bool:
+        """Whether direct/local trust rejection is being artificially delayed."""
+        state = self._direct_trust_delay_state.get(int(target_id), {})
+        return bool(float(state.get("active", 0.0)) >= 0.5)
+
+    def _effective_direct_trust_obj(self, target_id: int, trust_obj):
+        """Return a proxy trust object while test-only direct-delay is active."""
+        if trust_obj is None or not self._is_direct_trust_delay_active(target_id):
+            return trust_obj
+
+        state = self._direct_trust_delay_state.get(int(target_id), {})
+        threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+        local_trust = self._safe_float_or_nan(
+            state.get("clean_local_trust", float("nan"))
+        )
+        final_trust = self._safe_float_or_nan(
+            state.get("clean_final_trust", float("nan"))
+        )
+        if not np.isfinite(local_trust):
+            local_trust = 1.0
+        if not np.isfinite(final_trust):
+            final_trust = local_trust
+
+        delayed = copy(trust_obj)
+        delayed.local_trust_sample = float(max(local_trust, threshold))
+        delayed.final_score = float(max(final_trust, threshold))
+        delayed.flag_local_est_check = False
+        delayed.flag_target_attack = False
+        return delayed
+
     def _direct_recovery_scale(self, target_id: int) -> float:
         """Return the current direct-channel recovery gain for a target."""
         if not getattr(self, "direct_recovery_enabled", True):
@@ -577,6 +742,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             local_bad = self._has_active_attack_flags(trust_obj)
             quarantined = self._is_target_quarantined_by_rollback(target_id)
             local_ready = self._local_trust_ready_for_direct_recovery(trust_obj)
+            if self._is_direct_trust_delay_active(target_id):
+                local_bad = False
+                local_ready = True
             state = self._direct_recovery_state.get(target_id)
 
             if state is None and not (local_bad or quarantined) and local_ready:
@@ -681,6 +849,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         """
         if self._is_target_quarantined_by_rollback(target_id):
             return False
+        if self._is_direct_trust_delay_active(target_id):
+            return True
         if self._direct_recovery_scale(target_id) <= 1e-9:
             return False
 
@@ -1123,11 +1293,48 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             if anchor_entry is not None:
                 anchor_history.append(anchor_entry)
 
+    def _apply_rollback_trigger_delay(
+        self, target_id: int, signal: Dict[str, object]
+    ) -> Dict[str, object]:
+        """Delay rollback trigger reasons for controlled rollback experiments."""
+        delay_steps = int(max(getattr(self, "rollback_trigger_delay_steps", 0), 0))
+        if delay_steps <= 0:
+            self._rollback_trigger_delay_state.pop(int(target_id), None)
+            return signal
+
+        reason_keys = (
+            "trust_below_threshold",
+            "flag_local_est_check",
+            "flag_global_est_check",
+        )
+        reason_active = any(bool(signal.get(key, False)) for key in reason_keys)
+        if not reason_active:
+            self._rollback_trigger_delay_state[int(target_id)] = 0
+            signal["rollback_trigger_delay_count"] = 0
+            signal["rollback_trigger_delay_steps"] = delay_steps
+            return signal
+
+        count = self._rollback_trigger_delay_state.get(int(target_id), 0) + 1
+        self._rollback_trigger_delay_state[int(target_id)] = count
+        signal["rollback_trigger_delay_count"] = count
+        signal["rollback_trigger_delay_steps"] = delay_steps
+        if count <= delay_steps:
+            delayed = dict(signal)
+            for key in reason_keys:
+                delayed[key] = False
+            return delayed
+        return signal
+
     def _build_rollback_trigger_signals(
-        self, trust_scores: Dict[int, float]
+        self,
+        trust_scores: Dict[int, float],
+        current_time_ns: Optional[int] = None,
     ) -> Dict[int, Dict[str, object]]:
         """Build per-target rollback trigger reasons from trust flags and final trust."""
         threshold = float(np.clip(self.trust_config.trust_threshold, 0.0, 1.0))
+        suppress_startup = self._suppress_rollback_triggers_during_startup(
+            current_time_ns
+        )
         signals: Dict[int, Dict[str, object]] = {}
 
         for vehicle_id, trust_val in trust_scores.items():
@@ -1136,7 +1343,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 continue
 
             trust_obj = self.trust_model.get_trust_score(target_id)
-            signals[target_id] = {
+            raw_signal = {
                 "trust_below_threshold": bool(
                     self.rollback_on_final_trust
                     and float(trust_val) < threshold
@@ -1154,6 +1361,27 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 ),
                 "final_trust": float(trust_val),
             }
+            if suppress_startup:
+                raw_signal["startup_trigger_suppressed"] = True
+                raw_signal["startup_trigger_suppress_duration_s"] = float(
+                    self.rollback_startup_suppress_duration_s
+                )
+                raw_signal["startup_elapsed_s"] = self._get_startup_elapsed_s(
+                    current_time_ns
+                )
+                self._rollback_trigger_delay_state.pop(target_id, None)
+                for key in (
+                    "trust_below_threshold",
+                    "flag_local_est_check",
+                    "flag_global_est_check",
+                ):
+                    raw_signal[key] = False
+                signals[target_id] = raw_signal
+                continue
+
+            signals[target_id] = self._apply_rollback_trigger_delay(
+                target_id, raw_signal
+            )
 
         return signals
 
@@ -1273,13 +1501,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             # 2. Update trust scores for all known vehicles
             trust_scores = self._update_trust_scores(current_time_ns)
 
-            # 2.1 Apply attack mitigation before weight computation/update
-            if self.attack_mitigation_enabled:
-                self._apply_attack_mitigation(trust_scores, current_time_ns)
-
-            self._update_direct_channel_recovery_states(trust_scores)
-
-            # 2.5 Build generalized trust vector O_i(j) when enabled
+            # 2.1 Build generalized trust vector O_i(j) when enabled
             if self.trust_config.use_generalized_trust_vector:
                 self.generalized_trust_vector = (
                     self.trust_model.compute_generalized_trust_vector(
@@ -1293,6 +1515,15 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     self.vehicle_id: 1.0,
                     **{k: float(v) for k, v in trust_scores.items()},
                 }
+
+            self._apply_generalized_trust_attack_flags()
+
+            # 2.2 Apply attack mitigation before weight computation/update
+            if self.attack_mitigation_enabled:
+                self._apply_attack_mitigation(trust_scores, current_time_ns)
+
+            self._update_direct_trust_delay_states(trust_scores)
+            self._update_direct_channel_recovery_states(trust_scores)
 
             # 3. Calculate adaptive weights based on trust/opinion
             weight_source_scores = (
@@ -1355,8 +1586,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     and target_attack_or_quarantine
                 )
                 attack_relative_host_anchor_active = bool(
-                    prediction_mode == "relative_host_anchor_mixed"
-                    and target_attack_or_quarantine
+                    target_attack_or_quarantine
+                    and (
+                        prediction_mode == "relative_host_anchor_mixed"
+                        or (
+                            prediction_mode == "mixed_clean_data"
+                            and force_clean_pose_anchor
+                        )
+                    )
                 )
                 target_prediction_mode[target_id] = bool(prediction_mode != "none")
                 consensus_est = normal_est.copy()
@@ -1439,10 +1676,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 self.fleet_states[:, target_id] = final_est
                 step_targets[target_id] = components
 
+            rollback_status = self.rollback.get_status()
+
             # 5.1 Contamination rollback
             if self.rollback.enabled:
                 rollback_trigger_signals = self._build_rollback_trigger_signals(
-                    trust_scores
+                    trust_scores,
+                    current_time_ns=current_time_ns,
                 )
                 self.rollback.record(
                     current_time_ns=current_time_ns,
@@ -1455,6 +1695,19 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     fleet_states=self.fleet_states,
                     trigger_signals=rollback_trigger_signals,
                 )
+                rollback_status = self.rollback.get_status()
+                post_rollback_anchor_count = (
+                    self._apply_post_rollback_anchor_correction(
+                        trust_scores=trust_scores,
+                        current_time_ns=current_time_ns,
+                        rollback_status=rollback_status,
+                    )
+                )
+                if post_rollback_anchor_count > 0:
+                    rollback_status = dict(rollback_status)
+                    rollback_status["post_rollback_anchor_count"] = int(
+                        post_rollback_anchor_count
+                    )
                 self._update_rollback_trusted_state_history(
                     trust_scores=trust_scores,
                     current_time_ns=current_time_ns,
@@ -1469,7 +1722,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 target_prediction_mode,
                 current_time_ns=current_time_ns,
                 target_components=step_targets,
-                rollback_status=self.rollback.get_status(),
+                rollback_status=rollback_status,
                 consensus_estimates=consensus_estimates,
                 post_prediction_estimates=post_prediction_estimates,
                 clean_reference_estimates=clean_reference_estimates,
@@ -1941,6 +2194,240 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             else float("nan"),
         }
 
+    def _apply_post_rollback_anchor_correction(
+        self,
+        trust_scores: Dict[int, float],
+        current_time_ns: int,
+        rollback_status: Optional[Dict[str, object]] = None,
+    ) -> int:
+        """Optionally apply one final attack-time anchor after rollback replay.
+
+        Rollback replay already runs the prediction model for each replayed step.
+        This hook is a conservative final alignment at the current timestamp; it
+        does not propagate forward by another dt.
+        """
+        if not getattr(self, "post_rollback_anchor_enabled", False):
+            return 0
+        rollback_status = rollback_status or {}
+        if not bool(rollback_status.get("triggered", False)):
+            return 0
+
+        applied_count = 0
+        for raw_target_id in trust_scores.keys():
+            target_id = int(raw_target_id)
+            if target_id == self.vehicle_id:
+                continue
+            self._ensure_fleet_capacity(target_id)
+
+            target_trust_obj = self.trust_model.get_trust_score(target_id)
+            target_attack_or_quarantine = bool(
+                self._has_active_attack_flags(target_trust_obj)
+                or self._is_target_quarantined_by_rollback(target_id)
+            )
+            if not target_attack_or_quarantine:
+                continue
+
+            target_model_cfg = self._get_vehicle_model_config(target_id)
+            prediction_mode = normalize_dynamics_prediction_mode(
+                target_model_cfg.get(
+                    "dynamics_prediction_mode", self.dynamics_prediction_mode
+                )
+            )
+            if prediction_mode not in (
+                "clean_data",
+                "mixed_clean_data",
+                "relative_host_anchor_mixed",
+            ):
+                continue
+
+            force_clean_pose_anchor = bool(
+                self.force_clean_pose_anchor
+                and prediction_mode
+                in ("clean_data", "mixed_clean_data", "relative_host_anchor_mixed")
+            )
+            attack_relative_host_anchor_active = bool(
+                prediction_mode == "relative_host_anchor_mixed"
+                or (
+                    prediction_mode == "mixed_clean_data"
+                    and force_clean_pose_anchor
+                )
+            )
+            anchored_state = self._anchor_current_state_for_attack(
+                state=self.fleet_states[:, target_id],
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+                prediction_mode=prediction_mode,
+                force_clean_pose_anchor=force_clean_pose_anchor,
+                attack_relative_host_anchor_active=attack_relative_host_anchor_active,
+            )
+            if anchored_state is None:
+                continue
+
+            self.fleet_states[:, target_id] = self._apply_state_constraints(
+                anchored_state, target_id=target_id
+            )
+            applied_count += 1
+
+        return applied_count
+
+    def _anchor_current_state_for_attack(
+        self,
+        state: np.ndarray,
+        target_id: int,
+        current_time_ns: int,
+        prediction_mode: str,
+        force_clean_pose_anchor: bool,
+        attack_relative_host_anchor_active: bool,
+    ) -> Optional[np.ndarray]:
+        """Anchor a current-time state without applying another prediction dt."""
+        state = np.asarray(state, dtype=float).copy()
+        if state.size < self.state_dim:
+            state = np.pad(state, (0, self.state_dim - state.size), mode="constant")
+
+        clean_state = self._get_latest_clean_aligned_state(
+            target_id=target_id,
+            current_time_ns=current_time_ns,
+        )
+        if clean_state is not None:
+            clean_state = np.asarray(clean_state, dtype=float).copy()
+
+        if prediction_mode == "clean_data":
+            if clean_state is None:
+                return None
+            anchored = state.copy()
+            if force_clean_pose_anchor:
+                if clean_state.shape[0] > 0:
+                    anchored[0] = float(clean_state[0])
+                if clean_state.shape[0] > 1:
+                    anchored[1] = float(clean_state[1])
+            if anchored.shape[0] > 2 and clean_state.shape[0] > 2:
+                anchored[2] = self._wrap_angle(float(clean_state[2]))
+            if anchored.shape[0] > 3 and clean_state.shape[0] > 3:
+                anchored[3] = float(clean_state[3])
+            if anchored.shape[0] > 4 and clean_state.shape[0] > 4:
+                anchored[4] = float(clean_state[4])
+            return anchored
+
+        if prediction_mode in ("mixed_clean_data", "relative_host_anchor_mixed"):
+            if not attack_relative_host_anchor_active:
+                return None
+            return self._anchor_current_state_from_relative_host(
+                state=state,
+                target_id=target_id,
+                current_time_ns=current_time_ns,
+                clean_state=clean_state,
+                force_clean_pose_anchor=force_clean_pose_anchor,
+            )
+
+        return None
+
+    def _anchor_current_state_from_relative_host(
+        self,
+        state: np.ndarray,
+        target_id: int,
+        current_time_ns: int,
+        clean_state: Optional[np.ndarray],
+        force_clean_pose_anchor: bool,
+    ) -> Optional[np.ndarray]:
+        """Apply relative-host anchoring at the current time without extra dt."""
+        anchor_snapshot = self._build_relative_host_anchor_snapshot(
+            target_id=target_id,
+            current_time_ns=current_time_ns,
+            reference_state=state,
+            clean_state=clean_state,
+        )
+
+        theta = float(state[2]) if state.shape[0] > 2 else 0.0
+        velocity = float(state[3]) if state.shape[0] > 3 else 0.0
+        acceleration = float(state[4]) if state.shape[0] > 4 else 0.0
+        host_theta = (
+            float(anchor_snapshot.get("host_theta", theta))
+            if anchor_snapshot is not None
+            else theta
+        )
+
+        if clean_state is not None and clean_state.shape[0] > 2:
+            theta = self._blend_angles(
+                float(clean_state[2]),
+                host_theta,
+                primary_weight=self.relative_host_anchor_clean_theta_weight,
+                secondary_weight=self.relative_host_anchor_host_theta_weight,
+            )
+        elif anchor_snapshot is not None:
+            theta = host_theta
+
+        if anchor_snapshot is not None:
+            host_velocity = float(anchor_snapshot.get("host_velocity", velocity))
+            velocity = (
+                self.relative_host_anchor_target_velocity_weight * velocity
+                + self.relative_host_anchor_host_velocity_weight * host_velocity
+            )
+            host_acceleration = float(
+                anchor_snapshot.get("host_acceleration", acceleration)
+            )
+            acceleration = (
+                self.relative_host_anchor_target_acceleration_weight * acceleration
+                + self.relative_host_anchor_host_acceleration_weight * host_acceleration
+            )
+
+        anchor_x = float(state[0])
+        anchor_y = float(state[1])
+        has_position_anchor = False
+        if anchor_snapshot is not None:
+            host_x = float(anchor_snapshot.get("host_x", anchor_x))
+            host_y = float(anchor_snapshot.get("host_y", anchor_y))
+            distance = max(float(anchor_snapshot.get("distance", 0.1)), 0.1)
+            sign = 1.0 if float(anchor_snapshot.get("sign", 1.0)) >= 0.0 else -1.0
+            relative_x = float(anchor_snapshot.get("relative_x", float("nan")))
+            relative_y = float(anchor_snapshot.get("relative_y", float("nan")))
+            if (
+                getattr(self, "relative_host_anchor_use_bearing", True)
+                and np.isfinite(relative_x)
+                and np.isfinite(relative_y)
+            ):
+                cos_h = float(np.cos(host_theta))
+                sin_h = float(np.sin(host_theta))
+                anchor_x = host_x + cos_h * relative_x - sin_h * relative_y
+                anchor_y = host_y + sin_h * relative_x + cos_h * relative_y
+            else:
+                anchor_x = host_x + sign * distance * np.cos(host_theta)
+                anchor_y = host_y + sign * distance * np.sin(host_theta)
+            has_position_anchor = True
+        elif force_clean_pose_anchor and clean_state is not None:
+            if clean_state.shape[0] > 0:
+                anchor_x = float(clean_state[0])
+            if clean_state.shape[0] > 1:
+                anchor_y = float(clean_state[1])
+            has_position_anchor = True
+
+        if not has_position_anchor and clean_state is None and anchor_snapshot is None:
+            return None
+
+        anchored = state.copy()
+        if has_position_anchor:
+            anchor_w = max(
+                float(getattr(self, "relative_host_anchor_anchor_position_weight", 1.0)),
+                0.0,
+            )
+            estimate_w = max(
+                float(getattr(self, "relative_host_anchor_estimate_position_weight", 0.0)),
+                0.0,
+            )
+            weight_sum = anchor_w + estimate_w
+            if weight_sum > 1e-9:
+                anchored[0] = (anchor_w * anchor_x + estimate_w * float(state[0])) / weight_sum
+                anchored[1] = (anchor_w * anchor_y + estimate_w * float(state[1])) / weight_sum
+            else:
+                anchored[0] = anchor_x
+                anchored[1] = anchor_y
+        if anchored.shape[0] > 2:
+            anchored[2] = self._wrap_angle(theta)
+        if anchored.shape[0] > 3:
+            anchored[3] = velocity
+        if anchored.shape[0] > 4:
+            anchored[4] = acceleration
+        return anchored
+
     # ==================================================================
     #   TRUST-WEIGHTED UPDATE (unified paper / non-paper)
     # ==================================================================
@@ -1971,7 +2458,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "prediction": {"dt": float(dt), "control": None},
             "weights": {"w0": 0.0, "w_self": 1.0, "neighbors": {}},
         }
-        target_trust_obj = self.trust_model.get_trust_score(target_id)
+        raw_target_trust_obj = self.trust_model.get_trust_score(target_id)
+        target_trust_obj = self._effective_direct_trust_obj(
+            target_id, raw_target_trust_obj
+        )
         allow_direct_channel = (
             True
             if not apply_trust_channel_gating
@@ -2276,10 +2766,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         """
         Predict with normal dynamics unless an attack activates host anchoring.
 
-        During attack, base x/y is rebuilt from host pose plus the latest
-        trusted relative distance. Heading blends clean target theta with host
-        theta when both exist, and target velocity falls back to host velocity.
-        Outside attack, this mode degrades to the normal vehicle model.
+        During attack, one x/y candidate is rebuilt from host pose plus the
+        latest trusted relative distance. It is then blended with the normal
+        model prediction so the anchor corrects drift without a hard jump.
+        Heading blends clean target theta with host theta when both exist, and
+        target velocity falls back to host velocity. Outside attack, this mode
+        degrades to the normal vehicle model.
         """
         state = np.asarray(state, dtype=float).copy()
         if dt <= 0.0:
@@ -2291,6 +2783,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 dt=dt,
                 target_id=target_id,
             )
+
+        model_predicted = self._predict_with_vehicle_model(
+            state=state,
+            control=control,
+            dt=dt,
+            target_id=target_id,
+        )
 
         clean_state = None
         if current_time_ns is not None:
@@ -2351,10 +2850,18 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 self.relative_host_anchor_target_velocity_weight * velocity
                 + self.relative_host_anchor_host_velocity_weight * host_velocity
             )
+            host_acceleration = float(
+                anchor_snapshot.get("host_acceleration", acceleration)
+            )
+            acceleration = (
+                self.relative_host_anchor_target_acceleration_weight * acceleration
+                + self.relative_host_anchor_host_acceleration_weight * host_acceleration
+            )
 
         predicted = state.copy()
         base_x = float(state[0])
         base_y = float(state[1])
+        has_position_anchor = False
         if anchor_snapshot is not None:
             host_x = float(anchor_snapshot.get("host_x", base_x))
             host_y = float(anchor_snapshot.get("host_y", base_y))
@@ -2374,14 +2881,53 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             else:
                 base_x = host_x + sign * distance * np.cos(host_theta)
                 base_y = host_y + sign * distance * np.sin(host_theta)
+            has_position_anchor = True
         elif force_clean_pose_anchor and clean_state is not None:
             if clean_state.shape[0] > 0:
                 base_x = float(clean_state[0])
             if clean_state.shape[0] > 1:
                 base_y = float(clean_state[1])
+            has_position_anchor = True
 
-        predicted[0] = base_x + velocity * np.cos(theta) * dt
-        predicted[1] = base_y + velocity * np.sin(theta) * dt
+        anchor_predicted_x = base_x + velocity * np.cos(theta) * dt
+        anchor_predicted_y = base_y + velocity * np.sin(theta) * dt
+        if has_position_anchor and model_predicted.shape[0] > 1:
+            anchor_w = max(
+                float(
+                    getattr(
+                        self,
+                        "relative_host_anchor_anchor_position_weight",
+                        1.0,
+                    )
+                ),
+                0.0,
+            )
+            estimate_w = max(
+                float(
+                    getattr(
+                        self,
+                        "relative_host_anchor_estimate_position_weight",
+                        0.0,
+                    )
+                ),
+                0.0,
+            )
+            weight_sum = anchor_w + estimate_w
+            if weight_sum > 1e-9:
+                predicted[0] = (
+                    anchor_w * anchor_predicted_x
+                    + estimate_w * float(model_predicted[0])
+                ) / weight_sum
+                predicted[1] = (
+                    anchor_w * anchor_predicted_y
+                    + estimate_w * float(model_predicted[1])
+                ) / weight_sum
+            else:
+                predicted[0] = anchor_predicted_x
+                predicted[1] = anchor_predicted_y
+        else:
+            predicted[0] = anchor_predicted_x
+            predicted[1] = anchor_predicted_y
         if predicted.shape[0] > 2:
             predicted[2] = self._wrap_angle(theta)
         if predicted.shape[0] > 3:
@@ -2417,15 +2963,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 current_time_ns=current_time_ns,
                 force_clean_pose_anchor=force_clean_pose_anchor,
             )
-        if prediction_mode == "mixed_clean_data":
-            return self._predict_from_mixed_clean_data_motion(
-                state=state,
-                dt=dt,
-                target_id=target_id,
-                current_time_ns=current_time_ns,
-                force_clean_pose_anchor=force_clean_pose_anchor,
-            )
-        if prediction_mode == "relative_host_anchor_mixed":
+        if prediction_mode in ("mixed_clean_data", "relative_host_anchor_mixed"):
             return self._predict_from_relative_host_anchor_mixed_motion(
                 state=state,
                 control=control,
@@ -2652,6 +3190,32 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     # ==================================================================
     #   LOGGING (extracted from update())
     # ==================================================================
+    def _get_direct_trust_delay_log_data(self) -> Dict[int, Dict[str, float]]:
+        """Return direct-trust delay diagnostics for CSV logging."""
+        delay_steps = int(
+            max(getattr(self, "direct_trust_application_delay_steps", 0), 0)
+        )
+        log_data: Dict[int, Dict[str, float]] = {}
+        for target_id, state in self._direct_trust_delay_state.items():
+            log_data[int(target_id)] = {
+                "active": float(state.get("active", 0.0)),
+                "bad_count": float(state.get("bad_count", 0.0)),
+                "delay_steps": float(delay_steps),
+                "clean_local_trust": float(state.get("clean_local_trust", np.nan)),
+            }
+        return log_data
+
+    def _get_rollback_trigger_delay_log_data(self) -> Dict[int, Dict[str, float]]:
+        """Return rollback-trigger delay diagnostics for CSV logging."""
+        delay_steps = int(max(getattr(self, "rollback_trigger_delay_steps", 0), 0))
+        return {
+            int(target_id): {
+                "count": float(count),
+                "delay_steps": float(delay_steps),
+            }
+            for target_id, count in self._rollback_trigger_delay_state.items()
+        }
+
     def _log_update(
         self,
         trust_scores: Dict[int, float],
@@ -2706,6 +3270,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             "post_prediction_estimates": post_prediction_estimates or {},
             "clean_reference_estimates": clean_reference_estimates or {},
             "prediction_debugs": prediction_debugs or {},
+            "direct_trust_delay": self._get_direct_trust_delay_log_data(),
+            "rollback_trigger_delay": self._get_rollback_trigger_delay_log_data(),
             "v2v_attack": self._get_v2v_attack_log_data(current_time_ns),
             "rollback": rollback_status or self.rollback.get_status(),
         }
@@ -2914,6 +3480,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self._rollback_trusted_state_history.clear()
         self._rollback_trusted_relative_anchor_history.clear()
         self._direct_recovery_state.clear()
+        self._direct_trust_delay_state.clear()
+        self._rollback_trigger_delay_state.clear()
         self._ext_cache.clear()
         self._reset_startup_weight_tracking()
 
@@ -2951,6 +3519,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self._rollback_trusted_state_history.clear()
         self._rollback_trusted_relative_anchor_history.clear()
         self._direct_recovery_state.clear()
+        self._direct_trust_delay_state.clear()
+        self._rollback_trigger_delay_state.clear()
         self._received_control_inputs.clear()
         self._init_runtime_tracking()
 

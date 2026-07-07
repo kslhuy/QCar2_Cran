@@ -23,6 +23,8 @@ Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/LocalNeuralObs/neu
 
 Development/multi_vehicle_self_driving_RealQcar/qcar/simulation/results
 Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/ai_trust_outputs
+Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/results
+Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/paper_figures
 Development/multi_vehicle_self_driving_RealQcar/qcar/fig
 # docker/libraries/resources/pretrained_models
 docker/libraries/resources/pretrained_models/

@@ -124,8 +124,8 @@ class VehicleLogic:
             self.v2v_manager = V2VAttackInjector(
                 v2v_manager=base_v2v_manager,
                 attack_config_path=attack_config_path,
-                # enabled=config.vehicle.enable_v2v_attack  # Uses fleet_config.yaml
-                enabled = False
+                enabled=config.vehicle.enable_v2v_attack  # Uses fleet_config.yaml
+                # enabled = False
             )
             self.vehicle_logger.logger.info("V2VAttackInjector successfully wrapped V2VManager.")
         except Exception as e:
@@ -179,7 +179,7 @@ class VehicleLogic:
         self.state_machine = VehicleStateMachine(self, self.vehicle_logger)
 
         # Gear state
-        self.gear = Gear.DRIVE_1
+        self.gear = Gear.DRIVE_2
 
         # Timing
         self.start_time = time.time()

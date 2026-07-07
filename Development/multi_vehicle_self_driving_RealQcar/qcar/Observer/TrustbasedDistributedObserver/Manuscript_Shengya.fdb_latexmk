@@ -1,5 +1,5 @@
 # Fdb version 4
-["bibtex Manuscript_Shengya"] 0 "Manuscript_Shengya.aux" "Manuscript_Shengya.bbl" "Manuscript_Shengya" 1782749526.38353 0
+["bibtex Manuscript_Shengya"] 0 "Manuscript_Shengya.aux" "Manuscript_Shengya.bbl" "Manuscript_Shengya" 1783344475.36322 0
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/bibtex/bst/ieeetran/IEEEtran.bst" 1440622569 57748 7c8250ecf02814ce6ddc0cdbb63df1dd ""
   "Manuscript_Shengya.aux" 0 -1 0 "pdflatex"
   "biblio.bib" 0 -1 0 ""
@@ -7,7 +7,7 @@
   "Manuscript_Shengya.bbl"
   "Manuscript_Shengya.blg"
   (rewritten before read)
-["pdflatex"] 1782749523.16814 "c:/Users/Quang Huy Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/Manuscript_Shengya.tex" "Manuscript_Shengya.pdf" "Manuscript_Shengya" 1782749526.3842 2
+["pdflatex"] 1783344472.16611 "c:/Users/Quang Huy Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/Manuscript_Shengya.tex" "Manuscript_Shengya.pdf" "Manuscript_Shengya" 1783344475.36399 2
   "C:/Users/Quang Huy Nugyen/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map" 1781980141 165209 65ead702fc4d2014bae07fb962335ea7 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/MiKTeX/miktex/data/le/pdftex/pdflatex.fmt" 1708892368 24235342 323bfbfe4766a02092c40689ab514069 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/enc/dvips/base/8r.enc" 1458473887 4993 80dc9bab7f31fb78a000ccfed0e27cab ""
@@ -279,12 +279,11 @@
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/tex/latex/tools/bm.sty" 1700599895 13231 2c742011581e2bf297e33520567d9464 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/tex/latex/url/url.sty" 1388490452 12796 8edb7d69a20b857904dd0ea757c14ec9 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/tex/latex/xcolor/xcolor.sty" 1700127522 55487 80a65caedd3722f4c20a14a69e785d8f ""
-  "Manuscript_Shengya.aux" 1782749525 16814 f719b0544806dba5786f43578fc7534d "pdflatex"
+  "Manuscript_Shengya.aux" 1783344474 17147 c41ce2289623b96f9206f4dbca536806 "pdflatex"
   "Manuscript_Shengya.bbl" 0 -1 0 "bibtex Manuscript_Shengya"
-  "Manuscript_Shengya.out" 1782749525 8821 4d8c6f86ad74e18d9b1233cda9356384 "pdflatex"
-  "Manuscript_Shengya.tex" 1782749513 128487 bde026ed8b9fdb6bd72116f2b554fe69 ""
-  "c:/Users/Quang Huy Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/Manuscript_Shengya.tex" 1782749513 128487 bde026ed8b9fdb6bd72116f2b554fe69 ""
-  "fig/hybrid.jpg" 0 -1 0 ""
+  "Manuscript_Shengya.out" 1783344474 9161 778c39cbb49b64171e25f2b9d295b6e3 "pdflatex"
+  "Manuscript_Shengya.tex" 1783344458 134095 9c5652a816d17617932de746e59a453a ""
+  "c:/Users/Quang Huy Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/Manuscript_Shengya.tex" 1783344458 134095 9c5652a816d17617932de746e59a453a ""
   "img/image.png" 0 -1 0 ""
   (generated)
   "Manuscript_Shengya.aux"
