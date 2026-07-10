@@ -16,11 +16,11 @@ from typing import Iterable, Optional
 
 import numpy as np
 
-from core.Types import PlannerTarget, VehicleStateEstimate
-from utils.Control.PathPlanner.BasePathPlanner import BasePathPlanner
+from core.types import PlannerTarget, VehicleStateEstimate
+from .path_planner_base import PathPlannerBase
 
 
-class StaticWaypointPlanner(BasePathPlanner):
+class PathPlannerStatic(PathPlannerBase):
     """
     Minimal static waypoint planner.
 

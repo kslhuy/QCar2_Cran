@@ -1,0 +1,75 @@
+# V2V utility configuration for the refactored runtime.
+# Runtime may override vehicle_id from command-line or vehicle config.
+
+null_v2v:
+  enabled: false
+  implementation: null
+  vehicle_id: 0
+
+udp:
+  enabled: true
+  implementation: udp
+  vehicle_id: 0
+  bind_ip: "0.0.0.0"
+  base_port: 8000
+  broadcast_rate_hz: 20
+  peer_timeout_s: 2.0
+  peers: []
+
+localhost_two_vehicle:
+  enabled: true
+  implementation: udp
+  bind_ip: "127.0.0.1"
+  base_port: 18000
+  broadcast_rate_hz: 20
+  peer_timeout_s: 2.0
+  vehicles:
+    - vehicle_id: 0
+      peers:
+        - vehicle_id: 1
+          ip: "127.0.0.1"
+    - vehicle_id: 1
+      peers:
+        - vehicle_id: 0
+          ip: "127.0.0.1"
+
+localhost_four_vehicle:
+  enabled: true
+  implementation: udp
+  bind_ip: "127.0.0.1"
+  base_port: 18100
+  broadcast_rate_hz: 20
+  peer_timeout_s: 2.0
+  vehicles:
+    - vehicle_id: 0
+      peers:
+        - vehicle_id: 1
+          ip: "127.0.0.1"
+        - vehicle_id: 2
+          ip: "127.0.0.1"
+        - vehicle_id: 3
+          ip: "127.0.0.1"
+    - vehicle_id: 1
+      peers:
+        - vehicle_id: 0
+          ip: "127.0.0.1"
+        - vehicle_id: 2
+          ip: "127.0.0.1"
+        - vehicle_id: 3
+          ip: "127.0.0.1"
+    - vehicle_id: 2
+      peers:
+        - vehicle_id: 0
+          ip: "127.0.0.1"
+        - vehicle_id: 1
+          ip: "127.0.0.1"
+        - vehicle_id: 3
+          ip: "127.0.0.1"
+    - vehicle_id: 3
+      peers:
+        - vehicle_id: 0
+          ip: "127.0.0.1"
+        - vehicle_id: 1
+          ip: "127.0.0.1"
+        - vehicle_id: 2
+          ip: "127.0.0.1"

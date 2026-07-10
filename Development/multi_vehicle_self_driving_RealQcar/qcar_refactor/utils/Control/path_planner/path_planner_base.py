@@ -8,10 +8,10 @@ should not know about vehicle hardware, observers, controllers, GUI, or V2V.
 from abc import ABC, abstractmethod
 from typing import Iterable, Optional
 
-from core.Types import PlannerTarget, VehicleStateEstimate
+from core.types import PlannerTarget, VehicleStateEstimate
 
 
-class BasePathPlanner(ABC):
+class PathPlannerBase(ABC):
     """Interface every path planner implementation should follow."""
 
     @abstractmethod
@@ -40,7 +40,7 @@ class BasePathPlanner(ABC):
         ...
 
 
-class NullPathPlanner(BasePathPlanner):
+class PathPlannerNull(PathPlannerBase):
     """Safe no-op planner for tests and bring-up."""
 
     def __init__(self, target_velocity: float = 0.0) -> None:

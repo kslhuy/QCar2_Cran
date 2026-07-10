@@ -13,8 +13,8 @@ this controller.
 import logging
 import math
 
-from core.Types import ControlCommand, PlannerTarget, VehicleStateEstimate
-from utils.Control.Controller.BaseController import BaseController
+from core.types import ControlCommand, PlannerTarget, VehicleStateEstimate
+from utils.control.controller.controller_base import ControllerBase
 
 
 def _clip(value: float, lower: float, upper: float) -> float:
@@ -25,7 +25,7 @@ def _wrap_to_pi(angle: float) -> float:
     return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
 
 
-class SimplePathController(BaseController):
+class ControllerSimple(ControllerBase):
     """
     Minimal controller for static path following.
 
@@ -34,27 +34,24 @@ class SimplePathController(BaseController):
 
     def __init__(
         self,
-        kp_velocity: float = 0.2,
-        ki_velocity: float = 0.0,
-        kd_velocity: float = 0.0,
-        feedforward_gain: float = 0.0,
-        steering_gain: float = 1.0,
-        max_throttle: float = 0.10,
-        min_throttle: float = -0.10,
-        max_steering: float = 0.48,
-        integral_limit: float = 1.0,
+        config: dict | None = None,
+        vehicle_id: int = 0,
         logger=None,
+        **overrides,
     ) -> None:
         self._logger = logger or logging.getLogger(self.__class__.__name__)
-        self.kp_velocity = float(kp_velocity)
-        self.ki_velocity = float(ki_velocity)
-        self.kd_velocity = float(kd_velocity)
-        self.feedforward_gain = float(feedforward_gain)
-        self.steering_gain = float(steering_gain)
-        self.max_throttle = abs(float(max_throttle))
-        self.min_throttle = -abs(float(min_throttle))
-        self.max_steering = abs(float(max_steering))
-        self.integral_limit = abs(float(integral_limit))
+        self._vehicle_id = vehicle_id
+        config = dict(config or {})
+        config.update(overrides)
+        self.kp_velocity = float(config.get("kp_velocity", 0.2))
+        self.ki_velocity = float(config.get("ki_velocity", 0.0))
+        self.kd_velocity = float(config.get("kd_velocity", 0.0))
+        self.feedforward_gain = float(config.get("feedforward_gain", 0.0))
+        self.steering_gain = float(config.get("steering_gain", 1.0))
+        self.max_throttle = abs(float(config.get("max_throttle", 0.10)))
+        self.min_throttle = -abs(float(config.get("min_throttle", -0.10)))
+        self.max_steering = abs(float(config.get("max_steering", 0.48)))
+        self.integral_limit = abs(float(config.get("integral_limit", 1.0)))
         self._integral_error = 0.0
         self._previous_error = None
 

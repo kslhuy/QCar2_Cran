@@ -1,13 +1,13 @@
 import time
 import numpy as np
 
-from .BaseIO import BaseVehicleIO
+from .io_base import IOBase
 
 
-class QCar2IO(BaseVehicleIO):
+class IOQCar2(IOBase):
     def __init__(self, config, vehicle_id=0, logger=None):
 
-        super().__init__(config, logger)
+        super().__init__(config, vehicle_id, logger)
         from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
 
         self._is_physical = IS_PHYSICAL_QCAR

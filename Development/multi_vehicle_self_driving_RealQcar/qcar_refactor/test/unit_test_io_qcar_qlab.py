@@ -1,5 +1,5 @@
 """
-Unit tests for QCar2IO — physical mock path + QLabs live path.
+Unit tests for IOQCar2 - physical mock path + QLabs live path.
 
 QLabs path: auto-connects to running QLabs. If no cars exist, spawns one
 (like initCars_Studio.py) then runs hardware-level read/write tests.
@@ -72,7 +72,7 @@ def _spawn_qcar_in_qlabs():
         }])
         time.sleep(3.0)
         # MultiAgent already starts the copied QCar2 RT model with the generated
-        # ports. Wait until the ports that QCar2IO will use are actually open.
+        # ports. Wait until the ports that IOQCar2 will use are actually open.
         for i in range(15):
             time.sleep(2.0)
             try:
@@ -98,7 +98,7 @@ def _spawn_qcar_in_qlabs():
 # ===========================================================================
 
 @unittest.skipUnless(_qlabs_available(), "Not in QLabs environment")
-class TestQCar2IOLiveQLabs(unittest.TestCase):
+class TestIOQCar2LiveQLabs(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -146,8 +146,8 @@ class TestQCar2IOLiveQLabs(unittest.TestCase):
             "read": {"sensor_rate_hz": 100, "gps_rate_hz": 20},
             "timing": {"loop_rate_hz": 100},
         }
-        from utils.IO.IOQcar2 import QCar2IO
-        cls.io = QCar2IO(cls.config, vehicle_id=cls.vehicle_id)
+        from utils.io.io_qcar2 import IOQCar2
+        cls.io = IOQCar2(cls.config, vehicle_id=cls.vehicle_id)
 
     @classmethod
     def tearDownClass(cls):
@@ -227,7 +227,7 @@ class TestQCar2IOLiveQLabs(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(data.accelerometer)))
 
     def test_write_zero(self):
-        from core.Types import ControlCommand
+        from core.types import ControlCommand
         self.io.write(ControlCommand(throttle=0.0, steering=0.0, target_velocity=0.0))
 
     def test_stop(self):
@@ -242,7 +242,7 @@ class TestQCar2IOLiveQLabs(unittest.TestCase):
             time.sleep(0.01)
 
     def test_background_poll_thread_main_thread_reads_and_plots(self):
-        from core.Types import ControlCommand
+        from core.types import ControlCommand
 
         stop_event = threading.Event()
         poll_errors = []

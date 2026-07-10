@@ -2,23 +2,24 @@ import logging, time, threading
 import numpy as np
 from abc import ABC, abstractmethod
 
-from core.Types import SensorData, ControlCommand
-from core.Helpers import copy_safe
+from core.types import SensorData, ControlCommand
+from core.helpers import copy_safe
 
-class BaseVehicleIO(ABC):
+class IOBase(ABC):
     """
     Vehicle I/O with internal buffering.
     'read()' always returns the latest cached data;
     the IO layer decides when to poll hardware based on configured rates.
     'write()' clips commands to safe ranges and delegates to vehicle-specific write.
     """
-
-    def __init__(self, config: dict, logger=None):
+    
+    def __init__(self, config: dict, vehicle_id=0, logger=None):
         self._logger = logger or logging.getLogger(self.__class__.__name__)
         self._max_throttle = config["write"]["max_throttle"]
         self._max_steering = config["write"]["max_steering"]
         self._reading_sensor_rate_hz = config["read"]["sensor_rate_hz"]
         self._reading_gps_rate_hz = config["read"]["gps_rate_hz"]
+        self._vehicle_id = vehicle_id
         # Single combined buffer — sensor + GPS share one SensorData
         self._sensor_data_cache = SensorData(
             motor_tach=0.0, gyro_z=0.0, accelerometer=np.zeros(3), sensor_timestamp=0.0,
@@ -141,12 +142,12 @@ class BaseVehicleIO(ABC):
         return max(lo, min(hi, value))
 
 
-class NullVehicleIO(BaseVehicleIO):
+class IONull(IOBase):
     """No-hardware stub. Never polls; always returns safe defaults."""
 
-    def __init__(self, config: dict, logger=None):
+    def __init__(self, config: dict, vehicle_id: int = 0, logger=None):
         # Bypass rate logic — never poll hardware
-        super().__init__(config, logger)
+        super().__init__(config, vehicle_id, logger)
         self._max_throttle = 1.0
         self._max_steering = 1.0
 

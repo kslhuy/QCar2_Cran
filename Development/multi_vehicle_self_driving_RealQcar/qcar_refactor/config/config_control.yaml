@@ -11,13 +11,13 @@ observer:
       x: 0.0
       y: 0.0
       theta: 0.0
-  Luenberger:
+  luenberger:
 
-  EKF:
+  ekf:
 
-  HighGain:
+  high_gain:
 
-pathplanner:
+path_planner:
   common:
     lookahead_distance: 0.5
     max_steering_angle: 0.48
@@ -33,3 +33,15 @@ controller:
     min_throttle: -0.10
     max_speed: 1.0
     min_speed: -1.0
+  
+  controller_simple:
+    lookahead_distance: 0.5
+    kp_velocity: 0.2
+    ki_velocity: 0.0
+    kd_velocity: 0.0
+    feedforward_gain: 0.0
+    steering_gain: 1.0
+    max_throttle: 0.10
+    min_throttle: -0.10
+    max_steering: 0.48
+    integral_limit: 1.0

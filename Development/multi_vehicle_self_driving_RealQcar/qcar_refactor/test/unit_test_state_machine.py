@@ -4,8 +4,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.VehicleStateMachine import State, StateMachine
-from core.Types import GuiCommand
+from core.vehicle_state_machine import State, StateMachine
+from core.types import GuiCommand
 
 sm = StateMachine()
 assert sm.state == State.INITIALIZING

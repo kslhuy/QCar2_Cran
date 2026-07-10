@@ -2,10 +2,10 @@
 Integration test for the minimal control loop.
 
 This test combines:
-- vehicle IO: a virtual kinematic vehicle using BaseVehicleIO
-- observer: EKF
-- path planner: StaticWaypointPlanner
-- controller: SimplePathController
+- vehicle IO: a virtual kinematic vehicle using IOBase
+- observer: ObserverEKF
+- path planner: PathPlannerStatic
+- controller: ControllerSimple
 
 Run from the qcar_refactor directory:
     python -m unittest test.test_integration_control_loop
@@ -21,18 +21,17 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.Types import ControlCommand, SensorData
-from utils.IO.BaseIO import BaseVehicleIO
-from utils.Control.Observer.ObserverEKF import EKF
-from utils.Control.PathPlanner import StaticWaypointPlanner
-from utils.Control.Controller import SimplePathController
-
+from core.types import ControlCommand, SensorData
+from utils.io.io_base import IOBase
+from utils.control.observer.observer_ekf import ObserverEKF
+from utils.control.path_planner import PathPlannerStatic
+from utils.control.controller import ControllerSimple
 
 def _wrap_to_pi(angle: float) -> float:
     return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
 
 
-class VirtualKinematicVehicleIO(BaseVehicleIO):
+class VirtualKinematicVehicleIO(IOBase):
     """
     Deterministic virtual vehicle for integration testing.
 
@@ -323,15 +322,15 @@ class TestMinimalControlLoopIntegration(unittest.TestCase):
             gps_xy_noise_std=0.025,
             gps_theta_noise_std=0.015,
         )
-        observer = EKF(wheelbase=vehicle_io.wheelbase)
-        planner = StaticWaypointPlanner(
+        observer = ObserverEKF(wheelbase=vehicle_io.wheelbase)
+        planner = PathPlannerStatic(
             path_source=_build_path(laps=3),
             target_velocity=0.50,
             lookahead_distance=0.32,
             finish_tolerance=0.20,
             max_search_ahead=28,
         )
-        controller = SimplePathController(
+        controller = ControllerSimple(
             kp_velocity=0.35,
             ki_velocity=0.03,
             kd_velocity=0.0,

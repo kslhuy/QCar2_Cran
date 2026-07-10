@@ -79,13 +79,13 @@ Create a small runtime coordinator and make each active module expose a simple i
 
 Current standard project locations:
 
-- `qcar_refactor/core/Types.py`
-- `qcar_refactor/core/VehicleStateMachine.py`
+- `qcar_refactor/core/types.py`
+- `qcar_refactor/core/vehicle_state_machine.py`
 - `qcar_refactor/core/VehicleLogic.py`
 - `qcar_refactor/core/VehicleMain.py`
 - `qcar_refactor/config/ConfigRuntime.yaml` or another runtime-level config file
-- `qcar_refactor/config/ConfigControl.yaml`
-- `qcar_refactor/config/ConfigIO.yaml`
+- `qcar_refactor/config/config_control.yaml`
+- `qcar_refactor/config/config_io.yaml`
 - `qcar_refactor/utils/IO/`
 - `qcar_refactor/utils/Control/Observer/`
 - `qcar_refactor/utils/Control/PathPlanner/`
@@ -118,7 +118,7 @@ This review is based on the current refactor files under `qcar_refactor` as of t
 
 ### What Looks Good
 
-- Step 4 state machine exists as `core/VehicleStateMachine.py`.
+- Step 4 state machine exists as `core/vehicle_state_machine.py`.
 - Step 5 vehicle IO exists under `utils/IO/BaseIO.py`.
 - Step 6 observer exists under `utils/Control/Observer/ObserverEKF.py`.
 - Step 7 path planner exists under `utils/Control/PathPlanner/`.
@@ -128,7 +128,7 @@ This review is based on the current refactor files under `qcar_refactor` as of t
 ### Problems To Fix Before V2V/GUI
 
 1. Project naming is standardized to the current folder structure.
-   - Shared dataclasses live in `core/Types.py`.
+   - Shared dataclasses live in `core/types.py`.
    - Runtime/state-machine files live in `core/`.
    - Reusable modules live in `utils/`.
    - IO lives in `utils/IO/`.
@@ -144,7 +144,7 @@ This review is based on the current refactor files under `qcar_refactor` as of t
 3. Config should stay separated by purpose.
    - No `minimal_config.yaml` is needed.
    - Runtime-level config belongs in a runtime config file, for example `ConfigRuntime.yaml`.
-   - Utility-level config files should keep the `ConfigName.yaml` style, for example `ConfigControl.yaml` and `ConfigIO.yaml`.
+   - Utility-level config files should keep the `ConfigName.yaml` style, for example `config_control.yaml` and `config_io.yaml`.
    - Do not mix runtime config and utility config without a small loader that makes the ownership clear.
 
 4. Keep the reference state-machine pattern, but separate it better from utilities.
@@ -169,8 +169,8 @@ This review is based on the current refactor files under `qcar_refactor` as of t
 
 ### Do Before Step 9
 
-- [x] Add `V2VState` in `core/Types.py`.
-- [x] Use current project naming: `core/Types.py`, `utils/IO`, `utils/Control`, `utils/V2V`.
+- [x] Add `V2VState` in `core/types.py`.
+- [x] Use current project naming: `core/types.py`, `utils/IO`, `utils/Control`, `utils/V2V`.
 - [x] Remove the `minimal_config.yaml` direction from the plan.
 - [ ] Convert `unit_test_state_machine.py` to a real `unittest.TestCase`.
 - [x] Define EKF acceleration as `sqrt(ax**2 + ay**2)`.
@@ -193,7 +193,7 @@ Acceptance check:
 
 ### Step 2: Define Shared Data Contracts
 
-Use `core/Types.py` for plain dataclasses. Use these everywhere in the refactored runtime.
+Use `core/types.py` for plain dataclasses. Use these everywhere in the refactored runtime.
 
 Required types:
 
@@ -240,8 +240,8 @@ Acceptance check:
 Do not create `minimal_config.yaml`. Keep config separated by ownership:
 
 - Runtime config: one runtime-level file, for example `config/ConfigRuntime.yaml`.
-- Control utility config: `config/ConfigControl.yaml`.
-- IO utility config: `config/ConfigIO.yaml`.
+- Control utility config: `config/config_control.yaml`.
+- IO utility config: `config/config_io.yaml`.
 
 The runtime may load multiple config files, but the loader should make it obvious which module owns which settings.
 
@@ -291,7 +291,7 @@ Keep the state-machine pattern from the reference project. It is important for s
 
 Use the reference `VehicleStateMachine` pattern, but make it more separate from utilities. State handlers can call utility interfaces, but should not implement IO, observer math, controller math, path loading, V2V protocol code, or GUI transport.
 
-Use `core/VehicleStateMachine.py` and keep the reference state-machine pattern.
+Use `core/vehicle_state_machine.py` and keep the reference state-machine pattern.
 
 Core states:
 
@@ -451,7 +451,7 @@ Do not import `refs/V2V/v2v_manager.py` in the first refactored implementation. 
 
 #### Step 9.1: Fix Shared V2V Types
 
-Add this to `core/Types.py`:
+Add this to `core/types.py`:
 
 ```python
 @dataclass
@@ -742,7 +742,7 @@ Acceptance check:
 
 The refactored runtime should own lifecycle only. It should not contain controller math, observer math, path planning logic, V2V protocol logic, or GUI implementation details.
 
-The runtime must use `core/VehicleStateMachine.py` for state transitions and safety decisions.
+The runtime must use `core/vehicle_state_machine.py` for state transitions and safety decisions.
 
 Pseudo-structure:
 
@@ -786,7 +786,7 @@ Acceptance check:
 Add one of these:
 
 - `core/VehicleMain.py`
-- or a small root launcher that imports `core.VehicleMain`
+- or a small root launcher that imports `core.vehicle_main`
 
 Recommended first pass: keep the legacy launcher untouched and add the refactored launcher beside the refactored runtime.
 
@@ -846,7 +846,7 @@ Acceptance check:
 | Module | Owns | Must Not Own |
 |---|---|---|
 | `core/VehicleLogic.py` | Loop, lifecycle, module orchestration | Controller math, observer math, path generation |
-| `core/VehicleStateMachine.py` | Runtime mode and safety transitions | Controller math, sensor reading, GUI transport |
+| `core/vehicle_state_machine.py` | Runtime mode and safety transitions | Controller math, sensor reading, GUI transport |
 | `utils/IO/BaseIO.py` and concrete IO classes | Hardware/sim read-write and clipping | GUI, planner, V2V |
 | `utils/Control/Observer/` | Local state estimate | Controller decisions |
 | `utils/Control/PathPlanner/` | Waypoint target selection | Actuator command computation |
@@ -889,7 +889,7 @@ Use this as the main todo list.
   - [ ] Do not edit optional research modules yet.
 
 - [ ] Step 2: Add shared data types.
-  - [ ] Use `core/Types.py`.
+  - [ ] Use `core/types.py`.
   - [ ] Add `VehicleStateEstimate`.
   - [ ] Add `ControlCommand`.
   - [ ] Add `PlannerTarget`.
@@ -898,11 +898,11 @@ Use this as the main todo list.
 
 - [ ] Step 3: Keep config ownership clear.
   - [ ] Use a runtime config file for runtime settings, for example `ConfigRuntime.yaml`.
-  - [ ] Use utility config files for utility settings, for example `ConfigControl.yaml` and `ConfigIO.yaml`.
+  - [ ] Use utility config files for utility settings, for example `config_control.yaml` and `config_io.yaml`.
   - [ ] Pass each module only the config section it owns.
 
 - [ ] Step 4: Refactor the state machine.
-  - [ ] Use `core/VehicleStateMachine.py`.
+  - [ ] Use `core/vehicle_state_machine.py`.
   - [ ] Add states: `INITIALIZING`, `READY`, `RUNNING`, `STOPPED`, `ERROR`.
   - [ ] Add transitions for `START`, `STOP`, `EMERGENCY_STOP`, and `RESET`.
   - [ ] Add `should_drive()`.
@@ -935,7 +935,7 @@ Use this as the main todo list.
   - [ ] Return zero command when target/path is invalid.
 
 - [ ] Step 9: Add the V2V wrapper.
-  - [x] Add `V2VState` to `core/Types.py`.
+  - [x] Add `V2VState` to `core/types.py`.
   - [ ] Create `utils/V2V/BaseV2V.py`.
   - [ ] Add `NullV2V`.
   - [ ] Create `utils/V2V/UdpV2V.py`.

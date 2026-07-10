@@ -72,16 +72,22 @@ class V2VState:
     velocity: float
 
 
-# Backward-compatible alias for old imports. Prefer V2VState in new code.
+# Backward-compatible aliases for old imports. Prefer V2VState in new code.
+VBroadcastState = V2VState
 VBoradcastState = V2VState
 
 @dataclass
 class V2VMessage:
     "V2V message structure"
-    vehicle_id: int
+    sender_id: int
     timestamp: float
     message_type: str    
-    payload: dict         
+    payload: dict
+
+    @property
+    def vehicle_id(self) -> int:
+        """Backward-compatible alias. Prefer sender_id in new V2V code."""
+        return self.sender_id
 
 
 # Backward-compatible alias for old imports. Prefer V2VMessage in new code.

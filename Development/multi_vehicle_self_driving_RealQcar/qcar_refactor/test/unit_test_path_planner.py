@@ -14,8 +14,15 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.Types import PlannerTarget, VehicleStateEstimate
-from utils.Control.PathPlanner import BasePathPlanner, NullPathPlanner, StaticWaypointPlanner
+from utils.control.path_planner import PathPlannerBase, PathPlannerNull, PathPlannerStatic
+from core.types import PlannerTarget, VehicleStateEstimate
+
+
+class _SilentLogger:
+    def info(self, message: str) -> None:
+        pass
+    def warning(self, message: str) -> None:
+        pass
 
 
 def _state(x=0.0, y=0.0, theta=0.0, velocity=0.0):
@@ -33,10 +40,10 @@ def _state(x=0.0, y=0.0, theta=0.0, velocity=0.0):
 class TestBasePathPlanner(unittest.TestCase):
     def test_cannot_instantiate_base_planner(self):
         with self.assertRaises(TypeError):
-            BasePathPlanner()
+            PathPlannerBase()
 
     def test_null_planner_returns_safe_finished_target(self):
-        planner = NullPathPlanner()
+        planner = PathPlannerNull()
         target = planner.update(_state(x=2.0, y=3.0, theta=0.5))
 
         self.assertIsInstance(target, PlannerTarget)
@@ -48,7 +55,7 @@ class TestBasePathPlanner(unittest.TestCase):
 
 class TestStaticWaypointPlanner(unittest.TestCase):
     def test_loads_waypoints_from_iterable(self):
-        planner = StaticWaypointPlanner(
+        planner = PathPlannerStatic(
             path_source=[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)],
             lookahead_distance=0.5,
             target_velocity=0.6,
@@ -59,7 +66,7 @@ class TestStaticWaypointPlanner(unittest.TestCase):
         self.assertAlmostEqual(planner.waypoints[0, 2], 0.0)
 
     def test_returns_lookahead_target(self):
-        planner = StaticWaypointPlanner(
+        planner = PathPlannerStatic(
             path_source=[(0.0, 0.0), (0.25, 0.0), (1.0, 0.0)],
             lookahead_distance=0.5,
             target_velocity=0.7,
@@ -74,7 +81,7 @@ class TestStaticWaypointPlanner(unittest.TestCase):
         self.assertAlmostEqual(target.target_velocity, 0.7)
 
     def test_marks_finished_near_final_waypoint(self):
-        planner = StaticWaypointPlanner(
+        planner = PathPlannerStatic(
             path_source=[(0.0, 0.0), (1.0, 0.0)],
             finish_tolerance=0.2,
             target_velocity=0.6,
@@ -88,7 +95,7 @@ class TestStaticWaypointPlanner(unittest.TestCase):
         self.assertAlmostEqual(target.target_x, 1.0)
 
     def test_set_target_velocity_updates_future_targets(self):
-        planner = StaticWaypointPlanner(
+        planner = PathPlannerStatic(
             path_source=[(0.0, 0.0), (2.0, 0.0)],
             lookahead_distance=0.5,
             target_velocity=0.4,
@@ -101,7 +108,7 @@ class TestStaticWaypointPlanner(unittest.TestCase):
         self.assertAlmostEqual(target.target_velocity, 0.9)
 
     def test_empty_path_returns_finished_current_state_target(self):
-        planner = StaticWaypointPlanner(path_source=[])
+        planner = PathPlannerStatic(path_source=[], logger=_SilentLogger())
         target = planner.update(_state(x=4.0, y=-2.0, theta=1.2))
 
         self.assertTrue(target.is_finished)
@@ -118,7 +125,7 @@ class TestStaticWaypointPlanner(unittest.TestCase):
             file_obj.write("0.1,1.0,0.0,0.0,0.0,0.0,0.2\n")
 
         try:
-            planner = StaticWaypointPlanner(path_source=path)
+            planner = PathPlannerStatic(path_source=path)
             waypoints = planner.waypoints
         finally:
             os.remove(path)

@@ -21,7 +21,7 @@ Safety: Only RUNNING allows non-zero throttle and steering.
 """
 
 from enum import Enum, auto
-from core.Types import GuiCommand
+from core.types import GuiCommand
 
 
 class State(Enum):

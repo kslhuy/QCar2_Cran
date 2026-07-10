@@ -10,10 +10,10 @@ import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from core.Types import VehicleStateEstimate, ControlCommand
+from core.types import VehicleStateEstimate, ControlCommand
 
 
-class BaseVehicleObserver(ABC):
+class ObserverBase(ABC):
     """
     Abstract interface for all vehicle observers.
 
@@ -68,7 +68,7 @@ class BaseVehicleObserver(ABC):
         ...
 
 
-class NullObserver(BaseVehicleObserver):
+class ObserverNull(ObserverBase):
     """
     No-op observer for testing and offline simulation.
     Always returns zero state or given position with safe defaults.

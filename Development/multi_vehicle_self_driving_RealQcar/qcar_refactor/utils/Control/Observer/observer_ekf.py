@@ -13,8 +13,8 @@ from typing import Optional
 
 import yaml
 
-from .BaseObserver import BaseVehicleObserver
-from core.Types import VehicleStateEstimate, ControlCommand, SensorData
+from .observer_base import ObserverBase
+from core.types import VehicleStateEstimate, ControlCommand, SensorData
 
 
 def _wrap(angle: float) -> float:
@@ -24,7 +24,7 @@ def _wrap(angle: float) -> float:
 # ── Read wheelbase from config ──────────────────────────────────
 
 _config_path = os.path.join(
-    os.path.dirname(__file__), '..', '..', '..', 'config', 'ConfigControl.yaml'
+    os.path.dirname(__file__), '..', '..', '..', 'config', 'config_control.yaml'
 )
 try:
     with open(_config_path) as f:
@@ -35,7 +35,7 @@ except Exception:
     _WHEELBASE = 0.3
 
 
-class EKF(BaseVehicleObserver):
+class ObserverEKF(ObserverBase):
     __slots__ = ('_ekf', '_logger', '_started', '_last_accel_magnitude', '_wheelbase')
 
     def __init__(self, logger=None, wheelbase: float = _WHEELBASE) -> None:

@@ -11,8 +11,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.Types import VehicleStateEstimate, ControlCommand
-from utils.Control.Observer.BaseObserver import BaseVehicleObserver, NullObserver
+from core.types import VehicleStateEstimate, ControlCommand
+from utils.control.observer.observer_base import ObserverBase, ObserverNull
 
 
 class TestBaseVehicleObserverAbstract(unittest.TestCase):
@@ -20,10 +20,10 @@ class TestBaseVehicleObserverAbstract(unittest.TestCase):
 
     def test_cannot_instantiate_abstract(self):
         with self.assertRaises(TypeError):
-            BaseVehicleObserver()  # pylint: disable=abstract-class-instantiated
+            ObserverBase()  # pylint: disable=abstract-class-instantiated
 
     def test_concrete_subclass_must_implement_all(self):
-        class Incomplete(BaseVehicleObserver):
+        class Incomplete(ObserverBase):
             pass
         with self.assertRaises(TypeError):
             Incomplete()
@@ -33,7 +33,7 @@ class TestNullObserver(unittest.TestCase):
     """Tests for NullObserver — no-op observer for testing."""
 
     def setUp(self):
-        self.obs = NullObserver()
+        self.obs = ObserverNull()
 
     def test_start_default_pose(self):
         self.obs.start()

@@ -1,2 +1,2 @@
-from .BaseObserver import BaseVehicleObserver, NullObserver
-from .ObserverEKF import EKF
+from .observer_base import ObserverBase, ObserverNull
+from .observer_ekf import ObserverEKF

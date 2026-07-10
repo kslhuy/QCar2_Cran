@@ -9,11 +9,15 @@ know about GUI/V2V.
 import logging
 from abc import ABC, abstractmethod
 
-from core.Types import ControlCommand, PlannerTarget, VehicleStateEstimate
+from core.types import ControlCommand, PlannerTarget, VehicleStateEstimate
 
 
-class BaseController(ABC):
+class ControllerBase(ABC):
     """Interface every controller implementation should follow."""
+
+    def __init__(self, vehicle_id: int = 0, logger=None) -> None:
+        self._vehicle_id = vehicle_id
+        self._logger = logger or logging.getLogger(self.__class__.__name__)
 
     @abstractmethod
     def reset(self) -> None:
@@ -31,11 +35,11 @@ class BaseController(ABC):
         ...
 
 
-class NullController(BaseController):
+class ControllerNull(ControllerBase):
     """Safe no-op controller for tests and startup."""
 
-    def __init__(self, logger=None) -> None:
-        self._logger = logger or logging.getLogger(self.__class__.__name__)
+    def __init__(self, vehicle_id: int = 0, logger=None) -> None:
+        super().__init__(vehicle_id, logger)
 
     def reset(self) -> None:
         pass
