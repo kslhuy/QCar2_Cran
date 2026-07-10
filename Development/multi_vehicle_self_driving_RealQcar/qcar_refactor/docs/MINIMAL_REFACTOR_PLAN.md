@@ -1,6 +1,6 @@
 # QCar Refactor Plan
 
-This plan is based on `qcar_refactor/vehicle_logic.py` and the current refactor folder structure. The goal is to make the project easier to read, test, and modify while keeping the useful patterns from the reference implementation.
+This plan is based on `refs/qcar_origin/vehicle_logic.py` and the current refactor folder structure. The goal is to make the project easier to read, test, and modify while keeping the useful patterns from the reference implementation.
 
 - Basic GUI
 - Controller
@@ -13,9 +13,45 @@ Keep the same state-machine idea from the current project, but make it smaller a
 
 Everything else should either stay in `refs/` as reference code or be connected later through clear optional modules.
 
-## Current Run-Loop Modules
+## Project Overview
 
-`VehicleLogic.run()` is the main run cycle. Each loop currently schedules these modules:
+The refactor is currently between the reusable-module phase and the runtime-integration phase. The control pipeline is no longer only a proposal: shared dataclasses, the state machine, base and QCar IO, observer, static planner, simple controller, UDP V2V, and focused tests are present. The central runtime, config loader/factories, GUI bridge, fleet layer, CARLA adapter, and ROS adapters are not complete.
+
+Current status:
+
+| Area | Status | Evidence | Next decision |
+|---|---|---|---|
+| Shared contracts | Implemented, needs clarification | `core/types.py` defines sensor, estimate, command, planner, GUI, and V2V dataclasses | Document units, coordinate frames, and timestamp domains |
+| State machine | Implemented as a safety supervisor | `core/vehicle_state_machine.py` enforces that only `RUNNING` may drive; it does not yet reproduce legacy path, platoon, taxi, manual, or calibration modes | Keep safety state separate and migrate operation modes behind runtime strategies |
+| Vehicle IO | Partially implemented | `IOBase`, `IONull`, and `IOQCar2` exist; CARLA and ROS adapters are stubs | Stabilize lifecycle and timing contracts, then add backends |
+| Observer | Implemented for the first milestone | EKF implementation and tests exist | Align the base type annotation and documentation with `SensorData` |
+| Planner/controller | Implemented for the first milestone | Static waypoint planner and simple controller have focused tests | Integrate them through the runtime coordinator |
+| V2V | Implemented for the first milestone | Null and UDP implementations include localhost exchange and cleanup tests | Integrate without allowing V2V to control actuators |
+| GUI | Not implemented | No refactored GUI bridge exists | Build a queue-based null bridge before a visual application |
+| Runtime/config | Not implemented | `vehicle_config.py`, `vehicle_logic.py`, and `vehicle_main.py` are empty | This is the next critical path |
+| Fleet | Not implemented | `utils/fleet/` contains empty placeholders | Keep it out of the first single-vehicle runtime |
+| Verification | Good module coverage, no full runtime yet | 91 selected unit/integration tests pass; the state script is not discovered as tests | Add config, runtime lifecycle, and safe-shutdown tests |
+
+## Problems And Benefits
+
+| Current problem | Planned change | Benefit | Risk or cost |
+|---|---|---|---|
+| Legacy `VehicleLogic` owns lifecycle, control, communication, and research features | Keep a small coordinator and move behavior behind module interfaces | Individual modules can be tested and replaced independently | More explicit wiring and lifecycle code is required |
+| Runtime/config files are empty while utility modules already exist | Implement config composition and factories before adding more adapters | Creates one supported construction path and prevents backend-specific branching | Config validation must be designed carefully |
+| Units, frames, and timestamp domains are implicit | Define a minimum SI-facing boundary and let adapters convert when possible | QCar, CARLA, ROS, observers, and controllers receive predictable default units without pretending that the platforms are physically identical | Exact actuator and sensor equivalence remains future calibration work |
+| `IOBase` uses sample timestamps to rate-limit polling | Use separate monotonic poll clocks | Simulation timestamps can be preserved without breaking read rates | Changes shared IO behavior and needs regression tests |
+| Optional backends can fail during package import | Lazy-load backend dependencies in factories or concrete constructors | Core tests and QCar runs do not require CARLA or ROS installations | Import errors move to backend selection time and need clear messages |
+| Shutdown ownership is not standardized | Give the runtime/session one clear owner for every external resource | Exceptions and repeated shutdown calls leave the vehicle in a predictable safe state | Each adapter must implement an idempotent lifecycle |
+| State-machine tests are script assertions | Convert them to `unittest.TestCase` | Test discovery and CI can prove safety transitions | Small test maintenance cost |
+| The legacy state machine mixes safety transitions with control and feature implementations | Keep the current safety supervisor and move path/manual/platoon/taxi/calibration behavior to operation strategies or services | Original behavior can be migrated without rebuilding the legacy `VehicleLogic` coupling | Full legacy compatibility becomes incremental rather than immediate |
+| GUI and fleet features could expand the scope before one runtime works | Finish a headless single-vehicle runtime first | Produces an executable milestone sooner and reduces debugging variables | Advanced workflows arrive later |
+| CARLA startup and CARLA IO could become coupled | Use a separate CARLA session/startup object and a narrow `IOCarla` adapter | Simulation lifecycle stays replaceable and testable | Requires a small session interface in runtime orchestration |
+
+The detailed steps below describe the intended module boundaries. The status-aware checklist under **Suggested Work Order** is the source of truth for implementation order.
+
+## Legacy Reference Run-Loop
+
+The legacy `VehicleLogic.run()` is the reference run cycle. Each loop schedules these modules:
 
 1. Safety and timing
    - `WatchdogTimer.reset()`
@@ -81,17 +117,18 @@ Current standard project locations:
 
 - `qcar_refactor/core/types.py`
 - `qcar_refactor/core/vehicle_state_machine.py`
-- `qcar_refactor/core/VehicleLogic.py`
-- `qcar_refactor/core/VehicleMain.py`
-- `qcar_refactor/config/ConfigRuntime.yaml` or another runtime-level config file
+- `qcar_refactor/core/vehicle_config.py`
+- `qcar_refactor/core/vehicle_logic.py`
+- `qcar_refactor/core/vehicle_main.py`
+- `qcar_refactor/config/config.yaml`
 - `qcar_refactor/config/config_control.yaml`
 - `qcar_refactor/config/config_io.yaml`
-- `qcar_refactor/utils/IO/`
-- `qcar_refactor/utils/Control/Observer/`
-- `qcar_refactor/utils/Control/PathPlanner/`
-- `qcar_refactor/utils/Control/Controller/`
-- `qcar_refactor/utils/V2V/`
-- `qcar_refactor/utils/GUI/` if the visual app becomes large enough to split from the bridge
+- `qcar_refactor/utils/io/`
+- `qcar_refactor/utils/control/observer/`
+- `qcar_refactor/utils/control/path_planner/`
+- `qcar_refactor/utils/control/controller/`
+- `qcar_refactor/utils/v2v/`
+- `qcar_refactor/utils/gui/` if the visual app becomes large enough to split from the bridge
 
 The refactored loop should be:
 
@@ -119,22 +156,23 @@ This review is based on the current refactor files under `qcar_refactor` as of t
 ### What Looks Good
 
 - Step 4 state machine exists as `core/vehicle_state_machine.py`.
-- Step 5 vehicle IO exists under `utils/IO/BaseIO.py`.
-- Step 6 observer exists under `utils/Control/Observer/ObserverEKF.py`.
-- Step 7 path planner exists under `utils/Control/PathPlanner/`.
-- Step 8 controller exists under `utils/Control/Controller/`.
+- Step 5 vehicle IO exists under `utils/io/`.
+- Step 6 observer exists under `utils/control/observer/`.
+- Step 7 path planner exists under `utils/control/path_planner/`.
+- Step 8 controller exists under `utils/control/controller/`.
+- Step 9 V2V exists under `utils/v2v/` with null and UDP implementations.
 - The integration test `test/test_integration_control_loop.py` passes with virtual IO, EKF, static waypoint planner, and simple path controller.
 
-### Problems To Fix Before V2V/GUI
+### Problems To Fix Before Runtime/GUI
 
 1. Project naming is standardized to the current folder structure.
    - Shared dataclasses live in `core/types.py`.
    - Runtime/state-machine files live in `core/`.
    - Reusable modules live in `utils/`.
-   - IO lives in `utils/IO/`.
-   - Observer, path planner, and controller live under `utils/Control/`.
-   - V2V should live in `utils/V2V/`.
-   - GUI bridge can start in `core/GuiBridge.py`; visual GUI code can later live in `utils/GUI/`.
+   - IO lives in `utils/io/`.
+   - Observer, path planner, and controller live under `utils/control/`.
+   - V2V lives in `utils/v2v/`.
+   - GUI bridge can start in `core/gui_bridge.py`; visual GUI code can later live in `utils/gui/`.
 
 2. The V2V state type should be `V2VState`.
    - V2V is both a broadcast mechanism and vehicle-to-vehicle communication.
@@ -143,7 +181,7 @@ This review is based on the current refactor files under `qcar_refactor` as of t
 
 3. Config should stay separated by purpose.
    - No `minimal_config.yaml` is needed.
-   - Runtime-level config belongs in a runtime config file, for example `ConfigRuntime.yaml`.
+   - Runtime-level config belongs in `config/config.yaml`.
    - Utility-level config files should keep the `ConfigName.yaml` style, for example `config_control.yaml` and `config_io.yaml`.
    - Do not mix runtime config and utility config without a small loader that makes the ownership clear.
 
@@ -167,14 +205,18 @@ This review is based on the current refactor files under `qcar_refactor` as of t
    - `StaticWaypointPlanner` and `SimplePathController` have focused unit tests.
    - `test/test_integration_control_loop.py` passes, so the step 6-8 chain works at a useful first level.
 
-### Do Before Step 9
+### Do Before Runtime Integration
 
 - [x] Add `V2VState` in `core/types.py`.
-- [x] Use current project naming: `core/types.py`, `utils/IO`, `utils/Control`, `utils/V2V`.
+- [x] Use current project naming: `core/types.py`, `utils/io`, `utils/control`, `utils/v2v`.
 - [x] Remove the `minimal_config.yaml` direction from the plan.
 - [ ] Convert `unit_test_state_machine.py` to a real `unittest.TestCase`.
 - [x] Define EKF acceleration as `sqrt(ax**2 + ay**2)`.
 - [x] Make `NullVehicleIO` mutate `_sensor_data_cache`.
+- [ ] Define units, coordinate frames, steering convention, and timestamp domains in `core/types.py` or a contract document.
+- [ ] Separate IO rate-limit clocks from sensor sample timestamps.
+- [ ] Align `ObserverBase.update()` with the `SensorData` dataclass contract.
+- [ ] Make optional CARLA/ROS dependencies lazy imports.
 
 ### Step 1: Freeze The Current Runtime
 
@@ -182,7 +224,7 @@ Do not delete the current `vehicle_logic.py` immediately. Keep it as the legacy 
 
 Actions:
 
-- Add or complete `core/VehicleLogic.py` instead of rewriting the legacy reference first.
+- Add or complete `core/vehicle_logic.py` instead of rewriting the legacy reference first.
 - Keep `vehicle_main.py` working for the legacy path.
 - Add a refactored launcher or launcher argument later, after the refactored runtime is tested.
 
@@ -239,7 +281,7 @@ Acceptance check:
 
 Do not create `minimal_config.yaml`. Keep config separated by ownership:
 
-- Runtime config: one runtime-level file, for example `config/ConfigRuntime.yaml`.
+- Runtime config: `config/config.yaml`.
 - Control utility config: `config/config_control.yaml`.
 - IO utility config: `config/config_io.yaml`.
 
@@ -355,7 +397,7 @@ Acceptance check:
 
 ### Step 5: Build The Vehicle IO Layer
 
-Use `utils/IO/BaseIO.py` and concrete IO implementations under `utils/IO/` to isolate QCar/simulation hardware access.
+Use `utils/io/io_base.py` and concrete IO implementations under `utils/io/` to isolate QCar/simulation hardware access.
 
 Responsibilities:
 
@@ -374,7 +416,7 @@ Acceptance check:
 
 ### Step 6: Build The Observer
 
-Use `utils/Control/Observer/`.
+Use `utils/control/observer/`.
 
 Start by wrapping the existing `VehicleObserverSimple.VehicleObserver` if it is stable enough. The wrapper should expose only:
 
@@ -399,7 +441,7 @@ Acceptance check:
 
 ### Step 7: Build The Path Planner
 
-Use `utils/Control/PathPlanner/`.
+Use `utils/control/path_planner/`.
 
 Use existing path data first. Avoid changing `path_rich.py` until the refactored path-planning path runs.
 
@@ -419,7 +461,7 @@ Acceptance check:
 
 ### Step 8: Build The Controller
 
-Use `utils/Control/Controller/`.
+Use `utils/control/controller/`.
 
 Use existing simple controller code if possible:
 
@@ -440,11 +482,11 @@ Acceptance check:
 
 ### Step 9: Add V2V Carefully
 
-Create the V2V code under the current refactor structure:
+The first V2V implementation now lives under the current refactor structure:
 
-- `utils/V2V/BaseV2V.py`
-- `utils/V2V/UdpV2V.py`
-- `utils/V2V/__init__.py`
+- `utils/v2v/v2v_base.py`
+- `utils/v2v/v2v_udp.py`
+- `utils/v2v/__init__.py`
 - `test/unit_test_v2v.py`
 
 Do not import `refs/V2V/v2v_manager.py` in the first refactored implementation. That manager is powerful, but it also knows about fleet observers, trust reports, platoons, attack injection, vehicle logic, and Ground Station reporting. For the refactored runtime, use a small UDP adapter first. Later, after the refactored runtime is stable, you can decide whether to wrap the legacy manager.
@@ -487,29 +529,29 @@ Use only one message type in the first version:
 
 Do not add trust, attacks, fleet estimates, platoon commands, warnings, or intents yet.
 
-#### Step 9.2: Define `BaseV2V`
+#### Step 9.2: Define `V2VBase`
 
 Required interface:
 
 ```python
-class BaseV2V(ABC):
+class V2VBase(ABC):
     def start(self) -> None: ...
-    def update_receive(self) -> None: ...
-    def broadcast_state(self, state: VehicleStateEstimate) -> bool: ...
+    def process_received_messages(self) -> None: ...
+    def broadcast_local_state(self, state: VehicleStateEstimate) -> bool: ...
     def get_peer_states(self) -> dict[int, V2VState]: ...
     def get_status(self) -> dict: ...
     def stop(self) -> None: ...
 ```
 
-Also add `NullV2V`:
+Also add `V2VNull`:
 
 - `start()` does nothing.
-- `broadcast_state()` returns `False`.
+- `broadcast_local_state()` returns `False`.
 - `get_peer_states()` returns `{}`.
 - `get_status()` returns `{"enabled": False, "active": False, "peer_count": 0}`.
 - This lets the runtime and GUI work before real V2V is ready.
 
-#### Step 9.3: Implement `UdpV2V`
+#### Step 9.3: Implement `V2VUdp`
 
 Use standard library `socket`, `json`, `threading`, `queue`, and `time`.
 
@@ -556,7 +598,7 @@ Message format:
 Threading rule:
 
 - One receive thread may read UDP packets and push decoded messages into a `queue.Queue`.
-- `update_receive()` drains the queue and updates `_peer_states`.
+- `process_received_messages()` drains the queue and updates `_peer_states`.
 - `get_peer_states()` returns a copy.
 - Use a lock around `_peer_states`.
 - `stop()` must close sockets and join the receive thread.
@@ -586,7 +628,7 @@ Acceptance check:
 - One vehicle can run with V2V enabled and zero peers.
 - Two localhost V2V instances can exchange `V2VState`.
 - Stopping V2V leaves no receive thread alive.
-- Runtime can replace `UdpV2V` with `NullV2V` without changing controller, observer, planner, or state machine.
+- Runtime can replace `V2VUdp` with `V2VNull` without changing controller, observer, planner, or state machine.
 
 ### Step 10: Add Basic GUI Bridge Carefully
 
@@ -599,8 +641,8 @@ Start with the bridge. Do not start by copying the large GUI from `refs/GUI`, be
 
 Create:
 
-- `core/GuiBridge.py`
-- `utils/GUI/BasicGuiApp.py` later, only after the bridge tests pass
+- `core/gui_bridge.py`
+- `utils/gui/basic_gui_app.py` later, only after the bridge tests pass
 - `test/unit_test_gui_bridge.py`
 
 #### Step 10.1: Define The Bridge Interface
@@ -738,7 +780,7 @@ Acceptance check:
 - Runtime can process queued GUI commands without a real Tk window.
 - GUI can start/stop/reset and display telemetry without importing observer, controller, planner, IO, or V2V internals.
 
-### Step 11: Implement `core/VehicleLogic.py`
+### Step 11: Implement `core/vehicle_logic.py`
 
 The refactored runtime should own lifecycle only. It should not contain controller math, observer math, path planning logic, V2V protocol logic, or GUI implementation details.
 
@@ -764,14 +806,14 @@ class VehicleLogic:
             self.process_gui_commands()
             sensor_data = self.vehicle_io.read()
             estimate = self.observer.update(sensor_data, dt, self.last_command)
-            self.v2v.update_receive()
+            self.v2v.process_received_messages()
             if self.state_machine.should_drive():
                 target = self.planner.update(estimate)
                 command = self.controller.compute(estimate, target, dt)
             else:
                 command = zero_command()
             self.vehicle_io.write(command)
-            self.v2v.broadcast_state(estimate)
+            self.v2v.broadcast_local_state(estimate)
             self.gui.publish_telemetry(...)
             sleep_to_rate()
         self.shutdown()
@@ -785,14 +827,14 @@ Acceptance check:
 
 Add one of these:
 
-- `core/VehicleMain.py`
+- `core/vehicle_main.py`
 - or a small root launcher that imports `core.vehicle_main`
 
 Recommended first pass: keep the legacy launcher untouched and add the refactored launcher beside the refactored runtime.
 
 Acceptance check:
 
-- The refactored launcher can load runtime/config utility files and start `core/VehicleLogic.py`.
+- The refactored launcher can load runtime/config utility files and start `core/vehicle_logic.py`.
 
 ### Step 13: Add Focused Tests
 
@@ -839,20 +881,20 @@ Keep available but not imported by the refactored runtime:
 
 Acceptance check:
 
-- Importing `core/VehicleLogic.py` does not import optional research modules.
+- Importing `core/vehicle_logic.py` does not import optional research modules.
 
 ## Runtime Module Boundaries
 
 | Module | Owns | Must Not Own |
 |---|---|---|
-| `core/VehicleLogic.py` | Loop, lifecycle, module orchestration | Controller math, observer math, path generation |
+| `core/vehicle_logic.py` | Loop, lifecycle, module orchestration | Controller math, observer math, path generation |
 | `core/vehicle_state_machine.py` | Runtime mode and safety transitions | Controller math, sensor reading, GUI transport |
-| `utils/IO/BaseIO.py` and concrete IO classes | Hardware/sim read-write and clipping | GUI, planner, V2V |
-| `utils/Control/Observer/` | Local state estimate | Controller decisions |
-| `utils/Control/PathPlanner/` | Waypoint target selection | Actuator command computation |
-| `utils/Control/Controller/` | Throttle/steering command | Sensor reading, V2V |
-| `utils/V2V/` | Peer state send/receive | Fleet control policy |
-| `core/GuiBridge.py` | Commands and telemetry transport | Vehicle logic |
+| `utils/io/io_base.py` and concrete IO classes | Hardware/sim read-write and clipping | GUI, planner, V2V |
+| `utils/control/observer/` | Local state estimate | Controller decisions |
+| `utils/control/path_planner/` | Waypoint target selection | Actuator command computation |
+| `utils/control/controller/` | Throttle/steering command | Sensor reading, V2V |
+| `utils/v2v/` | Peer state send/receive | Fleet control policy |
+| `core/gui_bridge.py` | Commands and telemetry transport | Vehicle logic |
 
 ## First Refactor Milestone
 
@@ -881,104 +923,179 @@ Do not include platooning, attacks, calibration, or neural observers in this mil
 
 ## Suggested Work Order
 
-Use this as the main todo list.
+Use this as the main status and execution list. A checked item means that implementation and focused tests exist, not merely that a file has been created.
 
-- [ ] Step 1: Freeze the current runtime.
-  - [ ] Keep the current `vehicle_logic.py` as the legacy reference.
-  - [ ] Do not delete or rewrite the full state machine yet.
-  - [ ] Do not edit optional research modules yet.
+### Implementation Remarks
 
-- [ ] Step 2: Add shared data types.
-  - [ ] Use `core/types.py`.
-  - [ ] Add `VehicleStateEstimate`.
-  - [ ] Add `ControlCommand`.
-  - [ ] Add `PlannerTarget`.
-  - [ ] Add `GuiCommand`.
-  - [x] Add `V2VState`.
+1. Cross-platform units should be practical, not over-specified.
+   - For the first runtime, use SI-facing defaults at module boundaries: distance in metres, time in seconds, linear speed in m/s, angles in radians, angular speed in rad/s, and acceleration in m/s^2.
+   - A backend adapter converts its native values when the conversion is known. If a sensor has different physics or no direct equivalent, document the approximation and validity instead of forcing false equivalence.
+   - Keep the current `ControlCommand(throttle, steering, target_velocity)` contract for the first runtime. Do not block runtime integration on a universal low-level vehicle model.
+   - After QCar and CARLA both run, evaluate a backend-specific inner actuator controller that maps desired speed/road-wheel angle to native throttle, brake, steering, or ROS commands. That is a later interface change and requires calibration tests.
 
-- [ ] Step 3: Keep config ownership clear.
-  - [ ] Use a runtime config file for runtime settings, for example `ConfigRuntime.yaml`.
-  - [ ] Use utility config files for utility settings, for example `config_control.yaml` and `config_io.yaml`.
-  - [ ] Pass each module only the config section it owns.
+2. Treat this as an incremental migration, not a full recode.
+   - Reuse working implementations behind adapters when their behavior is stable. Rewrite only code that cannot be separated from legacy `VehicleLogic` or cannot satisfy the new lifecycle/safety contract.
+   - Keep the original GUI as an external application first. It already uses a TCP, length-prefixed MessagePack command/telemetry protocol and expects telemetry fields such as `x`, `y`, `th`, `v`, `u`, and `delta`.
+   - Implement a `LegacyGuiBridge` on the refactored vehicle side that translates that protocol to `GuiCommand` and the new telemetry snapshot. Do not copy the original GUI's deployment, platoon, scope, and research logic into the runtime.
+   - Build a new visual GUI only if the legacy protocol cannot support the minimal commands safely or a separate product requirement justifies it.
 
-- [ ] Step 4: Refactor the state machine.
-  - [ ] Use `core/vehicle_state_machine.py`.
-  - [ ] Add states: `INITIALIZING`, `READY`, `RUNNING`, `STOPPED`, `ERROR`.
-  - [ ] Add transitions for `START`, `STOP`, `EMERGENCY_STOP`, and `RESET`.
-  - [ ] Add `should_drive()`.
-  - [ ] Add tests proving only `RUNNING` can drive.
+3. Keep the config loader small and explicit.
+   - Use `core/vehicle_config.py` to load and compose files; utilities must not open YAML files themselves.
+   - Resolve default config paths relative to the project/config directory, not the current working directory.
+   - Apply precedence in one direction: utility YAML defaults/profile, then selections in `config.yaml`, then explicit command-line overrides.
+   - Select named profiles explicitly, for example `config_io.yaml[vehicle_type]`, `config_control.yaml[controller_name]`, and `config_v2v.yaml[v2v_profile]`. Avoid an unrestricted recursive merge because duplicate keys can silently override safety values.
+   - Validate shared structure centrally, but let each utility validate backend-specific fields. Return one typed/read-only config bundle and pass each module only its owned section.
+   - Use the legacy `VehicleMainConfig` as a field reference only. Do not inherit its fleet, YOLO, calibration, deployment, or research configuration in the minimal runtime.
 
-- [ ] Step 5: Add vehicle IO.
-  - [ ] Use `utils/IO/BaseIO.py`.
-  - [x] Fix `NullVehicleIO` to write directly to `_sensor_data_cache`.
-  - [ ] Add or finish real/simulation QCar IO wrapper.
-  - [ ] Add one command clipping function for throttle and steering.
+The loader flow should stay close to this shape:
 
-- [ ] Step 6: Add the observer wrapper.
-  - [ ] Use `utils/Control/Observer/`.
-  - [ ] Wrap or simplify `VehicleObserverSimple.VehicleObserver`.
-  - [ ] Return `VehicleStateEstimate`.
-  - [x] Define EKF acceleration as horizontal magnitude `sqrt(ax**2 + ay**2)`.
-  - [ ] Disable SysID, calibration, KalmanNet recording, scope streaming, and YOLO in this path.
+```python
+runtime = load_yaml_mapping(runtime_path)
+control_profiles = load_yaml_mapping(control_path)
+io_profiles = load_yaml_mapping(io_path)
+v2v_profiles = load_yaml_mapping(v2v_path)
 
-- [ ] Step 7: Add the path planner.
-  - [ ] Use `utils/Control/PathPlanner/`.
-  - [ ] Load a static waypoint CSV.
-  - [ ] Return a `PlannerTarget`.
-  - [ ] Detect when the path is finished.
+selection = normalize_runtime_selection(runtime, cli_overrides)
+bundle = ConfigBundle(
+    runtime=validate_runtime(runtime, selection),
+    io=validate_io(select_profile(io_profiles, selection.vehicle_type)),
+    control=validate_control(select_profile(control_profiles, selection.controller)),
+    v2v=validate_v2v(select_profile(v2v_profiles, selection.v2v_profile)),
+)
+```
 
-- [ ] Step 8: Add the controller.
-  - [ ] Use `utils/Control/Controller/`.
-  - [ ] Use a simple longitudinal controller.
-  - [ ] Use a simple lateral path-following controller.
-  - [ ] Return `ControlCommand`.
-  - [ ] Return zero command when target/path is invalid.
+`vehicle_config.py` should only load, select, compose, and validate. Factories consume the resulting sections and construct modules separately. This keeps config errors distinguishable from hardware or network startup errors.
 
-- [ ] Step 9: Add the V2V wrapper.
-  - [x] Add `V2VState` to `core/types.py`.
-  - [ ] Create `utils/V2V/BaseV2V.py`.
-  - [ ] Add `NullV2V`.
-  - [ ] Create `utils/V2V/UdpV2V.py`.
-  - [ ] Broadcast only local `VehicleStateEstimate` as `STATE`.
-  - [ ] Receive peer states as `V2VState`.
-  - [ ] Add localhost two-vehicle exchange test.
-  - [ ] Add stop/thread cleanup test.
-  - [ ] Keep attack injection, trust logic, fleet observer fusion, and platoon logic disabled in the first core path.
+### State-Machine Compatibility Remark
 
-- [ ] Step 10: Add the basic GUI bridge.
-  - [ ] Create `core/GuiBridge.py`.
-  - [ ] Add `NullGuiBridge`.
-  - [ ] Support `START`, `STOP`, `EMERGENCY_STOP`, `RESET`, `SET_VELOCITY`, and `SET_PATH`.
-  - [ ] Publish simple telemetry dictionary.
-  - [ ] Add bridge tests before building a real Tkinter window.
-  - [ ] Build a basic Tkinter app only after bridge tests pass.
-  - [ ] Keep calibration, attack, taxi, observer switching, remote scope, and advanced platoon controls out of the first GUI.
+The current state machine can replace the original top-level safety lifecycle, but it cannot by itself reproduce every original function. This is intentional: the original state handlers compute control, access sensors and networking through `vehicle_logic`, change configuration, and run feature-specific behavior. Copying those handlers would recreate the coupling this refactor is trying to remove.
 
-- [ ] Step 11: Add the refactored runtime.
-  - [ ] Create or complete `core/VehicleLogic.py`.
-  - [ ] Instantiate vehicle IO, observer, planner, controller, V2V, GUI bridge, and state machine.
-  - [ ] Ensure only `state_machine.should_drive()` can produce non-zero throttle.
-  - [ ] Always write zero command during shutdown and errors.
+Use two layers:
 
-- [ ] Step 12: Add a refactored launcher.
-  - [ ] Create or complete `core/VehicleMain.py`.
-  - [ ] Add `--config`, `--car-id`, and safe default arguments.
-  - [ ] Keep legacy `vehicle_main.py` unchanged for now.
+1. `StateMachine` remains the safety supervisor: `INITIALIZING`, `CALIBRATING`, `READY`, `RUNNING`, `STOPPED`, and `ERROR`.
+2. The runtime selects an operation strategy while the supervisor is `RUNNING`, such as path following, manual control, platoon following, or taxi. A strategy may request a safe transition, but it may not bypass `StateMachine.should_drive()` or write IO directly.
 
-- [ ] Step 13: Add focused tests.
-  - [ ] Add `test/test_config_loads.py`.
-  - [ ] Add or convert `test/unit_test_state_machine.py` to `unittest.TestCase`.
-  - [ ] Add or keep `test/unit_test_path_planner.py`.
-  - [ ] Add or keep `test/unit_test_controller.py`.
-  - [ ] Add `test/test_runtime_stops_on_gui_stop.py`.
-  - [ ] Add `test/unit_test_v2v.py`.
+Suggested compatibility mapping:
 
-- [ ] Step 14: Test in stages.
-  - [ ] Run with `NullVehicleIO`.
-  - [ ] Run in simulation.
-  - [ ] Run one physical QCar at low `max_throttle`.
-  - [ ] Run two vehicles and verify V2V peer discovery.
+| Original state | Refactored representation | Owner |
+|---|---|---|
+| `INITIALIZING` | `INITIALIZING` | Runtime lifecycle and state machine |
+| `WAITING_FOR_START` | `READY` | State machine |
+| `FOLLOWING_PATH` | `RUNNING` plus path-following strategy | Planner/controller/runtime |
+| `FOLLOWING_LEADER` | `RUNNING` plus platoon strategy | Future fleet/platoon service |
+| `TAXI_MODE` | `RUNNING` plus taxi mission strategy | Future mission service |
+| `MANUAL_MODE` | `RUNNING` plus validated manual-command strategy | GUI bridge/runtime |
+| `CALIBRATING` | `CALIBRATING` plus calibration service | Optional calibration module |
+| `STOPPED` | `STOPPED` | State machine and zero-command safety path |
+| Legacy transition failure | `ERROR` | State machine and runtime lifecycle |
 
-- [ ] Step 15: Clean up legacy coupling only after the refactored runtime works.
-  - [ ] Keep research modules available but not imported by `core/VehicleLogic.py`.
-  - [ ] Move calibration, SysID, KalmanNet, YOLO, taxi, attack injection, scope streaming, and advanced platoon features behind optional paths.
+For the first milestone, only migrate `WAITING_FOR_START`, `FOLLOWING_PATH`, `STOPPED`, and emergency/error behavior. Keep platoon, taxi, manual driving, online calibration, observer/controller switching, perception, scopes, and gear commands explicitly unsupported until their owning modules exist. This produces partial but honest compatibility instead of a state machine that accepts commands it cannot execute safely.
+
+### Completed Foundation
+
+- [x] Preserve the legacy implementation under `refs/qcar_origin/` as behavior reference.
+- [x] Define `SensorData`, `VehicleStateEstimate`, `ControlCommand`, `PlannerTarget`, `GuiCommand`, `V2VState`, and `V2VMessage` in `core/types.py`.
+- [x] Implement the minimal safety state machine in `core/vehicle_state_machine.py`.
+- [x] Implement `IOBase`, `IONull`, command clipping, buffered reads, and the QCar/QCar QLabs adapter.
+- [x] Implement the first EKF observer, static waypoint planner, and simple path controller.
+- [x] Implement null and UDP V2V adapters with peer timeout and clean thread shutdown.
+- [x] Add focused IO, observer, planner, controller, EKF, and V2V tests.
+- [x] Add a virtual closed-loop integration test for IO -> observer -> planner -> controller.
+
+### Phase 1: Stabilize Cross-Module Contracts
+
+- [ ] Record the minimum SI-facing conventions without requiring identical platform physics.
+  - [ ] Use metres, seconds, m/s, radians, rad/s, and m/s^2 as the default module-boundary units.
+  - [ ] Document `motor_tach` as the current observer speed input and record each backend's source/conversion; defer renaming until QCar and CARLA mappings are measured.
+  - [ ] Define pose as local `[x_m, y_m, yaw_rad]` and document each backend's frame conversion.
+  - [ ] Define whether each sample timestamp is wall, hardware, ROS, or simulation time.
+  - [ ] Record validity/approximation behavior when a backend cannot supply an equivalent sensor value.
+- [ ] Separate IO polling clocks from sample timestamps by using internal monotonic rate-limit fields.
+- [ ] Standardize `close()` or lifecycle cleanup in `IOBase`; require idempotent `stop()`/`close()` behavior.
+- [ ] Protect `_command_cache` with the same consistency expected by `get_last_command()`.
+- [ ] Change `ObserverBase.update()` annotations and docs from `dict` to `SensorData`.
+- [ ] Remove module-level YAML loading from observer implementations and inject model/config values from `vehicle_config.py`.
+- [ ] Replace duplicated placeholder observer files or clearly mark unsupported observer implementations.
+- [ ] Convert `test/unit_test_state_machine.py` from script assertions to a discoverable `unittest.TestCase`.
+- [ ] Ensure importing `core` and base utilities does not require CARLA, ROS, QLabs, or physical hardware packages.
+
+Acceptance gate: all existing headless tests pass after the contract changes, shared fields have default units/frames, and platform-specific approximations are visible rather than silently treated as identical measurements.
+
+### Phase 2: Implement Config Composition And Factories
+
+- [ ] Implement `core/vehicle_config.py`.
+  - [ ] Load `config/config.yaml`, `config_control.yaml`, `config_io.yaml`, and `config_v2v.yaml`.
+  - [ ] Resolve paths relative to the project/config directory and support explicit alternate paths.
+  - [ ] Require every loaded YAML root and selected profile to be a mapping.
+  - [ ] Validate required sections, positive rates, port ranges, and safety limits.
+  - [ ] Normalize vehicle types such as `qcar`, `qcar_ros`, `limo_ros`, `carla`, and `null`.
+  - [ ] Select IO, control, V2V, and GUI profiles explicitly instead of deep-merging unrelated files.
+  - [ ] Apply documented precedence: utility profile, runtime selection, then command-line overrides.
+  - [ ] Reject unknown override keys and conflicting safety limits.
+  - [ ] Return a typed/read-only bundle with runtime, IO, observer, planner, controller, V2V, and GUI sections.
+  - [ ] Pass each utility only its owned configuration plus explicitly shared timing values.
+- [ ] Add factories for IO, observer, planner, controller, V2V, and GUI bridge.
+- [ ] Lazy-load concrete backend modules inside their factory branches.
+- [ ] Add config/factory tests for valid, missing, invalid, and unavailable-backend cases.
+
+Acceptance gate: a validated configuration can construct a complete null/headless module set without optional hardware packages installed.
+
+### Phase 3: Implement The Headless Runtime
+
+- [ ] Implement `core/vehicle_logic.py` as lifecycle and loop coordinator only.
+  - [ ] Inject or construct modules through factories rather than hard-coding concrete classes.
+  - [ ] Start modules in dependency order and unwind already-started modules if startup fails.
+  - [ ] Process commands, read IO, estimate state, update V2V, plan, control, write, and publish telemetry in a documented order.
+  - [ ] Force a zero command whenever the state is not `RUNNING`.
+  - [ ] Force a zero command before cleanup on normal exit and exceptions.
+  - [ ] Use monotonic time for loop scheduling and clamp/reject invalid `dt`.
+  - [ ] Support an optional backend lifecycle hook such as `tick()` without importing backend APIs into control modules.
+- [ ] Keep `StateMachine` responsible only for safety/lifecycle transitions; it must not return throttle or steering as the legacy state machine did.
+- [ ] Add a small operation-strategy selection point in the runtime, with path following as the only required first strategy.
+- [ ] Map legacy `WAITING_FOR_START`, `FOLLOWING_PATH`, `STOPPED`, and emergency behavior to `READY`, `RUNNING`, `STOPPED`, and `ERROR` tests.
+- [ ] Reject unsupported legacy operation commands until their strategy/service is implemented; never silently treat them as successful.
+- [ ] Implement `core/vehicle_main.py` with `--config`, `--car-id`, and `--vehicle-type` overrides.
+- [ ] Handle `KeyboardInterrupt`, external kill events, startup failure, and repeated shutdown safely.
+- [ ] Add runtime tests for READY idle, START, STOP, emergency stop, path completion, module failure, and shutdown order.
+
+Acceptance gate: the headless runtime starts with null IO, remains stopped in `READY`, runs path following only after `START`, rejects unsupported legacy modes, and always writes zero before exit.
+
+### Phase 4: Add The GUI Bridge
+
+- [ ] Add `core/gui_bridge.py` with a small bridge interface, command queue, and telemetry snapshot.
+- [ ] Add `NullGuiBridge` for headless tests.
+- [ ] Support `START`, `STOP`, `EMERGENCY_STOP`, `RESET`, `SET_VELOCITY`, and `SET_PATH` with validation.
+- [ ] Keep all actuator writes in the runtime; GUI callbacks may only enqueue commands.
+- [ ] Document the minimal legacy GUI wire contract: TCP connection, four-byte length prefix, MessagePack payload, command `type`, and required telemetry fields.
+- [ ] Add `LegacyGuiBridge` that connects the refactored runtime to the original GUI without importing Tkinter GUI modules into the vehicle runtime.
+- [ ] Translate legacy `START`, `STOP`, `EMERGENCY_STOP`, `RESET`, velocity, and path messages to the new command types; reject unsupported advanced commands explicitly.
+- [ ] Publish compatibility telemetry fields (`x`, `y`, `th`, `v`, `u`, `delta`, `state`) from the new runtime snapshot.
+- [ ] Add protocol framing, translation, reconnect, bridge, and runtime-command-mapping tests.
+- [ ] Run the original GUI against the refactored null/simulation runtime before deciding whether a new visual GUI is needed.
+
+Acceptance gate: replacing `NullGuiBridge` with `LegacyGuiBridge` does not change observer, planner, controller, IO, or V2V code, and the original GUI can perform minimal start/stop/telemetry workflows.
+
+### Phase 5: Add And Validate Backends
+
+- [ ] Implement CARLA startup/session and `IOCarla` using `docs/CARLA_STARTUP_IO_TODO.md`.
+- [ ] Finish QCar ROS and Limo ROS adapters after the same IO contract is stable.
+- [ ] Keep backend startup/session ownership outside control modules.
+- [ ] Add fake-backend unit tests before live integration tests.
+- [ ] Run staged validation:
+  - [ ] Null/headless runtime.
+  - [ ] CARLA single vehicle.
+  - [ ] QLabs single QCar.
+  - [ ] Physical QCar at low throttle.
+  - [ ] Two vehicles exchanging V2V state.
+
+Acceptance gate: selecting a backend changes only construction/session wiring, not the state-machine or control pipeline.
+
+### Phase 6: Fleet And Optional Features
+
+- [ ] Define `utils/fleet/` only after the single-vehicle runtime is stable.
+- [ ] Keep fleet policy separate from V2V transport and local safety.
+- [ ] Add platooning, trust, attacks, calibration, SysID, neural observers, YOLO, taxi, and scope streaming one feature at a time behind optional interfaces.
+- [ ] Do not import optional research modules from the default runtime path.
+- [ ] Remove obsolete legacy coupling only after equivalent refactored behavior has tests.
+
+Acceptance gate: the minimal runtime remains importable and testable when every optional feature dependency is absent.
