@@ -1,4 +1,22 @@
-"""Direct-run live test for two CARLA vehicle processes with one tick owner."""
+"""Tutorial: launch two CARLA vehicle-control processes in one shared world.
+
+Start a CARLA server first, then run this file directly:
+
+    python qcar_refactor/test/test_integration_carla_multi_process.py
+
+The parent test creates a temporary scenario manifest from ``_manifest()`` and
+starts one ``extra.launch.carla_process_runner`` child per vehicle. Every child
+connects to the same CARLA ``host:port``. Only the vehicle whose manifest entry
+sets ``tick_owner: true`` calls ``world.tick()``; follower processes wait for
+the completed frame. Each child owns its own CARLA actor, sensors, runtime,
+planner, controller, and IO adapter.
+
+To change the test, edit ``_manifest()``: add vehicle entries, choose unique
+spawn transforms, assign distinct routes, and keep exactly one tick owner. The
+parent test owns CSV/PNG generation and writes results under
+``test/artifacts/carla_multi_process/``. It also terminates child processes if
+setup or the readiness barrier fails.
+"""
 
 import csv
 import json
@@ -45,6 +63,8 @@ class TestCarlaMultiProcess(unittest.TestCase):
             record_dir = _ROOT / "test" / "artifacts" / "carla_multi_process"
             processes = []
             try:
+                # The parent is only a launcher and artifact collector. Each
+                # child receives its own scenario entry through the manifest.
                 for vehicle_id in (1, 2):
                     ready_file = directory / f"vehicle_{vehicle_id}.ready"
                     command = [

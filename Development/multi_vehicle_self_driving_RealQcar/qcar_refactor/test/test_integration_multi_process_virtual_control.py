@@ -1,4 +1,25 @@
-"""Two independent virtual vehicles running the planner/controller pipeline."""
+"""Tutorial: launch two independent virtual vehicle-control processes.
+
+This file is the multi-vehicle entry point for the fast local test. Run it
+directly from any working directory with:
+
+    python qcar_refactor/test/test_integration_multi_process_virtual_control.py
+
+Or, from the ``qcar_refactor`` directory:
+
+    python -m unittest test.test_integration_multi_process_virtual_control
+
+The parent test process creates one child process per ``routes`` entry. Each
+child loads ``config_vehicle_virtual.yaml``, builds its own ``VehicleRuntime``
+through ``VehicleProcessSpec``, starts the normal planner/controller/IO loop,
+and returns only serializable telemetry. No runtime, IO object, or actuator
+state is shared between vehicles.
+
+Change ``VirtualControlTestConfig`` to change virtual duration, time step, or
+target speed. Change ``routes`` in the test method to add vehicles or provide
+different paths. The parent process writes CSV traces and the combined plot to
+``test/artifacts/multi_process_virtual_control/``.
+"""
 
 import csv
 from dataclasses import dataclass
@@ -87,6 +108,8 @@ class TestMultiProcessVirtualControlIntegration(unittest.TestCase):
         }
         context = multiprocessing.get_context("spawn")
         output_queue = context.Queue()
+        # One OS process per vehicle. The worker receives only the vehicle's
+        # ID, route, and value-type simulation settings.
         processes = [
             context.Process(target=_virtual_control_worker, args=(vehicle_id, route, _SIMULATION, output_queue))
             for vehicle_id, route in routes.items()
