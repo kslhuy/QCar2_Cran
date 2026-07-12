@@ -34,24 +34,23 @@ class ControllerSimple(ControllerBase):
 
     def __init__(
         self,
-        config: dict | None = None,
+        config: dict,
         vehicle_id: int = 0,
         logger=None,
         **overrides,
     ) -> None:
-        self._logger = logger or logging.getLogger(self.__class__.__name__)
-        self._vehicle_id = vehicle_id
-        config = dict(config or {})
-        config.update(overrides)
-        self.kp_velocity = float(config.get("kp_velocity", 0.2))
-        self.ki_velocity = float(config.get("ki_velocity", 0.0))
-        self.kd_velocity = float(config.get("kd_velocity", 0.0))
-        self.feedforward_gain = float(config.get("feedforward_gain", 0.0))
-        self.steering_gain = float(config.get("steering_gain", 1.0))
-        self.max_throttle = abs(float(config.get("max_throttle", 0.10)))
-        self.min_throttle = -abs(float(config.get("min_throttle", -0.10)))
-        self.max_steering = abs(float(config.get("max_steering", 0.48)))
-        self.integral_limit = abs(float(config.get("integral_limit", 1.0)))
+        effective_config = dict(config)
+        effective_config.update(overrides)
+        super().__init__(effective_config, vehicle_id, logger)
+        self.kp_velocity = float(self._config.get("kp_velocity", 0.2))
+        self.ki_velocity = float(self._config.get("ki_velocity", 0.0))
+        self.kd_velocity = float(self._config.get("kd_velocity", 0.0))
+        self.feedforward_gain = float(self._config.get("feedforward_gain", 0.0))
+        self.steering_gain = float(self._config.get("steering_gain", 1.0))
+        self.max_throttle = abs(float(self._config.get("max_throttle", 0.10)))
+        self.min_throttle = -abs(float(self._config.get("min_throttle", -0.10)))
+        self.max_steering = abs(float(self._config.get("max_steering", 0.48)))
+        self.integral_limit = abs(float(self._config.get("integral_limit", 1.0)))
         self._integral_error = 0.0
         self._previous_error = None
 

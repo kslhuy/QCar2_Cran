@@ -1,0 +1,18 @@
+"null":
+  implementation: "null"
+  target_velocity: 0.0
+
+static_default:
+  implementation: static
+  lookahead_distance: 0.5
+  max_steering: 0.48
+  max_throttle: 0.10
+  min_throttle: -0.10
+  max_speed: 1.0
+  min_speed: -1.0
+
+static_carla:
+  implementation: static
+  lookahead_distance: 1.2
+  finish_tolerance: 0.40
+  max_search_ahead: 30

@@ -1,0 +1,5 @@
+"null":
+  implementation: "null"
+
+legacy:
+  implementation: legacy

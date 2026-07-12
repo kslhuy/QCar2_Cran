@@ -17,6 +17,9 @@ from core.types import SensorData, VehicleStateEstimate
 from utils.control.observer.observer_ekf import ObserverEKF
 
 
+EKF_CONFIG = {"wheelbase": 0.3}
+
+
 ARTIFACT_CSV = os.path.join(
     os.path.dirname(__file__),
     "artifacts",
@@ -140,7 +143,7 @@ class TestEKFDeterministic(unittest.TestCase):
     """EKF contract tests that do not depend on recorded QLabs artifacts."""
 
     def setUp(self):
-        self.ekf = ObserverEKF()
+        self.ekf = ObserverEKF(EKF_CONFIG)
         self.ekf.start()
 
     def tearDown(self):
@@ -155,7 +158,7 @@ class TestEKFDeterministic(unittest.TestCase):
         self.assertEqual(state.velocity, 0.0)
 
     def test_update_before_start_raises(self):
-        ekf = ObserverEKF()
+        ekf = ObserverEKF(EKF_CONFIG)
         with self.assertRaises(RuntimeError):
             ekf.update(_make_sensor(), dt=0.01)
 
@@ -260,7 +263,7 @@ class TestEKFWithRecordedData(unittest.TestCase):
             raise unittest.SkipTest(f"Artifact CSV is empty: {ARTIFACT_CSV}")
 
     def setUp(self):
-        self.ekf = ObserverEKF()
+        self.ekf = ObserverEKF(EKF_CONFIG)
         self.ekf.start()
 
     def tearDown(self):

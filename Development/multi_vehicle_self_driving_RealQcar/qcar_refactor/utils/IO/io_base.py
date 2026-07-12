@@ -3,7 +3,6 @@ import numpy as np
 from abc import ABC, abstractmethod
 
 from core.types import SensorData, ControlCommand
-from core.helpers import copy_safe
 
 class IOBase(ABC):
     """
@@ -14,19 +13,23 @@ class IOBase(ABC):
     """
     
     def __init__(self, config: dict, vehicle_id=0, logger=None):
+        self._config = dict(config)
         self._logger = logger or logging.getLogger(self.__class__.__name__)
-        self._max_throttle = config["write"]["max_throttle"]
-        self._max_steering = config["write"]["max_steering"]
-        self._reading_sensor_rate_hz = config["read"]["sensor_rate_hz"]
-        self._reading_gps_rate_hz = config["read"]["gps_rate_hz"]
-        self._vehicle_id = vehicle_id
+        self._max_throttle = self._config["write"]["max_throttle"]
+        self._max_steering = self._config["write"]["max_steering"]
+        self._reading_sensor_rate_hz = self._config["read"]["sensor_rate_hz"]
+        self._reading_gps_rate_hz = self._config["read"]["gps_rate_hz"]
+        self._vehicle_id = int(vehicle_id)
         # Single combined buffer — sensor + GPS share one SensorData
         self._sensor_data_cache = SensorData(
             motor_tach=0.0, gyro_z=0.0, accelerometer=np.zeros(3), sensor_timestamp=0.0,
             gps_valid=False, gps_position=np.zeros(3), gps_timestamp=0.0,
         )
         self._command_cache = ControlCommand(throttle=0.0, steering=0.0, target_velocity=0.0)
-        self._cache_lock = threading.Lock()
+        self._cache_lock = threading.RLock()
+        self._lifecycle_lock = threading.RLock()
+        self._stopped = False
+        self._closed = False
 
     # ------------------------------------------------------------------
     # poll sensors and gps and maybe others io device from hardware api.
@@ -91,14 +94,19 @@ class IOBase(ABC):
 
     def write(self, command: ControlCommand):
         """Clip then delegate to hardware-specific write."""
-        t = self._clip(command.throttle, -self._max_throttle, self._max_throttle)
-        s = self._clip(command.steering, -self._max_steering, self._max_steering)
-        self._command_cache = ControlCommand(
-        throttle=t, steering=s,
-        target_velocity=command.target_velocity,
-        source=command.source,
-        )
-        self._hardware_write(t, s)
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RuntimeError("Cannot write to a closed IO adapter")
+            t = self._clip(command.throttle, -self._max_throttle, self._max_throttle)
+            s = self._clip(command.steering, -self._max_steering, self._max_steering)
+            with self._cache_lock:
+                self._command_cache = ControlCommand(
+                    throttle=t, steering=s,
+                    target_velocity=command.target_velocity,
+                    source=command.source,
+                )
+            self._hardware_write(t, s)
+            self._stopped = False
 
     def get_last_command(self) -> ControlCommand:
         """Return a copy of the last command sent to the vehicle."""
@@ -115,10 +123,38 @@ class IOBase(ABC):
         """Vehicle-specific: QCar uses qcar.write(), Limo publishes to ROS."""
         ...
 
-    @abstractmethod
     def stop(self):
-        """Zero command + cleanup."""
-        self._hardware_write(0.0, 0.0)
+        """Safely stop this adapter; repeated calls are harmless.
+
+        This does not terminate a separately-owned simulation or hardware
+        process. Subclasses only implement ``_hardware_write`` and, if needed,
+        ``_close_impl`` for resources they created themselves.
+        """
+        with self._lifecycle_lock:
+            if self._closed or self._stopped:
+                return
+            try:
+                self._hardware_write(0.0, 0.0)
+            finally:
+                with self._cache_lock:
+                    self._command_cache = ControlCommand(0.0, 0.0, 0.0, "safe_stop")
+                self._stopped = True
+
+    def close(self):
+        """Stop this adapter and release only resources it owns."""
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            try:
+                self.stop()
+            finally:
+                try:
+                    self._close_impl()
+                finally:
+                    self._closed = True
+
+    def _close_impl(self):
+        """Release adapter-local resources. Sessions remain externally owned."""
 
     @staticmethod
     def _default_sensor_data() -> dict:
@@ -165,7 +201,4 @@ class IONull(IOBase):
         self._sensor_data_cache.gps_timestamp = time.time()
 
     def _hardware_write(self, throttle, steering):
-        pass
-
-    def stop(self):
         pass

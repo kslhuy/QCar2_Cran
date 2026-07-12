@@ -1,0 +1,15 @@
+example_vehicle:
+  mass: 1.0
+  inertia: 0.1
+  wheelbase: 0.3
+  air_resistance: 0.1
+  friction_coefficient: 0.1
+
+# Approximate Tesla Model 3 values for the CARLA vehicle blueprint. Only
+# wheelbase is currently consumed by the EKF bicycle prediction.
+carla_model3:
+  mass: 1847.0
+  inertia: 3100.0
+  wheelbase: 2.875
+  air_resistance: 0.30
+  friction_coefficient: 1.0

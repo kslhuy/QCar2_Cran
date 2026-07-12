@@ -6,12 +6,9 @@ Predict:   command-driven — steering → yaw rate, throttle → acceleration
 Correct:   sensor fusion — motor_tach (v), gyro (yaw rate), accel_x (a), GPS (x,y,θ)
 """
 
-import os
 import time
 import numpy as np
 from typing import Optional
-
-import yaml
 
 from .observer_base import ObserverBase
 from core.types import VehicleStateEstimate, ControlCommand, SensorData
@@ -23,29 +20,34 @@ def _wrap(angle: float) -> float:
 
 # ── Read wheelbase from config ──────────────────────────────────
 
-_config_path = os.path.join(
-    os.path.dirname(__file__), '..', '..', '..', 'config', 'config_control.yaml'
-)
-try:
-    with open(_config_path) as f:
-        _WHEELBASE = float(
-            yaml.safe_load(f)['vehicle_model_parameters']['wheelbase']
-        )
-except Exception:
-    _WHEELBASE = 0.3
-
-
 class ObserverEKF(ObserverBase):
-    __slots__ = ('_ekf', '_logger', '_started', '_last_accel_magnitude', '_wheelbase')
+    __slots__ = ('_ekf', '_started', '_last_accel_magnitude', '_wheelbase')
 
-    def __init__(self, logger=None, wheelbase: float = _WHEELBASE) -> None:
-        super().__init__(logger)
+    def __init__(
+        self,
+        config: dict,
+        vehicle_id: int = 0,
+        logger=None,
+        wheelbase: Optional[float] = None,
+    ) -> None:
+        effective_config = dict(config)
+        if wheelbase is not None:
+            effective_config["wheelbase"] = wheelbase
+        super().__init__(effective_config, vehicle_id, logger)
         self._ekf = None
         self._started = False
         self._last_accel_magnitude = 0.0
-        self._wheelbase = wheelbase
+        self._wheelbase = float(self._config.get("wheelbase", 0.3))
 
     def start(self, initial_pose: Optional[list] = None) -> None:
+        if initial_pose is None:
+            initial_pose = self._config.get("initial_pose")
+        if isinstance(initial_pose, dict):
+            initial_pose = [
+                initial_pose.get("x", 0.0),
+                initial_pose.get("y", 0.0),
+                initial_pose.get("theta", 0.0),
+            ]
         init = np.array(initial_pose, dtype=float) if initial_pose else None
         self._ekf = _EKF(init, wheelbase=self._wheelbase)
         self._started = True

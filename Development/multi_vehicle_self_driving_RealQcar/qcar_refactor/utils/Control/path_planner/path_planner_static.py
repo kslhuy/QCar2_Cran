@@ -31,25 +31,23 @@ class PathPlannerStatic(PathPlannerBase):
 
     def __init__(
         self,
-        path_source=None,
-        target_velocity: float = 0.6,
-        lookahead_distance: float = 0.5,
-        finish_tolerance: float = 0.15,
-        x_column: int = 1,
-        y_column: int = 2,
-        theta_column: int = -1,
-        max_search_ahead: int = 50,
+        config: dict,
+        vehicle_id: int = 0,
         logger=None,
+        **overrides,
     ) -> None:
-        self._logger = logger or logging.getLogger(self.__class__.__name__)
+        effective_config = dict(config)
+        effective_config.update(overrides)
+        super().__init__(effective_config, vehicle_id, logger)
+        path_source = self._config.get("path_source")
         self._waypoints = np.zeros((0, 3), dtype=float)
-        self._target_velocity = float(target_velocity)
-        self._lookahead_distance = max(0.0, float(lookahead_distance))
-        self._finish_tolerance = max(0.0, float(finish_tolerance))
-        self._x_column = int(x_column)
-        self._y_column = int(y_column)
-        self._theta_column = int(theta_column)
-        self._max_search_ahead = max(1, int(max_search_ahead))
+        self._target_velocity = float(self._config.get("target_velocity", 0.6))
+        self._lookahead_distance = max(0.0, float(self._config.get("lookahead_distance", 0.5)))
+        self._finish_tolerance = max(0.0, float(self._config.get("finish_tolerance", 0.15)))
+        self._x_column = int(self._config.get("x_column", 1))
+        self._y_column = int(self._config.get("y_column", 2))
+        self._theta_column = int(self._config.get("theta_column", -1))
+        self._max_search_ahead = max(1, int(self._config.get("max_search_ahead", 50)))
         self._current_index = 0
         self._finished = True
 

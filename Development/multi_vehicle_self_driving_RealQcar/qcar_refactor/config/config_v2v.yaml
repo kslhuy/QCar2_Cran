@@ -1,75 +1,16 @@
-# V2V utility configuration for the refactored runtime.
-# Runtime may override vehicle_id from command-line or vehicle config.
+# Reusable V2V profiles for the refactored runtime.
+# The config loader supplies vehicle_id from config_vehicle.yaml or the CLI.
+# Multi-vehicle localhost arrangements belong in test/unit_test_v2v.py.
 
-null_v2v:
+"null":
   enabled: false
-  implementation: null
-  vehicle_id: 0
+  implementation: "null"
 
-udp:
+udp_default:
   enabled: true
   implementation: udp
-  vehicle_id: 0
   bind_ip: "0.0.0.0"
   base_port: 8000
   broadcast_rate_hz: 20
   peer_timeout_s: 2.0
   peers: []
-
-localhost_two_vehicle:
-  enabled: true
-  implementation: udp
-  bind_ip: "127.0.0.1"
-  base_port: 18000
-  broadcast_rate_hz: 20
-  peer_timeout_s: 2.0
-  vehicles:
-    - vehicle_id: 0
-      peers:
-        - vehicle_id: 1
-          ip: "127.0.0.1"
-    - vehicle_id: 1
-      peers:
-        - vehicle_id: 0
-          ip: "127.0.0.1"
-
-localhost_four_vehicle:
-  enabled: true
-  implementation: udp
-  bind_ip: "127.0.0.1"
-  base_port: 18100
-  broadcast_rate_hz: 20
-  peer_timeout_s: 2.0
-  vehicles:
-    - vehicle_id: 0
-      peers:
-        - vehicle_id: 1
-          ip: "127.0.0.1"
-        - vehicle_id: 2
-          ip: "127.0.0.1"
-        - vehicle_id: 3
-          ip: "127.0.0.1"
-    - vehicle_id: 1
-      peers:
-        - vehicle_id: 0
-          ip: "127.0.0.1"
-        - vehicle_id: 2
-          ip: "127.0.0.1"
-        - vehicle_id: 3
-          ip: "127.0.0.1"
-    - vehicle_id: 2
-      peers:
-        - vehicle_id: 0
-          ip: "127.0.0.1"
-        - vehicle_id: 1
-          ip: "127.0.0.1"
-        - vehicle_id: 3
-          ip: "127.0.0.1"
-    - vehicle_id: 3
-      peers:
-        - vehicle_id: 0
-          ip: "127.0.0.1"
-        - vehicle_id: 1
-          ip: "127.0.0.1"
-        - vehicle_id: 2
-          ip: "127.0.0.1"

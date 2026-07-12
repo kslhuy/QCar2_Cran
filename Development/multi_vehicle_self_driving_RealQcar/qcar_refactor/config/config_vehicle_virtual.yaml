@@ -1,0 +1,20 @@
+# Deterministic vehicle profile for closed-loop integration testing.
+vehicle:
+  car_id: 0
+
+runtime:
+  loop_rate_hz: 50
+
+modules:
+  model: example_vehicle
+  io: virtual
+  observer: ekf_qcar
+  planner: static_default
+  controller: simple_qcar
+  v2v: "null"
+  simulation: "null"
+  ground_station: "null"
+
+mission:
+  path: refs/qcar_origin/PathPlanner/path_rich_output/pp_waypoints.csv
+  target_velocity: 0.5

@@ -98,9 +98,12 @@ def _process_all(vehicles):
 
 class TestNullV2V(unittest.TestCase):
     def test_null_v2v_status_is_safe(self):
-        v2v = V2VNull()
+        config = {"enabled": False}
+        v2v = V2VNull(config, vehicle_id=3)
 
         v2v.start()
+        self.assertEqual(v2v._config, config)
+        self.assertEqual(v2v._vehicle_id, 3)
         self.assertFalse(v2v.broadcast_local_state(_state()))
         self.assertEqual(v2v.get_peer_states(), {})
         self.assertEqual(

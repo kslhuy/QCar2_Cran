@@ -1,0 +1,20 @@
+# Standalone null-runtime profile for CI, tests, and control-loop bring-up.
+vehicle:
+  car_id: 0
+
+runtime:
+  loop_rate_hz: 100
+
+modules:
+  model: example_vehicle
+  io: "null"
+  observer: "null"
+  planner: "null"
+  controller: "null"
+  v2v: "null"
+  simulation: "null"
+  ground_station: "null"
+
+mission:
+  path: []
+  target_velocity: 0.0

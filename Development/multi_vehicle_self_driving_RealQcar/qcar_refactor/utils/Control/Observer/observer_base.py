@@ -10,7 +10,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from core.types import VehicleStateEstimate, ControlCommand
+from core.types import SensorData, VehicleStateEstimate, ControlCommand
 
 
 class ObserverBase(ABC):
@@ -24,8 +24,10 @@ class ObserverBase(ABC):
         stop()    — cleanup
         
     """
-    __slots__ = ('_logger',)
-    def __init__(self, logger=None) -> None:
+    __slots__ = ('_config', '_vehicle_id', '_logger')
+    def __init__(self, config: dict, vehicle_id: int = 0, logger=None) -> None:
+        self._config = dict(config)
+        self._vehicle_id = int(vehicle_id)
         self._logger = logger or logging.getLogger(self.__class__.__name__)
 
     @abstractmethod
@@ -36,7 +38,7 @@ class ObserverBase(ABC):
     @abstractmethod
     def update(
         self,
-        sensor_data: dict,
+        sensor_data: SensorData,
         dt: float,
         last_command: Optional[ControlCommand] = None,
     ) -> VehicleStateEstimate:
@@ -44,8 +46,7 @@ class ObserverBase(ABC):
         Run one estimation step.
 
         Args:
-            sensor_data: dict from vehicle_io.read() with keys:
-                motor_tach, gyro_z, accelerometer, gps_valid, gps_position, sensor_timestamp
+            sensor_data: SensorData snapshot returned by vehicle_io.read().
             dt: time delta since last update (seconds)
             last_command: most recent ControlCommand written to vehicle (optional)
 
@@ -74,10 +75,10 @@ class ObserverNull(ObserverBase):
     Always returns zero state or given position with safe defaults.
     """
 
-    __slots__ = ('_logger', '_last')
+    __slots__ = ('_last',)
 
-    def __init__(self, logger=None) -> None:
-        super().__init__(logger)
+    def __init__(self, config: dict, vehicle_id: int = 0, logger=None) -> None:
+        super().__init__(config, vehicle_id, logger)
         self._last = VehicleStateEstimate(
             timestamp=0.0, x=0.0, y=0.0, theta=0.0,
             velocity=0.0, acceleration=0.0, gps_valid=False,
@@ -93,16 +94,16 @@ class ObserverNull(ObserverBase):
 
     def update(
         self,
-        sensor_data: dict,
+        sensor_data: SensorData,
         dt: float,
         last_command: Optional[ControlCommand] = None,
     ) -> VehicleStateEstimate:
-        now = sensor_data.get("sensor_timestamp", time.time())
+        now = sensor_data.sensor_timestamp or time.time()
         self._last = VehicleStateEstimate(
             timestamp=now,
             x=0.0, y=0.0, theta=0.0,
             velocity=0.0, acceleration=0.0,
-            gps_valid=sensor_data.get("gps_valid", False),
+            gps_valid=sensor_data.gps_valid,
         )
         return self._last
 

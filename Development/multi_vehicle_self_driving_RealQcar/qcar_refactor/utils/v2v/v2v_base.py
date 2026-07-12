@@ -7,6 +7,11 @@ from core.types import V2VState, VehicleStateEstimate
 class V2VBase(ABC):
     """Minimal V2V interface used by the refactored runtime."""
 
+    def __init__(self, config: dict, vehicle_id: int = 0, logger: logging.Logger | None = None) -> None:
+        self._config = dict(config)
+        self._vehicle_id = int(vehicle_id)
+        self._logger = logger or logging.getLogger(self.__class__.__name__)
+
     @abstractmethod
     def start(self) -> None:
         ...
@@ -35,9 +40,8 @@ class V2VBase(ABC):
 class V2VNull(V2VBase):
     """Safe no-op V2V implementation for tests and single-vehicle runs."""
 
-    def __init__(self, vehicle_id: int = 0, logger: logging.Logger | None = None) -> None:
-        self._vehicle_id = vehicle_id
-        self._logger = logger or logging.getLogger(self.__class__.__name__)
+    def __init__(self, config: dict, vehicle_id: int = 0, logger: logging.Logger | None = None) -> None:
+        super().__init__(config=config, vehicle_id=vehicle_id, logger=logger)
 
     def start(self) -> None:
         return None

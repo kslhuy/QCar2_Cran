@@ -8,22 +8,27 @@ from dataclasses import dataclass
 # GUI
 # V2V
 
-## Sensor data structures
 @dataclass
 class SensorData:
-    "raw sensor data from the vehicle"
+    """Raw vehicle data in SI units.
+
+    ``motor_tach`` is signed longitudinal speed in m/s where a backend can
+    provide it; otherwise it is that backend's documented approximation.
+    ``gyro_z`` is yaw rate in rad/s, ``accelerometer`` is m/s^2, timestamps
+    are seconds, and GPS stores local ``[x_m, y_m, yaw_rad]``.
+    """
     motor_tach: float
     gyro_z: float
-    accelerometer: np.ndarray  # shape (3,)
-    sensor_timestamp: float
+    accelerometer: np.ndarray  # [ax, ay, az] in m/s^2
+    sensor_timestamp: float  # seconds
     gps_valid: bool
     gps_position: np.ndarray  # shape (3,)
-    gps_timestamp: float
+    gps_timestamp: float  # seconds
 
 ## Observer data structures
 @dataclass
 class VehicleStateEstimate:
-    "state estimation of the observer, can be seen as the output of the observer"
+    """Observer output: metres, radians, m/s, m/s^2, and seconds."""
     timestamp: float
     x: float
     y: float
@@ -35,9 +40,13 @@ class VehicleStateEstimate:
 ## Controller data structures
 @dataclass
 class ControlCommand:
-    "minimal control input to get written to the vehicle"
-    throttle: float       # 0.0 to max_throttle
-    steering: float       # -max_steering to +max_steering
+    """Actuator request with target velocity in m/s.
+
+    Throttle and steering are backend-normalized commands. Each IO backend
+    documents its scale, sign convention, and physical approximation.
+    """
+    throttle: float
+    steering: float
     target_velocity: float
     source: str = ""      # e.g. "pid", "pure_pursuit", "zero"
 
@@ -71,11 +80,6 @@ class V2VState:
     theta: float
     velocity: float
 
-
-# Backward-compatible aliases for old imports. Prefer V2VState in new code.
-VBroadcastState = V2VState
-VBoradcastState = V2VState
-
 @dataclass
 class V2VMessage:
     "V2V message structure"
@@ -88,7 +92,3 @@ class V2VMessage:
     def vehicle_id(self) -> int:
         """Backward-compatible alias. Prefer sender_id in new V2V code."""
         return self.sender_id
-
-
-# Backward-compatible alias for old imports. Prefer V2VMessage in new code.
-VBroadcastMessage = V2VMessage

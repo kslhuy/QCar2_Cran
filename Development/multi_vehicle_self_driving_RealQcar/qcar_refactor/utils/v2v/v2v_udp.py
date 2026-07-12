@@ -23,16 +23,16 @@ class V2VUdp(V2VBase):
         vehicle_id: Optional[int] = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        self._logger = logger or logging.getLogger(self.__class__.__name__)
-        self._vehicle_id = int(config.get("vehicle_id", 0) if vehicle_id is None else vehicle_id)
-        self._bind_ip = str(config.get("bind_ip", "0.0.0.0"))
-        self._base_port = int(config.get("base_port", 8000))
-        self.local_port = int(config.get("local_port", self._base_port + self._vehicle_id))
-        self.broadcast_rate_hz = float(config.get("broadcast_rate_hz", 20.0))
-        self.peer_timeout_s = float(config.get("peer_timeout_s", 2.0))
+        resolved_vehicle_id = int(config.get("vehicle_id", 0) if vehicle_id is None else vehicle_id)
+        super().__init__(config, resolved_vehicle_id, logger)
+        self._bind_ip = str(self._config.get("bind_ip", "0.0.0.0"))
+        self._base_port = int(self._config.get("base_port", 8000))
+        self.local_port = int(self._config.get("local_port", self._base_port + self._vehicle_id))
+        self.broadcast_rate_hz = float(self._config.get("broadcast_rate_hz", 20.0))
+        self.peer_timeout_s = float(self._config.get("peer_timeout_s", 2.0))
         self._min_broadcast_interval_s = 1.0 / self.broadcast_rate_hz if self.broadcast_rate_hz > 0.0 else 0.0
 
-        self._peers = self._parse_peers(config.get("peers", []))
+        self._peers = self._parse_peers(self._config.get("peers", []))
         self._peer_states: dict[int, V2VState] = {}
         self._last_peer_seen: dict[int, float] = {}
         self._peer_lock = threading.Lock()

@@ -27,12 +27,11 @@ class _TestVehicleIO(IOBase):
     """Test double: spies on abstract methods, writes directly to cache."""
 
     def __init__(self, config, logger=None):
-        super().__init__(config, logger)
+        super().__init__(config, logger=logger)
         self.poll_sensor_count = 0
         self.poll_gps_count = 0
         self.last_throttle = None
         self.last_steering = None
-        self.stop_called = False
         # Optional override: dict with SensorData field names → values
         self._fake_sensor = None
         self._fake_gps = None
@@ -67,10 +66,6 @@ class _TestVehicleIO(IOBase):
         self.last_throttle = throttle
         self.last_steering = steering
 
-    def stop(self):
-        self.stop_called = True
-        self._hardware_write(0.0, 0.0)
-
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -98,6 +93,7 @@ class TestVehicleIO(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_init_stores_config_values(self):
+        self.assertEqual(self.io._config, self.config)
         self.assertEqual(self.io._max_throttle, 0.10)
         self.assertEqual(self.io._max_steering, 0.48)
         self.assertEqual(self.io._reading_sensor_rate_hz, 100)
@@ -319,9 +315,22 @@ class TestVehicleIO(unittest.TestCase):
 
     def test_stop_sends_zero_command(self):
         self.io.stop()
-        self.assertTrue(self.io.stop_called)
         self.assertEqual(self.io.last_throttle, 0.0)
         self.assertEqual(self.io.last_steering, 0.0)
+
+    def test_stop_and_close_are_idempotent(self):
+        self.io.stop()
+        self.io.stop()
+        self.io.close()
+        self.io.close()
+        self.assertTrue(self.io._stopped)
+        self.assertTrue(self.io._closed)
+        self.assertEqual(self.io.get_last_command().source, "vehicleIO_write_cache")
+
+    def test_write_after_close_is_rejected(self):
+        self.io.close()
+        with self.assertRaises(RuntimeError):
+            self.io.write(ControlCommand(0.1, 0.0, 0.1))
 
     # ------------------------------------------------------------------
     # 8. IONull

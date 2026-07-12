@@ -15,6 +15,19 @@ from core.types import ControlCommand, PlannerTarget, VehicleStateEstimate
 from utils.control.controller import ControllerBase, ControllerNull, ControllerSimple
 
 
+SIMPLE_CONFIG = {
+    "kp_velocity": 0.2,
+    "ki_velocity": 0.0,
+    "kd_velocity": 0.0,
+    "feedforward_gain": 0.0,
+    "steering_gain": 1.0,
+    "max_throttle": 0.10,
+    "min_throttle": -0.10,
+    "max_steering": 0.48,
+    "integral_limit": 1.0,
+}
+
+
 def _state(x=0.0, y=0.0, theta=0.0, velocity=0.0):
     return VehicleStateEstimate(
         timestamp=1.0,
@@ -40,12 +53,14 @@ def _target(x=1.0, y=0.0, theta=0.0, velocity=0.6, finished=False):
 class TestBaseController(unittest.TestCase):
     def test_cannot_instantiate_base_controller(self):
         with self.assertRaises(TypeError):
-            ControllerBase()
+            ControllerBase({})
 
     def test_null_controller_returns_safe_zero_command(self):
-        controller = ControllerNull()
+        controller = ControllerNull({}, vehicle_id=3)
         command = controller.compute(_state(), _target(), dt=0.01)
 
+        self.assertEqual(controller._config, {})
+        self.assertEqual(controller._vehicle_id, 3)
         self.assertIsInstance(command, ControlCommand)
         self.assertEqual(command.throttle, 0.0)
         self.assertEqual(command.steering, 0.0)
@@ -54,11 +69,7 @@ class TestBaseController(unittest.TestCase):
 
 class TestSimplePathController(unittest.TestCase):
     def test_forward_target_produces_positive_throttle_and_zero_steering(self):
-        controller = ControllerSimple(
-            kp_velocity=0.2,
-            max_throttle=0.1,
-            max_steering=0.48,
-        )
+        controller = ControllerSimple(SIMPLE_CONFIG)
 
         command = controller.compute(
             _state(x=0.0, y=0.0, theta=0.0, velocity=0.0),
@@ -72,7 +83,7 @@ class TestSimplePathController(unittest.TestCase):
         self.assertEqual(command.source, "simple_path_controller")
 
     def test_left_target_produces_positive_steering(self):
-        controller = ControllerSimple(steering_gain=1.0, max_steering=0.48)
+        controller = ControllerSimple(SIMPLE_CONFIG)
 
         command = controller.compute(
             _state(x=0.0, y=0.0, theta=0.0),
@@ -83,7 +94,7 @@ class TestSimplePathController(unittest.TestCase):
         self.assertGreater(command.steering, 0.0)
 
     def test_right_target_produces_negative_steering(self):
-        controller = ControllerSimple(steering_gain=1.0, max_steering=0.48)
+        controller = ControllerSimple(SIMPLE_CONFIG)
 
         command = controller.compute(
             _state(x=0.0, y=0.0, theta=0.0),
@@ -94,7 +105,7 @@ class TestSimplePathController(unittest.TestCase):
         self.assertLess(command.steering, 0.0)
 
     def test_finished_target_returns_zero_command_and_resets_integral(self):
-        controller = ControllerSimple(ki_velocity=1.0, integral_limit=1.0)
+        controller = ControllerSimple({**SIMPLE_CONFIG, "ki_velocity": 1.0})
         controller.compute(_state(velocity=0.0), _target(velocity=1.0), dt=0.5)
         self.assertNotEqual(controller.integral_error, 0.0)
 
@@ -111,13 +122,11 @@ class TestSimplePathController(unittest.TestCase):
         self.assertEqual(controller.integral_error, 0.0)
 
     def test_output_is_clipped_to_limits(self):
-        controller = ControllerSimple(
-            kp_velocity=10.0,
-            steering_gain=10.0,
-            max_throttle=0.1,
-            min_throttle=-0.1,
-            max_steering=0.48,
-        )
+        controller = ControllerSimple({
+            **SIMPLE_CONFIG,
+            "kp_velocity": 10.0,
+            "steering_gain": 10.0,
+        })
 
         command = controller.compute(
             _state(x=0.0, y=0.0, theta=0.0, velocity=-10.0),
@@ -131,7 +140,7 @@ class TestSimplePathController(unittest.TestCase):
         self.assertGreaterEqual(command.steering, -0.48)
 
     def test_negative_velocity_target_is_treated_as_stop(self):
-        controller = ControllerSimple(kp_velocity=0.2)
+        controller = ControllerSimple(SIMPLE_CONFIG)
 
         command = controller.compute(
             _state(velocity=0.5),

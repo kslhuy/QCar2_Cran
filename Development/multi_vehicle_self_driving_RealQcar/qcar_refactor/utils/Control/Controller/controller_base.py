@@ -15,8 +15,9 @@ from core.types import ControlCommand, PlannerTarget, VehicleStateEstimate
 class ControllerBase(ABC):
     """Interface every controller implementation should follow."""
 
-    def __init__(self, vehicle_id: int = 0, logger=None) -> None:
-        self._vehicle_id = vehicle_id
+    def __init__(self, config: dict, vehicle_id: int = 0, logger=None) -> None:
+        self._config = dict(config)
+        self._vehicle_id = int(vehicle_id)
         self._logger = logger or logging.getLogger(self.__class__.__name__)
 
     @abstractmethod
@@ -38,8 +39,8 @@ class ControllerBase(ABC):
 class ControllerNull(ControllerBase):
     """Safe no-op controller for tests and startup."""
 
-    def __init__(self, vehicle_id: int = 0, logger=None) -> None:
-        super().__init__(vehicle_id, logger)
+    def __init__(self, config: dict, vehicle_id: int = 0, logger=None) -> None:
+        super().__init__(config, vehicle_id, logger)
 
     def reset(self) -> None:
         pass

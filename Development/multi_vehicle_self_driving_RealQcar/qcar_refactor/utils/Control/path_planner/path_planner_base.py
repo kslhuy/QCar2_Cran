@@ -5,14 +5,19 @@ Path planners convert the current vehicle state into a planner target. They
 should not know about vehicle hardware, observers, controllers, GUI, or V2V.
 """
 
+import logging
 from abc import ABC, abstractmethod
-from typing import Iterable, Optional
 
 from core.types import PlannerTarget, VehicleStateEstimate
 
 
 class PathPlannerBase(ABC):
     """Interface every path planner implementation should follow."""
+
+    def __init__(self, config: dict, vehicle_id: int = 0, logger=None) -> None:
+        self._config = dict(config)
+        self._vehicle_id = int(vehicle_id)
+        self._logger = logger or logging.getLogger(self.__class__.__name__)
 
     @abstractmethod
     def load_path(self, path_source) -> None:
@@ -43,8 +48,9 @@ class PathPlannerBase(ABC):
 class PathPlannerNull(PathPlannerBase):
     """Safe no-op planner for tests and bring-up."""
 
-    def __init__(self, target_velocity: float = 0.0) -> None:
-        self._target_velocity = float(target_velocity)
+    def __init__(self, config: dict, vehicle_id: int = 0, logger=None) -> None:
+        super().__init__(config, vehicle_id, logger)
+        self._target_velocity = float(self._config.get("target_velocity", 0.0))
         self._finished = True
 
     def load_path(self, path_source) -> None:

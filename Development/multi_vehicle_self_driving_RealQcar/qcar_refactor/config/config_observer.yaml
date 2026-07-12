@@ -1,0 +1,24 @@
+"null":
+  implementation: "null"
+
+ekf_qcar:
+  implementation: ekf
+  initial_pose:
+    x: 0.0
+    y: 0.0
+    theta: 0.0
+
+ekf_carla:
+  implementation: ekf
+  # Project-frame pose for config_simulation.yaml spawn_transform.
+  initial_pose:
+    x: -13.1
+    y: -0.8
+    theta: 0.0
+
+# These implementations are not independent observers yet.
+luenberger:
+  implementation: unsupported
+
+high_gain:
+  implementation: unsupported

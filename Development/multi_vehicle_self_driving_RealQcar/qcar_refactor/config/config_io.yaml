@@ -1,32 +1,62 @@
 # IO configuration for vehicles. This file is used to set the read and write rates for sensors and GPS, as well as the maximum throttle and steering limits for safety.
-vehicle_example:
+"null":
+  implementation: "null"
   write:
-    max_throttle: 1       # safety clip for minimal runtime
-    max_steering: 1       # radians, hardware limit
+    max_throttle: 1.0
+    max_steering: 1.0
   read:
     sensor_rate_hz: 100
     gps_rate_hz: 10
 
+virtual:
+  implementation: virtual
+  write:
+    max_throttle: 1.0
+    max_steering: 0.48
+  read:
+    sensor_rate_hz: 50
+    gps_rate_hz: 10
+  dt: 0.02
+  wheelbase: 0.3
+  gps_period_steps: 5
+  seed: 7
+
+carla:
+  implementation: carla
+  write:
+    max_throttle: 0.15
+    max_steering: 0.48
+  read:
+    sensor_rate_hz: 20
+    gps_rate_hz: 20
+  steering_scale: 2.0833333333
+  # Project Y is the inverse of CARLA Y, so project-positive steering maps
+  # to CARLA-negative normalized steer.
+  steering_sign: -1.0
+
 qcar:
+  implementation: qcar
   write:
     max_throttle: 0.10       # safety clip for minimal runtime
-    max_steering: 0.48       # radians, hardware limit
+    max_steering: 0.48       # backend command safety limit
   read:
     sensor_rate_hz: 100
     gps_rate_hz: 10
 
 qcar_ros:
+  implementation: qcar_ros
   write:
     max_throttle: 0.10       # safety clip for minimal runtime
-    max_steering: 0.48       # radians, hardware limit
+    max_steering: 0.48       # backend command safety limit
   read:
     sensor_rate_hz: 100
     gps_rate_hz: 10
 
 limo_ros:
+  implementation: limo_ros
   write:
     max_throttle: 0.10       # safety clip for minimal runtime
-    max_steering: 0.48       # radians, hardware limit
+    max_steering: 0.48       # backend command safety limit
   read:
     sensor_rate_hz: 100
     gps_rate_hz: 10
