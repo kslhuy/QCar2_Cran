@@ -23,7 +23,7 @@ class VehicleProcessSpec:
     resources: Mapping[str, Any] | None = None
 
 
-def build_vehicle_process_runtime(spec: VehicleProcessSpec, logger=None) -> VehicleRuntime:
+def build_vehicle_process_runtime(spec: VehicleProcessSpec, logger=None, fleet=None) -> VehicleRuntime:
     """Build one runtime without assuming an IO or simulation backend."""
     overrides = deepcopy(dict(spec.value_overrides or {}))
     configured_id = overrides.get("vehicle_id")
@@ -38,7 +38,7 @@ def build_vehicle_process_runtime(spec: VehicleProcessSpec, logger=None) -> Vehi
     modules = build_vehicle_modules(config, logger=logger, resources=dict(spec.resources or {}))
     return VehicleRuntime(
         config, modules.io, modules.observer, modules.planner,
-        modules.controller, modules.v2v, simulation=modules.simulation, logger=logger,
+        modules.controller, modules.v2v, simulation=modules.simulation, fleet=fleet, logger=logger,
     )
 
 
@@ -47,6 +47,7 @@ def run_vehicle_process(
     cycles: int,
     dt: float | None = None,
     on_ready: Callable[[VehicleRuntime], None] | None = None,
+    on_running: Callable[[VehicleRuntime], None] | None = None,
     on_step: Callable[[object], None] | None = None,
 ) -> list[object]:
     """Start, command, step, and safely shut down one runtime.
@@ -62,6 +63,8 @@ def run_vehicle_process(
         if on_ready is not None:
             on_ready(runtime)
         runtime.handle_command(GuiCommand("START", {}))
+        if on_running is not None:
+            on_running(runtime)
         for _ in range(cycles):
             sample = runtime.step(dt=dt)
             telemetry.append(sample)

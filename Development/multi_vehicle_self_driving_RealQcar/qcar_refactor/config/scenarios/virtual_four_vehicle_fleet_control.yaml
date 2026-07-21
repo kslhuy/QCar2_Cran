@@ -1,0 +1,50 @@
+simulation_profile: "null"
+
+fleet:
+  profile: default
+  formation_id: virtual_four_vehicle_fleet_control
+  members:
+    - {vehicle_id: 1, role: leader, member_order: 0}
+    - {vehicle_id: 2, role: follower, member_order: 1}
+    - {vehicle_id: 3, role: follower, member_order: 2}
+    - {vehicle_id: 4, role: follower, member_order: 3}
+
+vehicles:
+  - vehicle_id: 1
+    vehicle_config_file: config_vehicle_virtual.yaml
+    controller_profile: simple_qcar
+    initial_pose: [0.0, 0.0, 0.0]
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 2, ip: "127.0.0.1"}]}
+    mission:
+      # A 70 m route keeps the 150 s real-time test running after formation.
+      # The turns are intentionally broad so follower stability is measurable.
+      path: [[0.0, 0.0], [2.0, 0.0], [4.0, 0.1], [6.0, 0.3], [8.0, 0.5], [10.0, 0.6], [12.0, 0.5], [14.0, 0.3], [16.0, 0.0], [18.0, -0.3], [20.0, -0.5], [22.0, -0.6], [24.0, -0.5], [26.0, -0.3], [28.0, 0.0], [30.0, 0.3], [32.0, 0.5], [34.0, 0.6], [36.0, 0.5], [38.0, 0.3], [40.0, 0.0], [42.0, -0.3], [44.0, -0.5], [46.0, -0.6], [48.0, -0.5], [50.0, -0.3], [52.0, 0.0], [54.0, 0.3], [56.0, 0.5], [58.0, 0.6], [60.0, 0.5], [62.0, 0.3], [64.0, 0.0], [66.0, -0.3], [68.0, -0.5], [70.0, -0.6]]
+      target_velocity: 0.35
+  - vehicle_id: 2
+    vehicle_config_file: config_vehicle_virtual.yaml
+    controller_profile: fleet_2d_virtual
+    initial_pose: [-0.8, 0.0, 0.0]
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 1, ip: "127.0.0.1"}, {vehicle_id: 3, ip: "127.0.0.1"}]}
+    mission:
+      path: [[-0.8, 0.0], [0.0, 0.0], [0.8, 0.05], [1.6, 0.20], [2.4, 0.45], [3.2, 0.60], [4.0, 0.55], [4.8, 0.30], [5.6, 0.0]]
+      target_velocity: 0.35
+  - vehicle_id: 3
+    vehicle_config_file: config_vehicle_virtual.yaml
+    controller_profile: fleet_2d_virtual
+    initial_pose: [-1.6, 0.0, 0.0]
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 2, ip: "127.0.0.1"}, {vehicle_id: 4, ip: "127.0.0.1"}]}
+    mission:
+      path: [[-1.6, 0.0], [-0.8, 0.0], [0.0, 0.0], [0.8, 0.05], [1.6, 0.20], [2.4, 0.45], [3.2, 0.60], [4.0, 0.55], [4.8, 0.30], [5.6, 0.0]]
+      target_velocity: 0.35
+  - vehicle_id: 4
+    vehicle_config_file: config_vehicle_virtual.yaml
+    controller_profile: fleet_2d_virtual
+    initial_pose: [-2.4, 0.0, 0.0]
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 3, ip: "127.0.0.1"}]}
+    mission:
+      path: [[-2.4, 0.0], [-1.6, 0.0], [-0.8, 0.0], [0.0, 0.0], [0.8, 0.05], [1.6, 0.20], [2.4, 0.45], [3.2, 0.60], [4.0, 0.55], [4.8, 0.30], [5.6, 0.0]]
+      target_velocity: 0.35

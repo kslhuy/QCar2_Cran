@@ -6,6 +6,8 @@ Concrete implementations live in their own files (kalman_observer.py, etc.).
 """
 
 import logging
+from dataclasses import replace
+from math import isfinite
 import time
 from abc import ABC, abstractmethod
 from typing import Optional
@@ -68,6 +70,19 @@ class ObserverBase(ABC):
         """Release resources, stop threads, close files."""
         ...
 
+    @staticmethod
+    def assess_estimate(estimate: VehicleStateEstimate) -> VehicleStateEstimate:
+        """Mark estimates with non-finite state values unsuitable for control."""
+        values = (
+            estimate.timestamp,
+            estimate.x,
+            estimate.y,
+            estimate.theta,
+            estimate.velocity,
+            estimate.acceleration,
+        )
+        return replace(estimate, valid=bool(estimate.valid) and all(isfinite(value) for value in values))
+
 
 class ObserverNull(ObserverBase):
     """
@@ -81,7 +96,7 @@ class ObserverNull(ObserverBase):
         super().__init__(config, vehicle_id, logger)
         self._last = VehicleStateEstimate(
             timestamp=0.0, x=0.0, y=0.0, theta=0.0,
-            velocity=0.0, acceleration=0.0, gps_valid=False,
+            velocity=0.0, acceleration=0.0, gps_valid=False, valid=False,
         )
 
     def start(self, initial_pose: Optional[list] = None) -> None:
@@ -99,12 +114,12 @@ class ObserverNull(ObserverBase):
         last_command: Optional[ControlCommand] = None,
     ) -> VehicleStateEstimate:
         now = sensor_data.sensor_timestamp or time.time()
-        self._last = VehicleStateEstimate(
+        self._last = self.assess_estimate(VehicleStateEstimate(
             timestamp=now,
             x=0.0, y=0.0, theta=0.0,
             velocity=0.0, acceleration=0.0,
-            gps_valid=sensor_data.gps_valid,
-        )
+            gps_valid=sensor_data.gps_valid, valid=False,
+        ))
         return self._last
 
     def get_latest(self) -> VehicleStateEstimate:

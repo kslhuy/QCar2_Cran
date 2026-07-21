@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from extra.simulation.carla.session import CarlaSession
+from extra.simulator.carla.session import CarlaSession
 
 
 class _Settings:

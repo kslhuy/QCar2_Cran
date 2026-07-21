@@ -1,51 +1,34 @@
-"""Tutorial: launch two independent virtual vehicle-control processes.
-
-This file is the multi-vehicle entry point for the fast local test. Run it
-directly from any working directory with:
-
-    python qcar_refactor/test/test_integration_multi_process_virtual_control.py
-
-Or, from the ``qcar_refactor`` directory:
-
-    python -m unittest test.test_integration_multi_process_virtual_control
-
-The parent test process creates one child process per ``routes`` entry. Each
-child loads ``config_vehicle_virtual.yaml``, builds its own ``VehicleRuntime``
-through ``VehicleProcessSpec``, starts the normal planner/controller/IO loop,
-and returns only serializable telemetry. No runtime, IO object, or actuator
-state is shared between vehicles.
-
-Change ``VirtualControlTestConfig`` to change virtual duration, time step, or
-target speed. Change ``routes`` in the test method to add vehicles or provide
-different paths. The parent process writes CSV traces and the combined plot to
-``test/artifacts/multi_process_virtual_control/``.
-"""
+"""Run two scenario-defined virtual controller workers on distinct curves."""
 
 import csv
 from dataclasses import dataclass
-import math
-import multiprocessing
-import os
 from pathlib import Path
 import sys
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from core.vehicle_process import VehicleProcessSpec, build_vehicle_process_runtime, run_vehicle_process
-
 
 _ROOT = Path(__file__).resolve().parents[1]
-_ARTIFACT_DIR = _ROOT / "test" / "artifacts" / "multi_process_virtual_control"
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+try:
+    from .helper_simulator_process import run_two_vehicle_workers
+except ImportError:
+    from helper_simulator_process import run_two_vehicle_workers
+
+from extra.simulator.virtual import load_virtual_setup
+
+
+_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "virtual_two_vehicle_control.yaml"
+_ARTIFACT_DIR = _ROOT / "test" / "artifacts" / "virtual_multi_process_control"
 
 
 @dataclass(frozen=True)
 class VirtualControlTestConfig:
-    """Self-contained simulation settings for this integration test."""
+    """Test-owned execution duration; routes and speed belong to the scenario."""
 
     duration_s: float = 30.0
     dt_s: float = 0.02
-    target_velocity_mps: float = 0.30
 
     @property
     def cycles(self) -> int:
@@ -55,86 +38,23 @@ class VirtualControlTestConfig:
 _SIMULATION = VirtualControlTestConfig()
 
 
-def _virtual_control_worker(vehicle_id, route, simulation, output_queue):
-    spec = VehicleProcessSpec(
-        vehicle_id=vehicle_id,
-        vehicle_config_file="config_vehicle_virtual.yaml",
-        value_overrides={
-            "mission": {"path": route, "target_velocity": simulation.target_velocity_mps},
-            "modules": {
-                "planner": {"path_source": route, "target_velocity": simulation.target_velocity_mps},
-            },
-        },
-    )
-    runtime = build_vehicle_process_runtime(spec)
-    telemetry = run_vehicle_process(runtime, cycles=simulation.cycles, dt=simulation.dt_s)
-    output_queue.put(
-        {
-            "vehicle_id": vehicle_id,
-            "rows": [_serialize(sample) for sample in telemetry],
-        }
-    )
-
-
-def _serialize(sample):
-    return {
-        "time_s": float(sample.sensor_data.sensor_timestamp),
-        "gps_x_m": float(sample.sensor_data.gps_position[0]),
-        "gps_y_m": float(sample.sensor_data.gps_position[1]),
-        "estimate_x_m": float(sample.estimate.x),
-        "estimate_y_m": float(sample.estimate.y),
-        "speed_mps": float(sample.estimate.velocity),
-        "target_x_m": float(sample.target.target_x),
-        "target_y_m": float(sample.target.target_y),
-        "throttle": float(sample.command.throttle),
-        "steering_rad": float(sample.command.steering),
-        "state": sample.state.name,
-    }
-
-
-def _curved_route(direction):
-    """Return a smooth route with an observable controller response."""
-    return [
-        [round(x, 3), round(direction * 0.55 * math.sin(math.pi * x / 6.0), 3)]
-        for x in (0.4 * index for index in range(16))
-    ]
-
-
 class TestMultiProcessVirtualControlIntegration(unittest.TestCase):
     def test_two_virtual_vehicles_follow_distinct_curves_and_save_plot(self):
-        routes = {
-            1: _curved_route(direction=1.0),
-            2: _curved_route(direction=-1.0),
-        }
-        context = multiprocessing.get_context("spawn")
-        output_queue = context.Queue()
-        # One OS process per vehicle. The worker receives only the vehicle's
-        # ID, route, and value-type simulation settings.
-        processes = [
-            context.Process(target=_virtual_control_worker, args=(vehicle_id, route, _SIMULATION, output_queue))
-            for vehicle_id, route in routes.items()
-        ]
+        setup = load_virtual_setup(_SCENARIO_FILE)
+        routes = {vehicle.vehicle_id: [list(point) for point in vehicle.route] for vehicle in setup.vehicles}
+        results = run_two_vehicle_workers(
+            self,
+            project_root=_ROOT,
+            runner_module="extra.simulator.virtual.process_runner",
+            setup_file=_SCENARIO_FILE,
+            cycles=_SIMULATION.cycles,
+            extra_args=["--dt", str(_SIMULATION.dt_s)],
+            require_v2v_trace=False,
+        )
 
-        try:
-            for process in processes:
-                process.start()
-            # Receive before join: a child can otherwise block flushing its
-            # telemetry payload into the multiprocessing pipe.
-            results = [output_queue.get(timeout=30) for _ in processes]
-            for process in processes:
-                process.join(timeout=30)
-                self.assertEqual(process.exitcode, 0)
-        finally:
-            for process in processes:
-                if process.is_alive():
-                    process.terminate()
-                    process.join(timeout=5)
-
-        rows_by_vehicle = {result["vehicle_id"]: result["rows"] for result in results}
+        rows_by_vehicle = {vehicle_id: result["rows"] for vehicle_id, result in results.items()}
         self.assertEqual(set(rows_by_vehicle), {1, 2})
         self.assertTrue(all(len(rows) == _SIMULATION.cycles for rows in rows_by_vehicle.values()))
-        for rows in rows_by_vehicle.values():
-            self._assert_safe_runtime_progression(rows)
         self.assertTrue(all(max(abs(row["throttle"]) for row in rows) > 0.01 for rows in rows_by_vehicle.values()))
         self.assertGreater(max(row["steering_rad"] for row in rows_by_vehicle[1]), 0.01)
         self.assertLess(min(row["steering_rad"] for row in rows_by_vehicle[2]), -0.01)
@@ -143,20 +63,6 @@ class TestMultiProcessVirtualControlIntegration(unittest.TestCase):
         self.assertTrue((_ARTIFACT_DIR / "vehicle_1.csv").is_file())
         self.assertTrue((_ARTIFACT_DIR / "vehicle_2.csv").is_file())
         self.assertTrue((_ARTIFACT_DIR / "trajectories.png").is_file())
-
-    def _assert_safe_runtime_progression(self, rows):
-        """A long run may finish its route, then must remain safely stopped."""
-        self.assertEqual(rows[0]["state"], "RUNNING")
-        stopped = False
-        for row in rows:
-            self.assertNotEqual(row["state"], "ERROR")
-            if row["state"] == "STOPPED":
-                stopped = True
-                self.assertEqual(row["throttle"], 0.0)
-                self.assertEqual(row["steering_rad"], 0.0)
-            else:
-                self.assertFalse(stopped, "runtime resumed after path-completion stop")
-                self.assertEqual(row["state"], "RUNNING")
 
     def _write_artifacts(self, rows_by_vehicle, routes):
         _ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)

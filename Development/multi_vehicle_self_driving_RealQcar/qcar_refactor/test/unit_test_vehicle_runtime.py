@@ -2,17 +2,26 @@
 
 import os
 import sys
+import time
 import unittest
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlCommand, GuiCommand, PlannerTarget, SensorData, VehicleStateEstimate
+from core.types import ControlCommand, GuiCommand, ControllerReference, SensorData, V2VMessage, VehicleStateEstimate
 from core.vehicle_config import ConfigVehicle
 from core.module_factory import build_vehicle_modules
 from core.vehicle_logic import VehicleRuntime
 from core.vehicle_state_machine import State
+from utils.fleet import (
+    FleetFormationBuilder,
+    FleetManager,
+    FleetMember,
+    FleetPolicy,
+    FleetRegistry,
+    encode_vehicle_state_estimate,
+)
 from utils.io.io_base import IONull
 
 
@@ -37,6 +46,29 @@ def _config():
             "ground_station": {"implementation": "null"},
         },
     )
+
+
+def _fleet_manager(vehicle_id: int = 0):
+    policy = FleetPolicy.from_mapping(
+        {
+            "following_policy": "direct_predecessor",
+            "communication": {
+                "topology": "loop",
+                "edge_direction": "directed",
+                "ego_estimate_rate_hz": 20,
+                "peer_timeout_s": 0.5,
+            },
+        }
+    )
+    formation = FleetFormationBuilder().build(
+        "runtime_test_fleet",
+        (
+            FleetMember.from_mapping({"vehicle_id": 0, "role": "leader", "member_order": 0}),
+            FleetMember.from_mapping({"vehicle_id": 1, "role": "follower", "member_order": 1}),
+        ),
+        policy,
+    )
+    return FleetManager(FleetRegistry(formation), vehicle_id=vehicle_id)
 
 
 class _Observer:
@@ -67,10 +99,12 @@ class _Planner:
 
     def update(self, state):
         self.events.append("planner.update")
-        return PlannerTarget(1.0, 0.0, 0.0, 0.5, self.finished)
+        return ControllerReference(1.0, 0.0, 0.0, 0.5, self.finished)
 
 
 class _Controller:
+    supports_fleet_reference = False
+
     def __init__(self, events):
         self.events = events
 
@@ -82,22 +116,36 @@ class _Controller:
         return ControlCommand(0.4, 0.1, target.target_velocity, "test_controller")
 
 
+class _FleetController(_Controller):
+    supports_fleet_reference = True
+
+    def compute(self, state, target, dt):
+        self.events.append("controller.compute_fleet_reference")
+        return ControlCommand(0.3, 0.2, target.target_velocity, "test_fleet_controller")
+
+
 class _V2V:
     def __init__(self, events, fail_start=False):
         self.events = events
         self.fail_start = fail_start
+        self.received = []
+        self.publications = []
 
     def start(self):
         self.events.append("v2v.start")
         if self.fail_start:
             raise RuntimeError("v2v failed")
 
-    def process_received_messages(self):
-        self.events.append("v2v.receive")
-
-    def broadcast_local_state(self, state):
-        self.events.append("v2v.broadcast")
+    def publish(self, message_type, payload, target_vehicle_ids=None):
+        self.events.append("v2v.publish")
+        self.publications.append((message_type, payload, target_vehicle_ids))
         return False
+
+    def drain_received(self):
+        self.events.append("v2v.drain")
+        received = self.received
+        self.received = []
+        return received
 
     def stop(self):
         self.events.append("v2v.stop")
@@ -125,13 +173,25 @@ class _RecordingNullIO(IONull):
 class TestVehicleRuntime(unittest.TestCase):
     def setUp(self):
         self.events = []
-        config = _config()
-        self.io = _RecordingNullIO(config.module("io"), self.events)
+        self.config = _config()
+        self.io = _RecordingNullIO(self.config.module("io"), self.events)
         self.observer = _Observer(self.events)
         self.planner = _Planner(self.events)
         self.controller = _Controller(self.events)
         self.v2v = _V2V(self.events)
-        self.runtime = VehicleRuntime(config, self.io, self.observer, self.planner, self.controller, self.v2v)
+        self.runtime = VehicleRuntime(self.config, self.io, self.observer, self.planner, self.controller, self.v2v)
+
+    def _rebuild_runtime(self, *, fleet, controller=None):
+        self.controller = controller or self.controller
+        self.runtime = VehicleRuntime(
+            self.config,
+            self.io,
+            self.observer,
+            self.planner,
+            self.controller,
+            self.v2v,
+            fleet=fleet,
+        )
 
     def test_factory_builds_headless_runtime(self):
         config = _config()
@@ -164,8 +224,7 @@ class TestVehicleRuntime(unittest.TestCase):
         self.assertEqual(telemetry.state, State.RUNNING)
         self.assertEqual(telemetry.command.throttle, 0.4)
         self.assertEqual(self.io.commands[-1], (0.4, 0.1))
-        self.assertLess(self.events.index("observer.update"), self.events.index("v2v.receive"))
-        self.assertLess(self.events.index("v2v.receive"), self.events.index("planner.update"))
+        self.assertLess(self.events.index("observer.update"), self.events.index("planner.update"))
         self.assertLess(self.events.index("planner.update"), self.events.index("controller.compute"))
 
     def test_stop_forces_zero_command(self):
@@ -175,6 +234,110 @@ class TestVehicleRuntime(unittest.TestCase):
         self.runtime.handle_command(GuiCommand("STOP", {}))
 
         self.assertEqual(self.runtime.state_machine.state, State.STOPPED)
+        self.assertEqual(self.io.commands[-1], (0.0, 0.0))
+
+    def test_fleet_build_and_cancel_use_existing_safe_stop_path(self):
+        self._rebuild_runtime(fleet=_fleet_manager())
+        self.runtime.start()
+        self.runtime.handle_command(GuiCommand("START", {}))
+
+        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        self.assertEqual(self.runtime.fleet.status().phase.value, "building")
+
+        self.runtime.handle_command(GuiCommand("CANCEL_FLEET", {}))
+        self.assertEqual(self.runtime.state_machine.state, State.STOPPED)
+        self.assertEqual(self.runtime.fleet.status().phase.value, "disabled")
+        self.assertEqual(self.io.commands[-1], (0.0, 0.0))
+
+    def test_fleet_build_is_rejected_when_vehicle_is_not_running(self):
+        self._rebuild_runtime(fleet=_fleet_manager())
+        self.runtime.start()
+        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+
+        self.assertEqual(self.runtime.fleet.status().phase.value, "disabled")
+
+    def test_fleet_runtime_consumes_generic_messages_and_publishes_to_peers(self):
+        self._rebuild_runtime(fleet=_fleet_manager())
+        peer = _fleet_manager(vehicle_id=1)
+        self.runtime.start()
+        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        payload = encode_vehicle_state_estimate(
+            VehicleStateEstimate(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, True),
+            peer.status(),
+        )
+        self.v2v.received.append(
+            V2VMessage(1, "VEHICLE_STATE_ESTIMATE", payload, 1, 0.0, 0, time.monotonic(), 0)
+        )
+
+        telemetry = self.runtime.step(dt=0.01)
+
+        self.assertEqual(telemetry.state, State.RUNNING)
+        self.assertEqual(self.runtime.fleet.status().phase.value, "active")
+        self.assertEqual(self.v2v.publications[-1][0], "VEHICLE_STATE_ESTIMATE")
+        self.assertEqual(self.v2v.publications[-1][2], [1])
+
+    def test_runtime_selects_fleet_controller_from_manager_reference(self):
+        self._rebuild_runtime(fleet=_fleet_manager(vehicle_id=1), controller=_FleetController(self.events))
+        leader = _fleet_manager(vehicle_id=0)
+        self.runtime.start()
+        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        self.assertTrue(leader.request_build(vehicle_running=True, now_monotonic=time.monotonic()))
+        payload = encode_vehicle_state_estimate(
+            VehicleStateEstimate(1.0, 1.0, 0.0, 0.0, 0.4, 0.0, True),
+            leader.status(),
+        )
+        self.v2v.received.append(
+            V2VMessage(0, "VEHICLE_STATE_ESTIMATE", payload, 1, 0.0, 0, time.monotonic(), 0)
+        )
+
+        telemetry = self.runtime.step(dt=0.01)
+
+        self.assertEqual(telemetry.state, State.RUNNING)
+        self.assertEqual(telemetry.command.source, "test_fleet_controller")
+        self.assertIn("controller.compute_fleet_reference", self.events)
+        self.assertNotIn("controller.compute", self.events)
+
+    def test_emergency_stop_cancels_an_active_fleet_before_writing_zero(self):
+        self._rebuild_runtime(fleet=_fleet_manager())
+        peer = _fleet_manager(vehicle_id=1)
+        self.runtime.start()
+        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        payload = encode_vehicle_state_estimate(
+            VehicleStateEstimate(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, True), peer.status()
+        )
+        self.v2v.received.append(
+            V2VMessage(1, "VEHICLE_STATE_ESTIMATE", payload, 1, 0.0, 0, time.monotonic(), 0)
+        )
+        self.runtime.step(dt=0.01)
+        self.assertEqual(self.runtime.fleet.status().phase.value, "active")
+
+        self.runtime.handle_command(GuiCommand("EMERGENCY_STOP", {}))
+
+        self.assertEqual(self.runtime.state_machine.state, State.STOPPED)
+        self.assertEqual(self.runtime.fleet.status().phase.value, "disabled")
+        self.assertEqual(self.io.commands[-1], (0.0, 0.0))
+
+    def test_shutdown_cancels_an_active_fleet_before_releasing_modules(self):
+        self._rebuild_runtime(fleet=_fleet_manager())
+        peer = _fleet_manager(vehicle_id=1)
+        self.runtime.start()
+        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        payload = encode_vehicle_state_estimate(
+            VehicleStateEstimate(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, True), peer.status()
+        )
+        self.v2v.received.append(
+            V2VMessage(1, "VEHICLE_STATE_ESTIMATE", payload, 1, 0.0, 0, time.monotonic(), 0)
+        )
+        self.runtime.step(dt=0.01)
+        self.assertEqual(self.runtime.fleet.status().phase.value, "active")
+
+        self.runtime.shutdown()
+
+        self.assertEqual(self.runtime.fleet.status().phase.value, "disabled")
         self.assertEqual(self.io.commands[-1], (0.0, 0.0))
 
     def test_emergency_stop_forces_zero_command(self):

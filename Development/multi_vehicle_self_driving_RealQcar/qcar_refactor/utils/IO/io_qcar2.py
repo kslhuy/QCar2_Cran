@@ -59,22 +59,3 @@ class IOQCar2(IOBase):
 
     def _hardware_write(self, throttle: float, steering: float) -> None:
         self._qcar.write(throttle=throttle, steering=steering)
-
-    def _close_impl(self) -> None:
-        """Release optional adapter-local GPS stream clients only."""
-        gps = self._gps
-        for stream_name in ("_gps_client", "_lidar_client"):
-            stream = getattr(gps, stream_name, None)
-            terminate = getattr(stream, "terminate", None)
-            if callable(terminate):
-                try:
-                    terminate()
-                except Exception as exc:
-                    self._logger.debug("Failed to terminate QCar GPS stream %s: %s", stream_name, exc)
-        lidar = getattr(gps, "lidar", None)
-        terminate = getattr(lidar, "terminate", None)
-        if callable(terminate):
-            try:
-                terminate()
-            except Exception as exc:
-                self._logger.debug("Failed to terminate QCar lidar client: %s", exc)

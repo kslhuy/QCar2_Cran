@@ -1,0 +1,211 @@
+"""Fleet lifecycle, peer cache, and publication coordination for one vehicle."""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Iterable
+from math import hypot
+
+from core.types import V2VMessage, VehicleStateEstimate
+
+from .fleet_message import VEHICLE_STATE_ESTIMATE, encode_vehicle_state_estimate
+from .fleet_peer_store import FleetPeerStore
+from .fleet_registry import FleetRegistry
+from .fleet_state_machine import FleetPhase, FleetStateMachine
+from .distributed_observer_base import DistributedObserverBase
+from .distributed_observer_fake import DistributedObserverFake
+from .fleet_following_policy import FleetFollowingPolicy
+from .fleet_types import (
+    FleetCommandResult,
+    FleetPeerSnapshot,
+    FleetPublication,
+    FleetStatus,
+    FleetStepResult,
+)
+
+
+class FleetManager:
+    """Coordinate local fleet state without owning sockets or actuator commands."""
+
+    def __init__(
+        self,
+        registry: FleetRegistry,
+        vehicle_id: int,
+        distributed_observer: DistributedObserverBase | None = None,
+    ) -> None:
+        self._state = FleetStateMachine(registry, vehicle_id)
+        self._registry = registry
+        self._vehicle_id = int(vehicle_id)
+        self._peers = FleetPeerStore(registry, vehicle_id)
+        self._distributed_observer = distributed_observer or DistributedObserverFake({}, vehicle_id)
+        self._distributed_observer.start()
+        self._distributed_latest = None
+        self._build_deadline: float | None = None
+        self._last_publication_at: float | None = None
+
+    @property
+    def phase(self) -> FleetPhase:
+        return self._state.phase
+
+    def status(self) -> FleetStatus:
+        return self._state.status(self._peers.peer_health())
+
+    def request_build(self, *, vehicle_running: bool, now_monotonic: float | None = None) -> bool:
+        if not self._state.request_build(vehicle_running=vehicle_running):
+            return False
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        self._build_deadline = now + self._registry.snapshot().policy.communication.peer_timeout_s
+        self._last_publication_at = None
+        return True
+
+    def handle_command(
+        self,
+        command_name: str,
+        *,
+        vehicle_running: bool,
+        now_monotonic: float | None = None,
+    ) -> FleetCommandResult:
+        """Handle fleet lifecycle commands without changing vehicle safety state."""
+        normalized = command_name.upper()
+        if normalized == "BUILD_FLEET":
+            self.request_build(vehicle_running=vehicle_running, now_monotonic=now_monotonic)
+            return FleetCommandResult(handled=True)
+        if normalized == "CANCEL_FLEET":
+            self.request_cancel("cancel_command")
+            return FleetCommandResult(handled=True, stop_vehicle=True, reason="fleet_cancel")
+        return FleetCommandResult(handled=False)
+
+    def request_cancel(self, reason: str = "") -> bool:
+        self._build_deadline = None
+        return self._state.request_cancel(reason)
+
+    def fault(self, reason: str) -> bool:
+        self._build_deadline = None
+        return self._state.fault(reason)
+
+    def complete_cancellation(self) -> bool:
+        self._build_deadline = None
+        return self._state.complete_cancellation()
+
+    def process_ego_estimate(self, estimate: VehicleStateEstimate) -> str | None:
+        """Reject fleet operation when the local observer has no usable state."""
+        if self.phase in (FleetPhase.BUILDING, FleetPhase.ACTIVE) and not estimate.valid:
+            return "fleet local observer estimate invalid"
+        return None
+
+    def step(
+        self,
+        estimate: VehicleStateEstimate,
+        messages: Iterable[V2VMessage],
+        now_monotonic: float,
+        *,
+        dt: float = 0.0,
+        measurements=None,
+    ) -> FleetStepResult:
+        """Process one fleet cycle and return decisions without touching IO."""
+        fault_reason = self.process_ego_estimate(estimate)
+        if fault_reason is None:
+            fault_reason = self.process_received(messages, now_monotonic)
+        if fault_reason is not None:
+            return FleetStepResult(self.status(), fault_reason=fault_reason)
+
+        self._distributed_latest = self._distributed_observer.update(
+            local_estimate=estimate,
+            peer_snapshots=self._peers.snapshots(),
+            membership_revision=self._registry.snapshot().membership_revision,
+            measurements=measurements,
+            dt=dt,
+        )
+        status = self.status()
+        publication = self.build_publication(estimate, now_monotonic)
+        if status.phase == FleetPhase.BUILDING and status.role.value == "follower":
+            return FleetStepResult(
+                status,
+                publication=publication,
+                hold_command=True,
+                distributed_estimate=self._distributed_latest,
+            )
+        if status.phase == FleetPhase.ACTIVE and status.role.value == "follower":
+            target = FleetFollowingPolicy().make_reference(estimate, self.predecessor_snapshot(), status)
+            if target is None:
+                return FleetStepResult(
+                    status,
+                    publication=publication,
+                    fault_reason="fleet follower has no valid predecessor",
+                    distributed_estimate=self._distributed_latest,
+                )
+            return FleetStepResult(
+                status,
+                publication=publication,
+                target=target,
+                distributed_estimate=self._distributed_latest,
+            )
+        return FleetStepResult(
+            status,
+            publication=publication,
+            distributed_estimate=self._distributed_latest,
+        )
+
+    def process_received(self, messages: Iterable[V2VMessage], now_monotonic: float) -> str | None:
+        """Store inbound estimates and return a safe-stop reason when peer data fails."""
+        self._peers.ingest(messages)
+        self._peers.prune_stale(now_monotonic)
+        if self.phase == FleetPhase.BUILDING:
+            if self._peers.all_expected_fresh():
+                self._state.activate()
+            elif self._build_deadline is not None and now_monotonic >= self._build_deadline:
+                return "fleet peer build timeout"
+        elif self.phase == FleetPhase.ACTIVE and not self._peers.all_expected_fresh():
+            return "fleet peer became stale"
+        return None
+
+    def build_publication(
+        self,
+        estimate: VehicleStateEstimate,
+        now_monotonic: float,
+    ) -> FleetPublication | None:
+        """Create a rate-limited fleet payload for the configured outbound peers."""
+        if self.phase not in (FleetPhase.BUILDING, FleetPhase.ACTIVE):
+            return None
+        formation = self._registry.snapshot()
+        period = 1.0 / formation.policy.communication.estimate_rate_hz
+        if self._last_publication_at is not None and now_monotonic - self._last_publication_at < period:
+            return None
+        self._last_publication_at = now_monotonic
+        return FleetPublication(
+            message_type=VEHICLE_STATE_ESTIMATE,
+            payload=encode_vehicle_state_estimate(estimate, self.status()),
+            target_vehicle_ids=formation.outbound_peer_ids(self._vehicle_id),
+        )
+
+    def snapshots(self) -> tuple[FleetPeerSnapshot, ...]:
+        return self._peers.snapshots()
+
+    def predecessor_snapshot(self) -> FleetPeerSnapshot | None:
+        return self._peers.predecessor_snapshot()
+
+    def predecessor_age_s(self, now_monotonic: float | None = None) -> float | None:
+        """Return the local receive age of the predecessor snapshot."""
+        predecessor = self.predecessor_snapshot()
+        if predecessor is None:
+            return None
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        return max(0.0, now - predecessor.received_at_monotonic)
+
+    def predecessor_gap_m(self, ego_estimate: VehicleStateEstimate) -> float | None:
+        """Return current Euclidean spacing to the validated predecessor."""
+        predecessor = self.predecessor_snapshot()
+        if predecessor is None:
+            return None
+        return hypot(predecessor.estimate.x - ego_estimate.x, predecessor.estimate.y - ego_estimate.y)
+
+    def counters(self) -> dict[str, int]:
+        return self._peers.counters()
+
+    def distributed_estimate(self):
+        """Return the latest pass-through or calculated fleet estimate."""
+        return self._distributed_latest
+
+    def shutdown(self) -> None:
+        """Release the observer owned by this fleet manager."""
+        self._distributed_observer.stop()

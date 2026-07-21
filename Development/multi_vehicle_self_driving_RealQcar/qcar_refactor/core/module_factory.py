@@ -26,6 +26,9 @@ class VehicleModules:
 
 def build_vehicle_modules(config: ConfigVehicle, logger=None, resources: dict | None = None) -> VehicleModules:
     """Build selected modules with lazy imports for optional backends."""
+    ground_station_config = config.module("ground_station")
+    if ground_station_config.get("implementation") != "null":
+        raise ConfigError("Ground-station profiles are not supported until the bridge is implemented")
     simulation = build_simulation(config, logger, resources)
     return VehicleModules(
         io=build_io(config, logger, resources, simulation),
@@ -71,7 +74,7 @@ def build_simulation(config: ConfigVehicle, logger=None, resources: dict | None 
     if implementation == "null":
         return None
     if implementation == "carla":
-        from extra.simulation.carla.session import CarlaSession
+        from extra.simulator.carla.session import CarlaSession
 
         dependencies = resources or {}
         return CarlaSession(
@@ -122,6 +125,14 @@ def build_controller(config: ConfigVehicle, logger=None):
         from utils.control.controller.controller_simple import ControllerSimple
 
         return ControllerSimple(controller_config, config.vehicle_id, logger)
+    if implementation == "fleet_2d":
+        from utils.control.controller.controller_fleet_2d import ControllerFleet2D
+
+        return ControllerFleet2D(controller_config, config.vehicle_id, logger)
+    if implementation == "fleet_longitudinal":
+        from utils.control.controller.controller_fleet_longitudinal import ControllerFleetLongitudinal
+
+        return ControllerFleetLongitudinal(controller_config, config.vehicle_id, logger)
     raise ConfigError(f"Unsupported controller implementation: '{implementation}'")
 
 

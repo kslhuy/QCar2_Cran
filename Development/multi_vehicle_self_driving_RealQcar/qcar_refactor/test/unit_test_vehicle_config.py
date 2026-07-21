@@ -11,6 +11,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.module_factory import build_vehicle_modules
 from core.vehicle_config import ConfigError, load_config
 
 
@@ -96,6 +97,11 @@ class TestVehicleConfig(unittest.TestCase):
         )
         self.assertEqual(config.module("io")["implementation"], "null")
         self.assertEqual(config.module("observer")["implementation"], "null")
+
+    def test_unsupported_ground_station_profile_is_rejected_by_composition(self):
+        config = load_config(self.config_dir, selection_overrides={"ground_station": "legacy"})
+        with self.assertRaisesRegex(ConfigError, "Ground-station profiles"):
+            build_vehicle_modules(config)
 
     def test_loads_a_new_module_from_the_vehicle_selection(self):
         (self.config_dir / "config_perception.yaml").write_text(

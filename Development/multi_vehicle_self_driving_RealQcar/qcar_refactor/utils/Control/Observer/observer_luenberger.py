@@ -76,17 +76,17 @@ class ObserverEKF(ObserverBase):
                          steering=steering, throttle=throttle)
         s = self._ekf.get_state()
 
-        return VehicleStateEstimate(
+        return self.assess_estimate(VehicleStateEstimate(
             timestamp=sensor_data.sensor_timestamp,
             x=s[0], y=s[1], theta=s[2], velocity=s[3],
             acceleration=self._last_accel_magnitude,
             gps_valid=sensor_data.gps_valid,
-        )
+        ))
 
     def get_latest(self) -> VehicleStateEstimate:
         if self._ekf is None:
             self._logger.warning("EKF not started, returning default state")
-            return VehicleStateEstimate(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False)
+            return VehicleStateEstimate(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, False)
         s = self._ekf.get_state()
         return VehicleStateEstimate(
             time.time(), s[0], s[1], s[2], s[3], self._last_accel_magnitude, False)

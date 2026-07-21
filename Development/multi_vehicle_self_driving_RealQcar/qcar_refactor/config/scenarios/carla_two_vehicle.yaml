@@ -1,0 +1,19 @@
+# Shared CARLA world plus two independent vehicle processes.
+# Run the direct CARLA integration test after starting CARLA on 127.0.0.1:2000.
+simulation_profile: carla_sync
+
+vehicles:
+  - vehicle_id: 1
+    vehicle_config_file: config_vehicle_carla.yaml
+    tick_owner: true
+    spawn_transform: {x: -13.1, y: 0.8, z: 0.5, yaw: 0.0}
+    mission:
+      path: [[-13.1, -0.8], [-10.0, -0.2], [-7.0, -0.8]]
+      target_velocity: 0.4
+
+  - vehicle_id: 2
+    vehicle_config_file: config_vehicle_carla.yaml
+    spawn_transform: {x: -13.1, y: -2.0, z: 0.5, yaw: 0.0}
+    mission:
+      path: [[-13.1, 2.0], [-10.0, 2.5], [-7.0, 2.0]]
+      target_velocity: 0.4

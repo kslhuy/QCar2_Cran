@@ -2,10 +2,7 @@
 
 This is the single implementation checklist for the refactor, including CARLA. Complete the modules in order because each acceptance gate is the dependency for the next module.
 
-Design references:
-
-- `MINIMAL_REFACTOR_PLAN.md`: architecture, state-machine migration, and legacy compatibility.
-- `CARLA_STARTUP_IO_TODO.md`: CARLA data mapping, session ownership, configuration, and shutdown detail.
+Design reference: `PROJECT_ARCHITECTURE.md` defines the project structure, ownership boundaries, runtime flow, configuration, usage, and extension rules.
 
 ## Configuration And Composition Rules
 
@@ -32,7 +29,7 @@ The loader resolves each entry in `config_vehicle.modules` from `config/config_<
 
 Project entry scripts follow one standard method: load one vehicle config, build modules through `core.module_factory`, construct `VehicleRuntime`, and call `start()`/`step()`/`shutdown()` inside `try`/`finally`. Scripts do not create hardware or simulation clients, spawn actors, poll sensors, or apply actuator commands directly.
 
-Package ownership is deliberate: reusable vehicle adapters and algorithms live under `utils/`; optional platform startup and session ownership live under `extra/simulation/`; executable ground-station applications and presentation code live under `extra/ground_station/`. `utils/ground_station/` is reserved for the vehicle-side ground-station command and telemetry bridge, not a desktop GUI.
+Package ownership is deliberate: reusable vehicle adapters and algorithms live under `utils/`; simulation platform orchestration lives under `extra/simulator/<platform>/`. `core/vehicle_process.py` builds and runs exactly one vehicle actor; it does not create child processes or know simulator sessions. `extra/simulator/base.py` owns the platform-neutral worker lifecycle and telemetry serialisation, while `extra/simulator/scenario.py` owns common YAML loading, simulation-profile lookup, mission parsing, V2V endpoint validation, unique-ID checks, and common `VehicleProcessSpec` assembly. Every scenario begins with `simulation_profile`: CARLA selects `carla_sync`, while the current isolated virtual runtime selects `"null"`. Both `extra/simulator/carla/` and `extra/simulator/virtual/` provide `scenario.py` and V2V-agnostic `process_runner.py`; their workers share `--setup-file`, `--vehicle-id`, `--cycles`, `--ready-file`, and `--start-file` arguments. `test/helper_v2v_trace.py` is the separate test-worker entry point: it uses the same platform managers but owns the synthetic `TEST_STATE_V1` message and localhost trace capture. Only `extra/simulator/carla/session.py` owns a session because CARLA has a shared external server/world; `IOVirtual` owns an isolated local mathematical model and therefore needs no virtual session. Executable ground-station applications and presentation code live under `extra/ground_station/`. `utils/ground_station/` is reserved for the vehicle-side ground-station command and telemetry bridge, not a desktop GUI.
 
 ## Multi-Vehicle Network And Scenario Rules
 
@@ -40,9 +37,11 @@ Keep simulation, V2V, and ground-station endpoints separate. A CARLA port is a s
 
 V2V is a vehicle-to-vehicle UDP transport. Each active vehicle binds a unique local UDP port, normally `v2v.base_port + vehicle_id`; peers send UDP packets to those ports. The legacy implementation uses a separate V2V range (default `7000 + vehicle_id`), while the refactored `udp_default` profile currently uses `8000 + vehicle_id`. Never overlap this range with CARLA or ground-station ports.
 
+V2V packet contents are untrusted. Invalid envelopes must be dropped without changing vehicle state. V2V only validates the generic envelope and retains local receive timestamps; fleet owns payload decoding and stale-peer decisions. Monotonic timestamps must not be compared across machines or used as observer timestamps. Virtual control tests remain unpaced by default; virtual tests using wall-clock UDP must enable the runner's `--realtime` option or deliberately pace their steps.
+
 The legacy ground station is a TCP server with one listener per vehicle at `ground_station.base_port + vehicle_id` (default `5000 + vehicle_id`). Each vehicle is a TCP client: it connects to that assigned remote listener, uploads telemetry, and receives commands over the same bidirectional connection. The refactored protocol should eventually use one TCP listener and an initial `vehicle_id` registration message; retain the per-vehicle TCP-port scheme only when legacy compatibility is required.
 
-`config_vehicle_*.yaml` remains a single-vehicle runtime template. A multi-vehicle scenario owns per-instance values: vehicle ID, spawn transform, mission, tick owner, V2V endpoint/peers, and ground-station destination. It must not duplicate shared CARLA session settings such as host, port, fixed delta, world defaults, or sensor defaults.
+`config_vehicle_*.yaml` remains a single-vehicle runtime template. Every multi-vehicle scenario explicitly selects a top-level `simulation_profile` from `config_simulation.yaml`, then owns per-instance values: vehicle ID, spawn transform, mission, tick owner, V2V endpoint/peers, and ground-station destination. It must not duplicate shared CARLA settings such as host, port, fixed delta, world defaults, or sensor defaults.
 
 ## Current Foundation
 
@@ -97,7 +96,7 @@ Owner: `core/vehicle_logic.py` and `core/vehicle_main.py`.
 - [x] Keep `StateMachine` as the safety supervisor only.
 - [x] Implement path following as the first `RUNNING` operation strategy.
 - [x] Force zero command whenever the state is not `RUNNING`, on exceptions, and before shutdown.
-- [x] Process one loop in this order: commands, simulation tick if present, IO read, observer, V2V receive, planner, controller, IO write, telemetry, V2V broadcast.
+- [x] Process one loop in this order: commands, simulation tick if present, IO read, observer, planner, controller, IO write, telemetry. V2V lifecycle is started and stopped by the runtime; fleet will later consume and publish generic V2V messages.
 - [x] Use monotonic loop scheduling and validate `dt`.
 - [x] Add runtime tests for READY, START, STOP, emergency stop, path completion, module failure, and shutdown order.
 
@@ -119,9 +118,9 @@ Acceptance gate: changing IO backend does not alter observer, planner, controlle
 
 ## Step 5: Add CARLA Simulation And IO
 
-Owners: `extra/simulation/carla/session.py` and `utils/io/io_carla.py`.
+Owners: `extra/simulator/carla/session.py` and `utils/io/io_carla.py`.
 
-- [x] Add `extra/simulation/carla/session.py`.
+- [x] Add `extra/simulator/carla/session.py`.
 - [x] Make `CarlaSession` own client connection, world settings, ego/sensor actors, sensor callbacks, synchronous ticks, and cleanup.
 - [x] Keep CARLA client/world/actor handles private to the session.
 - [x] Expose an ego actor and immutable/latest sensor snapshot to `IOCarla`.
@@ -143,48 +142,240 @@ Owners: `core/vehicle_process.py`, CARLA launch adapters, and tests.
 - [x] Start, step, and shut down one process-owned runtime in `try`/`finally`.
 - [x] Add focused process-builder/lifecycle tests, a two-process virtual-IO integration test, and a two-process virtual closed-loop controller test with CSV/trajectory-plot artifacts.
 - [x] Add a two-process virtual-IO integration test through the platform-neutral vehicle-process base.
+- [x] Give virtual and CARLA the same scenario/process-runner boundary; keep a session module only for externally shared simulation worlds.
 - [x] Add a parsed simulation setup manifest with per-vehicle IDs, config files, spawn transforms, routes, and exactly one synchronous tick owner.
-- [ ] Replace inline JSON test manifests with reusable YAML scenario files under `config/scenarios/`.
-- [ ] Make a scenario select one shared `config_simulation.yaml` session profile instead of duplicating CARLA host and port.
-- [ ] Keep `config_simulation.yaml` limited to shared session/world/sensor defaults; remove single-vehicle spawn and route assumptions from it.
-- [ ] Extend each scenario vehicle entry with optional `v2v` UDP endpoint/peer overrides and ground-station TCP destination settings.
-- [ ] Validate unique vehicle IDs, one CARLA tick owner, unique local V2V bind endpoints, and no collision between configured V2V and ground-station port ranges.
-- [ ] Add a simulation process launcher that starts one vehicle runtime process per parsed vehicle setup.
-- [ ] Make the tick-owner process configure/tick the shared CARLA world; non-owner processes must wait for completed frames and never call `world.tick()`.
-- [ ] Pass each process only its own spawn transform, path, vehicle ID, and externally owned resources; do not share Python runtime objects across processes.
+- [x] Replace inline JSON test manifests with reusable YAML scenario files under `config/scenarios/`.
+- [x] Make a scenario select one shared `config_simulation.yaml` session profile instead of duplicating CARLA host and port.
+- [x] Keep `config_simulation.yaml` limited to shared session/world/sensor defaults; retain only a named standalone `default_spawn_transform` fallback.
+- [x] Extend CARLA and virtual scenario vehicle entries with optional V2V profile, bind endpoint, and peer overrides.
+- [x] Reject ground-station scenario settings until a bridge owns and consumes them in Step 8.
+- [x] Validate unique vehicle IDs, one CARLA tick owner, unique local V2V bind endpoints, and no collision between configured V2V and ground-station port ranges.
+- [x] Add a simulation process launcher that starts one vehicle runtime process per parsed vehicle setup.
+- [x] Make CARLA and virtual multi-process integration tests launch canonical `config/scenarios/*.yaml` files through subprocess workers; keep only execution duration and artifact assertions inside tests.
+- [x] Make the tick-owner process configure/tick the shared CARLA world; non-owner processes wait for completed frames and never call `world.tick()`.
+- [x] Pass each process only its own spawn transform, path, vehicle ID, and external endpoint settings; do not share Python runtime objects across processes.
 - [x] Add a direct-run two-process CARLA control integration test with distinct trajectories, actor ownership/cleanup checks, CSV records, and per-vehicle plots.
 
 Acceptance gate: two independent headless vehicles can start, step, and shut down without V2V, fleet policy, or shared actuator state; the parsed CARLA setup makes one process the only synchronous tick owner.
 
-## Step 7: Add V2V And Fleet Utilities
+## Step 7: Finish V2V Transport And Build Fleet Utilities
 
 Owners: `utils/v2v/` and `utils/fleet/`.
 
 - [x] Connect the existing null/UDP V2V adapter through the runtime factory.
-- [ ] Apply each scenario vehicle's V2V endpoint and peer list as a `modules.v2v` override when launching independent processes.
-- [ ] Ensure V2V cannot write actuator commands or bypass the state machine.
-- [ ] Define fleet utility contracts for peer membership, latest `V2VState` snapshots, vehicle roles, and stale-peer removal.
-- [ ] Keep fleet utilities independent of UDP sockets, vehicle IO, actuator commands, and state-machine transitions.
-- [ ] Keep platoon/fleet control policy out of this step; it remains an optional operation strategy after fleet data is reliable.
-- [ ] Add unit tests for peer registration, timeout/removal, snapshot queries, and V2V/fleet isolation.
-- [ ] Run two local V2V instances and verify peer-state exchange without a fleet policy.
+- [x] Apply each CARLA or virtual scenario vehicle's V2V endpoint and peer list as a `modules.v2v` override and select its V2V profile when launching independent processes.
+- [x] Ensure V2V cannot write actuator commands or bypass the state machine; invalid packets are dropped rather than failing the control loop.
+- [x] Run two local virtual vehicle processes and verify generic UDP message exchange without a fleet policy.
+- [x] Record test-owned `STATE` payload trajectories, localhost receive latency, and sequence-gap packet-loss diagnostics; add the equivalent direct-run CARLA test.
+- [x] Replace the transitional state-specific V2V API (`broadcast_local_state()` and `get_peer_states()`) with generic `publish(message_type, payload)` and `drain_received()` transport methods.
+- [x] Keep UDP envelope metadata in V2V: sender ID, message type, sequence, generic payload, send timestamp, receive timestamp, transport counters, and endpoint routing.
+- [x] Retain `received_at_monotonic` only as local transport metadata; fleet will use it for stale-peer decisions and never compare it across machines or use it as an observer timestamp.
+- [x] Add high-resolution local diagnostic timestamps at `sendto()` and `recvfrom()`; plot transport latency and runtime queue delay separately in localhost tests.
+- [x] Default local V2V ports to `base_port + vehicle_id` and peer ports to `base_port + peer_id`; retain explicit scenario ports only as deployment overrides.
+- [x] Adopt legacy transport hardening without legacy coupling: configurable UDP socket buffers, selected-peer sends, optional per-message rate limits, thread-safe counters, and a fixed 2048-byte encoded-datagram maximum.
+- [x] Make virtual and CARLA V2V diagnostics use the same worker protocol, multi-peer result schema, and test-only CSV/plot helper; retain platform-specific session and timing hooks only.
+- [x] Move synthetic V2V state publishing, message draining, and localhost trace capture into `test/helper_v2v_trace.py`. Keep production simulation runners and `utils/v2v/` independent of test payload schemas and vehicle-state encoding.
 
-Acceptance gate: two local vehicles exchange peer state, while neither V2V nor fleet utilities can affect local actuator writes or safety transitions.
+### Step 7.1: Define Fleet Contracts And Configuration
 
-## Step 8: Add Ground-Station Client, Server, And GUI Interface
+Owner: `utils/fleet/`, `core/types.py`, and `config/`.
 
-Owners: `utils/ground_station/` and `extra/ground_station/`.
+- [x] Define immutable value contracts in `utils/fleet/`: `FleetRole`, `FleetMember`, `FleetFormation`, `FleetStatus`, `FleetPeerSnapshot`, and `FleetPhase`. Add a separate mutable `FleetRegistry` as the sole owner of membership changes.
+- [x] Define fleet message schemas with an explicit encoded `schema_version` field.
+- [x] Support exactly one leader and one or more ordered followers. Each follower has one predecessor; duplicate vehicle IDs, duplicate order values, missing predecessors, and a non-unique leader are configuration errors.
+- [x] Keep initial formation membership and order in the multi-vehicle scenario, where all vehicle IDs are visible. Do not put a complete multi-vehicle formation in `config_vehicle_*.yaml`.
+- [x] Add `config_fleet.yaml` for reusable fleet-policy profiles. Each profile specifies fleet-message publish rates, peer timeout, communication topology (`leader_follower` leader-centred star, `predecessor_chain` directed predecessor links, `loop` ring, or `vehicle_vehicle` full mesh), and explicit directed/bidirectional edge semantics.
+- [x] Keep V2V endpoints and generic transport routing in the scenario/V2V profile. Fleet topology validates the recipients required for fleet-owned messages; it does not create sockets or duplicate endpoint addresses.
+- [x] Validate that topology supports the selected following policy. Direct-predecessor following requires every follower to receive its predecessor estimate; a leader-centred star is therefore valid only for a leader-reference policy or when the required predecessor links are also configured.
+- [x] Remove the stale `V2VState` contract from `core/types.py`; `FleetPeerSnapshot` is now the fleet-owned state contract.
+- [x] Add fleet payload encoding/decoding, peer-state cache, and freshness policy in `utils/fleet/` during Step 7.4.
+- [x] Define `VEHICLE_STATE_ESTIMATE` as the fleet-owned V2V encoding of one vehicle's local `VehicleStateEstimate`, with source timestamp, sequence, encoded `schema_version`, and validity/health metadata. It is not fleet lifecycle state; `utils/v2v/` continues to transport only generic messages.
+- [x] Define `FleetStatus` separately for `formation_id`, membership revision, `source_vehicle_id`, member order/role, `FleetPhase`, and peer-health summary. One globally unique vehicle ID is used as the fleet member identity; do not introduce a second unrelated ID.
+- [x] Keep `VEHICLE_STATE_ESTIMATE` as the initial V2V data path: it carries the existing self-estimation result from `utils/control/observer` before a fleet-state observer exists. Preserve this publish/decode/snapshot pattern when a future fleet-state observer adds `FLEET_STATE_ESTIMATE` and `FleetStateEstimate`; do not treat fleet-state and self estimates as independent measurements or fuse them without a defined correlation model.
+- [x] Keep fleet utilities independent of UDP sockets, vehicle IO, direct actuator writes, CARLA/QCar APIs, and global safety-state transitions.
+- [x] Document timestamp rules: fleet uses a local V2V receive-monotonic time only for age/freshness; source timestamps are not compared between machines.
+- [x] Add unit tests for formation validation and V2V/fleet ownership isolation.
+- [x] Add payload round-trip and malformed-payload tests with the Step 7.4 codec.
 
-- [ ] Add `NullGroundStationBridge` and a queue-based vehicle-side bridge interface in `utils/ground_station/`.
-- [ ] Add `GroundStationClientBridge` for the vehicle-side TCP connection, framing, command receive queue, and telemetry publish queue.
-- [ ] Add `GroundStationServer` in `extra/ground_station/` to accept vehicle connections and route messages to the GUI interface.
-- [ ] Implement the visual ground-station main program in `extra/ground_station/`; it displays telemetry and enqueues commands but contains no vehicle control logic.
-- [ ] Define the minimal legacy-compatible protocol: TCP, length-prefixed MessagePack, vehicle ID, supported commands, and compatibility telemetry.
-- [ ] Make the new server use one configured TCP listener and identify a vehicle through its initial registration message; support the legacy `base_port + vehicle_id` listeners only through an explicit compatibility mode.
-- [ ] Support only START, STOP, EMERGENCY_STOP, RESET, SET_VELOCITY, and SET_PATH first; reject unsupported commands explicitly.
-- [ ] Add bridge factory, framing, translation, reconnect, server routing, GUI queue, and runtime command-mapping tests.
+Acceptance gate: a valid scenario can build one initial fleet definition for every vehicle process, and invalid membership, topology, or V2V route configuration fails without starting control.
 
-Acceptance gate: replacing the null bridge with a client/server/GUI connection does not change vehicle control, fleet utilities, or safety code.
+### Step 7.2: Build The Initial Fleet Formation And Dynamic Registry
+
+Owner: `utils/fleet/` and scenario parsing.
+
+- [x] Add `FleetFormationBuilder` to validate the scenario's initial membership/order and initialise the local `FleetRegistry`; it does not freeze membership for the lifetime of the fleet.
+- [x] Make `FleetRegistry` own the mutable member list and controlled membership operations (`join`, `leave`, role/order update) with validation and an incrementing membership revision. Callers receive immutable `FleetFormation`/`FleetStatus` snapshots, not the registry's mutable internal list.
+- [x] Expose local role, current ordered member snapshot, predecessor, successor list, expected peer IDs, and membership revision through queries.
+- [x] Resolve predecessor from the explicit member-order value, not the line order in YAML. For example, order `0` is the leader and order `2` follows order `1`, even if their YAML entries are reversed. This is the required deterministic behaviour.
+- [x] Validate that every initial member has a process specification and an enabled compatible V2V endpoint before the scenario accepts the formation. Resolve fleet-message recipients from the configured topology and reject missing required links.
+- [ ] Validate dynamic member updates against their future process/V2V registration path before the registry accepts the change.
+- [x] Do not create processes, sockets, simulators, actors, or controllers in the formation builder. `extra/simulator/` still owns processes and sessions; `core/vehicle_process.py` still owns one runtime.
+- [x] Add unit tests for two- and three-vehicle formations, YAML-order-independent predecessor selection, topology-route rejection, join/leave rejection, membership revision changes, and a vehicle not participating in a fleet.
+
+Acceptance gate: every participating vehicle can resolve its initial role and predecessor from the same scenario without cross-process Python objects, while future membership changes have one validated registry path.
+
+### Step 7.3: Add Fleet Lifecycle Without Expanding The Safety State Machine
+
+Owner: `utils/fleet/`, `core/vehicle_logic.py`, and `core/vehicle_state_machine.py`.
+
+- [x] Add a local `FleetPhase` owned by fleet utilities: `DISABLED -> BUILDING -> ACTIVE -> CANCELLING -> DISABLED`, with `FAULT -> CANCELLING` for fleet-data or policy failures.
+- [x] Keep the existing vehicle state machine as the global safety supervisor. Fleet phase is an operating mode, not another copy of `READY`, `RUNNING`, `STOPPED`, or `EMERGENCY_STOP`.
+- [x] Define explicit build and cancel requests. A build is allowed only from a safe running precondition with a valid `FleetRegistry` snapshot; cancelling or faulting commands zero through the existing safety path before leaving fleet operation.
+- [ ] Define membership-update requests and registry revision checks now. The baseline runtime may reject join, leave, leader handover, and reordering while `ACTIVE`, but later dynamic-fleet work must use these controlled operations rather than mutate a public list.
+- [x] Keep fleet commands local/test-driven until Step 8 extends the ground-station protocol; do not add a GUI dependency to fleet construction.
+- [x] Add lifecycle tests for peer timeout during build, emergency stop, and runtime shutdown with an active fleet. Successful build, invalid build rejection, cancel, and fault transitions are covered.
+
+Acceptance gate: fleet activation and cancellation are observable, idempotent local transitions that cannot bypass the vehicle safety supervisor.
+
+### Step 7.4: Publish And Maintain Fleet Peer Snapshots
+
+Owner: `utils/fleet/` with generic `utils/v2v/` transport.
+
+- [x] Publish the existing local observer result as `VEHICLE_STATE_ESTIMATE` at the configured rate after `utils/control/observer` updates. This is the baseline V2V data path, not `FleetStatus` and not a fleet-state observer output.
+- [x] Drain generic V2V messages in fleet, decode `VEHICLE_STATE_ESTIMATE`, and maintain a latest valid peer snapshot keyed by `source_vehicle_id` and membership revision.
+- [x] Record sender ID, source sequence, source timestamp, local receive time, validity, and freshness in every peer snapshot. Reject wrong-role, unexpected-peer, duplicate/out-of-order, stale, malformed, and obsolete-membership-revision messages according to explicit policy.
+- [x] Provide immutable snapshot queries for the current fleet and the immediate predecessor. The registry/cache remains internally mutable so it can remove departed or stale peers safely.
+- [x] Make freshness loss explicit and safe: a stale or missing predecessor prevents fleet control from issuing a following command and triggers the fleet cancellation/fault policy.
+- [x] Keep observer instances local. A future distributed observer is a local fleet component that consumes peer snapshots and produces a separate estimate; it is never a shared cross-process object.
+- [x] Add deterministic tests for receive ordering, timeout/removal, sequence gaps, malformed packets, and V2V/fleet isolation using injected local timestamps.
+
+Acceptance gate: a follower obtains only validated, fresh predecessor snapshots through V2V, and transport loss cannot create a fictitious fleet state or actuator command.
+
+### Step 7.5: Add Fleet Controller Base And Initial Longitudinal Controller
+
+Owner: `utils/fleet/`, `utils/control/`, and `core/vehicle_logic.py`.
+
+- [x] Add `utils/control/controller/controller_fleet_base.py` with `ControllerFleetBase`, a general fleet-controller base derived from `ControllerBase`. Its fleet-specific `compute()` accepts the same `ControllerReference` type as other controllers, plus optional `FleetStatus`; do not add fleet parameters to the non-fleet `ControllerBase` interface.
+- [x] In fleet-controller mode, define `ControllerReference` to represent the direct front vehicle's current reference state. `FleetFollowingPolicy` maps a validated predecessor `FleetPeerSnapshot` into this reference only while `FleetPhase` is `ACTIVE`; it does not select or invoke a controller.
+- [x] Add `utils/control/controller/controller_fleet_longitudinal.py` with `ControllerFleetLongitudinal`, derived from `ControllerFleetBase`. It implements the first longitudinal following algorithm using ego state, front-vehicle reference, and optional fresh `FleetStatus` context.
+- [x] Add `utils/control/controller/controller_fleet_2d.py` with `ControllerFleet2D`, derived from `ControllerFleetBase`. It uses the front-vehicle pose/heading, desired spacing, and ego state to construct a virtual 2D target behind the front vehicle, then calculates both throttle and steering within the shared command bounds.
+- [x] Keep the leader on its normal path/velocity controller. A follower uses the selected `ControllerFleetLongitudinal` or `ControllerFleet2D` only when fleet data is valid; fleet utility code still does not calculate actuator commands or access IO/V2V sockets.
+- [x] Keep `ControllerFleetLongitudinal` limited to longitudinal tests. `ControllerFleet2D` must not steer directly toward the front vehicle's centre; it must use a defined virtual-target/path geometry and be validated independently before CARLA use.
+- [x] Define explicit throttle/steering command bounds, desired-gap/target-speed limits, predecessor freshness requirements, and a zero-command/fleet-cancel fallback for invalid inputs.
+- [x] Make the runtime select exactly one command-producing controller per step: it uses a fleet reference only when the global vehicle state permits driving and the injected `FleetManager` result represents an active, valid follower reference; otherwise it uses the normal controller reference. Fleet utilities do not select, invoke, or overwrite controller commands.
+- [x] Move fleet-specific peer processing and lifecycle coordination out of `VehicleRuntime` and into `FleetManager`. Define one fleet runtime result/context that accepts the ego estimate, drained generic V2V messages, and local monotonic time; it validates peers, updates fleet phase, returns an optional V2V publication, an optional follower `ControllerReference`, and an explicit fault/cancel intent. `VehicleRuntime` remains the loop owner: it drains/publishes through V2V, combines its safety state with the manager result, invokes the injected controller, writes IO commands, and applies any returned fault/cancel intent through the global safety state machine. Do not let `FleetManager` select controllers, write actuators, own sockets, or transition the vehicle safety state directly.
+- [x] Expose fleet behavior to the vehicle only through the injected `FleetManager` interface. Do not import fleet policy, peer-store, state-machine, or controller implementation classes into `core/vehicle_logic.py`; apply the same one-utility/one-interface rule to every runtime utility.
+- [x] Run fleet control at the normal vehicle-runtime loop rate initially. Add a local controller rate limit only when the selected algorithm requires it; do not add another control thread.
+- [x] Add unit tests for `ControllerFleetBase` contract behaviour, longitudinal spacing response, 2D virtual-target geometry, throttle/steering bounds, optional-status handling, stale predecessor fallback, leader behaviour, and controller/fleet separation. See `FLEET_FOLLOWING_POLICY_SCHEME.md`.
+
+Acceptance gate: a fresh predecessor snapshot is converted into the same `ControllerReference` contract and consumed only by the selected `ControllerFleetBase`; stale or invalid data leaves the vehicle in the existing safe-stop path.
+
+### Step 7.5A: Reinforce Runtime-Facing Module Interfaces
+
+Owner: `core/`, `utils/control/`, `utils/io/`, and `utils/v2v/`.
+
+- [x] Replace controller capability probing in `VehicleRuntime` with one documented `ControllerBase` contract for normal and fleet-reference computation. The runtime may select the reference from its state-machine result and `FleetManager` result, but it must not use `getattr()` to discover a second controller entry point.
+- [x] Make `ControllerFleetLongitudinal` derive from `ControllerFleetBase`, not `ControllerFleet2D`. Move shared fleet-following bounds/configuration into the fleet controller base or a package-local shared helper; never import a sibling controller's private helper.
+- [x] Keep IO adapters free to use multiple platform connections and sensor streams behind `IOBase`. Move only externally owned QCar/GPS/LiDAR client cleanup out of `IOQCar2`; a device bootstrap/session owns resources that it created.
+- [x] Inject the optional `FleetManager` during `VehicleRuntime` construction instead of assigning `runtime.fleet` after construction in a simulator process manager.
+- [x] Preserve `V2VBase` as a versatile generic envelope transport: `publish(message_type, payload, targets)`, `drain_received()`, and transport status. Do not put fleet schemas, ground-station TCP, observer algorithms, or application-specific callbacks inside V2V.
+- [ ] When a second V2V consumer is introduced, route one drained generic message batch to registered utility-facing consumers from the orchestration layer; do not let multiple utilities drain the transport independently or add a speculative callback framework now.
+- [x] Add focused regression tests for the controller contract, fleet construction injection, and IO resource ownership.
+- [ ] Add a generic V2V batch-routing test when a second production V2V consumer exists.
+
+Acceptance gate: every implemented utility has one explicit runtime-facing interface; platform-specific adapters may own multiple device connections internally, while V2V remains transport-generic and can support future consumers without fleet coupling.
+
+### Step 7.6: Validate The Fleet In Virtual Simulation First
+
+Owner: `test/`, `extra/simulator/virtual/`, and fleet utilities.
+
+- [x] Add a canonical two-vehicle virtual fleet scenario with one leader, one follower, distinct initial positions, V2V endpoints, a static formation, and a reproducible mission.
+- [x] Add a real-time two-process virtual integration test that builds the fleet, activates it, records local and peer estimates, and controls the follower from its predecessor snapshot.
+- [x] Record CSV data and plots for trajectories, inter-vehicle spacing, target versus actual spacing, follower/leader speeds, fleet phase, V2V sequence gaps, and local snapshot age.
+- [~] Deferred: add deterministic fault-injection cases for delayed, dropped, malformed, and stale predecessor messages. Verify the documented cancellation/safe-stop behavior before safety-fault qualification.
+- [x] Establish quantitative acceptance thresholds for spacing error, command limits, timeout response, and clean shutdown before moving the same policy to CARLA.
+
+Acceptance gate: the virtual fleet test demonstrates bounded follower behavior under normal traffic and a verified safe response to communication faults.
+
+### Step 7.7: Repeat The Validated Fleet Scenario In CARLA
+
+Owner: `test/`, `extra/simulator/carla/`, and fleet utilities.
+
+- [x] Reuse the fleet contracts, worker protocol, message schema, and controller strategy from the virtual test. CARLA-specific code remains limited to session, actor, sensor, and world-tick handling.
+- [x] Add a direct-run three-process CARLA fleet integration test with exactly one synchronous tick owner, distinct spawn transforms, peer-state records, and the same fleet-phase assertions.
+- [x] Write CARLA CSV/plot artifacts equivalent to the virtual test and record CARLA sensor/control timing separately from local V2V snapshot age.
+- [~] Deferred: re-run communication-fault tests where practical and document any simulator-specific timing limitation before safety-fault qualification.
+
+Acceptance gate: the same static leader/follower policy works in CARLA without changing V2V transport, fleet contracts, or control ownership.
+
+### Step 7.8: Defer Research Extensions Until The Baseline Is Stable
+
+Owner: future `utils/fleet/` research work.
+
+- [x] Add `DistributedObserverBase` and the default `DistributedObserverFake`. The fake creates a collective estimate from direct measurements, local-observer output, and validated V2V snapshots without calculation; it is the integration contract for later algorithms.
+- [x] Add an advisory `DistributedObserverLuenberger` prototype with bounded prediction/correction gains and unit tests. It is not selected by scenarios and cannot provide a fleet-control reference.
+- [ ] Reproduce and evaluate the legacy distributed Luenberger observer offline before connecting it to follower control. See `DISTRIBUTED_LUENBERGER_OBSERVER_NOTES.md`.
+- [ ] Evaluate sampled-data behavior, measurement noise, delay, dropouts, out-of-order packets, bounded gains, and string stability against the static-fleet baseline.
+- [ ] Treat any distributed-observer output as advisory until bounded and stale-data behavior has been demonstrated. Publish it with a distinct schema and validity metadata.
+- [ ] Design and validate 2D kinematic fleet estimation/control separately; the legacy longitudinal Luenberger observer is not a direct 2D implementation.
+- [ ] Add dynamic joining, leaving, reordering, and leader handover only after ground-station command ownership, membership policy, and safety review are complete.
+
+Final Step 7 acceptance gate: two independent vehicle processes can form a validated static leader/follower fleet, exchange fleet-owned estimates through generic V2V, follow only with fresh predecessor data, cancel safely, and produce repeatable virtual and CARLA evidence. Communication-fault qualification is explicitly deferred. V2V, fleet, IO, and the safety supervisor retain their separate ownership boundaries.
+
+## Step 8: Add Command, Ground-Station, And Deployment Interfaces
+
+Owners: `core/`, `utils/ground_station/`, `extra/ground_station/`, and `extra/deployment/`.
+
+Principle: a vehicle command is a core domain contract, not a GUI or TCP object. The vehicle runtime remains the only owner of vehicle-state transitions and actuator writes. Every runtime utility is reached through one injected interface; the runtime does not import or coordinate a utility's internal helpers. Ground-station and CLI code only validate, transport, queue, acknowledge, and display commands. Deployment is a separate SSH/SFTP concern and must not be mixed with the runtime control connection.
+
+### Step 8.1: Define The Core Command Contract
+
+Owner: `core/`.
+
+- [ ] Add `core/commands.py` with a typed `CommandType`, immutable `VehicleCommand`, command source, command ID, timestamp, payload, and a serializable command acknowledgement/result contract.
+- [ ] Support only `START`, `STOP`, `EMERGENCY_STOP`, `RESET`, `SET_VELOCITY`, `SET_PATH`, `BUILD_FLEET`, and `CANCEL_FLEET`. Validate each payload at this boundary and explicitly reject unknown commands.
+- [ ] Replace `GuiCommand` directly with `VehicleCommand` across core, simulator runners, and tests. Do not add a compatibility adapter or retain a GUI-named command type.
+- [ ] Pass every `VehicleCommand` to the injected `FleetManager` first. It handles only recognised fleet lifecycle commands and returns an intent/status; `VehicleRuntime` alone applies the resulting safety-state transition and actuator-safe stop.
+- [ ] Add unit tests for command parsing, IDs, payload validation, state-machine routing, fleet-command acknowledgement, and safe rejection.
+
+Acceptance gate: tests, CLI, and a future GUI can request the same typed command without importing TCP, Qt, or a simulator module.
+
+### Step 8.2: Define Ground-Station Protocol And Vehicle Bridge
+
+Owner: `utils/ground_station/` and `core/module_factory.py`.
+
+- [ ] Define one versioned TCP protocol using length-prefixed MessagePack frames: vehicle registration, monitoring snapshot, command request, command acknowledgement, and error response.
+- [ ] Define an immutable monitoring snapshot containing vehicle ID, runtime/fleet phase, local estimate health, last command/result, IO/observer health, V2V counters, and fleet peer summaries. Keep it independent of UDP V2V envelopes and unsynchronised remote timestamps.
+- [ ] Add `GroundStationBridgeBase`, `NullGroundStationBridge`, and `GroundStationClientBridge`. The client owns a reconnecting TCP connection plus bounded receive/send queues; it never calls `VehicleRuntime.handle_command()` from its network thread.
+- [ ] Extend module construction and `VehicleRuntime` so each loop drains queued `VehicleCommand` objects, applies them through the existing runtime path, publishes acknowledgements, and emits monitoring snapshots at a configured rate.
+- [ ] Use one configured server listener. A vehicle connects outbound and identifies itself through registration; do not use `base_port + vehicle_id` except in an explicit legacy compatibility adapter.
+- [ ] Add unit tests for framing, protocol validation, queue bounds, reconnect behavior, command-to-runtime mapping, and null-bridge behavior.
+
+Acceptance gate: a vehicle can run unchanged with the null bridge or exchange typed commands and telemetry through the TCP bridge without introducing a GUI dependency.
+
+### Step 8.3: Build And Validate A CLI Ground Station First
+
+Owner: `extra/ground_station/` and `test/`.
+
+- [ ] Add `GroundStationServer` with a vehicle-session registry keyed by registered vehicle ID, latest monitoring snapshot, and command/acknowledgement routing.
+- [ ] Add a CLI server entry point that starts the listener, logs connection state, and exposes registered vehicle status.
+- [ ] Add a CLI client entry point for `list`, `status`, `start`, `stop`, `emergency-stop`, `reset`, `set-velocity`, `set-path`, `build-fleet`, and `cancel-fleet`, targeted by vehicle ID.
+- [ ] Require every CLI command to display its acknowledgement or rejection reason. A successful TCP send alone is not a successful vehicle command.
+- [ ] Add localhost integration tests using the real server, one vehicle bridge, and CLI-equivalent commands. Validate command acknowledgement, telemetry updates, fleet build/cancel, disconnect, and reconnect.
+
+Acceptance gate: operators can monitor and command one or more simulated vehicles from a terminal through the production protocol before a GUI exists.
+
+### Step 8.4: Add A Separate Real-Vehicle Deployment CLI
+
+Owner: `extra/deployment/`.
+
+- [ ] Add a deployment CLI that uploads an explicitly selected source/config bundle to a configured physical vehicle using SSH/SFTP, verifies a manifest/hash, starts or stops the remote vehicle entry point, tails logs, and retrieves artifacts.
+- [ ] Keep host credentials, deployment destinations, and SSH settings outside vehicle configuration profiles and out of source control.
+- [ ] Provide dry-run mode and require an explicit target vehicle ID/host for every mutating deployment operation.
+- [ ] Test packaging and manifest generation locally; perform real upload/start validation only on an approved physical vehicle at low throttle.
+
+Acceptance gate: deployment is repeatable and auditable without making the ground-station TCP connection responsible for code upload or process management.
+
+### Step 8.5: Add The Qt/PySide Ground-Station Interface Last
+
+Owner: `extra/ground_station/`.
+
+- [ ] Build a Qt/PySide application that consumes the existing server session registry and submits the same typed command requests as the CLI.
+- [ ] Display per-vehicle connection, runtime/fleet state, command acknowledgements, estimate health, V2V/fleet counters, and real-time plots from monitoring snapshots.
+- [ ] Keep plotting and UI updates asynchronous from networking. Bound history buffers and downsample only for rendering; never block command acknowledgement or vehicle telemetry handling on plot work.
+- [ ] Add UI integration tests for server-state updates and command enqueueing. The GUI must not contain vehicle control or fleet formation logic.
+
+Acceptance gate: replacing the CLI client with Qt/PySide changes presentation only; command semantics, TCP framing, vehicle control, fleet utilities, and safety ownership remain unchanged.
 
 ## Step 9: Validate In Stages
 
@@ -192,6 +383,7 @@ Acceptance gate: replacing the null bridge with a client/server/GUI connection d
 - [x] Run the null/headless runtime.
 - [x] Run the CARLA single-vehicle smoke test through `core.vehicle_main` with `test_integration_vehicle_main_carla.py`.
 - [x] Run the CARLA closed-loop path test at low speed with `test_integration_carla_control.py` on the configured local scene.
+- [ ] Run the scenario-driven two-process CARLA test with `test_integration_carla_multi_process.py` after the CARLA server is ready.
 - [ ] Run QLabs only after the license is available again.
 - [ ] Run physical QCar at low throttle only after headless and simulation checks pass.
 

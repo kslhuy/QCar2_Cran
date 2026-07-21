@@ -16,7 +16,7 @@ modules:
   ground_station: "null"
 
 mission:
-  # Project-frame XY route for config_simulation.yaml's CARLA spawn transform.
+  # Standalone vehicle_main route for the CARLA session fallback spawn transform.
   # It uses broad curves suitable for the Tesla Model 3, not QCar turns.
   path:
     - [-13.1, -0.8]

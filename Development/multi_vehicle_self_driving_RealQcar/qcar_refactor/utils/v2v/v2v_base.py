@@ -1,7 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 
-from core.types import V2VState, VehicleStateEstimate
+from core.types import V2VMessage
 
 
 class V2VBase(ABC):
@@ -17,15 +17,11 @@ class V2VBase(ABC):
         ...
 
     @abstractmethod
-    def process_received_messages(self) -> None:
+    def publish(self, message_type: str, payload: dict, target_vehicle_ids: list[int] | None = None) -> bool:
         ...
 
     @abstractmethod
-    def broadcast_local_state(self, state: VehicleStateEstimate) -> bool:
-        ...
-
-    @abstractmethod
-    def get_peer_states(self) -> dict[int, V2VState]:
+    def drain_received(self) -> list[V2VMessage]:
         ...
 
     @abstractmethod
@@ -46,14 +42,11 @@ class V2VNull(V2VBase):
     def start(self) -> None:
         return None
 
-    def process_received_messages(self) -> None:
-        return None
-
-    def broadcast_local_state(self, state: VehicleStateEstimate) -> bool:
+    def publish(self, message_type: str, payload: dict, target_vehicle_ids: list[int] | None = None) -> bool:
         return False
 
-    def get_peer_states(self) -> dict[int, V2VState]:
-        return {}
+    def drain_received(self) -> list[V2VMessage]:
+        return []
 
     def get_status(self) -> dict:
         return {"enabled": False, "active": False, "peer_count": 0}

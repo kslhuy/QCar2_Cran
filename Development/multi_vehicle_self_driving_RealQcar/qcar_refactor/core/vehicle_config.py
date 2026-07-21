@@ -95,6 +95,25 @@ def load_config(
     return ConfigVehicle(**values)
 
 
+def load_module_profile(
+    module_name: str,
+    profile: str,
+    config_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Load one reusable module profile for a platform scenario or launcher.
+
+    Vehicle runtimes should use :func:`load_config`. This narrower helper is
+    for launch-layer configuration that needs a shared platform profile before
+    any individual vehicle runtime is built.
+    """
+    directory = Path(config_dir) if config_dir is not None else _CONFIG_DIR
+    return _select(
+        _load_yaml(_module_config_path(directory, module_name)),
+        profile,
+        module_name,
+    )
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     try:
         with path.open("r", encoding="ascii") as file:
@@ -194,3 +213,38 @@ def _validate(values: Mapping[str, Any]) -> None:
         port = v2v.get("base_port")
         if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
             raise ConfigError("'v2v.base_port' must be an integer in [1, 65535]")
+        local_port = v2v.get("local_port", port + vehicle_id)
+        if not isinstance(local_port, int) or isinstance(local_port, bool) or not 1 <= local_port <= 65535:
+            raise ConfigError("'v2v.local_port' must be an integer in [1, 65535]")
+        peers = v2v.get("peers", [])
+        if not isinstance(peers, list):
+            raise ConfigError("'v2v.peers' must be a list")
+        for key in ("send_buffer_bytes", "receive_buffer_bytes"):
+            value = v2v.get(key)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            ):
+                raise ConfigError(f"'v2v.{key}' must be a positive integer")
+        rate_limits = v2v.get("message_rate_limits_hz", {})
+        if not isinstance(rate_limits, Mapping):
+            raise ConfigError("'v2v.message_rate_limits_hz' must be a mapping")
+        for message_type, rate_hz in rate_limits.items():
+            if not isinstance(message_type, str) or not message_type:
+                raise ConfigError("V2V message rate-limit types must be non-empty strings")
+            _positive_number(rate_hz, f"v2v.message_rate_limits_hz.{message_type}")
+        peer_ids = set()
+        for peer in peers:
+            if not isinstance(peer, Mapping):
+                raise ConfigError("Each v2v peer must be a mapping")
+            peer_id = peer.get("vehicle_id")
+            peer_port = peer.get("port", port + peer_id if isinstance(peer_id, int) and not isinstance(peer_id, bool) else None)
+            if not isinstance(peer_id, int) or isinstance(peer_id, bool) or peer_id < 0:
+                raise ConfigError("'v2v.peers.vehicle_id' must be a non-negative integer")
+            if peer_id == vehicle_id or peer_id in peer_ids:
+                raise ConfigError("V2V peers must be unique and cannot include the local vehicle")
+            if not isinstance(peer_port, int) or isinstance(peer_port, bool) or not 1 <= peer_port <= 65535:
+                raise ConfigError("'v2v.peers.port' must be an integer in [1, 65535]")
+            peer_ip = peer.get("ip", "127.0.0.1")
+            if not isinstance(peer_ip, str) or not peer_ip:
+                raise ConfigError("'v2v.peers.ip' must be a non-empty string")
+            peer_ids.add(peer_id)

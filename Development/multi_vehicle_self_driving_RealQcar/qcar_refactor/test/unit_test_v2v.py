@@ -1,9 +1,4 @@
-"""
-Unit tests for the minimal V2V utilities.
-
-Run from the qcar_refactor directory:
-    python -m unittest test.unit_test_v2v
-"""
+"""Unit tests for generic UDP V2V transport."""
 
 import os
 import socket
@@ -13,354 +8,203 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import V2VState, VehicleStateEstimate
 from utils.v2v import V2VNull, V2VUdp
 
 
-def _state(timestamp=None, x=1.0, y=2.0, theta=0.3, velocity=0.4):
-    return VehicleStateEstimate(
-        timestamp=time.time() if timestamp is None else float(timestamp),
-        x=float(x),
-        y=float(y),
-        theta=float(theta),
-        velocity=float(velocity),
-        acceleration=0.0,
-        gps_valid=True,
+def _free_udp_ports(count=2):
+    sockets = []
+    try:
+        for _ in range(count):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("127.0.0.1", 0))
+            sockets.append(sock)
+        return [sock.getsockname()[1] for sock in sockets]
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
+def _wait_for_messages(transport, timeout_s=1.0):
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        messages = transport.drain_received()
+        if messages:
+            return messages
+        time.sleep(0.01)
+    return transport.drain_received()
+
+
+def _wait_for_message_count(transport, expected_count, timeout_s=1.0):
+    deadline = time.monotonic() + timeout_s
+    messages = []
+    while time.monotonic() < deadline and len(messages) < expected_count:
+        messages.extend(transport.drain_received())
+        if len(messages) < expected_count:
+            time.sleep(0.01)
+    return messages
+
+
+def _transport(vehicle_id, local_port, peer_id, peer_port):
+    return V2VUdp(
+        {
+            "bind_ip": "127.0.0.1",
+            "local_port": local_port,
+            "peers": [{"vehicle_id": peer_id, "ip": "127.0.0.1", "port": peer_port}],
+        },
+        vehicle_id=vehicle_id,
     )
 
 
-def _free_base_port(vehicle_count: int = 2) -> int:
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.bind(("127.0.0.1", 0))
-        start_port = max(20000, probe.getsockname()[1])
-    finally:
-        probe.close()
+class TestGenericV2VTransport(unittest.TestCase):
+    def test_null_transport_is_safe(self):
+        transport = V2VNull({"enabled": False}, vehicle_id=3)
+        transport.start()
+        self.assertFalse(transport.publish("STATE", {"x": 1.0}))
+        self.assertEqual(transport.drain_received(), [])
+        self.assertEqual(transport.get_status()["peer_count"], 0)
+        transport.stop()
 
-    for base_port in range(start_port, 65000 - vehicle_count):
-        sockets = []
+    def test_udp_transports_exchange_generic_payload_and_metadata(self):
+        first_port, second_port = _free_udp_ports()
+        first = _transport(1, first_port, 2, second_port)
+        second = _transport(2, second_port, 1, first_port)
         try:
-            for offset in range(vehicle_count):
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.bind(("127.0.0.1", base_port + offset))
-                sockets.append(sock)
-            return base_port
-        except OSError:
-            continue
+            first.start()
+            second.start()
+            self.assertTrue(first.publish("STATE", {"x": 1.2, "valid": True}))
+            messages = _wait_for_messages(second)
+
+            self.assertEqual(len(messages), 1)
+            message = messages[0]
+            self.assertEqual(message.sender_id, 1)
+            self.assertEqual(message.message_type, "STATE")
+            self.assertEqual(message.payload, {"x": 1.2, "valid": True})
+            self.assertEqual(message.sequence, 0)
+            self.assertGreater(message.received_at_perf_counter_ns, message.sent_at_perf_counter_ns)
+            self.assertEqual(second.get_status()["messages_received"], 1)
         finally:
-            for sock in sockets:
-                sock.close()
+            first.stop()
+            second.stop()
 
-    raise RuntimeError("could not find free consecutive UDP ports")
-
-
-def _wait_for(condition, timeout_s=1.0, interval_s=0.02):
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if condition():
-            return True
-        time.sleep(interval_s)
-    return condition()
-
-
-def _build_v2v_fleet(vehicle_count: int, base_port: int):
-    vehicles = []
-    for vehicle_id in range(vehicle_count):
-        peers = [
-            {"vehicle_id": peer_id, "ip": "127.0.0.1"}
-            for peer_id in range(vehicle_count)
-            if peer_id != vehicle_id
-        ]
-        vehicles.append(
-            V2VUdp(
-                {
-                    "vehicle_id": vehicle_id,
-                    "bind_ip": "127.0.0.1",
-                    "base_port": base_port,
-                    "broadcast_rate_hz": 1000,
-                    "peer_timeout_s": 2.0,
-                    "peers": peers,
-                }
-            )
-        )
-    return vehicles
-
-
-def _stop_all(vehicles):
-    for vehicle in vehicles:
-        vehicle.stop()
-
-
-def _process_all(vehicles):
-    for vehicle in vehicles:
-        vehicle.process_received_messages()
-
-
-class TestNullV2V(unittest.TestCase):
-    def test_null_v2v_status_is_safe(self):
-        config = {"enabled": False}
-        v2v = V2VNull(config, vehicle_id=3)
-
-        v2v.start()
-        self.assertEqual(v2v._config, config)
-        self.assertEqual(v2v._vehicle_id, 3)
-        self.assertFalse(v2v.broadcast_local_state(_state()))
-        self.assertEqual(v2v.get_peer_states(), {})
-        self.assertEqual(
-            v2v.get_status(),
-            {"enabled": False, "active": False, "peer_count": 0},
-        )
-        v2v.stop()
-
-
-class TestUdpV2V(unittest.TestCase):
-    def test_udp_v2v_one_vehicle_starts_with_zero_peers(self):
-        base_port = _free_base_port()
-        v2v = V2VUdp(
-            {
-                "vehicle_id": 0,
-                "bind_ip": "127.0.0.1",
-                "base_port": base_port,
-                "peers": [],
-            }
-        )
-
+    def test_udp_drops_invalid_and_unknown_sender_packets(self):
+        first_port, second_port = _free_udp_ports()
+        receiver = _transport(2, second_port, 1, first_port)
         try:
-            v2v.start()
-            status = v2v.get_status()
-
-            self.assertTrue(status["active"])
-            self.assertEqual(status["peer_count"], 0)
-            self.assertEqual(v2v.get_peer_states(), {})
-            self.assertFalse(v2v.broadcast_local_state(_state()))
-        finally:
-            v2v.stop()
-
-    def test_udp_v2v_uses_config_vehicle_id_when_not_overridden(self):
-        base_port = _free_base_port(3)
-        v2v = V2VUdp(
-            {
-                "vehicle_id": 2,
-                "bind_ip": "127.0.0.1",
-                "base_port": base_port,
-                "peers": [],
-            }
-        )
-
-        self.assertEqual(v2v.get_status()["vehicle_id"], 2)
-        self.assertEqual(v2v.get_status()["local_port"], base_port + 2)
-
-    def test_udp_v2v_two_instances_exchange_state_on_localhost(self):
-        base_port = _free_base_port()
-        v0 = V2VUdp(
-            {
-                "vehicle_id": 0,
-                "bind_ip": "127.0.0.1",
-                "base_port": base_port,
-                "broadcast_rate_hz": 1000,
-                "peers": [{"vehicle_id": 1, "ip": "127.0.0.1"}],
-            }
-        )
-        v1 = V2VUdp(
-            {
-                "vehicle_id": 1,
-                "bind_ip": "127.0.0.1",
-                "base_port": base_port,
-                "broadcast_rate_hz": 1000,
-                "peers": [{"vehicle_id": 0, "ip": "127.0.0.1"}],
-            }
-        )
-
-        try:
-            v0.start()
-            v1.start()
-            self.assertTrue(v0.broadcast_local_state(_state(x=1.2, y=0.3, theta=0.1, velocity=0.5)))
-
-            received = _wait_for(
-                lambda: (v1.process_received_messages() or 0 in v1.get_peer_states()),
-                timeout_s=1.0,
-            )
-
-            self.assertTrue(received)
-            peer_state = v1.get_peer_states()[0]
-            self.assertIsInstance(peer_state, V2VState)
-            self.assertEqual(peer_state.vehicle_id, 0)
-            self.assertAlmostEqual(peer_state.x, 1.2)
-            self.assertAlmostEqual(peer_state.y, 0.3)
-            self.assertAlmostEqual(peer_state.theta, 0.1)
-            self.assertAlmostEqual(peer_state.velocity, 0.5)
-        finally:
-            v0.stop()
-            v1.stop()
-
-    def test_udp_v2v_one_sender_reaches_multiple_peers_on_localhost(self):
-        vehicle_count = 4
-        base_port = _free_base_port(vehicle_count)
-        vehicles = _build_v2v_fleet(vehicle_count, base_port)
-
-        try:
-            for vehicle in vehicles:
-                vehicle.start()
-
-            self.assertTrue(
-                vehicles[0].broadcast_local_state(
-                    _state(x=10.0, y=20.0, theta=0.4, velocity=0.8)
-                )
-            )
-
-            received = _wait_for(
-                lambda: (
-                    _process_all(vehicles)
-                    or all(0 in vehicles[i].get_peer_states() for i in range(1, vehicle_count))
-                ),
-                timeout_s=1.0,
-            )
-
-            self.assertTrue(received)
-            self.assertEqual(vehicles[0].get_peer_states(), {})
-            for vehicle_id in range(1, vehicle_count):
-                peer_state = vehicles[vehicle_id].get_peer_states()[0]
-                self.assertEqual(peer_state.vehicle_id, 0)
-                self.assertAlmostEqual(peer_state.x, 10.0)
-                self.assertAlmostEqual(peer_state.y, 20.0)
-                self.assertAlmostEqual(peer_state.theta, 0.4)
-                self.assertAlmostEqual(peer_state.velocity, 0.8)
-        finally:
-            _stop_all(vehicles)
-
-    def test_udp_v2v_four_instances_exchange_all_to_all_on_localhost(self):
-        vehicle_count = 4
-        base_port = _free_base_port(vehicle_count)
-        vehicles = _build_v2v_fleet(vehicle_count, base_port)
-
-        try:
-            for vehicle in vehicles:
-                vehicle.start()
-
-            for vehicle_id, vehicle in enumerate(vehicles):
-                self.assertTrue(
-                    vehicle.broadcast_local_state(
-                        _state(
-                            x=vehicle_id + 0.1,
-                            y=vehicle_id + 0.2,
-                            theta=vehicle_id + 0.3,
-                            velocity=vehicle_id + 0.4,
-                        )
-                    )
-                )
-
-            expected_peer_ids = {
-                vehicle_id: set(range(vehicle_count)) - {vehicle_id}
-                for vehicle_id in range(vehicle_count)
-            }
-            received = _wait_for(
-                lambda: (
-                    _process_all(vehicles)
-                    or all(
-                        set(vehicle.get_peer_states().keys()) == expected_peer_ids[vehicle_id]
-                        for vehicle_id, vehicle in enumerate(vehicles)
-                    )
-                ),
-                timeout_s=1.0,
-            )
-
-            self.assertTrue(received)
-            for vehicle_id, vehicle in enumerate(vehicles):
-                peer_states = vehicle.get_peer_states()
-                self.assertEqual(set(peer_states.keys()), expected_peer_ids[vehicle_id])
-                for peer_id, peer_state in peer_states.items():
-                    self.assertEqual(peer_state.vehicle_id, peer_id)
-                    self.assertAlmostEqual(peer_state.x, peer_id + 0.1)
-                    self.assertAlmostEqual(peer_state.y, peer_id + 0.2)
-                    self.assertAlmostEqual(peer_state.theta, peer_id + 0.3)
-                    self.assertAlmostEqual(peer_state.velocity, peer_id + 0.4)
-        finally:
-            _stop_all(vehicles)
-
-    def test_udp_v2v_ignores_own_messages(self):
-        base_port = _free_base_port()
-        v2v = V2VUdp(
-            {
-                "vehicle_id": 0,
-                "bind_ip": "127.0.0.1",
-                "base_port": base_port,
-                "broadcast_rate_hz": 1000,
-                "peers": [{"vehicle_id": 1, "ip": "127.0.0.1"}],
-            }
-        )
-
-        try:
-            v2v.start()
-            raw = (
-                b'{"sender_id":0,"timestamp":1.0,"message_type":"STATE",'
-                b'"payload":{"x":9.0,"y":9.0,"theta":0.0,"velocity":0.0}}'
-            )
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            receiver.start()
+            sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             try:
-                sock.sendto(raw, ("127.0.0.1", base_port))
+                sender.sendto(b'{"sender_id":1,"message_type":"STATE"}', ("127.0.0.1", second_port))
+                sender.sendto(
+                    b'{"sender_id":9,"message_type":"STATE","payload":{},"sequence":0,'
+                    b'"sent_at_monotonic":1.0,"sent_at_perf_counter_ns":1}',
+                    ("127.0.0.1", second_port),
+                )
             finally:
-                sock.close()
-
-            time.sleep(0.1)
-            v2v.process_received_messages()
-            self.assertEqual(v2v.get_peer_states(), {})
+                sender.close()
+            time.sleep(0.05)
+            self.assertEqual(receiver.drain_received(), [])
+            self.assertGreaterEqual(receiver.get_status()["packets_dropped"], 1)
         finally:
-            v2v.stop()
+            receiver.stop()
 
-    def test_udp_v2v_peer_timeout_removes_stale_peer(self):
-        base_port = _free_base_port()
-        v0 = V2VUdp(
-            {
-                "vehicle_id": 0,
-                "bind_ip": "127.0.0.1",
-                "base_port": base_port,
-                "broadcast_rate_hz": 1000,
-                "peer_timeout_s": 0.1,
-                "peers": [{"vehicle_id": 1, "ip": "127.0.0.1"}],
-            }
-        )
-        v1 = V2VUdp(
-            {
-                "vehicle_id": 1,
-                "bind_ip": "127.0.0.1",
-                "base_port": base_port,
-                "broadcast_rate_hz": 1000,
-                "peer_timeout_s": 0.1,
-                "peers": [{"vehicle_id": 0, "ip": "127.0.0.1"}],
-            }
-        )
-
+    def test_udp_estimates_packet_loss_from_generic_sequence_gaps(self):
+        first_port, second_port = _free_udp_ports()
+        receiver = _transport(2, second_port, 1, first_port)
         try:
-            v0.start()
-            v1.start()
-            v0.broadcast_local_state(_state())
-            self.assertTrue(
-                _wait_for(lambda: (v1.process_received_messages() or 0 in v1.get_peer_states()))
-            )
-            time.sleep(0.15)
-            v1.process_received_messages()
-            self.assertEqual(v1.get_peer_states(), {})
+            receiver.start()
+            sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                for sequence in (3, 5):
+                    packet = (
+                        '{"sender_id":1,"message_type":"STATE","payload":{},'
+                        f'"sequence":{sequence},"sent_at_monotonic":1.0,'
+                        '"sent_at_perf_counter_ns":1}'
+                    ).encode("ascii")
+                    sender.sendto(packet, ("127.0.0.1", second_port))
+            finally:
+                sender.close()
+            messages = _wait_for_message_count(receiver, expected_count=2)
+            self.assertEqual([message.sequence for message in messages], [3, 5])
+            self.assertEqual(receiver.get_status()["estimated_packets_lost"], 1)
         finally:
-            v0.stop()
-            v1.stop()
+            receiver.stop()
 
-    def test_udp_v2v_stop_closes_thread(self):
-        base_port = _free_base_port()
-        v2v = V2VUdp(
+    def test_udp_targets_only_selected_configured_peers(self):
+        first_port, second_port, third_port = _free_udp_ports(3)
+        first = V2VUdp(
             {
-                "vehicle_id": 0,
                 "bind_ip": "127.0.0.1",
-                "base_port": base_port,
-                "peers": [],
-            }
+                "local_port": first_port,
+                "peers": [
+                    {"vehicle_id": 2, "ip": "127.0.0.1", "port": second_port},
+                    {"vehicle_id": 3, "ip": "127.0.0.1", "port": third_port},
+                ],
+            },
+            vehicle_id=1,
         )
+        second = _transport(2, second_port, 1, first_port)
+        third = _transport(3, third_port, 1, first_port)
+        try:
+            first.start()
+            second.start()
+            third.start()
+            self.assertTrue(first.publish("WARNING", {"level": "low"}, target_vehicle_ids=[2]))
+            self.assertEqual([message.sender_id for message in _wait_for_messages(second)], [1])
+            time.sleep(0.05)
+            self.assertEqual(third.drain_received(), [])
+            with self.assertRaisesRegex(ValueError, "not a configured peer"):
+                first.publish("WARNING", {}, target_vehicle_ids=[9])
+        finally:
+            first.stop()
+            second.stop()
+            third.stop()
 
-        v2v.start()
-        self.assertTrue(v2v.get_status()["thread_alive"])
-        v2v.stop()
+    def test_udp_applies_optional_message_rate_limit_and_reports_rate(self):
+        first_port, second_port = _free_udp_ports()
+        sender = V2VUdp(
+            {
+                "bind_ip": "127.0.0.1",
+                "local_port": first_port,
+                "peers": [{"vehicle_id": 2, "ip": "127.0.0.1", "port": second_port}],
+                "message_rate_limits_hz": {"STATE": 5},
+            },
+            vehicle_id=1,
+        )
+        receiver = _transport(2, second_port, 1, first_port)
+        try:
+            sender.start()
+            receiver.start()
+            self.assertTrue(sender.publish("STATE", {"x": 1.0}))
+            self.assertFalse(sender.publish("STATE", {"x": 2.0}))
+            self.assertEqual(sender.get_status()["message_rate_limits_hz"], {"STATE": 5.0})
+            self.assertGreaterEqual(sender.get_status()["publish_rate_hz"], 1.0)
+            self.assertEqual(len(_wait_for_messages(receiver)), 1)
+        finally:
+            sender.stop()
+            receiver.stop()
 
-        self.assertFalse(v2v.get_status()["active"])
-        self.assertFalse(v2v.get_status()["thread_alive"])
+    def test_udp_rejects_datagrams_larger_than_2048_bytes(self):
+        first_port, second_port = _free_udp_ports()
+        sender = _transport(1, first_port, 2, second_port)
+        try:
+            sender.start()
+            with self.assertRaisesRegex(ValueError, "exceeds 2048 bytes"):
+                sender.publish("STATE", {"blob": "x" * 4096})
+            status = sender.get_status()
+            self.assertEqual(status["max_datagram_bytes"], 2048)
+            self.assertEqual(status["send_buffer_bytes"], 16384)
+            self.assertEqual(status["receive_buffer_bytes"], 32768)
+        finally:
+            sender.stop()
+
+    def test_stop_is_idempotent_and_closes_receive_thread(self):
+        first_port, second_port = _free_udp_ports()
+        transport = _transport(1, first_port, 2, second_port)
+        transport.start()
+        transport.stop()
+        transport.stop()
+        self.assertFalse(transport.get_status()["active"])
+        self.assertFalse(transport.get_status()["thread_alive"])
 
 
 if __name__ == "__main__":

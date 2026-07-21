@@ -15,7 +15,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.control.path_planner import PathPlannerBase, PathPlannerNull, PathPlannerStatic
-from core.types import PlannerTarget, VehicleStateEstimate
+from core.types import ControllerReference, VehicleStateEstimate
 
 
 class _SilentLogger:
@@ -47,7 +47,7 @@ class TestBasePathPlanner(unittest.TestCase):
         target = planner.update(_state(x=2.0, y=3.0, theta=0.5))
 
         self.assertEqual(planner._vehicle_id, 4)
-        self.assertIsInstance(target, PlannerTarget)
+        self.assertIsInstance(target, ControllerReference)
         self.assertTrue(target.is_finished)
         self.assertEqual(target.target_velocity, 0.0)
         self.assertEqual(target.target_x, 2.0)
@@ -75,7 +75,7 @@ class TestStaticWaypointPlanner(unittest.TestCase):
 
         target = planner.update(_state(x=0.0, y=0.0))
 
-        self.assertIsInstance(target, PlannerTarget)
+        self.assertIsInstance(target, ControllerReference)
         self.assertFalse(target.is_finished)
         self.assertAlmostEqual(target.target_x, 1.0)
         self.assertAlmostEqual(target.target_y, 0.0)

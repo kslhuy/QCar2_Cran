@@ -11,8 +11,15 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlCommand, PlannerTarget, VehicleStateEstimate
-from utils.control.controller import ControllerBase, ControllerNull, ControllerSimple
+from core.types import ControlCommand, ControllerReference, VehicleStateEstimate
+from utils.control.controller import (
+    ControllerBase,
+    ControllerFleet2D,
+    ControllerFleetBase,
+    ControllerFleetLongitudinal,
+    ControllerNull,
+    ControllerSimple,
+)
 
 
 SIMPLE_CONFIG = {
@@ -41,7 +48,7 @@ def _state(x=0.0, y=0.0, theta=0.0, velocity=0.0):
 
 
 def _target(x=1.0, y=0.0, theta=0.0, velocity=0.6, finished=False):
-    return PlannerTarget(
+    return ControllerReference(
         target_x=float(x),
         target_y=float(y),
         target_theta=float(theta),
@@ -65,6 +72,11 @@ class TestBaseController(unittest.TestCase):
         self.assertEqual(command.throttle, 0.0)
         self.assertEqual(command.steering, 0.0)
         self.assertEqual(command.target_velocity, 0.0)
+        self.assertFalse(controller.supports_fleet_reference)
+
+    def test_cannot_instantiate_base_fleet_controller(self):
+        with self.assertRaises(TypeError):
+            ControllerFleetBase({})
 
 
 class TestSimplePathController(unittest.TestCase):
@@ -150,6 +162,49 @@ class TestSimplePathController(unittest.TestCase):
 
         self.assertEqual(command.target_velocity, 0.0)
         self.assertLessEqual(command.throttle, 0.0)
+
+
+class TestFleet2DController(unittest.TestCase):
+    def test_follower_accelerates_when_behind_and_uses_virtual_target(self):
+        controller = ControllerFleet2D({
+            "desired_gap_m": 1.0, "time_headway_s": 0.0, "gap_gain": 0.5,
+            "kp_velocity": 1.0, "max_velocity": 2.0,
+            "max_throttle": 0.2, "min_throttle": -0.2, "max_steering": 0.4,
+        })
+        command = controller.compute(_state(x=0.0, velocity=0.0), _target(x=3.0, velocity=0.5), 0.1)
+
+        self.assertGreater(command.throttle, 0.0)
+        self.assertAlmostEqual(command.steering, 0.0)
+        self.assertEqual(command.source, "fleet_2d_controller")
+        self.assertTrue(controller.supports_fleet_reference)
+
+    def test_follower_command_is_bounded(self):
+        controller = ControllerFleet2D({
+            "desired_gap_m": 0.5, "gap_gain": 10.0, "kp_velocity": 10.0,
+            "max_velocity": 10.0, "max_throttle": 0.1, "min_throttle": -0.1,
+            "max_steering": 0.2, "steering_gain": 10.0,
+        })
+        command = controller.compute(_state(x=0.0, y=0.0), _target(x=10.0, y=10.0, velocity=10.0), 0.1)
+
+        self.assertLessEqual(command.throttle, 0.1)
+        self.assertGreaterEqual(command.throttle, -0.1)
+        self.assertLessEqual(abs(command.steering), 0.2)
+
+
+class TestFleetLongitudinalController(unittest.TestCase):
+    def test_follower_uses_gap_response_without_steering(self):
+        controller = ControllerFleetLongitudinal({
+            "desired_gap_m": 1.0, "time_headway_s": 0.0, "gap_gain": 0.5,
+            "kp_velocity": 1.0, "max_velocity": 2.0,
+            "max_throttle": 0.2, "min_throttle": -0.2, "max_steering": 0.4,
+        })
+
+        command = controller.compute(_state(x=0.0, velocity=0.0), _target(x=3.0, velocity=0.5), 0.1)
+
+        self.assertGreater(command.throttle, 0.0)
+        self.assertEqual(command.steering, 0.0)
+        self.assertEqual(command.source, "fleet_longitudinal_controller")
+        self.assertTrue(controller.supports_fleet_reference)
 
 
 if __name__ == "__main__":

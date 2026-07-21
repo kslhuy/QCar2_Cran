@@ -2,16 +2,15 @@ from .types import (
     SensorData,
     ControlCommand,
     VehicleStateEstimate,
-    PlannerTarget,
+    ControllerReference,
     GuiCommand,
-    V2VState,
     V2VMessage
 )
 
 __all__ = [
-    "SensorData", "ControlCommand", "VehicleStateEstimate", "PlannerTarget",
+    "SensorData", "ControlCommand", "VehicleStateEstimate", "ControllerReference",
     "GuiCommand",
-    "V2VState", "V2VMessage",
+    "V2VMessage",
 ]
 
 from .vehicle_state_machine import State, StateMachine

@@ -1,0 +1,41 @@
+simulation_profile: carla_sync
+
+fleet:
+  profile: carla_default
+  formation_id: carla_three_vehicle_fleet_control
+  members:
+    - {vehicle_id: 1, role: leader, member_order: 0}
+    - {vehicle_id: 2, role: follower, member_order: 1}
+    - {vehicle_id: 3, role: follower, member_order: 2}
+
+vehicles:
+  - vehicle_id: 1
+    vehicle_config_file: config_vehicle_carla.yaml
+    controller_profile: simple_carla
+    tick_owner: true
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 2, ip: "127.0.0.1"}]}
+    spawn_transform: {x: -3.1, y: 0.8, z: 2.0, yaw: 0.0}
+    mission:
+      # Project frame: a 10 m-radius, 90-degree entry arc centred at
+      # (-3.1, 9.2), then a straight exit. IOCarla mirrors Y for CARLA.
+      path: [[-3.1, -0.8], [-0.51, -0.46], [1.9, 0.54], [3.97, 2.13], [5.56, 4.2], [6.56, 6.61], [6.9, 9.2], [6.9, 15.0], [6.9, 21.0], [6.9, 27.0]]
+      target_velocity: 0.80
+  - vehicle_id: 2
+    vehicle_config_file: config_vehicle_carla.yaml
+    controller_profile: fleet_2d_carla
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 1, ip: "127.0.0.1"}, {vehicle_id: 3, ip: "127.0.0.1"}]}
+    spawn_transform: {x: -10.0, y: 0.8, z: 2.0, yaw: 0.0}
+    mission:
+      path: [[-10.0, -0.8], [-6.0, -0.8], [-3.1, -0.8], [-0.51, -0.46], [1.9, 0.54], [3.97, 2.13], [5.56, 4.2], [6.56, 6.61], [6.9, 9.2], [6.9, 15.0], [6.9, 21.0], [6.9, 27.0]]
+      target_velocity: 0.80
+  - vehicle_id: 3
+    vehicle_config_file: config_vehicle_carla.yaml
+    controller_profile: fleet_2d_carla
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 2, ip: "127.0.0.1"}]}
+    spawn_transform: {x: -20.0, y: 0.8, z: 2.0, yaw: 0.0}
+    mission:
+      path: [[-20.0, -0.8], [-15.0, -0.8], [-10.0, -0.8], [-3.1, -0.8], [-0.51, -0.46], [1.9, 0.54], [3.97, 2.13], [5.56, 4.2], [6.56, 6.61], [6.9, 9.2], [6.9, 15.0], [6.9, 21.0], [6.9, 27.0]]
+      target_velocity: 0.80

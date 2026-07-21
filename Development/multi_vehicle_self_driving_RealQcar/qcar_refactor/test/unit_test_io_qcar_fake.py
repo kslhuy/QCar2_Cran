@@ -78,13 +78,13 @@ class TestIOQCar2Fake(unittest.TestCase):
         self.assertEqual(self.qcar.writes[0], (0.1, 0.48))
         self.assertEqual(self.qcar.writes[-1], (0.0, 0.0))
 
-    def test_close_only_releases_injected_gps_streams(self):
+    def test_close_does_not_release_externally_owned_gps_streams(self):
         self.io.close()
         self.io.close()
 
-        self.assertTrue(self.gps._gps_client.terminated)
-        self.assertTrue(self.gps._lidar_client.terminated)
-        self.assertTrue(self.gps.lidar.terminated)
+        self.assertFalse(self.gps._gps_client.terminated)
+        self.assertFalse(self.gps._lidar_client.terminated)
+        self.assertFalse(self.gps.lidar.terminated)
 
     def test_qcar_object_is_required(self):
         with self.assertRaisesRegex(ValueError, "qcar object"):

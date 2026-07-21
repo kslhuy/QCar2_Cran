@@ -12,7 +12,7 @@ modules:
   controller: simple_qcar
   v2v: udp_default
   simulation: "null"
-  ground_station: legacy
+  ground_station: "null"
 
 mission:
   path: refs/qcar_origin/PathPlanner/path_rich_output/pp_waypoints.csv

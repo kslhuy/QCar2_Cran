@@ -16,7 +16,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 
-from core.types import PlannerTarget, VehicleStateEstimate
+from core.types import ControllerReference, VehicleStateEstimate
 from .path_planner_base import PathPlannerBase
 
 
@@ -76,10 +76,10 @@ class PathPlannerStatic(PathPlannerBase):
         self._current_index = 0
         self._finished = len(self._waypoints) == 0
 
-    def update(self, state: VehicleStateEstimate) -> PlannerTarget:
+    def update(self, state: VehicleStateEstimate) -> ControllerReference:
         if len(self._waypoints) == 0:
             self._finished = True
-            return PlannerTarget(
+            return ControllerReference(
                 target_x=float(state.x),
                 target_y=float(state.y),
                 target_theta=float(state.theta),
@@ -134,8 +134,8 @@ class PathPlannerStatic(PathPlannerBase):
                 return index
         return len(self._waypoints) - 1
 
-    def _make_target(self, waypoint: np.ndarray, is_finished: bool) -> PlannerTarget:
-        return PlannerTarget(
+    def _make_target(self, waypoint: np.ndarray, is_finished: bool) -> ControllerReference:
+        return ControllerReference(
             target_x=float(waypoint[0]),
             target_y=float(waypoint[1]),
             target_theta=float(waypoint[2]),

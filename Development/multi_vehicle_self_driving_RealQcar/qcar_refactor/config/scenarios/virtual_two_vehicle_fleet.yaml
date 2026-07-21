@@ -1,0 +1,31 @@
+# Initial two-vehicle direct-predecessor fleet for parser and unit-test use.
+simulation_profile: "null"
+
+fleet:
+  profile: default
+  formation_id: virtual_two_vehicle_fleet
+  members:
+    - vehicle_id: 1
+      role: leader
+      member_order: 0
+    - vehicle_id: 2
+      role: follower
+      member_order: 1
+
+vehicles:
+  - vehicle_id: 1
+    vehicle_config_file: config_vehicle_virtual.yaml
+    v2v_profile: udp_default
+    v2v:
+      peers: [{vehicle_id: 2, ip: "127.0.0.1"}]
+    mission:
+      path: [[0.0, 0.0], [2.0, 0.0], [4.0, 0.0]]
+      target_velocity: 0.30
+  - vehicle_id: 2
+    vehicle_config_file: config_vehicle_virtual.yaml
+    v2v_profile: udp_default
+    v2v:
+      peers: [{vehicle_id: 1, ip: "127.0.0.1"}]
+    mission:
+      path: [[-0.8, 0.0], [1.2, 0.0], [3.2, 0.0]]
+      target_velocity: 0.30

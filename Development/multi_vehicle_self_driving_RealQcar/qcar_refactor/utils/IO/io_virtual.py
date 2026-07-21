@@ -45,10 +45,10 @@ class IOVirtual(IOBase):
         self.gps_xy_noise_std = float(self._config.get("gps_xy_noise_std", 0.025))
         self.gps_theta_noise_std = float(self._config.get("gps_theta_noise_std", 0.015))
 
-        self.x = 0.0
-        self.y = 0.0
-        self.theta = 0.0
-        self.velocity = 0.0
+        self.x = float(self._config.get("initial_x", 0.0))
+        self.y = float(self._config.get("initial_y", 0.0))
+        self.theta = float(self._config.get("initial_theta", 0.0))
+        self.velocity = max(0.0, float(self._config.get("initial_velocity", 0.0)))
         self.acceleration = 0.0
         self.motor_command = 0.0
         self.steering_actual = 0.0

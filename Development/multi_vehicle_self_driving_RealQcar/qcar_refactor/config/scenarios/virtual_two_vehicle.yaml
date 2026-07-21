@@ -1,0 +1,21 @@
+# Deterministic local equivalent of carla_two_vehicle.yaml.
+# Each entry creates one independent IOVirtual runtime process.
+simulation_profile: "null"
+
+vehicles:
+  - vehicle_id: 1
+    vehicle_config_file: config_vehicle_virtual.yaml
+    v2v_profile: udp_default
+    v2v:
+      peers: [{vehicle_id: 2, ip: "127.0.0.1"}]
+    mission:
+      path: [[0.0, 0.0], [1.5, 0.4], [3.0, 0.0]]
+      target_velocity: 0.30
+  - vehicle_id: 2
+    vehicle_config_file: config_vehicle_virtual.yaml
+    v2v_profile: udp_default
+    v2v:
+      peers: [{vehicle_id: 1, ip: "127.0.0.1"}]
+    mission:
+      path: [[0.0, 1.0], [1.5, 0.6], [3.0, 1.0]]
+      target_velocity: 0.30

@@ -8,7 +8,7 @@ should not know about vehicle hardware, observers, controllers, GUI, or V2V.
 import logging
 from abc import ABC, abstractmethod
 
-from core.types import PlannerTarget, VehicleStateEstimate
+from core.types import ControllerReference, VehicleStateEstimate
 
 
 class PathPlannerBase(ABC):
@@ -30,7 +30,7 @@ class PathPlannerBase(ABC):
         ...
 
     @abstractmethod
-    def update(self, state: VehicleStateEstimate) -> PlannerTarget:
+    def update(self, state: VehicleStateEstimate) -> ControllerReference:
         """Return the current target for the controller."""
         ...
 
@@ -59,8 +59,8 @@ class PathPlannerNull(PathPlannerBase):
     def reset(self) -> None:
         self._finished = True
 
-    def update(self, state: VehicleStateEstimate) -> PlannerTarget:
-        return PlannerTarget(
+    def update(self, state: VehicleStateEstimate) -> ControllerReference:
+        return ControllerReference(
             target_x=float(state.x),
             target_y=float(state.y),
             target_theta=float(state.theta),

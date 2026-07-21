@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.types import ControlCommand
 from utils.io.io_carla import IOCarla
-from extra.simulation.carla.session import CarlaSensorSnapshot
+from extra.simulator.carla.session import CarlaSensorSnapshot
 
 
 class _Vector:

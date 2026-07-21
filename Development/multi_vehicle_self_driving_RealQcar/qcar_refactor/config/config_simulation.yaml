@@ -1,5 +1,5 @@
-# Simulation sessions are selected independently from vehicle IO.  The session
-# creates the simulated vehicle; the selected IO adapter only uses that vehicle.
+# Reusable simulation profiles. Vehicle-specific spawn transforms,
+# missions, tick ownership, and communication endpoints belong in config/scenarios.
 "null":
   implementation: "null"
 
@@ -11,15 +11,9 @@ carla_sync:
   fixed_delta_seconds: 0.05
   warmup_ticks: 2
   ego_blueprint: vehicle.tesla.model3
-  spawn_point_index: 0
-  # Use this in custom/QLabs worlds where world.get_map() cannot provide
-  # OpenDRIVE spawn points. These coordinates match the currently running
-  # local QLabs scene and can be replaced for another map.
-  spawn_transform:
-    x: -13.1
-    y: 0.8
-    z: 0.5
-    yaw: 0.0
+  # Used only by standalone vehicle_main CARLA runs when a scenario has not
+  # supplied a per-vehicle spawn_transform for a custom world.
+  default_spawn_transform: {x: -13.1, y: 0.8, z: 0.5, yaw: 0.0}
   sensors:
     imu:
       enabled: true

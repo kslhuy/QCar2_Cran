@@ -1,0 +1,32 @@
+# Reusable policy profiles. Fleet membership belongs to a multi-vehicle scenario.
+default:
+  following_policy: direct_predecessor
+  communication:
+    topology: predecessor_chain
+    edge_direction: directed
+    ego_estimate_rate_hz: 20
+    peer_timeout_s: 0.50
+
+leader_star:
+  following_policy: leader_reference
+  communication:
+    topology: leader_follower
+    edge_direction: bidirectional
+    ego_estimate_rate_hz: 20
+    peer_timeout_s: 0.50
+
+full_mesh:
+  following_policy: direct_predecessor
+  communication:
+    topology: vehicle_vehicle
+    edge_direction: bidirectional
+    ego_estimate_rate_hz: 20
+    peer_timeout_s: 0.50
+
+carla_default:
+  following_policy: direct_predecessor
+  communication:
+    topology: predecessor_chain
+    edge_direction: directed
+    ego_estimate_rate_hz: 20
+    peer_timeout_s: 3.00

@@ -13,7 +13,7 @@ this controller.
 import logging
 import math
 
-from core.types import ControlCommand, PlannerTarget, VehicleStateEstimate
+from core.types import ControlCommand, ControllerReference, VehicleStateEstimate
 from utils.control.controller.controller_base import ControllerBase
 
 
@@ -61,7 +61,7 @@ class ControllerSimple(ControllerBase):
     def compute(
         self,
         state: VehicleStateEstimate,
-        target: PlannerTarget,
+        target: ControllerReference,
         dt: float,
     ) -> ControlCommand:
         if target.is_finished:
@@ -128,7 +128,7 @@ class ControllerSimple(ControllerBase):
     def _compute_steering(
         self,
         state: VehicleStateEstimate,
-        target: PlannerTarget,
+        target: ControllerReference,
     ) -> float:
         dx = float(target.target_x) - float(state.x)
         dy = float(target.target_y) - float(state.y)

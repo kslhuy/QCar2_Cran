@@ -28,7 +28,7 @@ class SensorData:
 ## Observer data structures
 @dataclass
 class VehicleStateEstimate:
-    """Observer output: metres, radians, m/s, m/s^2, and seconds."""
+    """Observer output: metres, radians, m/s, m/s^2, seconds, and validity."""
     timestamp: float
     x: float
     y: float
@@ -36,6 +36,9 @@ class VehicleStateEstimate:
     velocity: float
     acceleration: float
     gps_valid: bool
+    # Overall observer health for control and fleet publication. This is not
+    # equivalent to instantaneous GPS measurement availability.
+    valid: bool = True
 
 ## Controller data structures
 @dataclass
@@ -50,10 +53,10 @@ class ControlCommand:
     target_velocity: float
     source: str = ""      # e.g. "pid", "pure_pursuit", "zero"
 
-### PathPlanner data structures
+### Controller data structures
 @dataclass
-class PlannerTarget:
-    "target for the planner to follow"
+class ControllerReference:
+    "target point for the controller to follow"
     target_x: float
     target_y: float
     target_theta: float
@@ -69,26 +72,19 @@ class GuiCommand:
     payload: dict         # e.g. {"velocity": 0.6} or {"path": "pp_waypoints.csv"}
 
 
-## V2V data structures
-@dataclass
-class V2VState:
-    "vehicle state shared through V2V broadcast/vehicle-to-vehicle messages"
-    vehicle_id: int
-    timestamp: float
-    x: float
-    y: float
-    theta: float
-    velocity: float
-
-@dataclass
+@dataclass(frozen=True)
 class V2VMessage:
-    "V2V message structure"
-    sender_id: int
-    timestamp: float
-    message_type: str    
-    payload: dict
+    """Generic V2V transport envelope.
 
-    @property
-    def vehicle_id(self) -> int:
-        """Backward-compatible alias. Prefer sender_id in new V2V code."""
-        return self.sender_id
+    Payload semantics belong to consumers such as the fleet state store.
+    Receive timestamps are meaningful only on the local receiver.
+    """
+
+    sender_id: int
+    message_type: str
+    payload: dict
+    sequence: int
+    sent_at_monotonic: float
+    sent_at_perf_counter_ns: int
+    received_at_monotonic: float = 0.0
+    received_at_perf_counter_ns: int = 0

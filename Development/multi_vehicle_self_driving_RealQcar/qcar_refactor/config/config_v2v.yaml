@@ -11,6 +11,7 @@ udp_default:
   implementation: udp
   bind_ip: "0.0.0.0"
   base_port: 8000
-  broadcast_rate_hz: 20
-  peer_timeout_s: 2.0
+  send_buffer_bytes: 16384
+  receive_buffer_bytes: 32768
+  message_rate_limits_hz: {}
   peers: []
