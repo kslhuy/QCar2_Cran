@@ -17,17 +17,31 @@ def main(argv=None) -> int:
     parser.add_argument("--cycles", type=int, default=None, help="stop after this many control-loop cycles")
     parser.add_argument("--vehicle-config", help="vehicle profile file in config/")
     parser.add_argument("--headless", action="store_true", help="use config_vehicle_headless.yaml")
+    parser.add_argument("--ground-station", choices=("null", "tcp_client"), help="ground-station bridge profile")
+    parser.add_argument("--ground-station-host", help="override TCP ground-station host")
+    parser.add_argument("--ground-station-port", type=int, help="override TCP ground-station listener port")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     value_overrides = {}
     if args.vehicle_id is not None:
         value_overrides["vehicle_id"] = args.vehicle_id
+    selection_overrides = {}
+    if args.ground_station is not None:
+        selection_overrides["ground_station"] = args.ground_station
+    if args.ground_station_host is not None or args.ground_station_port is not None:
+        ground_station_values = {}
+        if args.ground_station_host is not None:
+            ground_station_values["server_host"] = args.ground_station_host
+        if args.ground_station_port is not None:
+            ground_station_values["server_port"] = args.ground_station_port
+        value_overrides.setdefault("modules", {})["ground_station"] = ground_station_values
     vehicle_config_file = args.vehicle_config or (
         "config_vehicle_headless.yaml" if args.headless else "config_vehicle.yaml"
     )
     config = load_config(
         vehicle_config_file=vehicle_config_file,
+        selection_overrides=selection_overrides or None,
         value_overrides=value_overrides,
     )
     modules = build_vehicle_modules(config)
@@ -36,9 +50,10 @@ def main(argv=None) -> int:
         modules.io,
         modules.observer,
         modules.planner,
-        modules.controller,
+        modules.controller_manager,
         modules.v2v,
         simulation=modules.simulation,
+        ground_station=modules.ground_station,
     )
     period_s = 1.0 / config.runtime["loop_rate_hz"]
 

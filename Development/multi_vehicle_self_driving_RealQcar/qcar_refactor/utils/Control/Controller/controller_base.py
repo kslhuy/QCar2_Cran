@@ -9,7 +9,7 @@ know about GUI/V2V.
 import logging
 from abc import ABC, abstractmethod
 
-from core.types import ControlCommand, ControllerReference, VehicleStateEstimate
+from core.types import ControlInput, ControllerReference, VehicleStateEstimate
 
 
 class ControllerBase(ABC):
@@ -25,6 +25,11 @@ class ControllerBase(ABC):
         """Whether this controller accepts a predecessor-derived reference."""
         return False
 
+    @property
+    def uses_planner_completion(self) -> bool:
+        """Whether a completed planner target should stop the vehicle."""
+        return True
+
     @abstractmethod
     def reset(self) -> None:
         """Reset internal controller memory, such as PID integral error."""
@@ -36,7 +41,7 @@ class ControllerBase(ABC):
         state: VehicleStateEstimate,
         target: ControllerReference,
         dt: float,
-    ) -> ControlCommand:
+    ) -> ControlInput:
         """Compute one throttle/steering command."""
         ...
 
@@ -55,8 +60,8 @@ class ControllerNull(ControllerBase):
         state: VehicleStateEstimate,
         target: ControllerReference,
         dt: float,
-    ) -> ControlCommand:
-        return ControlCommand(
+    ) -> ControlInput:
+        return ControlInput(
             throttle=0.0,
             steering=0.0,
             target_velocity=0.0,

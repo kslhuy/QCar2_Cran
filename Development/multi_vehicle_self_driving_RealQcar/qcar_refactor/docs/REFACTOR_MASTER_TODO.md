@@ -39,7 +39,7 @@ V2V is a vehicle-to-vehicle UDP transport. Each active vehicle binds a unique lo
 
 V2V packet contents are untrusted. Invalid envelopes must be dropped without changing vehicle state. V2V only validates the generic envelope and retains local receive timestamps; fleet owns payload decoding and stale-peer decisions. Monotonic timestamps must not be compared across machines or used as observer timestamps. Virtual control tests remain unpaced by default; virtual tests using wall-clock UDP must enable the runner's `--realtime` option or deliberately pace their steps.
 
-The legacy ground station is a TCP server with one listener per vehicle at `ground_station.base_port + vehicle_id` (default `5000 + vehicle_id`). Each vehicle is a TCP client: it connects to that assigned remote listener, uploads telemetry, and receives commands over the same bidirectional connection. The refactored protocol should eventually use one TCP listener and an initial `vehicle_id` registration message; retain the per-vehicle TCP-port scheme only when legacy compatibility is required.
+The legacy ground station uses one TCP listener per vehicle at `ground_station.base_port + vehicle_id` (default `5000 + vehicle_id`) and infers vehicle identity from the listener. The refactor replaces that scheme with one configured TCP listener and an initial `vehicle_id` registration frame. The refactored implementation must not retain per-vehicle TCP listeners or a legacy compatibility bridge.
 
 `config_vehicle_*.yaml` remains a single-vehicle runtime template. Every multi-vehicle scenario explicitly selects a top-level `simulation_profile` from `config_simulation.yaml`, then owns per-instance values: vehicle ID, spawn transform, mission, tick owner, V2V endpoint/peers, and ground-station destination. It must not duplicate shared CARLA settings such as host, port, fixed delta, world defaults, or sensor defaults.
 
@@ -245,10 +245,10 @@ Acceptance gate: a follower obtains only validated, fresh predecessor snapshots 
 
 Owner: `utils/fleet/`, `utils/control/`, and `core/vehicle_logic.py`.
 
-- [x] Add `utils/control/controller/controller_fleet_base.py` with `ControllerFleetBase`, a general fleet-controller base derived from `ControllerBase`. Its fleet-specific `compute()` accepts the same `ControllerReference` type as other controllers, plus optional `FleetStatus`; do not add fleet parameters to the non-fleet `ControllerBase` interface.
+- [x] Add `utils/control/controller/controller_fleet/controller_fleet_base.py` with `ControllerFleetBase`, a general fleet-controller base derived from `ControllerBase`. Its `compute()` method has the same `(estimate, ControllerReference, dt)` contract as every other controller and advertises support for predecessor-derived references; do not add fleet lifecycle parameters to controller computation.
 - [x] In fleet-controller mode, define `ControllerReference` to represent the direct front vehicle's current reference state. `FleetFollowingPolicy` maps a validated predecessor `FleetPeerSnapshot` into this reference only while `FleetPhase` is `ACTIVE`; it does not select or invoke a controller.
-- [x] Add `utils/control/controller/controller_fleet_longitudinal.py` with `ControllerFleetLongitudinal`, derived from `ControllerFleetBase`. It implements the first longitudinal following algorithm using ego state, front-vehicle reference, and optional fresh `FleetStatus` context.
-- [x] Add `utils/control/controller/controller_fleet_2d.py` with `ControllerFleet2D`, derived from `ControllerFleetBase`. It uses the front-vehicle pose/heading, desired spacing, and ego state to construct a virtual 2D target behind the front vehicle, then calculates both throttle and steering within the shared command bounds.
+- [x] Add `utils/control/controller/controller_fleet/controller_fleet_longitudinal.py` with `ControllerFleetLongitudinal`, derived from `ControllerFleetBase`. It implements the first longitudinal following algorithm using ego state and a validated front-vehicle reference.
+- [x] Add `utils/control/controller/controller_fleet/controller_fleet_2d.py` with `ControllerFleet2D`, derived from `ControllerFleetBase`. It uses the front-vehicle pose/heading, desired spacing, and ego state to construct a virtual 2D target behind the front vehicle, then calculates both throttle and steering within the shared command bounds.
 - [x] Keep the leader on its normal path/velocity controller. A follower uses the selected `ControllerFleetLongitudinal` or `ControllerFleet2D` only when fleet data is valid; fleet utility code still does not calculate actuator commands or access IO/V2V sockets.
 - [x] Keep `ControllerFleetLongitudinal` limited to longitudinal tests. `ControllerFleet2D` must not steer directly toward the front vehicle's centre; it must use a defined virtual-target/path geometry and be validated independently before CARLA use.
 - [x] Define explicit throttle/steering command bounds, desired-gap/target-speed limits, predecessor freshness requirements, and a zero-command/fleet-cancel fallback for invalid inputs.
@@ -256,7 +256,7 @@ Owner: `utils/fleet/`, `utils/control/`, and `core/vehicle_logic.py`.
 - [x] Move fleet-specific peer processing and lifecycle coordination out of `VehicleRuntime` and into `FleetManager`. Define one fleet runtime result/context that accepts the ego estimate, drained generic V2V messages, and local monotonic time; it validates peers, updates fleet phase, returns an optional V2V publication, an optional follower `ControllerReference`, and an explicit fault/cancel intent. `VehicleRuntime` remains the loop owner: it drains/publishes through V2V, combines its safety state with the manager result, invokes the injected controller, writes IO commands, and applies any returned fault/cancel intent through the global safety state machine. Do not let `FleetManager` select controllers, write actuators, own sockets, or transition the vehicle safety state directly.
 - [x] Expose fleet behavior to the vehicle only through the injected `FleetManager` interface. Do not import fleet policy, peer-store, state-machine, or controller implementation classes into `core/vehicle_logic.py`; apply the same one-utility/one-interface rule to every runtime utility.
 - [x] Run fleet control at the normal vehicle-runtime loop rate initially. Add a local controller rate limit only when the selected algorithm requires it; do not add another control thread.
-- [x] Add unit tests for `ControllerFleetBase` contract behaviour, longitudinal spacing response, 2D virtual-target geometry, throttle/steering bounds, optional-status handling, stale predecessor fallback, leader behaviour, and controller/fleet separation. See `FLEET_FOLLOWING_POLICY_SCHEME.md`.
+- [x] Add unit tests for `ControllerFleetBase` contract behaviour, longitudinal spacing response, 2D virtual-target geometry, throttle/steering bounds, stale predecessor fallback, leader behaviour, and controller/fleet separation. See `FLEET_FOLLOWING_POLICY_SCHEME.md`.
 
 Acceptance gate: a fresh predecessor snapshot is converted into the same `ControllerReference` contract and consumed only by the selected `ControllerFleetBase`; stale or invalid data leaves the vehicle in the existing safe-stop path.
 
@@ -285,7 +285,7 @@ Owner: `test/`, `extra/simulator/virtual/`, and fleet utilities.
 - [~] Deferred: add deterministic fault-injection cases for delayed, dropped, malformed, and stale predecessor messages. Verify the documented cancellation/safe-stop behavior before safety-fault qualification.
 - [x] Establish quantitative acceptance thresholds for spacing error, command limits, timeout response, and clean shutdown before moving the same policy to CARLA.
 
-Acceptance gate: the virtual fleet test demonstrates bounded follower behavior under normal traffic and a verified safe response to communication faults.
+Acceptance gate: the virtual fleet test demonstrates bounded follower behavior under normal traffic. Communication-fault qualification is explicitly deferred.
 
 ### Step 7.7: Repeat The Validated Fleet Scenario In CARLA
 
@@ -296,7 +296,7 @@ Owner: `test/`, `extra/simulator/carla/`, and fleet utilities.
 - [x] Write CARLA CSV/plot artifacts equivalent to the virtual test and record CARLA sensor/control timing separately from local V2V snapshot age.
 - [~] Deferred: re-run communication-fault tests where practical and document any simulator-specific timing limitation before safety-fault qualification.
 
-Acceptance gate: the same static leader/follower policy works in CARLA without changing V2V transport, fleet contracts, or control ownership.
+Acceptance gate: the same static leader/follower policy works in CARLA without changing V2V transport, fleet contracts, or control ownership. CARLA communication-fault qualification is explicitly deferred.
 
 ### Step 7.8: Defer Research Extensions Until The Baseline Is Stable
 
@@ -316,17 +316,20 @@ Final Step 7 acceptance gate: two independent vehicle processes can form a valid
 
 Owners: `core/`, `utils/ground_station/`, `extra/ground_station/`, and `extra/deployment/`.
 
-Principle: a vehicle command is a core domain contract, not a GUI or TCP object. The vehicle runtime remains the only owner of vehicle-state transitions and actuator writes. Every runtime utility is reached through one injected interface; the runtime does not import or coordinate a utility's internal helpers. Ground-station and CLI code only validate, transport, queue, acknowledge, and display commands. Deployment is a separate SSH/SFTP concern and must not be mixed with the runtime control connection.
+Principle: a vehicle command is a core domain contract, not a GUI or TCP object. `VehicleCommandHandler` owns typed command dispatch to the vehicle state machine, planner, and injected `FleetManager`; `VehicleRuntime` owns the resulting control reset, safe actuator stop, and control loop. Every runtime utility is reached through one injected interface; the runtime does not import or coordinate a utility's internal helpers. `GroundStationCommandHandler` owns CLI parsing and target routing; `GroundStationRuntimeFacade` owns queued command pumping, acknowledgement publication, and monitoring construction; the underlying bridge owns TCP transport only. Ground-station presentation code cannot call a vehicle runtime directly. Deployment is a separate SSH/SFTP concern and must not be mixed with the runtime control connection.
+
+Network direction: the ground station owns one configured TCP listener. Each vehicle opens an outbound connection and must register its own `vehicle_id` before it can exchange telemetry or commands. The listener never infers identity from the TCP source address or a per-vehicle port. This is a new protocol; the refactor does not retain the legacy per-vehicle-listener design.
 
 ### Step 8.1: Define The Core Command Contract
 
 Owner: `core/`.
 
-- [ ] Add `core/commands.py` with a typed `CommandType`, immutable `VehicleCommand`, command source, command ID, timestamp, payload, and a serializable command acknowledgement/result contract.
-- [ ] Support only `START`, `STOP`, `EMERGENCY_STOP`, `RESET`, `SET_VELOCITY`, `SET_PATH`, `BUILD_FLEET`, and `CANCEL_FLEET`. Validate each payload at this boundary and explicitly reject unknown commands.
-- [ ] Replace `GuiCommand` directly with `VehicleCommand` across core, simulator runners, and tests. Do not add a compatibility adapter or retain a GUI-named command type.
-- [ ] Pass every `VehicleCommand` to the injected `FleetManager` first. It handles only recognised fleet lifecycle commands and returns an intent/status; `VehicleRuntime` alone applies the resulting safety-state transition and actuator-safe stop.
-- [ ] Add unit tests for command parsing, IDs, payload validation, state-machine routing, fleet-command acknowledgement, and safe rejection.
+- [x] Add `core/commands.py` with a typed `CommandType`, immutable `VehicleCommand`, command source, command ID, timestamp, payload, and a serializable command acknowledgement/result contract.
+- [x] Support only `START`, `STOP`, `EMERGENCY_STOP`, `RESET`, `SET_VELOCITY`, `SET_PATH`, `BUILD_FLEET`, and `CANCEL_FLEET`. Validate each payload at this boundary and explicitly reject unknown commands.
+- [x] Define acknowledgement outcomes separately from TCP delivery: applied, deferred, rejected, or failed. Every result includes the original command ID, vehicle ID, resulting runtime state, and a machine-readable reason code plus an operator-readable reason.
+- [x] Replace `GuiCommand` directly with `VehicleCommand` across core, simulator runners, and tests. Do not add a compatibility adapter or retain a GUI-named command type.
+- [x] Pass every `VehicleCommand` to the injected `FleetManager` first. It handles only recognised fleet lifecycle commands and returns an intent/status; `VehicleCommandHandler` applies the resulting state transition and `VehicleRuntime` alone applies actuator-safe stop work.
+- [x] Add unit tests for command parsing, IDs, payload validation, state-machine routing, fleet-command acknowledgement, and safe rejection.
 
 Acceptance gate: tests, CLI, and a future GUI can request the same typed command without importing TCP, Qt, or a simulator module.
 
@@ -334,12 +337,15 @@ Acceptance gate: tests, CLI, and a future GUI can request the same typed command
 
 Owner: `utils/ground_station/` and `core/module_factory.py`.
 
-- [ ] Define one versioned TCP protocol using length-prefixed MessagePack frames: vehicle registration, monitoring snapshot, command request, command acknowledgement, and error response.
-- [ ] Define an immutable monitoring snapshot containing vehicle ID, runtime/fleet phase, local estimate health, last command/result, IO/observer health, V2V counters, and fleet peer summaries. Keep it independent of UDP V2V envelopes and unsynchronised remote timestamps.
-- [ ] Add `GroundStationBridgeBase`, `NullGroundStationBridge`, and `GroundStationClientBridge`. The client owns a reconnecting TCP connection plus bounded receive/send queues; it never calls `VehicleRuntime.handle_command()` from its network thread.
-- [ ] Extend module construction and `VehicleRuntime` so each loop drains queued `VehicleCommand` objects, applies them through the existing runtime path, publishes acknowledgements, and emits monitoring snapshots at a configured rate.
-- [ ] Use one configured server listener. A vehicle connects outbound and identifies itself through registration; do not use `base_port + vehicle_id` except in an explicit legacy compatibility adapter.
-- [ ] Add unit tests for framing, protocol validation, queue bounds, reconnect behavior, command-to-runtime mapping, and null-bridge behavior.
+- [x] Define one versioned TCP protocol using bounded, length-prefixed MessagePack frames. Support exactly `REGISTER`, `REGISTER_ACK`, `MONITORING_SNAPSHOT`, `COMMAND_REQUEST`, `COMMAND_ACK`, and `ERROR` frames in the first implementation.
+- [x] Specify registration before coding the client: the first valid vehicle frame must be `REGISTER` with protocol version, vehicle ID, client-session ID, and optional capability metadata. The server validates it and returns `REGISTER_ACK`; only then may either side send normal monitoring or command frames.
+- [x] Define session ownership and reconnect rules: reject an active duplicate vehicle ID, remove a disconnected session from the registry, retain a bounded recent-disconnect diagnostic record, and permit a newly registered connection after disconnect. Do not identify a vehicle from its IP address, source port, or a `base_port + vehicle_id` listener.
+- [x] Define an immutable monitoring snapshot containing vehicle ID, runtime/fleet phase, local estimate health, last command/result, IO/observer health, V2V counters, and fleet peer summaries. Keep it independent of UDP V2V envelopes and unsynchronised remote timestamps.
+- [x] Add `GroundStationBridgeBase`, `NullGroundStationBridge`, and `GroundStationClientBridge`. The client owns the reconnecting TCP connection, protocol framing, registration state, and bounded receive/send queues; it never calls `VehicleRuntime.handle_command()` from its network thread.
+- [x] Define queue policy: preserve FIFO structural commands to a fixed bound and report overflow as a rejected acknowledgement; coalesce monitoring snapshots to the latest value; prioritise command acknowledgements over telemetry.
+- [x] Extend module construction and `VehicleRuntime` so each loop drains a bounded batch of queued `VehicleCommand` objects, applies them through the existing runtime path, publishes the resulting acknowledgement, and emits monitoring snapshots at a configured rate.
+- [x] Add a `tcp_client` ground-station profile with server host, listener port, connection/reconnect timing, queue bounds, frame-size limit, monitoring rate, and enabled flag. Keep `null` as the default. Do not add a legacy bridge or a per-vehicle TCP-port profile.
+- [x] Add unit tests for framing and frame-size limits, registration ordering/version validation, duplicate-ID rejection, queue bounds, reconnect behavior, command-to-runtime mapping, acknowledgement correlation, and null-bridge behavior.
 
 Acceptance gate: a vehicle can run unchanged with the null bridge or exchange typed commands and telemetry through the TCP bridge without introducing a GUI dependency.
 
@@ -347,13 +353,54 @@ Acceptance gate: a vehicle can run unchanged with the null bridge or exchange ty
 
 Owner: `extra/ground_station/` and `test/`.
 
-- [ ] Add `GroundStationServer` with a vehicle-session registry keyed by registered vehicle ID, latest monitoring snapshot, and command/acknowledgement routing.
-- [ ] Add a CLI server entry point that starts the listener, logs connection state, and exposes registered vehicle status.
-- [ ] Add a CLI client entry point for `list`, `status`, `start`, `stop`, `emergency-stop`, `reset`, `set-velocity`, `set-path`, `build-fleet`, and `cancel-fleet`, targeted by vehicle ID.
-- [ ] Require every CLI command to display its acknowledgement or rejection reason. A successful TCP send alone is not a successful vehicle command.
-- [ ] Add localhost integration tests using the real server, one vehicle bridge, and CLI-equivalent commands. Validate command acknowledgement, telemetry updates, fleet build/cancel, disconnect, and reconnect.
+- [x] Add `GroundStationServer` with one listener, a vehicle-session registry keyed by successfully registered vehicle ID, latest monitoring snapshot, and command/acknowledgement routing. The registry tracks connection/session state rather than a fixed set of expected vehicles.
+- [x] Add a CLI server entry point that starts the listener and exposes registered vehicle status.
+- [x] Add a continuously refreshing terminal dashboard for integration testing. For every registered vehicle, display connection/registration state, runtime and fleet phase, estimate validity, position/heading/speed, last monitoring age, last command acknowledgement, IO/observer health, V2V receive/drop counters, and fleet peer summary. Use only the server's latest monitoring snapshots; the dashboard does not query or control vehicles directly.
+- [x] Keep the terminal dashboard asynchronous from TCP receive and command routing. Refresh at a bounded display rate, retain bounded monitoring history for rates, and show stale or disconnected data explicitly rather than blocking while waiting for a vehicle.
+- [x] Add `GroundStationCommandHandler` and an interactive CLI command surface for `list`, `status`, `start`, `stop`, `emergency-stop`, `reset`, `set-velocity`, `set-path`, `build-fleet`, and `cancel-fleet`, targeted by vehicle ID. The handler parses terminal syntax and routes only typed `VehicleCommand` values through the server; it never accesses a vehicle runtime directly.
+- [x] Require every CLI command to display its acknowledgement or rejection reason. A successful TCP send alone is not a successful vehicle command.
+- [x] Add localhost integration tests using the real server, one vehicle bridge, and CLI-equivalent commands. Validate command acknowledgement, telemetry updates, dashboard snapshot rendering, fleet build/cancel, disconnect, and reconnect.
 
-Acceptance gate: operators can monitor and command one or more simulated vehicles from a terminal through the production protocol before a GUI exists.
+Acceptance gate: operators can monitor live state, diagnose stale/disconnected vehicles, and command one or more simulated vehicles from a terminal through the production protocol before a GUI exists.
+
+Before using the TCP bridge on a physical-vehicle network outside a trusted laboratory subnet, add authenticated registration, an explicit vehicle/server allow-list, and transport encryption or an isolated VPN. The current implementation is intentionally a localhost/trusted-test-network protocol, not an Internet-facing control service.
+
+### Step 8.3A: Preserve Runtime Ownership Boundaries
+
+Owner: `core/`, `utils/fleet/`, and `utils/ground_station/`.
+
+- [x] Move `MonitoringSnapshot` from `core/` to `utils/ground_station/`, because it is an operator-facing transport/dashboard contract rather than a general vehicle-domain type.
+- [x] Add `GroundStationRuntimeFacade` to own bounded bridge command draining, command-result retention/acknowledgement publication, and monitoring-snapshot construction. It accepts a runtime safety callback and never accesses the state machine, IO, controller, fleet internals, or a TCP socket directly.
+- [x] Remove ground-station queue, acknowledgement, and monitoring helper methods from `VehicleRuntime`. The runtime now invokes only the facade's `process_pending()` and `publish_monitoring()` operations.
+- [x] Add `FleetManager.attach_transport()` and `FleetManager.run_cycle()` so fleet owns its generic V2V drain/publication work. The manager receives a generic V2V facade and still does not own UDP sockets, direct actuator writes, or vehicle state-machine transitions.
+- [x] Move normal fleet stop/cancel and fleet-fault lifecycle cleanup behind `FleetManager.stop_for_vehicle()` and `FleetManager.abort()`. `VehicleRuntime` only applies the corresponding zero command or global vehicle-state transition.
+- [x] Add focused facade tests for ground-station command/monitoring behavior and fleet V2V exchange, then retain runtime and localhost TCP integration coverage.
+
+Acceptance gate: `VehicleRuntime` contains no ground-station protocol/monitoring helper or fleet transport-exchange helper. It remains the sole owner of actuator-safe writes and the global vehicle safety state machine.
+
+### Step 8.3B: Add Ground-Station Manual Control For Vehicle Tests
+
+Owner: `core/`, `utils/control/`, `utils/ground_station/`, `extra/ground_station/`, and `test/`.
+
+Principle: manual operation is a vehicle-side `ControllerBase` implementation, not a ground-station actuator channel. The ground station produces typed input and displays status; `VehicleCommandHandler` validates mode changes; `ControllerManual` clips and expires the input; `VehicleRuntime` remains the sole IO writer and global safety-state owner while selecting either the configured controller or `ControllerManual`.
+
+- [x] Add typed `ENABLE_MANUAL`, `DISABLE_MANUAL`, and `MANUAL_INPUT` commands. Validate throttle in `[-1, 1]`, finite steering, and no unexpected payload fields.
+- [x] Add `utils/control/controller/controller_manual.py` with `ControllerManual`, a normal `ControllerBase` implementation with a monotonic input timeout. It holds only the latest vehicle-side input, clips it to the selected controller profile's `manual` limits, and returns a zero command when stale.
+- [x] Build the manual controller from the selected `controller` profile. `ENABLE_MANUAL` selects it, `DISABLE_MANUAL` restores the configured controller, and runtime restart/shutdown clears manual mode.
+- [x] Extend `VehicleCommandHandler` to allow manual enable only while the vehicle is `RUNNING`, reject it while fleet operation is not disabled, reject input before enable, and deactivate manual control on any non-running vehicle state.
+- [x] Extend `VehicleRuntime` to use manual output only while active, bypass automatic path/fleet control during manual operation, stop on manual-input timeout, and preserve IO clipping as the final actuator boundary.
+- [x] Coalesce `MANUAL_INPUT` at the vehicle TCP bridge to one latest input rather than queuing stale steering/throttle values. Keep structural commands FIFO. Do not send a per-input acknowledgement for high-rate manual input.
+- [x] Add CLI commands `enable-manual`, `disable-manual`, `manual`, and Windows `manual-drive`. The keyboard loop sends typed input at 20 Hz and sends `STOP` on exit; it never accesses a vehicle runtime or IO directly.
+- [x] Add dashboard control-mode display plus unit and localhost TCP integration coverage for input clipping, timeout, command validation, coalescing, and end-to-end manual control.
+
+Acceptance gate: an operator can manually drive a configured virtual vehicle only through the production ground-station protocol. Stale manual input stops the vehicle, fleet/manual mixing is rejected, and no ground-station code calls vehicle IO or a runtime directly.
+
+#### Controller Selection Cleanup
+
+- [x] Replace manual-specific controller selection results with the generic `CommandHandling.controller_profile` intent. `VehicleCommandHandler` owns command semantics; `VehicleRuntime` only applies a selected profile through `ControllerManager`.
+- [x] Add optional `FleetPolicy.follower_controller_profile` and propagate it through `FleetStepResult`. A fleet follower can request a configured controller profile without `VehicleRuntime` naming a fleet-controller implementation.
+- [x] Move fleet-reference capability validation into `ControllerManager.compute_fleet()`. `VehicleRuntime` retains only the safe-stop response to a returned capability failure and the generic fleet hold action.
+- [x] Remove manual-specific selection helpers from `VehicleRuntime`. Planner-completion behavior is now declared by the active controller through `uses_planner_completion`.
 
 ### Step 8.4: Add A Separate Real-Vehicle Deployment CLI
 

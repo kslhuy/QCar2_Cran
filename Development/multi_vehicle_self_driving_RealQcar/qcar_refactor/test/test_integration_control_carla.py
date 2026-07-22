@@ -9,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.types import GuiCommand
+from core.commands import CommandType, VehicleCommand
 from core.module_factory import build_vehicle_modules
 from core.vehicle_config import load_config
 from core.vehicle_logic import VehicleRuntime
@@ -30,8 +30,9 @@ class TestLiveCarlaControlPipeline(unittest.TestCase):
             modules.io,
             modules.observer,
             modules.planner,
-            modules.controller,
+            modules.controller_manager,
             modules.v2v,
+            modules.ground_station,
             simulation=modules.simulation,
         )
         fixed_delta_s = float(config.module("simulation")["fixed_delta_seconds"])
@@ -44,7 +45,7 @@ class TestLiveCarlaControlPipeline(unittest.TestCase):
             initial_sensor = modules.io.read()
             route = self._long_route(initial_sensor.gps_position)
             modules.planner.load_path(route)
-            self.assertEqual(runtime.handle_command(GuiCommand("START", {})), State.RUNNING)
+            self.assertEqual(runtime.handle_command(VehicleCommand(CommandType.START)).runtime_state, State.RUNNING.name)
             for _ in range(max(2, round(self._DURATION_S / fixed_delta_s))):
                 telemetry = runtime.step(dt=fixed_delta_s)
                 rows.append(

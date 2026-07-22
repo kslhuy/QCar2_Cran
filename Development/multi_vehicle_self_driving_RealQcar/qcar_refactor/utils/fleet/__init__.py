@@ -1,9 +1,11 @@
 """Fleet formation, lifecycle, and peer-exchange utilities."""
 
 from .fleet_base import FleetFormationBuilder
-from .distributed_observer_base import DistributedObserverBase
-from .distributed_observer_fake import DistributedObserverFake
-from .distributed_observer_luenberger import DistributedObserverLuenberger
+from .fleet_utils.distributed_observer import (
+    DistributedObserverBase,
+    DistributedObserverFake,
+    DistributedObserverLuenberger,
+)
 from .fleet_manager import FleetManager
 from .fleet_message import (
     FLEET_MESSAGE_SCHEMA_VERSION,

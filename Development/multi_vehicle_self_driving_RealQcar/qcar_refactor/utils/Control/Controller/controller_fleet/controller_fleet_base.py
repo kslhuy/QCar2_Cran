@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from utils.control.controller.controller_base import ControllerBase
+from ..controller_base import ControllerBase
 
 
 class ControllerFleetBase(ControllerBase):

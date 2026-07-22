@@ -1,5 +1,15 @@
 "null":
   implementation: "null"
 
-legacy:
-  implementation: legacy
+tcp_client:
+  implementation: tcp_client
+  enabled: true
+  server_host: "127.0.0.1"
+  server_port: 5000
+  connect_timeout_s: 1.0
+  reconnect_interval_s: 1.0
+  command_queue_size: 32
+  outbound_queue_size: 64
+  max_frame_bytes: 65536
+  monitoring_rate_hz: 10
+  command_batch_size: 8

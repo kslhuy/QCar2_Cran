@@ -13,7 +13,7 @@ this controller.
 import logging
 import math
 
-from core.types import ControlCommand, ControllerReference, VehicleStateEstimate
+from core.types import ControlInput, ControllerReference, VehicleStateEstimate
 from utils.control.controller.controller_base import ControllerBase
 
 
@@ -63,7 +63,7 @@ class ControllerSimple(ControllerBase):
         state: VehicleStateEstimate,
         target: ControllerReference,
         dt: float,
-    ) -> ControlCommand:
+    ) -> ControlInput:
         if target.is_finished:
             self.reset()
             return self.zero_command(source="path_finished")
@@ -78,15 +78,15 @@ class ControllerSimple(ControllerBase):
         )
         steering = self._compute_steering(state, target)
 
-        return ControlCommand(
+        return ControlInput(
             throttle=throttle,
             steering=steering,
             target_velocity=target_velocity,
             source="simple_path_controller",
         )
 
-    def zero_command(self, source: str = "zero") -> ControlCommand:
-        return ControlCommand(
+    def zero_command(self, source: str = "zero") -> ControlInput:
+        return ControlInput(
             throttle=0.0,
             steering=0.0,
             target_velocity=0.0,

@@ -12,7 +12,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from core.types import SensorData, VehicleStateEstimate, ControlCommand
+from core.types import SensorData, VehicleStateEstimate, ControlInput
 
 
 class ObserverBase(ABC):
@@ -42,7 +42,7 @@ class ObserverBase(ABC):
         self,
         sensor_data: SensorData,
         dt: float,
-        last_command: Optional[ControlCommand] = None,
+        last_command: Optional[ControlInput] = None,
     ) -> VehicleStateEstimate:
         """
         Run one estimation step.
@@ -50,7 +50,7 @@ class ObserverBase(ABC):
         Args:
             sensor_data: SensorData snapshot returned by vehicle_io.read().
             dt: time delta since last update (seconds)
-            last_command: most recent ControlCommand written to vehicle (optional)
+            last_command: most recent ControlInput written to vehicle (optional)
 
         Returns:
             VehicleStateEstimate with current [x, y, theta, velocity, acceleration]
@@ -111,7 +111,7 @@ class ObserverNull(ObserverBase):
         self,
         sensor_data: SensorData,
         dt: float,
-        last_command: Optional[ControlCommand] = None,
+        last_command: Optional[ControlInput] = None,
     ) -> VehicleStateEstimate:
         now = sensor_data.sensor_timestamp or time.time()
         self._last = self.assess_estimate(VehicleStateEstimate(

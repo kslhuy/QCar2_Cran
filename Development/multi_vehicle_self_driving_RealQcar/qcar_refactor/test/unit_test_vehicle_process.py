@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import GuiCommand
+from core.commands import VehicleCommand
 from core.vehicle_config import ConfigError
 from core.vehicle_process import VehicleProcessSpec, build_vehicle_process_runtime, run_vehicle_process
 
@@ -54,8 +54,8 @@ class _FakeRuntime:
     def start(self):
         self.calls.append("start")
 
-    def handle_command(self, command: GuiCommand):
-        self.calls.append(("command", command.command))
+    def handle_command(self, command: VehicleCommand):
+        self.calls.append(("command", command.command_type.value))
 
     def step(self, dt):
         self._steps += 1

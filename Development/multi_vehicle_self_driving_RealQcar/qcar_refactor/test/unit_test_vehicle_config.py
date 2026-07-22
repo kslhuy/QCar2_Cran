@@ -98,10 +98,25 @@ class TestVehicleConfig(unittest.TestCase):
         self.assertEqual(config.module("io")["implementation"], "null")
         self.assertEqual(config.module("observer")["implementation"], "null")
 
-    def test_unsupported_ground_station_profile_is_rejected_by_composition(self):
-        config = load_config(self.config_dir, selection_overrides={"ground_station": "legacy"})
-        with self.assertRaisesRegex(ConfigError, "Ground-station profiles"):
-            build_vehicle_modules(config)
+    def test_tcp_ground_station_profile_builds_the_new_vehicle_bridge(self):
+        config = load_config(
+            self.config_dir,
+            selection_overrides={
+                "ground_station": "tcp_client",
+                "io": "null",
+                "observer": "null",
+                "planner": "null",
+                "controller": "null",
+                "v2v": "null",
+            },
+        )
+        modules = build_vehicle_modules(config)
+
+        self.assertEqual(modules.ground_station.__class__.__name__, "GroundStationRuntimeFacade")
+
+    def test_unknown_ground_station_profile_is_rejected_by_config_loading(self):
+        with self.assertRaisesRegex(ConfigError, "Unknown ground_station profile"):
+            load_config(self.config_dir, selection_overrides={"ground_station": "legacy"})
 
     def test_loads_a_new_module_from_the_vehicle_selection(self):
         (self.config_dir / "config_perception.yaml").write_text(

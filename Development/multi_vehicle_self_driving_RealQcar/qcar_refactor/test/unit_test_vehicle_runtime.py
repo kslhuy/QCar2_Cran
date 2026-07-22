@@ -9,7 +9,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlCommand, GuiCommand, ControllerReference, SensorData, V2VMessage, VehicleStateEstimate
+from core.commands import CommandOutcome, CommandSource, CommandType, VehicleCommand
+from core.types import ControlInput, ControllerReference, SensorData, V2VMessage, VehicleStateEstimate
 from core.vehicle_config import ConfigVehicle
 from core.module_factory import build_vehicle_modules
 from core.vehicle_logic import VehicleRuntime
@@ -23,6 +24,14 @@ from utils.fleet import (
     encode_vehicle_state_estimate,
 )
 from utils.io.io_base import IONull
+from utils.control.controller.controller_manual import ControllerManual
+from utils.control.controller.controller_manager import ControllerManager
+from utils.ground_station.bridge_base import NullGroundStationBridge
+from utils.ground_station.runtime_facade import GroundStationRuntimeFacade
+
+
+def _command(name: str, payload: dict | None = None) -> VehicleCommand:
+    return VehicleCommand(CommandType[name], payload or {})
 
 
 def _config():
@@ -101,6 +110,12 @@ class _Planner:
         self.events.append("planner.update")
         return ControllerReference(1.0, 0.0, 0.0, 0.5, self.finished)
 
+    def set_target_velocity(self, target_velocity):
+        self.events.append(("planner.set_velocity", target_velocity))
+
+    def load_path(self, path_source):
+        self.events.append(("planner.load_path", path_source))
+
 
 class _Controller:
     supports_fleet_reference = False
@@ -113,7 +128,7 @@ class _Controller:
 
     def compute(self, state, target, dt):
         self.events.append("controller.compute")
-        return ControlCommand(0.4, 0.1, target.target_velocity, "test_controller")
+        return ControlInput(0.4, 0.1, target.target_velocity, "test_controller")
 
 
 class _FleetController(_Controller):
@@ -121,7 +136,7 @@ class _FleetController(_Controller):
 
     def compute(self, state, target, dt):
         self.events.append("controller.compute_fleet_reference")
-        return ControlCommand(0.3, 0.2, target.target_velocity, "test_fleet_controller")
+        return ControlInput(0.3, 0.2, target.target_velocity, "test_fleet_controller")
 
 
 class _V2V:
@@ -147,6 +162,9 @@ class _V2V:
         self.received = []
         return received
 
+    def get_status(self):
+        return {"enabled": True, "messages_received": 0, "packets_dropped": 0}
+
     def stop(self):
         self.events.append("v2v.stop")
 
@@ -170,6 +188,37 @@ class _RecordingNullIO(IONull):
         super().close()
 
 
+class _GroundStation:
+    def __init__(self, events):
+        self.events = events
+        self.commands = []
+        self.acks = []
+        self.snapshots = []
+
+    def start(self):
+        self.events.append("ground_station.start")
+
+    def stop(self):
+        self.events.append("ground_station.stop")
+
+    def drain_commands(self, limit):
+        self.events.append("ground_station.drain")
+        commands, self.commands = self.commands[:limit], self.commands[limit:]
+        return commands
+
+    def publish_ack(self, result):
+        self.events.append("ground_station.ack")
+        self.acks.append(result)
+
+    def publish_snapshot(self, snapshot):
+        self.events.append("ground_station.snapshot")
+        self.snapshots.append(snapshot)
+
+
+def _null_ground_station() -> GroundStationRuntimeFacade:
+    return GroundStationRuntimeFacade(NullGroundStationBridge(), command_batch_size=8)
+
+
 class TestVehicleRuntime(unittest.TestCase):
     def setUp(self):
         self.events = []
@@ -178,18 +227,26 @@ class TestVehicleRuntime(unittest.TestCase):
         self.observer = _Observer(self.events)
         self.planner = _Planner(self.events)
         self.controller = _Controller(self.events)
+        self.controller_manager = ControllerManager(self.controller)
         self.v2v = _V2V(self.events)
-        self.runtime = VehicleRuntime(self.config, self.io, self.observer, self.planner, self.controller, self.v2v)
+        self.ground_station = _null_ground_station()
+        self.runtime = VehicleRuntime(
+            self.config, self.io, self.observer, self.planner,
+            self.controller_manager, self.v2v, self.ground_station,
+        )
 
     def _rebuild_runtime(self, *, fleet, controller=None):
         self.controller = controller or self.controller
+        self.controller_manager = ControllerManager(self.controller)
+        fleet.attach_transport(self.v2v)
         self.runtime = VehicleRuntime(
             self.config,
             self.io,
             self.observer,
             self.planner,
-            self.controller,
+            self.controller_manager,
             self.v2v,
+            self.ground_station,
             fleet=fleet,
         )
 
@@ -201,8 +258,9 @@ class TestVehicleRuntime(unittest.TestCase):
             modules.io,
             modules.observer,
             modules.planner,
-            modules.controller,
+            modules.controller_manager,
             modules.v2v,
+            modules.ground_station,
         )
         runtime.start()
         self.assertEqual(runtime.state_machine.state, State.READY)
@@ -218,7 +276,7 @@ class TestVehicleRuntime(unittest.TestCase):
 
     def test_start_allows_controller_command(self):
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(_command("START"))
         telemetry = self.runtime.step(dt=0.01)
 
         self.assertEqual(telemetry.state, State.RUNNING)
@@ -227,11 +285,67 @@ class TestVehicleRuntime(unittest.TestCase):
         self.assertLess(self.events.index("observer.update"), self.events.index("planner.update"))
         self.assertLess(self.events.index("planner.update"), self.events.index("controller.compute"))
 
+    def test_ground_station_command_is_applied_only_during_runtime_step(self):
+        bridge = _GroundStation(self.events)
+        self.runtime = VehicleRuntime(
+            self.config, self.io, self.observer, self.planner, self.controller_manager, self.v2v,
+            GroundStationRuntimeFacade(bridge, command_batch_size=8),
+        )
+        bridge.commands.append(
+            VehicleCommand(CommandType.START, source=CommandSource.GROUND_STATION, target_vehicle_id=0)
+        )
+        self.runtime.start()
+
+        telemetry = self.runtime.step(dt=0.01)
+
+        self.assertEqual(telemetry.state, State.RUNNING)
+        self.assertEqual(bridge.acks[-1].outcome, CommandOutcome.APPLIED)
+        self.assertEqual(bridge.snapshots[-1].runtime_state, "RUNNING")
+        self.assertLess(self.events.index("ground_station.drain"), self.events.index("observer.update"))
+
+    def test_set_velocity_uses_typed_command_and_returns_acknowledgement(self):
+        self.runtime.start()
+
+        result = self.runtime.handle_command(VehicleCommand(CommandType.SET_VELOCITY, {"velocity": 0.7}))
+
+        self.assertEqual(result.outcome, CommandOutcome.APPLIED)
+        self.assertIn(("planner.set_velocity", 0.7), self.events)
+
+    def test_manual_input_overrides_the_automatic_controller_while_active(self):
+        controller_manager = ControllerManager(
+            self.controller,
+            {
+                "manual": lambda: ControllerManual(
+                    {"command_timeout_s": 1.0, "max_throttle": 0.35, "max_steering": 0.30}
+                )
+            },
+        )
+        self.runtime = VehicleRuntime(
+            self.config, self.io, self.observer, self.planner, controller_manager, self.v2v, self.ground_station,
+        )
+        self.runtime.start()
+        self.runtime.handle_command(_command("START"))
+        self.runtime.handle_command(_command("ENABLE_MANUAL"))
+        self.runtime.handle_command(VehicleCommand(CommandType.MANUAL_INPUT, {"throttle": 0.2, "steering": 0.1}))
+
+        telemetry = self.runtime.step(dt=0.01)
+
+        self.assertEqual(telemetry.command.source, "manual_controller")
+        self.assertAlmostEqual(telemetry.command.throttle, 0.2)
+        self.assertAlmostEqual(telemetry.command.steering, 0.1)
+        self.assertNotIn("controller.compute", self.events)
+
+        self.runtime.handle_command(_command("DISABLE_MANUAL"))
+        restored = self.runtime.step(dt=0.01)
+
+        self.assertEqual(restored.command.source, "test_controller")
+        self.assertIn("controller.compute", self.events)
+
     def test_stop_forces_zero_command(self):
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(_command("START"))
         self.runtime.step(dt=0.01)
-        self.runtime.handle_command(GuiCommand("STOP", {}))
+        self.runtime.handle_command(_command("STOP"))
 
         self.assertEqual(self.runtime.state_machine.state, State.STOPPED)
         self.assertEqual(self.io.commands[-1], (0.0, 0.0))
@@ -239,12 +353,12 @@ class TestVehicleRuntime(unittest.TestCase):
     def test_fleet_build_and_cancel_use_existing_safe_stop_path(self):
         self._rebuild_runtime(fleet=_fleet_manager())
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(_command("START"))
 
-        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        self.runtime.handle_command(_command("BUILD_FLEET"))
         self.assertEqual(self.runtime.fleet.status().phase.value, "building")
 
-        self.runtime.handle_command(GuiCommand("CANCEL_FLEET", {}))
+        self.runtime.handle_command(_command("CANCEL_FLEET"))
         self.assertEqual(self.runtime.state_machine.state, State.STOPPED)
         self.assertEqual(self.runtime.fleet.status().phase.value, "disabled")
         self.assertEqual(self.io.commands[-1], (0.0, 0.0))
@@ -252,7 +366,7 @@ class TestVehicleRuntime(unittest.TestCase):
     def test_fleet_build_is_rejected_when_vehicle_is_not_running(self):
         self._rebuild_runtime(fleet=_fleet_manager())
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        self.runtime.handle_command(_command("BUILD_FLEET"))
 
         self.assertEqual(self.runtime.fleet.status().phase.value, "disabled")
 
@@ -260,8 +374,8 @@ class TestVehicleRuntime(unittest.TestCase):
         self._rebuild_runtime(fleet=_fleet_manager())
         peer = _fleet_manager(vehicle_id=1)
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
-        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        self.runtime.handle_command(_command("START"))
+        self.runtime.handle_command(_command("BUILD_FLEET"))
         payload = encode_vehicle_state_estimate(
             VehicleStateEstimate(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, True),
             peer.status(),
@@ -281,8 +395,8 @@ class TestVehicleRuntime(unittest.TestCase):
         self._rebuild_runtime(fleet=_fleet_manager(vehicle_id=1), controller=_FleetController(self.events))
         leader = _fleet_manager(vehicle_id=0)
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
-        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        self.runtime.handle_command(_command("START"))
+        self.runtime.handle_command(_command("BUILD_FLEET"))
         self.assertTrue(leader.request_build(vehicle_running=True, now_monotonic=time.monotonic()))
         payload = encode_vehicle_state_estimate(
             VehicleStateEstimate(1.0, 1.0, 0.0, 0.0, 0.4, 0.0, True),
@@ -303,8 +417,8 @@ class TestVehicleRuntime(unittest.TestCase):
         self._rebuild_runtime(fleet=_fleet_manager())
         peer = _fleet_manager(vehicle_id=1)
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
-        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        self.runtime.handle_command(_command("START"))
+        self.runtime.handle_command(_command("BUILD_FLEET"))
         payload = encode_vehicle_state_estimate(
             VehicleStateEstimate(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, True), peer.status()
         )
@@ -314,7 +428,7 @@ class TestVehicleRuntime(unittest.TestCase):
         self.runtime.step(dt=0.01)
         self.assertEqual(self.runtime.fleet.status().phase.value, "active")
 
-        self.runtime.handle_command(GuiCommand("EMERGENCY_STOP", {}))
+        self.runtime.handle_command(_command("EMERGENCY_STOP"))
 
         self.assertEqual(self.runtime.state_machine.state, State.STOPPED)
         self.assertEqual(self.runtime.fleet.status().phase.value, "disabled")
@@ -324,8 +438,8 @@ class TestVehicleRuntime(unittest.TestCase):
         self._rebuild_runtime(fleet=_fleet_manager())
         peer = _fleet_manager(vehicle_id=1)
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
-        self.runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+        self.runtime.handle_command(_command("START"))
+        self.runtime.handle_command(_command("BUILD_FLEET"))
         payload = encode_vehicle_state_estimate(
             VehicleStateEstimate(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, True), peer.status()
         )
@@ -342,9 +456,9 @@ class TestVehicleRuntime(unittest.TestCase):
 
     def test_emergency_stop_forces_zero_command(self):
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(_command("START"))
         self.runtime.step(dt=0.01)
-        self.runtime.handle_command(GuiCommand("EMERGENCY_STOP", {}))
+        self.runtime.handle_command(_command("EMERGENCY_STOP"))
 
         self.assertEqual(self.runtime.state_machine.state, State.STOPPED)
         self.assertEqual(self.io.commands[-1], (0.0, 0.0))
@@ -352,7 +466,7 @@ class TestVehicleRuntime(unittest.TestCase):
     def test_path_completion_stops_and_writes_zero(self):
         self.planner.finished = True
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(_command("START"))
         telemetry = self.runtime.step(dt=0.01)
 
         self.assertEqual(telemetry.state, State.STOPPED)
@@ -362,7 +476,7 @@ class TestVehicleRuntime(unittest.TestCase):
     def test_module_failure_marks_error_and_writes_zero(self):
         self.observer.fail = True
         self.runtime.start()
-        self.runtime.handle_command(GuiCommand("START", {}))
+        self.runtime.handle_command(_command("START"))
 
         with self.assertRaisesRegex(RuntimeError, "control loop failed"):
             self.runtime.step(dt=0.01)
@@ -378,8 +492,9 @@ class TestVehicleRuntime(unittest.TestCase):
             io,
             _Observer(events),
             _Planner(events),
-            _Controller(events),
+            ControllerManager(_Controller(events)),
             _V2V(events, fail_start=True),
+            _null_ground_station(),
         )
 
         with self.assertRaisesRegex(RuntimeError, "startup failed"):

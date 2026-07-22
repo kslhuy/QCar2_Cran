@@ -11,15 +11,18 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlCommand, ControllerReference, VehicleStateEstimate
+from core.types import ControlInput, ControllerReference, VehicleStateEstimate
 from utils.control.controller import (
     ControllerBase,
     ControllerFleet2D,
     ControllerFleetBase,
     ControllerFleetLongitudinal,
+    ControllerCapabilityError,
+    ControllerManager,
     ControllerNull,
     ControllerSimple,
 )
+from utils.control.controller.controller_manual import ControllerManual
 
 
 SIMPLE_CONFIG = {
@@ -68,7 +71,7 @@ class TestBaseController(unittest.TestCase):
 
         self.assertEqual(controller._config, {})
         self.assertEqual(controller._vehicle_id, 3)
-        self.assertIsInstance(command, ControlCommand)
+        self.assertIsInstance(command, ControlInput)
         self.assertEqual(command.throttle, 0.0)
         self.assertEqual(command.steering, 0.0)
         self.assertEqual(command.target_velocity, 0.0)
@@ -77,6 +80,29 @@ class TestBaseController(unittest.TestCase):
     def test_cannot_instantiate_base_fleet_controller(self):
         with self.assertRaises(TypeError):
             ControllerFleetBase({})
+
+    def test_manager_lazily_selects_and_restores_configured_controller(self):
+        configured = ControllerNull({})
+        manager = ControllerManager(
+            configured,
+            {"manual": lambda: ControllerManual({"command_timeout_s": 0.5})},
+        )
+
+        self.assertEqual(manager.active_name, "configured")
+        self.assertTrue(manager.has_profile("manual"))
+        manager.select("manual")
+        manager.set_input(0.2, 0.1)
+        command = manager.compute(_state(), _target(), 0.01)
+        manager.restore_configured()
+
+        self.assertEqual(command.source, "manual_controller")
+        self.assertEqual(manager.active_name, "configured")
+
+    def test_manager_rejects_a_fleet_reference_for_an_incompatible_profile(self):
+        manager = ControllerManager(ControllerNull({}))
+
+        with self.assertRaises(ControllerCapabilityError):
+            manager.compute_fleet(_state(), _target(), 0.01)
 
 
 class TestSimplePathController(unittest.TestCase):

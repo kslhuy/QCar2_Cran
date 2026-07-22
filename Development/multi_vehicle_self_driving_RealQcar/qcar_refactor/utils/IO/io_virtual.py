@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from core.types import ControlCommand
+from core.types import ControlInput
 from utils.io.io_base import IOBase
 
 
@@ -54,7 +54,7 @@ class IOVirtual(IOBase):
         self.steering_actual = 0.0
         self.time = 0.0
         self.step_count = 0
-        self._last_written = ControlCommand(0.0, 0.0, 0.0, "initial")
+        self._last_written = ControlInput(0.0, 0.0, 0.0, "initial")
 
     def read_to_cache(self) -> None:
         """Advance exactly one deterministic simulation sample and publish it."""
@@ -144,7 +144,7 @@ class IOVirtual(IOBase):
             self._sensor_data_cache.gps_timestamp = float(self.time)
 
     def _hardware_write(self, throttle: float, steering: float) -> None:
-        self._last_written = ControlCommand(
+        self._last_written = ControlInput(
             throttle=float(throttle),
             steering=float(steering),
             target_velocity=float(self._command_cache.target_velocity),

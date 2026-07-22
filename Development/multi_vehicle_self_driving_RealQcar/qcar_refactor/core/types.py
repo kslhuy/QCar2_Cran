@@ -42,7 +42,7 @@ class VehicleStateEstimate:
 
 ## Controller data structures
 @dataclass
-class ControlCommand:
+class ControlInput:
     """Actuator request with target velocity in m/s.
 
     Throttle and steering are backend-normalized commands. Each IO backend
@@ -62,14 +62,6 @@ class ControllerReference:
     target_theta: float
     target_velocity: float
     is_finished: bool = False
-
-
-## GUI data structures
-@dataclass
-class GuiCommand:
-    "command from the GUI to control the system"
-    command: str          # "START", "STOP", "EMERGENCY_STOP", "RESET", "SET_VELOCITY", "SET_PATH"
-    payload: dict         # e.g. {"velocity": 0.6} or {"path": "pp_waypoints.csv"}
 
 
 @dataclass(frozen=True)

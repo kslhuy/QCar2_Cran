@@ -189,62 +189,110 @@ def _positive_number(value: Any, name: str) -> None:
         raise ConfigError(f"'{name}' must be a positive number")
 
 
+def _positive_integer(value: Any, name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ConfigError(f"'{name}' must be a positive integer")
+
+
+def _port(value: Any, name: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 65535:
+        raise ConfigError(f"'{name}' must be an integer in [1, 65535]")
+
+
+def _throttle_limit(value: Any, name: str) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 < value <= 1:
+        raise ConfigError(f"'{name}' must be in (0, 1]")
+
+
+def _validate_manual_controller(controller: Mapping[str, Any]) -> None:
+    manual = controller.get("manual", {})
+    if not isinstance(manual, Mapping):
+        raise ConfigError("'controller.manual' must be a mapping")
+    if manual:
+        _positive_number(manual.get("command_timeout_s"), "controller.manual.command_timeout_s")
+        _throttle_limit(manual.get("max_throttle"), "controller.manual.max_throttle")
+        _positive_number(manual.get("max_steering"), "controller.manual.max_steering")
+
+
+def _validate_v2v(v2v: Mapping[str, Any], vehicle_id: int) -> None:
+    if not v2v.get("enabled"):
+        return
+
+    port = v2v.get("base_port")
+    _port(port, "v2v.base_port")
+    local_port = v2v.get("local_port", port + vehicle_id)
+    _port(local_port, "v2v.local_port")
+    peers = v2v.get("peers", [])
+    if not isinstance(peers, list):
+        raise ConfigError("'v2v.peers' must be a list")
+
+    for key in ("send_buffer_bytes", "receive_buffer_bytes"):
+        value = v2v.get(key)
+        if value is not None:
+            _positive_integer(value, f"v2v.{key}")
+
+    rate_limits = v2v.get("message_rate_limits_hz", {})
+    if not isinstance(rate_limits, Mapping):
+        raise ConfigError("'v2v.message_rate_limits_hz' must be a mapping")
+    for message_type, rate_hz in rate_limits.items():
+        if not isinstance(message_type, str) or not message_type:
+            raise ConfigError("V2V message rate-limit types must be non-empty strings")
+        _positive_number(rate_hz, f"v2v.message_rate_limits_hz.{message_type}")
+
+    peer_ids = set()
+    for peer in peers:
+        if not isinstance(peer, Mapping):
+            raise ConfigError("Each v2v peer must be a mapping")
+        peer_id = peer.get("vehicle_id")
+        peer_port = peer.get("port", port + peer_id if isinstance(peer_id, int) and not isinstance(peer_id, bool) else None)
+        if not isinstance(peer_id, int) or isinstance(peer_id, bool) or peer_id < 0:
+            raise ConfigError("'v2v.peers.vehicle_id' must be a non-negative integer")
+        if peer_id == vehicle_id or peer_id in peer_ids:
+            raise ConfigError("V2V peers must be unique and cannot include the local vehicle")
+        _port(peer_port, "v2v.peers.port")
+        peer_ip = peer.get("ip", "127.0.0.1")
+        if not isinstance(peer_ip, str) or not peer_ip:
+            raise ConfigError("'v2v.peers.ip' must be a non-empty string")
+        peer_ids.add(peer_id)
+
+
+def _validate_ground_station(ground_station: Mapping[str, Any]) -> None:
+    implementation = ground_station.get("implementation")
+    if implementation not in {"null", "tcp_client"}:
+        raise ConfigError("Unsupported ground-station implementation")
+    if implementation != "tcp_client":
+        return
+
+    if not isinstance(ground_station.get("enabled"), bool):
+        raise ConfigError("'ground_station.enabled' must be a boolean")
+    host = ground_station.get("server_host")
+    if not isinstance(host, str) or not host:
+        raise ConfigError("'ground_station.server_host' must be a non-empty string")
+    _port(ground_station.get("server_port"), "ground_station.server_port")
+    for key in ("connect_timeout_s", "reconnect_interval_s", "monitoring_rate_hz"):
+        _positive_number(ground_station.get(key), f"ground_station.{key}")
+    for key in ("command_queue_size", "outbound_queue_size", "max_frame_bytes", "command_batch_size"):
+        _positive_integer(ground_station.get(key), f"ground_station.{key}")
+
+
 def _validate(values: Mapping[str, Any]) -> None:
     vehicle_id = values["vehicle_id"]
     if not isinstance(vehicle_id, int) or isinstance(vehicle_id, bool) or vehicle_id < 0:
         raise ConfigError("'vehicle_id' must be a non-negative integer")
+
     _positive_number(values["runtime"].get("loop_rate_hz"), "runtime.loop_rate_hz")
     modules = _mapping(values, "modules")
     model = _mapping(modules, "model")
     io = _mapping(modules, "io")
-    v2v = _mapping(modules, "v2v")
     _positive_number(model.get("wheelbase"), "model.wheelbase")
 
     write = _mapping(io, "write")
     read = _mapping(io, "read")
-    max_throttle = write.get("max_throttle")
-    if not isinstance(max_throttle, (int, float)) or isinstance(max_throttle, bool) or not 0 < max_throttle <= 1:
-        raise ConfigError("'io.write.max_throttle' must be in (0, 1]")
+    _throttle_limit(write.get("max_throttle"), "io.write.max_throttle")
     _positive_number(write.get("max_steering"), "io.write.max_steering")
     _positive_number(read.get("sensor_rate_hz"), "io.read.sensor_rate_hz")
     _positive_number(read.get("gps_rate_hz"), "io.read.gps_rate_hz")
 
-    if v2v.get("enabled"):
-        port = v2v.get("base_port")
-        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-            raise ConfigError("'v2v.base_port' must be an integer in [1, 65535]")
-        local_port = v2v.get("local_port", port + vehicle_id)
-        if not isinstance(local_port, int) or isinstance(local_port, bool) or not 1 <= local_port <= 65535:
-            raise ConfigError("'v2v.local_port' must be an integer in [1, 65535]")
-        peers = v2v.get("peers", [])
-        if not isinstance(peers, list):
-            raise ConfigError("'v2v.peers' must be a list")
-        for key in ("send_buffer_bytes", "receive_buffer_bytes"):
-            value = v2v.get(key)
-            if value is not None and (
-                not isinstance(value, int) or isinstance(value, bool) or value <= 0
-            ):
-                raise ConfigError(f"'v2v.{key}' must be a positive integer")
-        rate_limits = v2v.get("message_rate_limits_hz", {})
-        if not isinstance(rate_limits, Mapping):
-            raise ConfigError("'v2v.message_rate_limits_hz' must be a mapping")
-        for message_type, rate_hz in rate_limits.items():
-            if not isinstance(message_type, str) or not message_type:
-                raise ConfigError("V2V message rate-limit types must be non-empty strings")
-            _positive_number(rate_hz, f"v2v.message_rate_limits_hz.{message_type}")
-        peer_ids = set()
-        for peer in peers:
-            if not isinstance(peer, Mapping):
-                raise ConfigError("Each v2v peer must be a mapping")
-            peer_id = peer.get("vehicle_id")
-            peer_port = peer.get("port", port + peer_id if isinstance(peer_id, int) and not isinstance(peer_id, bool) else None)
-            if not isinstance(peer_id, int) or isinstance(peer_id, bool) or peer_id < 0:
-                raise ConfigError("'v2v.peers.vehicle_id' must be a non-negative integer")
-            if peer_id == vehicle_id or peer_id in peer_ids:
-                raise ConfigError("V2V peers must be unique and cannot include the local vehicle")
-            if not isinstance(peer_port, int) or isinstance(peer_port, bool) or not 1 <= peer_port <= 65535:
-                raise ConfigError("'v2v.peers.port' must be an integer in [1, 65535]")
-            peer_ip = peer.get("ip", "127.0.0.1")
-            if not isinstance(peer_ip, str) or not peer_ip:
-                raise ConfigError("'v2v.peers.ip' must be a non-empty string")
-            peer_ids.add(peer_id)
+    _validate_manual_controller(_mapping(modules, "controller"))
+    _validate_v2v(_mapping(modules, "v2v"), vehicle_id)
+    _validate_ground_station(_mapping(modules, "ground_station"))

@@ -8,7 +8,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlCommand
+from core.types import ControlInput
 from utils.io.io_qcar2 import IOQCar2
 
 
@@ -71,7 +71,7 @@ class TestIOQCar2Fake(unittest.TestCase):
         np.testing.assert_array_equal(data.gps_position, [1.0, 2.0, 0.3])
 
     def test_write_is_clipped_and_stop_is_idempotent(self):
-        self.io.write(ControlCommand(1.0, 1.0, 0.5, "test"))
+        self.io.write(ControlInput(1.0, 1.0, 0.5, "test"))
         self.io.stop()
         self.io.stop()
 

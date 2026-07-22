@@ -19,23 +19,22 @@ class VehicleModules:
     io: object
     observer: object
     planner: object
-    controller: object
+    controller_manager: object
     v2v: object
+    ground_station: object
     simulation: object | None = None
 
 
 def build_vehicle_modules(config: ConfigVehicle, logger=None, resources: dict | None = None) -> VehicleModules:
     """Build selected modules with lazy imports for optional backends."""
-    ground_station_config = config.module("ground_station")
-    if ground_station_config.get("implementation") != "null":
-        raise ConfigError("Ground-station profiles are not supported until the bridge is implemented")
     simulation = build_simulation(config, logger, resources)
     return VehicleModules(
         io=build_io(config, logger, resources, simulation),
         observer=build_observer(config, logger),
         planner=build_planner(config, logger),
-        controller=build_controller(config, logger),
+        controller_manager=build_controller_manager(config, logger),
         v2v=build_v2v(config, logger),
+        ground_station=build_ground_station(config, logger),
         simulation=simulation,
     )
 
@@ -115,25 +114,59 @@ def build_planner(config: ConfigVehicle, logger=None):
 
 
 def build_controller(config: ConfigVehicle, logger=None):
-    controller_config = config.module("controller")
+    return _build_controller_profile(config.module("controller"), config.vehicle_id, logger)
+
+
+def _build_controller_profile(controller_config: dict, vehicle_id: int, logger=None):
     implementation = controller_config.get("implementation")
     if implementation == "null":
         from utils.control.controller.controller_base import ControllerNull
 
-        return ControllerNull(controller_config, config.vehicle_id, logger)
+        return ControllerNull(controller_config, vehicle_id, logger)
     if implementation == "simple":
         from utils.control.controller.controller_simple import ControllerSimple
 
-        return ControllerSimple(controller_config, config.vehicle_id, logger)
+        return ControllerSimple(controller_config, vehicle_id, logger)
     if implementation == "fleet_2d":
-        from utils.control.controller.controller_fleet_2d import ControllerFleet2D
+        from utils.control.controller.controller_fleet.controller_fleet_2d import ControllerFleet2D
 
-        return ControllerFleet2D(controller_config, config.vehicle_id, logger)
+        return ControllerFleet2D(controller_config, vehicle_id, logger)
     if implementation == "fleet_longitudinal":
-        from utils.control.controller.controller_fleet_longitudinal import ControllerFleetLongitudinal
+        from utils.control.controller.controller_fleet.controller_fleet_longitudinal import ControllerFleetLongitudinal
 
-        return ControllerFleetLongitudinal(controller_config, config.vehicle_id, logger)
+        return ControllerFleetLongitudinal(controller_config, vehicle_id, logger)
+    if implementation == "manual":
+        from utils.control.controller.controller_manual import ControllerManual
+
+        return ControllerManual(controller_config, vehicle_id, logger)
     raise ConfigError(f"Unsupported controller implementation: '{implementation}'")
+
+
+def build_controller_manager(config: ConfigVehicle, logger=None):
+    """Build the configured controller plus explicitly allowed runtime profiles."""
+    from utils.control.controller.controller_manager import ControllerManager
+    controller_config = config.module("controller")
+    manual_config = controller_config.get("manual")
+    if manual_config is not None and not isinstance(manual_config, dict):
+        raise ConfigError("controller.manual must be a mapping")
+    runtime_profiles = controller_config.get("runtime_profiles", {})
+    if not isinstance(runtime_profiles, dict):
+        raise ConfigError("controller.runtime_profiles must be a mapping")
+    profiles = dict(runtime_profiles)
+    if manual_config is not None:
+        profiles.setdefault("manual", {"implementation": "manual", **manual_config})
+    builders = {}
+    for profile_name, profile_config in profiles.items():
+        if not isinstance(profile_name, str) or not profile_name:
+            raise ConfigError("controller runtime profile names must be non-empty strings")
+        if not isinstance(profile_config, dict):
+            raise ConfigError(f"controller.runtime_profiles.{profile_name} must be a mapping")
+        builders[profile_name] = (
+            lambda profile_config=dict(profile_config): _build_controller_profile(
+                profile_config, config.vehicle_id, logger
+            )
+        )
+    return ControllerManager(build_controller(config, logger), builders)
 
 
 def build_v2v(config: ConfigVehicle, logger=None):
@@ -148,3 +181,29 @@ def build_v2v(config: ConfigVehicle, logger=None):
 
         return V2VUdp(v2v_config, config.vehicle_id, logger)
     raise ConfigError(f"Unsupported V2V implementation: '{implementation}'")
+
+
+def build_ground_station(config: ConfigVehicle, logger=None):
+    """Build the runtime-facing ground-station facade."""
+    from utils.ground_station.runtime_facade import GroundStationRuntimeFacade
+
+    bridge_config = config.module("ground_station")
+    return GroundStationRuntimeFacade(
+        build_ground_station_bridge(config, logger),
+        command_batch_size=int(bridge_config.get("command_batch_size", 8)),
+    )
+
+
+def build_ground_station_bridge(config: ConfigVehicle, logger=None):
+    """Build the selected transport bridge behind the ground-station facade."""
+    bridge_config = config.module("ground_station")
+    implementation = bridge_config.get("implementation")
+    if implementation == "null" or not bridge_config.get("enabled", True):
+        from utils.ground_station.bridge_base import NullGroundStationBridge
+
+        return NullGroundStationBridge(bridge_config, config.vehicle_id, logger)
+    if implementation == "tcp_client":
+        from utils.ground_station.bridge_tcp import GroundStationClientBridge
+
+        return GroundStationClientBridge(bridge_config, config.vehicle_id, logger)
+    raise ConfigError(f"Unsupported ground-station implementation: '{implementation}'")

@@ -64,6 +64,7 @@ class FleetCommunication:
 class FleetPolicy:
     following_policy: FollowingPolicy
     communication: FleetCommunication
+    follower_controller_profile: str | None = None
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object]) -> "FleetPolicy":
@@ -74,7 +75,10 @@ class FleetPolicy:
         communication_data = data.get("communication")
         if not isinstance(communication_data, Mapping):
             raise FleetError("fleet communication must be a mapping")
-        return cls(following_policy, FleetCommunication.from_mapping(communication_data))
+        controller_profile = data.get("follower_controller_profile")
+        if controller_profile is not None and (not isinstance(controller_profile, str) or not controller_profile):
+            raise FleetError("fleet follower_controller_profile must be a non-empty string or null")
+        return cls(following_policy, FleetCommunication.from_mapping(communication_data), controller_profile)
 
 
 @dataclass(frozen=True)
@@ -213,6 +217,7 @@ class FleetStepResult:
     status: FleetStatus
     publication: FleetPublication | None = None
     target: ControllerReference | None = None
+    controller_profile: str | None = None
     fault_reason: str | None = None
     hold_command: bool = False
     distributed_estimate: DistributedFleetEstimate | None = None
@@ -223,6 +228,7 @@ class FleetCommandResult:
     """Fleet lifecycle command intent for the vehicle safety supervisor."""
 
     handled: bool
+    accepted: bool = True
     stop_vehicle: bool = False
     reason: str = ""
 

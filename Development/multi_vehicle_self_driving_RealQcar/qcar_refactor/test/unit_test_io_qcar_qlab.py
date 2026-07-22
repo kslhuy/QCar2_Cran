@@ -227,8 +227,8 @@ class TestIOQCar2LiveQLabs(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(data.accelerometer)))
 
     def test_write_zero(self):
-        from core.types import ControlCommand
-        self.io.write(ControlCommand(throttle=0.0, steering=0.0, target_velocity=0.0))
+        from core.types import ControlInput
+        self.io.write(ControlInput(throttle=0.0, steering=0.0, target_velocity=0.0))
 
     def test_stop(self):
         self.io.stop()
@@ -242,7 +242,7 @@ class TestIOQCar2LiveQLabs(unittest.TestCase):
             time.sleep(0.01)
 
     def test_background_poll_thread_main_thread_reads_and_plots(self):
-        from core.types import ControlCommand
+        from core.types import ControlInput
 
         stop_event = threading.Event()
         poll_errors = []
@@ -269,11 +269,11 @@ class TestIOQCar2LiveQLabs(unittest.TestCase):
         try:
             end_time = time.monotonic() + 20.0
             next_command_time = 0.0
-            command = ControlCommand(throttle=0.0, steering=0.0, target_velocity=0.0)
+            command = ControlInput(throttle=0.0, steering=0.0, target_velocity=0.0)
             while time.monotonic() < end_time:
                 elapsed = time.monotonic()
                 if elapsed >= next_command_time:
-                    command = ControlCommand(
+                    command = ControlInput(
                         throttle=float(rng.uniform(-1, 1)),
                         steering=float(rng.uniform(-1, 1)),
                         target_velocity=0.0,
@@ -302,7 +302,7 @@ class TestIOQCar2LiveQLabs(unittest.TestCase):
                 ))
                 time.sleep(0.01)
         finally:
-            self.io.write(ControlCommand(throttle=0.0, steering=0.0, target_velocity=0.0))
+            self.io.write(ControlInput(throttle=0.0, steering=0.0, target_velocity=0.0))
             stop_event.set()
             worker.join(timeout=2.0)
 

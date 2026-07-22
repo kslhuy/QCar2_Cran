@@ -9,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlCommand
+from core.types import ControlInput
 from utils.io.io_carla import IOCarla
 from extra.simulator.carla.session import CarlaSensorSnapshot
 
@@ -78,8 +78,8 @@ class TestIOCarla(unittest.TestCase):
         self.assertTrue(data.gps_valid)
 
     def test_maps_throttle_brake_and_normalized_steering(self):
-        self.io.write(ControlCommand(0.5, 0.3, 0.0, "test"))
-        self.io.write(ControlCommand(-0.4, -0.3, 0.0, "test"))
+        self.io.write(ControlInput(0.5, 0.3, 0.0, "test"))
+        self.io.write(ControlInput(-0.4, -0.3, 0.0, "test"))
 
         forward, braking = self.session.ego_actor.controls
         self.assertEqual(forward, {"throttle": 0.5, "steer": -0.6, "brake": 0.0})

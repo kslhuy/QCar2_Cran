@@ -21,7 +21,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlCommand
+from core.types import ControlInput
 from utils.io.io_virtual import IOVirtual as VirtualKinematicVehicleIO
 from utils.control.observer.observer_ekf import ObserverEKF
 from utils.control.path_planner import PathPlannerStatic
@@ -114,7 +114,7 @@ class TestMinimalControlLoopIntegration(unittest.TestCase):
         })
 
         observer.start(initial_pose=[1.0, -1.0, 1.0])
-        command = ControlCommand(0.0, 0.0, 0.0, "initial")
+        command = ControlInput(0.0, 0.0, 0.0, "initial")
         rows = []
 
         max_steps = 4200

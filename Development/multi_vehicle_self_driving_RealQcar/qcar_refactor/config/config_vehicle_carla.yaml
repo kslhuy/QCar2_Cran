@@ -13,7 +13,7 @@ modules:
   controller: simple_carla
   v2v: "null"
   simulation: carla_sync
-  ground_station: "null"
+  ground_station: tcp_client
 
 mission:
   # Standalone vehicle_main route for the CARLA session fallback spawn transform.

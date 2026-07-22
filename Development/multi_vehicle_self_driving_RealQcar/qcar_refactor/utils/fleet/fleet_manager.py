@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import time
 from collections.abc import Iterable
+from dataclasses import replace
 from math import hypot
 
+from core.commands import CommandType, VehicleCommand
 from core.types import V2VMessage, VehicleStateEstimate
 
 from .fleet_message import VEHICLE_STATE_ESTIMATE, encode_vehicle_state_estimate
 from .fleet_peer_store import FleetPeerStore
 from .fleet_registry import FleetRegistry
 from .fleet_state_machine import FleetPhase, FleetStateMachine
-from .distributed_observer_base import DistributedObserverBase
-from .distributed_observer_fake import DistributedObserverFake
+from .fleet_utils.distributed_observer import DistributedObserverBase, DistributedObserverFake
 from .fleet_following_policy import FleetFollowingPolicy
 from .fleet_types import (
     FleetCommandResult,
@@ -42,6 +43,7 @@ class FleetManager:
         self._distributed_latest = None
         self._build_deadline: float | None = None
         self._last_publication_at: float | None = None
+        self._transport = None
 
     @property
     def phase(self) -> FleetPhase:
@@ -49,6 +51,12 @@ class FleetManager:
 
     def status(self) -> FleetStatus:
         return self._state.status(self._peers.peer_health())
+
+    def attach_transport(self, transport) -> None:
+        """Attach the generic V2V facade used for the fleet's own messages."""
+        if not callable(getattr(transport, "drain_received", None)) or not callable(getattr(transport, "publish", None)):
+            raise TypeError("fleet transport must provide drain_received() and publish()")
+        self._transport = transport
 
     def request_build(self, *, vehicle_running: bool, now_monotonic: float | None = None) -> bool:
         if not self._state.request_build(vehicle_running=vehicle_running):
@@ -60,20 +68,34 @@ class FleetManager:
 
     def handle_command(
         self,
-        command_name: str,
+        command: VehicleCommand,
         *,
         vehicle_running: bool,
         now_monotonic: float | None = None,
     ) -> FleetCommandResult:
         """Handle fleet lifecycle commands without changing vehicle safety state."""
-        normalized = command_name.upper()
-        if normalized == "BUILD_FLEET":
-            self.request_build(vehicle_running=vehicle_running, now_monotonic=now_monotonic)
+        if command.command_type == CommandType.BUILD_FLEET:
+            if not self.request_build(vehicle_running=vehicle_running, now_monotonic=now_monotonic):
+                return FleetCommandResult(
+                    handled=True,
+                    accepted=False,
+                    reason="fleet_build_requires_running_vehicle",
+                )
             return FleetCommandResult(handled=True)
-        if normalized == "CANCEL_FLEET":
-            self.request_cancel("cancel_command")
+        if command.command_type == CommandType.CANCEL_FLEET:
+            self.stop_for_vehicle(str(command.payload.get("reason", "cancel_command")))
             return FleetCommandResult(handled=True, stop_vehicle=True, reason="fleet_cancel")
         return FleetCommandResult(handled=False)
+
+    def stop_for_vehicle(self, reason: str = "") -> None:
+        """End fleet operation for a vehicle state transition or shutdown."""
+        self.request_cancel(reason)
+        self.complete_cancellation()
+
+    def abort(self, reason: str) -> None:
+        """End fleet operation after a fleet or runtime fault without touching IO."""
+        self.fault(reason)
+        self.complete_cancellation()
 
     def request_cancel(self, reason: str = "") -> bool:
         self._build_deadline = None
@@ -138,6 +160,7 @@ class FleetManager:
                 status,
                 publication=publication,
                 target=target,
+                controller_profile=self._registry.snapshot().policy.follower_controller_profile,
                 distributed_estimate=self._distributed_latest,
             )
         return FleetStepResult(
@@ -145,6 +168,36 @@ class FleetManager:
             publication=publication,
             distributed_estimate=self._distributed_latest,
         )
+
+    def run_cycle(
+        self,
+        estimate: VehicleStateEstimate,
+        *,
+        dt: float = 0.0,
+        now_monotonic: float | None = None,
+        measurements=None,
+    ) -> FleetStepResult:
+        """Exchange generic V2V messages and return the fleet decision for this cycle."""
+        if self._transport is None:
+            raise RuntimeError("FleetManager has no attached V2V transport")
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        result = self.step(
+            estimate,
+            self._transport.drain_received(),
+            now,
+            dt=dt,
+            measurements=measurements,
+        )
+        if result.fault_reason is not None:
+            self.abort(result.fault_reason)
+            return replace(result, status=self.status())
+        if result.publication is not None:
+            self._transport.publish(
+                result.publication.message_type,
+                result.publication.payload,
+                list(result.publication.target_vehicle_ids),
+            )
+        return result
 
     def process_received(self, messages: Iterable[V2VMessage], now_monotonic: float) -> str | None:
         """Store inbound estimates and return a safe-stop reason when peer data fails."""

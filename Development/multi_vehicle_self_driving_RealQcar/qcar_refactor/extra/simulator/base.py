@@ -72,11 +72,13 @@ class BaseSimulatorProcessManager(ABC):
 
     def run(
         self,
-        cycles: int,
+        cycles: int | None,
         dt: float | Callable[[object, SimulatorProcessContext], float | None],
         on_ready: Callable[[object, SimulatorProcessContext], None] | None = None,
         on_running: Callable[[object, SimulatorProcessContext], None] | None = None,
         on_step: Callable[[object, object, SimulatorProcessContext], None] | None = None,
+        collect_telemetry: bool = True,
+        should_stop: Callable[[], bool] | None = None,
     ) -> tuple[SimulatorProcessContext, list[object]]:
         """Build and run one process using platform callbacks only at hooks."""
         context = self.prepare()
@@ -102,6 +104,8 @@ class BaseSimulatorProcessManager(ABC):
             on_ready=ready_callback if on_ready is not None else None,
             on_running=running_callback if on_running is not None else None,
             on_step=step_callback if on_step is not None else None,
+            collect_telemetry=collect_telemetry,
+            should_stop=should_stop,
         )
         return context, telemetry
 

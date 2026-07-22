@@ -13,7 +13,8 @@ modules:
   controller: simple_qcar
   v2v: "null"
   simulation: "null"
-  ground_station: "null"
+  # Default localhost operator connection for interactive virtual runs.
+  ground_station: tcp_client
 
 mission:
   path: refs/qcar_origin/PathPlanner/path_rich_output/pp_waypoints.csv

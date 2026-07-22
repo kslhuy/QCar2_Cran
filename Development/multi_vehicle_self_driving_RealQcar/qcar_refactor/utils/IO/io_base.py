@@ -2,7 +2,7 @@ import logging, time, threading
 import numpy as np
 from abc import ABC, abstractmethod
 
-from core.types import SensorData, ControlCommand
+from core.types import SensorData, ControlInput
 
 class IOBase(ABC):
     """
@@ -25,7 +25,7 @@ class IOBase(ABC):
             motor_tach=0.0, gyro_z=0.0, accelerometer=np.zeros(3), sensor_timestamp=0.0,
             gps_valid=False, gps_position=np.zeros(3), gps_timestamp=0.0,
         )
-        self._command_cache = ControlCommand(throttle=0.0, steering=0.0, target_velocity=0.0)
+        self._command_cache = ControlInput(throttle=0.0, steering=0.0, target_velocity=0.0)
         self._cache_lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
         self._stopped = False
@@ -92,7 +92,7 @@ class IOBase(ABC):
     # write control input to vehicle.
     # ------------------------------------------------------------------
 
-    def write(self, command: ControlCommand):
+    def write(self, command: ControlInput):
         """Clip then delegate to hardware-specific write."""
         with self._lifecycle_lock:
             if self._closed:
@@ -100,7 +100,7 @@ class IOBase(ABC):
             t = self._clip(command.throttle, -self._max_throttle, self._max_throttle)
             s = self._clip(command.steering, -self._max_steering, self._max_steering)
             with self._cache_lock:
-                self._command_cache = ControlCommand(
+                self._command_cache = ControlInput(
                     throttle=t, steering=s,
                     target_velocity=command.target_velocity,
                     source=command.source,
@@ -108,10 +108,10 @@ class IOBase(ABC):
             self._hardware_write(t, s)
             self._stopped = False
 
-    def get_last_command(self) -> ControlCommand:
+    def get_last_command(self) -> ControlInput:
         """Return a copy of the last command sent to the vehicle."""
         with self._cache_lock:
-            return ControlCommand(
+            return ControlInput(
                 throttle=self._command_cache.throttle,
                 steering=self._command_cache.steering,
                 target_velocity=self._command_cache.target_velocity,
@@ -137,7 +137,7 @@ class IOBase(ABC):
                 self._hardware_write(0.0, 0.0)
             finally:
                 with self._cache_lock:
-                    self._command_cache = ControlCommand(0.0, 0.0, 0.0, "safe_stop")
+                    self._command_cache = ControlInput(0.0, 0.0, 0.0, "safe_stop")
                 self._stopped = True
 
     def close(self):

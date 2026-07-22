@@ -9,19 +9,19 @@ Transitions:
   INITIALIZING -> ERROR    (startup failure)
   CALIBRATING -> READY    (calibration complete)
   CALIBRATING -> ERROR    (calibration failure)
-  READY -> RUNNING         (GUI sends START)
-  READY -> STOPPED         (GUI sends STOP or EMERGENCY_STOP)
+  READY -> RUNNING         (external command sends START)
+  READY -> STOPPED         (external command sends STOP or EMERGENCY_STOP)
   READY -> ERROR           (observer/planner/IO failure)
-  RUNNING -> STOPPED       (GUI sends STOP, path finished, or emergency)
+  RUNNING -> STOPPED       (external command sends STOP, path finished, or emergency)
   RUNNING -> ERROR         (observer/planner/controller/IO failure)
-  STOPPED -> READY         (GUI sends RESET)
-  ERROR -> READY           (GUI sends RESET, modules healthy)
+  STOPPED -> READY         (external command sends RESET)
+  ERROR -> READY           (external command sends RESET, modules healthy)
 
 Safety: Only RUNNING allows non-zero throttle and steering.
 """
 
 from enum import Enum, auto
-from core.types import GuiCommand
+from core.commands import CommandType, VehicleCommand
 
 
 class State(Enum):
@@ -69,28 +69,33 @@ class StateMachine:
         self._error_reason = reason
         self._state = State.ERROR
 
-    def handle_command(self, cmd: GuiCommand) -> None:
-        """Process a GUI command, updating state accordingly."""
-        c = cmd.command.upper()
+    def handle_command(self, cmd: VehicleCommand) -> bool:
+        """Process one validated command and report whether it was applied."""
+        c = cmd.command_type
 
-        if c == "START":
+        if c == CommandType.START:
             if self._state == State.READY:
                 self._state = State.RUNNING
+                return True
 
-        elif c == "STOP":
+        elif c == CommandType.STOP:
             if self._state in (State.READY, State.RUNNING):
                 self._state = State.STOPPED
+                return True
 
-        elif c == "EMERGENCY_STOP":
+        elif c == CommandType.EMERGENCY_STOP:
             # Emergency stop from any state (except ERROR which is already dead)
             if self._state != State.ERROR:
                 self._state = State.STOPPED
-                self._error_reason = "Emergency stop from GUI"
+                self._error_reason = str(cmd.payload.get("reason", "Emergency stop command"))
+                return True
 
-        elif c == "RESET":
+        elif c == CommandType.RESET:
             if self._state in (State.STOPPED, State.ERROR):
                 self._state = State.READY
                 self._error_reason = ""
+                return True
+        return False
 
     def get_status(self) -> dict:
         return {

@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 
 from core.types import VehicleStateEstimate
 
-from .fleet_types import DistributedFleetEstimate, FleetPeerSnapshot
+from ...fleet_types import DistributedFleetEstimate, FleetPeerSnapshot
 
 
 class DistributedObserverBase(ABC):

@@ -23,7 +23,7 @@ ControllerReference                         FleetPeerSnapshot
         ControllerFleetLongitudinal or ControllerFleet2D
                                 |
                                 v
-                         ControlCommand -> IO
+                         ControlInput -> IO
 ```
 
 ## Ownership
@@ -33,9 +33,9 @@ ControllerReference                         FleetPeerSnapshot
 | `utils/v2v/` | Generic message envelope, UDP routing, receive metadata | Fleet state schema or actuator control |
 | `utils/fleet/FleetPeerSnapshot` | Validated remote vehicle estimate and local freshness metadata | UDP sockets, IO, or fleet lifecycle ownership |
 | `utils/fleet/FleetFollowingPolicy` | Fleet eligibility, predecessor selection, input validation, and front-reference composition | Following algorithm internals, actuator commands |
-| `utils/control/ControllerFleetBase` | General fleet-controller contract; accepts the normal reference type and advertises fleet-reference support | V2V messages, fleet registry mutation, path parsing, IO |
-| `utils/control/ControllerFleetLongitudinal` | First longitudinal following law | Fleet membership mutation, V2V messages, path parsing, IO |
-| `utils/control/ControllerFleet2D` | 2D following law: virtual target, throttle, and steering | Fleet membership mutation, V2V messages, path parsing, IO |
+| `utils/control/controller/controller_fleet/ControllerFleetBase` | General fleet-controller contract; accepts the normal reference type and advertises fleet-reference support | V2V messages, fleet registry mutation, path parsing, IO |
+| `utils/control/controller/controller_fleet/ControllerFleetLongitudinal` | First longitudinal following law | Fleet membership mutation, V2V messages, path parsing, IO |
+| `utils/control/controller/controller_fleet/ControllerFleet2D` | 2D following law: virtual target, throttle, and steering | Fleet membership mutation, V2V messages, path parsing, IO |
 | `utils/control/ControllerBase` | Normal-controller contract and parent class for fleet controllers | Fleet topology or network access |
 | `core/vehicle_logic.py` | Ordered composition and existing safe-stop path | A concrete following-law implementation |
 
@@ -97,7 +97,7 @@ class ControllerFleetBase(ControllerBase):
         ego_estimate: VehicleStateEstimate,
         front_reference: ControllerReference,
         dt_s: float,
-    ) -> ControlCommand:
+    ) -> ControlInput:
         """Return one safe command from a front-vehicle reference."""
 
 
@@ -134,7 +134,7 @@ The policy returns an explicit failure rather than a reference when the fleet ph
 1. The leader passes its path-planner `ControllerReference` directly to its normal `ControllerBase` implementation.
 2. A follower receives a `ControllerReference` representing the direct front vehicle. `ControllerFleetLongitudinal` uses the front position only to calculate longitudinal gap; it does not steer towards that position.
 3. `ControllerFleetLongitudinal` is limited to longitudinal/straight-road evaluation. `ControllerFleet2D` is the separate 2D implementation that computes both throttle and steering from a virtual target behind the front vehicle; it requires independent geometry and closed-loop validation.
-4. The selected normal or fleet controller is the sole producer of `ControlCommand`; `IOBase` remains the sole actuator adapter.
+4. The selected normal or fleet controller is the sole producer of `ControlInput`; `IOBase` remains the sole actuator adapter.
 5. Fleet control runs in the normal `VehicleRuntime` loop. Add a local controller rate limiter only when a selected algorithm requires a slower update rate; do not create a second control thread.
 6. A stale, missing, malformed, out-of-order, or obsolete-membership predecessor snapshot cannot yield a command. It causes the configured fleet cancellation/fault path.
 

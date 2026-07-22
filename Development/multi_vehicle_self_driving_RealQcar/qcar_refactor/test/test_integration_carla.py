@@ -11,7 +11,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.module_factory import build_vehicle_modules
-from core.types import ControlCommand
+from core.types import ControlInput
 from core.vehicle_config import load_config
 from core.vehicle_logic import VehicleRuntime
 
@@ -33,8 +33,9 @@ class TestLiveCarlaSmoke(unittest.TestCase):
             modules.io,
             modules.observer,
             modules.planner,
-            modules.controller,
+            modules.controller_manager,
             modules.v2v,
+            modules.ground_station,
             simulation=modules.simulation,
         )
 
@@ -57,7 +58,7 @@ class TestLiveCarlaSmoke(unittest.TestCase):
             runtime.start()
             for index in range(sample_count):
                 elapsed_s = index * fixed_delta_s
-                command = ControlCommand(
+                command = ControlInput(
                     throttle=0.20,
                     steering=0.30 * sin(2.0 * pi * elapsed_s / 5.0),
                     target_velocity=0.0,

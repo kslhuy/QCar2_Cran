@@ -15,7 +15,7 @@ import numpy as np
 # Ensure the qcar_refactor package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import SensorData, ControlCommand
+from core.types import SensorData, ControlInput
 from utils.io.io_base import IOBase, IONull
 vio_mod = importlib.import_module("utils.io.io_base")
 
@@ -274,33 +274,33 @@ class TestVehicleIO(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_write_passes_through_within_limits(self):
-        cmd = ControlCommand(throttle=0.05, steering=0.20, target_velocity=0.5)
+        cmd = ControlInput(throttle=0.05, steering=0.20, target_velocity=0.5)
         self.io.write(cmd)
         self.assertEqual(self.io.last_throttle, 0.05)
         self.assertEqual(self.io.last_steering, 0.20)
 
     def test_write_clips_throttle_above_max(self):
-        cmd = ControlCommand(throttle=0.50, steering=0.0, target_velocity=1.0)
+        cmd = ControlInput(throttle=0.50, steering=0.0, target_velocity=1.0)
         self.io.write(cmd)
         self.assertEqual(self.io.last_throttle, 0.10)
 
     def test_write_clips_throttle_below_negative_max(self):
-        cmd = ControlCommand(throttle=-0.50, steering=0.0, target_velocity=-1.0)
+        cmd = ControlInput(throttle=-0.50, steering=0.0, target_velocity=-1.0)
         self.io.write(cmd)
         self.assertEqual(self.io.last_throttle, -0.10)
 
     def test_write_clips_steering_above_max(self):
-        cmd = ControlCommand(throttle=0.0, steering=0.80, target_velocity=0.5)
+        cmd = ControlInput(throttle=0.0, steering=0.80, target_velocity=0.5)
         self.io.write(cmd)
         self.assertEqual(self.io.last_steering, 0.48)
 
     def test_write_clips_steering_below_negative_max(self):
-        cmd = ControlCommand(throttle=0.0, steering=-0.80, target_velocity=0.5)
+        cmd = ControlInput(throttle=0.0, steering=-0.80, target_velocity=0.5)
         self.io.write(cmd)
         self.assertEqual(self.io.last_steering, -0.48)
 
     def test_write_exactly_at_bounds_passes_through(self):
-        cmd = ControlCommand(
+        cmd = ControlInput(
             throttle=self.config["write"]["max_throttle"],
             steering=-self.config["write"]["max_steering"],
             target_velocity=0.5,
@@ -330,7 +330,7 @@ class TestVehicleIO(unittest.TestCase):
     def test_write_after_close_is_rejected(self):
         self.io.close()
         with self.assertRaises(RuntimeError):
-            self.io.write(ControlCommand(0.1, 0.0, 0.1))
+            self.io.write(ControlInput(0.1, 0.0, 0.1))
 
     # ------------------------------------------------------------------
     # 8. IONull
@@ -348,7 +348,7 @@ class TestVehicleIO(unittest.TestCase):
         self.assertEqual(data.gps_timestamp, 0.0)
 
     def test_null_io_write_is_noop(self):
-        cmd = ControlCommand(throttle=0.99, steering=0.99, target_velocity=2.0)
+        cmd = ControlInput(throttle=0.99, steering=0.99, target_velocity=2.0)
         self.null_io.write(cmd)  # no exception
 
     def test_null_io_stop_is_noop(self):
@@ -503,7 +503,7 @@ class TestVehicleIO(unittest.TestCase):
             ready.wait()
             for i in range(iterations):
                 try:
-                    cmd = ControlCommand(
+                    cmd = ControlInput(
                         throttle=0.05 * (i % 3 - 1),
                         steering=0.1 * (i % 5 - 2),
                         target_velocity=0.5,

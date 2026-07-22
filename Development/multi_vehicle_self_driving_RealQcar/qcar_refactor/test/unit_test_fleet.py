@@ -10,6 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.commands import CommandType, VehicleCommand
 from core.types import V2VMessage, VehicleStateEstimate
 from extra.simulator.virtual.process_runner import VirtualProcessManager
 from extra.simulator.virtual.scenario import load_virtual_setup
@@ -33,10 +34,19 @@ from utils.fleet import (
 )
 
 
-def _policy(topology: str = "predecessor_chain", following_policy: str = "direct_predecessor") -> FleetPolicy:
+def _policy(
+    topology: str = "predecessor_chain",
+    following_policy: str = "direct_predecessor",
+    follower_controller_profile: str | None = None,
+) -> FleetPolicy:
     return FleetPolicy.from_mapping(
         {
             "following_policy": following_policy,
+            **(
+                {"follower_controller_profile": follower_controller_profile}
+                if follower_controller_profile is not None
+                else {}
+            ),
             "communication": {
                 "topology": topology,
                 "edge_direction": "directed",
@@ -320,16 +330,60 @@ class TestFleetPeerExchange(unittest.TestCase):
     def test_manager_owns_fleet_lifecycle_command_interpretation(self):
         manager = FleetManager(self.registry, vehicle_id=2)
 
-        build = manager.handle_command("BUILD_FLEET", vehicle_running=True, now_monotonic=0.0)
+        build = manager.handle_command(VehicleCommand(CommandType.BUILD_FLEET), vehicle_running=True, now_monotonic=0.0)
         self.assertTrue(build.handled)
         self.assertFalse(build.stop_vehicle)
         self.assertEqual(manager.phase, FleetPhase.BUILDING)
 
-        cancel = manager.handle_command("CANCEL_FLEET", vehicle_running=True)
+        cancel = manager.handle_command(VehicleCommand(CommandType.CANCEL_FLEET), vehicle_running=True)
         self.assertTrue(cancel.handled)
         self.assertTrue(cancel.stop_vehicle)
         self.assertEqual(cancel.reason, "fleet_cancel")
-        self.assertEqual(manager.phase, FleetPhase.CANCELLING)
+        self.assertEqual(manager.phase, FleetPhase.DISABLED)
+
+    def test_manager_run_cycle_owns_generic_v2v_drain_and_publication(self):
+        class _Transport:
+            def __init__(self, messages):
+                self.messages = list(messages)
+                self.publications = []
+
+            def drain_received(self):
+                messages, self.messages = self.messages, []
+                return messages
+
+            def publish(self, message_type, payload, target_vehicle_ids):
+                self.publications.append((message_type, payload, target_vehicle_ids))
+
+        manager = FleetManager(self.registry, vehicle_id=1)
+        follower = FleetStateMachine(self.registry, vehicle_id=2)
+        self.assertTrue(manager.request_build(vehicle_running=True, now_monotonic=0.0))
+        payload = encode_vehicle_state_estimate(_estimate(), follower.status())
+        transport = _Transport((_message(2, 1, payload, 0.1),))
+        manager.attach_transport(transport)
+
+        result = manager.run_cycle(_estimate(), now_monotonic=0.1, dt=0.05)
+
+        self.assertEqual(result.status.phase, FleetPhase.ACTIVE)
+        self.assertEqual(transport.publications[0][0], VEHICLE_STATE_ESTIMATE)
+        self.assertEqual(transport.publications[0][2], [2])
+
+    def test_active_follower_requests_the_policy_controller_profile(self):
+        formation = FleetFormationBuilder().build(
+            "profile-selection",
+            (_member(1, "leader", 0), _member(2, "follower", 1)),
+            _policy(follower_controller_profile="fleet_following"),
+        )
+        leader = FleetManager(FleetRegistry(formation), vehicle_id=1)
+        follower = FleetManager(FleetRegistry(formation), vehicle_id=2)
+        self.assertTrue(leader.request_build(vehicle_running=True, now_monotonic=0.0))
+        self.assertTrue(follower.request_build(vehicle_running=True, now_monotonic=0.0))
+        leader_result = leader.step(_estimate(), (), now_monotonic=0.1)
+        payload = encode_vehicle_state_estimate(_estimate(), leader_result.status)
+
+        result = follower.step(_estimate(), (_message(1, 1, payload, 0.1),), now_monotonic=0.1)
+
+        self.assertEqual(result.status.phase, FleetPhase.ACTIVE)
+        self.assertEqual(result.controller_profile, "fleet_following")
 
 class TestDistributedObserver(unittest.TestCase):
     def test_pass_through_observer_preserves_measurement_local_and_v2v_sources(self):

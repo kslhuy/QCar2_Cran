@@ -11,7 +11,7 @@ import numpy as np
 from typing import Optional
 
 from .observer_base import ObserverBase
-from core.types import VehicleStateEstimate, ControlCommand, SensorData
+from core.types import VehicleStateEstimate, ControlInput, SensorData
 
 
 def _wrap(angle: float) -> float:
@@ -54,7 +54,7 @@ class ObserverEKF(ObserverBase):
         self._logger.info("EKFObserver started")
 
     def update(self, sensor_data: SensorData, dt: float,
-               last_command: Optional[ControlCommand] = None) -> VehicleStateEstimate:
+               last_command: Optional[ControlInput] = None) -> VehicleStateEstimate:
         if not self._started:
             raise RuntimeError("EKFObserver not started")
 

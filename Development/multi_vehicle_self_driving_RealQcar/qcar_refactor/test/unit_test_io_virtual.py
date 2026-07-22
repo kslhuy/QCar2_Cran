@@ -6,7 +6,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlCommand
+from core.types import ControlInput
 from utils.io.io_virtual import IOVirtual
 
 
@@ -29,7 +29,7 @@ class TestIOVirtual(unittest.TestCase):
         self.io = IOVirtual(_CONFIG)
 
     def test_throttle_advances_longitudinal_state(self):
-        self.io.write(ControlCommand(0.5, 0.0, 0.5, "test"))
+        self.io.write(ControlInput(0.5, 0.0, 0.5, "test"))
         for _ in range(50):
             self.io.read_to_cache()
 
@@ -40,7 +40,7 @@ class TestIOVirtual(unittest.TestCase):
         self.assertGreater(velocity, 0.0)
 
     def test_steering_produces_lateral_motion_and_yaw(self):
-        self.io.write(ControlCommand(0.6, 0.25, 0.6, "test"))
+        self.io.write(ControlInput(0.6, 0.25, 0.6, "test"))
         for _ in range(100):
             self.io.read_to_cache()
 
@@ -50,7 +50,7 @@ class TestIOVirtual(unittest.TestCase):
         self.assertGreater(theta, 0.0)
 
     def test_sensor_snapshot_matches_noise_free_state(self):
-        self.io.write(ControlCommand(0.5, 0.1, 0.5, "test"))
+        self.io.write(ControlInput(0.5, 0.1, 0.5, "test"))
         self.io.read_to_cache()
         sensor = self.io.read()
         x, y, theta, velocity, _ = self.io.true_state()
@@ -62,7 +62,7 @@ class TestIOVirtual(unittest.TestCase):
         self.assertAlmostEqual(sensor.gps_position[2], theta)
 
     def test_stop_sets_next_actuator_request_to_zero(self):
-        self.io.write(ControlCommand(0.5, 0.2, 0.5, "test"))
+        self.io.write(ControlInput(0.5, 0.2, 0.5, "test"))
         self.io.stop()
         command = self.io.get_last_command()
 

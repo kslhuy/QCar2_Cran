@@ -9,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlCommand, SensorData, VehicleStateEstimate
+from core.types import ControlInput, SensorData, VehicleStateEstimate
 from utils.control.observer.observer_base import ObserverBase, ObserverNull
 
 
@@ -56,7 +56,7 @@ class TestNullObserver(unittest.TestCase):
 
     def test_update_accepts_sensor_data_and_returns_safe_state(self):
         self.observer.start()
-        command = ControlCommand(throttle=0.5, steering=0.1, target_velocity=0.0)
+        command = ControlInput(throttle=0.5, steering=0.1, target_velocity=0.0)
         state = self.observer.update(_sensor_data(gps_valid=True), dt=0.01, last_command=command)
 
         self.assertIsInstance(state, VehicleStateEstimate)

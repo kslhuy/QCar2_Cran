@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 
 from core.vehicle_process import build_vehicle_process_runtime, run_vehicle_process
-from core.types import GuiCommand
+from core.commands import CommandSource, CommandType, VehicleCommand
 from extra.simulator.base import BaseSimulatorProcessManager
 from extra.simulator.virtual.scenario import VirtualSetup, VirtualVehicleSetup, load_virtual_setup
 
@@ -47,10 +47,11 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Run one vehicle from a multi-process virtual setup")
     parser.add_argument("--setup-file", required=True)
     parser.add_argument("--vehicle-id", required=True, type=int)
-    parser.add_argument("--cycles", type=int, default=120)
+    parser.add_argument("--cycles", type=int, help="stop after this many control-loop cycles")
     parser.add_argument("--dt", type=float, default=0.02)
     parser.add_argument("--ready-file", type=Path, required=True)
     parser.add_argument("--start-file", type=Path, required=True)
+    parser.add_argument("--stop-file", type=Path, help="launcher shutdown signal file")
     parser.add_argument("--realtime", action="store_true", help="pace virtual steps for wall-clock transport tests")
     parser.add_argument("--build-fleet", action="store_true")
     args = parser.parse_args(argv)
@@ -64,20 +65,23 @@ def main(argv=None) -> int:
         manager.wait_for_start_signal(args.start_file)
 
     def on_step(runtime, telemetry, _context):
-        rows.append(manager.serialize_telemetry(telemetry, runtime.fleet))
+        if args.cycles is not None:
+            rows.append(manager.serialize_telemetry(telemetry, runtime.fleet))
         if args.realtime:
             time.sleep(args.dt)
 
     def on_running(runtime, _context):
         if args.build_fleet:
-            runtime.handle_command(GuiCommand("BUILD_FLEET", {}))
+            runtime.handle_command(VehicleCommand(CommandType.BUILD_FLEET, source=CommandSource.SIMULATOR))
 
     context, telemetry = manager.run(
         args.cycles,
         dt=args.dt,
+        should_stop=args.stop_file.exists if args.stop_file is not None else None,
         on_ready=on_ready,
         on_running=on_running if args.build_fleet else None,
         on_step=on_step if args.realtime else None,
+        collect_telemetry=args.cycles is not None,
     )
     print(
         json.dumps(

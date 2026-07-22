@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from core.module_factory import build_vehicle_modules
-from core.types import GuiCommand
+from core.commands import CommandSource, CommandType, VehicleCommand
 from core.vehicle_config import ConfigError, load_config
 from core.vehicle_logic import VehicleRuntime
 
@@ -36,38 +36,48 @@ def build_vehicle_process_runtime(spec: VehicleProcessSpec, logger=None, fleet=N
         value_overrides=overrides,
     )
     modules = build_vehicle_modules(config, logger=logger, resources=dict(spec.resources or {}))
+    if fleet is not None:
+        fleet.attach_transport(modules.v2v)
     return VehicleRuntime(
         config, modules.io, modules.observer, modules.planner,
-        modules.controller, modules.v2v, simulation=modules.simulation, fleet=fleet, logger=logger,
+        modules.controller_manager, modules.v2v, simulation=modules.simulation, fleet=fleet,
+        ground_station=modules.ground_station, logger=logger,
     )
 
 
 def run_vehicle_process(
     runtime: VehicleRuntime,
-    cycles: int,
+    cycles: int | None,
     dt: float | None = None,
     on_ready: Callable[[VehicleRuntime], None] | None = None,
     on_running: Callable[[VehicleRuntime], None] | None = None,
     on_step: Callable[[object], None] | None = None,
+    collect_telemetry: bool = True,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[object]:
     """Start, command, step, and safely shut down one runtime.
 
     Hooks let optional platform runners coordinate process barriers and pacing
     without adding platform behavior to the shared vehicle runtime.
     """
-    if cycles <= 0:
+    if cycles is not None and cycles <= 0:
         raise ValueError("cycles must be positive")
     telemetry = []
     try:
         runtime.start()
         if on_ready is not None:
             on_ready(runtime)
-        runtime.handle_command(GuiCommand("START", {}))
+        runtime.handle_command(VehicleCommand(CommandType.START, source=CommandSource.SIMULATOR))
         if on_running is not None:
             on_running(runtime)
-        for _ in range(cycles):
+        completed_cycles = 0
+        while cycles is None or completed_cycles < cycles:
+            if should_stop is not None and should_stop():
+                break
             sample = runtime.step(dt=dt)
-            telemetry.append(sample)
+            completed_cycles += 1
+            if collect_telemetry:
+                telemetry.append(sample)
             if on_step is not None:
                 on_step(sample)
     finally:
