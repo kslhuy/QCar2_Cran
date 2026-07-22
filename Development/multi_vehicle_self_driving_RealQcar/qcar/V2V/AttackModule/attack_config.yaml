@@ -52,7 +52,7 @@ scenarios:
     enabled: false
     attack_type: "Mix_test"
     modification_type: "bias"
-    data_type: "fleet"
+    data_type: "local"
     t_start: 10.0
     t_end: 15.0
     attacker_id: 0
@@ -63,10 +63,10 @@ scenarios:
 
   # Mix_test Case 2: X position intermittent faulty noise, sigma=10, p=0.5
   - name: "Mix_test_Case2_XFaulty10Prob50"
-    enabled: false
+    enabled: true
     attack_type: "Mix_test"
     modification_type: "faulty"
-    data_type: "fleet"
+    data_type: "local"
     t_start: 10.0
     t_end: 15.0
     attacker_id: 0

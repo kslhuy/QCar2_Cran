@@ -145,6 +145,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.received_clean_local_states: Dict[int, List[Tuple[int, np.ndarray]]] = (
             defaultdict(list)
         )
+        # Track initialization explicitly: (0, 0, ...) is a valid vehicle state,
+        # so numeric zero checks cannot distinguish an origin pose from a target
+        # that has not supplied its first direct V2V state yet.
+        self._initialized_target_ids: Set[int] = {self.vehicle_id}
 
         # External relative measurements (e.g. YOLO / radar)
         self._ext_cache = ExternalMeasurementCache(
@@ -1462,6 +1466,56 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             return host_control
         return None
 
+    def _initialize_targets_from_direct_states(self, current_time_ns: int) -> Set[int]:
+        """Seed unseen peer estimates from their first fresh direct V2V state.
+
+        Initialization happens before trust evaluation so a zero-filled peer
+        column cannot create a false startup inconsistency.  The normal
+        (possibly attacked) estimator input is used deliberately; the clean
+        V2V channel remains trust/reference-only and is not leaked into the
+        control-path estimate.
+        """
+        initialized_now: Set[int] = set()
+        for raw_target_id in list(self.received_local_states.keys()):
+            try:
+                target_id = int(raw_target_id)
+            except (TypeError, ValueError):
+                continue
+            if (
+                target_id < 0
+                or target_id == self.vehicle_id
+                or target_id in self._initialized_target_ids
+            ):
+                continue
+
+            direct_entry = self._get_latest_received_state_with_timestamp(
+                target_id, current_time_ns
+            )
+            if direct_entry is None:
+                continue
+
+            direct_ts_ns, direct_state_raw = direct_entry
+            initial_state = self._align_state_array_to_time(
+                direct_state_raw,
+                snapshot_ts_ns=direct_ts_ns,
+                current_time_ns=current_time_ns,
+                target_id=target_id,
+            )
+            initial_state = np.asarray(initial_state, dtype=float).reshape(-1)
+            if initial_state.size < self.state_dim or not np.all(
+                np.isfinite(initial_state[: self.state_dim])
+            ):
+                continue
+
+            self._ensure_fleet_capacity(target_id)
+            self.fleet_states[:, target_id] = self._apply_state_constraints(
+                initial_state[: self.state_dim], target_id=target_id
+            )
+            self._initialized_target_ids.add(target_id)
+            initialized_now.add(target_id)
+
+        return initialized_now
+
     # ==================================================================
     #   MAIN UPDATE
     # ==================================================================
@@ -1498,8 +1552,15 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 "acceleration": local_state[4] if len(local_state) > 4 else 0.0,
             }
 
+            # Seed each peer once from its own direct/control-path broadcast.
+            # This must precede trust evaluation, which compares against the
+            # host's current fleet estimate.
+            self._initialize_targets_from_direct_states(current_time_ns)
+
             # 2. Update trust scores for all known vehicles
-            trust_scores = self._update_trust_scores(current_time_ns)
+            trust_scores = self._update_trust_scores(
+                current_time_ns, require_initialized=True
+            )
 
             # 2.1 Build generalized trust vector O_i(j) when enabled
             if self.trust_config.use_generalized_trust_vector:
@@ -1742,8 +1803,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     # ==================================================================
     #   TRUST SCORE UPDATE
     # ==================================================================
-    def _update_trust_scores(self, current_time_ns: int) -> Dict[int, float]:
-        """Update trust scores for all known vehicles."""
+    def _update_trust_scores(
+        self, current_time_ns: int, require_initialized: bool = False
+    ) -> Dict[int, float]:
+        """Update trust scores for known vehicles with usable estimator state."""
         trust_scores: Dict[int, float] = {}
 
         known_vehicle_ids = set()
@@ -1755,6 +1818,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             # Ensure fleet_states can accommodate this vehicle_id
             # (vehicle IDs may be non-contiguous, e.g. [0, 2])
             self._ensure_fleet_capacity(vehicle_id)
+            if require_initialized and not self.is_target_initialized(vehicle_id):
+                continue
             
             latest = self._get_latest_received_state_with_timestamp(
                 vehicle_id, current_time_ns
@@ -3340,6 +3405,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         # Fleet estimates snapshot
         fleet_estimates = {}
         for vid in range(self.fleet_size):
+            if vid != self.vehicle_id and not self.is_target_initialized(vid):
+                continue
             state_vec = self.fleet_states[:, vid]
             fleet_estimates[vid] = {
                 "x": float(state_vec[0]),
@@ -3401,6 +3468,13 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     # ==================================================================
     #   PUBLIC API
     # ==================================================================
+    def is_target_initialized(self, target_id: int) -> bool:
+        """Return whether a target has a real initial state, including at the origin."""
+        try:
+            return int(target_id) in self._initialized_target_ids
+        except (TypeError, ValueError):
+            return False
+
     def get_trust_score(self, vehicle_id: int) -> Optional[TrustScore]:
         """Get detailed trust score for a vehicle."""
         return self.trust_model.get_trust_score(vehicle_id)
@@ -3453,6 +3527,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 )
                 self._ensure_fleet_capacity(target_id)
                 self.fleet_states[:, target_id] = restored_state
+                self._initialized_target_ids.add(target_id)
                 restored.append(target_id)
             except Exception as exc:
                 if self.logger:
@@ -3511,6 +3586,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.host_state = {}
         self.controller_debug_snapshot = {}
         self.received_clean_local_states.clear()
+        self._initialized_target_ids = {self.vehicle_id}
         self._ext_cache.clear()
         self.current_weight_result = None
         self.generalized_trust_vector = {self.vehicle_id: 1.0}

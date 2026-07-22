@@ -643,13 +643,17 @@ class V2VManager:
                 
                 # Add to VehicleObserver if available (observer expects a 5D numpy array)
                 if self.vehicle_observer:
-                    if state_dict is not None:
-                        self.vehicle_observer.add_received_local_state(
-                            sender_id, state_dict, message_timestamp_ns
-                        )
+                    # Publish the trust/reference-only copy first. If the
+                    # fleet observer runs as soon as the direct state is
+                    # visible, its matching validator is then already
+                    # available for the same timestamp.
                     if clean_state_dict is not None:
                         self.vehicle_observer.add_received_clean_local_state(
                             sender_id, clean_state_dict, message_timestamp_ns
+                        )
+                    if state_dict is not None:
+                        self.vehicle_observer.add_received_local_state(
+                            sender_id, state_dict, message_timestamp_ns
                         )
                     
                     

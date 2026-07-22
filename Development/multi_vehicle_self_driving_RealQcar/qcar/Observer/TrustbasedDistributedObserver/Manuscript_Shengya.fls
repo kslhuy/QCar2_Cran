@@ -449,8 +449,6 @@ INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\tim
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\times\ptmb8r.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\times\ptmri7t.vf
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\times\ptmri8r.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\times\ptmri7t.vf
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\times\ptmri8r.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmr9.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmmi9.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmsy9.tfm
@@ -465,18 +463,16 @@ INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\tim
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\times\ptmr8r.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\times\ptmr7t.vf
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\times\ptmr8r.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\times\ptmri7t.vf
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\times\ptmri8r.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\times\ptmr7t.vf
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\times\ptmr8r.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\psnfss\ot1pcr.fd
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\psnfss\ot1pcr.fd
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\psnfss\ot1pcr.fd
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\courier\pcrr7t.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\times\ptmb7t.vf
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\times\ptmb8r.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\courier\pcrr7t.vf
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\courier\pcrr8r.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\vf\adobe\times\ptmb7t.vf
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\adobe\times\ptmb8r.tfm
 INPUT Manuscript_Shengya.aux
 INPUT .\Manuscript_Shengya.out
 INPUT .\Manuscript_Shengya.out
@@ -494,8 +490,6 @@ INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi6.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi7.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi7.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi8.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi8.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi9.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi9.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmr10.pfb
@@ -518,8 +512,6 @@ INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmsy7.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmsy9.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmsy9.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\symbols\msam10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\symbols\msam10.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\symbols\msbm10.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\symbols\msbm10.pfb
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\urw\courier\ucrr8a.pfb

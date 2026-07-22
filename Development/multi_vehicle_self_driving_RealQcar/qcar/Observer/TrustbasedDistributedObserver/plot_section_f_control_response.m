@@ -2,10 +2,10 @@ function summary = plot_section_f_control_response(varargin)
 %PLOT_SECTION_F_CONTROL_RESPONSE Plot trust-fused platoon-control evidence.
 %
 % This is the MATLAB version of the Section F figure:
-%   (a) trust and observer source weight for the attacked vehicle
+%   (a) trust and direct W0 weight for the attacked vehicle
 %   (b) controller fusion alpha and ACC/CACC commands
-%   (c) true/estimated pairwise inter-vehicle spacing
-%   (d) distributed position-estimation error
+%   (c) full-platoon inter-vehicle spacing
+%   (d) V2V attack timeline
 %
 % Common usage:
 %   plot_section_f_control_response
@@ -18,6 +18,7 @@ addParameter(parser, 'File', '', @(x) ischar(x) || isstring(x));
 addParameter(parser, 'Attacker', NaN, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'Host', NaN, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'Peer', NaN, @(x) isscalar(x) && isnumeric(x));
+addParameter(parser, 'FleetGapFiles', strings(0, 1), @(x) isstring(x) || iscell(x) || ischar(x));
 addParameter(parser, 'ResultDate', '', @(x) ischar(x) || isstring(x));
 addParameter(parser, 'SelectFile', true, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, 'Save', true, @(x) islogical(x) || isnumeric(x));
@@ -27,10 +28,15 @@ addParameter(parser, 'Dpi', 600, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'AttackWindow', [NaN NaN], @isWindowSpec);
 addParameter(parser, 'PlotWindow', [NaN NaN], @(x) isnumeric(x) && numel(x) == 2);
 addParameter(parser, 'TurnWindow', [NaN NaN], @isWindowSpec);
-addParameter(parser, 'ShowTurnSections', true, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, 'ShowTurnSections', false, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, 'ShowControllerGaps', false, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, 'ShowAccDesiredGap', false, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, 'ShowAttackStatusRows', false, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, 'ShowAttackEvents', false, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, 'ShowAttackIntervalMarkers', true, @(x) islogical(x) || isnumeric(x));
+addParameter(parser, 'ShowTrustThreshold', false, @(x) islogical(x) || isnumeric(x));
 addParameter(parser, 'TrustThreshold', 0.70, @(x) isscalar(x) && isnumeric(x));
-addParameter(parser, 'SpacingThreshold', 0.25, @(x) isscalar(x) && isnumeric(x));
+addParameter(parser, 'SpacingThreshold', 0.30, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'SpacingTolerance', 0.15, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'GapStabilityStdMax', 0.25, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'GoodCoveragePercent', 80.0, @(x) isscalar(x) && isnumeric(x));
@@ -38,9 +44,9 @@ addParameter(parser, 'FusionAlphaAttackMax', 0.50, @(x) isscalar(x) && isnumeric
 addParameter(parser, 'FusionAlphaDropMinPercent', 30.0, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'CaccS0', 0.30, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'CaccHeadway', 0.45, @(x) isscalar(x) && isnumeric(x));
-addParameter(parser, 'AccDesiredDistance', 0.35, @(x) isscalar(x) && isnumeric(x));
+addParameter(parser, 'AccDesiredDistance', 0.45, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'AccHeadway', 0.45, @(x) isscalar(x) && isnumeric(x));
-addParameter(parser, 'WeightScale', 5.0, @(x) isscalar(x) && isnumeric(x));
+addParameter(parser, 'WeightScale', 1.0, @(x) isscalar(x) && isnumeric(x));
 addParameter(parser, 'CommandScale', 10.0, @(x) isscalar(x) && isnumeric(x));
 parse(parser, varargin{:});
 args = parser.Results;
@@ -66,16 +72,28 @@ plotWindow = resolvePlotWindow(t, attackWindows, double(args.PlotWindow));
 turnMask = resolveTurnMask(tbl, t, args.TurnWindow);
 
 weightSpec = chooseSourceWeightColumn(tbl, attacker, host);
+gapSpec = buildFleetGapSeries(tbl, host);
+fleetGapFiles = normalizeStringArray(args.FleetGapFiles);
+if ~isempty(fleetGapFiles)
+    fleetGapFiles = resolveInputFiles(fleetGapFiles, scriptDir);
+    batchGapSpec = buildBatchFleetGapSeries(fleetGapFiles, t, host);
+    if ~isempty(batchGapSpec)
+        gapSpec = batchGapSpec;
+    else
+        warning('Could not build batch full-platoon gaps; using gaps available in the selected host log.');
+    end
+end
+gapSpec = orderGapSpecForHost(gapSpec, host);
 style = paperStyle();
 set(groot, 'defaultAxesFontName', style.fontName);
 set(groot, 'defaultTextFontName', style.fontName);
 
 summary = buildControlSummary(tbl, t, filepath, host, attacker, peer, ...
-    weightSpec, attackWindows, turnMask, args.TrustThreshold, args);
+    weightSpec, gapSpec, attackWindows, turnMask, args.TrustThreshold, args);
 printSummary(summary, weightSpec);
 
 fig = makeControlFigure(tbl, t, filepath, host, attacker, peer, weightSpec, ...
-    attackWindows, plotWindow, turnMask, summary, args, style);
+    gapSpec, attackWindows, plotWindow, turnMask, summary, args, style);
 
 outputDir = resolveOutputDir(string(args.OutputDir), filepath, scriptDir);
 baseName = sprintf('section_f_control_response_%s', erase(fileBaseName(filepath), "trust_weight_log_"));
@@ -90,11 +108,11 @@ if logical(args.Save)
 end
 end
 
-function fig = makeControlFigure(tbl, t, filepath, host, attacker, peer, weightSpec, ...
-    attackWindows, plotWindow, turnMask, summary, args, style)
+function fig = makeControlFigure(tbl, t, ~, host, attacker, ~, weightSpec, ...
+    gapSpec, ~, plotWindow, turnMask, summary, args, style)
 
 trust = col(tbl, sprintf('trust_%d', attacker));
-weight = col(tbl, weightSpec.column);
+w0Weight = col(tbl, weightSpec.column);
 alpha = col(tbl, 'ctrl_alpha');
 uFinal = col(tbl, 'ctrl_u_final') * args.CommandScale;
 uCacc = col(tbl, 'ctrl_u_cacc') * args.CommandScale;
@@ -104,12 +122,7 @@ projectedGap = col(tbl, 'ctrl_along_track_gap');
 leaderDist = col(tbl, 'ctrl_distance_to_leader');
 hostSpeed = hostVelocity(tbl, host);
 caccDesiredGap = args.CaccS0 + args.CaccHeadway * max(hostSpeed, 0);
-gapSpec = buildFleetGapSeries(tbl, host);
-attackerErr = positionErrorWithReference(tbl, attacker, 'est');
-peerErr = nan(size(t));
-if isfinite(peer)
-    peerErr = positionErrorWithReference(tbl, peer, 'est');
-end
+accDesiredGap = args.AccDesiredDistance + args.AccHeadway * max(hostSpeed, 0);
 visibleMask = t >= plotWindow(1) & t <= plotWindow(2);
 turnMask = normalizeMask(turnMask, t);
 
@@ -117,17 +130,24 @@ fig = figure('Name', 'Section F Control Response', 'Color', 'w', ...
     'Units', 'centimeters', 'Position', [2 2 19 21]);
 layout = tiledlayout(fig, 4, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
 
-titleText = sprintf('Closed-loop trust fusion under attacked predecessor V%d (host V%d)', attacker, host);
-shortLogName = erase(fileBaseName(filepath), "trust_weight_log_");
+hostLeader = hostLeaderFromGapSpec(gapSpec, host);
+if isfinite(host) && isfinite(hostLeader)
+    titleText = sprintf('Trust-fused control: host V%d follows V%d, attacker V%d', ...
+        host, hostLeader, attacker);
+elseif isfinite(host)
+    titleText = sprintf('Trust-fused control: host V%d, attacker V%d', host, attacker);
+else
+    titleText = sprintf('Trust-fused control under attacker V%d', attacker);
+end
+hostGapLabel = hostPairLabelFromGapSpec(gapSpec, host);
 subtitleMinGap = firstFinite([
     summary.minHostPairGapAttack_m
     summary.minFleetDirectGapAttack_m
     summary.minControlGapAttack_m]);
-subtitleText = sprintf(['%s | log %s | %d attack intervals, %.2f--%.2f s span | ', ...
-    'alpha %.3f, min pair gap %.3f m, gap RMSE %.3f m'], ...
+subtitleText = sprintf('%s | alpha %.3f | W0 %.3f | min %s %.3f m | RMSE %.3f m', ...
     char(summary.overallAttackVerdict), ...
-    shortLogName, summary.attackIntervalCount, summary.attackStart_s, summary.attackEnd_s, ...
-    summary.alphaAttackMean, subtitleMinGap, summary.rmseHostGapErrorAttack_m);
+    summary.alphaAttackMean, summary.sourceWeightAttackMean, ...
+    hostGapLabel, subtitleMinGap, summary.rmseHostGapErrorAttack_m);
 title(layout, titleText, 'FontName', style.fontName, 'FontSize', style.titleSize + 1, ...
     'FontWeight', 'bold', 'Interpreter', 'none');
 subtitle(layout, subtitleText, 'FontName', style.fontName, 'FontSize', style.fontSize, ...
@@ -136,16 +156,21 @@ subtitle(layout, subtitleText, 'FontName', style.fontName, 'FontSize', style.fon
 ax1 = nexttile(layout);
 hold(ax1, 'on');
 plotFinite(ax1, t, trust, '-', style.blue, style.lineWidth, sprintf('trust assigned to V%d', attacker));
-plotFinite(ax1, t, weight * args.WeightScale, '-', style.orange, style.lineWidth, ...
-    sprintf('%g x %s', args.WeightScale, weightSpec.label));
-yline(ax1, args.TrustThreshold, ':', sprintf('threshold %.2f', args.TrustThreshold), ...
-    'Color', style.attackColor, 'LineWidth', 0.8, 'HandleVisibility', 'off');
-ylim(ax1, [0 max(1.05, maxFinite([trust(visibleMask); weight(visibleMask) * args.WeightScale]) * 1.05)]);
+if abs(args.WeightScale - 1.0) > 1e-12
+    weightLabel = sprintf('%g x %s', args.WeightScale, weightSpec.label);
+else
+    weightLabel = char(weightSpec.label);
+end
+plotFinite(ax1, t, w0Weight * args.WeightScale, '-', style.orange, style.lineWidth, weightLabel);
+if logical(args.ShowTrustThreshold)
+    yline(ax1, args.TrustThreshold, ':', sprintf('threshold %.2f', args.TrustThreshold), ...
+        'Color', style.attackColor, 'LineWidth', 0.8, 'HandleVisibility', 'off');
+end
+ylim(ax1, [0 max(1.05, maxFinite([trust(visibleMask); w0Weight(visibleMask) * args.WeightScale]) * 1.05)]);
 markTurnSections(ax1, t, turnMask, style, logical(args.ShowTurnSections));
-markAttackWindows(ax1, attackWindows, style);
 applyTimeWindow(ax1, plotWindow);
-styleAxes(ax1, '(a) Attacker reliability: trust and observer source influence', ...
-    '', 'trust / scaled weight [-]', style);
+styleAxes(ax1, '(a) Attacker reliability: trust and W0', ...
+    '', 'trust / W0 [-]', style);
 legend(ax1, 'Location', 'northwest', 'FontSize', style.fontSize - 1, 'Interpreter', 'none');
 
 ax2 = nexttile(layout);
@@ -157,7 +182,6 @@ plotFinite(ax2, t, uSensor, '-', style.orange, style.lineWidth, sprintf('sensor 
 commandMax = maxFinite([alpha(visibleMask); uFinal(visibleMask); uCacc(visibleMask); uSensor(visibleMask)]);
 ylim(ax2, [0 max(1.10, commandMax * 1.08)]);
 markTurnSections(ax2, t, turnMask, style, logical(args.ShowTurnSections));
-markAttackWindows(ax2, attackWindows, style);
 applyTimeWindow(ax2, plotWindow);
 styleAxes(ax2, '(b) Controller response: trust gate and longitudinal commands', ...
     '', 'alpha / scaled command [-]', style);
@@ -167,11 +191,16 @@ ax3 = nexttile(layout);
 hold(ax3, 'on');
 plotFleetGaps(ax3, t, gapSpec, style);
 if isfinite(host)
-    desiredGapLabel = sprintf('host CACC desired gap V%d', host);
+    caccDesiredGapLabel = sprintf('host CACC desired gap V%d', host);
+    accDesiredGapLabel = sprintf('host ACC desired gap V%d', host);
 else
-    desiredGapLabel = 'host CACC desired gap';
+    caccDesiredGapLabel = 'host CACC desired gap';
+    accDesiredGapLabel = 'host ACC desired gap';
 end
-plotFinite(ax3, t, caccDesiredGap, ':', style.eventColor, style.lineWidth, desiredGapLabel);
+plotFinite(ax3, t, caccDesiredGap, ':', style.eventColor, style.lineWidth, caccDesiredGapLabel);
+if logical(args.ShowAccDesiredGap)
+    plotFinite(ax3, t, accDesiredGap, '--', style.attackColor, 0.95, accDesiredGapLabel);
+end
 if logical(args.ShowControllerGaps)
     plotFinite(ax3, t, leaderDist, '-.', style.purple, 0.9, 'controller leader distance');
     plotFinite(ax3, t, projectedGap, ':', style.green, 0.9, 'controller along-track gap');
@@ -179,33 +208,27 @@ if logical(args.ShowControllerGaps)
 end
 yline(ax3, args.SpacingThreshold, ':', sprintf('min gap = %.2f m', args.SpacingThreshold), ...
     'Color', style.attackColor, 'LineWidth', 0.8, 'HandleVisibility', 'off');
-gapMax = maxFinite([gapSpecValues(gapSpec, visibleMask); caccDesiredGap(visibleMask); ...
-    leaderDist(visibleMask); projectedGap(visibleMask); sensorGap(visibleMask)]);
+gapMaxInputs = [gapSpecValues(gapSpec, visibleMask); caccDesiredGap(visibleMask); ...
+    leaderDist(visibleMask); projectedGap(visibleMask); sensorGap(visibleMask)];
+if logical(args.ShowAccDesiredGap)
+    gapMaxInputs = [gapMaxInputs; accDesiredGap(visibleMask)];
+end
+gapMax = maxFinite(gapMaxInputs);
 if ~isfinite(gapMax)
     gapMax = 1.0;
 end
 ylim(ax3, [0 max(1.25, gapMax * 1.08)]);
 markTurnSections(ax3, t, turnMask, style, logical(args.ShowTurnSections));
-markAttackWindows(ax3, attackWindows, style);
 applyTimeWindow(ax3, plotWindow);
-styleAxes(ax3, '(c) Safety check: pairwise V0/V1/V2 spacing', ...
+styleAxes(ax3, '(c) Safety check: full-platoon spacing', ...
     '', 'gap [m]', style);
 legend(ax3, 'Location', 'northwest', 'FontSize', style.fontSize - 1, 'Interpreter', 'none');
 
 ax4 = nexttile(layout);
-hold(ax4, 'on');
-plotFinite(ax4, t, attackerErr, '-', style.blue, style.lineWidth, sprintf('V%d estimate', attacker));
-if isfinite(peer)
-    plotFinite(ax4, t, peerErr, '-', style.orange, style.lineWidth, sprintf('V%d estimate', peer));
-end
-errMax = maxFinite([attackerErr(visibleMask); peerErr(visibleMask)]);
-ylim(ax4, [0 max(0.06, errMax * 1.20)]);
-markTurnSections(ax4, t, turnMask, style, logical(args.ShowTurnSections));
-markAttackWindows(ax4, attackWindows, style);
+plotAttackTimeline(ax4, tbl, t, plotWindow, style, ...
+    logical(args.ShowAttackStatusRows), logical(args.ShowAttackEvents), ...
+    logical(args.ShowAttackIntervalMarkers));
 applyTimeWindow(ax4, plotWindow);
-styleAxes(ax4, '(d) Estimation check: distributed position error', ...
-    'time [s]', 'position error [m]', style);
-legend(ax4, 'Location', 'northwest', 'FontSize', style.fontSize - 1, 'Interpreter', 'none');
 end
 
 function ok = isWindowSpec(x)
@@ -260,6 +283,14 @@ if isfile(candidate)
 end
 
 error('File does not exist: %s', filepath);
+end
+
+function filepaths = resolveInputFiles(fileArgs, scriptDir)
+fileArgs = normalizeStringArray(fileArgs);
+filepaths = strings(numel(fileArgs), 1);
+for k = 1:numel(fileArgs)
+    filepaths(k) = string(resolveInputFile(fileArgs(k), scriptDir));
+end
 end
 
 function tbl = readTrustTable(filepath)
@@ -601,18 +632,20 @@ mask = mask & isfinite(t(:));
 end
 
 function spec = chooseSourceWeightColumn(tbl, attacker, host)
-spec = struct('column', "", 'label', "source weight");
+spec = struct('column', "", 'label', "W0 weight");
 
 candidates = strings(0, 1);
 labels = strings(0, 1);
+candidates(end + 1, 1) = sprintf('w0_final_%d', attacker);
+labels(end + 1, 1) = sprintf('W0 final V%d', attacker);
+candidates(end + 1, 1) = "w0";
+labels(end + 1, 1) = "W0 host";
 candidates(end + 1, 1) = sprintf('w_neighbor_%d', attacker);
-labels(end + 1, 1) = sprintf('source weight V%d', attacker);
+labels(end + 1, 1) = sprintf('neighbor weight V%d fallback', attacker);
 if isfinite(host)
     candidates(end + 1, 1) = sprintf('w_neighbor_from_v%d_to_%d', attacker, host);
-    labels(end + 1, 1) = sprintf('source weight V%d to V%d', attacker, host);
+    labels(end + 1, 1) = sprintf('neighbor weight V%d to V%d fallback', attacker, host);
 end
-candidates(end + 1, 1) = sprintf('w0_final_%d', attacker);
-labels(end + 1, 1) = sprintf('direct weight V%d', attacker);
 
 for k = 1:numel(candidates)
     y = col(tbl, candidates(k));
@@ -638,16 +671,16 @@ fallbackTrust = sprintf('trust_%d', attacker);
 if any(names == fallbackTrust)
     spec.column = fallbackTrust;
     spec.label = sprintf('trust V%d fallback', attacker);
-    warning('No source-weight column found for attacked vehicle V%d; using %s for plotting continuity.', ...
+    warning('No W0/weight column found for attacked vehicle V%d; using %s for plotting continuity.', ...
         attacker, fallbackTrust);
     return;
 end
 
-error('Could not find a source-weight or trust column for attacked vehicle V%d.', attacker);
+error('Could not find a W0, weight, or trust column for attacked vehicle V%d.', attacker);
 end
 
 function summary = buildControlSummary(tbl, t, filepath, host, attacker, peer, ...
-    weightSpec, attackWindows, turnMask, trustThreshold, args)
+    weightSpec, gapSpec, attackWindows, turnMask, trustThreshold, args)
 
 turnMask = normalizeMask(turnMask, t);
 finiteTimeMask = isfinite(t);
@@ -672,7 +705,6 @@ sensorGap = col(tbl, 'ctrl_sensor_gap');
 projectedGap = col(tbl, 'ctrl_along_track_gap');
 leaderDist = col(tbl, 'ctrl_distance_to_leader');
 controlGap = firstFiniteSeries(projectedGap, leaderDist, sensorGap);
-gapSpec = buildFleetGapSeries(tbl, host);
 hostPairGap = hostDirectGapSeries(gapSpec, host, height(tbl));
 fleetDirectGap = minGapSeries(gapSpec, height(tbl), "direct");
 hostSpeed = hostVelocity(tbl, host);
@@ -800,11 +832,11 @@ fprintf('Host V%d, attacker V%d, peer V%d, attack span [%.3f, %.3f] s\n', ...
 fprintf('Attack intervals: %d, active duration %.3f s over %.3f s span (%.1f%% duty)\n', ...
     summary.attackIntervalCount, summary.attackActiveDuration_s, ...
     summary.attackSpanDuration_s, summary.attackDuty_percent);
-fprintf('Source-weight column: %s\n', weightSpec.column);
+fprintf('W0/weight column: %s\n', weightSpec.column);
 fprintf('Trust: %.3f pre -> %.3f attack, detection delay %.3f s, recovery delay %.3f s\n', ...
     summary.trustPreMean, summary.trustAttackMean, summary.trustDetectionDelay_s, ...
     summary.trustRecoveryDelay_s);
-fprintf('Source weight: %.4f pre -> %.4f attack (%.1f%% suppression)\n', ...
+fprintf('W0/weight: %.4f pre -> %.4f attack (%.1f%% suppression)\n', ...
     summary.sourceWeightPreMean, summary.sourceWeightAttackMean, ...
     summary.sourceWeightSuppression_percent);
 fprintf('Controller alpha: %.3f pre -> %.3f attack (%.1f%% drop)\n', ...
@@ -932,25 +964,346 @@ else
 end
 end
 
-function markAttackWindows(ax, attackWindows, style)
-attackWindows = mergeTimeWindows(attackWindows);
-if isempty(attackWindows)
-    return;
+function plotAttackTimeline(ax, tbl, t, plotWindow, style, showStatusRows, ...
+    showEvents, showIntervalMarkers)
+hold(ax, 'on');
+intervals = attackTimelineIntervals(tbl, t);
+if showEvents
+    events = attackTimelineEvents(tbl, t);
+else
+    events = struct('event', {}, 'time_s', {});
 end
-yl = ylim(ax);
-handles = gobjects(size(attackWindows, 1), 1);
-for k = 1:size(attackWindows, 1)
-    handles(k) = patch(ax, ...
-        [attackWindows(k, 1) attackWindows(k, 2) attackWindows(k, 2) attackWindows(k, 1)], ...
-        [yl(1) yl(1) yl(2) yl(2)], ...
-        style.attackShade, 'FaceAlpha', 0.45, 'EdgeColor', 'none', ...
+
+lanes = strings(0, 1);
+if showStatusRows
+    lanes = ["module enabled"; "attack active"];
+end
+for k = 1:numel(intervals)
+    for j = 1:numel(intervals(k).lanes)
+        lane = intervals(k).lanes(j);
+        if strlength(lane) > 0 && ~any(lanes == lane)
+            lanes(end + 1) = lane; %#ok<AGROW>
+        end
+    end
+end
+if isempty(lanes)
+    lanes = "attack";
+end
+
+barH = 0.68;
+enabledSpans = zeros(0, 2);
+activeSpans = zeros(0, 2);
+if showStatusRows
+    enabled = col(tbl, 'v2v_attack_enabled');
+    enabledSpans = maskToTimeSpans(t, isfinite(enabled) & enabled >= 0.5);
+    plotTimelineSpans(ax, enabledSpans, laneIndex(lanes, "module enabled"), ...
+        barH, [0.20 0.70 0.20], 0.18);
+
+    activeMask = false(size(t));
+    active = col(tbl, 'v2v_attack_active');
+    if any(isfinite(active))
+        activeMask = activeMask | active >= 0.5;
+    end
+    activeCount = col(tbl, 'v2v_attack_active_count');
+    if any(isfinite(activeCount))
+        activeMask = activeMask | activeCount > 0;
+    end
+    activeSpans = maskToTimeSpans(t, activeMask);
+    plotTimelineSpans(ax, activeSpans, laneIndex(lanes, "attack active"), ...
+        barH, [0.85 0.20 0.20], 0.18);
+end
+
+colors = [
+    style.blue
+    style.orange
+    style.green
+    style.purple
+    style.darkGreen
+    [0.20 0.60 0.80]
+    [0.80 0.35 0.65]];
+colorKeys = strings(0, 1);
+for k = 1:numel(intervals)
+    colorKey = intervals(k).display_label;
+    if strlength(colorKey) == 0
+        colorKey = intervals(k).type;
+    end
+    idx = find(colorKeys == colorKey, 1, 'first');
+    if isempty(idx)
+        colorKeys(end + 1, 1) = colorKey; %#ok<AGROW>
+        idx = numel(colorKeys);
+    end
+    color = colors(mod(idx - 1, size(colors, 1)) + 1, :);
+    for j = 1:numel(intervals(k).lanes)
+        y = laneIndex(lanes, intervals(k).lanes(j));
+        if ~isfinite(y)
+            continue;
+        end
+        patchTimelineSpan(ax, intervals(k).start_s, intervals(k).end_s, ...
+            y - barH / 2, y + barH / 2, color, 0.45);
+        if showIntervalMarkers
+            plotTimelineBoundaryMarkers(ax, intervals(k).start_s, intervals(k).end_s, ...
+                y - barH / 2, y + barH / 2, color);
+        end
+        text(ax, mean([intervals(k).start_s intervals(k).end_s]), y, ...
+            char(intervals(k).display_label), ...
+            'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
+            'FontName', style.fontName, 'FontSize', max(style.fontSize - 1, 6), ...
+            'Interpreter', 'none', 'Clipping', 'on', 'HandleVisibility', 'off');
+    end
+end
+
+for k = 1:numel(events)
+    eventTime = events(k).time_s;
+    if ~isfinite(eventTime)
+        continue;
+    end
+    eventName = lower(events(k).event);
+    color = [0.20 0.70 0.20];
+    if eventName ~= "enable"
+        color = [0.85 0.10 0.10];
+    end
+    xline(ax, eventTime, '--', 'Color', color, 'LineWidth', 0.9, ...
+        'HandleVisibility', 'off');
+    text(ax, eventTime, numel(lanes) + 0.45, char(eventName), ...
+        'Rotation', 90, 'Color', color, 'FontName', style.fontName, ...
+        'FontSize', max(style.fontSize - 1, 6), ...
+        'HorizontalAlignment', 'right', 'VerticalAlignment', 'middle', ...
+        'Interpreter', 'none', 'Clipping', 'on', 'HandleVisibility', 'off');
+end
+
+if isempty(intervals) && isempty(enabledSpans) && isempty(activeSpans)
+    text(ax, mean(plotWindow), 1.5, 'No V2V attack timeline data', ...
+        'HorizontalAlignment', 'center', 'VerticalAlignment', 'middle', ...
+        'FontName', style.fontName, 'FontSize', style.fontSize, ...
         'HandleVisibility', 'off');
 end
-try
-    uistack(handles, 'bottom');
-catch
+
+set(ax, 'YTick', 1:numel(lanes), 'YTickLabel', cellstr(lanes));
+ylim(ax, [0.35, numel(lanes) + 0.65]);
+styleAxes(ax, '(d) V2V attack timeline', 'time [s]', '', style);
+if all(isfinite(plotWindow)) && plotWindow(2) > plotWindow(1)
+    xlim(ax, plotWindow);
+else
+    finiteT = t(isfinite(t));
+    if ~isempty(finiteT)
+        xlim(ax, [min(finiteT) max(finiteT)]);
+    end
 end
-ylim(ax, yl);
+end
+
+function intervals = attackTimelineIntervals(tbl, t)
+intervals = struct('start_s', {}, 'end_s', {}, 'lanes', {}, ...
+    'display_label', {}, 'type', {});
+finiteT = t(isfinite(t));
+if isempty(finiteT)
+    tMin = 0.0;
+    tMax = 1.0;
+else
+    tMin = min(finiteT);
+    tMax = max(finiteT);
+end
+
+data = jsonArrayOrEmpty(lastNonemptyText(tbl, 'v2v_attack_intervals'));
+if ~isempty(data)
+    intervals(numel(data)) = struct( ...
+        'start_s', NaN, ...
+        'end_s', NaN, ...
+        'lanes', "", ...
+        'display_label', "", ...
+        'type', "");
+end
+count = 0;
+for k = 1:numel(data)
+    item = data(k);
+    startTime = numericStructField(item, 'start_s');
+    endTime = numericStructField(item, 'end_s');
+    if ~isfinite(startTime) || ~isfinite(endTime)
+        continue;
+    end
+    startTime = max(startTime, tMin);
+    endTime = min(endTime, tMax);
+    if endTime <= startTime
+        endTime = startTime + 1e-3;
+    end
+    count = count + 1;
+    intervals(count) = struct( ...
+        'start_s', startTime, ...
+        'end_s', endTime, ...
+        'lanes', attackTimelineLanes(item), ...
+        'display_label', attackTimelineLabel(item), ...
+        'type', attackTimelineType(item));
+end
+if count > 0
+    intervals = intervals(1:count);
+else
+    intervals = struct('start_s', {}, 'end_s', {}, 'lanes', {}, ...
+        'display_label', {}, 'type', {});
+end
+
+if ~isempty(intervals)
+    return;
+end
+
+startTime = firstFinite(col(tbl, 'v2v_attack_start_s'));
+endTime = firstFinite(col(tbl, 'v2v_attack_end_s'));
+if isfinite(startTime) && isfinite(endTime) && endTime > startTime
+    intervals(end + 1) = struct( ...
+        'start_s', max(startTime, tMin), ...
+        'end_s', min(endTime, tMax), ...
+        'lanes', "fleet all", ...
+        'display_label', "attack", ...
+        'type', "attack");
+end
+end
+
+function events = attackTimelineEvents(tbl, t)
+events = struct('event', {}, 'time_s', {});
+data = jsonArrayOrEmpty(lastNonemptyText(tbl, 'v2v_attack_events'));
+for k = 1:numel(data)
+    eventTime = numericStructField(data(k), 'time_s');
+    eventName = stringStructField(data(k), 'event');
+    if isfinite(eventTime) && strlength(eventName) > 0
+        events(end + 1) = struct('event', eventName, 'time_s', eventTime); %#ok<AGROW>
+    end
+end
+if ~isempty(events)
+    return;
+end
+
+enabled = col(tbl, 'v2v_attack_enabled');
+if ~any(isfinite(enabled))
+    return;
+end
+
+mask = isfinite(enabled) & enabled >= 0.5;
+prev = false;
+for k = 1:numel(mask)
+    if ~isfinite(t(k))
+        continue;
+    end
+    if mask(k) && ~prev
+        events(end + 1) = struct('event', "enable", 'time_s', t(k)); %#ok<AGROW>
+    elseif prev && ~mask(k)
+        events(end + 1) = struct('event', "disable", 'time_s', t(k)); %#ok<AGROW>
+    end
+    prev = mask(k);
+end
+end
+
+function lanes = attackTimelineLanes(item)
+dataType = lower(stringStructField(item, 'data_type'));
+attackerId = numericStructField(item, 'attacker_id');
+if isfinite(attackerId)
+    localLane = "local V" + string(round(attackerId));
+else
+    localLane = "local";
+end
+
+lanes = strings(0, 1);
+if contains(dataType, "fleet") || contains(dataType, "global") || contains(dataType, "both")
+    lanes(end + 1, 1) = "fleet all";
+end
+if contains(dataType, "local") || contains(dataType, "both")
+    lanes(end + 1, 1) = localLane;
+end
+if isempty(lanes)
+    lanes = "attack";
+end
+end
+
+function label = attackTimelineLabel(item)
+label = attackCaseLabel(item);
+if strlength(label) > 0
+    return;
+end
+
+label = stringStructField(item, 'name');
+if strlength(label) == 0
+    attackType = stringStructField(item, 'type');
+    modification = stringStructField(item, 'modification');
+    fields = stringStructField(item, 'target_fields');
+    label = strjoin([attackType modification fields], " ");
+end
+label = erase(label, "Mix_test_");
+label = erase(label, "Case");
+label = strrep(label, "_", " ");
+label = strtrim(label);
+if strlength(label) > 24
+    label = extractBefore(label, 22) + "...";
+end
+if strlength(label) == 0
+    label = "attack";
+end
+end
+
+function label = attackCaseLabel(item)
+label = "";
+caseFields = ["case_id", "case_number", "case"];
+for k = 1:numel(caseFields)
+    caseNumber = numericStructField(item, caseFields(k));
+    if isfinite(caseNumber)
+        label = "Case " + string(round(caseNumber));
+        return;
+    end
+end
+
+texts = [
+    stringStructField(item, 'name')
+    stringStructField(item, 'description')];
+for k = 1:numel(texts)
+    txt = char(texts(k));
+    if isempty(txt)
+        continue;
+    end
+    token = regexp(txt, '(?i)case[_\s-]*(\d+)', 'tokens', 'once');
+    if ~isempty(token)
+        label = "Case " + string(token{1});
+        return;
+    end
+end
+end
+
+function typeName = attackTimelineType(item)
+typeName = stringStructField(item, 'type');
+if strlength(typeName) == 0
+    typeName = "attack";
+end
+end
+
+function plotTimelineSpans(ax, spans, y, barH, color, alpha)
+if ~isfinite(y)
+    return;
+end
+for k = 1:size(spans, 1)
+    patchTimelineSpan(ax, spans(k, 1), spans(k, 2), ...
+        y - barH / 2, y + barH / 2, color, alpha);
+end
+end
+
+function plotTimelineBoundaryMarkers(ax, x1, x2, y1, y2, color)
+markerColor = max(0.0, color * 0.65);
+line(ax, [x1 x1], [y1 y2], 'Color', markerColor, ...
+    'LineStyle', ':', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+line(ax, [x2 x2], [y1 y2], 'Color', markerColor, ...
+    'LineStyle', ':', 'LineWidth', 1.2, 'HandleVisibility', 'off');
+end
+
+function patchTimelineSpan(ax, x1, x2, y1, y2, color, alpha)
+if ~isfinite(x1) || ~isfinite(x2) || x2 <= x1
+    return;
+end
+patch(ax, [x1 x2 x2 x1], [y1 y1 y2 y2], color, ...
+    'FaceAlpha', alpha, 'EdgeColor', color, 'EdgeAlpha', min(alpha + 0.20, 1.0), ...
+    'LineWidth', 0.5, 'HandleVisibility', 'off');
+end
+
+function idx = laneIndex(lanes, lane)
+found = find(lanes == string(lane), 1, 'first');
+if isempty(found)
+    idx = NaN;
+else
+    idx = found;
+end
 end
 
 function markTurnSections(ax, t, turnMask, style, enabled)
@@ -1066,6 +1419,252 @@ if isfinite(host) && isfinite(ctrlLeader) && ctrlLeader ~= round(host) ...
 end
 end
 
+function gapSpec = orderGapSpecForHost(gapSpec, host)
+if isempty(gapSpec) || ~isfinite(host)
+    return;
+end
+
+host = round(host);
+isHostGap = false(size(gapSpec));
+for k = 1:numel(gapSpec)
+    isHostGap(k) = gapSpec(k).isHostDirect && gapSpec(k).follower == host;
+end
+if ~any(isHostGap)
+    for k = 1:numel(gapSpec)
+        isHostGap(k) = gapSpec(k).follower == host;
+    end
+end
+
+gapSpec = [gapSpec(isHostGap), gapSpec(~isHostGap)];
+end
+
+function leader = hostLeaderFromGapSpec(gapSpec, host)
+leader = NaN;
+if isempty(gapSpec) || ~isfinite(host)
+    return;
+end
+
+host = round(host);
+for k = 1:numel(gapSpec)
+    if gapSpec(k).isHostDirect && gapSpec(k).follower == host
+        leader = gapSpec(k).leader;
+        return;
+    end
+end
+for k = 1:numel(gapSpec)
+    if gapSpec(k).follower == host
+        leader = gapSpec(k).leader;
+        return;
+    end
+end
+end
+
+function label = hostPairLabelFromGapSpec(gapSpec, host)
+leader = hostLeaderFromGapSpec(gapSpec, host);
+if isfinite(host) && isfinite(leader)
+    label = sprintf('V%d-V%d gap', round(host), round(leader));
+else
+    label = 'host gap';
+end
+end
+
+function gapSpec = buildBatchFleetGapSeries(filepaths, targetT, host)
+gapSpec = struct('follower', {}, 'leader', {}, 'role', {}, ...
+    'isHostDirect', {}, 'gap', {}, 'label', {});
+
+filepaths = normalizeStringArray(filepaths);
+logs = repmat(struct('filepath', '', 'tbl', table(), 'time', [], 'host', NaN), ...
+    numel(filepaths), 1);
+logCount = 0;
+ids = [];
+for k = 1:numel(filepaths)
+    filepath = char(filepaths(k));
+    try
+        tbl = readTrustTable(filepath);
+    catch err
+        warning('Could not read fleet gap file %s: %s', filepath, err.message);
+        continue;
+    end
+    if ~ismember('time', tbl.Properties.VariableNames)
+        continue;
+    end
+    logCount = logCount + 1;
+    logs(logCount) = struct( ...
+        'filepath', filepath, ...
+        'tbl', tbl, ...
+        'time', col(tbl, 'time'), ...
+        'host', resolveHost(filepath, tbl, NaN));
+    ids = [ids; extractVehicleIds(tbl)]; %#ok<AGROW>
+end
+logs = logs(1:logCount);
+
+ids = sort(unique(ids(isfinite(ids))).');
+if isempty(logs) || numel(ids) < 2
+    return;
+end
+
+trajectories = repmat(struct('vehicle', NaN, 'x', [], 'y', [], 'source', ""), ...
+    numel(ids), 1);
+trajectoryCount = 0;
+for k = 1:numel(ids)
+    vehicleId = ids(k);
+    [x, y, sourceName] = batchVehicleTrajectory(logs, vehicleId, targetT);
+    if any(isfinite(x) & isfinite(y))
+        trajectoryCount = trajectoryCount + 1;
+        trajectories(trajectoryCount) = struct( ...
+            'vehicle', vehicleId, ...
+            'x', x, ...
+            'y', y, ...
+            'source', sourceName);
+    end
+end
+trajectories = trajectories(1:trajectoryCount);
+
+vehicleIds = [trajectories.vehicle];
+vehicleIds = sort(vehicleIds(:).');
+for k = 2:numel(vehicleIds)
+    follower = vehicleIds(k);
+    leader = vehicleIds(k - 1);
+    isHostDirect = isfinite(host) && follower == round(host);
+    gapSpec = appendTrajectoryGapSpec(gapSpec, trajectories, follower, leader, ...
+        "direct", isHostDirect);
+end
+
+if numel(vehicleIds) >= 3
+    follower = vehicleIds(end);
+    leader = vehicleIds(1);
+    if ~pairExists(gapSpec, follower, leader)
+        gapSpec = appendTrajectoryGapSpec(gapSpec, trajectories, follower, leader, ...
+            "end_to_end", false);
+    end
+end
+end
+
+function [x, y, sourceName] = batchVehicleTrajectory(logs, vehicleId, targetT)
+[x, y] = combineBatchTrajectory(logs, vehicleId, targetT, 'ref');
+if any(isfinite(x) & isfinite(y))
+    sourceName = "reference";
+    return;
+end
+
+ownMask = false(numel(logs), 1);
+for k = 1:numel(logs)
+    ownMask(k) = isfinite(logs(k).host) && round(logs(k).host) == vehicleId;
+end
+[x, y] = combineBatchTrajectory(logs(ownMask), vehicleId, targetT, 'est');
+if any(isfinite(x) & isfinite(y))
+    sourceName = "self_state";
+    return;
+end
+
+[x, y] = combineBatchTrajectory(logs, vehicleId, targetT, 'est');
+sourceName = "estimate";
+end
+
+function [x, y] = combineBatchTrajectory(logs, vehicleId, targetT, prefix)
+targetT = targetT(:);
+xMat = nan(numel(targetT), 0);
+yMat = nan(numel(targetT), 0);
+for k = 1:numel(logs)
+    rawX = col(logs(k).tbl, sprintf('%s_x_%d', prefix, vehicleId));
+    rawY = col(logs(k).tbl, sprintf('%s_y_%d', prefix, vehicleId));
+    sourceT = logs(k).time(:);
+    mask = isfinite(sourceT) & isfinite(rawX) & isfinite(rawY);
+    if sum(mask) < 2
+        continue;
+    end
+
+    sourceT = sourceT(mask);
+    rawX = rawX(mask);
+    rawY = rawY(mask);
+    [sourceT, uniqueIdx] = unique(sourceT, 'stable');
+    rawX = rawX(uniqueIdx);
+    rawY = rawY(uniqueIdx);
+    if numel(sourceT) < 2
+        continue;
+    end
+
+    interpX = interp1(sourceT, rawX, targetT, 'linear', NaN);
+    interpY = interp1(sourceT, rawY, targetT, 'linear', NaN);
+    if any(isfinite(interpX) & isfinite(interpY))
+        xMat(:, end + 1) = interpX; %#ok<AGROW>
+        yMat(:, end + 1) = interpY; %#ok<AGROW>
+    end
+end
+
+x = rowMedianOmitNaN(xMat, numel(targetT));
+y = rowMedianOmitNaN(yMat, numel(targetT));
+end
+
+function values = rowMedianOmitNaN(matrixValues, rowCount)
+values = nan(rowCount, 1);
+if isempty(matrixValues)
+    return;
+end
+for k = 1:rowCount
+    row = matrixValues(k, :);
+    row = row(isfinite(row));
+    if ~isempty(row)
+        values(k) = median(row);
+    end
+end
+end
+
+function gapSpec = appendTrajectoryGapSpec(gapSpec, trajectories, follower, leader, role, isHostDirect)
+followerIdx = trajectoryIndex(trajectories, follower);
+leaderIdx = trajectoryIndex(trajectories, leader);
+if ~isfinite(followerIdx) || ~isfinite(leaderIdx)
+    return;
+end
+
+followerX = trajectories(followerIdx).x(:);
+followerY = trajectories(followerIdx).y(:);
+leaderX = trajectories(leaderIdx).x(:);
+leaderY = trajectories(leaderIdx).y(:);
+n = min([numel(followerX), numel(followerY), numel(leaderX), numel(leaderY)]);
+gap = nan(n, 1);
+mask = isfinite(followerX(1:n)) & isfinite(followerY(1:n)) ...
+    & isfinite(leaderX(1:n)) & isfinite(leaderY(1:n));
+gap(mask) = hypot(leaderX(mask) - followerX(mask), leaderY(mask) - followerY(mask));
+if ~any(isfinite(gap))
+    return;
+end
+
+sourceName = trajectoryPairLabel(trajectories(followerIdx).source, ...
+    trajectories(leaderIdx).source);
+label = spacingLegendLabel(sourceName, follower, leader, role, isHostDirect);
+gapSpec(end + 1) = struct( ... %#ok<AGROW>
+    'follower', follower, ...
+    'leader', leader, ...
+    'role', string(role), ...
+    'isHostDirect', logical(isHostDirect), ...
+    'gap', gap, ...
+    'label', label);
+end
+
+function idx = trajectoryIndex(trajectories, vehicleId)
+idx = NaN;
+for k = 1:numel(trajectories)
+    if trajectories(k).vehicle == vehicleId
+        idx = k;
+        return;
+    end
+end
+end
+
+function label = trajectoryPairLabel(sourceA, sourceB)
+sourceA = string(sourceA);
+sourceB = string(sourceB);
+if sourceA == "reference" && sourceB == "reference"
+    label = "batch true gap";
+elseif (sourceA == "reference" || sourceA == "self_state") ...
+        && (sourceB == "reference" || sourceB == "self_state")
+    label = "batch logged gap";
+else
+    label = "batch estimated gap";
+end
+end
+
 function ids = extractVehicleIdsWithPosition(tbl)
 ids = extractVehicleIds(tbl);
 keep = false(size(ids));
@@ -1088,7 +1687,7 @@ if ~any(isfinite(gap))
     return;
 end
 
-label = sprintf('%s V%d-V%d', sourceName, follower, leader);
+label = spacingLegendLabel(sourceName, follower, leader, role, isHostDirect);
 gapSpec(end + 1) = struct( ... %#ok<AGROW>
     'follower', follower, ...
     'leader', leader, ...
@@ -1096,6 +1695,16 @@ gapSpec(end + 1) = struct( ... %#ok<AGROW>
     'isHostDirect', logical(isHostDirect), ...
     'gap', gap, ...
     'label', label);
+end
+
+function label = spacingLegendLabel(~, follower, leader, role, isHostDirect)
+if isHostDirect
+    label = sprintf('host gap V%d-V%d', follower, leader);
+elseif string(role) == "end_to_end"
+    label = sprintf('fleet span V%d-V%d', follower, leader);
+else
+    label = sprintf('platoon gap V%d-V%d', follower, leader);
+end
 end
 
 function exists = pairExists(gapSpec, follower, leader)
@@ -1270,6 +1879,37 @@ end
 values = strtrim(values);
 end
 
+function value = lastNonemptyText(tbl, name)
+values = textColumn(tbl, name);
+value = "";
+for k = numel(values):-1:1
+    candidate = strtrim(values(k));
+    if strlength(candidate) > 0 && lower(candidate) ~= "nan"
+        value = candidate;
+        return;
+    end
+end
+end
+
+function data = jsonArrayOrEmpty(raw)
+data = struct([]);
+raw = strtrim(string(raw));
+if strlength(raw) == 0 || raw == "[]" || lower(raw) == "nan"
+    return;
+end
+try
+    decoded = jsondecode(char(raw));
+catch
+    return;
+end
+if isempty(decoded)
+    return;
+end
+if isstruct(decoded)
+    data = decoded(:);
+end
+end
+
 function value = numericStructField(item, fieldName)
 value = NaN;
 if ~isfield(item, fieldName)
@@ -1286,6 +1926,26 @@ elseif ischar(raw) || isstring(raw)
     if isscalar(parsed)
         value = double(parsed);
     end
+end
+end
+
+function value = stringStructField(item, fieldName)
+value = "";
+if ~isfield(item, fieldName)
+    return;
+end
+
+raw = item.(fieldName);
+if isstring(raw) || ischar(raw)
+    value = strtrim(string(raw));
+elseif isnumeric(raw) || islogical(raw)
+    if isscalar(raw) && isfinite(double(raw))
+        value = string(double(raw));
+    end
+elseif iscell(raw)
+    parts = strtrim(string(raw(:)));
+    parts = parts(strlength(parts) > 0);
+    value = strjoin(parts, "|");
 end
 end
 

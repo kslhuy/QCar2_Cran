@@ -72,6 +72,7 @@ cases = loadCases(files, caseNames, scriptDir, focus);
 outputDir = resolveOutputDir(args.OutputDir, scriptDir);
 formats = normalizeStringArray(args.Formats);
 timeWindow = double(args.TimeWindow);
+overviewTimeWindow = [0 20];
 
 style = paperStyle();
 set(groot, 'defaultAxesFontName', style.fontName);
@@ -84,10 +85,10 @@ if logical(args.Save)
     writetable(summary, fullfile(outputDir, sprintf('rollback_correction_summary_V%d.csv', focus)));
 end
 
-figTrajectory = makeTrajectoryFigure(cases, focus, style);
+figTrajectory = makeTrajectoryFigure(cases, focus, style, overviewTimeWindow);
 finishFigure(figTrajectory, 'paper_trajectory_xy', outputDir, formats, logical(args.Save), args.Dpi);
 
-figStates = makeStateFigure(cases, focus, style, timeWindow);
+figStates = makeStateFigure(cases, focus, style, overviewTimeWindow);
 finishFigure(figStates, 'paper_state_estimation', outputDir, formats, logical(args.Save), args.Dpi);
 
 figPositionError = makePositionErrorFigure(cases, focus, style, timeWindow);
@@ -399,7 +400,7 @@ style.attackColor = [0.45 0.45 0.45];
 style.gridAlpha = 0.20;
 end
 
-function fig = makeTrajectoryFigure(cases, focus, style)
+function fig = makeTrajectoryFigure(cases, focus, style, timeWindow)
 n = numel(cases);
 fig = figure('Name', 'Paper Trajectory XY', 'Color', 'w', ...
     'Units', 'centimeters', 'Position', [2 2 18 5.8]);
@@ -409,10 +410,11 @@ for i = 1:n
     ax = nexttile(layout);
     tbl = cases(i).table;
     hold(ax, 'on');
-    plotXY(ax, tbl, focus, 'ref', 'Reference', style.refColor, '-', style.refWidth);
-    plotXY(ax, tbl, focus, 'postpred', 'Post-prediction', style.postColor, '--', style.lineWidth);
-    plotXY(ax, tbl, focus, 'est', 'Final estimate', style.estColor, '-', style.lineWidth);
-    markTrajectoryEvent(ax, cases(i), focus, style);
+    t = cases(i).time;
+    plotXY(ax, tbl, focus, t, timeWindow, 'ref', 'Reference', style.refColor, '-', style.refWidth);
+    plotXY(ax, tbl, focus, t, timeWindow, 'postpred', 'Post-prediction', style.postColor, '--', style.lineWidth);
+    plotXY(ax, tbl, focus, t, timeWindow, 'est', 'Final estimate', style.estColor, '-', style.lineWidth);
+    markTrajectoryEvent(ax, cases(i), focus, style, timeWindow);
     axis(ax, 'equal');
     styleAxes(ax, sprintf('(%c) %s', char('a' + i - 1), cases(i).name), 'x [m]', 'y [m]', style);
     if i == 1
@@ -423,19 +425,22 @@ title(layout, sprintf('Trajectory comparison for target V%d', focus), ...
     'FontName', style.fontName, 'FontSize', style.titleSize, 'FontWeight', 'bold');
 end
 
-function plotXY(ax, tbl, focus, prefix, labelText, color, lineStyle, lineWidth)
+function plotXY(ax, tbl, focus, t, timeWindow, prefix, labelText, color, lineStyle, lineWidth)
 x = col(tbl, sprintf('%s_x_%d', prefix, focus));
 y = col(tbl, sprintf('%s_y_%d', prefix, focus));
-mask = isfinite(x) & isfinite(y);
+mask = isfinite(x) & isfinite(y) & timeWindowMask(t, timeWindow);
 if any(mask)
     plot(ax, x(mask), y(mask), 'DisplayName', labelText, ...
         'Color', color, 'LineStyle', lineStyle, 'LineWidth', lineWidth);
 end
 end
 
-function markTrajectoryEvent(ax, caseData, focus, style)
+function markTrajectoryEvent(ax, caseData, focus, style, timeWindow)
 event = caseData.event;
 if ~isfinite(event.index) || event.correction_m <= 0
+    return;
+end
+if ~isTimeInWindow(event.time_from_attack_s, timeWindow)
     return;
 end
 tbl = caseData.table;
@@ -946,6 +951,28 @@ if isempty(timeWindow)
 end
 if numel(timeWindow) == 2 && all(isfinite(timeWindow)) && timeWindow(2) > timeWindow(1)
     xlim(ax, timeWindow);
+end
+end
+
+function mask = timeWindowMask(t, timeWindow)
+mask = true(size(t));
+if isempty(timeWindow)
+    return;
+end
+if numel(timeWindow) == 2 && all(isfinite(timeWindow)) && timeWindow(2) > timeWindow(1)
+    mask = isfinite(t) & t >= timeWindow(1) & t <= timeWindow(2);
+end
+end
+
+function tf = isTimeInWindow(t, timeWindow)
+if isempty(timeWindow)
+    tf = true;
+    return;
+end
+if numel(timeWindow) == 2 && all(isfinite(timeWindow)) && timeWindow(2) > timeWindow(1)
+    tf = isfinite(t) && t >= timeWindow(1) && t <= timeWindow(2);
+else
+    tf = true;
 end
 end
 

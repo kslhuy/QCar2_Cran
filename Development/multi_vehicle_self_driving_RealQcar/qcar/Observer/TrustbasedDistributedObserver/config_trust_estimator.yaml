@@ -168,7 +168,7 @@ weight:
   # Temporal smoothing (EMA)
   eta: 0.15                       # EMA smoothing factor
   enable_smoothing: false         # Enable weight smoothing between updates
-  startup_fixed_duration_s: 0.5   # Keep fixed non-trust weights while platoon forms
+  startup_fixed_duration_s: 1.0   # Keep fixed non-trust weights while platoon forms
   use_gamma_self_weight_adaptation: true
   gamma_self_weight_floor: 0.25
   

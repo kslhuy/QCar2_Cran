@@ -1,5 +1,5 @@
 # Fdb version 4
-["bibtex Manuscript_Shengya"] 0 "Manuscript_Shengya.aux" "Manuscript_Shengya.bbl" "Manuscript_Shengya" 1783344475.36322 0
+["bibtex Manuscript_Shengya"] 0 "Manuscript_Shengya.aux" "Manuscript_Shengya.bbl" "Manuscript_Shengya" 1783697270.62121 0
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/bibtex/bst/ieeetran/IEEEtran.bst" 1440622569 57748 7c8250ecf02814ce6ddc0cdbb63df1dd ""
   "Manuscript_Shengya.aux" 0 -1 0 "pdflatex"
   "biblio.bib" 0 -1 0 ""
@@ -7,7 +7,7 @@
   "Manuscript_Shengya.bbl"
   "Manuscript_Shengya.blg"
   (rewritten before read)
-["pdflatex"] 1783344472.16611 "c:/Users/Quang Huy Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/Manuscript_Shengya.tex" "Manuscript_Shengya.pdf" "Manuscript_Shengya" 1783344475.36399 2
+["pdflatex"] 1783697264.9682 "c:/Users/Quang Huy Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/Manuscript_Shengya.tex" "Manuscript_Shengya.pdf" "Manuscript_Shengya" 1783697270.62192 2
   "C:/Users/Quang Huy Nugyen/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map" 1781980141 165209 65ead702fc4d2014bae07fb962335ea7 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/MiKTeX/miktex/data/le/pdftex/pdflatex.fmt" 1708892368 24235342 323bfbfe4766a02092c40689ab514069 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/enc/dvips/base/8r.enc" 1458473887 4993 80dc9bab7f31fb78a000ccfed0e27cab ""
@@ -71,7 +71,6 @@
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmmi5.pfb" 1247596667 37912 07513ec114ac737ab54cea0152f4424b ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmmi6.pfb" 1247596666 37166 8ab3487cbe3ab49ebce74c29ea2418db ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmmi7.pfb" 1247596667 36281 c355509802a035cadc5f15869451dcee ""
-  "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmmi8.pfb" 1247596666 35469 dcf3a5f2fc1862f5952e3ee5eb1d98c4 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmmi9.pfb" 1247596667 36094 798f80770b3b148ceedd006d487db67c ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr10.pfb" 1247596667 35752 024fb6c41858982481f6968b5fc26508 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr5.pfb" 1247596667 31809 8670ca339bf94e56da1fc21c80635e2a ""
@@ -84,7 +83,6 @@
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy7.pfb" 1247596666 32716 08e384dc442464e7285e891af9f45947 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy9.pfb" 1247596666 32442 c975af247b6702f7ca0c299af3616b80 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cmextra/cmex9.pfb" 1247596670 30212 f7062d6da71d1ec66ffb8906891648f7 ""
-  "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/symbols/msam10.pfb" 1247596673 31764 459c573c03a4949a528c2cc7f557e217 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/symbols/msbm10.pfb" 1247596673 34694 870c211f62cb72718a00e353f14f254d ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/urw/courier/ucrr8a.pfb" 1136846148 45758 19968a0990191524e34e1994d4a31cb6 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/fonts/type1/urw/times/utmb8a.pfb" 1136849748 44729 fea0975e20ec51c992338362f05f1146 ""
@@ -279,12 +277,15 @@
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/tex/latex/tools/bm.sty" 1700599895 13231 2c742011581e2bf297e33520567d9464 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/tex/latex/url/url.sty" 1388490452 12796 8edb7d69a20b857904dd0ea757c14ec9 ""
   "C:/Users/Quang Huy Nugyen/AppData/Local/Programs/MiKTeX/tex/latex/xcolor/xcolor.sty" 1700127522 55487 80a65caedd3722f4c20a14a69e785d8f ""
-  "Manuscript_Shengya.aux" 1783344474 17147 c41ce2289623b96f9206f4dbca536806 "pdflatex"
+  "Manuscript_Shengya.aux" 1783697266 17323 08c1b2c51f4b1e7813ff6d064a1bff4e "pdflatex"
   "Manuscript_Shengya.bbl" 0 -1 0 "bibtex Manuscript_Shengya"
-  "Manuscript_Shengya.out" 1783344474 9161 778c39cbb49b64171e25f2b9d295b6e3 "pdflatex"
-  "Manuscript_Shengya.tex" 1783344458 134095 9c5652a816d17617932de746e59a453a ""
-  "c:/Users/Quang Huy Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/Manuscript_Shengya.tex" 1783344458 134095 9c5652a816d17617932de746e59a453a ""
-  "img/image.png" 0 -1 0 ""
+  "Manuscript_Shengya.out" 1783697266 8980 3a45594ce74989f47cb749e56721e1f0 "pdflatex"
+  "Manuscript_Shengya.tex" 1783697257 128799 f4884833b1e923e47f4c648559a4003c ""
+  "c:/Users/Quang Huy Nugyen/Desktop/PHD_paper/Simulation/QCAR/QCar2_Cran/Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/Manuscript_Shengya.tex" 1783697257 128799 f4884833b1e923e47f4c648559a4003c ""
+  "img/XY_case2_global.eps" 0 -1 0 ""
+  "img/XY_case2_local.eps" 0 -1 0 ""
+  "img/controller_fusion.eps" 0 -1 0 ""
+  "img/rollback_anchoring.eps" 0 -1 0 ""
   (generated)
   "Manuscript_Shengya.aux"
   "Manuscript_Shengya.log"

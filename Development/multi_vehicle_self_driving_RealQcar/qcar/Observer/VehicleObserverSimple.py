@@ -1904,6 +1904,12 @@ class VehicleObserver:
             self._ensure_fleet_state_cache_locked()
             if target_id >= self.fleet_states.shape[1]:
                 return None
+            if (
+                target_id != self.vehicle_id
+                and hasattr(self.fleet_estimator, "is_target_initialized")
+                and not self.fleet_estimator.is_target_initialized(target_id)
+            ):
+                return None
             return self.fleet_states[:, target_id].copy()
 
     def _ensure_fleet_state_cache_locked(self) -> None:
@@ -2518,6 +2524,12 @@ class VehicleObserver:
         if 0 <= vehicle_id < self.fleet_size:
             with self.lock:
                 self._ensure_fleet_state_cache_locked()
+                if (
+                    vehicle_id != self.vehicle_id
+                    and hasattr(self.fleet_estimator, "is_target_initialized")
+                    and not self.fleet_estimator.is_target_initialized(vehicle_id)
+                ):
+                    return None
                 return self.fleet_states[:, vehicle_id].copy()
         return None
 
@@ -2810,10 +2822,18 @@ class VehicleObserver:
             fleet_data = {}
             for vehicle_id in range(self.fleet_size):
                 fs = self.fleet_states[:, vehicle_id]
-                if vehicle_id != self.vehicle_id and not np.any(fs):
-                    continue
-                # Include all tracked vehicles in fleet (zeros or not) for proper fleet estimation
-                # The receiver can decide whether to use the data based on confidence/age
+                if vehicle_id != self.vehicle_id:
+                    if hasattr(self.fleet_estimator, "is_target_initialized"):
+                        try:
+                            if not self.fleet_estimator.is_target_initialized(vehicle_id):
+                                continue
+                        except Exception:
+                            if not np.any(fs):
+                                continue
+                    elif not np.any(fs):
+                        continue
+                # Include all initialized vehicles. Explicit initialization
+                # status preserves a legitimate all-zero pose at the origin.
                 fleet_data[vehicle_id] = {
                     "x": float(self.fleet_states[0, vehicle_id]),
                     "y": float(self.fleet_states[1, vehicle_id]),

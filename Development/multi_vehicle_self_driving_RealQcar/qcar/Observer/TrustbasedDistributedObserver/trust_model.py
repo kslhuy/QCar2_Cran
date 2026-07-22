@@ -133,6 +133,8 @@ class TrustConfig:
     local_pose_distance_tolerance: float = 0.5
     local_pose_distance_relative_tolerance: float = 0.1
     severe_local_pose_distance_ratio: float = 2.0
+    local_pose_bearing_tolerance_rad: float = 0.35
+    severe_local_pose_bearing_ratio: float = 2.0
     temporal_pos_tolerance_m: float = 2.0
     temporal_vel_tolerance: float = 1.0
 
@@ -984,11 +986,11 @@ class TriPTrustModel:
         self, host_state: Dict, target_data: VehicleData
     ) -> Tuple[float, bool]:
         """
-        Compare an independent relative-distance measurement against the
-        distance implied by the received target pose.
+        Compare independent relative-pose measurements against the received pose.
 
-        This lets local trust react immediately when the target's attacked
-        x/y state disagrees with a cleaner distance reference.
+        Distance alone is ambiguous: a biased x/y pose can lie on the same range
+        circle as the clean target. When the clean/fake sensor also provides a
+        bearing, include that check so wrong-side poses are rejected.
         """
         measured_distance, is_measured, reference_age_s = (
             self._resolve_pose_distance_reference(host_state, target_data)
@@ -1022,19 +1024,58 @@ class TriPTrustModel:
         normalized_error = excess_error / max(
             measured_distance, pose_tolerance, 0.1
         )
-        score = max(1.0 - normalized_error, 0.0) ** self.config.weight_distance
+        distance_score = (
+            max(1.0 - normalized_error, 0.0) ** self.config.weight_distance
+        )
 
-        severe_mismatch = pose_error > max(
+        severe_distance_mismatch = pose_error > max(
             pose_tolerance * float(self.config.severe_local_pose_distance_ratio),
             pose_tolerance + float(self.config.stationary_noise_tolerance),
         )
-        if severe_mismatch:
-            score = min(
-                score,
+        if severe_distance_mismatch:
+            distance_score = min(
+                distance_score,
                 float(
                     np.clip(self.config.severe_v2v_distance_score_cap, 0.0, 1.0)
                 ),
             )
+
+        score = float(distance_score)
+        severe_mismatch = bool(severe_distance_mismatch)
+
+        measured_bearing, bearing_is_measured = self._resolve_relative_bearing(
+            host_state, target_data, use_sensor=True
+        )
+        if bearing_is_measured:
+            host_theta = float(host_state.get("theta", host_state.get(2, 0.0)))
+            reported_bearing = self._wrap_angle(
+                float(np.arctan2(reported_dy, reported_dx)) - host_theta
+            )
+            bearing_error = abs(
+                self._wrap_angle(float(reported_bearing) - float(measured_bearing))
+            )
+            bearing_tolerance = max(
+                float(self.config.local_pose_bearing_tolerance_rad),
+                0.5 * float(self.config.stationary_noise_tolerance),
+                1e-3,
+            )
+            bearing_score = self._robust_score(bearing_error, bearing_tolerance)
+            severe_bearing_mismatch = bearing_error > (
+                bearing_tolerance
+                * float(self.config.severe_local_pose_bearing_ratio)
+            )
+            if severe_bearing_mismatch:
+                bearing_score = min(
+                    bearing_score,
+                    float(
+                        np.clip(
+                            self.config.severe_v2v_distance_score_cap, 0.0, 1.0
+                        )
+                    ),
+                )
+
+            score = min(score, bearing_score)
+            severe_mismatch = severe_mismatch or bool(severe_bearing_mismatch)
 
         return float(np.clip(score, 0.0, 1.0)), bool(severe_mismatch)
 

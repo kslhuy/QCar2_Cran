@@ -108,19 +108,21 @@ end
 paperOutputDir = resolvePaperOutputDir(args.PaperOutputDir, scriptDir);
 paperFormats = normalizeStringArray(args.PaperFormats);
 plotPaperFigures = logical(args.PlotPaperFigures) || logical(args.PaperOnly);
+figure12TimeWindow = [0 20];
+diagnosticFigureTimeWindow = [];
+if ~plotPaperFigures
+    diagnosticFigureTimeWindow = figure12TimeWindow;
+end
 for focus = focuses
     if plotPaperFigures
-        figTrustPaper = makePaperTrustComponentsFigure(tbl, times, focus, hostId);
-        figWeightPaper = makePaperWeightsFigure(tbl, times, active, focus, hostId);
-        finishPaperFigure(figTrustPaper, sprintf('paper_trust_components_hostV%d_focusV%d', hostId, focus), ...
-            paperOutputDir, paperFormats, logical(args.SavePaperFigures), args.Dpi);
-        finishPaperFigure(figWeightPaper, sprintf('paper_weights_hostV%d_focusV%d', hostId, focus), ...
+        figTrustWeightsPaper = makePaperTrustWeightsFigure(tbl, times, active, focus, hostId, figure12TimeWindow);
+        finishPaperFigure(figTrustWeightsPaper, sprintf('paper_trust_weights_hostV%d_focusV%d', hostId, focus), ...
             paperOutputDir, paperFormats, logical(args.SavePaperFigures), args.Dpi);
     end
 
     if ~logical(args.PaperOnly)
-        makeTrustFigure(tbl, times, active, focus, hostId);
-        makeWeightsFigure(tbl, times, active, focus, hostId);
+        makeTrustFigure(tbl, times, active, focus, hostId, diagnosticFigureTimeWindow);
+        makeWeightsFigure(tbl, times, active, focus, hostId, diagnosticFigureTimeWindow);
         makeEstimationFigure(tbl, times, active, focus, hostId);
         if logical(args.PlotImpactHistograms)
             makeImpactHistogramFigure(tbl, focus, hostId);
@@ -529,6 +531,20 @@ if showLegend
 end
 end
 
+function applyFigureTimeWindow(fig, timeWindow)
+if isempty(timeWindow)
+    return;
+end
+if ~(numel(timeWindow) == 2 && all(isfinite(timeWindow)) && timeWindow(2) > timeWindow(1))
+    return;
+end
+
+axesList = findall(fig, 'Type', 'axes');
+for i = 1:numel(axesList)
+    xlim(axesList(i), timeWindow);
+end
+end
+
 function addTurnSections(ax, times, tbl)
 isTurning = colToArray(tbl, 'is_turning');
 mask = isfinite(isTurning) & isTurning >= 1;
@@ -545,16 +561,16 @@ end
 uistack(findobj(ax, 'Type', 'line'), 'top');
 end
 
-function fig = makePaperTrustComponentsFigure(tbl, times, focus, hostId)
-fig = paperFigure(sprintf('Paper Trust Components Host V%d Focus V%d', hostId, focus), [18.0 12.2]);
-t = tiledlayout(fig, 3, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
-layoutTitle(t, sprintf('Trust, opinion, and component scores for target V%d', focus));
+function fig = makePaperTrustWeightsFigure(tbl, times, active, focus, hostId, timeWindow)
+fig = paperFigure(sprintf('Paper Trust and Weights Host V%d Focus V%d', hostId, focus), [18.0 11.8]);
+t = tiledlayout(fig, 2, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
+layoutTitle(t, sprintf('Trust components and fusion weights for target V%d', focus));
 
 ax = nexttile(t, 1);
 hold(ax, 'on');
 trustCols = { ...
     sprintf('trust_%d', focus), 'final trust', [0.0000 0.4470 0.7410], '-'; ...
-    sprintf('gtrust_%d', focus), 'opinion score O_i(j)', [0.8500 0.3250 0.0980], '-'; ...
+    sprintf('gtrust_%d', focus), 'opinion score O_i(j)', [0.8500 0.3250 0.0980], '--'; ...
     sprintf('local_trust_%d', focus), 'local trust', [0.4660 0.6740 0.1880], '--'; ...
     sprintf('global_trust_%d', focus), 'global trust', [0.4940 0.1840 0.5560], '--'};
 count = plotPaperColumns(ax, times, tbl, trustCols, 1.35);
@@ -568,7 +584,7 @@ else
 end
 styleAxes(ax, '(a) Final trust and opinion signals', 'trust [-]', '', true);
 
-ax = nexttile(t, 2);
+ax = nexttile(t, 3);
 hold(ax, 'on');
 componentCols = { ...
     sprintf('v_score_%d', focus), 'velocity', [0.0000 0.4470 0.7410], '-'; ...
@@ -579,14 +595,14 @@ componentCols = { ...
     sprintf('q_factor_%d', focus), 'quality factor', [0.3010 0.7450 0.9330], '--'};
 count = plotPaperColumns(ax, times, tbl, componentCols, 1.15);
 if count == 0
-    noData(ax, sprintf('(b) Component scores for V%d', focus));
+    noData(ax, sprintf('(c) Component scores for V%d', focus));
 else
     ylim(ax, [0 1.05]);
     addAttackSpans(ax, times, tbl, focus);
 end
-styleAxes(ax, '(b) Local/direct component scores', 'score [-]', '', true);
+styleAxes(ax, '(c) Local/direct component scores', 'score [-]', 'time [s]', true);
 
-ax = nexttile(t, 3);
+ax = nexttile(t, 4);
 hold(ax, 'on');
 globalFactorCols = { ...
     sprintf('gamma_host_%d', focus), '\gamma_{host}', [0.0000 0.4470 0.7410], '-'; ...
@@ -595,34 +611,26 @@ globalFactorCols = { ...
     sprintf('global_trust_%d', focus), 'global trust', [0.4940 0.1840 0.5560], '--'};
 count = plotPaperColumns(ax, times, tbl, globalFactorCols, 1.25);
 if count == 0
-    noData(ax, sprintf('(c) Global opinion factors for V%d', focus));
+    noData(ax, sprintf('(d) Global opinion factors for V%d', focus));
 else
     ylim(ax, [0 1.05]);
     addAttackSpans(ax, times, tbl, focus);
 end
-styleAxes(ax, '(c) Global/opinion fusion factors', 'score [-]', 'time [s]', true);
+styleAxes(ax, '(d) Global/opinion fusion factors', 'score [-]', 'time [s]', true);
 
-set(findall(fig, '-property', 'Interpreter'), 'Interpreter', 'tex');
-set(findall(fig, '-property', 'TickLabelInterpreter'), 'TickLabelInterpreter', 'tex');
-end
-
-function fig = makePaperWeightsFigure(tbl, times, active, focus, hostId)
-fig = paperFigure(sprintf('Paper Weights Host V%d Focus V%d', hostId, focus), [18.0 6.6]);
-t = tiledlayout(fig, 1, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
-layoutTitle(t, sprintf('Fusion weights for target V%d', focus));
-
-ax = nexttile(t, 1);
+ax = nexttile(t, 2);
 hold(ax, 'on');
 weightCols = paperWeightColumns(tbl, active, focus);
 count = plotPaperColumns(ax, times, tbl, weightCols, 1.35);
 if count == 0
-    noData(ax, sprintf('Fusion weights for V%d', focus));
+    noData(ax, sprintf('(b) Fusion weights for V%d', focus));
 else
     ylim(ax, [0 1.05]);
     addAttackSpans(ax, times, tbl, focus);
 end
-styleAxes(ax, 'Direct, neighbor, and self weights', 'weight [-]', 'time [s]', true);
+styleAxes(ax, '(b) Direct, neighbor, and self weights', 'weight [-]', '', true);
 
+applyFigureTimeWindow(fig, timeWindow);
 set(findall(fig, '-property', 'Interpreter'), 'Interpreter', 'tex');
 set(findall(fig, '-property', 'TickLabelInterpreter'), 'TickLabelInterpreter', 'tex');
 end
@@ -726,7 +734,7 @@ for i = 1:numel(formats)
 end
 end
 
-function makeTrustFigure(tbl, times, active, focus, hostId)
+function makeTrustFigure(tbl, times, active, focus, hostId, timeWindow)
 fig = paperFigure(sprintf('Trust Calculation Host V%d Focus V%d', hostId, focus), [18.0 13.8]);
 t = tiledlayout(fig, 3, 4, 'TileSpacing', 'compact', 'Padding', 'compact');
 layoutTitle(t, sprintf('Trust Calculation (Host V%d, Focus V%d)', hostId, focus));
@@ -853,9 +861,10 @@ plotOffsetFlags(ax, times, tbl, { ...
     sprintf('rel_dist_meas_used_%d', focus), 'External dist used', 0.24; ...
     sprintf('rel_vel_meas_used_%d', focus), 'External rel vel used', 0.36});
 styleAxes(ax, sprintf('Relative Measurement Usage (V%d)', focus), 'Flag', 'Time [s]', true);
+applyFigureTimeWindow(fig, timeWindow);
 end
 
-function makeWeightsFigure(tbl, times, active, focus, hostId)
+function makeWeightsFigure(tbl, times, active, focus, hostId, timeWindow)
 hasFinal = hasFiniteColumn(tbl, sprintf('w0_final_%d', focus)) || ...
     hasFiniteColumn(tbl, sprintf('w_self_final_%d', focus)) || ...
     hasFiniteColumn(tbl, sprintf('w_neighbor_sum_final_%d', focus));
@@ -956,6 +965,7 @@ if count == 0
     noData(ax, 'Counts / Legacy Summary');
 end
 styleAxes(ax, 'Counts / Legacy Summary', 'Count or Weight', 'Time [s]', true);
+applyFigureTimeWindow(fig, timeWindow);
 end
 
 function makeEstimationFigure(tbl, times, active, focus, hostId)
