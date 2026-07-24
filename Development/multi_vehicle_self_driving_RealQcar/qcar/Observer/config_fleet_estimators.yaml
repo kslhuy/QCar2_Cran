@@ -67,6 +67,12 @@ fleet:
     c1: 0.14878
     throttle_gain: 8.6993
 
+    # Static-friction deadzone. The affine rolling-resistance model would
+    # otherwise predict v -> -c0/c1 at zero throttle and drift backwards.
+    enable_stationary_deadzone: true
+    zero_speed_deadzone: 0.05    # m/s
+    throttle_deadzone: 0.007023  # throttle command; normally equal to c0
+
     # K_i_HG is used to build L_i = [0 ... theta*K_i_HG^T ... 0]^T.
     K_i_HG: [18.0442, 25.1158, 6.2953]
 
@@ -81,10 +87,10 @@ fleet:
     # Communication topology over all vehicles, including vehicle 0.
     # If omitted or dimension-mismatched, the estimator falls back to fully connected.
     adjacency_matrix:
-      - [0, 1, 1, 1]
-      - [1, 0, 1, 1]
-      - [1, 1, 0, 1]
-      - [1, 1, 1, 0]
+      - [0, 1, 0, 1]
+      - [0, 0, 1, 0]
+      - [1, 0, 0, 0]
+      - [1, 0, 0, 0]
 
     debug_recording: true
     debug_output_dir: "observer_recordings"
@@ -113,7 +119,7 @@ fleet:
           - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.302599794723427, -0.198732948634779, 1.52402873167918]
         gamma: 0.05798
         r_i: 0.8
-        high_gain_theta: 3.0
+        high_gain_theta: 2.75
         tau_i: 0.16
       car1:
         K_i_HG: [18.0442, 25.1158, 6.2953]
@@ -132,7 +138,7 @@ fleet:
           - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.453710126856966, -0.289408598423902, 2.20682018024394]
         gamma: 0.05798
         r_i: 1.6
-        high_gain_theta: 3.0
+        high_gain_theta: 2.75
         tau_i: 0.16
       car2:
         K_i_HG: [18.0442, 25.1158, 6.2953]
@@ -151,7 +157,7 @@ fleet:
           - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.402462486224326, -0.268427014243138, 2.00750058742180]
         gamma: 0.05798
         r_i: 0.8
-        high_gain_theta: 3.0
+        high_gain_theta: 2.75
         tau_i: 0.16
       car3:
         K_i_HG: [18.0442, 25.1158, 6.2953]
@@ -170,7 +176,7 @@ fleet:
           - [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.391022762652808, -0.264476178851938, 1.96536644180935]
         gamma: 0.05798
         r_i: 0.8
-        high_gain_theta: 3.0
+        high_gain_theta: 2.75
         tau_i: 0.16
 
   # ---------------------------------------------------------------------

@@ -10,6 +10,7 @@ state columns that match the HG observer state:
 import csv
 import os
 import queue
+import re
 import threading
 import time
 from datetime import datetime
@@ -22,19 +23,24 @@ class DistributedHGRecorder:
     """Non-blocking recorder for DistributedHGEstimator debug data."""
 
     _STOP_SENTINEL = object()
+    _session_lock = threading.Lock()
+    _active_sessions = {}
 
     def __init__(self, output_dir: str = "observer_recordings",
                  vehicle_id: int = 0,
                  observer_size: int = 4,
                  fleet_size: int = 4,
                  queue_size: int = 1000,
-                 flush_interval: float = 5.0):
+                 flush_interval: float = 5.0,
+                 run_id: str = None):
         self.output_dir = output_dir
         self.vehicle_id = vehicle_id
         self.observer_size = observer_size
         self.fleet_size = fleet_size
         self.queue_size = queue_size
         self.flush_interval = flush_interval
+        self.run_id = run_id
+        self.run_dir = None
 
         self.file = None
         self.writer = None
@@ -49,12 +55,15 @@ class DistributedHGRecorder:
         self._dropped_count = 0
 
     def start(self) -> str:
-        """Start recording to dist_hg_v<vehicle_id>_<timestamp>.csv."""
+        """Start recording in a run directory shared by all fleet vehicles."""
         os.makedirs(self.output_dir, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_dir = self._get_run_directory(timestamp)
+        os.makedirs(self.run_dir, exist_ok=True)
+
         filename = f"dist_hg_v{self.vehicle_id}_{timestamp}.csv"
-        self.filepath = os.path.join(self.output_dir, filename)
+        self.filepath = os.path.join(self.run_dir, filename)
 
         self.columns = self._build_columns()
         self.file = open(self.filepath, "w", newline="", buffering=8192)
@@ -75,6 +84,59 @@ class DistributedHGRecorder:
         )
         self._writer_thread.start()
         return self.filepath
+
+    def _get_run_directory(self, timestamp: str) -> str:
+        """Return one run directory for the recorders of the current fleet.
+
+        Estimators for a simulated fleet are normally constructed sequentially
+        in one process.  The process-local registry keeps their run directory
+        stable even when construction crosses a one-second timestamp boundary.
+        An explicit ``run_id`` can be used when recorders run in separate
+        processes or on separate machines with a shared output directory.
+        """
+        if self.run_id is not None:
+            safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(self.run_id)).strip("._")
+            if not safe_run_id:
+                raise ValueError("run_id must contain at least one valid character")
+            return os.path.join(self.output_dir, f"dist_hg_run_{safe_run_id}")
+
+        session_key = (os.path.abspath(self.output_dir), self.fleet_size)
+        with self._session_lock:
+            session = self._active_sessions.get(session_key)
+            if session is None or self.vehicle_id in session["vehicle_ids"]:
+                session = {
+                    "run_dir": self._new_run_directory(timestamp),
+                    "vehicle_ids": set(),
+                }
+                self._active_sessions[session_key] = session
+
+            session["vehicle_ids"].add(self.vehicle_id)
+            run_dir = session["run_dir"]
+
+            if len(session["vehicle_ids"]) >= self.fleet_size:
+                self._active_sessions.pop(session_key, None)
+
+            return run_dir
+
+    def _new_run_directory(self, timestamp: str) -> str:
+        """Choose a fresh directory without overwriting an earlier run."""
+        base_dir = os.path.join(self.output_dir, f"dist_hg_run_{timestamp}")
+        candidate = base_dir
+        suffix = 1
+        vehicle_prefix = f"dist_hg_v{self.vehicle_id}_"
+
+        while os.path.isdir(candidate):
+            # Another process may already have created this run in the same
+            # second. Join it if this vehicle has not claimed a file there.
+            if not any(
+                name.startswith(vehicle_prefix) and name.endswith(".csv")
+                for name in os.listdir(candidate)
+            ):
+                return candidate
+            candidate = f"{base_dir}_{suffix:02d}"
+            suffix += 1
+
+        return candidate
 
     def _build_columns(self) -> List[str]:
         columns = ["time"]

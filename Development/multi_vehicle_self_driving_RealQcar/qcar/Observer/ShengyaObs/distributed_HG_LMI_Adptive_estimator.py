@@ -62,6 +62,16 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
 
         self.c0 = self.config.get('c0', 0.007023)
         self.c1 = self.config.get('c1', 0.14878)
+        # The affine rolling-resistance model is only valid while the vehicle is
+        # moving.  At u=0 it otherwise has the non-physical equilibrium
+        # v=-c0/c1 and makes unmeasured vehicle blocks drift backwards.
+        self.enable_stationary_deadzone = self.config.get('enable_stationary_deadzone', True)
+        self.zero_speed_deadzone = max(
+            0.0, float(self.config.get('zero_speed_deadzone', 0.05))
+        )
+        self.throttle_deadzone = max(
+            0.0, float(self.config.get('throttle_deadzone', self.c0))
+        )
         self.gamma = self.config.get('gamma', 1.0)
         self.r_i = self.config.get('r_i', 1.0)
         self.high_gain_theta = self.config.get('high_gain_theta', self.config.get('theta', 1.0))
@@ -171,6 +181,7 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
         self.debug_data = {}
         self.debug_recording_enabled = self.config.get('debug_recording', True)
         self.debug_output_dir = self.config.get('debug_output_dir', 'observer_recordings')
+        self.debug_run_id = self.config.get('debug_run_id')
         self.recorder = None
         self._update_count = 0
         self._recording_start_time = None
@@ -184,6 +195,10 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
         self.estimated_state = np.zeros(3 * self.observer_size)
         self.initialize_from_true_states = self.config.get('initialize_from_true_states', True)
         self._true_state_initialization_complete = False
+        # Keep consensus disabled throughout true-state initialization.  If all
+        # states become available in an update, consensus is enabled only after
+        # that update so the initialization frame cannot receive a large kick.
+        self._consensus_ready = not self.initialize_from_true_states
         
         # CRITICAL: Force fleet_states to correct dimensions
         # The parent class initializes it, but we must ensure it's correct
@@ -212,10 +227,15 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
                 output_dir=self.debug_output_dir,
                 vehicle_id=self.vehicle_id,
                 observer_size=self.observer_size,
-                fleet_size=self.fleet_size
+                fleet_size=self.fleet_size,
+                run_id=self.debug_run_id,
             )
             filepath = self.recorder.start()
             self._recording_start_time = 0.0
+            if self.logger:
+                self.logger.logger.info(
+                    f"Vehicle {self.vehicle_id}: HG debug recording started: {filepath}"
+                )
         except Exception as e:
             if self.logger:
                 self.logger.log_error(f"Failed to initialize HG debug recorder", e)
@@ -226,6 +246,16 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
         if self.recorder is not None:
             self.recorder.stop()
             self.recorder = None
+
+    def reset(self):
+        """Reset HG state and require initialization before consensus again."""
+        super().reset()
+        self.received_observer_states.clear()
+        self.estimated_state = np.zeros(self.block_state_dim * self.observer_size)
+        self._true_state_initialized_mask = np.zeros(self.observer_size, dtype=bool)
+        self._true_state_initialization_complete = False
+        self._consensus_ready = not self.initialize_from_true_states
+        self.debug_data = {}
     
     def __del__(self):
         """Cleanup: stop recording when estimator is destroyed."""
@@ -447,11 +477,37 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
             dynamics_term: Dynamics prediction [3*observer_size]
         """
         nonlinear_f = self._compute_nonlinear_f_term(x_vec)
-        return (
+        dynamics_term = (
             self.A_delta @ x_vec
             + self.B_tau @ collective_control
             + self.B_nonlinear @ nonlinear_f
         )
+
+        if not self.enable_stationary_deadzone:
+            return dynamics_term
+
+        # Static-friction/zero-speed mode.  The normal affine model contains the
+        # constant term -Kth*c0/tau, so zero throttle at zero speed predicts a
+        # backwards acceleration.  Freeze position prediction in this small
+        # region and dissipate residual v/a estimates toward zero.  Consensus
+        # and measurement corrections are still applied by the caller.
+        x_mat = np.asarray(x_vec, dtype=float).reshape(
+            (self.block_state_dim, self.observer_size), order="F"
+        )
+        control_vec = np.asarray(collective_control, dtype=float).reshape(-1)
+        stationary_mask = (
+            (np.abs(x_mat[1, :]) <= self.zero_speed_deadzone)
+            & (np.abs(control_vec) <= self.throttle_deadzone)
+        )
+        decay_tau = max(float(self.tau_i), 1e-6)
+
+        for vehicle_idx in np.flatnonzero(stationary_mask):
+            block_start = self.block_state_dim * vehicle_idx
+            dynamics_term[block_start] = 0.0
+            dynamics_term[block_start + 1] = -x_mat[1, vehicle_idx] / decay_tau
+            dynamics_term[block_start + 2] = -x_mat[2, vehicle_idx] / decay_tau
+
+        return dynamics_term
     
     def _compute_measurement_term(self, x_vec: np.ndarray, local_state: np.ndarray, 
                                  current_time_ns: int) -> tuple:
@@ -846,6 +902,9 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
             self.estimated_state = self._distributed_hg_observer_update(
                 local_state, current_time_ns, control, dt
             )
+
+            if self._true_state_initialization_complete:
+                self._consensus_ready = True
             
             # Add the estimated x/v/a states back to fleet_states.
             self.fleet_states = self._transfer_estimated_state_to_fleet_states(
@@ -904,9 +963,15 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
         measurement_term, local_measurement, estimated_measurement, measurement_error = \
             self._compute_measurement_term(x_vec, local_state, current_time_ns)
         
-        # 3. Compute consensus correction term
-        consensus_term = self._compute_consensus_term(x_vec, current_time_ns)
-        neighbor_count = len(self.my_neighbors)  # For debug data recording
+        # 3. Compute consensus correction only after initialization has already
+        # completed in a previous update.  This prevents partially initialized
+        # zero blocks from entering the distributed feedback loop.
+        if self._consensus_ready:
+            consensus_term = self._compute_consensus_term(x_vec, current_time_ns)
+            neighbor_count = len(self.my_neighbors)
+        else:
+            consensus_term = np.zeros(dim_distributed_observer)
+            neighbor_count = 0
               
         x_i_new = x_vec + dt * (dynamics_term + measurement_term + consensus_term)
         
@@ -943,13 +1008,13 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
         # This ensures all data is synchronized to current vehicle's timestamp
         
         
-        # Record follower vehicles' true states
-        for vehicle_id in range(1, self.fleet_size):
+        # Record every vehicle's true state, including vehicle 0.
+        for vehicle_id in range(self.fleet_size):
             if vehicle_id == self.vehicle_id:
-                # Own state already recorded above as position, velocity, acceleration
                 self.debug_data[f'true_position_{vehicle_id}'] = local_state[0]
                 self.debug_data[f'true_velocity_{vehicle_id}'] = local_state[3]
                 self.debug_data[f'true_acceleration_{vehicle_id}'] = local_state[4] if len(local_state) > 4 else 0.0
+                self.debug_data[f'true_throttle_{vehicle_id}'] = control[1]
                 continue
             
             # Get latest received state from V2V communication
@@ -964,6 +1029,13 @@ class DistributedHGEstimator(FleetStateEstimatorBase):
                 self.debug_data[f'true_position_{vehicle_id}'] = np.nan
                 self.debug_data[f'true_velocity_{vehicle_id}'] = np.nan
                 self.debug_data[f'true_acceleration_{vehicle_id}'] = np.nan
+
+            other_control = self._get_latest_received_control(vehicle_id, current_time_ns)
+            self.debug_data[f'true_throttle_{vehicle_id}'] = (
+                other_control[1]
+                if other_control is not None and len(other_control) > 1
+                else np.nan
+            )
         
         return x_i_new
 

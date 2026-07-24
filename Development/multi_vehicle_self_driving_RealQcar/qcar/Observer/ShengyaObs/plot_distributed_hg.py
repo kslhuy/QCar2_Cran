@@ -39,7 +39,7 @@ def list_recordings(directories: List[str], pattern: str) -> List[Tuple[str, dat
     for directory in directories:
         if not os.path.exists(directory):
             continue
-        for path in glob.glob(os.path.join(directory, pattern)):
+        for path in glob.glob(os.path.join(directory, "**", pattern), recursive=True):
             recordings.append((
                 path,
                 datetime.fromtimestamp(os.path.getmtime(path)),
@@ -148,34 +148,56 @@ def plot_estimated_states(data: Dict[str, np.ndarray], vehicle_ids: List[int],
         ax.legend(loc="best", ncol=2)
 
 
-def plot_errors(data: Dict[str, np.ndarray], vehicle_ids: List[int], ax) -> None:
+def plot_errors(data: Dict[str, np.ndarray], vehicle_ids: List[int],
+                ax_x, ax_v, ax_a) -> None:
+    """Plot estimate-minus-truth errors for all longitudinal states."""
     time = data["time"]
     colors = plt.cm.tab10(np.linspace(0, 1, max(len(vehicle_ids), 1)))
-    any_line = False
+    components = [
+        ("x", "true_position", ax_x, "Position Estimation Error", "error [m]"),
+        ("v", "true_velocity", ax_v, "Velocity Estimation Error", "error [m/s]"),
+        ("a", "true_acceleration", ax_a, "Acceleration Estimation Error", "error [m/s^2]"),
+    ]
+    any_line = {component: False for component, *_ in components}
 
     for color, vid in zip(colors, vehicle_ids):
-        est = x_col("x_vec", vid, "x", data)
-        true = f"true_position_{vid}"
-        if est and true in data and not np.isnan(data[true]).all():
-            ax.plot(time, data[est] - data[true], label=f"x err {vid}",
-                    color=color, linewidth=1.2)
-            any_line = True
+        for component, true_prefix, ax, _, _ in components:
+            est_col = x_col("x_vec", vid, component, data)
+            true_col = f"{true_prefix}_{vid}"
+            if not est_col or true_col not in data:
+                continue
+
+            error = data[est_col] - data[true_col]
+            valid = np.isfinite(error)
+            if not np.any(valid):
+                continue
+
+            rmse = np.sqrt(np.mean(np.square(error[valid])))
+            ax.plot(
+                time,
+                error,
+                label=f"Car {vid} (RMSE={rmse:.3g})",
+                color=color,
+                linewidth=1.2,
+            )
+            any_line[component] = True
 
     if "meas_err_x" in data:
-        ax.plot(time, data["meas_err_x"], label="local meas err",
-                color="black", linestyle="--", linewidth=1.1)
-        any_line = True
+        ax_x.plot(time, data["meas_err_x"], label="local measurement error",
+                  color="black", linestyle="--", linewidth=1.1)
+        any_line["x"] = True
     elif "meas_err_rel_pos" in data:
-        ax.plot(time, data["meas_err_rel_pos"], label="local meas err",
-                color="black", linestyle="--", linewidth=1.1)
-        any_line = True
+        ax_x.plot(time, data["meas_err_rel_pos"], label="local measurement error",
+                  color="black", linestyle="--", linewidth=1.1)
+        any_line["x"] = True
 
-    ax.set_title("Position Estimation Error")
-    ax.set_ylabel("error [m]")
-    ax.axhline(0.0, color="0.35", linewidth=0.7)
-    ax.grid(True, alpha=0.3, linewidth=0.5)
-    if any_line:
-        ax.legend(loc="best", ncol=2)
+    for component, _, ax, title, ylabel in components:
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.axhline(0.0, color="0.35", linewidth=0.7)
+        ax.grid(True, alpha=0.3, linewidth=0.5)
+        if any_line[component]:
+            ax.legend(loc="best", ncol=2)
 
 
 def plot_terms(data: Dict[str, np.ndarray], vid: int, ax) -> None:
@@ -282,34 +304,36 @@ def create_plot(data: Dict[str, np.ndarray], filepath: str, term_vehicle_id: Opt
 
     basename = os.path.basename(filepath)
     duration = data["time"][-1] - data["time"][0]
-    fig = plt.figure(figsize=(15, 13))
+    fig = plt.figure(figsize=(15, 16))
     fig.suptitle(
         f"Distributed High-Gain Observer\n{basename} | samples={len(data['time'])} | duration={duration:.2f}s",
         fontweight="bold",
     )
 
-    gs = GridSpec(5, 2, figure=fig, hspace=0.48, wspace=0.28,
-                  top=0.92, bottom=0.06, left=0.07, right=0.96)
+    gs = GridSpec(6, 2, figure=fig, hspace=0.5, wspace=0.28,
+                  top=0.93, bottom=0.05, left=0.07, right=0.96)
 
     ax_x = fig.add_subplot(gs[0, 0])
     ax_v = fig.add_subplot(gs[0, 1])
     ax_a = fig.add_subplot(gs[1, 0])
     plot_estimated_states(data, vehicle_ids, ax_x, ax_v, ax_a)
 
-    ax_err = fig.add_subplot(gs[1, 1])
-    plot_errors(data, vehicle_ids, ax_err)
+    ax_err_x = fig.add_subplot(gs[1, 1])
+    ax_err_v = fig.add_subplot(gs[2, 0])
+    ax_err_a = fig.add_subplot(gs[2, 1])
+    plot_errors(data, vehicle_ids, ax_err_x, ax_err_v, ax_err_a)
 
-    ax_terms = fig.add_subplot(gs[2, 0])
+    ax_terms = fig.add_subplot(gs[3, 0])
     plot_terms(data, selected_vid, ax_terms)
 
-    ax_consensus = fig.add_subplot(gs[2, 1])
+    ax_consensus = fig.add_subplot(gs[3, 1])
     plot_consensus(data, ax_consensus)
 
-    ax_fleet_x = fig.add_subplot(gs[3, 0])
-    ax_fleet_v = fig.add_subplot(gs[3, 1])
+    ax_fleet_x = fig.add_subplot(gs[4, 0])
+    ax_fleet_v = fig.add_subplot(gs[4, 1])
     plot_fleet_states(data, vehicle_ids, ax_fleet_x, ax_fleet_v)
 
-    ax_control = fig.add_subplot(gs[4, :])
+    ax_control = fig.add_subplot(gs[5, :])
     plot_controls(data, vehicle_ids, ax_control)
     ax_control.set_xlabel("Time [s]")
 
@@ -325,7 +349,8 @@ def main() -> None:
                         help="Search old dist_luenberger_*.csv names")
     parser.add_argument("--vehicle-id", type=int,
                         help="Vehicle block used for observer-term subplot")
-    parser.add_argument("--save", "-s", action="store_true", help="Save figure without asking")
+    parser.add_argument("--save", "-s", action="store_true",
+                        help="Save figure without displaying it")
     parser.add_argument("--output", "-o", help="Output PNG path")
     args = parser.parse_args()
 
@@ -350,8 +375,7 @@ def main() -> None:
     data = load_data(filepath)
     fig = create_plot(data, filepath, args.vehicle_id)
 
-    figure_dir = os.path.join(SCRIPT_DIR, "figure")
-    os.makedirs(figure_dir, exist_ok=True)
+    figure_dir = os.path.dirname(os.path.abspath(filepath))
     default_output = os.path.join(
         figure_dir,
         os.path.basename(filepath)
@@ -360,12 +384,12 @@ def main() -> None:
         .replace(".csv", ".png"),
     )
 
-    if args.save or args.output:
-        output = args.output if args.output else default_output
-        os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-        fig.savefig(output, dpi=150, bbox_inches="tight")
-        print(f"Figure saved to: {output}")
-    else:
+    output = args.output if args.output else default_output
+    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+    fig.savefig(output, dpi=150, bbox_inches="tight")
+    print(f"Figure saved to: {output}")
+
+    if not args.save and not args.output:
         plt.show()
 
 

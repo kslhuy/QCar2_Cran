@@ -261,7 +261,7 @@ per_vehicle_controllers:
 
         - {throttle: 0.00, duration: 5}
 
-        - {throttle: 0.12, duration: 666666}
+        - {throttle: 0.1, duration: 666666}
         - {throttle: 0.26, duration: 6}
         - {throttle: 0.10, duration: 6}
         - {throttle: 0.30, duration: 6}
@@ -310,8 +310,8 @@ per_vehicle_controllers:
         hi: 0.3                # Time headway (seconds)
     throttle_sequence:
         - {throttle: 0.00, duration: 5}
-        - {throttle: 0.12, duration: 666666}
-  
+        - {throttle: 0.1, duration: 666666}
+
   # Vehicle 2 (Second Follower)
   2:
     longitudinal_controller_type: 'throttle_sequence'  # Uses true V2V states for control
@@ -333,7 +333,7 @@ per_vehicle_controllers:
         hi: 0.3                # Time headway (seconds)
     throttle_sequence:
         - {throttle: 0.00, duration: 5}
-        - {throttle: 0.12, duration: 666666}
+        - {throttle: 0.1, duration: 666666}
 
   # Vehicle 3 (Third Follower)
   3:
@@ -356,7 +356,7 @@ per_vehicle_controllers:
         hi: 0.3                # Time headway (seconds)
     throttle_sequence:
         - {throttle: 0.00, duration: 5}
-        - {throttle: 0.12, duration: 666666}
+        - {throttle: 0.1, duration: 666666}
 
 # Notes on per-vehicle configuration:
 # 1. Any parameter not specified for a vehicle uses the global default
