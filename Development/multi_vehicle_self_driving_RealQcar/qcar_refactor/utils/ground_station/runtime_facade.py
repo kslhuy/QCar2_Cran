@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from core.commands import CommandResult, CommandSource, CommandType, VehicleCommand
-from core.types import VehicleStateEstimate
+from core.types import ControllerReference, VehicleStateEstimate
 
 from .monitoring import MonitoringSnapshot
 
@@ -54,6 +54,7 @@ class GroundStationRuntimeFacade:
         vehicle_id: int,
         runtime_state: str,
         estimate: VehicleStateEstimate,
+        control_reference: ControllerReference,
         fleet=None,
         v2v=None,
         control_mode: str = "auto",
@@ -63,6 +64,12 @@ class GroundStationRuntimeFacade:
         """Build and publish one operator-facing snapshot from public module state."""
         fleet_status = fleet.status() if fleet is not None else None
         fleet_summary = {
+            "configured": fleet_status is not None,
+            "formation_id": fleet_status.formation_id if fleet_status is not None else "",
+            "role": fleet_status.role.value if fleet_status is not None else "",
+            "member_order": fleet_status.member_order if fleet_status is not None else None,
+            "member_count": len(fleet_status.peer_health) + 1 if fleet_status is not None else 0,
+            "reason": fleet_status.reason if fleet_status is not None else "",
             "peer_count": len(fleet.snapshots()) if fleet is not None else 0,
             "peer_health": list(fleet_status.peer_health) if fleet_status is not None else [],
         }
@@ -84,6 +91,13 @@ class GroundStationRuntimeFacade:
                 observer_healthy=bool(estimate.valid),
                 v2v_status=v2v_status,
                 fleet_summary=fleet_summary,
+                control_reference={
+                    "target_x_m": float(control_reference.target_x),
+                    "target_y_m": float(control_reference.target_y),
+                    "target_heading_rad": float(control_reference.target_theta),
+                    "target_velocity_mps": float(control_reference.target_velocity),
+                    "is_finished": bool(control_reference.is_finished),
+                },
                 control_mode=str(control_mode),
                 manual_input_age_s=manual_input_age_s,
                 last_command_result=self._last_command_result,

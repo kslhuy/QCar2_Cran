@@ -402,6 +402,22 @@ Acceptance gate: an operator can manually drive a configured virtual vehicle onl
 - [x] Move fleet-reference capability validation into `ControllerManager.compute_fleet()`. `VehicleRuntime` retains only the safe-stop response to a returned capability failure and the generic fleet hold action.
 - [x] Remove manual-specific selection helpers from `VehicleRuntime`. Planner-completion behavior is now declared by the active controller through `uses_planner_completion`.
 
+### Step 8.3C: Coordinate Vehicle Safety, Fleet Lifecycle, And Manual Control
+
+Owner: `core/`, `utils/fleet/`, `utils/ground_station/`, `extra/ground_station/`, and `test/`.
+
+Principle: vehicle safety state, fleet lifecycle, and selected controller are distinct state dimensions. The vehicle safety state remains the only authority that permits non-zero actuation. Fleet formation is prepared from scenario policy and membership; each vehicle process owns one local `FleetManager` with its own peer cache and phase, never a shared cross-process manager.
+
+- [x] Model fleet preparation explicitly so `BUILD_FLEET` may prepare a configured formation while the vehicle is `READY`, without starting peer-timeout/activation work until the vehicle enters `RUNNING`.
+- [x] Permit `ENABLE_MANUAL` to arm the manual controller in `READY`, but keep manual input and all non-zero output gated by `RUNNING`.
+- [x] Allow manual control for an active/building fleet leader while retaining the current follower restriction; followers must continue to use fleet control whenever fleet operation is active.
+- [x] Define the allowed combined state vector `(vehicle safety state, fleet phase, controller mode)` and test invalid combinations, transitions on `START`/`STOP`/`RESET`, peer timeout, path completion, and manual timeout.
+- [x] Simplify the CLI dashboard fleet field to `leader`, `follower`, or `unavailable`; move phase, member order, peer health, and fault reason to activity/log output.
+- [x] Include each target's last reported runtime and fleet state in CLI command-send and acknowledgement log entries, identifying the values as snapshots rather than synchronous state reads.
+- [x] Design a separate, revisioned dynamic-formation command before implementation. It must validate an ordered member vector, distribute the identical formation revision to every listed vehicle-local `FleetManager`, require acknowledgements, and only then activate the formation. Do not overload the current payload-free `BUILD_FLEET` command without a compatibility plan.
+
+Acceptance gate: operator-visible state is unambiguous; preparing a formation cannot cause premature peer timeout; leader manual control cannot bypass actuator safety; and a future dynamic formation cannot leave vehicle processes with divergent membership revisions.
+
 ### Step 8.4: Add A Separate Real-Vehicle Deployment CLI
 
 Owner: `extra/deployment/`.

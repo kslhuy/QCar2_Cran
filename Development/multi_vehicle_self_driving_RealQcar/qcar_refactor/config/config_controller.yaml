@@ -29,6 +29,10 @@ simple_carla:
   min_throttle: -0.80
   max_steering: 0.48
   integral_limit: 1.0
+  manual:
+    command_timeout_s: 0.25
+    max_throttle: 0.35
+    max_steering: 0.30
 
 # Conservative profile for the deterministic virtual bicycle model.
 # The fleet policy provides predecessor position, not a dense curvature path.

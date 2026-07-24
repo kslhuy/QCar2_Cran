@@ -48,10 +48,6 @@ class VehicleRuntime:
         self.io = io
         self.observer = observer
         self.planner = planner
-        if not isinstance(controller_manager, ControllerManager):
-            raise TypeError("VehicleRuntime requires ControllerManager from the module factory")
-        if not isinstance(ground_station, GroundStationRuntimeFacade):
-            raise TypeError("VehicleRuntime requires GroundStationRuntimeFacade from the module factory")
         self.controller_manager = controller_manager
         self.v2v = v2v
         self.simulation = simulation
@@ -169,6 +165,7 @@ class VehicleRuntime:
                 vehicle_id=self.config.vehicle_id,
                 runtime_state=telemetry.state.name,
                 estimate=telemetry.estimate,
+                control_reference=telemetry.target,
                 fleet=self.fleet,
                 v2v=self.v2v,
                 control_mode="manual" if manual_mode else "auto",

@@ -363,12 +363,14 @@ class TestVehicleRuntime(unittest.TestCase):
         self.assertEqual(self.runtime.fleet.status().phase.value, "disabled")
         self.assertEqual(self.io.commands[-1], (0.0, 0.0))
 
-    def test_fleet_build_is_rejected_when_vehicle_is_not_running(self):
+    def test_fleet_build_prepares_in_ready_then_starts_when_running(self):
         self._rebuild_runtime(fleet=_fleet_manager())
         self.runtime.start()
         self.runtime.handle_command(_command("BUILD_FLEET"))
 
-        self.assertEqual(self.runtime.fleet.status().phase.value, "disabled")
+        self.assertEqual(self.runtime.fleet.status().phase.value, "prepared")
+        self.runtime.handle_command(_command("START"))
+        self.assertEqual(self.runtime.fleet.status().phase.value, "building")
 
     def test_fleet_runtime_consumes_generic_messages_and_publishes_to_peers(self):
         self._rebuild_runtime(fleet=_fleet_manager())

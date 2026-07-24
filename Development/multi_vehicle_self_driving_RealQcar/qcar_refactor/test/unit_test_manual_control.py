@@ -48,23 +48,28 @@ class TestControllerManual(unittest.TestCase):
         self.assertAlmostEqual(fresh.steering, 0.30)
         self.assertEqual(timed_out.throttle, 0.0)
 
-    def test_handler_requires_running_state_before_manual_activation(self):
+    def test_handler_arms_manual_in_ready_but_requires_running_for_input(self):
         state_machine = StateMachine()
         handler = VehicleCommandHandler(2, state_machine, _Planner(), manual_controller_available=True)
 
         rejected = handler.handle(VehicleCommand(CommandType.ENABLE_MANUAL), now_monotonic=1.0)
         state_machine.mark_ready()
-        handler.handle(VehicleCommand(CommandType.START), now_monotonic=1.0)
         accepted = handler.handle(VehicleCommand(CommandType.ENABLE_MANUAL), now_monotonic=2.0)
-        input_result = handler.handle(
+        waiting = handler.handle(
             VehicleCommand(CommandType.MANUAL_INPUT, {"throttle": 0.2, "steering": 0.1}),
             now_monotonic=2.1,
         )
+        handler.handle(VehicleCommand(CommandType.START), now_monotonic=2.2)
+        input_result = handler.handle(
+            VehicleCommand(CommandType.MANUAL_INPUT, {"throttle": 0.2, "steering": 0.1}),
+            now_monotonic=2.3,
+        )
 
         self.assertEqual(rejected.result.outcome, CommandOutcome.REJECTED)
-        self.assertEqual(rejected.result.reason_code, "manual_requires_running_vehicle")
+        self.assertEqual(rejected.result.reason_code, "manual_requires_ready_or_running_vehicle")
         self.assertEqual(accepted.result.outcome, CommandOutcome.APPLIED)
         self.assertEqual(accepted.controller_profile, "manual")
+        self.assertEqual(waiting.result.reason_code, "manual_input_requires_running_vehicle")
         self.assertEqual(input_result.result.outcome, CommandOutcome.APPLIED)
         self.assertEqual(input_result.manual_input, (0.2, 0.1))
 

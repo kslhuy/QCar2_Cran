@@ -26,6 +26,7 @@ class MonitoringSnapshot:
     observer_healthy: bool
     v2v_status: Mapping[str, Any]
     fleet_summary: Mapping[str, Any]
+    control_reference: Mapping[str, Any]
     control_mode: str = "auto"
     manual_input_age_s: float | None = None
     last_command_result: CommandResult | None = None
@@ -49,6 +50,7 @@ class MonitoringSnapshot:
                 raise ValueError(f"{name} must be a finite number")
         if not isinstance(self.v2v_status, Mapping) or not isinstance(self.fleet_summary, Mapping):
             raise ValueError("monitoring status sections must be mappings")
+        _control_reference(self.control_reference)
         if self.control_mode not in {"auto", "manual"}:
             raise ValueError("control_mode must be 'auto' or 'manual'")
         if self.manual_input_age_s is not None and (
@@ -62,6 +64,7 @@ class MonitoringSnapshot:
             raise ValueError("last_command_result must use CommandResult")
         object.__setattr__(self, "v2v_status", MappingProxyType(dict(self.v2v_status)))
         object.__setattr__(self, "fleet_summary", MappingProxyType(dict(self.fleet_summary)))
+        object.__setattr__(self, "control_reference", MappingProxyType(dict(self.control_reference)))
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "MonitoringSnapshot":
@@ -81,6 +84,7 @@ class MonitoringSnapshot:
             observer_healthy=_bool(data.get("observer_healthy"), "observer_healthy"),
             v2v_status=dict(_mapping(data.get("v2v_status"), "v2v_status")),
             fleet_summary=dict(_mapping(data.get("fleet_summary"), "fleet_summary")),
+            control_reference=dict(_control_reference(data.get("control_reference"))),
             control_mode=data.get("control_mode", "auto"),
             manual_input_age_s=data.get("manual_input_age_s"),
             last_command_result=(CommandResult.from_mapping(command_data) if command_data is not None else None),
@@ -100,6 +104,7 @@ class MonitoringSnapshot:
             "observer_healthy": self.observer_healthy,
             "v2v_status": dict(self.v2v_status),
             "fleet_summary": dict(self.fleet_summary),
+            "control_reference": dict(self.control_reference),
             "control_mode": self.control_mode,
             "manual_input_age_s": self.manual_input_age_s,
             "last_command_result": (
@@ -136,3 +141,12 @@ def _bool(value: Any, name: str) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be boolean")
     return value
+
+
+def _control_reference(value: Any) -> Mapping[str, Any]:
+    """Validate the controller target retained for operator monitoring."""
+    reference = _mapping(value, "control_reference")
+    for key in ("target_x_m", "target_y_m", "target_heading_rad", "target_velocity_mps"):
+        _number(reference.get(key), f"control_reference.{key}")
+    _bool(reference.get("is_finished"), "control_reference.is_finished")
+    return reference

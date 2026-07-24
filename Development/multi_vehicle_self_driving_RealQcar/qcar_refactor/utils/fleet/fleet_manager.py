@@ -61,10 +61,25 @@ class FleetManager:
     def request_build(self, *, vehicle_running: bool, now_monotonic: float | None = None) -> bool:
         if not self._state.request_build(vehicle_running=vehicle_running):
             return False
+        if vehicle_running:
+            self._start_build(now_monotonic)
+        return True
+
+    def start_for_vehicle(self, *, now_monotonic: float | None = None) -> bool:
+        """Start a previously prepared formation once the vehicle is RUNNING."""
+        if not self._state.begin_running():
+            return False
+        self._start_build(now_monotonic)
+        return True
+
+    def is_follower(self) -> bool:
+        return self.status().role.value == "follower"
+
+    def _start_build(self, now_monotonic: float | None) -> None:
+        self._peers.clear()
         now = time.monotonic() if now_monotonic is None else float(now_monotonic)
         self._build_deadline = now + self._registry.snapshot().policy.communication.peer_timeout_s
         self._last_publication_at = None
-        return True
 
     def handle_command(
         self,
@@ -79,7 +94,7 @@ class FleetManager:
                 return FleetCommandResult(
                     handled=True,
                     accepted=False,
-                    reason="fleet_build_requires_running_vehicle",
+                    reason="fleet_already_prepared_or_operating",
                 )
             return FleetCommandResult(handled=True)
         if command.command_type == CommandType.CANCEL_FLEET:
@@ -125,6 +140,11 @@ class FleetManager:
         measurements=None,
     ) -> FleetStepResult:
         """Process one fleet cycle and return decisions without touching IO."""
+        if self.phase == FleetPhase.PREPARED:
+            # Preparation deliberately has no position or peer-data processing.
+            # ``run_cycle`` may drain transport input, but that input cannot
+            # become a usable peer cache until BUILDING begins.
+            return FleetStepResult(self.status())
         fault_reason = self.process_ego_estimate(estimate)
         if fault_reason is None:
             fault_reason = self.process_received(messages, now_monotonic)

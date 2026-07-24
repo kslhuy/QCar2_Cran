@@ -160,8 +160,9 @@ class TestFleetRegistryAndStateMachine(unittest.TestCase):
 
     def test_lifecycle_build_activate_cancel_and_fault(self):
         lifecycle = FleetStateMachine(self.registry, vehicle_id=1)
-        self.assertFalse(lifecycle.request_build(vehicle_running=False))
-        self.assertTrue(lifecycle.request_build(vehicle_running=True))
+        self.assertTrue(lifecycle.request_build(vehicle_running=False))
+        self.assertEqual(lifecycle.phase, FleetPhase.PREPARED)
+        self.assertTrue(lifecycle.begin_running())
         self.assertEqual(lifecycle.phase, FleetPhase.BUILDING)
         self.assertTrue(lifecycle.activate())
         self.assertEqual(lifecycle.status().source_vehicle_id, 1)
@@ -326,6 +327,24 @@ class TestFleetPeerExchange(unittest.TestCase):
 
         self.assertEqual(result.fault_reason, "fleet peer build timeout")
         self.assertEqual(result.status.phase, FleetPhase.BUILDING)
+
+    def test_prepared_manager_discards_peer_data_until_running(self):
+        manager = FleetManager(self.registry, vehicle_id=2)
+        leader = FleetStateMachine(self.registry, vehicle_id=1)
+        self.assertTrue(manager.request_build(vehicle_running=False, now_monotonic=0.0))
+
+        payload = encode_vehicle_state_estimate(_estimate(), leader.status())
+        prepared = manager.step(
+            _estimate(),
+            (_message(1, 1, payload, 10.0),),
+            now_monotonic=10.0,
+            dt=0.05,
+        )
+
+        self.assertEqual(prepared.status.phase, FleetPhase.PREPARED)
+        self.assertIsNone(prepared.distributed_estimate)
+        self.assertEqual(manager.snapshots(), ())
+        self.assertTrue(manager.start_for_vehicle(now_monotonic=10.0))
 
     def test_manager_owns_fleet_lifecycle_command_interpretation(self):
         manager = FleetManager(self.registry, vehicle_id=2)

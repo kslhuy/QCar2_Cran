@@ -1,14 +1,5 @@
 simulation_profile: "null"
 
-fleet:
-  profile: default
-  formation_id: virtual_four_vehicle_fleet_control
-  members:
-    - {vehicle_id: 1, role: leader, member_order: 0}
-    - {vehicle_id: 2, role: follower, member_order: 1}
-    - {vehicle_id: 3, role: follower, member_order: 2}
-    - {vehicle_id: 4, role: follower, member_order: 3}
-
 vehicles:
   - vehicle_id: 1
     vehicle_config_file: config_vehicle_virtual.yaml
@@ -48,3 +39,12 @@ vehicles:
     mission:
       path: [[-2.4, 0.0], [-1.6, 0.0], [-0.8, 0.0], [0.0, 0.0], [0.8, 0.05], [1.6, 0.20], [2.4, 0.45], [3.2, 0.60], [4.0, 0.55], [4.8, 0.30], [5.6, 0.0]]
       target_velocity: 0.35
+
+fleet:
+  profile: default
+  formation_id: virtual_four_vehicle_fleet_control
+  members:
+    - {vehicle_id: 1, role: leader, member_order: 0}
+    - {vehicle_id: 2, role: follower, member_order: 1}
+    - {vehicle_id: 3, role: follower, member_order: 2}
+    - {vehicle_id: 4, role: follower, member_order: 3}

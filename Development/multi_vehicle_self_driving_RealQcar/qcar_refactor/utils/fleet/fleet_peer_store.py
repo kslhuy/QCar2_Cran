@@ -105,6 +105,10 @@ class FleetPeerStore:
     def counters(self) -> dict[str, int]:
         return dict(self._counters)
 
+    def clear(self) -> None:
+        """Discard peer state before a new fleet run begins."""
+        self._snapshots.clear()
+
     def _sync_membership(self, membership_revision: int) -> None:
         if membership_revision != self._membership_revision:
             self._snapshots.clear()

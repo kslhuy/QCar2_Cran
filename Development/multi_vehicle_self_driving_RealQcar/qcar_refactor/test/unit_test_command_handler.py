@@ -70,6 +70,14 @@ class TestVehicleCommandHandler(unittest.TestCase):
         self.assertEqual(handling.result.reason_code, "vehicle_id_mismatch")
         self.assertEqual(self.state_machine.state, State.READY)
 
+    def test_fleet_lifecycle_command_is_rejected_without_a_fleet_manager(self):
+        handler = VehicleCommandHandler(3, self.state_machine, self.planner)
+
+        handling = handler.handle(VehicleCommand(CommandType.BUILD_FLEET))
+
+        self.assertEqual(handling.result.outcome, CommandOutcome.REJECTED)
+        self.assertEqual(handling.result.reason_code, "fleet_manager_unavailable")
+
     def test_fleet_cancel_requests_runtime_safe_stop_after_state_transition(self):
         self.state_machine.handle_command(VehicleCommand(CommandType.START))
         fleet = _Fleet(FleetCommandResult(handled=True, stop_vehicle=True, reason="fleet_cancel"))

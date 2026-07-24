@@ -10,6 +10,7 @@ from .fleet_types import FleetError, FleetStatus
 
 class FleetPhase(str, Enum):
     DISABLED = "disabled"
+    PREPARED = "prepared"
     BUILDING = "building"
     ACTIVE = "active"
     CANCELLING = "cancelling"
@@ -45,13 +46,24 @@ class FleetStateMachine:
         )
 
     def request_build(self, *, vehicle_running: bool) -> bool:
-        if not vehicle_running:
-            return False
+        """Record a configured formation request without starting communication.
+
+        A READY vehicle is allowed to prepare.  Only a RUNNING vehicle moves
+        from PREPARED to BUILDING, which is the phase that publishes peer
+        estimates and owns the peer timeout.
+        """
         if self._phase == FleetPhase.DISABLED:
-            self._phase = FleetPhase.BUILDING
+            self._phase = FleetPhase.BUILDING if vehicle_running else FleetPhase.PREPARED
             self._reason = ""
             return True
         return False
+
+    def begin_running(self) -> bool:
+        """Begin fleet communication after the vehicle enters RUNNING."""
+        if self._phase != FleetPhase.PREPARED:
+            return False
+        self._phase = FleetPhase.BUILDING
+        return True
 
     def activate(self) -> bool:
         if self._phase != FleetPhase.BUILDING:

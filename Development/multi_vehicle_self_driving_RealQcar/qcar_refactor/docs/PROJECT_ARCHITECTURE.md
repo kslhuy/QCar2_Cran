@@ -114,6 +114,28 @@ The runtime starts the selected simulation session first, then observer, planner
 
 For CARLA synchronous mode, the simulation session owns `world.tick()`, updates its latest snapshot, then `IOCarla` reads that completed frame. A multi-vehicle CARLA scenario designates exactly one `tick_owner`; other actors wait for completed frames.
 
+### Fleet Command Dispatch And `BUILD_FLEET`
+
+`BUILD_FLEET` is not a vehicle-state-machine transition. It is a lifecycle command handled only by an injected `FleetManager`. The command path is deliberately ordered as follows:
+
+```text
+VehicleCommand(BUILD_FLEET)
+    -> VehicleCommandHandler verifies target vehicle ID
+    -> injected FleetManager handles fleet lifecycle commands
+        -> accepted while READY: fleet phase DISABLED -> PREPARED
+        -> accepted while RUNNING: fleet phase DISABLED -> BUILDING
+        -> rejected: fleet is already PREPARED/BUILDING/ACTIVE
+    -> no FleetManager: rejected as fleet_manager_unavailable
+```
+
+The acknowledgement `fleet_manager_unavailable` means the vehicle is running but was not launched with a fleet definition. It does **not** mean that a running fleet-enabled vehicle is forbidden from building a fleet.
+
+A `FleetManager` is created only by a scenario runner when the selected scenario has a top-level `fleet:` definition. The normal single-vehicle command, `python -m core.vehicle_main ...`, constructs no fleet manager. To use `build-fleet`, launch a fleet-enabled virtual or CARLA scenario through `extra.simulator.launcher`; every intended member must be listed in the scenario's fleet configuration. A READY vehicle accepts the command as `PREPARED`; it discards inbound peer state and does not publish V2V state, update its distributed observer, evaluate peers, or start a timeout until `START` changes the vehicle safety state to `RUNNING` and promotes the fleet to `BUILDING`.
+
+After fleet operation begins, each member enters `BUILDING`. It publishes its V2V estimate and waits for fresh estimates from every expected peer. It becomes `ACTIVE` only when all required peers are fresh before the configured peer timeout. Missing/invalid local estimates, unavailable V2V routes, stale peers, or a timeout fault the fleet and trigger the runtime's safe-stop path.
+
+The permitted combined state vectors are deliberately small. `READY` always writes zero output and may use either the configured or armed manual controller; it may also have a `DISABLED` or `PREPARED` fleet. `RUNNING` may be automatic with a disabled/prepared/building/active fleet, or manual with a disabled fleet or a leader's building/active fleet. A building/active follower must use its fleet-selected controller and cannot retain manual mode. `STOPPED` and `ERROR` always cancel fleet operation, restore the configured controller, and write zero output. `BUILD_FLEET` remains the static, payload-free scenario command. A dynamic ordered-member-vector command needs a separate revisioned protocol: validate the entire ordered vector, deliver the identical revision to every listed local manager, await all acknowledgements, then activate; it must not reuse `BUILD_FLEET`'s payload.
+
 ## Configuration And Scenarios
 
 ### Profile Configuration
@@ -212,7 +234,7 @@ python -m extra.simulator.launcher --platform virtual --setup-file config/scenar
 python -m extra.simulator.launcher --platform carla --setup-file config/scenarios/carla_two_vehicle.yaml
 ```
 
-Both commands run until `Ctrl+C`, just like the single-vehicle entry point. `Ctrl+C` creates a shared shutdown signal that every worker observes in its control loop, allowing each runtime to write its safe zero command and release platform resources before the launcher exits; a non-responsive worker is force-stopped only after a five-second grace period. Add `--cycles <count>` for a bounded run. For virtual scenarios, add `--realtime` when testing wall-clock communication such as UDP V2V; otherwise the launcher runs deterministic virtual steps as quickly as possible. Add `--build-fleet` to send `BUILD_FLEET` after every worker enters the running state.
+Both commands run until `Ctrl+C`, just like the single-vehicle entry point. `Ctrl+C` creates a shared shutdown signal that every worker observes in its control loop, allowing each runtime to write its safe zero command and release platform resources before the launcher exits; a non-responsive worker is force-stopped only after a five-second grace period. Add `--cycles <count>` for a bounded run. For virtual scenarios, add `--realtime` whenever an operator or wall-clock V2V communication is involved; without it, the virtual workers run as quickly as possible and can finish a short route before a CLI command is processed. Add `--build-fleet` to send `BUILD_FLEET` after every worker enters the running state.
 
 The launcher selects the matching worker module and manages its temporary readiness, start, and shutdown files. The files under `test/` still validate this behaviour, but are not the normal operational interface. For CARLA, the scenario must have exactly one `tick_owner: true`; all other workers wait for that process's completed world frames.
 
@@ -258,9 +280,9 @@ All vehicle commands target one non-negative `vehicle_id`. The terminal converts
 | `reset <id>` | `RESET` | Reset an emergency-stopped or error runtime when the state machine permits it. |
 | `set-velocity <id> <m/s>` | `SET_VELOCITY` | Set a finite, non-negative planner target velocity. |
 | `set-path <id> <csv-path>` | `SET_PATH` | Load a non-empty planner path file. The path must be accepted by the selected planner. |
-| `build-fleet <id>` | `BUILD_FLEET` | Start the selected fleet lifecycle, subject to fleet configuration and vehicle state. |
+| `build-fleet <id>` | `BUILD_FLEET` | Prepare the selected static formation in `READY`, or begin its lifecycle in `RUNNING`. |
 | `cancel-fleet <id>` | `CANCEL_FLEET` | Cancel fleet operation and safely stop the vehicle when required by the fleet manager. |
-| `enable-manual <id>` | `ENABLE_MANUAL` | Select the manual controller. This requires a configured manual controller, a `RUNNING` vehicle, and no active fleet operation. |
+| `enable-manual <id>` | `ENABLE_MANUAL` | Arm/select the manual controller in `READY` or `RUNNING`. Input is accepted only in `RUNNING`; a building/active fleet follower cannot use manual control, while its leader can. |
 | `disable-manual <id>` | `DISABLE_MANUAL` | Restore the configured controller. |
 | `manual <id> <throttle> <steering-rad>` | `MANUAL_INPUT` | Update manual input. Throttle must be finite and in `[-1, 1]`; steering must be finite. Manual mode must already be enabled. |
 | `manual-drive <id>` | — | Starts the interactive keyboard loop; it first sends `ENABLE_MANUAL`, then streams coalesced `MANUAL_INPUT` values. |
@@ -269,7 +291,7 @@ All vehicle commands target one non-negative `vehicle_id`. The terminal converts
 
 ### Manual Virtual Driving
 
-The selected controller profile owns an optional `manual` subsection. `VehicleRuntime` builds `ControllerManual` from it and temporarily selects that normal `ControllerBase` implementation only while manual mode is enabled. Manual control is unavailable unless the vehicle is `RUNNING` and fleet operation is disabled. In the ground-station terminal, use either a one-shot command or the Windows keyboard loop:
+The selected controller profile owns an optional `manual` subsection. `VehicleRuntime` builds `ControllerManual` from it and temporarily selects that normal `ControllerBase` implementation only while manual mode is enabled. Manual control can be armed in `READY`, but input and non-zero actuation remain unavailable until `RUNNING`. A building or active fleet follower cannot use manual control; the fleet leader can. In the ground-station terminal, use either a one-shot command or the Windows keyboard loop:
 
 ```text
 enable-manual 0
@@ -277,11 +299,18 @@ manual 0 0.20 0.10
 manual-drive 0
 ```
 
-`manual-drive` waits for the `ENABLE_MANUAL` acknowledgement, then sends `MANUAL_INPUT` at 20 Hz. Use the physical arrow keys for throttle and steering, `Space` to zero the requested input, and `Q` to send `STOP` and exit. Arrow presses are held only briefly, so releasing the key returns that axis to zero. `ControllerManual` clips input to its configured limits and outputs a zero command when input is older than its monotonic `command_timeout_s`; it does not use operator wall-clock time. `MANUAL_INPUT` is coalesced to its latest value and does not produce a per-input acknowledgement, while enable/disable/stop commands remain FIFO and acknowledged. Additional lazy profiles belong under `controller.runtime_profiles`; a fleet policy may request one through `follower_controller_profile` when an active follower needs a fleet controller.
+`manual-drive` waits for the `ENABLE_MANUAL` acknowledgement, then sends `MANUAL_INPUT` at 20 Hz. On Windows, it polls the physical arrow-key state independently, so hold Up/Down together with Left/Right to control throttle and steering simultaneously. `Space` zeros the requested input and `Q` sends `STOP` and exits. Releasing either arrow returns only that axis to zero. `ControllerManual` clips input to its configured limits and outputs a zero command when input is older than its monotonic `command_timeout_s`; it does not use operator wall-clock time. `MANUAL_INPUT` is coalesced to its latest value and does not produce a per-input acknowledgement, while enable/disable/stop commands remain FIFO and acknowledged. Additional lazy profiles belong under `controller.runtime_profiles`; a fleet policy may request one through `follower_controller_profile` when an active follower needs a fleet controller.
 
 ### Run A Scenario Worker
 
 Scenario workers are normally launched by an integration parent process. A worker receives a scenario path, vehicle ID, cycle count, ready marker, and start marker. CARLA and virtual process runners share this protocol; CARLA adds session/tick ownership internally.
+
+```powershell
+python -m extra.simulator.launcher `
+  --platform carla `
+  --setup-file config/scenarios/carla_three_vehicle_cli_fleet.yaml `
+  --build-fleet
+```
 
 ### Run Tests
 

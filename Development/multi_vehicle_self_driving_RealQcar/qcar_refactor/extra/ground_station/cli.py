@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import deque
+import ctypes
+import os
 import queue
 import sys
 import threading
@@ -125,6 +127,7 @@ class GroundStationTerminal:
         self._stop_requested = False
         self._activity = deque(maxlen=200)
         self._pending_activity: queue.SimpleQueue[str] = queue.SimpleQueue()
+        self._last_reported_context: dict[int, str] = {}
         self._manual_lock = threading.Lock()
         self._manual_vehicle_id: int | None = None
         self._manual_throttle = 0.0
@@ -208,10 +211,14 @@ class GroundStationTerminal:
     def run(self) -> int:
         self._record(f"Ground station listening on {self._listen_host}:{self._server.port}")
         try:
-            self._app.run(pre_run=lambda: self._app.create_background_task(self._refresh_loop()))
+            self._app.run(pre_run=self._start_background_tasks)
         except KeyboardInterrupt:
             pass
         return 0
+
+    def _start_background_tasks(self) -> None:
+        self._app.create_background_task(self._refresh_loop())
+        self._app.create_background_task(self._manual_input_loop())
 
     async def _refresh_loop(self) -> None:
         started_at = time.monotonic()
@@ -219,11 +226,23 @@ class GroundStationTerminal:
             if self._duration_s is not None and time.monotonic() - started_at >= self._duration_s:
                 self._request_exit(self._app)
                 return
-            self._status_pane.text = self._dashboard.render(self._server.session_rows())
+            rows = self._server.session_rows()
+            self._status_pane.text = self._dashboard.render(rows)
+            for row in rows:
+                vehicle_id = row["vehicle_id"]
+                context = _last_reported_state(self._server, vehicle_id)
+                if self._last_reported_context.get(vehicle_id) != context:
+                    self._last_reported_context[vehicle_id] = context
+                    self._record(f"Vehicle {vehicle_id} report changed: {context}")
             self._drain_activity()
-            self._send_manual_input_if_due()
             self._app.invalidate()
             await asyncio.sleep(self._refresh_period_s)
+
+    async def _manual_input_loop(self) -> None:
+        """Transmit physical manual-key state at 20 Hz independently of display refresh."""
+        while not self._stop_requested:
+            self._send_manual_input_if_due()
+            await asyncio.sleep(0.05)
 
     def _submit(self, buffer) -> bool:
         text = buffer.text.strip()
@@ -272,7 +291,10 @@ class GroundStationTerminal:
         if request.command.command_type == CommandType.MANUAL_INPUT:
             self._record(f"Manual input sent to vehicle {request.vehicle_id}")
             return
-        self._record(f"Command {request.command.command_id} sent to vehicle {request.vehicle_id}; awaiting COMMAND_ACK")
+        self._record(
+            f"Command {request.command.command_id} sent to vehicle {request.vehicle_id} "
+            f"{_last_reported_state(self._server, request.vehicle_id)}; awaiting COMMAND_ACK"
+        )
         result = _wait_for_ack(
             self._server,
             request.vehicle_id,
@@ -283,7 +305,10 @@ class GroundStationTerminal:
             self._record(f"Command {request.command.command_id} has no acknowledgement after {self._acknowledgement_timeout_s:.1f} s")
             return
         reason = f" ({result.get('reason_code')}: {result.get('reason')})" if result.get("reason") else ""
-        self._record(f"COMMAND_ACK {request.command.command_id}: {result.get('outcome')}{reason}")
+        self._record(
+            f"COMMAND_ACK {request.command.command_id}: {result.get('outcome')}{reason} "
+            f"{_last_reported_state(self._server, request.vehicle_id)}"
+        )
 
     def _start_manual_drive(self, vehicle_id: int) -> None:
         if self._manual_active():
@@ -330,8 +355,7 @@ class GroundStationTerminal:
             vehicle_id = self._manual_vehicle_id
             if vehicle_id is None or now < self._next_manual_send:
                 return
-            throttle = self._manual_throttle if now <= self._manual_throttle_until else 0.0
-            steering = self._manual_steering if now <= self._manual_steering_until else 0.0
+            throttle, steering = self._manual_key_state(now)
             self._next_manual_send = now + 0.05
         delivery = self._server.send_command(
             vehicle_id,
@@ -340,6 +364,23 @@ class GroundStationTerminal:
         if not delivery.accepted:
             self._record(f"Manual input stopped: {delivery.reason}")
             self._stop_manual_drive(send_stop=False)
+
+    def _manual_key_state(self, now: float) -> tuple[float, float]:
+        """Return simultaneous physical arrow-key state on Windows.
+
+        Terminal key events do not expose independent key-up state, so they
+        cannot reliably represent combinations such as Up+Left. The Windows
+        API does; non-Windows terminals retain the short key-event fallback.
+        """
+        if os.name == "nt":
+            if _windows_key_down(0x20):  # VK_SPACE
+                return 0.0, 0.0
+            throttle = 0.35 if _windows_key_down(0x26) else -0.35 if _windows_key_down(0x28) else 0.0
+            steering = 0.30 if _windows_key_down(0x25) else -0.30 if _windows_key_down(0x27) else 0.0
+            return throttle, steering
+        throttle = self._manual_throttle if now <= self._manual_throttle_until else 0.0
+        steering = self._manual_steering if now <= self._manual_steering_until else 0.0
+        return throttle, steering
 
     def _stop_manual_drive(self, *, send_stop: bool) -> None:
         with self._manual_lock:
@@ -416,13 +457,19 @@ def _operator_input_loop(
             if command.command_type == CommandType.MANUAL_INPUT:
                 print(f"Manual input sent to vehicle {vehicle_id}")
                 continue
-            print(f"Command {command.command_id} sent to vehicle {vehicle_id}; awaiting COMMAND_ACK")
+            print(
+                f"Command {command.command_id} sent to vehicle {vehicle_id} "
+                f"{_last_reported_state(server, vehicle_id)}; awaiting COMMAND_ACK"
+            )
             result = _wait_for_ack(server, vehicle_id, command.command_id, acknowledgement_timeout_s)
             if result is None:
                 print(f"Command {command.command_id} has no acknowledgement after {acknowledgement_timeout_s:.1f} s")
             else:
                 reason = f" ({result.get('reason_code')}: {result.get('reason')})" if result.get("reason") else ""
-                print(f"COMMAND_ACK {command.command_id}: {result.get('outcome')}{reason}")
+                print(
+                    f"COMMAND_ACK {command.command_id}: {result.get('outcome')}{reason} "
+                    f"{_last_reported_state(server, vehicle_id)}"
+                )
         else:
             print(f"Command not sent: {delivery.reason}")
 
@@ -521,10 +568,43 @@ def _wait_for_ack(
     return None
 
 
+def _last_reported_state(server: GroundStationServer, vehicle_id: int) -> str:
+    """Format the target's latest monitoring snapshot, never a synchronous read.
+
+    The snapshot may lag a command acknowledgement; naming that fact prevents
+    the terminal log from implying it queried the vehicle's live internals.
+    """
+    row = next((item for item in server.session_rows() if item["vehicle_id"] == vehicle_id), None)
+    snapshot = row.get("snapshot") if isinstance(row, dict) else None
+    if not isinstance(snapshot, dict):
+        return "(last reported snapshot: runtime=?, fleet=unavailable)"
+    runtime = str(snapshot.get("runtime_state", "?"))
+    fleet = snapshot.get("fleet_summary")
+    if not isinstance(fleet, dict) or not fleet.get("configured", False):
+        fleet_state = "unavailable"
+    else:
+        phase = str(snapshot.get("fleet_phase", "?"))
+        role = str(fleet.get("role", "?"))
+        order = fleet.get("member_order")
+        members = fleet.get("member_count")
+        fleet_state = f"{phase}/{role}"
+        if isinstance(order, int) and isinstance(members, int) and members > 0:
+            fleet_state += f" order={order + 1}/{members}"
+        reason = fleet.get("reason")
+        if isinstance(reason, str) and reason:
+            fleet_state += f" reason={reason}"
+    return f"(last reported snapshot: runtime={runtime}, fleet={fleet_state})"
+
+
 def _redraw(text: str) -> None:
     # Windows Terminal and standard ANSI terminals redraw without creating a log flood.
     sys.stdout.write("\x1b[2J\x1b[H" + text + "\n")
     sys.stdout.flush()
+
+
+def _windows_key_down(virtual_key: int) -> bool:
+    """Return whether a Windows virtual key is physically held down."""
+    return bool(ctypes.windll.user32.GetAsyncKeyState(virtual_key) & 0x8000)
 
 
 if __name__ == "__main__":

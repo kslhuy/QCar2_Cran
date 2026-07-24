@@ -11,7 +11,7 @@ import msgpack
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.commands import CommandOutcome, CommandResult, CommandType, VehicleCommand
-from core.types import VehicleStateEstimate
+from core.types import ControllerReference, VehicleStateEstimate
 from utils.ground_station.monitoring import MonitoringSnapshot
 from extra.ground_station.command_handler import GroundStationCommandHandler
 from extra.ground_station.dashboard import GroundStationDashboard
@@ -45,6 +45,13 @@ def _snapshot(vehicle_id: int) -> MonitoringSnapshot:
         observer_healthy=True,
         v2v_status={"messages_received": 4, "packets_dropped": 1},
         fleet_summary={"peer_count": 0, "peer_health": []},
+        control_reference={
+            "target_x_m": 5.0,
+            "target_y_m": 1.0,
+            "target_heading_rad": 0.2,
+            "target_velocity_mps": 0.7,
+            "is_finished": False,
+        },
     )
 
 
@@ -171,11 +178,13 @@ class TestGroundStationProtocol(unittest.TestCase):
             vehicle_id=6,
             runtime_state="RUNNING",
             estimate=VehicleStateEstimate(1.0, 2.0, 3.0, 0.1, 0.4, 0.0, True),
+            control_reference=ControllerReference(4.0, 5.0, 0.2, 0.6),
         )
 
         self.assertEqual(len(bridge.acks), 1)
         self.assertEqual(facade.last_command_result, bridge.acks[0])
         self.assertEqual(bridge.snapshots[0].runtime_state, "RUNNING")
+        self.assertEqual(bridge.snapshots[0].control_reference["target_x_m"], 4.0)
         self.assertEqual(bridge.snapshots[0].last_command_result, bridge.acks[0])
 
     def test_manual_input_acknowledgements_are_suppressed_for_high_rate_transport(self):
@@ -265,6 +274,8 @@ class TestGroundStationBridgeAndServer(unittest.TestCase):
 
         self.assertIn("RUNNING", rendered)
         self.assertIn("4/1", rendered)
+        self.assertIn("5.0, 1.0; 0.70", rendered)
+        self.assertIn("unavailable", rendered)
         stale = dashboard.render(self.server.session_rows(), now_monotonic=time.monotonic() + 1.0)
         self.assertIn("stale", stale)
 

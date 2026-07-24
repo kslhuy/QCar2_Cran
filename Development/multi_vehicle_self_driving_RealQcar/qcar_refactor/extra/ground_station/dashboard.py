@@ -20,8 +20,8 @@ class GroundStationDashboard:
         connected_count = sum(1 for row in entries if row.get("connection_state") == "connected")
         lines = [
             f"Ground station | connected: {connected_count} | recent disconnects: {len(entries) - connected_count} | stale after: {self._stale_after_s:.1f} s",
-            "ID  Link         Runtime     Mode    Input   Fleet      x [m]    y [m]   yaw    v [m/s]  Est  IO/Obs  Peers  V2V rx/drop  Rate  Age    Last command",
-            "--  -----------  ----------  ------  ------  ---------  -------  -------  -----  -------  ---  ------  -----  -----------  ----  -----  ------------",
+            "ID  Link         Runtime     Mode    Input   Fleet phase/role    x [m]    y [m]   yaw    v [m/s]  Reference [x, y; v]       Est  IO/Obs  Peers  V2V rx/drop  Rate  Age    Last command",
+            "--  -----------  ----------  ------  ------  -----------------  -------  -------  -----  -------  ------------------------  ---  ------  -----  -----------  ----  -----  ------------",
         ]
         for row in entries:
             snapshot = row.get("snapshot")
@@ -46,6 +46,7 @@ class GroundStationDashboard:
             received = _counter(v2v, "messages_received", "received_packets", "received", "packets_received")
             dropped = _counter(v2v, "dropped_packets", "dropped", "packets_dropped")
             peers = _counter(fleet, "peer_count")
+            fleet_status = _fleet_status(snapshot, fleet)
             result = row.get("last_command_result") or snapshot.get("last_command_result") or {}
             if not isinstance(result, Mapping):
                 result = {}
@@ -55,16 +56,18 @@ class GroundStationDashboard:
                 last_command = f"{last_command}:{reason}"
             manual_input_age = snapshot.get("manual_input_age_s")
             manual_input = "-" if manual_input_age is None else f"{float(manual_input_age):.2f}s"
+            control_reference = _control_reference(snapshot.get("control_reference"))
             lines.append(
                 f"{int(row['vehicle_id']):<2}  {link:<11}  "
                 f"{str(snapshot.get('runtime_state', '?')):<10}  "
                 f"{str(snapshot.get('control_mode', 'auto')):<6}  "
                 f"{manual_input:<6}  "
-                f"{str(snapshot.get('fleet_phase', '?')):<9}  "
+                f"{fleet_status:<17}  "
                 f"{float(snapshot.get('x_m', 0.0)):>7.2f}  "
                 f"{float(snapshot.get('y_m', 0.0)):>7.2f}  "
                 f"{float(snapshot.get('heading_rad', 0.0)):>5.2f}  "
                 f"{float(snapshot.get('velocity_mps', 0.0)):>7.2f}  "
+                f"{control_reference:<24}  "
                 f"{'ok' if snapshot.get('estimate_valid') else 'bad':<3}  "
                 f"{'ok' if snapshot.get('io_healthy') else 'bad'}/{'ok' if snapshot.get('observer_healthy') else 'bad':<3}  "
                 f"{peers:>5}  "
@@ -84,3 +87,29 @@ def _counter(status: Mapping[str, Any], *keys: str) -> int:
         if isinstance(value, int) and not isinstance(value, bool):
             return value
     return 0
+
+
+def _fleet_status(snapshot: Mapping[str, Any], fleet: Mapping[str, Any]) -> str:
+    """Render both lifecycle phase and local formation role for operators."""
+    if not fleet.get("configured", False):
+        return "unavailable"
+    phase = str(snapshot.get("fleet_phase", "?"))
+    role = str(fleet.get("role", "?"))
+    if phase not in {"disabled", "prepared", "building", "active", "cancelling", "fault"}:
+        return "unavailable"
+    if role not in {"leader", "follower"}:
+        return phase
+    return f"{phase}/{role}"
+
+
+def _control_reference(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unavailable"
+    try:
+        reference = (
+            f"{float(value['target_x_m']):.1f}, {float(value['target_y_m']):.1f}; "
+            f"{float(value['target_velocity_mps']):.2f}"
+        )
+    except (KeyError, TypeError, ValueError):
+        return "unavailable"
+    return f"{reference} done" if value.get("is_finished") else reference

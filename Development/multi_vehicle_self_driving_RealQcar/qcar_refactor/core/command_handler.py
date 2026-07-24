@@ -58,6 +58,17 @@ class VehicleCommandHandler:
         if manual_handling is not None:
             return manual_handling
 
+        if self._fleet is None and command.command_type in {
+            CommandType.BUILD_FLEET,
+            CommandType.CANCEL_FLEET,
+        }:
+            return self._result(
+                command,
+                CommandOutcome.REJECTED,
+                "fleet_manager_unavailable",
+                "This vehicle was not launched from a fleet-enabled scenario",
+            )
+
         fleet_handling = self._handle_fleet_command(command, now_monotonic)
         if fleet_handling is not None:
             return fleet_handling
@@ -84,9 +95,17 @@ class VehicleCommandHandler:
             )
 
         if current_state == State.RUNNING:
+            fleet_started = self._fleet is not None and self._fleet.start_for_vehicle(
+                now_monotonic=time.monotonic() if now_monotonic is None else float(now_monotonic)
+            )
             return CommandHandling(
                 self._command_result(command, CommandOutcome.APPLIED),
                 reset_control=previous_state != current_state,
+                controller_profile=(
+                    self._disable_manual()
+                    if fleet_started and self._fleet.is_follower()
+                    else None
+                ),
             )
 
         reason = f"state_{current_state.name.lower()}"
@@ -114,14 +133,14 @@ class VehicleCommandHandler:
                 "This vehicle has no configured manual controller",
             )
         if command.command_type == CommandType.ENABLE_MANUAL:
-            if not self._state_machine.should_drive():
+            if self._state_machine.state not in (State.READY, State.RUNNING):
                 return self._result(
                     command,
                     CommandOutcome.REJECTED,
-                    "manual_requires_running_vehicle",
-                    "Manual control requires the vehicle runtime to be RUNNING",
+                    "manual_requires_ready_or_running_vehicle",
+                    "Manual control requires the vehicle runtime to be READY or RUNNING",
                 )
-            if self._fleet_is_operating():
+            if self._fleet_blocks_manual():
                 return self._result(
                     command,
                     CommandOutcome.REJECTED,
@@ -145,6 +164,13 @@ class VehicleCommandHandler:
                 "manual_not_active",
                 "Enable manual control before sending manual input",
             )
+        if not self._state_machine.should_drive():
+            return self._result(
+                command,
+                CommandOutcome.REJECTED,
+                "manual_input_requires_running_vehicle",
+                "Manual input requires the vehicle runtime to be RUNNING",
+            )
         return CommandHandling(
             self._command_result(command, CommandOutcome.APPLIED),
             manual_input=(
@@ -159,12 +185,13 @@ class VehicleCommandHandler:
         self._manual_enabled = False
         return "configured"
 
-    def _fleet_is_operating(self) -> bool:
+    def _fleet_blocks_manual(self) -> bool:
+        """Followers retain fleet control; leaders may use their manual profile."""
         if self._fleet is None:
             return False
         phase = getattr(self._fleet, "phase", None)
         value = getattr(phase, "value", phase)
-        return value not in (None, "disabled")
+        return value in ("building", "active") and self._fleet.is_follower()
 
     def _handle_fleet_command(
         self,
@@ -202,7 +229,14 @@ class VehicleCommandHandler:
                 safe_stop_reason=safe_stop_reason,
                 controller_profile=self._disable_manual(),
             )
-        return self._result(command, CommandOutcome.APPLIED)
+        return CommandHandling(
+            self._command_result(command, CommandOutcome.APPLIED),
+            controller_profile=(
+                self._disable_manual()
+                if self._state_machine.should_drive() and self._fleet.is_follower()
+                else None
+            ),
+        )
 
     def _result(
         self,

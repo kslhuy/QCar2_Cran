@@ -1,0 +1,51 @@
+# Operator-facing CARLA fleet scenario. This file is intentionally separate
+# from integration-test scenarios so its route and spacing may evolve for CLI
+# experiments without changing automated test inputs.
+#
+# Start the ground station, then run:
+# python -m extra.simulator.launcher --platform carla --setup-file
+# config/scenarios/carla_three_vehicle_cli_fleet.yaml --build-fleet
+simulation_profile: carla_sync
+
+fleet:
+  profile: carla_default
+  formation_id: carla_cli_three_vehicle
+  members:
+    - {vehicle_id: 1, role: leader, member_order: 0}
+    - {vehicle_id: 2, role: follower, member_order: 1}
+    - {vehicle_id: 3, role: follower, member_order: 2}
+
+vehicles:
+  # The leader follows the scenario route. Followers switch to fleet_2d_carla
+  # after peer exchange activates the formation.
+  - vehicle_id: 1
+    vehicle_config_file: config_vehicle_carla.yaml
+    controller_profile: simple_carla
+    tick_owner: true
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 2, ip: "127.0.0.1"}]}
+    spawn_transform: {x: -3.0, y: 0.8, z: 0.5, yaw: 0.0}
+    mission:
+      # Project frame: 90-degree, 10 m-radius entry arc followed by a 45 m exit.
+      path: [[-3.0, -0.8], [-0.4, -0.5], [2.0, 0.5], [4.1, 2.1], [5.7, 4.2], [6.7, 6.6], [7.0, 9.2], [7.0, 18.0], [7.0, 30.0], [7.0, 42.0], [7.0, 54.0]]
+      target_velocity: 0.80
+
+  - vehicle_id: 2
+    vehicle_config_file: config_vehicle_carla.yaml
+    controller_profile: fleet_2d_carla
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 1, ip: "127.0.0.1"}, {vehicle_id: 3, ip: "127.0.0.1"}]}
+    spawn_transform: {x: -10.0, y: 0.8, z: 0.5, yaw: 0.0}
+    mission:
+      path: [[-10.0, -0.8], [-3.0, -0.8], [-0.4, -0.5], [2.0, 0.5], [4.1, 2.1], [5.7, 4.2], [6.7, 6.6], [7.0, 9.2], [7.0, 18.0], [7.0, 30.0], [7.0, 42.0], [7.0, 54.0]]
+      target_velocity: 0.80
+
+  - vehicle_id: 3
+    vehicle_config_file: config_vehicle_carla.yaml
+    controller_profile: fleet_2d_carla
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 2, ip: "127.0.0.1"}]}
+    spawn_transform: {x: -17.0, y: 0.8, z: 0.5, yaw: 0.0}
+    mission:
+      path: [[-17.0, -0.8], [-10.0, -0.8], [-3.0, -0.8], [-0.4, -0.5], [2.0, 0.5], [4.1, 2.1], [5.7, 4.2], [6.7, 6.6], [7.0, 9.2], [7.0, 18.0], [7.0, 30.0], [7.0, 42.0], [7.0, 54.0]]
+      target_velocity: 0.80
