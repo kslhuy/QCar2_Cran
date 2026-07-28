@@ -99,6 +99,14 @@ class TestVehicleConfig(unittest.TestCase):
         self.assertEqual(config.module("planner")["implementation"], "sdcs_small_map")
         self.assertEqual(config.module("planner")["node_sequence"], config.mission["node_sequence"])
 
+    def test_carla_default_uses_the_sdcs_planner_and_one_closed_circuit(self):
+        config = load_config(self.config_dir, vehicle_config_file="config_vehicle_carla.yaml")
+
+        self.assertEqual(config.module("planner")["implementation"], "sdcs_small_map")
+        self.assertEqual(config.module("planner")["node_sequence"], [0, 2, 4, 6, 10])
+        self.assertEqual(config.module("planner")["loop"], 1)
+        self.assertEqual(config.module("simulation")["implementation"], "carla")
+
     def test_selection_override_is_applied_before_profiles_are_loaded(self):
         config = load_config(
             self.config_dir,

@@ -269,6 +269,7 @@ class GroundStationTerminal:
         if request.action == "help":
             self._record("start|stop|emergency-stop|reset|build-fleet|cancel-fleet <vehicle-id>")
             self._record("set-velocity <id> <m/s> | set-path <id> <csv-path> | manual <id> <throttle> <steering>")
+            self._record("enable-sdcs-map <id> <0|1|2|inf> <node> <node> [...] | disable-sdcs-map <id>")
             self._record("enable-manual <id> | disable-manual <id> | manual-drive <id> | list | status <id> | quit")
             return
         if request.action == "list":
@@ -434,6 +435,7 @@ def _operator_input_loop(
         if request.action == "help":
             print("Use: start|stop|emergency-stop|reset|build-fleet|cancel-fleet <vehicle-id>")
             print("     set-velocity <vehicle-id> <m/s> | set-path <vehicle-id> <csv-path>")
+            print("     enable-sdcs-map <vehicle-id> <0|1|2|inf> <node> <node> [...] | disable-sdcs-map <vehicle-id>")
             print("     enable-manual <vehicle-id> | disable-manual <vehicle-id>")
             print("     manual <vehicle-id> <throttle> <steering-rad> | manual-drive <vehicle-id>")
             continue

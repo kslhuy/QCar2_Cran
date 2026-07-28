@@ -37,6 +37,7 @@ class GroundStationCommandHandler:
         "cancel-fleet": CommandType.CANCEL_FLEET,
         "enable-manual": CommandType.ENABLE_MANUAL,
         "disable-manual": CommandType.DISABLE_MANUAL,
+        "disable-sdcs-map": CommandType.DISABLE_SDCS_MAP,
     }
 
     def parse(self, text: str) -> GroundStationCommandRequest:
@@ -83,6 +84,23 @@ class GroundStationCommandHandler:
                 vehicle_id,
                 VehicleCommand(CommandType.SET_PATH, {"path": parts[2]}, source=CommandSource.LOCAL),
             )
+        if action == "enable-sdcs-map":
+            if len(parts) < 5:
+                raise ValueError("enable-sdcs-map requires a vehicle ID, loop, and at least two node IDs")
+            loop = self._loop(parts[2])
+            try:
+                nodes = [int(value) for value in parts[3:]]
+            except ValueError as exc:
+                raise ValueError("SDCS map node IDs must be integers") from exc
+            return GroundStationCommandRequest(
+                action,
+                vehicle_id,
+                VehicleCommand(
+                    CommandType.ENABLE_SDCS_MAP,
+                    {"nodes": nodes, "loop": loop},
+                    source=CommandSource.LOCAL,
+                ),
+            )
         if action == "manual":
             if len(parts) != 4:
                 raise ValueError("manual requires a vehicle ID, throttle, and steering in radians")
@@ -127,3 +145,15 @@ class GroundStationCommandHandler:
         if vehicle_id < 0:
             raise ValueError("vehicle ID must be non-negative")
         return vehicle_id
+
+    @staticmethod
+    def _loop(value: str) -> int | str:
+        if value == "inf":
+            return value
+        try:
+            loop = int(value)
+        except ValueError as exc:
+            raise ValueError("loop must be 0, 1, 2, or inf") from exc
+        if loop not in (0, 1, 2):
+            raise ValueError("loop must be 0, 1, 2, or inf")
+        return loop

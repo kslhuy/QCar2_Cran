@@ -42,6 +42,15 @@ class TestVehicleCommand(unittest.TestCase):
             VehicleCommand(CommandType.SET_PATH, {"path": ""})
         with self.assertRaisesRegex(CommandError, "Unsupported payload fields"):
             VehicleCommand(CommandType.START, {"velocity": 0.1})
+        with self.assertRaisesRegex(CommandError, "loop must be"):
+            VehicleCommand(CommandType.ENABLE_SDCS_MAP, {"nodes": [0, 2], "loop": 3})
+        with self.assertRaisesRegex(CommandError, "integers in"):
+            VehicleCommand(CommandType.ENABLE_SDCS_MAP, {"nodes": [0, 12], "loop": 0})
+
+    def test_sdcs_map_command_round_trip_preserves_loop_policy(self):
+        command = VehicleCommand(CommandType.ENABLE_SDCS_MAP, {"nodes": [0, 2, 4], "loop": "inf"})
+
+        self.assertEqual(VehicleCommand.from_mapping(command.to_mapping()), command)
 
     def test_result_round_trip_retains_acknowledgement_identity(self):
         result = CommandResult(

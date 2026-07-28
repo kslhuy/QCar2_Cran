@@ -1,0 +1,15 @@
+# Default single-vehicle CARLA scenario for the SDCS right-hand-traffic map.
+# loop may be 0 (open path), 1 or 2 (closed circuits), or "inf" (run until
+# disable-sdcs-map or stop is sent through the ground station).
+simulation_profile: carla_sdcs_small_map
+
+vehicles:
+  - vehicle_id: 0
+    vehicle_config_file: config_vehicle_carla.yaml
+    tick_owner: true
+    # Project node 0 (-1.140, 1.053, -pi/2) in CARLA's left-handed frame.
+    spawn_transform: {x: -1.14, y: -1.053177, z: 0.5, yaw: 90.0}
+    mission:
+      node_sequence: [0, 2, 4, 6, 10]
+      loop: 1
+      target_velocity: 5.0

@@ -23,3 +23,12 @@ sdcs_small_map:
   lookahead_distance: 0.25
   finish_tolerance: 0.10
   max_search_ahead: 80
+  # The runtime can select this separate instance for an operator-provided
+  # map route, leaving the configured default route intact for disable/reset.
+  runtime_profiles:
+    sdcs_map:
+      implementation: sdcs_small_map
+      sample_distance_m: 0.02
+      lookahead_distance: 0.25
+      finish_tolerance: 0.10
+      max_search_ahead: 80

@@ -106,6 +106,24 @@ class VehicleRuntime:
     def handle_command(self, command: VehicleCommand) -> CommandResult:
         """Apply one validated command through the safety-owned runtime path."""
         handling = self._command_handler.handle(command, now_monotonic=time.monotonic())
+        if handling.planner_profile is not None:
+            try:
+                self.planner.select(handling.planner_profile)
+                if handling.sdcs_node_sequence is not None:
+                    self.planner.set_node_sequence(
+                        handling.sdcs_node_sequence,
+                        loop=handling.sdcs_loop,
+                    )
+            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                result = CommandResult(
+                    command.command_id,
+                    self.config.vehicle_id,
+                    CommandOutcome.REJECTED,
+                    self.state_machine.state.name,
+                    "planner_selection_failed",
+                    str(exc),
+                )
+                return self.ground_station.record_command_result(command, result)
         if handling.controller_profile is not None:
             self.controller_manager.select(handling.controller_profile)
         if handling.manual_input is not None:

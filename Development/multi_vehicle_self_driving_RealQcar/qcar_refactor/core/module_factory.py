@@ -100,20 +100,23 @@ def build_observer(config: ConfigVehicle, logger=None):
 
 
 def build_planner(config: ConfigVehicle, logger=None):
-    planner_config = config.module("planner")
+    return _build_planner_profile(config.module("planner"), config.vehicle_id, logger)
+
+
+def _build_planner_profile(planner_config: dict, vehicle_id: int, logger=None):
     implementation = planner_config.get("implementation")
     if implementation == "null":
         from utils.control.path_planner.path_planner_base import PathPlannerNull
 
-        return PathPlannerNull(planner_config, config.vehicle_id, logger)
+        return PathPlannerNull(planner_config, vehicle_id, logger)
     if implementation == "static":
         from utils.control.path_planner.path_planner_static import PathPlannerStatic
 
-        return PathPlannerStatic(planner_config, config.vehicle_id, logger)
+        return PathPlannerStatic(planner_config, vehicle_id, logger)
     if implementation == "sdcs_small_map":
         from utils.control.path_planner.path_planner_sdcs_small_map import PathPlannerSDCSSmallMap
 
-        return PathPlannerSDCSSmallMap(planner_config, config.vehicle_id, logger)
+        return PathPlannerSDCSSmallMap(planner_config, vehicle_id, logger)
     raise ConfigError(f"Unsupported planner implementation: '{implementation}'")
 
 
@@ -128,7 +131,22 @@ def build_path_planner_manager(config: ConfigVehicle, logger=None):
     """Wrap the configured path planner in its stable runtime-facing manager."""
     from utils.control.managers import PathPlannerManager
 
-    return PathPlannerManager(build_planner(config, logger))
+    planner_config = config.module("planner")
+    runtime_profiles = planner_config.get("runtime_profiles", {})
+    if not isinstance(runtime_profiles, dict):
+        raise ConfigError("planner.runtime_profiles must be a mapping")
+    builders = {}
+    for profile_name, profile_config in runtime_profiles.items():
+        if not isinstance(profile_name, str) or not profile_name:
+            raise ConfigError("planner runtime profile names must be non-empty strings")
+        if not isinstance(profile_config, dict):
+            raise ConfigError(f"planner.runtime_profiles.{profile_name} must be a mapping")
+        builders[profile_name] = (
+            lambda profile_config=dict(profile_config): _build_planner_profile(
+                profile_config, config.vehicle_id, logger
+            )
+        )
+    return PathPlannerManager(build_planner(config, logger), builders)
 
 
 def build_controller(config: ConfigVehicle, logger=None):

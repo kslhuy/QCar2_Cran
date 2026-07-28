@@ -52,6 +52,17 @@ class _Planner:
         return False
 
 
+class _SDCSPlanner(_Planner):
+    def __init__(self):
+        super().__init__()
+        self.nodes = None
+        self.loop = None
+
+    def set_node_sequence(self, nodes, *, loop=0):
+        self.nodes = tuple(nodes)
+        self.loop = loop
+
+
 def _sensor_data():
     return SensorData(0.0, 0.0, [0.0, 0.0, 0.0], 2.0, True, [1.0, 2.0, 0.0], 2.0)
 
@@ -85,3 +96,15 @@ class TestControlUtilityManagers(unittest.TestCase):
         self.assertEqual(manager.active_name, "alternate")
         self.assertIs(manager.restore_configured(), configured)
 
+    def test_path_planner_manager_exposes_sdcs_routes_only_for_supporting_profile(self):
+        configured = _Planner()
+        sdcs = _SDCSPlanner()
+        manager = PathPlannerManager(configured, {"sdcs_map": lambda: sdcs})
+
+        with self.assertRaisesRegex(ValueError, "does not support"):
+            manager.set_node_sequence([0, 2], loop=1)
+        manager.select("sdcs_map")
+        manager.set_node_sequence([0, 2, 4], loop="inf")
+
+        self.assertEqual(sdcs.nodes, (0, 2, 4))
+        self.assertEqual(sdcs.loop, "inf")

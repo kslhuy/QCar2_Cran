@@ -115,6 +115,13 @@ class TestGroundStationProtocol(unittest.TestCase):
         self.assertAlmostEqual(request.command.payload["throttle"], 0.2)
         self.assertAlmostEqual(request.command.payload["steering"], -0.1)
 
+    def test_cli_parser_builds_sdcs_map_command_with_loop_policy(self):
+        request = GroundStationCommandHandler().parse("enable-sdcs-map 3 inf 0 2 4")
+
+        self.assertEqual(request.command.command_type, CommandType.ENABLE_SDCS_MAP)
+        self.assertEqual(request.command.payload["nodes"], [0, 2, 4])
+        self.assertEqual(request.command.payload["loop"], "inf")
+
     def test_cli_parser_handles_read_only_status_request(self):
         request = GroundStationCommandHandler().parse("status 3")
 

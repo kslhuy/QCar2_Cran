@@ -75,6 +75,7 @@ class GroundStationDashboard:
         lines.append("")
         lines.append("Commands: start <id> | stop <id> | emergency-stop <id> | reset <id>")
         lines.append("          set-velocity <id> <m/s> | set-path <id> <csv-path> | build-fleet <id> | cancel-fleet <id>")
+        lines.append("          enable-sdcs-map <id> <0|1|2|inf> <node> <node> [...] | disable-sdcs-map <id>")
         lines.append("          enable-manual <id> | disable-manual <id> | manual <id> <throttle> <steering> | manual-drive <id>")
         lines.append("          list | status <id> | help | quit")
         return "\n".join(lines)

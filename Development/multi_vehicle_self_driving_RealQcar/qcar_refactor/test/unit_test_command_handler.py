@@ -26,6 +26,11 @@ class _Planner:
         self.path = path
 
 
+class _SDCSPlanner(_Planner):
+    def has_profile(self, name: str) -> bool:
+        return name == "sdcs_map"
+
+
 class _Fleet:
     def __init__(self, result: FleetCommandResult) -> None:
         self.result = result
@@ -34,6 +39,9 @@ class _Fleet:
     def handle_command(self, command, *, vehicle_running, now_monotonic):
         self.commands.append((command, vehicle_running, now_monotonic))
         return self.result
+
+    def is_follower(self):
+        return False
 
 
 class TestVehicleCommandHandler(unittest.TestCase):
@@ -89,6 +97,46 @@ class TestVehicleCommandHandler(unittest.TestCase):
         self.assertEqual(handling.safe_stop_reason, "fleet_cancel")
         self.assertEqual(self.state_machine.state, State.STOPPED)
         self.assertTrue(fleet.commands[0][1])
+
+    def test_enable_sdcs_map_requires_ready_and_returns_runtime_planner_action(self):
+        handler = VehicleCommandHandler(3, self.state_machine, _SDCSPlanner())
+
+        handling = handler.handle(
+            VehicleCommand(CommandType.ENABLE_SDCS_MAP, {"nodes": [0, 2, 4], "loop": 2})
+        )
+
+        self.assertEqual(handling.result.outcome, CommandOutcome.APPLIED)
+        self.assertEqual(handling.planner_profile, "sdcs_map")
+        self.assertEqual(handling.sdcs_node_sequence, (0, 2, 4))
+        self.assertEqual(handling.sdcs_loop, 2)
+        self.assertTrue(handling.reset_control)
+
+    def test_disable_sdcs_map_stops_and_restores_configured_planner(self):
+        handler = VehicleCommandHandler(3, self.state_machine, _SDCSPlanner())
+        self.state_machine.handle_command(VehicleCommand(CommandType.START))
+
+        handling = handler.handle(VehicleCommand(CommandType.DISABLE_SDCS_MAP))
+
+        self.assertEqual(handling.result.outcome, CommandOutcome.APPLIED)
+        self.assertEqual(handling.planner_profile, "configured")
+        self.assertTrue(handling.require_safe_stop)
+        self.assertEqual(self.state_machine.state, State.STOPPED)
+
+    def test_running_fleet_leader_may_change_sdcs_route_but_follower_cannot(self):
+        self.state_machine.handle_command(VehicleCommand(CommandType.START))
+        fleet = _Fleet(FleetCommandResult(handled=False))
+        fleet.phase = "active"
+        handler = VehicleCommandHandler(3, self.state_machine, _SDCSPlanner(), fleet)
+        command = VehicleCommand(CommandType.ENABLE_SDCS_MAP, {"nodes": [0, 2, 4], "loop": "inf"})
+
+        leader = handler.handle(command)
+
+        self.assertEqual(leader.result.outcome, CommandOutcome.APPLIED)
+        self.assertTrue(leader.require_safe_stop)
+        fleet.is_follower = lambda: True
+        follower = handler.handle(command)
+        self.assertEqual(follower.result.outcome, CommandOutcome.REJECTED)
+        self.assertEqual(follower.result.reason_code, "sdcs_map_rejected_for_fleet_follower")
 
 
 if __name__ == "__main__":

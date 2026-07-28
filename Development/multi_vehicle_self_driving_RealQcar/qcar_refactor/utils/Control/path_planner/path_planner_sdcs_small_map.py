@@ -253,9 +253,11 @@ class PathPlannerSDCSSmallMap(PathPlannerStatic):
         if configured_nodes is not None:
             effective_config.pop("path_source", None)
         self._node_sequence: tuple[int, ...] = ()
+        self._route_node_sequence: tuple[int, ...] = ()
+        self._loop: int | str = 0
         super().__init__(effective_config, vehicle_id, logger)
         if configured_nodes is not None:
-            self.set_node_sequence(configured_nodes)
+            self.set_node_sequence(configured_nodes, loop=effective_config.get("loop", 0))
 
     @property
     def node_sequence(self) -> tuple[int, ...]:
@@ -265,21 +267,51 @@ class PathPlannerSDCSSmallMap(PathPlannerStatic):
     def available_node_ids(self) -> tuple[int, ...]:
         return self._roadmap.node_ids
 
+    @property
+    def loop(self) -> int | str:
+        """Return the requested route completion policy."""
+        return self._loop
+
+    @property
+    def route_node_sequence(self) -> tuple[int, ...]:
+        """Return the expanded finite route, or one cycle for ``inf``."""
+        return self._route_node_sequence
+
     def node_pose(self, node_id: int) -> tuple[float, float, float]:
         return self._roadmap.node_pose(node_id)
 
-    def set_node_sequence(self, node_sequence: Sequence[int]) -> None:
-        """Generate and load the shortest directed route through SDCS node IDs."""
+    def set_node_sequence(self, node_sequence: Sequence[int], *, loop: int | str = 0) -> None:
+        """Generate a directed node route with an explicit completion policy.
+
+        ``0`` ends at the last requested node.  ``1`` returns to the first
+        node once, ``2`` completes two closed circuits, and ``"inf"`` repeats
+        a closed circuit until an operator disables the map route.
+        """
         sequence = tuple(node_sequence)
-        waypoints = self._roadmap.generate_path(sequence)
+        resolved_loop = _validate_loop(loop)
+        route_sequence = _expand_loop_sequence(sequence, resolved_loop)
+        waypoints = self._roadmap.generate_path(route_sequence)
         self._node_sequence = sequence
+        self._route_node_sequence = route_sequence
+        self._loop = resolved_loop
         self._config["node_sequence"] = list(sequence)
+        self._config["loop"] = resolved_loop
         PathPlannerStatic.load_path(self, waypoints)
 
     def load_path(self, path_source: Iterable[Sequence[float]] | str) -> None:
         """Load a generic waypoint path and clear the active SDCS node route."""
         self._node_sequence = ()
+        self._route_node_sequence = ()
+        self._loop = 0
         PathPlannerStatic.load_path(self, path_source)
+
+    def update(self, state):
+        """Restart the closed route at its origin for an infinite loop."""
+        target = PathPlannerStatic.update(self, state)
+        if self._loop != "inf" or not target.is_finished:
+            return target
+        PathPlannerStatic.reset(self)
+        return PathPlannerStatic.update(self, state)
 
 
 def _cross(first: np.ndarray, second: np.ndarray) -> float:
@@ -299,3 +331,28 @@ def _join_paths(*paths: np.ndarray) -> np.ndarray:
     for path in paths[1:]:
         result = np.vstack((result, path[1:]))
     return result
+
+
+def _validate_loop(loop: int | str) -> int | str:
+    if loop in (0, 1, 2) and not isinstance(loop, bool):
+        return int(loop)
+    if loop == "inf":
+        return loop
+    raise ValueError("loop must be 0, 1, 2, or 'inf'")
+
+
+def _expand_loop_sequence(sequence: Sequence[int], loop: int | str) -> tuple[int, ...]:
+    """Expand node IDs without adding adjacent duplicate nodes.
+
+    A finite loop count is the number of closed circuits.  The supplied path
+    itself is preserved for ``0``.  A path that already ends at its origin is
+    treated as one closed circuit and is not closed twice.
+    """
+    base = tuple(sequence)
+    if loop == 0:
+        return base
+    closed = base[-1] == base[0]
+    circuit = base if closed else base + (base[0],)
+    if loop == "inf" or loop == 1:
+        return circuit
+    return circuit + tuple(circuit[1:])

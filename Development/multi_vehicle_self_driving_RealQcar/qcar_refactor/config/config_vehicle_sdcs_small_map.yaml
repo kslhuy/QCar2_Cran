@@ -18,5 +18,6 @@ modules:
 mission:
   # Each adjacent pair is connected by the roadmap's shortest directed route.
   # Valid IDs are 0 through 10 on the right-hand-traffic small map.
-  node_sequence: [0, 2, 4, 6, 10, 0]
+  node_sequence: [0, 2, 4, 6, 10]
+  loop: 1
   target_velocity: 5.0

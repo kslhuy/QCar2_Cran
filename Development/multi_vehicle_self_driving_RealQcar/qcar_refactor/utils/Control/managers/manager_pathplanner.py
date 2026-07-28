@@ -33,6 +33,13 @@ class PathPlannerManager(ManagerBase[PathPlannerBase]):
     def set_target_velocity(self, target_velocity: float) -> None:
         self._active.set_target_velocity(target_velocity)
 
+    def set_node_sequence(self, node_sequence, *, loop: int | str = 0) -> None:
+        """Set an SDCS route only when the selected planner supports it."""
+        setter = getattr(self._active, "set_node_sequence", None)
+        if not callable(setter):
+            raise ValueError(f"Path planner profile '{self.active_name}' does not support SDCS node routes")
+        setter(node_sequence, loop=loop)
+
     def is_finished(self) -> bool:
         return self._active.is_finished()
 

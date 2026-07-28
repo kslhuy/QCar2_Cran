@@ -471,6 +471,8 @@ All vehicle commands target one non-negative `vehicle_id`. The terminal converts
 | `reset <id>` | `RESET` | Reset an emergency-stopped or error runtime when the state machine permits it. |
 | `set-velocity <id> <m/s>` | `SET_VELOCITY` | Set a finite, non-negative planner target velocity. |
 | `set-path <id> <csv-path>` | `SET_PATH` | Load a non-empty planner path file. The path must be accepted by the selected planner. |
+| `enable-sdcs-map <id> <0\|1\|2\|inf> <node> <node> [...]` | `ENABLE_SDCS_MAP` | Select an SDCS route for a READY/RUNNING single vehicle or fleet leader. `0` leaves the route open; `1` returns once to the first node; `2` completes two circuits; `inf` repeats until disabled. Followers reject this command. |
+| `disable-sdcs-map <id>` | `DISABLE_SDCS_MAP` | Restore the configured planner. Outside a fleet it safely stops; an active leader continues its fleet using the restored route. |
 | `build-fleet <id>` | `BUILD_FLEET` | Prepare the selected static formation in `READY`, or begin its lifecycle in `RUNNING`. |
 | `cancel-fleet <id>` | `CANCEL_FLEET` | Cancel fleet operation and safely stop the vehicle when required by the fleet manager. |
 | `enable-manual <id>` | `ENABLE_MANUAL` | Arm/select the manual controller in `READY` or `RUNNING`. Input is accepted only in `RUNNING`; a building/active fleet follower cannot use manual control, while its leader can. |
@@ -493,6 +495,8 @@ Use the following operator sequences as command-level smoke tests. Check the das
 | Arm manual control before driving | `reset <id>` then `enable-manual <id>` then `start <id>` | Manual mode may be selected only after reset returns the vehicle to `READY`; it remains zero-output until `RUNNING`. |
 | Drive manually | `enable-manual <id>`, `start <id>` when needed, then `manual-drive <id>` or `manual <id> <throttle> <steering-rad>` | `Mode` becomes `manual`; input is accepted only while `RUNNING`. A building/active follower rejects manual mode. |
 | Return from manual to automatic | `disable-manual <id>` | The configured controller is restored. It does not itself start a stopped vehicle. |
+| Run an SDCS map route | `enable-sdcs-map <leader-id> inf 0 2 4 6 10` | Use only on a standalone vehicle or fleet leader. The leader pauses for one safe zero command, then followers continue from its published motion. |
+| Restore the configured route | `disable-sdcs-map <leader-id>` | The active leader resumes the configured route; a standalone vehicle stops safely. |
 | Cancel a formation | `cancel-fleet <id>` for each intended member | Each commanded member safely stops and transitions its local fleet manager to `disabled`. |
 
 The scenario launcher starts vehicles automatically. Therefore, when it is used with `--build-fleet`, the normal fleet command is the launcher invocation, not a second set of `start` and `build-fleet` commands in the CLI. CLI commands remain useful for monitoring, emergency stop, cancellation, and controlled restart tests.

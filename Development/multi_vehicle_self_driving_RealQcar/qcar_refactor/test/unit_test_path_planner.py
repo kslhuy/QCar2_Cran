@@ -178,6 +178,28 @@ class TestSDCSSmallMapPlanner(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "adjacent duplicate"):
             planner.set_node_sequence([0, 0])
 
+    def test_loop_policy_expands_closed_circuits_and_preserves_open_route(self):
+        planner = PathPlannerSDCSSmallMap({"sample_distance_m": 0.02})
+
+        planner.set_node_sequence([0, 2, 4], loop=0)
+        self.assertEqual(planner.route_node_sequence, (0, 2, 4))
+        planner.set_node_sequence([0, 2, 4], loop=1)
+        self.assertEqual(planner.route_node_sequence, (0, 2, 4, 0))
+        planner.set_node_sequence([0, 2, 4], loop=2)
+        self.assertEqual(planner.route_node_sequence, (0, 2, 4, 0, 2, 4, 0))
+
+    def test_infinite_loop_restarts_at_origin_instead_of_finishing(self):
+        planner = PathPlannerSDCSSmallMap(
+            {"node_sequence": [0, 2, 4], "loop": "inf", "finish_tolerance": 0.2}
+        )
+        final_x, final_y, _ = planner.node_pose(0)
+
+        target = planner.update(_state(final_x, final_y))
+
+        self.assertFalse(target.is_finished)
+        self.assertFalse(planner.is_finished())
+        self.assertEqual(planner.loop, "inf")
+
 
 if __name__ == "__main__":
     unittest.main()

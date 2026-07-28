@@ -12,6 +12,8 @@ from extra.simulator.scenario import (
     FleetSetup,
     load_simulation_profile,
     load_yaml_mapping,
+    parse_mission_loop,
+    parse_mission_node_sequence,
     parse_mission_path,
     parse_fleet_setup,
     parse_v2v_endpoint,
@@ -35,7 +37,9 @@ class CarlaVehicleSetup:
     vehicle_id: int
     vehicle_config_file: str
     spawn_transform: dict[str, float]
-    route: tuple[tuple[float, float], ...]
+    route: tuple[tuple[float, float], ...] | None
+    node_sequence: tuple[int, ...] | None = None
+    loop: int | str = 0
     target_velocity: float | None = None
     tick_owner: bool = False
     v2v: dict[str, Any] | None = None
@@ -60,6 +64,8 @@ class CarlaVehicleSetup:
             vehicle_id=self.vehicle_id,
             vehicle_config_file=self.vehicle_config_file,
             route=self.route,
+            node_sequence=self.node_sequence,
+            loop=self.loop,
             target_velocity=self.target_velocity,
             selection_overrides={
                 "simulation": simulation_profile,
@@ -145,11 +151,20 @@ def _parse_vehicle_scenario(data: Any) -> CarlaVehicleSetup:
     if "ground_station" in data:
         raise CarlaSetupError("ground_station is not supported until the bridge is implemented")
     v2v = parse_v2v_endpoint(data.get("v2v"), CarlaSetupError)
+    has_path = "path" in mission
+    has_node_sequence = "node_sequence" in mission
+    if has_path == has_node_sequence:
+        raise CarlaSetupError("mission requires exactly one of path or node_sequence")
     return CarlaVehicleSetup(
         vehicle_id=vehicle_id,
         vehicle_config_file=read_string(data, "vehicle_config_file", CarlaSetupError, default="config_vehicle_carla.yaml"),
         spawn_transform=_parse_spawn_transform(data.get("spawn_transform")),
-        route=parse_mission_path(mission.get("path"), CarlaSetupError),
+        route=parse_mission_path(mission["path"], CarlaSetupError) if has_path else None,
+        node_sequence=(
+            parse_mission_node_sequence(mission["node_sequence"], CarlaSetupError)
+            if has_node_sequence else None
+        ),
+        loop=parse_mission_loop(mission, CarlaSetupError),
         target_velocity=float(target_velocity) if target_velocity is not None else None,
         tick_owner=tick_owner,
         v2v=v2v,

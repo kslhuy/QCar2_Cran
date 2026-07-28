@@ -9,34 +9,15 @@ modules:
   model: carla_model3
   io: carla
   observer: ekf_carla
-  planner: static_carla
+  planner: sdcs_small_map
   controller: simple_carla
   v2v: "null"
-  simulation: carla_sync
+  simulation: carla_sdcs_small_map
   ground_station: tcp_client
 
 mission:
-  # Standalone vehicle_main route for the CARLA session fallback spawn transform.
-  # It uses broad curves suitable for the Tesla Model 3, not QCar turns.
-  path:
-    - [-13.1, -0.8]
-    - [-12.4, -0.6]
-    - [-11.7, -0.3]
-    - [-11.0, 0.1]
-    - [-10.3, 0.4]
-    - [-9.6, 0.45]
-    - [-8.9, 0.4]
-    - [-8.2, 0.1]
-    - [-7.5, -0.3]
-    - [-6.8, -0.6]
-    - [-6.1, -0.8]
-    - [-5.4, -1.0]
-    - [-4.7, -1.15]
-    - [-4.0, -1.2]
-    - [-3.3, -1.15]
-    - [-2.6, -1.0]
-    - [-1.9, -0.7]
-    - [-1.2, -0.4]
-    - [-0.5, -0.2]
-    - [0.2, -0.2]
-  target_velocity: 0.4
+  # One right-hand-traffic SDCS circuit in the CARLA project frame.
+  # The planner closes this open sequence because loop=1.
+  node_sequence: [0, 2, 4, 6, 10]
+  loop: 1
+  target_velocity: 5.0

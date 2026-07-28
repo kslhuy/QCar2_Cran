@@ -19,6 +19,9 @@ class CommandHandling:
     safe_stop_reason: str = ""
     controller_profile: str | None = None
     manual_input: tuple[float, float] | None = None
+    planner_profile: str | None = None
+    sdcs_node_sequence: tuple[int, ...] | None = None
+    sdcs_loop: int | str | None = None
 
 
 class VehicleCommandHandler:
@@ -73,6 +76,10 @@ class VehicleCommandHandler:
         if fleet_handling is not None:
             return fleet_handling
 
+        sdcs_handling = self._handle_sdcs_map_command(command)
+        if sdcs_handling is not None:
+            return sdcs_handling
+
         if command.command_type == CommandType.SET_VELOCITY:
             self._planner.set_target_velocity(float(command.payload["velocity"]))
             return self._result(command, CommandOutcome.APPLIED)
@@ -116,6 +123,72 @@ class VehicleCommandHandler:
             require_safe_stop=True,
             safe_stop_reason=reason,
             controller_profile=self._disable_manual(),
+        )
+
+    def _handle_sdcs_map_command(self, command: VehicleCommand) -> CommandHandling | None:
+        if command.command_type not in {
+            CommandType.ENABLE_SDCS_MAP,
+            CommandType.DISABLE_SDCS_MAP,
+        }:
+            return None
+        if self._fleet_blocks_sdcs_map():
+            return self._result(
+                command,
+                CommandOutcome.REJECTED,
+                "sdcs_map_rejected_for_fleet_follower",
+                "SDCS map selection is owned by the fleet leader while fleet operation is active",
+            )
+        if command.command_type == CommandType.ENABLE_SDCS_MAP:
+            if self._state_machine.state not in (State.READY, State.RUNNING):
+                return self._result(
+                    command,
+                    CommandOutcome.REJECTED,
+                    "sdcs_map_requires_ready_or_running_vehicle",
+                    "Select an SDCS map route only while the vehicle runtime is READY or RUNNING",
+                )
+            has_profile = getattr(self._planner, "has_profile", None)
+            if not callable(has_profile) or not has_profile("sdcs_map"):
+                return self._result(
+                    command,
+                    CommandOutcome.REJECTED,
+                    "sdcs_map_profile_unavailable",
+                    "This vehicle has no configured SDCS map planner profile",
+                )
+            return CommandHandling(
+                self._command_result(command, CommandOutcome.APPLIED),
+                reset_control=True,
+                require_safe_stop=self._state_machine.should_drive(),
+                safe_stop_reason="sdcs_map_route_change",
+                planner_profile="sdcs_map",
+                sdcs_node_sequence=tuple(command.payload["nodes"]),
+                sdcs_loop=command.payload["loop"],
+            )
+
+        if self._fleet_is_active():
+            # The leader remains the fleet's motion source.  Restore its
+            # configured route without stopping followers; the runtime writes
+            # one zero command before calculating the next reference.
+            return CommandHandling(
+                self._command_result(command, CommandOutcome.APPLIED),
+                reset_control=True,
+                require_safe_stop=True,
+                safe_stop_reason="sdcs_map_disabled",
+                controller_profile=self._disable_manual(),
+                planner_profile="configured",
+            )
+
+        # Outside a fleet, disabling a map route is a safety event: restore
+        # the configured planner, return to STOPPED, then require START.
+        self._state_machine.handle_command(
+            VehicleCommand(CommandType.STOP, {"reason": "sdcs_map_disabled"}, source=command.source)
+        )
+        return CommandHandling(
+            self._command_result(command, CommandOutcome.APPLIED),
+            reset_control=True,
+            require_safe_stop=True,
+            safe_stop_reason="sdcs_map_disabled",
+            controller_profile=self._disable_manual(),
+            planner_profile="configured",
         )
 
     def _handle_manual_command(self, command: VehicleCommand) -> CommandHandling | None:
@@ -192,6 +265,16 @@ class VehicleCommandHandler:
         phase = getattr(self._fleet, "phase", None)
         value = getattr(phase, "value", phase)
         return value in ("building", "active") and self._fleet.is_follower()
+
+    def _fleet_is_active(self) -> bool:
+        if self._fleet is None:
+            return False
+        phase = getattr(self._fleet, "phase", None)
+        value = getattr(phase, "value", phase)
+        return value in ("building", "active")
+
+    def _fleet_blocks_sdcs_map(self) -> bool:
+        return self._fleet_is_active() and self._fleet.is_follower()
 
     def _handle_fleet_command(
         self,

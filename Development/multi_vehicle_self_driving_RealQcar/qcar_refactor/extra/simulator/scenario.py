@@ -99,7 +99,9 @@ def build_vehicle_process_spec(
     *,
     vehicle_id: int,
     vehicle_config_file: str,
-    route: tuple[tuple[float, float], ...],
+    route: tuple[tuple[float, float], ...] | None,
+    node_sequence: tuple[int, ...] | None = None,
+    loop: int | str = 0,
     target_velocity: float | None,
     module_overrides: Mapping[str, Any] | None = None,
     selection_overrides: Mapping[str, str] | None = None,
@@ -108,10 +110,24 @@ def build_vehicle_process_spec(
     fleet_spec: FleetRuntimeSpec | None = None,
 ) -> VehicleProcessSpec:
     """Build the common process contract from one parsed simulator vehicle."""
-    resolved_route = [list(point) for point in route]
+    if (route is None) == (node_sequence is None):
+        raise ValueError("A scenario mission must select exactly one of route or node_sequence")
     resolved_modules = deepcopy(dict(module_overrides or {}))
     planner = dict(resolved_modules.get("planner", {}))
-    planner["path_source"] = resolved_route
+    mission: dict[str, Any]
+    if route is not None:
+        resolved_route = [list(point) for point in route]
+        planner["path_source"] = resolved_route
+        # Scenario XY waypoints intentionally override a vehicle profile's
+        # default SDCS route.
+        planner["node_sequence"] = None
+        mission = {"path": resolved_route, "node_sequence": None}
+    else:
+        resolved_nodes = list(node_sequence or ())
+        planner["path_source"] = None
+        planner["node_sequence"] = resolved_nodes
+        planner["loop"] = loop
+        mission = {"path": None, "node_sequence": resolved_nodes, "loop": loop}
     if target_velocity is not None:
         planner["target_velocity"] = target_velocity
     resolved_modules["planner"] = planner
@@ -120,8 +136,7 @@ def build_vehicle_process_spec(
     if v2v is not None:
         resolved_modules["v2v"] = deepcopy(dict(v2v))
         selected_modules["v2v"] = v2v_profile or "udp_default"
-    # A mission combines waypoint data with scalar control settings.
-    mission: dict[str, Any] = {"path": resolved_route}
+    # A mission combines one route representation with scalar control settings.
     if target_velocity is not None:
         mission["target_velocity"] = target_velocity
     return VehicleProcessSpec(
@@ -158,6 +173,23 @@ def parse_mission_path(data: Any, error_type: type[Exception]) -> tuple[tuple[fl
             raise error_type("Each mission.path waypoint must contain numeric X and Y values")
         route.append((float(x), float(y)))
     return tuple(route)
+
+
+def parse_mission_node_sequence(data: Any, error_type: type[Exception]) -> tuple[int, ...]:
+    if not isinstance(data, list) or len(data) < 2:
+        raise error_type("mission.node_sequence requires at least two SDCS node IDs")
+    if any(not isinstance(node_id, int) or isinstance(node_id, bool) or not 0 <= node_id <= 10 for node_id in data):
+        raise error_type("mission.node_sequence IDs must be integers in [0, 10]")
+    if any(first == second for first, second in zip(data, data[1:])):
+        raise error_type("mission.node_sequence cannot contain adjacent duplicate node IDs")
+    return tuple(data)
+
+
+def parse_mission_loop(data: Any, error_type: type[Exception]) -> int | str:
+    loop = data.get("loop", 0)
+    if loop not in (0, 1, 2, "inf") or isinstance(loop, bool):
+        raise error_type("mission.loop must be 0, 1, 2, or 'inf'")
+    return loop
 
 
 def validate_unique_vehicle_ids(vehicles: tuple[Any, ...], platform_name: str, error_type: type[Exception]) -> None:

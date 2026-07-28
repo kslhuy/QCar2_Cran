@@ -24,6 +24,8 @@ class CommandType(str, Enum):
     RESET = "RESET"
     SET_VELOCITY = "SET_VELOCITY"
     SET_PATH = "SET_PATH"
+    ENABLE_SDCS_MAP = "ENABLE_SDCS_MAP"
+    DISABLE_SDCS_MAP = "DISABLE_SDCS_MAP"
     BUILD_FLEET = "BUILD_FLEET"
     CANCEL_FLEET = "CANCEL_FLEET"
     ENABLE_MANUAL = "ENABLE_MANUAL"
@@ -186,6 +188,8 @@ def _validate_payload(command_type: CommandType, payload: Mapping[str, Any]) -> 
         CommandType.RESET: {"reason"},
         CommandType.SET_VELOCITY: {"velocity"},
         CommandType.SET_PATH: {"path"},
+        CommandType.ENABLE_SDCS_MAP: {"nodes", "loop"},
+        CommandType.DISABLE_SDCS_MAP: set(),
         CommandType.BUILD_FLEET: set(),
         CommandType.CANCEL_FLEET: {"reason"},
         CommandType.ENABLE_MANUAL: set(),
@@ -205,6 +209,20 @@ def _validate_payload(command_type: CommandType, payload: Mapping[str, Any]) -> 
         path = payload.get("path")
         if not isinstance(path, str) or not path.strip():
             raise CommandError("SET_PATH requires a non-empty string 'path'")
+    if command_type == CommandType.ENABLE_SDCS_MAP:
+        nodes = payload.get("nodes")
+        if not isinstance(nodes, list) or len(nodes) < 2:
+            raise CommandError("ENABLE_SDCS_MAP requires a 'nodes' list with at least two node IDs")
+        if any(
+            not isinstance(node_id, int) or isinstance(node_id, bool) or not 0 <= node_id <= 10
+            for node_id in nodes
+        ):
+            raise CommandError("ENABLE_SDCS_MAP nodes must be integers in [0, 10]")
+        if any(first == second for first, second in zip(nodes, nodes[1:])):
+            raise CommandError("ENABLE_SDCS_MAP nodes cannot contain adjacent duplicates")
+        loop = payload.get("loop")
+        if loop not in (0, 1, 2, "inf") or isinstance(loop, bool):
+            raise CommandError("ENABLE_SDCS_MAP loop must be 0, 1, 2, or 'inf'")
     if command_type == CommandType.MANUAL_INPUT:
         for key in ("throttle", "steering"):
             value = payload.get(key)

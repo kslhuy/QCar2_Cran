@@ -78,6 +78,8 @@ def load_config(
             module_configs["planner"].setdefault("path_source", mission["path"])
         if "node_sequence" in mission:
             module_configs["planner"].setdefault("node_sequence", mission["node_sequence"])
+        if "loop" in mission:
+            module_configs["planner"].setdefault("loop", mission["loop"])
         module_configs["planner"].setdefault("target_velocity", mission.get("target_velocity", 0.0))
     if "observer" in module_configs and "wheelbase" in module_configs.get("model", {}):
         module_configs["observer"].setdefault("wheelbase", module_configs["model"]["wheelbase"])
@@ -216,6 +218,14 @@ def _validate_manual_controller(controller: Mapping[str, Any]) -> None:
         _positive_number(manual.get("max_steering"), "controller.manual.max_steering")
 
 
+def _validate_planner(planner: Mapping[str, Any]) -> None:
+    loop = planner.get("loop", 0)
+    if loop not in (0, 1, 2, "inf") or isinstance(loop, bool):
+        raise ConfigError("planner.loop must be 0, 1, 2, or 'inf'")
+    if not isinstance(planner.get("runtime_profiles", {}), Mapping):
+        raise ConfigError("planner.runtime_profiles must be a mapping")
+
+
 def _validate_v2v(v2v: Mapping[str, Any], vehicle_id: int) -> None:
     if not v2v.get("enabled"):
         return
@@ -296,5 +306,6 @@ def _validate(values: Mapping[str, Any]) -> None:
     _positive_number(read.get("gps_rate_hz"), "io.read.gps_rate_hz")
 
     _validate_manual_controller(_mapping(modules, "controller"))
+    _validate_planner(_mapping(modules, "planner"))
     _validate_v2v(_mapping(modules, "v2v"), vehicle_id)
     _validate_ground_station(_mapping(modules, "ground_station"))
