@@ -5,7 +5,7 @@ from __future__ import annotations
 from math import isfinite
 import time
 
-from core.types import ControlInput, ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, VehicleStateEstimate
 
 from .controller_base import ControllerBase
 

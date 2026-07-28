@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.command_handler import VehicleCommandHandler
 from core.commands import CommandOutcome, CommandType, VehicleCommand
 from core.vehicle_state_machine import StateMachine
-from core.types import ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControllerReference, VehicleStateEstimate
 from utils.control.controller.controller_manual import ControllerManual
 
 

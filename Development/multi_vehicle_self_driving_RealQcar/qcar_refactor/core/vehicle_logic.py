@@ -9,10 +9,10 @@ from typing import Any
 
 from core.command_handler import VehicleCommandHandler
 from core.commands import CommandResult, CommandSource, CommandType, VehicleCommand
-from core.types import ControlInput, ControllerReference, SensorData, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, SensorData, VehicleStateEstimate
 from core.vehicle_config import ConfigVehicle
 from core.vehicle_state_machine import State, StateMachine
-from utils.control.controller.controller_manager import ControllerCapabilityError, ControllerManager
+from utils.control.managers import ControllerCapabilityError, ControllerManager
 from utils.ground_station.runtime_facade import GroundStationRuntimeFacade
 
 

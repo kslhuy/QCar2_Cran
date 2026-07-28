@@ -45,7 +45,7 @@ The legacy ground station uses one TCP listener per vehicle at `ground_station.b
 
 ## Current Foundation
 
-- [x] Shared dataclasses in `core/types.py`.
+- [x] Shared dataclasses in `core/vehicle_types.py`.
 - [x] Minimal safety state machine in `core/vehicle_state_machine.py`.
 - [x] Base/null IO, observer, planner, controller, and V2V interfaces.
 - [x] QCar IO adapter, EKF observer, static planner, simple controller, and UDP V2V implementation.
@@ -74,7 +74,7 @@ Acceptance gate: a null/headless configuration loads without CARLA, ROS, QLabs, 
 
 ## Step 2: Stabilize Shared Contracts
 
-Owner: `core/types.py`, base utility classes, and tests.
+Owner: `core/vehicle_types.py`, base utility classes, and tests.
 
 - [x] Record module-boundary defaults: metres, seconds, m/s, radians, rad/s, and m/s^2.
 - [x] Document each backend approximation for `motor_tach`, GPS pose, IMU, and actuator commands.
@@ -178,7 +178,7 @@ Owners: `utils/v2v/` and `utils/fleet/`.
 
 ### Step 7.1: Define Fleet Contracts And Configuration
 
-Owner: `utils/fleet/`, `core/types.py`, and `config/`.
+Owner: `utils/fleet/`, `core/vehicle_types.py`, and `config/`.
 
 - [x] Define immutable value contracts in `utils/fleet/`: `FleetRole`, `FleetMember`, `FleetFormation`, `FleetStatus`, `FleetPeerSnapshot`, and `FleetPhase`. Add a separate mutable `FleetRegistry` as the sole owner of membership changes.
 - [x] Define fleet message schemas with an explicit encoded `schema_version` field.
@@ -187,7 +187,7 @@ Owner: `utils/fleet/`, `core/types.py`, and `config/`.
 - [x] Add `config_fleet.yaml` for reusable fleet-policy profiles. Each profile specifies fleet-message publish rates, peer timeout, communication topology (`leader_follower` leader-centred star, `predecessor_chain` directed predecessor links, `loop` ring, or `vehicle_vehicle` full mesh), and explicit directed/bidirectional edge semantics.
 - [x] Keep V2V endpoints and generic transport routing in the scenario/V2V profile. Fleet topology validates the recipients required for fleet-owned messages; it does not create sockets or duplicate endpoint addresses.
 - [x] Validate that topology supports the selected following policy. Direct-predecessor following requires every follower to receive its predecessor estimate; a leader-centred star is therefore valid only for a leader-reference policy or when the required predecessor links are also configured.
-- [x] Remove the stale `V2VState` contract from `core/types.py`; `FleetPeerSnapshot` is now the fleet-owned state contract.
+- [x] Remove the stale `V2VState` contract from `core/vehicle_types.py`; `FleetPeerSnapshot` is now the fleet-owned state contract.
 - [x] Add fleet payload encoding/decoding, peer-state cache, and freshness policy in `utils/fleet/` during Step 7.4.
 - [x] Define `VEHICLE_STATE_ESTIMATE` as the fleet-owned V2V encoding of one vehicle's local `VehicleStateEstimate`, with source timestamp, sequence, encoded `schema_version`, and validity/health metadata. It is not fleet lifecycle state; `utils/v2v/` continues to transport only generic messages.
 - [x] Define `FleetStatus` separately for `formation_id`, membership revision, `source_vehicle_id`, member order/role, `FleetPhase`, and peer-health summary. One globally unique vehicle ID is used as the fleet member identity; do not introduce a second unrelated ID.
@@ -236,7 +236,7 @@ Owner: `utils/fleet/` with generic `utils/v2v/` transport.
 - [x] Record sender ID, source sequence, source timestamp, local receive time, validity, and freshness in every peer snapshot. Reject wrong-role, unexpected-peer, duplicate/out-of-order, stale, malformed, and obsolete-membership-revision messages according to explicit policy.
 - [x] Provide immutable snapshot queries for the current fleet and the immediate predecessor. The registry/cache remains internally mutable so it can remove departed or stale peers safely.
 - [x] Make freshness loss explicit and safe: a stale or missing predecessor prevents fleet control from issuing a following command and triggers the fleet cancellation/fault policy.
-- [x] Keep observer instances local. A future distributed observer is a local fleet component that consumes peer snapshots and produces a separate estimate; it is never a shared cross-process object.
+- [x] Keep observer instances local. Fleet policy profiles select a process-local advisory distributed observer (`fake` by default; `luenberger_experimental` for offline evaluation); it consumes peer snapshots and produces a separate estimate, never a shared cross-process object or a controller input.
 - [x] Add deterministic tests for receive ordering, timeout/removal, sequence gaps, malformed packets, and V2V/fleet isolation using injected local timestamps.
 
 Acceptance gate: a follower obtains only validated, fresh predecessor snapshots through V2V, and transport loss cannot create a fictitious fleet state or actuator command.
@@ -256,7 +256,7 @@ Owner: `utils/fleet/`, `utils/control/`, and `core/vehicle_logic.py`.
 - [x] Move fleet-specific peer processing and lifecycle coordination out of `VehicleRuntime` and into `FleetManager`. Define one fleet runtime result/context that accepts the ego estimate, drained generic V2V messages, and local monotonic time; it validates peers, updates fleet phase, returns an optional V2V publication, an optional follower `ControllerReference`, and an explicit fault/cancel intent. `VehicleRuntime` remains the loop owner: it drains/publishes through V2V, combines its safety state with the manager result, invokes the injected controller, writes IO commands, and applies any returned fault/cancel intent through the global safety state machine. Do not let `FleetManager` select controllers, write actuators, own sockets, or transition the vehicle safety state directly.
 - [x] Expose fleet behavior to the vehicle only through the injected `FleetManager` interface. Do not import fleet policy, peer-store, state-machine, or controller implementation classes into `core/vehicle_logic.py`; apply the same one-utility/one-interface rule to every runtime utility.
 - [x] Run fleet control at the normal vehicle-runtime loop rate initially. Add a local controller rate limit only when the selected algorithm requires it; do not add another control thread.
-- [x] Add unit tests for `ControllerFleetBase` contract behaviour, longitudinal spacing response, 2D virtual-target geometry, throttle/steering bounds, stale predecessor fallback, leader behaviour, and controller/fleet separation. See `FLEET_FOLLOWING_POLICY_SCHEME.md`.
+- [x] Add unit tests for `ControllerFleetBase` contract behaviour, longitudinal spacing response, 2D virtual-target geometry, throttle/steering bounds, stale predecessor fallback, leader behaviour, and controller/fleet separation. See the fleet-following architecture chapter in `PROJECT_ARCHITECTURE.md`.
 
 Acceptance gate: a fresh predecessor snapshot is converted into the same `ControllerReference` contract and consumed only by the selected `ControllerFleetBase`; stale or invalid data leaves the vehicle in the existing safe-stop path.
 
@@ -458,3 +458,8 @@ Acceptance gate: replacing the CLI client with Qt/PySide changes presentation on
 - [ ] Remove legacy coupling only after the replacement behavior has tests.
 
 Acceptance gate: the minimal runtime stays importable and testable without every optional dependency.
+
+## Naming Record
+
+- [x] Rename `core/types.py` to `core/vehicle_types.py`. Sensor, estimate, controller-reference, control-input, and generic V2V data contracts are vehicle-runtime types; typed operator/runtime commands remain separately owned by `core/commands.py`.
+- [x] Move runtime control-utility selection and delegation into `utils/control/managers/`: `ManagerBase`, `ControllerManager`, `ObserverManager`, and `PathPlannerManager`. The module factory provides these stable interfaces to production runtimes; concrete algorithms remain in their observer, path-planner, and controller packages.

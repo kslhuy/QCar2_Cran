@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from math import isfinite
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Mapping
 
-from core.types import ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControllerReference, VehicleStateEstimate
 
 if TYPE_CHECKING:
     from .fleet_state_machine import FleetPhase
@@ -39,6 +41,33 @@ class FollowingPolicy(str, Enum):
 
 
 @dataclass(frozen=True)
+class DistributedObserverConfig:
+    """Configuration for the process-local advisory fleet observer."""
+
+    implementation: str
+    parameters: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parameters", MappingProxyType(dict(self.parameters)))
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, object] | None) -> "DistributedObserverConfig":
+        if data is None:
+            return cls("fake", {})
+        if not isinstance(data, Mapping):
+            raise FleetError("fleet distributed_observer must be a mapping")
+        implementation = _required_string(data, "implementation")
+        if implementation not in {"fake", "luenberger"}:
+            raise FleetError("fleet distributed_observer.implementation must be 'fake' or 'luenberger'")
+        parameters = {key: value for key, value in data.items() if key != "implementation"}
+        if implementation == "fake" and parameters:
+            raise FleetError("fleet distributed_observer.fake does not accept parameters")
+        if implementation == "luenberger":
+            _validate_luenberger_parameters(parameters)
+        return cls(implementation, parameters)
+
+
+@dataclass(frozen=True)
 class FleetCommunication:
     topology: FleetTopology
     edge_direction: EdgeDirection
@@ -65,6 +94,9 @@ class FleetPolicy:
     following_policy: FollowingPolicy
     communication: FleetCommunication
     follower_controller_profile: str | None = None
+    distributed_observer: DistributedObserverConfig = field(
+        default_factory=lambda: DistributedObserverConfig("fake", {})
+    )
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, object]) -> "FleetPolicy":
@@ -78,7 +110,12 @@ class FleetPolicy:
         controller_profile = data.get("follower_controller_profile")
         if controller_profile is not None and (not isinstance(controller_profile, str) or not controller_profile):
             raise FleetError("fleet follower_controller_profile must be a non-empty string or null")
-        return cls(following_policy, FleetCommunication.from_mapping(communication_data), controller_profile)
+        return cls(
+            following_policy,
+            FleetCommunication.from_mapping(communication_data),
+            controller_profile,
+            DistributedObserverConfig.from_mapping(data.get("distributed_observer")),
+        )
 
 
 @dataclass(frozen=True)
@@ -268,6 +305,21 @@ def _positive_number(value: object, name: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
         raise FleetError(f"fleet {name} must be a positive number")
     return float(value)
+
+
+def _validate_luenberger_parameters(parameters: Mapping[str, object]) -> None:
+    allowed = {"position_gain", "heading_gain", "velocity_gain", "acceleration_gain"}
+    unknown = sorted(set(parameters) - allowed)
+    if unknown:
+        raise FleetError(f"fleet distributed_observer has unsupported parameters: {unknown}")
+    for name, value in parameters.items():
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not isfinite(float(value))
+            or not 0.0 <= float(value) <= 1.0
+        ):
+            raise FleetError(f"fleet distributed_observer.{name} must be a finite number in [0, 1]")
 
 
 def _valid_vehicle_id(value: object) -> bool:

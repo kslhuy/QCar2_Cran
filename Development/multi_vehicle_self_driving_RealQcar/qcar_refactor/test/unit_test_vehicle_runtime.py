@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.commands import CommandOutcome, CommandSource, CommandType, VehicleCommand
-from core.types import ControlInput, ControllerReference, SensorData, V2VMessage, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, SensorData, V2VMessage, VehicleStateEstimate
 from core.vehicle_config import ConfigVehicle
 from core.module_factory import build_vehicle_modules
 from core.vehicle_logic import VehicleRuntime
@@ -25,7 +25,7 @@ from utils.fleet import (
 )
 from utils.io.io_base import IONull
 from utils.control.controller.controller_manual import ControllerManual
-from utils.control.controller.controller_manager import ControllerManager
+from utils.control.managers import ControllerManager
 from utils.ground_station.bridge_base import NullGroundStationBridge
 from utils.ground_station.runtime_facade import GroundStationRuntimeFacade
 

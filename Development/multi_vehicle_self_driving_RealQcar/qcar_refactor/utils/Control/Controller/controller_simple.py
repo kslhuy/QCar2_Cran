@@ -13,7 +13,7 @@ this controller.
 import logging
 import math
 
-from core.types import ControlInput, ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, VehicleStateEstimate
 from utils.control.controller.controller_base import ControllerBase
 
 

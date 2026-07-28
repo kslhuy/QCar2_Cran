@@ -22,3 +22,23 @@ carla_sync:
         x: 0.0
         y: 0.0
         z: 0.0
+
+carla_sdcs_small_map:
+  implementation: carla
+  host: "127.0.0.1"
+  port: 2000
+  timeout_s: 20.0
+  fixed_delta_seconds: 0.05
+  warmup_ticks: 2
+  ego_blueprint: vehicle.tesla.model3
+  # Node 0 in the project frame is (-1.140, 1.053, -pi/2).
+  # IOCarla maps CARLA y/yaw to project coordinates by negating both.
+  default_spawn_transform: {x: -1.14, y: -1.053177, z: 0.5, yaw: 90.0}
+  sensors:
+    imu:
+      enabled: true
+      blueprint: sensor.other.imu
+      transform:
+        x: 0.0
+        y: 0.0
+        z: 0.0

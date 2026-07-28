@@ -11,17 +11,16 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlInput, ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, VehicleStateEstimate
 from utils.control.controller import (
     ControllerBase,
     ControllerFleet2D,
     ControllerFleetBase,
     ControllerFleetLongitudinal,
-    ControllerCapabilityError,
-    ControllerManager,
     ControllerNull,
     ControllerSimple,
 )
+from utils.control.managers import ControllerCapabilityError, ControllerManager
 from utils.control.controller.controller_manual import ControllerManual
 
 

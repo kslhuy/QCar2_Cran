@@ -4,7 +4,7 @@ Start a CARLA server first, then run this file directly:
 
     python qcar_refactor/test/test_integration_carla_multi_process.py
 
-The parent test loads ``config/scenarios/carla_two_vehicle.yaml`` and starts one
+The parent test loads ``config/scenarios/test/carla_two_vehicle.yaml`` and starts one
 ``extra.simulator.carla.process_runner`` child per vehicle. Every child
 connects to the same CARLA ``host:port``. Only the vehicle whose manifest entry
 sets ``tick_owner: true`` calls ``world.tick()``; follower processes wait for
@@ -30,7 +30,7 @@ import unittest
 
 
 _ROOT = Path(__file__).resolve().parents[1]
-_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "carla_two_vehicle.yaml"
+_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "test" / "carla_two_vehicle.yaml"
 
 
 @unittest.skipUnless(__name__ == "__main__", "run this CARLA multi-process integration test file directly")

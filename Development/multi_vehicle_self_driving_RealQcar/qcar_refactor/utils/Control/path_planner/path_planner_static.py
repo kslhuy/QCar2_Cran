@@ -16,7 +16,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 
-from core.types import ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControllerReference, VehicleStateEstimate
 from .path_planner_base import PathPlannerBase
 
 

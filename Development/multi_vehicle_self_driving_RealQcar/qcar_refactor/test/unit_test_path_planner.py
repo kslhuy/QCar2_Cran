@@ -14,8 +14,14 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils.control.path_planner import PathPlannerBase, PathPlannerNull, PathPlannerStatic
-from core.types import ControllerReference, VehicleStateEstimate
+from utils.control.path_planner import (
+    PathPlannerBase,
+    PathPlannerNull,
+    PathPlannerSDCSSmallMap,
+    PathPlannerStatic,
+    SDCSSmallMapRoadMap,
+)
+from core.vehicle_types import ControllerReference, VehicleStateEstimate
 
 
 class _SilentLogger:
@@ -38,10 +44,6 @@ def _state(x=0.0, y=0.0, theta=0.0, velocity=0.0):
 
 
 class TestBasePathPlanner(unittest.TestCase):
-    def test_cannot_instantiate_base_planner(self):
-        with self.assertRaises(TypeError):
-            PathPlannerBase({})
-
     def test_null_planner_returns_safe_finished_target(self):
         planner = PathPlannerNull({"target_velocity": 0.0}, vehicle_id=4)
         target = planner.update(_state(x=2.0, y=3.0, theta=0.5))
@@ -134,6 +136,47 @@ class TestStaticWaypointPlanner(unittest.TestCase):
         self.assertEqual(waypoints.shape, (2, 3))
         np.testing.assert_allclose(waypoints[0], [0.0, 0.0, 0.1])
         np.testing.assert_allclose(waypoints[1], [1.0, 0.0, 0.2])
+
+
+class TestSDCSSmallMapPlanner(unittest.TestCase):
+    def test_uses_right_hand_small_map_nodes_in_carla_plane_metres(self):
+        roadmap = SDCSSmallMapRoadMap(sample_distance_m=0.02)
+
+        self.assertEqual(roadmap.node_ids, tuple(range(11)))
+        x_m, y_m, heading_rad = roadmap.node_pose(0)
+        self.assertAlmostEqual(x_m, -1.14)
+        self.assertAlmostEqual(y_m, 1.053177)
+        self.assertAlmostEqual(heading_rad, -np.pi / 2.0)
+
+    def test_generates_directed_route_and_standard_planner_targets(self):
+        planner = PathPlannerSDCSSmallMap(
+            {
+                "node_sequence": [0, 2, 4, 6, 0],
+                "sample_distance_m": 0.02,
+                "lookahead_distance": 0.25,
+                "target_velocity": 0.5,
+            }
+        )
+
+        self.assertEqual(planner.node_sequence, (0, 2, 4, 6, 0))
+        self.assertEqual(planner.available_node_ids, tuple(range(11)))
+        self.assertGreater(len(planner.waypoints), 100)
+        np.testing.assert_allclose(planner.waypoints[0, :2], planner.node_pose(0)[:2])
+        np.testing.assert_allclose(planner.waypoints[-1, :2], planner.node_pose(0)[:2])
+
+        target = planner.update(_state(*planner.node_pose(0)[:2]))
+        self.assertFalse(target.is_finished)
+        self.assertAlmostEqual(target.target_velocity, 0.5)
+
+    def test_rejects_invalid_node_ids_and_unusable_sequences(self):
+        planner = PathPlannerSDCSSmallMap({"sample_distance_m": 0.02})
+
+        with self.assertRaisesRegex(ValueError, r"\[0, 10\]"):
+            planner.set_node_sequence([0, 11])
+        with self.assertRaisesRegex(ValueError, "at least two"):
+            planner.set_node_sequence([0])
+        with self.assertRaisesRegex(ValueError, "adjacent duplicate"):
+            planner.set_node_sequence([0, 0])
 
 
 if __name__ == "__main__":

@@ -30,8 +30,8 @@ def build_vehicle_modules(config: ConfigVehicle, logger=None, resources: dict | 
     simulation = build_simulation(config, logger, resources)
     return VehicleModules(
         io=build_io(config, logger, resources, simulation),
-        observer=build_observer(config, logger),
-        planner=build_planner(config, logger),
+        observer=build_observer_manager(config, logger),
+        planner=build_path_planner_manager(config, logger),
         controller_manager=build_controller_manager(config, logger),
         v2v=build_v2v(config, logger),
         ground_station=build_ground_station(config, logger),
@@ -110,7 +110,25 @@ def build_planner(config: ConfigVehicle, logger=None):
         from utils.control.path_planner.path_planner_static import PathPlannerStatic
 
         return PathPlannerStatic(planner_config, config.vehicle_id, logger)
+    if implementation == "sdcs_small_map":
+        from utils.control.path_planner.path_planner_sdcs_small_map import PathPlannerSDCSSmallMap
+
+        return PathPlannerSDCSSmallMap(planner_config, config.vehicle_id, logger)
     raise ConfigError(f"Unsupported planner implementation: '{implementation}'")
+
+
+def build_observer_manager(config: ConfigVehicle, logger=None):
+    """Wrap the configured observer in its stable runtime-facing manager."""
+    from utils.control.managers import ObserverManager
+
+    return ObserverManager(build_observer(config, logger))
+
+
+def build_path_planner_manager(config: ConfigVehicle, logger=None):
+    """Wrap the configured path planner in its stable runtime-facing manager."""
+    from utils.control.managers import PathPlannerManager
+
+    return PathPlannerManager(build_planner(config, logger))
 
 
 def build_controller(config: ConfigVehicle, logger=None):
@@ -144,7 +162,7 @@ def _build_controller_profile(controller_config: dict, vehicle_id: int, logger=N
 
 def build_controller_manager(config: ConfigVehicle, logger=None):
     """Build the configured controller plus explicitly allowed runtime profiles."""
-    from utils.control.controller.controller_manager import ControllerManager
+    from utils.control.managers import ControllerManager
     controller_config = config.module("controller")
     manual_config = controller_config.get("manual")
     if manual_config is not None and not isinstance(manual_config, dict):

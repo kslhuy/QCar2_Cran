@@ -90,6 +90,15 @@ class TestVehicleConfig(unittest.TestCase):
         self.assertEqual(config.module("io")["implementation"], "null")
         self.assertFalse(config.module("v2v")["enabled"])
 
+    def test_sdcs_small_map_profile_passes_mission_node_sequence_to_planner(self):
+        config = load_config(
+            self.config_dir,
+            vehicle_config_file="config_vehicle_sdcs_small_map.yaml",
+        )
+
+        self.assertEqual(config.module("planner")["implementation"], "sdcs_small_map")
+        self.assertEqual(config.module("planner")["node_sequence"], config.mission["node_sequence"])
+
     def test_selection_override_is_applied_before_profiles_are_loaded(self):
         config = load_config(
             self.config_dir,

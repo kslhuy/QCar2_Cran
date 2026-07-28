@@ -13,7 +13,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import SensorData, VehicleStateEstimate
+from core.vehicle_types import SensorData, VehicleStateEstimate
 from utils.control.observer.observer_ekf import ObserverEKF
 
 

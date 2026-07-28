@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from core.commands import CommandResult, CommandSource, CommandType, VehicleCommand
-from core.types import ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControllerReference, VehicleStateEstimate
 
 from .monitoring import MonitoringSnapshot
 
@@ -63,6 +63,12 @@ class GroundStationRuntimeFacade:
     ) -> None:
         """Build and publish one operator-facing snapshot from public module state."""
         fleet_status = fleet.status() if fleet is not None else None
+        peer_snapshots = fleet.snapshots() if fleet is not None else ()
+        peer_ages_s = (
+            {str(vehicle_id): round(age_s, 3) for vehicle_id, age_s in fleet.peer_ages_s().items()}
+            if fleet is not None
+            else {}
+        )
         fleet_summary = {
             "configured": fleet_status is not None,
             "formation_id": fleet_status.formation_id if fleet_status is not None else "",
@@ -70,8 +76,12 @@ class GroundStationRuntimeFacade:
             "member_order": fleet_status.member_order if fleet_status is not None else None,
             "member_count": len(fleet_status.peer_health) + 1 if fleet_status is not None else 0,
             "reason": fleet_status.reason if fleet_status is not None else "",
-            "peer_count": len(fleet.snapshots()) if fleet is not None else 0,
+            "peer_count": len(peer_snapshots),
             "peer_health": list(fleet_status.peer_health) if fleet_status is not None else [],
+            "expected_peer_ids": [vehicle_id for vehicle_id, _healthy in fleet_status.peer_health]
+            if fleet_status is not None
+            else [],
+            "peer_ages_s": peer_ages_s,
         }
         try:
             v2v_status = dict(v2v.get_status()) if v2v is not None else {"enabled": False}

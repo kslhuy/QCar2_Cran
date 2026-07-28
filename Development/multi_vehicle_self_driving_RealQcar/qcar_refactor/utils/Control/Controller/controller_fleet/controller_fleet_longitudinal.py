@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.types import ControlInput, ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, VehicleStateEstimate
 from .controller_fleet_base import ControllerFleetBase
 
 

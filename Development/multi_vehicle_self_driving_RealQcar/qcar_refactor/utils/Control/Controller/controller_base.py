@@ -9,7 +9,7 @@ know about GUI/V2V.
 import logging
 from abc import ABC, abstractmethod
 
-from core.types import ControlInput, ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, VehicleStateEstimate
 
 
 class ControllerBase(ABC):

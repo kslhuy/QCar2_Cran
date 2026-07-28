@@ -14,7 +14,7 @@ except ImportError:
 
 from extra.simulator.virtual import load_virtual_setup
 
-_SCENARIO = _ROOT / "config" / "scenarios" / "virtual_four_vehicle_fleet_control.yaml"
+_SCENARIO = _ROOT / "config" / "scenarios" / "test" / "virtual_four_vehicle_fleet_control.yaml"
 _ARTIFACTS = _ROOT / "test" / "artifacts" / "virtual_fleet_control"
 _FLEET_ORDER = (1, 2, 3, 4)
 

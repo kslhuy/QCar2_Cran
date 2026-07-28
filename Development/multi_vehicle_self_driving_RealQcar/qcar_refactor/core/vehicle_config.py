@@ -76,6 +76,8 @@ def load_config(
     if "planner" in module_configs:
         if "path" in mission:
             module_configs["planner"].setdefault("path_source", mission["path"])
+        if "node_sequence" in mission:
+            module_configs["planner"].setdefault("node_sequence", mission["node_sequence"])
         module_configs["planner"].setdefault("target_velocity", mission.get("target_velocity", 0.0))
     if "observer" in module_configs and "wheelbase" in module_configs.get("model", {}):
         module_configs["observer"].setdefault("wheelbase", module_configs["model"]["wheelbase"])

@@ -21,7 +21,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import ControlInput
+from core.vehicle_types import ControlInput
 from utils.io.io_virtual import IOVirtual as VirtualKinematicVehicleIO
 from utils.control.observer.observer_ekf import ObserverEKF
 from utils.control.path_planner import PathPlannerStatic

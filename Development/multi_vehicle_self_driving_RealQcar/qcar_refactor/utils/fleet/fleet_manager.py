@@ -8,7 +8,7 @@ from dataclasses import replace
 from math import hypot
 
 from core.commands import CommandType, VehicleCommand
-from core.types import V2VMessage, VehicleStateEstimate
+from core.vehicle_types import V2VMessage, VehicleStateEstimate
 
 from .fleet_message import VEHICLE_STATE_ESTIMATE, encode_vehicle_state_estimate
 from .fleet_peer_store import FleetPeerStore
@@ -264,6 +264,14 @@ class FleetManager:
             return None
         now = time.monotonic() if now_monotonic is None else float(now_monotonic)
         return max(0.0, now - predecessor.received_at_monotonic)
+
+    def peer_ages_s(self, now_monotonic: float | None = None) -> dict[int, float]:
+        """Return local receive ages for currently cached fleet peers."""
+        now = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        return {
+            snapshot.source_vehicle_id: max(0.0, now - snapshot.received_at_monotonic)
+            for snapshot in self._peers.snapshots()
+        }
 
     def predecessor_gap_m(self, ego_estimate: VehicleStateEstimate) -> float | None:
         """Return current Euclidean spacing to the validated predecessor."""

@@ -2,8 +2,8 @@
 
 5D kinematic EKF: state = [x, y, theta, v, a]
 
-Predict:   command-driven — steering → yaw rate, throttle → acceleration
-Correct:   sensor fusion — motor_tach (v), gyro (yaw rate), accel_x (a), GPS (x,y,θ)
+Predict:   command-driven â€” steering â†’ yaw rate, throttle â†’ acceleration
+Correct:   sensor fusion â€” motor_tach (v), gyro (yaw rate), accel_x (a), GPS (x,y,Î¸)
 """
 
 import time
@@ -11,14 +11,14 @@ import numpy as np
 from typing import Optional
 
 from .observer_base import ObserverBase
-from core.types import VehicleStateEstimate, ControlInput, SensorData
+from core.vehicle_types import VehicleStateEstimate, ControlInput, SensorData
 
 
 def _wrap(angle: float) -> float:
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
 
-# ── Read wheelbase from config ──────────────────────────────────
+# â”€â”€ Read wheelbase from config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class ObserverEKF(ObserverBase):
     __slots__ = ('_ekf', '_started', '_last_accel_magnitude', '_wheelbase')
@@ -105,22 +105,22 @@ class ObserverEKF(ObserverBase):
         return float(np.hypot(ax, ay))
 
 
-# ── Internal 5D EKF math ────────────────────────────────────────
+# â”€â”€ Internal 5D EKF math â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _EKF:
     """
     5D kinematic Extended Kalman Filter: state = [x, y, theta, v, a]
 
     Predict:   command-driven
-                 a ← throttle (trend, resets each step)
-                 v ← v + a·dt
-                 θ ← θ + v·tan(δ)/L·dt  (bicycle model from steering)
+                 a â† throttle (trend, resets each step)
+                 v â† v + aÂ·dt
+                 Î¸ â† Î¸ + vÂ·tan(Î´)/LÂ·dt  (bicycle model from steering)
                  Falls back to gyro when steering unavailable.
                  x,y from standard bicycle kinematics.
 
     Correct:   sensor fusion
-                 GPS:     full [x, y, θ, v] correction
-                 No GPS:  [motor_tach, gyro_z, accel_x] → [v, yaw_rate, a]
+                 GPS:     full [x, y, Î¸, v] correction
+                 No GPS:  [motor_tach, gyro_z, accel_x] â†’ [v, yaw_rate, a]
     """
 
     def __init__(self, initial_pose=None, wheelbase: float = 0.3):
@@ -133,16 +133,16 @@ class _EKF:
         # Covariance
         self.P = np.diag([0.1, 0.1, 0.1, 0.1, 1.0])  # a uncertain at start
 
-        # Process noise — a gets full reset from command, so higher Q
+        # Process noise â€” a gets full reset from command, so higher Q
         self.Q = np.diag([0.01, 0.01, 0.01, 0.05, 0.3])
 
         # Measurement noise
-        self.R_gps = np.diag([0.3, 0.3, 0.1, 0.2])      # x,y,θ,v with GPS
+        self.R_gps = np.diag([0.3, 0.3, 0.1, 0.2])      # x,y,Î¸,v with GPS
         self.R_imu = np.diag([0.2, 0.1, 0.5])             # v, yaw_rate, a
 
     def update(self, motor_tach, gyro_z, dt, accel_x=0.0,
                gps=None, steering=None, throttle=0.0):
-        # ── 1. Predict ──────────────────────────────────────
+        # â”€â”€ 1. Predict â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         x, y, theta, v, a = self.x
         has_gps = gps is not None
 
@@ -166,8 +166,8 @@ class _EKF:
 
         xp = np.array([x_pred, y_pred, theta_pred, v_pred, a_pred])
 
-        # Jacobian of motion model w.r.t. state (5×5)
-        # a_pred = throttle → ∂a_pred/∂a = 0 (no state memory)
+        # Jacobian of motion model w.r.t. state (5Ã—5)
+        # a_pred = throttle â†’ âˆ‚a_pred/âˆ‚a = 0 (no state memory)
         F = np.array([
             [1, 0, -v * np.sin(theta) * dt, np.cos(theta) * dt, 0],
             [0, 1,  v * np.cos(theta) * dt, np.sin(theta) * dt, 0],
@@ -177,9 +177,9 @@ class _EKF:
         ])
         Pp = F @ self.P @ F.T + self.Q
 
-        # ── 2. Correct ──────────────────────────────────────
+        # â”€â”€ 2. Correct â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if has_gps:
-            # Full state correction: x, y, θ, v
+            # Full state correction: x, y, Î¸, v
             # a is unobservable from GPS alone, kept from prediction
             z = np.array([gps["x"], gps["y"], gps["theta"], motor_tach])
             H = np.array([

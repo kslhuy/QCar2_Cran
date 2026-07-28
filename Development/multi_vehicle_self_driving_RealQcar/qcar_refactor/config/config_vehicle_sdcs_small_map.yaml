@@ -1,0 +1,22 @@
+# CARLA Tesla Model 3 profile for the SDCS right-hand-traffic small-map plane.
+vehicle:
+  car_id: 0
+
+runtime:
+  loop_rate_hz: 20
+
+modules:
+  model: carla_model3
+  io: carla
+  observer: ekf_carla
+  planner: sdcs_small_map
+  controller: simple_carla
+  v2v: "null"
+  simulation: carla_sdcs_small_map
+  ground_station: tcp_client
+
+mission:
+  # Each adjacent pair is connected by the roadmap's shortest directed route.
+  # Valid IDs are 0 through 10 on the right-hand-traffic small map.
+  node_sequence: [0, 2, 4, 6, 10, 0]
+  target_velocity: 5.0

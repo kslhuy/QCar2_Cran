@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 
-from core.types import VehicleStateEstimate
+from core.vehicle_types import VehicleStateEstimate
 
 from .distributed_observer_base import DistributedObserverBase
 from ...fleet_types import (

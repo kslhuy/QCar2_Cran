@@ -11,7 +11,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.module_factory import build_vehicle_modules
-from core.types import ControlInput
+from core.vehicle_types import ControlInput
 from core.vehicle_config import load_config
 from core.vehicle_logic import VehicleRuntime
 

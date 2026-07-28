@@ -5,7 +5,7 @@ from __future__ import annotations
 from math import isfinite
 from typing import Mapping
 
-from core.types import V2VMessage, VehicleStateEstimate
+from core.vehicle_types import V2VMessage, VehicleStateEstimate
 
 from .fleet_types import FleetError, FleetPeerSnapshot, FleetRole, FleetStatus
 

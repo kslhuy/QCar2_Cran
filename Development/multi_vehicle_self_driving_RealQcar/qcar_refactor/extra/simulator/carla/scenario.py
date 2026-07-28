@@ -21,6 +21,7 @@ from extra.simulator.scenario import (
     validate_unique_v2v_local_ports,
     validate_unique_vehicle_ids,
 )
+from utils.fleet import FleetRuntimeSpec
 
 
 class CarlaSetupError(ValueError):
@@ -41,7 +42,11 @@ class CarlaVehicleSetup:
     v2v_profile: str | None = None
     controller_profile: str | None = None
 
-    def to_process_spec(self, simulation_profile: str):
+    def to_process_spec(
+        self,
+        simulation_profile: str,
+        fleet_spec: FleetRuntimeSpec | None = None,
+    ):
         """Convert one CARLA scenario entry to the shared process contract."""
         # Scenarios spawn actors in CARLA's native frame. IOCarla converts
         # sensor poses to the project's right-handed frame, so the observer
@@ -70,6 +75,7 @@ class CarlaVehicleSetup:
             },
             v2v=self.v2v,
             v2v_profile=self.v2v_profile,
+            fleet_spec=fleet_spec,
         )
 
 

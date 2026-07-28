@@ -5,8 +5,10 @@ from .fleet_utils.distributed_observer import (
     DistributedObserverBase,
     DistributedObserverFake,
     DistributedObserverLuenberger,
+    build_distributed_observer,
 )
 from .fleet_manager import FleetManager
+from .fleet_runtime import FleetRuntimeSpec, build_fleet_manager
 from .fleet_message import (
     FLEET_MESSAGE_SCHEMA_VERSION,
     VEHICLE_STATE_ESTIMATE,
@@ -18,6 +20,7 @@ from .fleet_peer_store import FleetPeerStore
 from .fleet_state_machine import FleetPhase, FleetStateMachine
 from .fleet_types import (
     EdgeDirection,
+    DistributedObserverConfig,
     FleetCommunication,
     FleetError,
     FleetFormation,
@@ -43,12 +46,15 @@ __all__ = [
     "FleetFormation",
     "FleetFormationBuilder",
     "DistributedObserverBase",
+    "DistributedObserverConfig",
     "DistributedObserverFake",
     "DistributedObserverLuenberger",
+    "build_distributed_observer",
     "DistributedEstimateSource",
     "DistributedFleetEstimate",
     "DistributedVehicleEstimate",
     "FleetManager",
+    "FleetRuntimeSpec",
     "FleetCommandResult",
     "FleetMessageError",
     "FleetStateMachine",
@@ -65,6 +71,7 @@ __all__ = [
     "FLEET_MESSAGE_SCHEMA_VERSION",
     "FollowingPolicy",
     "VEHICLE_STATE_ESTIMATE",
+    "build_fleet_manager",
     "decode_vehicle_state_estimate",
     "encode_vehicle_state_estimate",
 ]

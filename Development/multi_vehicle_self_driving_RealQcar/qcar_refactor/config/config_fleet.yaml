@@ -1,6 +1,8 @@
 # Reusable policy profiles. Fleet membership belongs to a multi-vehicle scenario.
 default:
   following_policy: direct_predecessor
+  distributed_observer:
+    implementation: fake
   communication:
     topology: predecessor_chain
     edge_direction: directed
@@ -9,6 +11,8 @@ default:
 
 leader_star:
   following_policy: leader_reference
+  distributed_observer:
+    implementation: fake
   communication:
     topology: leader_follower
     edge_direction: bidirectional
@@ -17,6 +21,8 @@ leader_star:
 
 full_mesh:
   following_policy: direct_predecessor
+  distributed_observer:
+    implementation: fake
   communication:
     topology: vehicle_vehicle
     edge_direction: bidirectional
@@ -25,8 +31,25 @@ full_mesh:
 
 carla_default:
   following_policy: direct_predecessor
+  distributed_observer:
+    implementation: fake
   communication:
     topology: predecessor_chain
     edge_direction: directed
     ego_estimate_rate_hz: 20
     peer_timeout_s: 3.00
+
+# Advisory only: this fixed-gain prototype does not drive fleet control.
+luenberger_experimental:
+  following_policy: direct_predecessor
+  distributed_observer:
+    implementation: luenberger
+    position_gain: 0.35
+    heading_gain: 0.35
+    velocity_gain: 0.45
+    acceleration_gain: 0.30
+  communication:
+    topology: predecessor_chain
+    edge_direction: directed
+    ego_estimate_rate_hz: 20
+    peer_timeout_s: 0.50

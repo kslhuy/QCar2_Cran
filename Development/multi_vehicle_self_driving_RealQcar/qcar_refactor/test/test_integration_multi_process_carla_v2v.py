@@ -22,7 +22,7 @@ except ImportError:
     from helper_v2v_diagnostics import assert_two_vehicle_v2v_results, write_v2v_artifacts
 
 
-_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "carla_two_vehicle_v2v.yaml"
+_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "test" / "carla_two_vehicle_v2v.yaml"
 _ARTIFACT_DIR = _ROOT / "test" / "artifacts" / "carla_multi_process_v2v"
 _CYCLES = 240
 

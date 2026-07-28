@@ -20,6 +20,7 @@ from extra.simulator.scenario import (
     validate_unique_v2v_local_ports,
     validate_unique_vehicle_ids,
 )
+from utils.fleet import FleetRuntimeSpec
 
 
 class VirtualSetupError(ValueError):
@@ -39,7 +40,11 @@ class VirtualVehicleSetup:
     controller_profile: str | None = None
     initial_pose: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
-    def to_process_spec(self, simulation_profile: str = "null"):
+    def to_process_spec(
+        self,
+        simulation_profile: str = "null",
+        fleet_spec: FleetRuntimeSpec | None = None,
+    ):
         """Convert this platform scenario entry to the shared process spec."""
         return build_vehicle_process_spec(
             vehicle_id=self.vehicle_id,
@@ -57,6 +62,7 @@ class VirtualVehicleSetup:
             }}},
             v2v=self.v2v,
             v2v_profile=self.v2v_profile,
+            fleet_spec=fleet_spec,
         )
 
 

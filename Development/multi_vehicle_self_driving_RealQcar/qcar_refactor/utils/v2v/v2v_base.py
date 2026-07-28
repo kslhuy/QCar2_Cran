@@ -1,7 +1,7 @@
 import logging
 from abc import ABC, abstractmethod
 
-from core.types import V2VMessage
+from core.vehicle_types import V2VMessage
 
 
 class V2VBase(ABC):

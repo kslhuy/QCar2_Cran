@@ -6,7 +6,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 
-from core.types import VehicleStateEstimate
+from core.vehicle_types import VehicleStateEstimate
 
 from ...fleet_types import DistributedFleetEstimate, FleetPeerSnapshot
 

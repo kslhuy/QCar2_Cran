@@ -12,7 +12,7 @@ try:
 except ImportError:
     from helper_fleet import run_fleet_integration
 
-_SCENARIO = _ROOT / "config" / "scenarios" / "carla_three_vehicle_fleet_control.yaml"
+_SCENARIO = _ROOT / "config" / "scenarios" / "test" / "carla_three_vehicle_fleet_control.yaml"
 _ARTIFACTS = _ROOT / "test" / "artifacts" / "carla_fleet_control"
 _FLEET_ORDER = (1, 2, 3)
 

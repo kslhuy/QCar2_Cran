@@ -8,7 +8,7 @@ should not know about vehicle hardware, observers, controllers, GUI, or V2V.
 import logging
 from abc import ABC, abstractmethod
 
-from core.types import ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControllerReference, VehicleStateEstimate
 
 
 class PathPlannerBase(ABC):

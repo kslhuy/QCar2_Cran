@@ -94,7 +94,7 @@ def _spawn_qcar_in_qlabs():
 
 
 # ===========================================================================
-# Tests — Live QLabs (auto-spawns if needed)
+# Tests â€” Live QLabs (auto-spawns if needed)
 # ===========================================================================
 
 @unittest.skip("QLabs live IO is deferred while the license is unavailable")
@@ -121,9 +121,9 @@ class TestIOQCar2LiveQLabs(unittest.TestCase):
 
         if need_spawn:
             if robots:
-                print("[SETUP] Cars found but ports dead — re-spawning ...")
+                print("[SETUP] Cars found but ports dead â€” re-spawning ...")
             else:
-                print("[SETUP] No cars found — auto-spawning ...")
+                print("[SETUP] No cars found â€” auto-spawning ...")
             robots = _spawn_qcar_in_qlabs()
 
         if not robots:
@@ -227,7 +227,7 @@ class TestIOQCar2LiveQLabs(unittest.TestCase):
         self.assertTrue(np.all(np.isfinite(data.accelerometer)))
 
     def test_write_zero(self):
-        from core.types import ControlInput
+        from core.vehicle_types import ControlInput
         self.io.write(ControlInput(throttle=0.0, steering=0.0, target_velocity=0.0))
 
     def test_stop(self):
@@ -242,7 +242,7 @@ class TestIOQCar2LiveQLabs(unittest.TestCase):
             time.sleep(0.01)
 
     def test_background_poll_thread_main_thread_reads_and_plots(self):
-        from core.types import ControlInput
+        from core.vehicle_types import ControlInput
 
         stop_event = threading.Event()
         poll_errors = []

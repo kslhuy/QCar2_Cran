@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Callable, Mapping
 
 from core.module_factory import build_vehicle_modules
 from core.commands import CommandSource, CommandType, VehicleCommand
 from core.vehicle_config import ConfigError, load_config
 from core.vehicle_logic import VehicleRuntime
+
+if TYPE_CHECKING:
+    from utils.fleet import FleetRuntimeSpec
 
 
 @dataclass(frozen=True)
@@ -21,9 +24,10 @@ class VehicleProcessSpec:
     selection_overrides: Mapping[str, str] | None = None
     value_overrides: Mapping[str, Any] | None = None
     resources: Mapping[str, Any] | None = None
+    fleet_spec: FleetRuntimeSpec | None = None
 
 
-def build_vehicle_process_runtime(spec: VehicleProcessSpec, logger=None, fleet=None) -> VehicleRuntime:
+def build_vehicle_process_runtime(spec: VehicleProcessSpec, logger=None) -> VehicleRuntime:
     """Build one runtime without assuming an IO or simulation backend."""
     overrides = deepcopy(dict(spec.value_overrides or {}))
     configured_id = overrides.get("vehicle_id")
@@ -36,7 +40,11 @@ def build_vehicle_process_runtime(spec: VehicleProcessSpec, logger=None, fleet=N
         value_overrides=overrides,
     )
     modules = build_vehicle_modules(config, logger=logger, resources=dict(spec.resources or {}))
-    if fleet is not None:
+    fleet = None
+    if spec.fleet_spec is not None:
+        from utils.fleet import build_fleet_manager
+
+        fleet = build_fleet_manager(spec.fleet_spec, config.vehicle_id, logger)
         fleet.attach_transport(modules.v2v)
     return VehicleRuntime(
         config, modules.io, modules.observer, modules.planner,

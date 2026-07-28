@@ -61,14 +61,8 @@ class BaseSimulatorProcessManager(ABC):
 
     @staticmethod
     def build_runtime(context: SimulatorProcessContext):
-        """Build one runtime with its optional process-local fleet interface."""
-        fleet_setup = getattr(context.setup, "fleet", None)
-        fleet = None
-        if fleet_setup is not None:
-            from utils.fleet import FleetManager
-
-            fleet = FleetManager(fleet_setup.registry, context.vehicle.vehicle_id)
-        return build_vehicle_process_runtime(context.spec, fleet=fleet)
+        """Build the common vehicle runtime from the prepared process spec."""
+        return build_vehicle_process_runtime(context.spec)
 
     def run(
         self,

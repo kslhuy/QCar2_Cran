@@ -16,3 +16,10 @@ static_carla:
   lookahead_distance: 1.2
   finish_tolerance: 0.40
   max_search_ahead: 30
+
+sdcs_small_map:
+  implementation: sdcs_small_map
+  sample_distance_m: 0.02
+  lookahead_distance: 0.25
+  finish_tolerance: 0.10
+  max_search_ahead: 80

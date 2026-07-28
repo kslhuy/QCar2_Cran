@@ -19,7 +19,7 @@ except ImportError:
 from extra.simulator.virtual import load_virtual_setup
 
 
-_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "virtual_two_vehicle_control.yaml"
+_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "test" / "virtual_two_vehicle_control.yaml"
 _ARTIFACT_DIR = _ROOT / "test" / "artifacts" / "virtual_multi_process_control"
 
 

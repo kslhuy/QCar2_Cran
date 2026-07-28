@@ -1,7 +1,7 @@
 # utils/control_utils/observer/base_observer.py
 
 """
-Base Observer — defines the interface every observer must implement.
+Base Observer â€” defines the interface every observer must implement.
 Concrete implementations live in their own files (kalman_observer.py, etc.).
 """
 
@@ -12,7 +12,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from core.types import SensorData, VehicleStateEstimate, ControlInput
+from core.vehicle_types import SensorData, VehicleStateEstimate, ControlInput
 
 
 class ObserverBase(ABC):
@@ -20,10 +20,10 @@ class ObserverBase(ABC):
     Abstract interface for all vehicle observers.
 
     Every observer implementation must provide:
-        start()   — initialize state
-        update()  — one estimation step, returns VehicleStateEstimate
-        get_latest() — return last estimate without recomputing
-        stop()    — cleanup
+        start()   â€” initialize state
+        update()  â€” one estimation step, returns VehicleStateEstimate
+        get_latest() â€” return last estimate without recomputing
+        stop()    â€” cleanup
         
     """
     __slots__ = ('_config', '_vehicle_id', '_logger')
@@ -61,7 +61,7 @@ class ObserverBase(ABC):
     def get_latest(self) -> VehicleStateEstimate:
         """
         Return the last computed state estimate without recomputing.
-        Safe to call at any time — returns zero state if not started.
+        Safe to call at any time â€” returns zero state if not started.
         """
         ...
 

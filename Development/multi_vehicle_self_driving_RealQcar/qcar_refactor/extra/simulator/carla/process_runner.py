@@ -21,7 +21,8 @@ class CarlaProcessManager(BaseSimulatorProcessManager):
         return load_carla_setup(setup_file)
 
     def build_process_spec(self, setup: CarlaSetup, vehicle: CarlaVehicleSetup):
-        return vehicle.to_process_spec(setup.simulation_profile)
+        fleet_spec = setup.fleet.to_runtime_spec() if setup.fleet is not None else None
+        return vehicle.to_process_spec(setup.simulation_profile, fleet_spec)
 
 
 def main(argv=None) -> int:

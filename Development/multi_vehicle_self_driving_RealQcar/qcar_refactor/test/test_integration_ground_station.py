@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.commands import CommandType, VehicleCommand
-from core.types import ControlInput, ControllerReference, SensorData, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, SensorData, VehicleStateEstimate
 from core.vehicle_config import ConfigVehicle
 from core.vehicle_logic import VehicleRuntime
 from extra.ground_station.server import GroundStationServer
@@ -20,7 +20,7 @@ from utils.ground_station.runtime_facade import GroundStationRuntimeFacade
 from utils.io.io_base import IONull
 from utils.v2v.v2v_base import V2VNull
 from utils.control.controller.controller_manual import ControllerManual
-from utils.control.controller.controller_manager import ControllerManager
+from utils.control.managers import ControllerManager
 
 
 def _wait_for(predicate, timeout_s: float = 3.0) -> bool:

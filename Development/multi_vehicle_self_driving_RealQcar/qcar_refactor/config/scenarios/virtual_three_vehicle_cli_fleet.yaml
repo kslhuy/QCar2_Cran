@@ -1,0 +1,46 @@
+# Operator-facing virtual fleet scenario, separate from integration-test inputs.
+# Run with --realtime so the ground-station CLI can observe and command it:
+# python -m extra.simulator.launcher --platform virtual --realtime --setup-file
+# config/scenarios/virtual_three_vehicle_cli_fleet.yaml --build-fleet
+simulation_profile: "null"
+
+fleet:
+  profile: default
+  formation_id: virtual_cli_three_vehicle
+  members:
+    - {vehicle_id: 1, role: leader, member_order: 0}
+    - {vehicle_id: 2, role: follower, member_order: 1}
+    - {vehicle_id: 3, role: follower, member_order: 2}
+
+vehicles:
+  - vehicle_id: 1
+    vehicle_config_file: config_vehicle_virtual.yaml
+    controller_profile: simple_qcar
+    initial_pose: [0.0, 0.0, 0.0]
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 2, ip: "127.0.0.1"}]}
+    mission:
+      # Broad alternating turns over 70 m keep the fleet active for about
+      # 200 seconds at 0.35 m/s.
+      path: [[0.0, 0.0], [5.0, 0.2], [10.0, 0.7], [15.0, 1.2], [20.0, 1.4], [25.0, 1.1], [30.0, 0.5], [35.0, -0.2], [40.0, -0.8], [45.0, -1.1], [50.0, -0.9], [55.0, -0.3], [60.0, 0.4], [65.0, 1.0], [70.0, 1.2]]
+      target_velocity: 0.35
+
+  - vehicle_id: 2
+    vehicle_config_file: config_vehicle_virtual.yaml
+    controller_profile: fleet_2d_virtual
+    initial_pose: [-1.2, 0.0, 0.0]
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 1, ip: "127.0.0.1"}, {vehicle_id: 3, ip: "127.0.0.1"}]}
+    mission:
+      path: [[-1.2, 0.0], [0.0, 0.0], [5.0, 0.2], [10.0, 0.7], [15.0, 1.2], [20.0, 1.4], [25.0, 1.1], [30.0, 0.5], [35.0, -0.2], [40.0, -0.8], [45.0, -1.1], [50.0, -0.9], [55.0, -0.3], [60.0, 0.4], [65.0, 1.0], [70.0, 1.2]]
+      target_velocity: 0.35
+
+  - vehicle_id: 3
+    vehicle_config_file: config_vehicle_virtual.yaml
+    controller_profile: fleet_2d_virtual
+    initial_pose: [-2.4, 0.0, 0.0]
+    v2v_profile: udp_default
+    v2v: {bind_ip: "127.0.0.1", peers: [{vehicle_id: 2, ip: "127.0.0.1"}]}
+    mission:
+      path: [[-2.4, 0.0], [-1.2, 0.0], [0.0, 0.0], [5.0, 0.2], [10.0, 0.7], [15.0, 1.2], [20.0, 1.4], [25.0, 1.1], [30.0, 0.5], [35.0, -0.2], [40.0, -0.8], [45.0, -1.1], [50.0, -0.9], [55.0, -0.3], [60.0, 0.4], [65.0, 1.0], [70.0, 1.2]]
+      target_velocity: 0.35

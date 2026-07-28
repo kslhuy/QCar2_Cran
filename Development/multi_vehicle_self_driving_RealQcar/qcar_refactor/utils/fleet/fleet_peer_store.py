@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from core.types import V2VMessage
+from core.vehicle_types import V2VMessage
 
 from .fleet_message import FleetMessageError, VEHICLE_STATE_ESTIMATE, decode_vehicle_state_estimate
 from .fleet_registry import FleetRegistry

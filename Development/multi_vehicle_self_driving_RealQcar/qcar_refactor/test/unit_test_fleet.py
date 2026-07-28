@@ -11,7 +11,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.commands import CommandType, VehicleCommand
-from core.types import V2VMessage, VehicleStateEstimate
+from core.vehicle_types import V2VMessage, VehicleStateEstimate
 from extra.simulator.virtual.process_runner import VirtualProcessManager
 from extra.simulator.virtual.scenario import load_virtual_setup
 from utils.fleet import (
@@ -28,6 +28,9 @@ from utils.fleet import (
     DistributedEstimateSource,
     DistributedObserverFake,
     DistributedObserverLuenberger,
+    FleetRuntimeSpec,
+    build_fleet_manager,
+    build_distributed_observer,
     VEHICLE_STATE_ESTIMATE,
     decode_vehicle_state_estimate,
     encode_vehicle_state_estimate,
@@ -81,6 +84,38 @@ def _message(sender_id: int, sequence: int, payload: dict, received_at: float) -
 
 
 class TestFleetFormation(unittest.TestCase):
+    def test_runtime_factory_builds_the_process_local_manager(self):
+        formation = FleetFormationBuilder().build(
+            "runtime",
+            (_member(1, "leader", 0), _member(2, "follower", 1)),
+            _policy(),
+        )
+        manager = build_fleet_manager(FleetRuntimeSpec(FleetRegistry(formation)), vehicle_id=1)
+        try:
+            self.assertEqual(manager.status().source_vehicle_id, 1)
+            self.assertIsNone(manager.distributed_estimate())
+        finally:
+            manager.shutdown()
+
+    def test_policy_selects_a_configured_distributed_observer(self):
+        policy = FleetPolicy.from_mapping(
+            {
+                "following_policy": "direct_predecessor",
+                "distributed_observer": {"implementation": "luenberger", "position_gain": 0.5},
+                "communication": {
+                    "topology": "predecessor_chain",
+                    "edge_direction": "directed",
+                    "ego_estimate_rate_hz": 20,
+                    "peer_timeout_s": 0.5,
+                },
+            }
+        )
+
+        observer = build_distributed_observer(policy.distributed_observer, vehicle_id=2)
+
+        self.assertEqual(policy.distributed_observer.implementation, "luenberger")
+        self.assertIsInstance(observer, DistributedObserverLuenberger)
+
     def test_builder_uses_member_order_not_yaml_order(self):
         formation = FleetFormationBuilder().build(
             "ordered",
@@ -192,7 +227,7 @@ class TestFleetRegistryAndStateMachine(unittest.TestCase):
 class TestFleetScenario(unittest.TestCase):
     def test_virtual_fleet_scenario_loads_profile_membership_and_routes(self):
         project_root = Path(__file__).resolve().parents[1]
-        setup = load_virtual_setup(project_root / "config" / "scenarios" / "virtual_two_vehicle_fleet.yaml")
+        setup = load_virtual_setup(project_root / "config" / "scenarios" / "test" / "virtual_two_vehicle_fleet.yaml")
 
         self.assertIsNotNone(setup.fleet)
         assert setup.fleet is not None
@@ -204,10 +239,11 @@ class TestFleetScenario(unittest.TestCase):
     def test_process_manager_attaches_a_local_lifecycle_for_fleet_member(self):
         project_root = Path(__file__).resolve().parents[1]
         manager = VirtualProcessManager(
-            project_root / "config" / "scenarios" / "virtual_two_vehicle_fleet.yaml",
+            project_root / "config" / "scenarios" / "test" / "virtual_two_vehicle_fleet.yaml",
             vehicle_id=1,
         )
         context = manager.prepare()
+        self.assertIsNotNone(context.spec.fleet_spec)
         runtime = manager.build_runtime(context)
         try:
             self.assertIsNotNone(runtime.fleet)

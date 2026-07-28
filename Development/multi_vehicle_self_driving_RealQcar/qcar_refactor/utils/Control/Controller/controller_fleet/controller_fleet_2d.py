@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from core.types import ControlInput, ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, VehicleStateEstimate
 from .controller_fleet_base import ControllerFleetBase
 def _wrap(angle: float) -> float:
     return (angle + math.pi) % (2.0 * math.pi) - math.pi

@@ -11,7 +11,15 @@ import yaml
 
 from core.vehicle_config import ConfigError, load_module_profile
 from core.vehicle_process import VehicleProcessSpec
-from utils.fleet import FleetError, FleetFormation, FleetFormationBuilder, FleetMember, FleetPolicy, FleetRegistry
+from utils.fleet import (
+    FleetError,
+    FleetFormation,
+    FleetFormationBuilder,
+    FleetMember,
+    FleetPolicy,
+    FleetRegistry,
+    FleetRuntimeSpec,
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +32,10 @@ class FleetSetup:
     @property
     def formation(self) -> FleetFormation:
         return self.registry.snapshot()
+
+    def to_runtime_spec(self) -> FleetRuntimeSpec:
+        """Return the platform-neutral fleet inputs for one vehicle process."""
+        return FleetRuntimeSpec(self.registry)
 
 
 def load_yaml_mapping(path: str | Path, platform_name: str, error_type: type[Exception]) -> dict[str, Any]:
@@ -93,6 +105,7 @@ def build_vehicle_process_spec(
     selection_overrides: Mapping[str, str] | None = None,
     v2v: Mapping[str, Any] | None = None,
     v2v_profile: str | None = None,
+    fleet_spec: FleetRuntimeSpec | None = None,
 ) -> VehicleProcessSpec:
     """Build the common process contract from one parsed simulator vehicle."""
     resolved_route = [list(point) for point in route]
@@ -116,6 +129,7 @@ def build_vehicle_process_spec(
         vehicle_config_file=vehicle_config_file,
         selection_overrides=selected_modules or None,
         value_overrides={"mission": mission, "modules": resolved_modules},
+        fleet_spec=fleet_spec,
     )
 
 

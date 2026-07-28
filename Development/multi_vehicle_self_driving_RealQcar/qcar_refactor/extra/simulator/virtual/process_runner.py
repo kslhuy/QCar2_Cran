@@ -22,7 +22,8 @@ class VirtualProcessManager(BaseSimulatorProcessManager):
         return load_virtual_setup(setup_file)
 
     def build_process_spec(self, setup: VirtualSetup, vehicle: VirtualVehicleSetup):
-        return vehicle.to_process_spec(setup.simulation_profile)
+        fleet_spec = setup.fleet.to_runtime_spec() if setup.fleet is not None else None
+        return vehicle.to_process_spec(setup.simulation_profile, fleet_spec)
 
 
 def run_virtual_vehicle(vehicle: VirtualVehicleSetup, cycles: int, dt_s: float, realtime: bool = False):

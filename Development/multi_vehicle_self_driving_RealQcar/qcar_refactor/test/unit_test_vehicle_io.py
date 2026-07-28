@@ -15,7 +15,7 @@ import numpy as np
 # Ensure the qcar_refactor package is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.types import SensorData, ControlInput
+from core.vehicle_types import SensorData, ControlInput
 from utils.io.io_base import IOBase, IONull
 vio_mod = importlib.import_module("utils.io.io_base")
 
@@ -32,7 +32,7 @@ class _TestVehicleIO(IOBase):
         self.poll_gps_count = 0
         self.last_throttle = None
         self.last_steering = None
-        # Optional override: dict with SensorData field names → values
+        # Optional override: dict with SensorData field names â†’ values
         self._fake_sensor = None
         self._fake_gps = None
 
@@ -204,7 +204,7 @@ class TestVehicleIO(unittest.TestCase):
         self.assertEqual(self.io.poll_gps_count, 1)
 
     # ------------------------------------------------------------------
-    # 5. read_to_cache() + read() — poll then snapshot
+    # 5. read_to_cache() + read() â€” poll then snapshot
     # ------------------------------------------------------------------
 
     @patch("utils.io.io_base.time.time")
@@ -222,7 +222,7 @@ class TestVehicleIO(unittest.TestCase):
     def test_read_returns_snapshot_after_poll(self, mock_time):
         """read() returns a copy of whatever read_to_cache() populated."""
         mock_time.return_value = 200.0
-        self.io.read_to_cache()          # poll hardware → cache
+        self.io.read_to_cache()          # poll hardware â†’ cache
         data = self.io.read()            # read snapshot (no poll)
         self.assertIsInstance(data, SensorData)
         self.assertEqual(data.motor_tach, 1.0)
@@ -232,13 +232,13 @@ class TestVehicleIO(unittest.TestCase):
 
     @patch("utils.io.io_base.time.time")
     def test_read_is_pure_snapshot_no_side_effect(self, mock_time):
-        """read() must NEVER trigger a poll — it's a pure getter."""
+        """read() must NEVER trigger a poll â€” it's a pure getter."""
         mock_time.return_value = 200.0
         # First call: read without any prior poll
         before_sensor = self.io.poll_sensor_count
         before_gps = self.io.poll_gps_count
         data = self.io.read()
-        # Poll counts unchanged — read() does not poll
+        # Poll counts unchanged â€” read() does not poll
         self.assertEqual(self.io.poll_sensor_count, before_sensor)
         self.assertEqual(self.io.poll_gps_count, before_gps)
         # Returns defaults (cache was never populated)
@@ -388,12 +388,12 @@ class TestVehicleIO(unittest.TestCase):
         self.assertEqual(self.io.poll_sensor_count, 1)
 
     # ------------------------------------------------------------------
-    # 10. Continuous read loop — single-thread baseline
+    # 10. Continuous read loop â€” single-thread baseline
     # ------------------------------------------------------------------
 
     @patch("utils.io.io_base.time.time")
     def test_single_thread_continuous_read_loop(self, mock_time):
-        """Simulate a control loop: poll → read → poll → read with advancing time."""
+        """Simulate a control loop: poll â†’ read â†’ poll â†’ read with advancing time."""
         mock_time.return_value = 100.0
         iterations = 60
 
@@ -416,7 +416,7 @@ class TestVehicleIO(unittest.TestCase):
         self.assertEqual(self.io.poll_sensor_count, 1)
         self.assertEqual(self.io.poll_gps_count, 1)
 
-        # Multiple reads — none trigger a poll
+        # Multiple reads â€” none trigger a poll
         for _ in range(5):
             data = self.io.read()
             self.assertIsInstance(data, SensorData)
@@ -430,7 +430,7 @@ class TestVehicleIO(unittest.TestCase):
 
     def test_lock_prevents_cross_thread_data_leak(self):
         """Under concurrent read() calls, each thread gets a self-consistent
-        snapshot — sensor and GPS from the same poll moment (same thread's tag)."""
+        snapshot â€” sensor and GPS from the same poll moment (same thread's tag)."""
         errors = []
         iterations = 100
         ready = threading.Barrier(2)
@@ -467,12 +467,12 @@ class TestVehicleIO(unittest.TestCase):
                     data = self.io.read()
                     sensor_tag = int(data.motor_tach)
                     gps_tag = int(data.gps_position[0])
-                    # Each caller's sensor and GPS must match —
+                    # Each caller's sensor and GPS must match â€”
                     # proving the lock gave a consistent snapshot
                     self.assertEqual(
                         sensor_tag, gps_tag,
-                        f"LOCK FAILED: sensor tag={sensor_tag} ≠ gps tag={gps_tag} "
-                        f"— cross-thread data leak in read()"
+                        f"LOCK FAILED: sensor tag={sensor_tag} â‰  gps tag={gps_tag} "
+                        f"â€” cross-thread data leak in read()"
                     )
                 except Exception as e:
                     errors.append(str(e))
@@ -490,7 +490,7 @@ class TestVehicleIO(unittest.TestCase):
         self.assertEqual(errors, [], f"Thread errors: {errors}")
 
     def test_multi_thread_write_during_read(self):
-        """write() from one thread while another polls+reads — verify no crash."""
+        """write() from one thread while another polls+reads â€” verify no crash."""
         far_future = 1e15
         self.io._sensor_data_cache.sensor_timestamp = far_future
         self.io._sensor_data_cache.gps_timestamp = far_future
@@ -541,7 +541,7 @@ class TestVehicleIO(unittest.TestCase):
         ready = threading.Barrier(3)
 
         def ros2_sensor_callback():
-            """Simulate a ROS2 subscriber callback — writes directly to cache."""
+            """Simulate a ROS2 subscriber callback â€” writes directly to cache."""
             ready.wait()
             for i in range(iterations):
                 try:

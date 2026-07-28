@@ -2,7 +2,7 @@ import logging, time, threading
 import numpy as np
 from abc import ABC, abstractmethod
 
-from core.types import SensorData, ControlInput
+from core.vehicle_types import SensorData, ControlInput
 
 class IOBase(ABC):
     """
@@ -20,7 +20,7 @@ class IOBase(ABC):
         self._reading_sensor_rate_hz = self._config["read"]["sensor_rate_hz"]
         self._reading_gps_rate_hz = self._config["read"]["gps_rate_hz"]
         self._vehicle_id = int(vehicle_id)
-        # Single combined buffer — sensor + GPS share one SensorData
+        # Single combined buffer â€” sensor + GPS share one SensorData
         self._sensor_data_cache = SensorData(
             motor_tach=0.0, gyro_z=0.0, accelerometer=np.zeros(3), sensor_timestamp=0.0,
             gps_valid=False, gps_position=np.zeros(3), gps_timestamp=0.0,
@@ -38,7 +38,7 @@ class IOBase(ABC):
     @abstractmethod
     def _poll_sensors(self):
         """Write sensor fields DIRECTLY to self._sensor_data_cache.
-        Called under _cache_lock — no need to return anything."""
+        Called under _cache_lock â€” no need to return anything."""
         self._sensor_data_cache.motor_tach = 0.0
         self._sensor_data_cache.gyro_z = 0.0
         self._sensor_data_cache.accelerometer = np.zeros(3)
@@ -182,7 +182,7 @@ class IONull(IOBase):
     """No-hardware stub. Never polls; always returns safe defaults."""
 
     def __init__(self, config: dict, vehicle_id: int = 0, logger=None):
-        # Bypass rate logic — never poll hardware
+        # Bypass rate logic â€” never poll hardware
         super().__init__(config, vehicle_id, logger)
         self._max_throttle = 1.0
         self._max_steering = 1.0

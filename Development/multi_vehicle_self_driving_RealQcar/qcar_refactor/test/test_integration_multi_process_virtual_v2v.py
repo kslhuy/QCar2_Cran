@@ -17,7 +17,7 @@ except ImportError:
     from helper_v2v_diagnostics import assert_two_vehicle_v2v_results, write_v2v_artifacts
 
 
-_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "virtual_two_vehicle.yaml"
+_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "test" / "virtual_two_vehicle.yaml"
 _ARTIFACT_DIR = _ROOT / "test" / "artifacts" / "virtual_multi_process_v2v"
 _DURATION_S = 6.0
 _DT_S = 0.02

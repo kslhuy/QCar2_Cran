@@ -15,7 +15,7 @@ except ImportError:
     from helper_simulator_process import run_two_vehicle_workers
 
 
-_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "virtual_two_vehicle.yaml"
+_SCENARIO_FILE = _ROOT / "config" / "scenarios" / "test" / "virtual_two_vehicle.yaml"
 
 
 class TestMultiProcessVirtualIntegration(unittest.TestCase):

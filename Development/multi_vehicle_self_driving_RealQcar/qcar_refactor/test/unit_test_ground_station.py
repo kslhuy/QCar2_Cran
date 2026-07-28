@@ -11,7 +11,7 @@ import msgpack
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.commands import CommandOutcome, CommandResult, CommandType, VehicleCommand
-from core.types import ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControllerReference, VehicleStateEstimate
 from utils.ground_station.monitoring import MonitoringSnapshot
 from extra.ground_station.command_handler import GroundStationCommandHandler
 from extra.ground_station.dashboard import GroundStationDashboard
@@ -44,7 +44,12 @@ def _snapshot(vehicle_id: int) -> MonitoringSnapshot:
         io_healthy=True,
         observer_healthy=True,
         v2v_status={"messages_received": 4, "packets_dropped": 1},
-        fleet_summary={"peer_count": 0, "peer_health": []},
+        fleet_summary={
+            "peer_count": 0,
+            "peer_health": [],
+            "expected_peer_ids": [],
+            "peer_ages_s": {},
+        },
         control_reference={
             "target_x_m": 5.0,
             "target_y_m": 1.0,
@@ -273,11 +278,34 @@ class TestGroundStationBridgeAndServer(unittest.TestCase):
         rendered = dashboard.render(self.server.session_rows(), now_monotonic=time.monotonic())
 
         self.assertIn("RUNNING", rendered)
-        self.assertIn("4/1", rendered)
+        self.assertIn("4/   0/1", rendered)
+        self.assertIn("1.2, -0.5, 0.10; 0.60", rendered)
         self.assertIn("5.0, 1.0; 0.70", rendered)
+        self.assertIn("valid", rendered)
         self.assertIn("unavailable", rendered)
         stale = dashboard.render(self.server.session_rows(), now_monotonic=time.monotonic() + 1.0)
         self.assertIn("stale", stale)
+
+    def test_dashboard_shows_required_peer_freshness_and_fleet_fault_reason(self):
+        snapshot = _snapshot(7).to_mapping()
+        snapshot["fleet_phase"] = "disabled"
+        snapshot["fleet_summary"] = {
+            "configured": True,
+            "role": "follower",
+            "peer_count": 0,
+            "peer_health": [[1, False]],
+            "expected_peer_ids": [1],
+            "peer_ages_s": {},
+            "reason": "fleet peer became stale",
+        }
+
+        rendered = GroundStationDashboard().render(
+            [{"vehicle_id": 7, "connection_state": "connected", "snapshot": snapshot, "last_monitoring_monotonic": 2.0}],
+            now_monotonic=2.0,
+        )
+
+        self.assertIn("1:missing", rendered)
+        self.assertIn("fleet:fleet peer became stale", rendered)
 
     def test_client_reconnects_to_a_restarted_single_listener(self):
         port = self.server.port

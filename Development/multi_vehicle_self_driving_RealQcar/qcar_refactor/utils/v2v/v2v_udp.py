@@ -12,7 +12,7 @@ import time
 from collections import deque
 from typing import Any, Optional
 
-from core.types import V2VMessage
+from core.vehicle_types import V2VMessage
 from utils.v2v.v2v_base import V2VBase
 
 
