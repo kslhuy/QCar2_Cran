@@ -6,6 +6,7 @@ Run from the qcar_refactor directory:
 """
 import csv
 import os
+from pathlib import Path
 import sys
 import unittest
 
@@ -14,17 +15,14 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.vehicle_types import SensorData, VehicleStateEstimate
+from test.helper_artifacts import create_artifact_run
 from utils.control.observer.observer_ekf import ObserverEKF
 
 
 EKF_CONFIG = {"wheelbase": 0.3}
 
 
-ARTIFACT_CSV = os.path.join(
-    os.path.dirname(__file__),
-    "artifacts",
-    "qcar_io_background_buffer.csv",
-)
+ARTIFACT_CSV = Path(__file__).resolve().parent / "fixtures" / "qcar" / "qcar_io_background_buffer.csv"
 
 
 def _bool_from_csv(value):
@@ -460,9 +458,13 @@ class TestEKFWithRecordedData(unittest.TestCase):
         ax_command.set_title("Input Command")
         ax_command.legend(loc="best", fontsize=8)
 
-        output_dir = os.path.join(os.path.dirname(__file__), "artifacts")
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, "ekf_estimation_vs_gps.png")
+        artifacts = create_artifact_run(
+            category="diagnostic",
+            platform="qcar",
+            test_name="ekf_estimation",
+            metadata={"source_recording": Path(ARTIFACT_CSV).name, "samples": len(self.sensor_data)},
+        )
+        output_path = artifacts.figures_directory / "ekf_estimation_vs_gps.png"
         fig.savefig(output_path, dpi=120)
         plt.close(fig)
         print(f"[PLOT] saved {output_path}")

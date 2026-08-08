@@ -6,9 +6,7 @@ import argparse
 import logging
 import time
 
-from core.vehicle_config import load_config
-from core.module_factory import build_vehicle_modules
-from core.vehicle_logic import VehicleRuntime
+from core.vehicle_process import VehicleProcessSpec, build_vehicle_process_runtime
 
 
 def main(argv=None) -> int:
@@ -24,8 +22,6 @@ def main(argv=None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     value_overrides = {}
-    if args.vehicle_id is not None:
-        value_overrides["vehicle_id"] = args.vehicle_id
     selection_overrides = {}
     if args.ground_station is not None:
         selection_overrides["ground_station"] = args.ground_station
@@ -39,23 +35,15 @@ def main(argv=None) -> int:
     vehicle_config_file = args.vehicle_config or (
         "config_vehicle_headless.yaml" if args.headless else "config_vehicle.yaml"
     )
-    config = load_config(
-        vehicle_config_file=vehicle_config_file,
-        selection_overrides=selection_overrides or None,
-        value_overrides=value_overrides,
+    runtime = build_vehicle_process_runtime(
+        VehicleProcessSpec(
+            vehicle_id=args.vehicle_id,
+            vehicle_config_file=vehicle_config_file,
+            selection_overrides=selection_overrides or None,
+            value_overrides=value_overrides,
+        )
     )
-    modules = build_vehicle_modules(config)
-    runtime = VehicleRuntime(
-        config,
-        modules.io,
-        modules.observer,
-        modules.planner,
-        modules.controller_manager,
-        modules.v2v,
-        simulation=modules.simulation,
-        ground_station=modules.ground_station,
-    )
-    period_s = 1.0 / config.runtime["loop_rate_hz"]
+    period_s = 1.0 / runtime.config.runtime["loop_rate_hz"]
 
     try:
         runtime.start()

@@ -15,5 +15,7 @@ modules:
   ground_station: "null"
 
 mission:
-  path: refs/qcar_origin/PathPlanner/path_rich_output/pp_waypoints.csv
+  # Physical deployment starts route-free. Select an approved path explicitly
+  # through the ground station or a dedicated operational vehicle profile.
+  path: null
   target_velocity: 0.6

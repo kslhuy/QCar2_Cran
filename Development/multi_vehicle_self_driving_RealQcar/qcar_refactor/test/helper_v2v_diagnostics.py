@@ -16,12 +16,15 @@ def assert_two_vehicle_v2v_results(test_case, results: dict[int, dict], cycles: 
         test_case.assertGreater(max(trace["messages_received"] for trace in result["v2v_trace"]), 0)
 
 
-def write_v2v_artifacts(results: dict[int, dict], artifact_dir: Path, platform_name: str) -> None:
+def write_v2v_artifacts(
+    results: dict[int, dict], raw_directory: Path, figures_directory: Path, platform_name: str
+) -> None:
     """Write platform-neutral peer traces and one common diagnostic plot."""
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    raw_directory.mkdir(parents=True, exist_ok=True)
+    figures_directory.mkdir(parents=True, exist_ok=True)
     flattened = {vehicle_id: _flatten_trace(result["v2v_trace"]) for vehicle_id, result in results.items()}
     for vehicle_id, rows in flattened.items():
-        with (artifact_dir / f"vehicle_{vehicle_id}_v2v.csv").open("w", newline="", encoding="ascii") as file:
+        with (raw_directory / f"vehicle_{vehicle_id}_v2v.csv").open("w", newline="", encoding="ascii") as file:
             writer = csv.DictWriter(file, fieldnames=list(rows[0]))
             writer.writeheader()
             writer.writerows(rows)
@@ -90,7 +93,7 @@ def write_v2v_artifacts(results: dict[int, dict], artifact_dir: Path, platform_n
     axes[3].set_ylabel("packets")
     axes[3].grid(True, alpha=0.3)
     axes[3].legend()
-    figure.savefig(artifact_dir / "peer_state_latency_loss.png", dpi=150)
+    figure.savefig(figures_directory / "peer_state_latency_loss.png", dpi=150)
     plt.close(figure)
 
 

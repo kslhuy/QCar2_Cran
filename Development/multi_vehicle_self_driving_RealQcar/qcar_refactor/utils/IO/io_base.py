@@ -1,8 +1,10 @@
+from collections import deque
 import logging, time, threading
 import numpy as np
 from abc import ABC, abstractmethod
+from typing import Optional
 
-from core.vehicle_types import SensorData, ControlInput
+from core.vehicle_types import ControlInput, LaserScanSample, SensorData
 
 class IOBase(ABC):
     """
@@ -28,6 +30,11 @@ class IOBase(ABC):
         self._command_cache = ControlInput(throttle=0.0, steering=0.0, target_velocity=0.0)
         self._cache_lock = threading.RLock()
         self._lifecycle_lock = threading.RLock()
+        self._lidar_lock = threading.Lock()
+        self._lidar_scans = deque(maxlen=self._lidar_queue_capacity())
+        self._lidar_accepted = 0
+        self._lidar_dropped = 0
+        self._latest_lidar_scan = None
         self._stopped = False
         self._closed = False
 
@@ -87,6 +94,60 @@ class IOBase(ABC):
                 gps_position=self._sensor_data_cache.gps_position.copy(),
                 gps_timestamp=self._sensor_data_cache.gps_timestamp,
             )
+
+    def _publish_lidar_scan(self, scan: LaserScanSample) -> None:
+        """Store one locally converted LiDAR frame for a later single drain."""
+
+        if not isinstance(scan, LaserScanSample):
+            raise TypeError("LiDAR publisher requires a LaserScanSample")
+        with self._lidar_lock:
+            if len(self._lidar_scans) == self._lidar_scans.maxlen:
+                self._lidar_dropped += 1
+            self._lidar_scans.append(scan)
+            self._lidar_accepted += 1
+            self._latest_lidar_scan = scan
+
+    def set_lidar_enabled(self, enabled: bool) -> bool:
+        """Enable or disable local LiDAR acquisition when this IO supports it.
+
+        The base adapter has no LiDAR resource. Platform adapters override
+        this method without importing ground-station transport code.
+        """
+
+        if not isinstance(enabled, bool):
+            raise ValueError("LiDAR enabled state must be boolean")
+        return False
+
+    def latest_lidar_scan(self) -> Optional[LaserScanSample]:
+        """Return the newest local scan without consuming the localisation queue."""
+
+        with self._lidar_lock:
+            return self._latest_lidar_scan
+
+    def drain_lidar_scans(self):
+        """Return locally captured normalized scans exactly once.
+
+        Core runtime code does not use this optional interface yet.  It is
+        intentionally available to local localisation and diagnostic workers;
+        no scan data is sent to the ground station by this operation.
+        """
+
+        with self._lidar_lock:
+            scans = tuple(self._lidar_scans)
+            self._lidar_scans.clear()
+            return scans
+
+    def lidar_status(self) -> dict:
+        """Return local LiDAR queue counters for monitoring or diagnostics."""
+
+        with self._lidar_lock:
+            return {
+                "accepted": self._lidar_accepted,
+                "dropped": self._lidar_dropped,
+                "queued": len(self._lidar_scans),
+                "available": False,
+                "enabled": False,
+            }
     
     # ------------------------------------------------------------------
     # write control input to vehicle.
@@ -176,6 +237,14 @@ class IOBase(ABC):
     @staticmethod
     def _clip(value, lo, hi):
         return max(lo, min(hi, value))
+
+    def _lidar_queue_capacity(self) -> int:
+        sensors = self._config.get("sensors", {})
+        lidar = sensors.get("lidar", {}) if isinstance(sensors, dict) else {}
+        value = lidar.get("queue_capacity", 8) if isinstance(lidar, dict) else 8
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError("LiDAR queue_capacity must be a positive integer")
+        return value
 
 
 class IONull(IOBase):

@@ -53,7 +53,15 @@ def build_io(config: ConfigVehicle, logger=None, resources: dict | None = None, 
         qcar = devices.get("qcar")
         if qcar is None:
             raise ConfigError("QCar IO requires resources['qcar'] from an external device bootstrap")
-        return IOQCar2(io_config, qcar=qcar, gps=devices.get("gps"), vehicle_id=config.vehicle_id, logger=logger)
+        return IOQCar2(
+            io_config,
+            qcar=qcar,
+            gps=devices.get("gps"),
+            lidar=devices.get("lidar"),
+            lidar_manager=devices.get("lidar_manager"),
+            vehicle_id=config.vehicle_id,
+            logger=logger,
+        )
     if implementation == "virtual":
         from utils.io.io_virtual import IOVirtual
 
@@ -73,7 +81,7 @@ def build_simulation(config: ConfigVehicle, logger=None, resources: dict | None 
     if implementation == "null":
         return None
     if implementation == "carla":
-        from extra.simulator.carla.session import CarlaSession
+        from extra.platform.carla.session import CarlaSession
 
         dependencies = resources or {}
         return CarlaSession(

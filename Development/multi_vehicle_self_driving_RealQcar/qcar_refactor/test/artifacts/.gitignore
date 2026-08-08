@@ -1,0 +1,4 @@
+# Generated test runs are local evidence, not source inputs.  Existing tracked
+# legacy artifacts remain visible to Git until they are explicitly migrated.
+*
+!.gitignore

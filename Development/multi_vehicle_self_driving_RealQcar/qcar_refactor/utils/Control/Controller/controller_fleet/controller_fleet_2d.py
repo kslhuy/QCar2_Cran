@@ -25,7 +25,9 @@ class ControllerFleet2D(ControllerFleetBase):
         virtual_y = target.target_y - desired_gap * math.sin(target.target_theta)
         distance = math.hypot(target.target_x - state.x, target.target_y - state.y)
         target_velocity = self._clip(target.target_velocity + self.gap_gain * (distance - desired_gap), 0.0, self.max_velocity)
-        throttle = self._clip(self.kp_velocity * (target_velocity - state.velocity), self.min_throttle, self.max_throttle)
         heading = math.atan2(virtual_y - state.y, virtual_x - state.x)
+
+        
+        throttle = self._clip(self.kp_velocity * (target_velocity - state.velocity), self.min_throttle, self.max_throttle)
         steering = self._clip(self.steering_gain * _wrap(heading - state.theta), -self.max_steering, self.max_steering)
         return ControlInput(throttle, steering, target_velocity, "fleet_2d_controller")

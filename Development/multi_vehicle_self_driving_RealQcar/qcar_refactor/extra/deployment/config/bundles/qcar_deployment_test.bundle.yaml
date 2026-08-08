@@ -1,0 +1,20 @@
+# Safe QCar deployment-validation bundle.  It deliberately has no route data;
+# config_vehicle_deployment_test.yaml sets mission.path to null.
+bundle:
+  source_root: "../../../.."
+  include:
+    - core
+    - utils
+    - extra/__init__.py
+    - extra/platform/__init__.py
+    - extra/platform/base.py
+    - extra/platform/qcar
+    - config/config_vehicle_deployment_test.yaml
+    - config/config_model.yaml
+    - config/config_io.yaml
+    - config/config_observer.yaml
+    - config/config_planner.yaml
+    - config/config_controller.yaml
+    - config/config_v2v.yaml
+    - config/config_simulation.yaml
+    - config/config_ground_station.yaml

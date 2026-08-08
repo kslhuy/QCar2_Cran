@@ -4,9 +4,11 @@ import os
 import sys
 import unittest
 
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from extra.simulator.carla.session import CarlaSession
+from extra.platform.carla.session import CarlaSession
 
 
 class _Settings:
@@ -199,6 +201,36 @@ class TestCarlaSession(unittest.TestCase):
         finally:
             session.close()
         self.assertEqual(self.world.applied_settings, [])
+
+    def test_lidar_callback_queues_a_copied_raw_measurement(self):
+        config = {
+            **_CONFIG,
+            "sensors": {
+                **_CONFIG["sensors"],
+                "lidar": {
+                    "enabled": True,
+                    "blueprint": "sensor.lidar.ray_cast",
+                    "transform": {},
+                    "scan": {"frame_id": "laser", "bin_count": 8, "range_min_m": 0.05, "range_max_m": 20.0},
+                },
+            },
+        }
+        session = CarlaSession(config, client=_Client(self.world), carla_api=_Carla)
+        try:
+            session.start()
+            lidar = self.world.sensors[1]
+            points = np.array([3.0, 0.0, 0.0, 1.0], dtype=np.float32)
+            lidar.callback(type("Lidar", (), {"timestamp": 0.15, "frame": 3, "raw_data": points.tobytes()})())
+
+            measurements = session.drain_lidar_measurements()
+
+            self.assertEqual(len(measurements), 1)
+            self.assertEqual(measurements[0].frame, 3)
+            self.assertEqual(measurements[0].timestamp_s, 0.15)
+            self.assertEqual(measurements[0].raw_data, points.tobytes())
+            self.assertEqual(session.drain_lidar_measurements(), ())
+        finally:
+            session.close()
 
 
 if __name__ == "__main__":

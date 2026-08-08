@@ -1,6 +1,7 @@
 """Direct-run CARLA integration test for the SDCS small-map path planner."""
 
 import csv
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -14,6 +15,7 @@ from core.module_factory import build_vehicle_modules
 from core.vehicle_config import load_config
 from core.vehicle_logic import VehicleRuntime
 from core.vehicle_state_machine import State
+from test.helper_artifacts import create_artifact_run
 from utils.control.path_planner import SDCSSmallMapRoadMap
 
 
@@ -25,9 +27,30 @@ class TestLiveCarlaSDCSSmallMapPath(unittest.TestCase):
 
     def test_follows_sdcs_small_map_route_and_writes_artifacts(self):
         roadmap = SDCSSmallMapRoadMap()
-        config = load_config(vehicle_config_file="config_vehicle_sdcs_small_map.yaml")
-        node_sequence = tuple(config.mission["node_sequence"])
-        route = roadmap.generate_path(node_sequence)
+        node_sequence = (0, 2, 4, 6, 10)
+        loop = 1
+        # The runtime expands a finite loop by returning from the last node to
+        # the first.  Use that same closed route for the telemetry comparison;
+        # otherwise the valid 10 -> 0 return leg is reported as cross-track
+        # error against the open 0 -> 10 reference.
+        route_node_sequence = (*node_sequence, node_sequence[0])
+        config = load_config(
+            vehicle_config_file="config_vehicle_carla.yaml",
+            selection_overrides={"ground_station": "null"},
+            value_overrides={
+                "mission": {"node_sequence": list(node_sequence), "loop": loop, "target_velocity": 5.0},
+                "modules": {
+                    "observer": {
+                        "initial_pose": {"x": -1.14, "y": 1.053177, "theta": -math.pi / 2.0}
+                    },
+                    "planner": {"node_sequence": list(node_sequence), "loop": loop, "target_velocity": 5.0},
+                    "simulation": {
+                        "spawn_transform": {"x": -1.14, "y": -1.053177, "z": 0.5, "yaw": 90.0}
+                    },
+                },
+            },
+        )
+        route = roadmap.generate_path(route_node_sequence)
         modules = build_vehicle_modules(config)
         runtime = VehicleRuntime(
             config,
@@ -47,6 +70,11 @@ class TestLiveCarlaSDCSSmallMapPath(unittest.TestCase):
             self.assertEqual(runtime.handle_command(VehicleCommand(CommandType.START)).runtime_state, State.RUNNING.name)
             for _ in range(round(self._DURATION_S / fixed_delta_s)):
                 telemetry = runtime.step(dt=fixed_delta_s)
+                lidar_scans = runtime.io.drain_lidar_scans()
+                finite_lidar_bins = sum(
+                    sum(math.isfinite(distance) for distance in scan.ranges_m)
+                    for scan in lidar_scans
+                )
                 rows.append(
                     {
                         "time_s": telemetry.sensor_data.sensor_timestamp,
@@ -60,6 +88,8 @@ class TestLiveCarlaSDCSSmallMapPath(unittest.TestCase):
                         "target_speed_mps": telemetry.target.target_velocity,
                         "throttle": telemetry.command.throttle,
                         "steering_rad": telemetry.command.steering,
+                        "lidar_scan_count": len(lidar_scans),
+                        "lidar_finite_bin_count": finite_lidar_bins,
                         "state": telemetry.state.name,
                     }
                 )
@@ -72,7 +102,13 @@ class TestLiveCarlaSDCSSmallMapPath(unittest.TestCase):
         gps = np.asarray([[row["gps_x_m"], row["gps_y_m"]] for row in rows], dtype=float)
         targets = np.asarray([[row["target_x_m"], row["target_y_m"]] for row in rows], dtype=float)
         cross_track_error = _nearest_route_distance(gps, route[:, :2])
-        self._write_artifacts(rows, route, cross_track_error)
+        artifacts = create_artifact_run(
+            category="integration",
+            platform="carla",
+            test_name="sdcs_path",
+            metadata={"node_sequence": list(node_sequence), "loop": loop, "samples": len(rows)},
+        )
+        self._write_artifacts(rows, route, cross_track_error, artifacts.raw_directory, artifacts.figures_directory)
 
         self.assertGreaterEqual(len(rows), 1000)
         self.assertTrue(all(row["state"] == State.RUNNING.name for row in rows[:-1]))
@@ -82,13 +118,20 @@ class TestLiveCarlaSDCSSmallMapPath(unittest.TestCase):
         self.assertGreater(max(row["speed_mps"] for row in rows), 0.15)
         self.assertGreater(max(row["throttle"] for row in rows), 0.01)
         self.assertGreater(max(abs(row["steering_rad"]) for row in rows), 0.02)
+        self.assertGreater(sum(row["lidar_scan_count"] for row in rows), 0)
+        self.assertGreater(max(row["lidar_finite_bin_count"] for row in rows), 0)
         self.assertLess(np.percentile(cross_track_error, 90.0), 2.0)
         self.assertLess(np.linalg.norm(gps[-1] - route[-1, :2]), 0.5)
 
-    def _write_artifacts(self, rows: list[dict], route: np.ndarray, cross_track_error: np.ndarray) -> None:
-        artifact_dir = Path(__file__).resolve().parent / "artifacts"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = artifact_dir / "integration_carla_sdcs_path.csv"
+    def _write_artifacts(
+        self,
+        rows: list[dict],
+        route: np.ndarray,
+        cross_track_error: np.ndarray,
+        raw_directory: Path,
+        figures_directory: Path,
+    ) -> None:
+        csv_path = raw_directory / "integration_carla_sdcs_path.csv"
         with csv_path.open("w", newline="", encoding="ascii") as file:
             writer = csv.DictWriter(file, fieldnames=[*rows[0], "cross_track_error_m"])
             writer.writeheader()
@@ -138,7 +181,7 @@ class TestLiveCarlaSDCSSmallMapPath(unittest.TestCase):
         axes[1, 1].grid(True)
         axes[1, 1].legend()
 
-        plot_path = artifact_dir / "integration_carla_sdcs_path.png"
+        plot_path = figures_directory / "integration_carla_sdcs_path.png"
         figure.savefig(plot_path, dpi=160)
         plt.close(figure)
         self.assertTrue(csv_path.is_file())

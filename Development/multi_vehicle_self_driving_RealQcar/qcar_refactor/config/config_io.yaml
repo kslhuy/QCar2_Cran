@@ -33,6 +33,11 @@ carla:
   # Project Y is the inverse of CARLA Y, so project-positive steering maps
   # to CARLA-negative normalized steer.
   steering_sign: -1.0
+  # This is a process-local buffer owned by IOCarla. CARLA actor attributes
+  # and point-cloud projection remain in config_simulation.yaml.
+  sensors:
+    lidar:
+      queue_capacity: 8
 
 qcar:
   implementation: qcar
@@ -42,6 +47,29 @@ qcar:
   read:
     sensor_rate_hz: 100
     gps_rate_hz: 10
+  # Disabled by default so the normal QCar runtime preserves its existing
+  # hardware requirements. Enable only after the direct stationary probe has
+  # confirmed this vehicle's scan orientation and range convention.
+  sensors:
+    lidar:
+      # The PAL resource is created on demand: targets-start leaves the motor
+      # stopped, `lidar start` acquires it locally, and `lidar stop` releases
+      # it after stopping the local worker.
+      enabled: false
+      source: qcar_hardware
+      poll_rate_hz: 20.0
+      queue_capacity: 8
+      num_measurements: 384
+      filtering: true
+      frame_id: qcar_lidar
+      bin_count: 360
+      range_min_m: 0.05
+      range_max_m: 12.0
+      # Provisional sensor-frame convention; verify these stationary-capture
+      # calibration values before enabling runtime localization.
+      angle_min_rad: -3.141592653589793
+      angle_offset_rad: 0.0
+      angle_sign: 1.0
 
 qcar_ros:
   implementation: qcar_ros

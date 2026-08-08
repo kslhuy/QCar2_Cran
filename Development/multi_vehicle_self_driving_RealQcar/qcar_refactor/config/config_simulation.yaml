@@ -1,5 +1,6 @@
-# Reusable simulation profiles. Vehicle-specific spawn transforms,
-# missions, tick ownership, and communication endpoints belong in config/scenarios.
+# Reusable platform session profiles. Vehicle spawn transforms, routes, and
+# tick ownership belong in scenarios or test code.  Sensors created by a
+# platform session belong to that session profile.
 "null":
   implementation: "null"
 
@@ -22,23 +23,26 @@ carla_sync:
         x: 0.0
         y: 0.0
         z: 0.0
-
-carla_sdcs_small_map:
-  implementation: carla
-  host: "127.0.0.1"
-  port: 2000
-  timeout_s: 20.0
-  fixed_delta_seconds: 0.05
-  warmup_ticks: 2
-  ego_blueprint: vehicle.tesla.model3
-  # Node 0 in the project frame is (-1.140, 1.053, -pi/2).
-  # IOCarla maps CARLA y/yaw to project coordinates by negating both.
-  default_spawn_transform: {x: -1.14, y: -1.053177, z: 0.5, yaw: 90.0}
-  sensors:
-    imu:
+    # Standard shared CARLA scan source: horizontal 2-D scan at vehicle-body
+    # height.  CARLA owns this actor, so it belongs to this session profile.
+    lidar:
       enabled: true
-      blueprint: sensor.other.imu
-      transform:
-        x: 0.0
-        y: 0.0
-        z: 0.0
+      blueprint: sensor.lidar.ray_cast
+      # CARLA callback hand-off only; IOCarla owns the normalized scan buffer.
+      callback_queue_capacity: 8
+      transform: {x: 0.0, y: 0.0, z: 0.5, pitch: 0.0, yaw: 0.0, roll: 0.0}
+      attributes:
+        channels: 1
+        upper_fov: 0.0
+        lower_fov: 0.0
+        points_per_second: 7200
+        rotation_frequency: 20
+        range: 50
+        sensor_tick: 0.05
+      scan:
+        frame_id: laser
+        bin_count: 360
+        range_min_m: 0.05
+        range_max_m: 50.0
+        scan_time_s: 0.05
+        planar_z_tolerance_m: 0.05

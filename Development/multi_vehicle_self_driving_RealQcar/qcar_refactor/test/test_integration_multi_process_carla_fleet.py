@@ -7,30 +7,38 @@ import unittest
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+from test.helper_artifacts import create_artifact_run
 try:
     from .helper_fleet import run_fleet_integration
 except ImportError:
     from helper_fleet import run_fleet_integration
 
 _SCENARIO = _ROOT / "config" / "scenarios" / "test" / "carla_three_vehicle_fleet_control.yaml"
-_ARTIFACTS = _ROOT / "test" / "artifacts" / "carla_fleet_control"
 _FLEET_ORDER = (1, 2, 3)
 
 
 @unittest.skipUnless(__name__ == "__main__", "run directly with a CARLA server available")
 class TestCarlaFleetControl(unittest.TestCase):
     def test_three_carla_processes_build_fleet_and_record_artifacts(self):
+        artifacts = create_artifact_run(
+            category="integration",
+            platform="carla",
+            test_name="fleet_control",
+            metadata={"scenario": _SCENARIO.name, "vehicle_ids": list(_FLEET_ORDER)},
+        )
         run_fleet_integration(
             self,
             project_root=_ROOT,
-            runner_module="extra.simulator.carla.process_runner",
+            runner_module="extra.platform.carla.process_runner",
             setup_file=_SCENARIO,
             cycles=800,
             extra_args=["--build-fleet"],
             timeout_s=90.0,
             fleet_order=_FLEET_ORDER,
             platform_name="CARLA",
-            artifact_directory=_ARTIFACTS,
+            raw_directory=artifacts.raw_directory,
+            figures_directory=artifacts.figures_directory,
             summary_filename="fleet_carla_summary.png",
             minimum_gap_m=4.0,
             minimum_steering_rad=0.02,

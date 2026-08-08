@@ -78,6 +78,16 @@ class TestVehicleCommandHandler(unittest.TestCase):
         self.assertEqual(handling.result.reason_code, "vehicle_id_mismatch")
         self.assertEqual(self.state_machine.state, State.READY)
 
+    def test_lidar_diagnostics_are_allowed_while_stopped_without_restarting_drive(self):
+        handler = VehicleCommandHandler(3, self.state_machine, self.planner)
+        self.assertTrue(self.state_machine.handle_command(VehicleCommand(CommandType.STOP)))
+
+        handling = handler.handle(VehicleCommand(CommandType.ENABLE_LIDAR_DIAGNOSTIC))
+
+        self.assertEqual(handling.result.outcome, CommandOutcome.APPLIED)
+        self.assertTrue(handling.lidar_diagnostic_enabled)
+        self.assertEqual(self.state_machine.state, State.STOPPED)
+
     def test_fleet_lifecycle_command_is_rejected_without_a_fleet_manager(self):
         handler = VehicleCommandHandler(3, self.state_machine, self.planner)
 

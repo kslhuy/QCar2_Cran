@@ -31,6 +31,8 @@ class CommandType(str, Enum):
     ENABLE_MANUAL = "ENABLE_MANUAL"
     DISABLE_MANUAL = "DISABLE_MANUAL"
     MANUAL_INPUT = "MANUAL_INPUT"
+    ENABLE_LIDAR_DIAGNOSTIC = "ENABLE_LIDAR_DIAGNOSTIC"
+    DISABLE_LIDAR_DIAGNOSTIC = "DISABLE_LIDAR_DIAGNOSTIC"
 
 
 class CommandSource(str, Enum):
@@ -195,6 +197,8 @@ def _validate_payload(command_type: CommandType, payload: Mapping[str, Any]) -> 
         CommandType.ENABLE_MANUAL: set(),
         CommandType.DISABLE_MANUAL: set(),
         CommandType.MANUAL_INPUT: {"throttle", "steering"},
+        CommandType.ENABLE_LIDAR_DIAGNOSTIC: set(),
+        CommandType.DISABLE_LIDAR_DIAGNOSTIC: set(),
     }[command_type]
     unexpected = set(payload).difference(allowed)
     if unexpected:

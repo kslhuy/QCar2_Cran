@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.vehicle_types import ControlInput
 from utils.io.io_carla import IOCarla
-from extra.simulator.carla.session import CarlaSensorSnapshot
+from extra.platform.carla.session import CarlaSensorSnapshot
 
 
 class _Vector:
@@ -45,12 +45,21 @@ class _Actor:
 class _Session:
     def __init__(self):
         self.ego_actor = _Actor()
+        self._lidar_measurements = []
 
     def get_snapshot(self):
         return CarlaSensorSnapshot(5, 1.25, (1.0, -2.0, 3.0), -0.4)
 
     def make_vehicle_control(self, **values):
         return values
+
+    def drain_lidar_measurements(self):
+        measurements = tuple(self._lidar_measurements)
+        self._lidar_measurements.clear()
+        return measurements
+
+    def lidar_scan_config(self):
+        return {"frame_id": "laser", "bin_count": 8, "range_min_m": 0.05, "range_max_m": 20.0}
 
 
 _CONFIG = {
@@ -84,6 +93,21 @@ class TestIOCarla(unittest.TestCase):
         forward, braking = self.session.ego_actor.controls
         self.assertEqual(forward, {"throttle": 0.5, "steer": -0.6, "brake": 0.0})
         self.assertEqual(braking, {"throttle": 0.0, "steer": 0.6, "brake": 0.4})
+
+    def test_converts_local_raw_measurements_and_drains_each_scan_once(self):
+        points = np.array([3.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        self.session._lidar_measurements.append(
+            type("Lidar", (), {"timestamp_s": 1.5, "raw_data": points.tobytes()})()
+        )
+
+        self.io.read_to_cache()
+        scans = self.io.drain_lidar_scans()
+
+        self.assertEqual(len(scans), 1)
+        self.assertEqual(scans[0].timestamp_ns, 1_500_000_000)
+        self.assertEqual(scans[0].frame_id, "laser")
+        self.assertAlmostEqual(min(scans[0].ranges_m), 3.0)
+        self.assertEqual(self.io.drain_lidar_scans(), ())
 
 
 if __name__ == "__main__":

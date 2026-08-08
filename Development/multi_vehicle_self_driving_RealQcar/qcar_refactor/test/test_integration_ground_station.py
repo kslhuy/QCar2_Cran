@@ -10,10 +10,10 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.commands import CommandType, VehicleCommand
-from core.vehicle_types import ControlInput, ControllerReference, SensorData, VehicleStateEstimate
+from core.vehicle_types import ControlInput, ControllerReference, LaserScanSample, SensorData, VehicleStateEstimate
 from core.vehicle_config import ConfigVehicle
 from core.vehicle_logic import VehicleRuntime
-from extra.ground_station.server import GroundStationServer
+from extra.ground_station.core.server import GroundStationServer
 from utils.fleet import FleetFormationBuilder, FleetManager, FleetMember, FleetPolicy, FleetRegistry
 from utils.ground_station.bridge_tcp import GroundStationClientBridge
 from utils.ground_station.runtime_facade import GroundStationRuntimeFacade
@@ -50,6 +50,18 @@ class _Observer:
             True,
             valid=True,
         )
+
+
+class _LidarIONull(IONull):
+    """Integration-only IO proving the runtime-owned LiDAR switch contract."""
+
+    def __init__(self, config, vehicle_id):
+        super().__init__(config, vehicle_id)
+        self.lidar_enabled = False
+
+    def set_lidar_enabled(self, enabled: bool) -> bool:
+        self.lidar_enabled = enabled
+        return True
 
 
 class _Planner:
@@ -144,9 +156,10 @@ class TestGroundStationRuntimeIntegration(unittest.TestCase):
         v2v = V2VNull({}, vehicle_id=4)
         fleet = FleetManager(FleetRegistry(formation), vehicle_id=4)
         fleet.attach_transport(v2v)
+        self.io = _LidarIONull(self.config.module("io"), vehicle_id=4)
         self.runtime = VehicleRuntime(
             self.config,
-            IONull(self.config.module("io"), vehicle_id=4),
+            self.io,
             _Observer(),
             self.planner,
             ControllerManager(
@@ -271,6 +284,41 @@ class TestGroundStationRuntimeIntegration(unittest.TestCase):
                 and self.server.session_rows()[0]["snapshot"]["control_mode"] == "manual"
             )
         )
+
+    def test_lidar_command_switches_local_io_and_forwards_a_bounded_tcp_scan(self):
+        self.runtime.start()
+        self.assertTrue(_wait_for(lambda: len(self.server.session_rows()) == 1))
+        command = VehicleCommand(CommandType.ENABLE_LIDAR_DIAGNOSTIC, command_id="lidar-start-4")
+        self.assertTrue(self.server.send_command(4, command).accepted)
+        self.io._publish_lidar_scan(
+            LaserScanSample(
+                timestamp_ns=123,
+                frame_id="laser",
+                angle_min_rad=-1.0,
+                angle_max_rad=1.0,
+                angle_increment_rad=1.0,
+                time_increment_s=0.0,
+                scan_time_s=0.1,
+                range_min_m=0.05,
+                range_max_m=10.0,
+                ranges_m=(1.0, float("inf"), 2.0),
+            )
+        )
+        for _ in range(30):
+            self.runtime.step(dt=0.05)
+            result = self.server.session_rows()[0]["last_command_result"]
+            if result.get("command_id") == command.command_id and self.server.latest_lidar_scan(4) is not None:
+                break
+            time.sleep(0.01)
+        else:
+            self.fail("LiDAR command acknowledgement or TCP scan did not arrive")
+
+        self.assertTrue(self.io.lidar_enabled)
+        self.assertEqual(self.server.latest_lidar_scan(4).timestamp_ns, 123)
+        stop = VehicleCommand(CommandType.DISABLE_LIDAR_DIAGNOSTIC, command_id="lidar-stop-4")
+        self.assertTrue(self.server.send_command(4, stop).accepted)
+        self._run_until_ack(stop.command_id)
+        self.assertFalse(self.io.lidar_enabled)
 
     def _run_until_ack(self, command_id: str) -> dict:
         for _ in range(30):

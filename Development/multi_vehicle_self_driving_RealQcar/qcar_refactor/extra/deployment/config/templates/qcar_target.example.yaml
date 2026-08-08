@@ -1,0 +1,35 @@
+# Copy this file to extra/deployment/config/local/qcar-0.target.local.yaml.
+# Do not store passwords or private keys in it. Pin the QCar host key in the
+# separately managed known_hosts file before preflight or deployment.
+deployment_target:
+  vehicle_id: 0
+  expected_hostname: "qcar-0"
+
+  ssh:
+    host: "192.168.1.230"
+    port: 22
+    username: "nvidia"
+    identity_file: "~/.ssh/qcar_deploy_ed25519"
+    # Alternatively, remove identity_file and use one of:
+    # password_env: "QCAR_DEPLOY_PASSWORD"
+    # password_prompt: true
+    known_hosts: "~/.ssh/known_hosts"
+    connect_timeout_s: 10
+
+  release:
+    root: "/home/nvidia/qcar-deployments"
+    command_timeout_s: 30
+    # Executed from {release}/payload.  QCar resource ownership remains in
+    # extra.platform.qcar.process_runner; core and deployment stay hardware-neutral.
+    start_command: "python3 -m extra.platform.qcar.process_runner --vehicle-config config_vehicle.yaml --vehicle-id {vehicle_id}"
+    stop_command: "if test -f {remote_root}/run/vehicle-{vehicle_id}.pid; then kill -TERM $(cat {remote_root}/run/vehicle-{vehicle_id}.pid) || true; fi"
+    log_path_template: "{remote_root}/logs/vehicle-{vehicle_id}.log"
+
+  preflight:
+    required_commands:
+      - python3
+      - tar
+      - sha256sum
+      - nohup
+    required_python_modules:
+      - pal.products.qcar

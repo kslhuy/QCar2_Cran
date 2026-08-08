@@ -36,3 +36,8 @@ docker/libraries/resources/pretrained_models/yolov8s-seg.pt
 **/distances_new.mat
 **/distance_new.mat
 Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/presented_data.mat
+
+# Local side-program configuration may identify operator machines, endpoints,
+# host keys, credential references, and generated deployment archives.
+Development/multi_vehicle_self_driving_RealQcar/qcar_refactor/extra/deployment/config/local/
+Development/multi_vehicle_self_driving_RealQcar/qcar_refactor/extra/ground_station/config/local/

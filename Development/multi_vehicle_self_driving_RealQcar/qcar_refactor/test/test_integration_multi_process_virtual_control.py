@@ -16,13 +16,11 @@ try:
 except ImportError:
     from helper_simulator_process import run_two_vehicle_workers
 
-from extra.simulator.virtual import load_virtual_setup
+from extra.platform.virtual import load_virtual_setup
+from test.helper_artifacts import create_artifact_run
 
 
 _SCENARIO_FILE = _ROOT / "config" / "scenarios" / "test" / "virtual_two_vehicle_control.yaml"
-_ARTIFACT_DIR = _ROOT / "test" / "artifacts" / "virtual_multi_process_control"
-
-
 @dataclass(frozen=True)
 class VirtualControlTestConfig:
     """Test-owned execution duration; routes and speed belong to the scenario."""
@@ -45,7 +43,7 @@ class TestMultiProcessVirtualControlIntegration(unittest.TestCase):
         results = run_two_vehicle_workers(
             self,
             project_root=_ROOT,
-            runner_module="extra.simulator.virtual.process_runner",
+            runner_module="extra.platform.virtual.process_runner",
             setup_file=_SCENARIO_FILE,
             cycles=_SIMULATION.cycles,
             extra_args=["--dt", str(_SIMULATION.dt_s)],
@@ -59,15 +57,20 @@ class TestMultiProcessVirtualControlIntegration(unittest.TestCase):
         self.assertGreater(max(row["steering_rad"] for row in rows_by_vehicle[1]), 0.01)
         self.assertLess(min(row["steering_rad"] for row in rows_by_vehicle[2]), -0.01)
 
-        self._write_artifacts(rows_by_vehicle, routes)
-        self.assertTrue((_ARTIFACT_DIR / "vehicle_1.csv").is_file())
-        self.assertTrue((_ARTIFACT_DIR / "vehicle_2.csv").is_file())
-        self.assertTrue((_ARTIFACT_DIR / "trajectories.png").is_file())
+        artifacts = create_artifact_run(
+            category="integration",
+            platform="virtual",
+            test_name="multi_process_control",
+            metadata={"scenario": _SCENARIO_FILE.name, "vehicle_ids": [1, 2], "cycles": _SIMULATION.cycles},
+        )
+        self._write_artifacts(rows_by_vehicle, routes, artifacts.raw_directory, artifacts.figures_directory)
+        self.assertTrue((artifacts.raw_directory / "vehicle_1.csv").is_file())
+        self.assertTrue((artifacts.raw_directory / "vehicle_2.csv").is_file())
+        self.assertTrue((artifacts.figures_directory / "trajectories.png").is_file())
 
-    def _write_artifacts(self, rows_by_vehicle, routes):
-        _ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    def _write_artifacts(self, rows_by_vehicle, routes, raw_directory, figures_directory):
         for vehicle_id, rows in rows_by_vehicle.items():
-            with (_ARTIFACT_DIR / f"vehicle_{vehicle_id}.csv").open("w", newline="", encoding="ascii") as file:
+            with (raw_directory / f"vehicle_{vehicle_id}.csv").open("w", newline="", encoding="ascii") as file:
                 writer = csv.DictWriter(file, fieldnames=list(rows[0]))
                 writer.writeheader()
                 writer.writerows(rows)
@@ -103,7 +106,7 @@ class TestMultiProcessVirtualControlIntegration(unittest.TestCase):
         axes[1].set_ylabel("steering [rad]")
         axes[1].grid(True, alpha=0.3)
         axes[1].legend()
-        figure.savefig(_ARTIFACT_DIR / "trajectories.png", dpi=150)
+        figure.savefig(figures_directory / "trajectories.png", dpi=150)
         plt.close(figure)
 
 

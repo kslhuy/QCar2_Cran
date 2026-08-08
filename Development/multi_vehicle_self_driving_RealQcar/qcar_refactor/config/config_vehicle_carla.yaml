@@ -1,4 +1,5 @@
-# Canonical single-vehicle CARLA Tesla Model 3 profile.
+# Canonical CARLA Tesla Model 3 composition.  A scenario or direct test owns
+# the map-specific spawn transform and mission; this default is safe/empty.
 vehicle:
   car_id: 0
 
@@ -12,12 +13,9 @@ modules:
   planner: sdcs_small_map
   controller: simple_carla
   v2v: "null"
-  simulation: carla_sdcs_small_map
+  simulation: carla_sync
   ground_station: tcp_client
 
 mission:
-  # One right-hand-traffic SDCS circuit in the CARLA project frame.
-  # The planner closes this open sequence because loop=1.
-  node_sequence: [0, 2, 4, 6, 10]
-  loop: 1
-  target_velocity: 5.0
+  path: null
+  target_velocity: 0.0

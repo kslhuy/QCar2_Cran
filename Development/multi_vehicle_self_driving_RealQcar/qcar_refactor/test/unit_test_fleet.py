@@ -12,8 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.commands import CommandType, VehicleCommand
 from core.vehicle_types import V2VMessage, VehicleStateEstimate
-from extra.simulator.virtual.process_runner import VirtualProcessManager
-from extra.simulator.virtual.scenario import load_virtual_setup
+from extra.platform.virtual.process_runner import VirtualProcessManager
+from extra.platform.virtual.scenario import load_virtual_setup
 from utils.fleet import (
     FleetError,
     FleetFormationBuilder,

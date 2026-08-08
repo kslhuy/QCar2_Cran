@@ -3,7 +3,7 @@
 # experiments without changing automated test inputs.
 #
 # Start the ground station, then run:
-# python -m extra.simulator.launcher --platform carla --setup-file
+# python -m extra.platform.launcher --platform carla --setup-file
 # config/scenarios/carla_three_vehicle_cli_fleet.yaml --build-fleet
 simulation_profile: carla_sync
 

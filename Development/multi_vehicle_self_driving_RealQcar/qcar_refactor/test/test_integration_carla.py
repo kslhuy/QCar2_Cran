@@ -14,6 +14,7 @@ from core.module_factory import build_vehicle_modules
 from core.vehicle_types import ControlInput
 from core.vehicle_config import load_config
 from core.vehicle_logic import VehicleRuntime
+from test.helper_artifacts import create_artifact_run
 
 
 @unittest.skipUnless(__name__ == "__main__", "run this CARLA integration test file directly")
@@ -92,12 +93,16 @@ class TestLiveCarlaSmoke(unittest.TestCase):
         self.assertGreater(np.max(np.abs(steering)), 0.1)
         self.assertTrue(all(sample[8] for sample in samples))
         self.assertTrue(all(sample[6].shape == (3,) for sample in samples))
-        self._write_sensor_artifacts(samples)
+        artifacts = create_artifact_run(
+            category="integration",
+            platform="carla",
+            test_name="io_sensor_trace",
+            metadata={"duration_s": self._DRIVE_DURATION_S, "sample_count": sample_count},
+        )
+        self._write_sensor_artifacts(samples, artifacts.raw_directory, artifacts.figures_directory)
 
-    def _write_sensor_artifacts(self, samples) -> None:
-        artifact_dir = Path(__file__).resolve().parent / "artifacts"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = artifact_dir / "carla_sensor_trace.csv"
+    def _write_sensor_artifacts(self, samples, raw_directory: Path, figures_directory: Path) -> None:
+        csv_path = raw_directory / "carla_sensor_trace.csv"
         with csv_path.open("w", newline="", encoding="ascii") as file:
             writer = csv.writer(file)
             writer.writerow(
@@ -155,7 +160,7 @@ class TestLiveCarlaSmoke(unittest.TestCase):
         axes[4].grid(True)
         axes[4].legend()
 
-        plot_path = artifact_dir / "carla_sensor_trace.png"
+        plot_path = figures_directory / "carla_sensor_trace.png"
         figure.savefig(plot_path, dpi=150)
         plt.close(figure)
         self.assertTrue(csv_path.is_file())

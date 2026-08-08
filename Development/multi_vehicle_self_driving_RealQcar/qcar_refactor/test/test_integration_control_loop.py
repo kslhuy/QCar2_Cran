@@ -26,6 +26,7 @@ from utils.io.io_virtual import IOVirtual as VirtualKinematicVehicleIO
 from utils.control.observer.observer_ekf import ObserverEKF
 from utils.control.path_planner import PathPlannerStatic
 from utils.control.controller import ControllerSimple
+from test.helper_artifacts import create_artifact_run
 
 def _wrap_to_pi(angle: float) -> float:
     return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
@@ -176,13 +177,17 @@ class TestMinimalControlLoopIntegration(unittest.TestCase):
             for row in rows
         )
         self.assertLess(max_estimation_error, 1000.0)
+        artifacts = create_artifact_run(
+            category="integration",
+            platform="virtual",
+            test_name="control_loop",
+            metadata={"samples": len(rows), "dt_s": dt},
+        )
+        self._save_artifacts(rows, planner.waypoints, artifacts.raw_directory, artifacts.figures_directory)
 
-    def _save_artifacts(self, rows: list, waypoints: np.ndarray) -> None:
-        output_dir = os.path.join(os.path.dirname(__file__), "artifacts")
-        os.makedirs(output_dir, exist_ok=True)
-
-        csv_path = os.path.join(output_dir, "integration_control_loop.csv")
-        with open(csv_path, "w", newline="") as file_obj:
+    def _save_artifacts(self, rows: list, waypoints: np.ndarray, raw_directory, figures_directory) -> None:
+        csv_path = raw_directory / "integration_control_loop.csv"
+        with csv_path.open("w", newline="") as file_obj:
             writer = csv.DictWriter(file_obj, fieldnames=list(rows[0].keys()))
             writer.writeheader()
             writer.writerows(rows)
@@ -284,7 +289,7 @@ class TestMinimalControlLoopIntegration(unittest.TestCase):
         ax_err.grid(True, alpha=0.25)
         ax_err.legend(loc="best", fontsize=8)
 
-        plot_path = os.path.join(output_dir, "integration_control_loop.png")
+        plot_path = figures_directory / "integration_control_loop.png"
         fig.savefig(plot_path, dpi=120)
         plt.close(fig)
         print(f"[PLOT] saved {plot_path}")

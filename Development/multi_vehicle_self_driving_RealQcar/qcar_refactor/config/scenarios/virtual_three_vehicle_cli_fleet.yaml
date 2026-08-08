@@ -1,6 +1,6 @@
 # Operator-facing virtual fleet scenario, separate from integration-test inputs.
 # Run with --realtime so the ground-station CLI can observe and command it:
-# python -m extra.simulator.launcher --platform virtual --realtime --setup-file
+# python -m extra.platform.launcher --platform virtual --realtime --setup-file
 # config/scenarios/virtual_three_vehicle_cli_fleet.yaml --build-fleet
 simulation_profile: "null"
 

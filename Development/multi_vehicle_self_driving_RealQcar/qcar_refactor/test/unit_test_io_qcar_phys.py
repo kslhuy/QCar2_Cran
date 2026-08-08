@@ -18,6 +18,8 @@ from io import StringIO
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from test.helper_artifacts import create_artifact_run
+
 # ===========================================================================
 # QLabs spawn helper (like initCars_Studio.py, but minimal)
 # ===========================================================================
@@ -367,23 +369,27 @@ class TestIOQCar2LiveQLabs(unittest.TestCase):
         axes[6].legend(loc="upper right")
         fig.tight_layout()
 
-        output_dir = os.path.join(os.path.dirname(__file__), "artifacts")
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, "qcar_io_background_buffer.png")
+        artifacts = create_artifact_run(
+            category="diagnostic",
+            platform="qcar",
+            test_name="io_background_buffer",
+            metadata={"samples": len(samples)},
+        )
+        output_path = artifacts.figures_directory / "qcar_io_background_buffer.png"
         fig.savefig(output_path, dpi=120)
         plt.close(fig)
         print(f"[PLOT] saved {output_path}")
 
         # Save raw data as CSV artifact for future regression tests
         import csv
-        csv_path = os.path.join(output_dir, "qcar_io_background_buffer.csv")
+        csv_path = artifacts.raw_directory / "qcar_io_background_buffer.csv"
         csv_header = [
             "wall_time", "sensor_timestamp", "motor_tach", "gyro_z",
             "accel_x", "accel_y", "accel_z",
             "gps_valid", "gps_x", "gps_y", "gps_yaw", "gps_timestamp",
             "cmd_throttle", "cmd_steering",
         ]
-        with open(csv_path, "w", newline="") as f:
+        with csv_path.open("w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(csv_header)
             for rel_t, sample in zip(t, samples):

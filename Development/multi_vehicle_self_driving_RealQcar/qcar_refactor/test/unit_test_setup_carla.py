@@ -10,7 +10,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from extra.simulator.carla.scenario import CarlaSetupError, load_carla_setup, parse_carla_setup
+from extra.platform.carla.scenario import CarlaSetupError, load_carla_setup, parse_carla_setup
 
 
 def _manifest():
@@ -92,13 +92,13 @@ class TestCarlaSetup(unittest.TestCase):
             load_carla_setup(self._write_manifest(null_v2v))
 
     def test_default_sdcs_scenario_selects_node_route_and_loop_policy(self):
-        scenario_path = Path(__file__).resolve().parents[1] / "config" / "scenarios" / "carla_sdcs_small_map.yaml"
+        scenario_path = Path(__file__).resolve().parents[1] / "config" / "scenarios" / "test" /"carla_sdcs_small_map.yaml"
 
         setup = load_carla_setup(scenario_path)
         vehicle = setup.vehicles[0]
         spec = vehicle.to_process_spec(setup.simulation_profile)
 
-        self.assertEqual(setup.simulation_profile, "carla_sdcs_small_map")
+        self.assertEqual(setup.simulation_profile, "carla_sync")
         self.assertIsNone(vehicle.route)
         self.assertEqual(vehicle.node_sequence, (0, 2, 4, 6, 10))
         self.assertEqual(vehicle.loop, 1)

@@ -8,8 +8,8 @@ from pathlib import Path
 import time
 from typing import Any
 
-from extra.simulator.carla.process_runner import CarlaProcessManager
-from extra.simulator.virtual.process_runner import VirtualProcessManager
+from extra.platform.carla.process_runner import CarlaProcessManager
+from extra.platform.virtual.process_runner import VirtualProcessManager
 
 
 _TEST_MESSAGE_TYPE = "TEST_STATE_V1"

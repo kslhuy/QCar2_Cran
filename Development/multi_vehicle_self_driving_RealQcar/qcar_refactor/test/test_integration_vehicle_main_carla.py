@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core import vehicle_main
 from core.vehicle_logic import VehicleRuntime
+from test.helper_artifacts import create_artifact_run
 
 
 class _CapturingRuntime(VehicleRuntime):
@@ -36,7 +37,7 @@ class TestVehicleMainCarlaIntegration(unittest.TestCase):
         _CapturingRuntime.instances.clear()
 
     def test_vehicle_main_runs_carla_profile_and_reads_io(self):
-        with patch("core.vehicle_main.VehicleRuntime", _CapturingRuntime), patch("core.vehicle_main.time.sleep"):
+        with patch("core.vehicle_process.VehicleRuntime", _CapturingRuntime), patch("core.vehicle_main.time.sleep"):
             result = vehicle_main.main(["--vehicle-config", "config_vehicle_carla.yaml", "--cycles", "800"])
 
         self.assertEqual(result, 0)
@@ -45,11 +46,15 @@ class TestVehicleMainCarlaIntegration(unittest.TestCase):
         self.assertEqual(len(runtime.telemetry), 800)
         self.assertTrue(all(sample.sensor_data.gps_valid for sample in runtime.telemetry))
         self.assertGreater(runtime.telemetry[-1].sensor_data.sensor_timestamp, 0.0)
-        self._write_artifacts(runtime.telemetry)
+        artifacts = create_artifact_run(
+            category="integration",
+            platform="carla",
+            test_name="vehicle_main",
+            metadata={"cycles": len(runtime.telemetry), "vehicle_config": "config_vehicle_carla.yaml"},
+        )
+        self._write_artifacts(runtime.telemetry, artifacts.raw_directory, artifacts.figures_directory)
 
-    def _write_artifacts(self, telemetry) -> None:
-        artifact_dir = Path(__file__).resolve().parent / "artifacts"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
+    def _write_artifacts(self, telemetry, raw_directory: Path, figures_directory: Path) -> None:
         rows = []
         for sample in telemetry:
             sensor = sample.sensor_data
@@ -70,7 +75,7 @@ class TestVehicleMainCarlaIntegration(unittest.TestCase):
                 }
             )
 
-        csv_path = artifact_dir / "vehicle_main_carla.csv"
+        csv_path = raw_directory / "vehicle_main_carla.csv"
         with csv_path.open("w", newline="", encoding="ascii") as file:
             writer = csv.DictWriter(file, fieldnames=list(rows[0]))
             writer.writeheader()
@@ -103,7 +108,7 @@ class TestVehicleMainCarlaIntegration(unittest.TestCase):
         axes[2].set_ylabel("acceleration (m/s^2)")
         axes[2].grid(True)
         axes[2].legend()
-        plot_path = artifact_dir / "vehicle_main_carla.png"
+        plot_path = figures_directory / "vehicle_main_carla.png"
         figure.savefig(plot_path, dpi=150)
         plt.close(figure)
 

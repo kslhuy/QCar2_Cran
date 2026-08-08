@@ -22,6 +22,7 @@ class CommandHandling:
     planner_profile: str | None = None
     sdcs_node_sequence: tuple[int, ...] | None = None
     sdcs_loop: int | str | None = None
+    lidar_diagnostic_enabled: bool | None = None
 
 
 class VehicleCommandHandler:
@@ -60,6 +61,10 @@ class VehicleCommandHandler:
         manual_handling = self._handle_manual_command(command)
         if manual_handling is not None:
             return manual_handling
+
+        lidar_handling = self._handle_lidar_diagnostic_command(command)
+        if lidar_handling is not None:
+            return lidar_handling
 
         if self._fleet is None and command.command_type in {
             CommandType.BUILD_FLEET,
@@ -123,6 +128,24 @@ class VehicleCommandHandler:
             require_safe_stop=True,
             safe_stop_reason=reason,
             controller_profile=self._disable_manual(),
+        )
+
+    def _handle_lidar_diagnostic_command(self, command: VehicleCommand) -> CommandHandling | None:
+        if command.command_type not in {
+            CommandType.ENABLE_LIDAR_DIAGNOSTIC,
+            CommandType.DISABLE_LIDAR_DIAGNOSTIC,
+        }:
+            return None
+        if self._state_machine.state not in (State.READY, State.RUNNING, State.STOPPED):
+            return self._result(
+                command,
+                CommandOutcome.REJECTED,
+                "lidar_diagnostic_requires_started_vehicle",
+                "LiDAR diagnostics require a READY, RUNNING, or STOPPED vehicle runtime",
+            )
+        return CommandHandling(
+            self._command_result(command, CommandOutcome.APPLIED),
+            lidar_diagnostic_enabled=(command.command_type == CommandType.ENABLE_LIDAR_DIAGNOSTIC),
         )
 
     def _handle_sdcs_map_command(self, command: VehicleCommand) -> CommandHandling | None:

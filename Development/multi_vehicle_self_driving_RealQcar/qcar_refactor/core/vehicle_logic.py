@@ -106,6 +106,25 @@ class VehicleRuntime:
     def handle_command(self, command: VehicleCommand) -> CommandResult:
         """Apply one validated command through the safety-owned runtime path."""
         handling = self._command_handler.handle(command, now_monotonic=time.monotonic())
+        if handling.lidar_diagnostic_enabled is not None:
+            try:
+                available = self.io.set_lidar_enabled(handling.lidar_diagnostic_enabled)
+            except (AttributeError, RuntimeError, ValueError) as exc:
+                available = False
+                reason = str(exc)
+            else:
+                reason = "LiDAR resource is not available in this vehicle runtime"
+            if not available:
+                result = CommandResult(
+                    command.command_id,
+                    self.config.vehicle_id,
+                    CommandOutcome.REJECTED,
+                    self.state_machine.state.name,
+                    "lidar_unavailable",
+                    reason,
+                )
+                return self.ground_station.record_command_result(command, result)
+            self.ground_station.set_lidar_diagnostic_enabled(handling.lidar_diagnostic_enabled)
         if handling.planner_profile is not None:
             try:
                 self.planner.select(handling.planner_profile)
@@ -150,6 +169,7 @@ class VehicleRuntime:
             if self.simulation is not None:
                 self.simulation.tick()
             self.io.read_to_cache()
+            self.ground_station.publish_lidar_scan(self.io.latest_lidar_scan())
             sensor_data = self.io.read()
             estimate = self.observer.update(sensor_data, resolved_dt, self.io.get_last_command())
             fleet_step = self.fleet.run_cycle(estimate, dt=resolved_dt) if self.fleet is not None else None

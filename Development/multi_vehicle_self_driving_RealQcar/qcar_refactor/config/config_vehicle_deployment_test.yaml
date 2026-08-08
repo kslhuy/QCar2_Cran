@@ -1,0 +1,22 @@
+# Safe deployment-validation profile.  No waypoint file is required and the
+# static planner remains finished, so this profile must not be used as an
+# operational route configuration.
+vehicle:
+  car_id: 0
+
+runtime:
+  loop_rate_hz: 100
+
+modules:
+  model: example_vehicle
+  io: qcar
+  observer: ekf_qcar
+  planner: static_default
+  controller: simple_qcar
+  v2v: udp_default
+  simulation: "null"
+  ground_station: tcp_qcar_lan
+
+mission:
+  path: null
+  target_velocity: 0.0

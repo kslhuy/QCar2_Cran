@@ -12,7 +12,9 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from core.commands import CommandError, CommandOutcome, CommandResult, CommandSource, CommandType, VehicleCommand
+from core.vehicle_types import LaserScanSample
 from .bridge_base import GroundStationBridgeBase
+from .lidar_transport import lidar_scan_to_mapping
 from .monitoring import MonitoringSnapshot
 from .protocol import FrameDecoder, FrameType, ProtocolError, encode_frame, error_payload
 
@@ -34,6 +36,9 @@ class GroundStationClientBridge(GroundStationBridgeBase):
         self._monitoring_rate_hz = _positive_float(
             self._config.get("monitoring_rate_hz", 10.0), "monitoring_rate_hz"
         )
+        self._lidar_diagnostic_rate_hz = _positive_float(
+            self._config.get("lidar_diagnostic_rate_hz", 20.0), "lidar_diagnostic_rate_hz"
+        )
         command_queue_size = _positive_int(self._config.get("command_queue_size", 32), "command_queue_size")
         outbound_queue_size = _positive_int(self._config.get("outbound_queue_size", 64), "outbound_queue_size")
         self._commands: Queue[VehicleCommand] = Queue(maxsize=command_queue_size)
@@ -43,6 +48,9 @@ class GroundStationClientBridge(GroundStationBridgeBase):
         self._latest_snapshot: MonitoringSnapshot | None = None
         self._snapshot_lock = threading.Lock()
         self._last_snapshot_offer_at = 0.0
+        self._latest_lidar_scan: LaserScanSample | None = None
+        self._lidar_lock = threading.Lock()
+        self._last_lidar_offer_at = 0.0
         self._running = threading.Event()
         self._connected = threading.Event()
         self._registered = threading.Event()
@@ -57,6 +65,10 @@ class GroundStationClientBridge(GroundStationBridgeBase):
             "manual_inputs_coalesced": 0,
             "acks_sent": 0,
             "snapshots_sent": 0,
+            "lidar_scans_offered": 0,
+            "lidar_scans_sent": 0,
+            "lidar_scans_coalesced": 0,
+            "lidar_scans_rejected": 0,
             "reconnects": 0,
         }
 
@@ -119,6 +131,21 @@ class GroundStationClientBridge(GroundStationBridgeBase):
             raise TypeError("ground-station acknowledgements must use CommandResult")
         self._offer_control(FrameType.COMMAND_ACK, result.to_mapping())
 
+    def publish_lidar_scan(self, scan: LaserScanSample) -> None:
+        """Retain only the newest requested diagnostic scan at a bounded rate."""
+
+        if not isinstance(scan, LaserScanSample):
+            raise TypeError("ground-station LiDAR diagnostics require a LaserScanSample")
+        now = time.monotonic()
+        if now - self._last_lidar_offer_at < 1.0 / self._lidar_diagnostic_rate_hz:
+            return
+        self._last_lidar_offer_at = now
+        with self._lidar_lock:
+            if self._latest_lidar_scan is not None:
+                self._stats["lidar_scans_coalesced"] += 1
+            self._latest_lidar_scan = scan
+            self._stats["lidar_scans_offered"] += 1
+
     def get_status(self) -> dict[str, object]:
         return {
             "enabled": True,
@@ -155,7 +182,7 @@ class GroundStationClientBridge(GroundStationBridgeBase):
             {
                 "vehicle_id": self._vehicle_id,
                 "session_id": self._session_id,
-                "capabilities": {"commands": True, "monitoring": True},
+                "capabilities": {"commands": True, "monitoring": True, "lidar_diagnostic": True},
             },
         )
         registration_deadline = time.monotonic() + self._connect_timeout_s
@@ -167,6 +194,7 @@ class GroundStationClientBridge(GroundStationBridgeBase):
         while self._running.is_set() and self._registered.is_set():
             self._send_queued_control(connection)
             self._send_latest_snapshot(connection)
+            self._send_latest_lidar_scan(connection)
             self._receive_available(connection, decoder)
             time.sleep(0.005)
 
@@ -268,6 +296,24 @@ class GroundStationClientBridge(GroundStationBridgeBase):
             return
         self._send_direct(connection, FrameType.MONITORING_SNAPSHOT, snapshot.to_mapping())
         self._stats["snapshots_sent"] += 1
+
+    def _send_latest_lidar_scan(self, connection: socket.socket) -> None:
+        with self._lidar_lock:
+            scan = self._latest_lidar_scan
+            self._latest_lidar_scan = None
+        if scan is None:
+            return
+        try:
+            self._send_direct(
+                connection,
+                FrameType.LIDAR_SCAN,
+                lidar_scan_to_mapping(scan, vehicle_id=self._vehicle_id),
+            )
+        except (ProtocolError, ValueError) as error:
+            self._stats["lidar_scans_rejected"] += 1
+            self._last_error = f"LiDAR diagnostic frame rejected: {error}"
+            return
+        self._stats["lidar_scans_sent"] += 1
 
     def _send_direct(self, connection: socket.socket, frame_type: FrameType, payload: Mapping[str, Any]) -> None:
         connection.sendall(encode_frame(frame_type, payload, max_frame_bytes=self._max_frame_bytes))

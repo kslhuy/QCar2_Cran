@@ -1,0 +1,14 @@
+# Canonical ground-station settings. This is the only application YAML path.
+# Vehicle bridges select the operator host in config/config_ground_station.yaml.
+ground_station:
+  listener:
+    host: "0.0.0.0"
+    port: 5000
+    max_frame_bytes: 4096
+  terminal:
+    dashboard_refresh_hz: 4.0
+    lidar_refresh_hz: 20.0
+    stale_after_s: 1.0
+    acknowledgement_timeout_s: 3.0
+    dashboard_enabled: true
+    input_enabled: true

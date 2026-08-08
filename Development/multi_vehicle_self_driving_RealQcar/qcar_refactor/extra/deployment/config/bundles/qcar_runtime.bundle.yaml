@@ -1,0 +1,23 @@
+# Minimal source/config selection for core.vehicle_main on a physical QCar.
+# This does not include the reference GUI, tests, deployment CLI, logs, or
+# simulator/reference trees. The default physical profile is route-free; add
+# only an approved project-owned route asset in a dedicated operational bundle.
+bundle:
+  source_root: "../../../.."
+  include:
+    - core
+    - utils
+    - extra/__init__.py
+    - extra/platform/__init__.py
+    - extra/platform/base.py
+    - extra/platform/qcar
+    # config_vehicle.yaml and one configuration profile for each selected module.
+    - config/config_vehicle.yaml
+    - config/config_model.yaml
+    - config/config_io.yaml
+    - config/config_observer.yaml
+    - config/config_planner.yaml
+    - config/config_controller.yaml
+    - config/config_v2v.yaml
+    - config/config_simulation.yaml
+    - config/config_ground_station.yaml

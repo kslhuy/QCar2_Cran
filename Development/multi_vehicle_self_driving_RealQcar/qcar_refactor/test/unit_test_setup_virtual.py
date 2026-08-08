@@ -9,7 +9,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from extra.simulator.virtual.scenario import VirtualSetupError, load_virtual_setup, parse_virtual_setup
+from extra.platform.virtual.scenario import VirtualSetupError, load_virtual_setup, parse_virtual_setup
 
 
 def _manifest():

@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from core.commands import CommandResult, VehicleCommand
+from core.vehicle_types import LaserScanSample
 from .monitoring import MonitoringSnapshot
 
 
@@ -37,6 +38,11 @@ class GroundStationBridgeBase(ABC):
         ...
 
     @abstractmethod
+    def publish_lidar_scan(self, scan: LaserScanSample) -> None:
+        """Offer one bounded diagnostic scan for asynchronous transport."""
+        ...
+
+    @abstractmethod
     def get_status(self) -> dict[str, object]:
         """Return local bridge connection status for diagnostics."""
         ...
@@ -61,6 +67,9 @@ class NullGroundStationBridge(GroundStationBridgeBase):
         return None
 
     def publish_ack(self, result: CommandResult) -> None:
+        return None
+
+    def publish_lidar_scan(self, scan: LaserScanSample) -> None:
         return None
 
     def get_status(self) -> dict[str, object]:

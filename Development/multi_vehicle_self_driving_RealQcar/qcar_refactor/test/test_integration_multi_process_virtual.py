@@ -23,7 +23,7 @@ class TestMultiProcessVirtualIntegration(unittest.TestCase):
         results = run_two_vehicle_workers(
             self,
             project_root=_ROOT,
-            runner_module="extra.simulator.virtual.process_runner",
+            runner_module="extra.platform.virtual.process_runner",
             setup_file=_SCENARIO_FILE,
             cycles=40,
             require_v2v_trace=False,

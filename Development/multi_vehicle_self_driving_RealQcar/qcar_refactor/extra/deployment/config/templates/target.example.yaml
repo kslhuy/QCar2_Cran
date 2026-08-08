@@ -1,0 +1,36 @@
+# Copy this file to extra/deployment/config/local/vehicle-0.target.local.yaml.
+# Local files are ignored because they identify machines and credential paths.
+# Do not store a password or private key in this file. Pin the endpoint host
+# key in the separately managed known_hosts file before preflight/deployment.
+deployment_target:
+  # Logical vehicle-runtime identity; never a hardware model identifier.
+  vehicle_id: 0
+  expected_hostname: "vehicle-0"
+
+  ssh:
+    host: "192.168.1.230"
+    port: 22
+    username: "vehicle"
+    identity_file: "~/.ssh/vehicle_deploy_ed25519"
+    # Alternatively, remove identity_file and use one of:
+    # password_env: "VEHICLE_DEPLOY_PASSWORD"
+    # password_prompt: true
+    known_hosts: "~/.ssh/known_hosts"
+    connect_timeout_s: 10
+
+  release:
+    root: "/opt/vehicle-deployments"
+    command_timeout_s: 30
+    # These opaque commands select the platform from the versioned bundle.
+    # Supported placeholders: {vehicle_id}, {remote_root}, and {release}.
+    start_command: "python3 -m your_platform.process_runner --vehicle-id {vehicle_id}"
+    stop_command: "if test -f {remote_root}/run/vehicle-{vehicle_id}.pid; then kill -TERM $(cat {remote_root}/run/vehicle-{vehicle_id}.pid) || true; fi"
+    log_path_template: "{remote_root}/logs/vehicle-{vehicle_id}.log"
+
+  preflight:
+    required_commands:
+      - python3
+      - tar
+      - sha256sum
+      - nohup
+    required_python_modules: []

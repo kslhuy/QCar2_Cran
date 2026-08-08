@@ -1,0 +1,12 @@
+# Copy this file to extra/deployment/config/local/deployment_targets.local.yaml.
+# It chooses one versioned bundle policy and the local Linux endpoints that
+# receive it. Endpoint SSH/release settings remain in each referenced target.
+deployment_targets:
+  bundle:
+    # Relative paths resolve from this local inventory file.
+    specification: "../bundles/qcar_deployment_test.bundle.yaml"
+    output: "qcar-targets-release.tar.gz"
+  targets:
+    - file: "qcar-61231.target.local.yaml"
+    # Add another independently pinned Linux endpoint:
+    # - file: "vehicle-1.target.local.yaml"

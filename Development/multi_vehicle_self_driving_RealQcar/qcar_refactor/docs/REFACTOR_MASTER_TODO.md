@@ -29,7 +29,7 @@ The loader resolves each entry in `config_vehicle.modules` from `config/config_<
 
 Project entry scripts follow one standard method: load one vehicle config, build modules through `core.module_factory`, construct `VehicleRuntime`, and call `start()`/`step()`/`shutdown()` inside `try`/`finally`. Scripts do not create hardware or simulation clients, spawn actors, poll sensors, or apply actuator commands directly.
 
-Package ownership is deliberate: reusable vehicle adapters and algorithms live under `utils/`; simulation platform orchestration lives under `extra/simulator/<platform>/`. `core/vehicle_process.py` builds and runs exactly one vehicle actor; it does not create child processes or know simulator sessions. `extra/simulator/base.py` owns the platform-neutral worker lifecycle and telemetry serialisation, while `extra/simulator/scenario.py` owns common YAML loading, simulation-profile lookup, mission parsing, V2V endpoint validation, unique-ID checks, and common `VehicleProcessSpec` assembly. Every scenario begins with `simulation_profile`: CARLA selects `carla_sync`, while the current isolated virtual runtime selects `"null"`. Both `extra/simulator/carla/` and `extra/simulator/virtual/` provide `scenario.py` and V2V-agnostic `process_runner.py`; their workers share `--setup-file`, `--vehicle-id`, `--cycles`, `--ready-file`, and `--start-file` arguments. `test/helper_v2v_trace.py` is the separate test-worker entry point: it uses the same platform managers but owns the synthetic `TEST_STATE_V1` message and localhost trace capture. Only `extra/simulator/carla/session.py` owns a session because CARLA has a shared external server/world; `IOVirtual` owns an isolated local mathematical model and therefore needs no virtual session. Executable ground-station applications and presentation code live under `extra/ground_station/`. `utils/ground_station/` is reserved for the vehicle-side ground-station command and telemetry bridge, not a desktop GUI.
+Package ownership is deliberate: reusable vehicle adapters and algorithms live under `utils/`; platform orchestration lives under `extra/platform/<platform>/`. `core/vehicle_process.py` builds and runs exactly one vehicle actor; it does not create child processes or know platform resources. `extra/platform/base.py` owns the platform-neutral worker lifecycle and telemetry serialisation, while the platform scenario modules own YAML loading, simulation-profile lookup, mission parsing, V2V endpoint validation, unique-ID checks, and common `VehicleProcessSpec` assembly. Every simulation scenario begins with `simulation_profile`: CARLA selects `carla_sync`, while the current isolated virtual runtime selects `"null"`. Both `extra/platform/carla/` and `extra/platform/virtual/` provide `scenario.py` and V2V-agnostic `process_runner.py`; their workers share `--setup-file`, `--vehicle-id`, `--cycles`, `--ready-file`, and `--start-file` arguments. `test/helper_v2v_trace.py` is the separate test-worker entry point: it uses the same platform managers but owns the synthetic `TEST_STATE_V1` message and localhost trace capture. Only `extra/platform/carla/session.py` owns a session because CARLA has a shared external server/world; `IOVirtual` owns an isolated local mathematical model and therefore needs no virtual session. QCar and future ROS 2 resource contexts use the same platform contract. `extra/ground_station/` follows the same layered rule: its `core/` owns listener/session and typed-command routing behavior, `presentation/` owns terminal/dashboard rendering, and its local `utils/` owns reusable logging and live plotting support. `utils/ground_station/` remains reserved for the vehicle-side ground-station command and telemetry bridge, not a desktop GUI.
 
 ## Multi-Vehicle Network And Scenario Rules
 
@@ -41,7 +41,7 @@ V2V packet contents are untrusted. Invalid envelopes must be dropped without cha
 
 The legacy ground station uses one TCP listener per vehicle at `ground_station.base_port + vehicle_id` (default `5000 + vehicle_id`) and infers vehicle identity from the listener. The refactor replaces that scheme with one configured TCP listener and an initial `vehicle_id` registration frame. The refactored implementation must not retain per-vehicle TCP listeners or a legacy compatibility bridge.
 
-`config_vehicle_*.yaml` remains a single-vehicle runtime template. Every multi-vehicle scenario explicitly selects a top-level `simulation_profile` from `config_simulation.yaml`, then owns per-instance values: vehicle ID, spawn transform, mission, tick owner, V2V endpoint/peers, and ground-station destination. It must not duplicate shared CARLA settings such as host, port, fixed delta, world defaults, or sensor defaults.
+`config_vehicle_*.yaml` remains a single-vehicle runtime template. Every multi-vehicle scenario explicitly selects a top-level `simulation_profile` from `config_simulation.yaml`, then owns per-instance values: vehicle ID, spawn transform, mission, tick owner, V2V endpoint/peers, and ground-station destination. It must not duplicate shared CARLA settings such as host, port, fixed delta, world defaults, or session-owned sensor defaults. Direct test scripts may add a genuinely isolated sensor through `value_overrides`; do not promote it into a duplicate simulation or vehicle profile.
 
 ## Current Foundation
 
@@ -83,6 +83,11 @@ Owner: `core/vehicle_types.py`, base utility classes, and tests.
 - [x] Protect command-cache access consistently with sensor-cache access.
 - [x] Convert the state-machine script assertions into discovered `unittest` tests.
 - [x] Mark unsupported observer variants clearly or implement them independently.
+- [ ] Resolve the observer-variant naming/implementation mismatch: both
+  `utils/control/observer/observer_high_gain.py` and
+  `observer_luenberger.py` currently define `ObserverEKF`. Either implement
+  and export distinct matching observer classes or remove the misleading
+  profiles/modules and update factory/configuration/tests together.
 
 Acceptance gate: all headless tests pass and every shared field has an explicit unit or approximation note.
 
@@ -92,6 +97,10 @@ Owner: `core/vehicle_logic.py` and `core/vehicle_main.py`.
 
 - [x] Create module factories for IO, observer, planner, controller, and V2V.
 - [ ] Add ground-station bridge factory with its Step 8 implementation.
+- [x] Make `vehicle_main` create a `VehicleProcessSpec` and delegate configuration,
+  module construction, and `VehicleRuntime` assembly to
+  `build_vehicle_process_runtime()`. Retain the standalone CLI's paced loop and
+  operator-owned `START`; it must not use the simulator worker's automatic start.
 - [x] Start dependencies in order and unwind already-started modules after a startup failure.
 - [x] Keep `StateMachine` as the safety supervisor only.
 - [x] Implement path following as the first `RUNNING` operation strategy.
@@ -110,6 +119,10 @@ Owner: `utils/io/`.
 - [x] Finish common IO lifecycle behavior and command-cache locking.
 - [x] Provide `IOVirtual` for deterministic control-loop integration tests.
 - [x] Keep `IOQCar2` as a physical-device adapter; it receives externally owned QCar/GPS objects and does not own a QLabs session.
+- [ ] Extend the IO contract for independently timestamped sensor sources: required IMU/wheel propagation data plus optional GPS pose, LiDAR scan, and camera-frame reads. Camera-localisation may publish an optional pose correction from those frames. Keep latest required values and bounded optional-source queues; do not force all sources into one synchronous `SensorData` snapshot.
+- [ ] Refactor `IOBase.read_to_cache()` into a template method after the physical LiDAR probe: refresh the required state cache, then non-blockingly harvest already-arrived optional measurements. `IOCarla` should use the optional-collection hook; QCar/ROS LiDAR workers must publish independently of the control-loop rate; only `LocalizationManager` may drain scans. Do not make this architectural refactor part of the initial QCar capture test.
+- [ ] Preserve acquisition timestamp, sequence identity, validity, source ID, frame, and static extrinsics for every optional sensor source. An IO adapter may convert native data to `LaserScanSample`, `CameraFrame`, or `PoseMeasurement`, but it must not create/stop hardware, CARLA actors, ROS nodes, or calibration services.
+- [ ] Add explicit `sensors` sections to selected IO profiles. IMU/wheel inputs are required; GPS, LiDAR, and camera inputs are individually enabled optional sources with expected rate, freshness, and queue limits. Camera frames remain available to future perception/detection as well as camera localisation. CARLA actor blueprint/transform settings remain in `config_simulation.yaml`; algorithm/fusion settings remain in `config_localization.yaml`.
 - [ ] Finish ROS adapters only after their external transport contracts are defined.
 - [x] Keep QLabs live work blocked while the license is expired; retain it as reference only.
 - [x] Add fake-hardware tests for each completed IO adapter.
@@ -118,9 +131,9 @@ Acceptance gate: changing IO backend does not alter observer, planner, controlle
 
 ## Step 5: Add CARLA Simulation And IO
 
-Owners: `extra/simulator/carla/session.py` and `utils/io/io_carla.py`.
+Owners: `extra/platform/carla/session.py` and `utils/io/io_carla.py`.
 
-- [x] Add `extra/simulator/carla/session.py`.
+- [x] Add `extra/platform/carla/session.py`.
 - [x] Make `CarlaSession` own client connection, world settings, ego/sensor actors, sensor callbacks, synchronous ticks, and cleanup.
 - [x] Keep CARLA client/world/actor handles private to the session.
 - [x] Expose an ego actor and immutable/latest sensor snapshot to `IOCarla`.
@@ -130,6 +143,7 @@ Owners: `extra/simulator/carla/session.py` and `utils/io/io_carla.py`.
 - [x] Do not let `IOCarla` create clients, tick worlds, spawn actors, or restore world settings.
 - [x] Add fake session tests and fake actor tests without CARLA installed.
 - [x] Add direct-run live CARLA smoke, control, and `vehicle_main` tests that record CSV data and plot artifacts.
+- [x] Keep one reusable CARLA vehicle/session composition (`config_vehicle_carla.yaml` + `carla_sync`), including its standard horizontal 2-D LiDAR. Test-specific routes, spawns, and observer poses are overrides rather than duplicate configuration profiles.
 
 Acceptance gate: selecting CARLA changes only session and IO construction; the shared control pipeline remains unchanged.
 
@@ -138,20 +152,23 @@ Acceptance gate: selecting CARLA changes only session and IO construction; the s
 Owners: `core/vehicle_process.py`, CARLA launch adapters, and tests.
 
 - [x] Build one independent `VehicleRuntime` from one platform-neutral process specification, including config selections, overrides, and externally owned resources.
+- [x] Allow `VehicleProcessSpec.vehicle_id=None` to preserve the selected
+  configuration's vehicle ID for a standalone entry point, while retaining
+  explicit-ID override-conflict validation for scenario workers.
 - [x] Reject a process specification whose vehicle ID conflicts with an override.
 - [x] Start, step, and shut down one process-owned runtime in `try`/`finally`.
 - [x] Add focused process-builder/lifecycle tests, a two-process virtual-IO integration test, and a two-process virtual closed-loop controller test with CSV/trajectory-plot artifacts.
 - [x] Add a two-process virtual-IO integration test through the platform-neutral vehicle-process base.
 - [x] Give virtual and CARLA the same scenario/process-runner boundary; keep a session module only for externally shared simulation worlds.
 - [x] Add a parsed simulation setup manifest with per-vehicle IDs, config files, spawn transforms, routes, and exactly one synchronous tick owner.
-- [x] Replace inline JSON test manifests with reusable YAML scenario files under `config/scenarios/`.
+- [x] Replace inline JSON test manifests with reusable YAML scenario files under `config/scenarios/test/`; reserve `config/scenarios/` for current operator-facing scenarios.
 - [x] Make a scenario select one shared `config_simulation.yaml` session profile instead of duplicating CARLA host and port.
 - [x] Keep `config_simulation.yaml` limited to shared session/world/sensor defaults; retain only a named standalone `default_spawn_transform` fallback.
 - [x] Extend CARLA and virtual scenario vehicle entries with optional V2V profile, bind endpoint, and peer overrides.
 - [x] Reject ground-station scenario settings until a bridge owns and consumes them in Step 8.
 - [x] Validate unique vehicle IDs, one CARLA tick owner, unique local V2V bind endpoints, and no collision between configured V2V and ground-station port ranges.
 - [x] Add a simulation process launcher that starts one vehicle runtime process per parsed vehicle setup.
-- [x] Make CARLA and virtual multi-process integration tests launch canonical `config/scenarios/*.yaml` files through subprocess workers; keep only execution duration and artifact assertions inside tests.
+- [x] Make CARLA and virtual multi-process integration tests launch canonical `config/scenarios/test/*.yaml` files through subprocess workers; keep only execution duration and artifact assertions inside tests.
 - [x] Make the tick-owner process configure/tick the shared CARLA world; non-owner processes wait for completed frames and never call `world.tick()`.
 - [x] Pass each process only its own spawn transform, path, vehicle ID, and external endpoint settings; do not share Python runtime objects across processes.
 - [x] Add a direct-run two-process CARLA control integration test with distinct trajectories, actor ownership/cleanup checks, CSV records, and per-vehicle plots.
@@ -209,7 +226,7 @@ Owner: `utils/fleet/` and scenario parsing.
 - [x] Resolve predecessor from the explicit member-order value, not the line order in YAML. For example, order `0` is the leader and order `2` follows order `1`, even if their YAML entries are reversed. This is the required deterministic behaviour.
 - [x] Validate that every initial member has a process specification and an enabled compatible V2V endpoint before the scenario accepts the formation. Resolve fleet-message recipients from the configured topology and reject missing required links.
 - [ ] Validate dynamic member updates against their future process/V2V registration path before the registry accepts the change.
-- [x] Do not create processes, sockets, simulators, actors, or controllers in the formation builder. `extra/simulator/` still owns processes and sessions; `core/vehicle_process.py` still owns one runtime.
+- [x] Do not create processes, sockets, simulators, actors, or controllers in the formation builder. `extra/platform/` still owns processes and sessions; `core/vehicle_process.py` still owns one runtime.
 - [x] Add unit tests for two- and three-vehicle formations, YAML-order-independent predecessor selection, topology-route rejection, join/leave rejection, membership revision changes, and a vehicle not participating in a fleet.
 
 Acceptance gate: every participating vehicle can resolve its initial role and predecessor from the same scenario without cross-process Python objects, while future membership changes have one validated registry path.
@@ -277,7 +294,7 @@ Acceptance gate: every implemented utility has one explicit runtime-facing inter
 
 ### Step 7.6: Validate The Fleet In Virtual Simulation First
 
-Owner: `test/`, `extra/simulator/virtual/`, and fleet utilities.
+Owner: `test/`, `extra/platform/virtual/`, and fleet utilities.
 
 - [x] Add a canonical two-vehicle virtual fleet scenario with one leader, one follower, distinct initial positions, V2V endpoints, a static formation, and a reproducible mission.
 - [x] Add a real-time two-process virtual integration test that builds the fleet, activates it, records local and peer estimates, and controls the follower from its predecessor snapshot.
@@ -289,7 +306,7 @@ Acceptance gate: the virtual fleet test demonstrates bounded follower behavior u
 
 ### Step 7.7: Repeat The Validated Fleet Scenario In CARLA
 
-Owner: `test/`, `extra/simulator/carla/`, and fleet utilities.
+Owner: `test/`, `extra/platform/carla/`, and fleet utilities.
 
 - [x] Reuse the fleet contracts, worker protocol, message schema, and controller strategy from the virtual test. CARLA-specific code remains limited to session, actor, sensor, and world-tick handling.
 - [x] Add a direct-run three-process CARLA fleet integration test with exactly one synchronous tick owner, distinct spawn transforms, peer-state records, and the same fleet-phase assertions.
@@ -316,7 +333,7 @@ Final Step 7 acceptance gate: two independent vehicle processes can form a valid
 
 Owners: `core/`, `utils/ground_station/`, `extra/ground_station/`, and `extra/deployment/`.
 
-Principle: a vehicle command is a core domain contract, not a GUI or TCP object. `VehicleCommandHandler` owns typed command dispatch to the vehicle state machine, planner, and injected `FleetManager`; `VehicleRuntime` owns the resulting control reset, safe actuator stop, and control loop. Every runtime utility is reached through one injected interface; the runtime does not import or coordinate a utility's internal helpers. `GroundStationCommandHandler` owns CLI parsing and target routing; `GroundStationRuntimeFacade` owns queued command pumping, acknowledgement publication, and monitoring construction; the underlying bridge owns TCP transport only. Ground-station presentation code cannot call a vehicle runtime directly. Deployment is a separate SSH/SFTP concern and must not be mixed with the runtime control connection.
+Principle: a vehicle command is a core domain contract, not a GUI or TCP object. `VehicleCommandHandler` owns typed command dispatch to the vehicle state machine, planner, and injected `FleetManager`; `VehicleRuntime` owns the resulting control reset, safe actuator stop, and control loop. Every runtime utility is reached through one injected interface; the runtime does not import or coordinate a utility's internal helpers. `GroundStationCommandHandler` owns CLI parsing and target routing; `GroundStationRuntimeFacade` owns queued command pumping, acknowledgement publication, and monitoring construction; the underlying bridge owns TCP transport only. Ground-station presentation code cannot call a vehicle runtime directly. Deployment is a separate SSH/SFTP concern and must not be mixed with the runtime control connection. Its multi-machine manifest is named *deployment targets*, never *fleet*: it describes hosts and releases, whereas `utils/fleet` describes a runtime vehicle formation.
 
 Network direction: the ground station owns one configured TCP listener. Each vehicle opens an outbound connection and must register its own `vehicle_id` before it can exchange telemetry or commands. The listener never infers identity from the TCP source address or a per-vehicle port. This is a new protocol; the refactor does not retain the legacy per-vehicle-listener design.
 
@@ -358,6 +375,12 @@ Owner: `extra/ground_station/` and `test/`.
 - [x] Add a continuously refreshing terminal dashboard for integration testing. For every registered vehicle, display connection/registration state, runtime and fleet phase, estimate validity, position/heading/speed, last monitoring age, last command acknowledgement, IO/observer health, V2V receive/drop counters, and fleet peer summary. Use only the server's latest monitoring snapshots; the dashboard does not query or control vehicles directly.
 - [x] Keep the terminal dashboard asynchronous from TCP receive and command routing. Refresh at a bounded display rate, retain bounded monitoring history for rates, and show stale or disconnected data explicitly rather than blocking while waiting for a vehicle.
 - [x] Add `GroundStationCommandHandler` and an interactive CLI command surface for `list`, `status`, `start`, `stop`, `emergency-stop`, `reset`, `set-velocity`, `set-path`, `build-fleet`, and `cancel-fleet`, targeted by vehicle ID. The handler parses terminal syntax and routes only typed `VehicleCommand` values through the server; it never accesses a vehicle runtime directly.
+- [x] Name deployment host inventories `deployment_targets` and use only `targets-*` deployment commands, distinct from the runtime `utils/fleet` formation model. Remove the former `fleet-*` aliases and legacy target/inventory YAML shapes during development rather than carrying a compatibility layer.
+- [x] Define `DeploymentTarget` as a generic Linux vehicle endpoint: SSH/SFTP access, release location, health prerequisites, and opaque process commands. The selected bundle and runner command choose QCar, Limo, ROS 2, or another Linux platform; `vehicle_id` is only the logical runtime identity.
+- [x] Standardize `extra/deployment/` and `extra/ground_station/` as operator-side programs. Deployment keeps reviewed examples in `config/templates/`, ignored machine settings in `config/local/`, and versioned bundle policies in `config/bundles/`. Ground station instead uses only `extra/ground_station/config/ground_station.yaml`: no template, local copy, or CLI-selected YAML. `deployment_target` separates logical identity, SSH, release, and preflight settings; the fixed-path ground-station listener remains separate from the vehicle-side `config/config_ground_station.yaml` bridge profile. Both expose one canonical `python -m extra.<program>` entry point.
+- [x] Layer `extra/ground_station/` like the main program: `core/` owns listener/session and command-routing behavior, `presentation/` owns terminal/dashboard rendering, and its local `utils/` owns reusable logging and live-plotting support. Keep the package root limited to application entry points and configuration; do not retain flat-module compatibility wrappers.
+- [x] Centralize every side-program dataclass in `extra/deployment/deployment_type.py` or `extra/ground_station/ground_station_type.py`. Bundle, SSH, CLI, listener, and presentation modules consume these contracts but do not define their own side-program data records.
+- [x] Integrate the Qt LiDAR display into the registered ground-station TCP server. The interactive CLI accepts `lidar start <id>`, `lidar stop <id>`, and `lidar status [id]`; it routes typed runtime commands through the existing vehicle bridge. The selected local IO adapter enables or disables acquisition, and the runtime forwards only the newest normalized scan at a configured diagnostic rate. The server stores that bounded scan for the viewer. This works for CARLA and QCar without SSH, UDP, a deployment target, or a second PAL owner; closing the viewer or CLI sends the typed stop command. LiDAR diagnostics are allowed in `READY`, `RUNNING`, and `STOPPED`, so a vehicle can remain safely stopped while scanning.
 - [x] Require every CLI command to display its acknowledgement or rejection reason. A successful TCP send alone is not a successful vehicle command.
 - [x] Add localhost integration tests using the real server, one vehicle bridge, and CLI-equivalent commands. Validate command acknowledgement, telemetry updates, dashboard snapshot rendering, fleet build/cancel, disconnect, and reconnect.
 
@@ -422,10 +445,30 @@ Acceptance gate: operator-visible state is unambiguous; preparing a formation ca
 
 Owner: `extra/deployment/`.
 
-- [ ] Add a deployment CLI that uploads an explicitly selected source/config bundle to a configured physical vehicle using SSH/SFTP, verifies a manifest/hash, starts or stops the remote vehicle entry point, tails logs, and retrieves artifacts.
-- [ ] Keep host credentials, deployment destinations, and SSH settings outside vehicle configuration profiles and out of source control.
-- [ ] Provide dry-run mode and require an explicit target vehicle ID/host for every mutating deployment operation.
-- [ ] Test packaging and manifest generation locally; perform real upload/start validation only on an approved physical vehicle at low throttle.
+- [x] Add a deployment CLI that uploads an explicitly selected source/config bundle to a configured physical vehicle using SSH/SFTP, verifies a manifest/hash, starts or stops the remote vehicle entry point, tails logs, and retrieves artifacts.
+- [x] Keep host credentials, deployment destinations, and SSH settings outside vehicle configuration profiles and out of source control.
+- [x] Provide dry-run mode and require an explicit target vehicle ID/host for every mutating deployment operation.
+- [ ] Test packaging and manifest generation locally; perform approved physical upload/start validation only at low throttle. (Local packaging and mocked SSH coverage are complete; do not start the physical vehicle until the user explicitly approves the supported-wheel test.)
+- [x] Build a deterministic, allowlisted deployment bundle. Exclude caches, test artifacts, local logs, VCS files, and secrets; fail the deployment if any selected file cannot upload.
+- [x] Support SSH keys or an agent and pinned `known_hosts` verification; never accept an unknown host key automatically.
+- [x] Deploy transactionally: upload to a versioned staging release, verify the complete manifest remotely, atomically activate it, retain the prior release, and provide rollback.
+- [x] Run remote preflight and post-start health checks for target identity, free disk, required runtime/dependencies, and process health. Record structured deployment logs and artifacts, with command timeouts.
+
+#### Shared Platform Process Runner And Launcher (prerequisite to physical start)
+
+Principle: `core` remains platform-neutral. Every platform runner owns only its external-resource lifecycle and supplies those resources through `VehicleProcessSpec.resources`; `IOBase` implementations remain the sole sensor/actuator adapters. A launcher coordinates processes or remote endpoints but never bypasses `VehicleRuntime` safety or injects a physical START command.
+
+- [x] Replace the simulator-only process-manager naming with a shared `extra/platform/` contract: generic `BasePlatformProcessManager`, setup-resolving `ScenarioPlatformProcessManager` (scenario YAML or a one-QCar vehicle config), and `QCarProcessManager`, with a resource-context hook that opens/releases and injects platform-owned resources into one `VehicleProcessSpec`.
+- [x] Split common runtime lifecycle from start policy. Preserve automatic barrier release for virtual/CARLA tests, but add an operator-gated policy for physical platforms: start modules in `READY`, write zero while waiting, and accept motion only through the configured ground-station `START` command.
+- [x] Generalize the launcher behind two explicit execution backends: local subprocesses for virtual/CARLA and authenticated remote endpoints for deployed QCars/ROS 2 hosts. Both backends report readiness, health, logs, shutdown result, and per-vehicle failures through `LaunchEndpointResult`/`LaunchReport`; remote fleet start fails closed after a start failure, while fleet stop reports every endpoint.
+- [x] Expose one `PlatformLauncher` lifecycle interface to application and future ground-station code. Target configuration chooses the local or remote transport internally; ground-station runtime `START`/`STOP` commands remain separate from deployment and process lifecycle operations.
+- [x] Migrate virtual and CARLA process runners to the shared contract without changing their current scenario YAML, CLI behaviour, tick ownership, readiness barrier, or test coverage; update all project callers to the canonical `extra.platform.*` paths.
+- [x] Implement the QCar platform runner as the first physical backend. It owns `QCar(readMode=1)`, passes only `resources["qcar"]` to `IOQCar2`, relies on `IOQCar2.stop()` for normal neutral output and PAL `QCar.terminate()` for final cleanup, and never constructs QCar objects in `core` or `utils/io`.
+- [ ] Define a ROS 2 platform-runner extension point: own `rclpy` initialization/node/executor and ROS publishers/subscribers in the platform resource context; add the matching IO adapter separately behind the existing IO contract. (A lazy node resource context exists; executor, IO adapter, and ROS endpoint tests remain.)
+- [x] Keep `extra/deployment/` limited to bundle/SSH/release transport. It may invoke the remote platform-runner command and collect health/logs, but it must not contain vehicle IO, ROS 2 callbacks, QCar APIs, scenario policy, or fleet-following logic.
+- [ ] Add fake-resource unit tests for the shared runner; local multi-process tests for the local launcher backend; mocked SSH tests for the remote backend; and an approved low-throttle QCar test that verifies `READY`, zero output, explicit START, STOP, and cleanup. (The fake-resource, local, and mocked-SSH portions are covered; the approved physical test remains.)
+
+Acceptance gate: virtual, CARLA, QCar, and a future ROS 2 vehicle use one runner/launcher lifecycle contract; each external resource has exactly one platform owner; and no physical vehicle can move because a deployment, readiness barrier, or launcher starts it implicitly.
 
 Acceptance gate: deployment is repeatable and auditable without making the ground-station TCP connection responsible for code upload or process management.
 
@@ -456,6 +499,80 @@ Acceptance gate: replacing the CLI client with Qt/PySide changes presentation on
 - [ ] Add manual driving, taxi, calibration, perception, SysID, neural observers, scopes, trust, and attack features one module at a time.
 - [ ] Keep optional features out of the default import and startup path.
 - [ ] Remove legacy coupling only after the replacement behavior has tests.
+
+### Standard Test Artifact Procedure
+
+Owners: `test/helper_artifacts.py`, artifact-producing test scripts, and deployment-test documentation.
+
+Principle: a test result is immutable evidence for one execution, not a mutable global file named after a test. Create one run under `test/artifacts/<category>/<platform>/<test_name>/<run_id>/`, write `manifest.json` first, and classify every generated file as `raw/`, `derived/`, `figures/`, or `logs/`. Generated runs are ignored by Git. Fixtures and committed reference recordings are separate inputs and must never be overwritten by a test.
+
+- [x] Add the test-only `ArtifactRun`/`create_artifact_run()` helper with a unique run ID, classified directories, metadata manifest, and focused unit tests.
+- [x] Migrate artifact-producing virtual/CARLA, multi-process/fleet/V2V, localisation, and QCar diagnostic tests to the standard layout.
+- [x] Remove legacy flat/per-test artifact results that do not meet the run/manifest standard while preserving new generated runs under the classified hierarchy.
+- [x] Move the committed EKF QCar CSV input to `test/fixtures/qcar/` and update its consumer. Deterministic inputs now have an explicit fixture owner rather than a legacy artifact-path dependency.
+- [ ] Add a shared test CLI option or environment setting for an explicit artifact root/run ID, including CI retention paths, without changing default local behavior.
+- [ ] Update physical QCar capture/fetch commands to create and preserve the same local run manifest with target hostname, release/bundle hash, capture configuration, and remote source path.
+- [ ] Add a small artifact-index/report command that lists available runs and their manifest metadata without parsing plots or test code.
+
+### Cross-Platform LiDAR Acquisition And Localisation
+
+Owners: `utils/io/` owns the common local acquisition API, local buffering,
+and native-to-common conversion; `extra/platform/<platform>/` owns only native
+resource lifecycle; `utils/localization/` owns algorithms that consume
+normalized scans.  This is one local adapter layer, not separate CARLA and
+QCar runtime designs.
+
+Principle: the selected `IOBase` adapter runs in the same local
+vehicle/simulator process as the sensor and publishes new, dependency-free
+ROS 2 `sensor_msgs/msg/LaserScan`-shaped `LaserScanSample` values into its
+bounded local queue. `IOBase` exposes a one-time drain to local
+localisation/control. The ground station receives health and pose telemetry,
+never the continuous raw scan stream; scans leave a vehicle only through an
+explicit bounded capture or diagnostic request. `ScanMatchAlgorithm` turns a scan into a map-frame
+`[x, y, yaw]` `PoseMeasurement`.  A native LiDAR-to-GPS/PAL service that
+already produces a pose is a `PoseMeasurement` source instead; it must not
+masquerade as a raw scan source.  Camera frames remain general perception
+inputs, and use this correction path only when a camera-localisation algorithm
+explicitly produces a pose.  No IO adapter creates/stops hardware, CARLA
+actors, ROS nodes, SLAM processes, or calibration services.
+
+#### 1. Consolidate The Common Contract
+
+- [x] Define dependency-free `LaserScanSample` and `PoseMeasurement` contracts with ROS frame/unit conventions in `core/vehicle_types.py`. They are vehicle data contracts: IO adapters publish scans, localisation algorithms consume scans and return pose corrections, and neither layer owns the type.
+- [ ] Extend the scan source descriptor with source ID, monotonically increasing sequence ID, validity, `base_link -> sensor` extrinsics, expected rate, and freshness. Preserve ROS-shaped ranges/intensities and the existing acquisition timestamp/queue capacity.
+- [x] Add the common bounded LiDAR queue directly to `IOBase`. A local IO worker/callback privately publishes each normalized new scan; `IOBase.drain_lidar_scans()` returns each scan once, and `lidar_status()` reports accepted, dropped, and queued counts. It contains no PAL, CARLA, or ROS imports and never relays raw scans to the ground station.
+- [ ] Add duplicate, stale, invalid, and out-of-order detection to the common source diagnostics once source identity and sequence metadata exist.
+- [x] Place the current LiDAR ICP family under `utils/localization/scan_matching/`: `ScanMatchAlgorithm` is the common lifecycle contract, with separate scan-to-scan odometry and reference-scan map localizers.
+- [x] Make scan-matching consume only the core vehicle contracts. Do not let an algorithm import `IOBase`, an IO implementation, a platform session, or ROS 2.
+
+#### 2. Adapt Existing CARLA Before Adding Hardware
+
+- [x] Add the current CARLA ray-cast conversion and fake-session/live-CARLA scan tests as a prototype.
+- [x] Convert the prototype into the local `IOCarla` path: `CarlaSession` owns the actor and preserves a bounded raw callback queue; `IOCarla`, in the same simulator process, drains that queue, performs CARLA right-to-left axis/projection conversion, and publishes to the shared IO buffer. `CarlaSession` no longer holds `LaserScanSample` values or localisation state. Unit, SDCS-route, and LiDAR-route integration tests pass.
+- [ ] Keep CARLA blueprint, actor transform, point-cloud projection, and scan binning in `config_simulation.yaml`. Put the normalized source ID, output frames/extrinsics, expected rate, freshness, and queue capacity in the selected `config_io.yaml` profile. Do not duplicate vehicle profiles for sensor combinations.
+
+#### 3. Add QCar Through The Same Boundary
+
+- [ ] Run and record the deployed-QCar no-motion LiDAR probe. `extra.platform.qcar.lidar_capture` now uses the locally checked PAL `QCarLidar.read()` API, copies its `angles`/`distances`, and never constructs `QCarGPS` (which may alter the LiDAR-to-GPS service). Confirm the deployed PAL version, angle/range units, scan ordering, invalid values, and stationary repeatability before treating this as an `IOQCar2` producer.
+- [x] Add a QCar platform resource context with an on-demand PAL LiDAR manager. The normal disabled profile leaves PAL LiDAR uncreated at `targets-start`; `lidar start <id>` lets `IOQCar2` acquire it locally and begin its high-rate polling worker, while `lidar stop <id>` stops that worker and releases PAL. Explicit stationary capture may still request a direct short-lived handle. PAL angle/range conversion and the common bounded source remain local on the deployed vehicle. Physical frame/range confirmation remains a required gate before enabling localisation.
+- [x] Add a stationary QCar IO integration capture command. With explicit `--with-lidar`, it records `IOQCar2`-normalized scan bins, IMU/tachometer samples, worker counters, and artifacts without starting a route, calling `QCar.write`, recalibrating, or restarting PAL services. The direct LiDAR probe separately preserves raw PAL arrays for calibration review.
+- [ ] Add `qcar_hardware` and explicitly separate `qcar_qlabs` source choices in `config_io.yaml`; they may share the same public API but must not assume the same native PAL transport or calibration.
+- [x] Add the explicitly requested diagnostic-only Qt/pyqtgraph viewer to `extra/ground_station/utils/live_plotting.py`. `test_integration_carla_lidar_route.py` uses the real `VehicleRuntime`, selected TCP ground-station bridge, reference scan, and scan-match localisation to show route/localisation left and current/reference scans right. The smaller `test_integration_carla_lidar_viewer.py` remains a stationary local scan smoke; the normal QCar/CARLA switch is the typed TCP `lidar start|stop` command and the ground-station viewer refreshes independently from the terminal dashboard. `io_capture --with-lidar --diagnostic-host` remains a lower-level fallback. The viewer never consumes a normal runtime/localisation queue. Its camera pane remains a placeholder until the `CameraFrame` contract and producer exist.
+
+#### 4. Reuse The Contract For ROS 2 And Pose Services
+
+- [ ] Add a local ROS 2 IO callback that converts `sensor_msgs/msg/LaserScan` directly into the common contract; inject only its externally owned node through `ros2_resource_context`. Use it unchanged for Limo; do not add a Limo-specific scan-matching implementation or route scans through the ground station.
+- [ ] Add a selected `pal_lidar_gps` **pose-source** adapter that uses existing Quanser calibration only. It emits `PoseMeasurement`; recalibration and restart remain explicit operator actions, and it shares correction health/freshness handling with GPS and scan matching.
+- [ ] Define a dependency-free `CameraFrame` contract and camera IO producers for supported platforms. A selected camera localiser may emit `PoseMeasurement` through the same optional-correction interface; generic frames remain available to perception/detection.
+
+#### 5. Integrate Only After Replay Validation
+
+- [ ] Define the local multi-rate correction contract before connecting localisation to control: IMU/wheel inputs propagate at their own rate; a local LiDAR worker may publish scans faster or slower than the control loop; GPS, camera-derived, PAL-pose, and LiDAR-derived poses are optional timestamped corrections. Drain each correction once, sort or explicitly reject out-of-order inputs, reject stale data, and publish source-health diagnostics upstream.
+- [ ] Implement and replay-test one selected fixed-map scan matcher (ICP, NDT, or equivalent) against both CARLA and recorded QCar scans before it is permitted to run on a vehicle. The same algorithm input and artifact schema must work for both platforms.
+- [ ] Define map, initial-pose, static-extrinsics, timestamp freshness, queue capacity, covariance, delayed-measurement policy, and loss-of-localisation configuration. Bind all maps/calibrations to the deployment manifest; never infer a map frame from a route.
+- [ ] Add unit and replay tests for scan conversion, source queue semantics, duplicate prevention, independent rates, stale/invalid/out-of-order samples, map-frame mismatch, lifecycle ownership, and common CARLA/QCar replay. Then run approved wheels-supported QCar and Limo smoke tests.
+- [ ] Gate operational physical `START` on configured fresh, valid localisation while retaining a clearly marked no-motion diagnostic profile for capture/calibration work.
+- [ ] Add `utils/localization/slam/` only when map construction, map persistence, loop closure, and SLAM-specific tests are actually in scope; SLAM may use scan matching but is not a fixed-map scan matcher.
 
 Acceptance gate: the minimal runtime stays importable and testable without every optional dependency.
 

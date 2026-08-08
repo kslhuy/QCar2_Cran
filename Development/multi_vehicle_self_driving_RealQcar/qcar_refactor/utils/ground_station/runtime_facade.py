@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from core.commands import CommandResult, CommandSource, CommandType, VehicleCommand
-from core.vehicle_types import ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControllerReference, LaserScanSample, VehicleStateEstimate
 
 from .monitoring import MonitoringSnapshot
 
@@ -24,6 +24,8 @@ class GroundStationRuntimeFacade:
         self._bridge = bridge
         self._command_batch_size = command_batch_size
         self._last_command_result: CommandResult | None = None
+        self._lidar_diagnostic_enabled = False
+        self._last_lidar_timestamp_ns: int | None = None
 
     @property
     def last_command_result(self) -> CommandResult | None:
@@ -47,6 +49,26 @@ class GroundStationRuntimeFacade:
         if command.source == CommandSource.GROUND_STATION and command.command_type != CommandType.MANUAL_INPUT:
             self._bridge.publish_ack(result)
         return result
+
+    def set_lidar_diagnostic_enabled(self, enabled: bool) -> None:
+        """Select whether new local scans may be forwarded for operator display."""
+
+        if not isinstance(enabled, bool):
+            raise ValueError("LiDAR diagnostic enabled state must be boolean")
+        self._lidar_diagnostic_enabled = enabled
+        self._last_lidar_timestamp_ns = None
+
+    def publish_lidar_scan(self, scan: LaserScanSample | None) -> None:
+        """Forward only a newly acquired selected diagnostic scan to the bridge."""
+
+        if not self._lidar_diagnostic_enabled or scan is None:
+            return
+        if not isinstance(scan, LaserScanSample):
+            raise TypeError("LiDAR diagnostics require a LaserScanSample")
+        if self._last_lidar_timestamp_ns == scan.timestamp_ns:
+            return
+        self._last_lidar_timestamp_ns = scan.timestamp_ns
+        self._bridge.publish_lidar_scan(scan)
 
     def publish_monitoring(
         self,

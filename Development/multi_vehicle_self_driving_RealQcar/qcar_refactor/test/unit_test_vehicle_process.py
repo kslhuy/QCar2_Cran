@@ -38,12 +38,30 @@ class TestVehicleProcess(unittest.TestCase):
         with self.assertRaisesRegex(ConfigError, "conflicts"):
             build_vehicle_process_runtime(spec)
 
+    def test_uses_the_configured_vehicle_id_when_the_spec_does_not_override_it(self):
+        runtime = build_vehicle_process_runtime(
+            VehicleProcessSpec(
+                vehicle_id=None,
+                vehicle_config_file="config_vehicle_virtual.yaml",
+            )
+        )
+
+        self.assertEqual(runtime.config.vehicle_id, 0)
+
     def test_runs_start_step_and_shutdown_in_order(self):
         runtime = _FakeRuntime()
         samples = run_vehicle_process(runtime, cycles=2, dt=0.05)
 
         self.assertEqual(samples, ["sample-1", "sample-2"])
         self.assertEqual(runtime.calls, ["start", ("command", "START"), ("step", 0.05), ("step", 0.05), "shutdown"])
+
+    def test_operator_gated_process_does_not_inject_a_simulator_start_command(self):
+        runtime = _FakeRuntime()
+
+        samples = run_vehicle_process(runtime, cycles=1, dt=0.05, auto_start=False)
+
+        self.assertEqual(samples, ["sample-1"])
+        self.assertEqual(runtime.calls, ["start", ("step", 0.05), "shutdown"])
 
 
 class _FakeRuntime:

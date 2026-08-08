@@ -90,22 +90,34 @@ class TestVehicleConfig(unittest.TestCase):
         self.assertEqual(config.module("io")["implementation"], "null")
         self.assertFalse(config.module("v2v")["enabled"])
 
-    def test_sdcs_small_map_profile_passes_mission_node_sequence_to_planner(self):
-        config = load_config(
-            self.config_dir,
-            vehicle_config_file="config_vehicle_sdcs_small_map.yaml",
-        )
-
-        self.assertEqual(config.module("planner")["implementation"], "sdcs_small_map")
-        self.assertEqual(config.module("planner")["node_sequence"], config.mission["node_sequence"])
-
-    def test_carla_default_uses_the_sdcs_planner_and_one_closed_circuit(self):
+    def test_carla_composition_is_safe_until_a_scenario_or_test_supplies_a_route(self):
         config = load_config(self.config_dir, vehicle_config_file="config_vehicle_carla.yaml")
 
         self.assertEqual(config.module("planner")["implementation"], "sdcs_small_map")
-        self.assertEqual(config.module("planner")["node_sequence"], [0, 2, 4, 6, 10])
-        self.assertEqual(config.module("planner")["loop"], 1)
+        self.assertNotIn("node_sequence", config.module("planner"))
+        self.assertIsNone(config.mission["path"])
         self.assertEqual(config.module("simulation")["implementation"], "carla")
+        self.assertEqual(config.module("simulation")["sensors"]["lidar"]["attributes"]["range"], 50)
+
+    def test_carla_test_can_supply_its_route_without_another_profile(self):
+        config = load_config(
+            self.config_dir,
+            vehicle_config_file="config_vehicle_carla.yaml",
+            selection_overrides={"ground_station": "null"},
+            value_overrides={
+                "mission": {"node_sequence": [0, 1, 4, 0], "loop": 0, "target_velocity": 3.0},
+                "modules": {
+                    "planner": {"node_sequence": [0, 1, 4, 0], "loop": 0, "target_velocity": 3.0},
+                    "simulation": {
+                        "spawn_transform": {"x": -1.14, "y": -1.053177, "z": 0.5, "yaw": 90.0},
+                    },
+                },
+            },
+        )
+
+        self.assertEqual(config.module("ground_station")["implementation"], "null")
+        self.assertEqual(config.module("planner")["node_sequence"], [0, 1, 4, 0])
+        self.assertEqual(config.module("simulation")["sensors"]["lidar"]["transform"]["z"], 0.5)
 
     def test_selection_override_is_applied_before_profiles_are_loaded(self):
         config = load_config(

@@ -1,0 +1,12 @@
+# Platform-neutral localisation selection.  Platform resource contexts own
+# native sensors; reusable algorithms consume the ROS-shaped LaserScanSample.
+"none":
+  implementation: "none"
+
+lidar_scan_matching:
+  implementation: lidar_to_pose
+  input_frame: laser
+  output_frame: map
+  max_measurement_age_s: 0.30
+  # A map/calibration artifact and concrete algorithm settings are supplied by
+  # an operational platform profile, never inferred by IOQCar2.

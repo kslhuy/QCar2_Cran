@@ -11,11 +11,25 @@ import msgpack
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.commands import CommandOutcome, CommandResult, CommandType, VehicleCommand
-from core.vehicle_types import ControllerReference, VehicleStateEstimate
+from core.vehicle_types import ControllerReference, LaserScanSample, VehicleStateEstimate
 from utils.ground_station.monitoring import MonitoringSnapshot
-from extra.ground_station.command_handler import GroundStationCommandHandler
-from extra.ground_station.dashboard import GroundStationDashboard
-from extra.ground_station.server import GroundStationServer
+from extra.ground_station.core.command_handler import GroundStationCommandHandler
+from extra.ground_station.app import main as ground_station_main
+from extra.ground_station.configuration import (
+    GROUND_STATION_CONFIGURATION_PATH,
+    load_ground_station_configuration,
+)
+from extra.ground_station.ground_station_type import (
+    CommandDelivery,
+    DisconnectedVehicle,
+    GroundStationCommandRequest,
+    GroundStationConfigurationError,
+    GroundStationConfiguration,
+    VehicleSession,
+)
+from extra.ground_station.presentation.dashboard import GroundStationDashboard
+from extra.ground_station.core.server import GroundStationServer
+from extra.ground_station.utils.logging import get_ground_station_logger
 from utils.ground_station.bridge_tcp import GroundStationClientBridge
 from utils.ground_station.bridge_base import NullGroundStationBridge
 from utils.ground_station.protocol import FrameDecoder, FrameType, ProtocolError, decode_frame, encode_frame
@@ -78,6 +92,53 @@ def _bridge_config(port: int, **overrides) -> dict:
     return config
 
 
+class TestGroundStationApplicationConfiguration(unittest.TestCase):
+    def test_fixed_yaml_path_is_separate_from_vehicle_bridge_profiles(self):
+        configuration = load_ground_station_configuration()
+
+        self.assertEqual(GROUND_STATION_CONFIGURATION_PATH.name, "ground_station.yaml")
+        self.assertTrue(GROUND_STATION_CONFIGURATION_PATH.is_file())
+        self.assertEqual(configuration.listener_host, "0.0.0.0")
+        self.assertEqual(configuration.listener_port, 5000)
+        self.assertEqual(configuration.max_frame_bytes, 4096)
+        self.assertEqual(configuration.lidar_refresh_hz, 20.0)
+        self.assertTrue(configuration.input_enabled)
+        overridden = configuration.with_overrides(port=0, input_enabled=False)
+        self.assertEqual(overridden.listener_port, 0)
+        self.assertFalse(overridden.input_enabled)
+        self.assertEqual(load_ground_station_configuration().listener_port, 5000)
+
+    def test_fixed_yaml_configuration_rejects_invalid_temporary_overrides(self):
+        with self.assertRaisesRegex(GroundStationConfigurationError, r"\[0, 65535\]"):
+            load_ground_station_configuration().with_overrides(port=70000)
+
+
+class TestGroundStationPackageLayout(unittest.TestCase):
+    def test_all_ground_station_dataclasses_are_owned_by_the_type_module(self):
+        for contract in (
+            CommandDelivery,
+            DisconnectedVehicle,
+            GroundStationCommandRequest,
+            GroundStationConfiguration,
+            VehicleSession,
+        ):
+            self.assertEqual(contract.__module__, "extra.ground_station.ground_station_type")
+
+    def test_canonical_server_entry_point_uses_the_core_listener(self):
+        self.assertEqual(
+            ground_station_main(["server", "--host", "127.0.0.1", "--port", "0", "--duration-s", "0.01"]),
+            0,
+        )
+
+    def test_namespaced_logger_does_not_configure_process_handlers(self):
+        logger = get_ground_station_logger("test")
+
+        self.assertEqual(logger.name, "extra.ground_station.test")
+        self.assertEqual(logger.handlers, [])
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            get_ground_station_logger(" ")
+
+
 class TestGroundStationProtocol(unittest.TestCase):
     def test_incremental_frame_decoder_handles_fragmented_tcp_reads(self):
         encoded = encode_frame(FrameType.REGISTER, {"vehicle_id": 2, "session_id": "session"})
@@ -128,6 +189,12 @@ class TestGroundStationProtocol(unittest.TestCase):
         self.assertEqual(request.vehicle_id, 3)
         self.assertIsNone(request.command)
         self.assertEqual(request.action, "status")
+
+    def test_cli_parser_maps_lidar_toggle_to_a_typed_vehicle_command(self):
+        request = GroundStationCommandHandler().parse("lidar start 3")
+
+        self.assertEqual(request.vehicle_id, 3)
+        self.assertEqual(request.command.command_type, CommandType.ENABLE_LIDAR_DIAGNOSTIC)
 
     def test_command_handler_routes_only_typed_vehicle_commands(self):
         class _Server:
@@ -259,6 +326,26 @@ class TestGroundStationBridgeAndServer(unittest.TestCase):
         row = self.server.session_rows()[0]
         self.assertEqual(row["snapshot"]["runtime_state"], "RUNNING")
         self.assertEqual(row["last_command_result"]["outcome"], "applied")
+
+    def test_latest_lidar_scan_uses_the_registered_tcp_session(self):
+        scan = LaserScanSample(
+            timestamp_ns=123,
+            frame_id="laser",
+            angle_min_rad=-1.0,
+            angle_max_rad=1.0,
+            angle_increment_rad=1.0,
+            time_increment_s=0.0,
+            scan_time_s=0.1,
+            range_min_m=0.05,
+            range_max_m=10.0,
+            ranges_m=(1.0, float("inf"), 2.0),
+        )
+        self.bridge.publish_lidar_scan(scan)
+
+        self.assertTrue(_wait_for(lambda: self.server.latest_lidar_scan(7) is not None))
+        received = self.server.latest_lidar_scan(7)
+        self.assertEqual(received.timestamp_ns, 123)
+        self.assertEqual(received.ranges_m, scan.ranges_m)
 
     def test_live_duplicate_vehicle_id_is_rejected(self):
         duplicate = socket.create_connection(("127.0.0.1", self.server.port), timeout=1.0)

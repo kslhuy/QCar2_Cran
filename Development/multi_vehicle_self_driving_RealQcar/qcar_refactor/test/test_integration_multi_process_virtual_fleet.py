@@ -7,21 +7,28 @@ import unittest
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+from test.helper_artifacts import create_artifact_run
 try:
     from .helper_fleet import run_fleet_integration
 except ImportError:
     from helper_fleet import run_fleet_integration
 
-from extra.simulator.virtual import load_virtual_setup
+from extra.platform.virtual import load_virtual_setup
 
 _SCENARIO = _ROOT / "config" / "scenarios" / "test" / "virtual_four_vehicle_fleet_control.yaml"
-_ARTIFACTS = _ROOT / "test" / "artifacts" / "virtual_fleet_control"
 _FLEET_ORDER = (1, 2, 3, 4)
 
 
 class TestVirtualFleetControl(unittest.TestCase):
     def test_four_process_fleet_follows_from_declared_spawns_and_records_artifacts(self):
         cycles, dt = 600, 0.02
+        artifacts = create_artifact_run(
+            category="integration",
+            platform="virtual",
+            test_name="fleet_control",
+            metadata={"scenario": _SCENARIO.name, "vehicle_ids": list(_FLEET_ORDER), "cycles": cycles, "dt_s": dt},
+        )
         setup = load_virtual_setup(_SCENARIO)
         self.assertEqual(tuple(vehicle.vehicle_id for vehicle in setup.vehicles), _FLEET_ORDER)
         expected_x = {vehicle_id: -0.8 * (vehicle_id - 1) for vehicle_id in _FLEET_ORDER}
@@ -37,14 +44,15 @@ class TestVirtualFleetControl(unittest.TestCase):
         run_fleet_integration(
             self,
             project_root=_ROOT,
-            runner_module="extra.simulator.virtual.process_runner",
+            runner_module="extra.platform.virtual.process_runner",
             setup_file=_SCENARIO,
             cycles=cycles,
             extra_args=["--dt", str(dt), "--realtime", "--build-fleet"],
             timeout_s=cycles * dt + 30.0,
             fleet_order=_FLEET_ORDER,
             platform_name="Virtual",
-            artifact_directory=_ARTIFACTS,
+            raw_directory=artifacts.raw_directory,
+            figures_directory=artifacts.figures_directory,
             summary_filename="fleet_virtual_summary.png",
             validation_position_columns=("estimate_x_m", "estimate_y_m"),
             minimum_gap_m=0.30,

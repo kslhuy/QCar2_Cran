@@ -26,7 +26,8 @@ def run_fleet_integration(
     timeout_s: float,
     fleet_order: Sequence[int],
     platform_name: str,
-    artifact_directory: str | Path,
+    raw_directory: str | Path,
+    figures_directory: str | Path,
     summary_filename: str,
     validation_position_columns: tuple[str, str] = ("gps_x_m", "gps_y_m"),
     plot_position_columns: tuple[str, str] = ("gps_x_m", "gps_y_m"),
@@ -73,7 +74,8 @@ def run_fleet_integration(
 
     summary_path = write_fleet_artifacts(
         rows_by_vehicle,
-        artifact_directory,
+        raw_directory,
+        figures_directory,
         fleet_order=fleet_order,
         platform_name=platform_name,
         summary_filename=summary_filename,
@@ -151,7 +153,8 @@ def assert_fleet_run(
 
 def write_fleet_artifacts(
     rows_by_vehicle: Mapping[int, Sequence[Mapping[str, object]]],
-    artifact_directory: str | Path,
+    raw_directory: str | Path,
+    figures_directory: str | Path,
     *,
     fleet_order: Sequence[int] | None = None,
     platform_name: str,
@@ -179,8 +182,10 @@ def write_fleet_artifacts(
     if any(not rows_by_vehicle[vehicle_id] for vehicle_id in ordered_vehicle_ids):
         raise ValueError("Fleet telemetry cannot contain an empty vehicle series")
 
-    directory = Path(artifact_directory)
-    directory.mkdir(parents=True, exist_ok=True)
+    raw_path = Path(raw_directory)
+    figures_path = Path(figures_directory)
+    raw_path.mkdir(parents=True, exist_ok=True)
+    figures_path.mkdir(parents=True, exist_ok=True)
     labels = _vehicle_labels(ordered_vehicle_ids)
     for index, vehicle_id in enumerate(ordered_vehicle_ids):
         rows = rows_by_vehicle[vehicle_id]
@@ -195,7 +200,7 @@ def write_fleet_artifacts(
             )
             for row in rows
         ]
-        with (directory / f"vehicle_{vehicle_id}.csv").open("w", newline="", encoding="ascii") as file:
+        with (raw_path / f"vehicle_{vehicle_id}.csv").open("w", newline="", encoding="ascii") as file:
             writer = csv.DictWriter(file, fieldnames=list(artifact_rows[0]))
             writer.writeheader()
             writer.writerows(artifact_rows)
@@ -206,7 +211,7 @@ def write_fleet_artifacts(
         rows_by_vehicle,
         ordered_vehicle_ids,
         labels,
-        directory / summary_filename,
+        figures_path / summary_filename,
         platform_name,
         position_columns,
         display_y_sign,
@@ -218,10 +223,10 @@ def write_fleet_artifacts(
         rows_by_vehicle,
         ordered_vehicle_ids,
         labels,
-        _diagnostics_path(directory / summary_filename),
+        _diagnostics_path(figures_path / summary_filename),
         platform_name,
     )
-    return directory / summary_filename
+    return figures_path / summary_filename
 
 
 def _artifact_row(

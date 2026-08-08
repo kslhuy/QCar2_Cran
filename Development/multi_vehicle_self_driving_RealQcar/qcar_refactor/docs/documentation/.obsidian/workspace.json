@@ -1,0 +1,215 @@
+{
+  "main": {
+    "id": "0f8d6dc1c483dd93",
+    "type": "split",
+    "children": [
+      {
+        "id": "f626b5de93ebfaf0",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "dadc5510c85e4f87",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "New tab"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "2150d339d0f42539",
+    "type": "split",
+    "children": [
+      {
+        "id": "50c3cdfba122c795",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "2a85473d214ce43d",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "24a0a3a46e06a400",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "b3d204367dfb73db",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "caa77fd558d60376",
+    "type": "split",
+    "children": [
+      {
+        "id": "3ada7927a9743b72",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "b65fad6e58833bdd",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "core/command-handler.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for command-handler"
+            }
+          },
+          {
+            "id": "4d398ed12e5a18e7",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "core/command-handler.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from command-handler"
+            }
+          },
+          {
+            "id": "f8bc99a7601f3918",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "f17fe7dbdab4e22d",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "a958a65d56207689",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "core/command-handler.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of command-handler"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "dadc5510c85e4f87",
+  "lastOpenFiles": [
+    "extra/ground-station/configuration.md",
+    "extra/ground-station/ground-station-type.md",
+    "extra/deployment/deployment-type.md",
+    "extra/simulator/base.md",
+    "core/vehicle-runtime.md",
+    "extra/ground-station/core/listener.md",
+    "extra/ground-station/core/server.md",
+    "extra/ground-station/core/command-handler.md",
+    "extra/ground-station/server.md",
+    "utils/io/io-ros-stubs.md",
+    "utils/README.md",
+    "config/README.md",
+    "extra/README.md",
+    "extra/ground-station/command-handler.md",
+    "extra/ground-station/cli.md",
+    "utils/fleet/fleet-runtime.md",
+    "utils/fleet/fleet-registry.md",
+    "utils/fleet/fleet-peer-store.md",
+    "utils/fleet/fleet-message.md",
+    "utils/fleet/fleet-manager.md",
+    "utils/fleet/fleet-following-policy.md",
+    "utils/fleet/fleet-base.md",
+    "utils/fleet/distributed-observer-fake.md",
+    "utils/fleet/distributed-observer-luenberger.md",
+    "utils/fleet/distributed-observer-factory.md",
+    "utils/fleet/distributed-observer-base.md",
+    "extra/simulator",
+    "extra/ground-station",
+    "extra",
+    "config"
+  ]
+}

@@ -14,6 +14,7 @@ from core.module_factory import build_vehicle_modules
 from core.vehicle_config import load_config
 from core.vehicle_logic import VehicleRuntime
 from core.vehicle_state_machine import State
+from test.helper_artifacts import create_artifact_run
 
 
 @unittest.skipUnless(__name__ == "__main__", "run this CARLA control integration test file directly")
@@ -78,7 +79,13 @@ class TestLiveCarlaControlPipeline(unittest.TestCase):
         self.assertGreater(max(abs(row["steering_rad"]) for row in rows), 0.01)
         gps_xy = np.asarray([[row["gps_x"], row["gps_y"]] for row in rows], dtype=float)
         self.assertGreater(np.linalg.norm(gps_xy[-1] - gps_xy[0]), 0.5)
-        self._write_artifacts(rows, np.asarray(route, dtype=float))
+        artifacts = create_artifact_run(
+            category="integration",
+            platform="carla",
+            test_name="control_pipeline",
+            metadata={"duration_s": self._DURATION_S, "samples": len(rows)},
+        )
+        self._write_artifacts(rows, np.asarray(route, dtype=float), artifacts.raw_directory, artifacts.figures_directory)
 
     @staticmethod
     def _long_route(initial_position: np.ndarray) -> list[list[float]]:
@@ -95,10 +102,10 @@ class TestLiveCarlaControlPipeline(unittest.TestCase):
         headings = np.append(headings, headings[-1])
         return np.column_stack((points, headings)).tolist()
 
-    def _write_artifacts(self, rows: list[dict], route: np.ndarray) -> None:
-        artifact_dir = Path(__file__).resolve().parent / "artifacts"
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = artifact_dir / "integration_carla_control.csv"
+    def _write_artifacts(
+        self, rows: list[dict], route: np.ndarray, raw_directory: Path, figures_directory: Path
+    ) -> None:
+        csv_path = raw_directory / "integration_carla_control.csv"
         with csv_path.open("w", newline="", encoding="ascii") as file:
             writer = csv.DictWriter(file, fieldnames=list(rows[0]))
             writer.writeheader()
@@ -146,7 +153,7 @@ class TestLiveCarlaControlPipeline(unittest.TestCase):
         axes[3].set_ylabel("estimation error (m)")
         axes[3].grid(True)
         axes[3].legend()
-        figure.savefig(artifact_dir / "integration_carla_control.png", dpi=150)
+        figure.savefig(figures_directory / "integration_carla_control.png", dpi=150)
         plt.close(figure)
 
 
