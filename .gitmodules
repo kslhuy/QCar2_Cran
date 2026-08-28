@@ -1,3 +1,11 @@
 [submodule "GroundStation-Qcar-App"]
 	path = GroundStation-Qcar-App
 	url = https://github.com/kslhuy/GroundStation-Qcar-App.git
+
+[submodule "Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/Liqi_obs/Hichem"]
+	path = Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/Liqi_obs/Hichem
+	url = https://github.com/kslhuy/Highgain_Hichem_Cran.git
+[submodule "CartePCB"]
+	path = CartePCB
+	url = https://github.com/kslhuy/CartePCB.git
+	branch = main
