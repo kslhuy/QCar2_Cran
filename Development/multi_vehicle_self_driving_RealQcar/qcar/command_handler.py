@@ -206,6 +206,8 @@ class CommandHandler:
             CommandType.DISABLE_ATTACK,
             CommandType.START_LOCAL_SENSOR_ATTACK,
             CommandType.STOP_LOCAL_SENSOR_ATTACK,
+            CommandType.SET_ELECTRONICS_FAULT,
+            CommandType.RESET_ELECTRONICS_TWIN,
             CommandType.ACTIVATE_PERCEPTION,
             CommandType.DISABLE_PERCEPTION,
             CommandType.SET_PARAMS,

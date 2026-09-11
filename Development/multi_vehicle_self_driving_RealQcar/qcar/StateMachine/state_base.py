@@ -514,6 +514,28 @@ class StateBase:
                 self.logger.log_error("[CMD] Error stopping local sensor attack", e)
             return None
 
+        elif command_type == CommandType.SET_ELECTRONICS_FAULT:
+            self.logger.logger.info("[CMD] Updating electronics digital-twin fault")
+            try:
+                success = self.vehicle_logic.configure_electronics_fault(data)
+                if not success:
+                    self.logger.logger.warning(
+                        "[CMD] Electronics twin is unavailable or rejected the fault"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error updating electronics fault", e)
+            return None
+
+        elif command_type == CommandType.RESET_ELECTRONICS_TWIN:
+            self.logger.logger.info("[CMD] Resetting electronics digital twin")
+            try:
+                success = self.vehicle_logic.reset_electronics_twin()
+                if not success:
+                    self.logger.logger.warning("[CMD] Electronics twin is unavailable")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error resetting electronics twin", e)
+            return None
+
         elif command_type == CommandType.SET_FLEET_OBSERVER:
             observer_type = data.get("observer_type")
             if observer_type:

@@ -322,6 +322,10 @@ class V2VManager:
         broadcast_sent = False
         
         try:
+            # Drain any datagrams that completed the COM/radio path since the
+            # previous vehicle loop before producing the next V2V messages.
+            self.v2v_communication.pump_transport()
+
             # Attempt to broadcast local state (V2VCommunication will rate-limit)
             if self._broadcast_local_state():
                 broadcast_sent = True
@@ -340,6 +344,7 @@ class V2VManager:
             
             # Process received messages
             self._process_received_messages()
+            self.v2v_communication.pump_transport()
             
             return broadcast_sent
             

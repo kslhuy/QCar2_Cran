@@ -6,7 +6,7 @@ import socket
 import threading
 import time
 import logging
-from typing import Dict, List, Optional, Callable, Set
+from typing import Any, Dict, List, Optional, Callable, Set
 from queue import Queue, Empty
 from dataclasses import dataclass, asdict
 from contextlib import contextmanager
@@ -112,6 +112,7 @@ class V2VCommunication:
         # Message handling
         self.message_queue = Queue(maxsize=200)  # Larger queue for high frequency
         self.message_handlers: Dict[str, Callable[[V2VMessage], None]] = {}
+        self.datagram_adapter: Optional[Any] = None
         self.stats = {
             'messages_sent': 0,
             'messages_received': 0,
@@ -224,7 +225,11 @@ class V2VCommunication:
             try:
                 data, addr = self.recv_socket.recvfrom(self.MAX_PACKET_SIZE)
                 if data and self._running:
-                    self._process_udp_message(data, addr)
+                    adapter = self.datagram_adapter
+                    if adapter is None:
+                        self._process_udp_message(data, addr)
+                    else:
+                        adapter.inbound(data, addr, self._process_udp_message)
                     
             except socket.timeout:
                 continue  # Normal timeout, keep listening
@@ -334,6 +339,11 @@ class V2VCommunication:
         # Reset per-message-type tracking
         for msg_type in self.message_send_times_ns:
             self.message_send_times_ns[msg_type] = 0
+        if self.datagram_adapter is not None:
+            try:
+                self.datagram_adapter.reset_transport()
+            except Exception:
+                pass
     
     def _notify_status_change(self, event: str, peer_id: int):
         """Notify status callback of connection changes"""
@@ -388,8 +398,18 @@ class V2VCommunication:
                     target_ip = self.peer_ips[target_id]
                     target_port = self.peer_ports[target_id]
                     try:
-                        self.send_socket.sendto(msg_bytes, (target_ip, target_port))
-                        success_count += 1
+                        address = (target_ip, target_port)
+                        if self.datagram_adapter is None:
+                            accepted = self._send_raw_datagram(msg_bytes, address)
+                        else:
+                            accepted = self.datagram_adapter.outbound(
+                                msg_bytes,
+                                target_id,
+                                address,
+                                self._send_raw_datagram,
+                            )
+                        if accepted:
+                            success_count += 1
                     except Exception as e:
                         self.logger.debug(f"Send failed to {target_id}: {e}")
             
@@ -410,6 +430,29 @@ class V2VCommunication:
         except Exception as e:
             self.logger.error(f"UDP send error: {e}")
             return False
+
+    def set_datagram_adapter(self, adapter: Optional[Any]) -> None:
+        """Install an optional raw-datagram transport such as the PCB COM bridge."""
+        with self._lock:
+            previous = self.datagram_adapter
+            self.datagram_adapter = adapter
+        if previous is not None and previous is not adapter:
+            try:
+                previous.reset_transport()
+            except Exception:
+                pass
+
+    def pump_transport(self) -> None:
+        adapter = self.datagram_adapter
+        if adapter is None:
+            return
+        adapter.pump()
+
+    def _send_raw_datagram(self, payload: bytes, address) -> bool:
+        if not self._is_active or self.send_socket is None:
+            return False
+        self.send_socket.sendto(bytes(payload), address)
+        return True
     
     def register_message_handler(self, message_type: str, handler: Callable[[V2VMessage], None]):
         """Register a handler for specific message types"""
@@ -448,6 +491,11 @@ class V2VCommunication:
                 'send_intervals': self.send_intervals.copy(),
                 'actual_rate_hz': self.stats.get('send_rate', 0.0),
             })
+            if self.datagram_adapter is not None:
+                try:
+                    stats['datagram_adapter'] = self.datagram_adapter.get_status()
+                except Exception:
+                    stats['datagram_adapter'] = {'enabled': True, 'status': 'error'}
         return stats
     
     def get_connection_summary(self) -> str:

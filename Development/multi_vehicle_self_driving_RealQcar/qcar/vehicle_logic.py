@@ -1049,6 +1049,7 @@ class VehicleLogic:
                 self._send_telemetry_to_ground_station()
                 self._broadcast_periodic_status()
                 self._process_queued_commands()
+                self._pump_electronics_v2v_transport()
                 self._broadcast_v2v_state()
 
                 # Performance monitoring
@@ -1137,6 +1138,7 @@ class VehicleLogic:
             if self.qcar is not None:
                 # Use VehicleObserver to update sensor data
                 self.vehicle_observer.update_sensor_data(self.qcar)
+                self._update_electronics_sensor_source()
 
                 # Handle YOLO logic using YOLOManager (only if enabled)
                 if self.yolo_manager.yolo_enabled:
@@ -1164,6 +1166,145 @@ class VehicleLogic:
 
         except Exception as e:
             self.vehicle_logger.log_error("Sensor data update error", e)
+
+    def _update_electronics_sensor_source(self) -> None:
+        """Expose PCB measurements separately, with opt-in fusion policy."""
+        twin = getattr(self, "electronics_twin", None)
+        if twin is None or self.vehicle_observer is None:
+            return
+
+        gateway = getattr(self, "electronics_gateway", None)
+        snapshot = twin.get_snapshot()
+        if gateway is None:
+            electronics_data = snapshot.to_dict()
+            field_overrides = {}
+        else:
+            update = gateway.build_update(
+                self.vehicle_observer.get_sensor_data(), snapshot
+            )
+            electronics_data = update.pop("electronics")
+            field_overrides = update
+        self.vehicle_observer.update_auxiliary_sensor_data(
+            "electronics", electronics_data, field_overrides
+        )
+
+    def configure_electronics_fault(self, data: Optional[dict] = None) -> bool:
+        """Apply a bounded runtime fault command from the Ground Station."""
+        twin = getattr(self, "electronics_twin", None)
+        if twin is None:
+            return False
+
+        values = dict(data or {})
+        kind = str(values.get("kind", "bus")).strip().lower()
+        if kind == "bus":
+            allowed = {
+                "enabled",
+                "fixed_delay_s",
+                "jitter_s",
+                "drop_probability",
+                "bit_error_rate",
+            }
+            faults = {
+                key: values[key]
+                for key in allowed
+                if key in values
+            }
+            if not faults:
+                return False
+            bus_name = str(values.get("bus", "nav_com"))
+            if bus_name.strip().lower() in {"v2v", "radio", "v2v_radio"}:
+                bridge = getattr(self, "electronics_v2v_bridge", None)
+                if bridge is None:
+                    return False
+                bridge.configure_faults(**faults)
+            else:
+                twin.set_bus_faults(bus_name, **faults)
+        elif kind == "sensor":
+            twin.set_sensor_fault(
+                str(values.get("sensor", "imu")),
+                str(values.get("mode", "none")),
+                float(values.get("value", 0.0)),
+            )
+        elif kind == "power":
+            voltage = values.get("input_voltage_v")
+            twin.set_input_voltage(None if voltage is None else float(voltage))
+        elif kind == "mcu_reset":
+            twin.set_mcu_reset(
+                str(values.get("mcu", "com")), bool(values.get("asserted", False))
+            )
+        elif kind == "v2v_mode":
+            bridge = getattr(self, "electronics_v2v_bridge", None)
+            if bridge is None:
+                return False
+            bridge.set_mode(str(values.get("mode", "firmware")))
+        elif kind == "embedded_core_mode":
+            estimator = (
+                self.vehicle_observer.get_fleet_estimator()
+                if self.vehicle_observer is not None
+                and hasattr(self.vehicle_observer, "get_fleet_estimator")
+                else None
+            )
+            if estimator is None or not hasattr(
+                estimator, "set_embedded_core_mode"
+            ):
+                return False
+            status = estimator.set_embedded_core_mode(
+                str(values.get("mode", "shadow"))
+            )
+            return bool(status.get("mode_request_accepted", False))
+        elif kind == "embedded_core_reset":
+            estimator = (
+                self.vehicle_observer.get_fleet_estimator()
+                if self.vehicle_observer is not None
+                and hasattr(self.vehicle_observer, "get_fleet_estimator")
+                else None
+            )
+            if estimator is None or not hasattr(
+                estimator, "reset_embedded_core_parity"
+            ):
+                return False
+            estimator.reset_embedded_core_parity()
+        else:
+            raise ValueError(f"Unsupported electronics fault kind: {kind}")
+        return True
+
+    def reset_electronics_twin(self) -> bool:
+        """Reset simulated power-on state, buses, sensors and firmware core."""
+        bridge = getattr(self, "electronics_v2v_bridge", None)
+        if bridge is not None:
+            bridge.reset_transport()
+        adapter = getattr(
+            getattr(self, "_parent_fake_vehicle", None),
+            "electronics_adapter",
+            None,
+        )
+        if adapter is not None:
+            adapter.reset()
+            return True
+        twin = getattr(self, "electronics_twin", None)
+        if twin is None:
+            return False
+        twin.reset()
+        return True
+
+    def attach_electronics_v2v_bridge(self, config: Optional[dict] = None):
+        """Route the existing V2V MsgPack transport through COM electronics."""
+        twin = getattr(self, "electronics_twin", None)
+        communication = getattr(
+            getattr(self, "v2v_manager", None), "v2v_communication", None
+        )
+        if twin is None or communication is None:
+            return None
+
+        from electronics import ElectronicsV2VBridge
+
+        bridge = ElectronicsV2VBridge(twin, config)
+        communication.set_datagram_adapter(bridge)
+        self.electronics_v2v_bridge = bridge
+        self.vehicle_logger.logger.info(
+            f"Electronics V2V bridge attached in {bridge.mode} mode"
+        )
+        return bridge
 
     # ===== Observer Update Methods =====
     def _observer_update(self, dt: float):
@@ -1626,6 +1767,28 @@ class VehicleLogic:
         status_msg.update(self._get_cached_periodic_static_status())
         status_msg.update(self._get_local_sensor_attack_status_compact())
 
+        electronics_twin = getattr(self, "electronics_twin", None)
+        if electronics_twin is not None:
+            try:
+                electronics_status = electronics_twin.get_status_summary()
+                electronics_v2v_bridge = getattr(
+                    self, "electronics_v2v_bridge", None
+                )
+                if electronics_v2v_bridge is not None:
+                    electronics_status["v2v"] = electronics_v2v_bridge.get_status()
+                fleet_estimator = None
+                if hasattr(self.vehicle_observer, "get_fleet_estimator"):
+                    fleet_estimator = self.vehicle_observer.get_fleet_estimator()
+                if fleet_estimator is not None and hasattr(
+                    fleet_estimator, "get_embedded_core_status"
+                ):
+                    electronics_status["embedded_core"] = (
+                        fleet_estimator.get_embedded_core_status()
+                    )
+                status_msg["electronics"] = electronics_status
+            except Exception:
+                pass
+
         try:
             current_handler = self.state_machine.get_current_state_handler()
             if current_handler and hasattr(current_handler, "get_path_visualization_data"):
@@ -1681,6 +1844,16 @@ class VehicleLogic:
 
         except Exception as e:
             self.vehicle_logger.log_error("V2V state broadcast error", e)
+
+    def _pump_electronics_v2v_transport(self) -> None:
+        """Advance COM/radio queues at the vehicle loop rate, not message rate."""
+        bridge = getattr(self, "electronics_v2v_bridge", None)
+        if bridge is None:
+            return
+        try:
+            bridge.pump()
+        except Exception as e:
+            self.vehicle_logger.log_error("Electronics V2V transport error", e)
 
     def _log_v2v_activity(self):
         """Log V2V communication activity summary"""

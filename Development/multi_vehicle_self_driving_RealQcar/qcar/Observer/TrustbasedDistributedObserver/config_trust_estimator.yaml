@@ -31,6 +31,24 @@ fleet:
   received_local_states_limit: 10
   received_fleet_states_limit: 5
 
+# Platform-neutral C++ candidate for the future COM H753 firmware. In shadow
+# mode Python remains authoritative; every Trust memory update and distributed
+# correction is replayed in C++ and compared before authoritative mode is ever
+# allowed. If the library has not been built the observer continues normally
+# and reports "available: false" to Ground Station.
+embedded_core:
+  enabled: true
+  mode: shadow
+  library_path: electronics/native/build/cran_electronics_core.dll
+  score_tolerance: 1.0e-9
+  weight_tolerance: 1.0e-9
+  state_tolerance: 1.0e-9
+  prediction_tolerance: 1.0e-9
+  # The UI may report parity_pass after one complete four-stage cycle, but the
+  # native core is not an authority candidate until every stage has this many
+  # zero-failure comparisons in the current process.
+  authority_min_comparisons_per_stage: 1000
+
 # =====================================================================
 # Trust Model Configuration (TriP Model)
 # =====================================================================

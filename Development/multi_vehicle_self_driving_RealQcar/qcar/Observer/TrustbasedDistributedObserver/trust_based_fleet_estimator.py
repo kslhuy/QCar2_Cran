@@ -69,6 +69,7 @@ from Observer.TrustbasedDistributedObserver.estimator_config import (
 from Observer.TrustbasedDistributedObserver.v2v_attack_status import (
     V2VAttackStatusTracker,
 )
+from electronics.trust_observer_native import TrustObserverShadow
 
 
 class TrustBasedFleetEstimator(FleetStateEstimatorBase):
@@ -125,6 +126,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             fleet_size=fleet_size,
             config=self.weight_config,
             logger=logger,
+        )
+
+        # Native COM-H753 candidate runs with the same Trust evidence and
+        # observer contributions as Python. Python remains authoritative until
+        # the exposed parity counters stay within the configured tolerances.
+        self.embedded_core_shadow = TrustObserverShadow(
+            config=self._get_config_section("embedded_core"),
+            trust_config=trust_config_dict,
         )
 
         self.observer_settings = ObserverSettings.from_config(
@@ -1702,6 +1711,45 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     ),
                     target_id=target_id,
                 )
+                native_clean_state = None
+                if clean_reference is not None:
+                    native_clean_state = np.array(
+                        [
+                            clean_reference.get("x", 0.0),
+                            clean_reference.get("y", 0.0),
+                            clean_reference.get("theta", 0.0),
+                            clean_reference.get("velocity", 0.0),
+                            clean_reference.get("acceleration", 0.0),
+                        ],
+                        dtype=float,
+                    )
+                native_prediction = self.embedded_core_shadow.compare_prediction(
+                    corrected_state=consensus_est,
+                    clean_state=native_clean_state,
+                    control=target_ctrl,
+                    dt=dt,
+                    prediction_mode=prediction_mode,
+                    model_config=target_model_cfg,
+                    prediction_options={
+                        "anchor_position_weight": self.relative_host_anchor_anchor_position_weight,
+                        "estimate_position_weight": self.relative_host_anchor_estimate_position_weight,
+                        "clean_theta_weight": self.relative_host_anchor_clean_theta_weight,
+                        "host_theta_weight": self.relative_host_anchor_host_theta_weight,
+                        "target_velocity_weight": self.relative_host_anchor_target_velocity_weight,
+                        "host_velocity_weight": self.relative_host_anchor_host_velocity_weight,
+                        "target_acceleration_weight": self.relative_host_anchor_target_acceleration_weight,
+                        "host_acceleration_weight": self.relative_host_anchor_host_acceleration_weight,
+                        "use_anchor_bearing": self.relative_host_anchor_use_bearing,
+                    },
+                    force_clean_pose_anchor=force_clean_pose_anchor,
+                    attack_anchor_active=attack_relative_host_anchor_active,
+                    host_anchor=self._copy_host_anchor_snapshot(host_anchor_snapshot),
+                    python_predicted_state=predicted_est,
+                )
+                if self.embedded_core_shadow.should_use_native(native_prediction):
+                    predicted_est = np.asarray(
+                        native_prediction["native_state"], dtype=float
+                    ).copy()
                 normal_est = predicted_est
                 post_prediction_estimates[target_id] = self._state_vector_to_log_dict(
                     normal_est
@@ -1829,6 +1877,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 trust_result = self.trust_model.update_missing_observation(
                     target_id=vehicle_id, current_time_ns=current_time_ns
                 )
+                native_trust = self.embedded_core_shadow.compare_trust(
+                    target_id=vehicle_id,
+                    python_trust=trust_result,
+                    missing_observation=True,
+                )
+                self._apply_native_trust_authority(trust_result, native_trust)
                 trust_scores[vehicle_id] = trust_result.final_score
                 self.stats["trust_updates"] += 1
                 continue
@@ -1911,10 +1965,37 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 has_fleet_data=(target_fleet_data is not None),
             )
 
+            native_trust = self.embedded_core_shadow.compare_trust(
+                target_id=vehicle_id,
+                python_trust=trust_result,
+                missing_observation=False,
+            )
+            self._apply_native_trust_authority(trust_result, native_trust)
+
             trust_scores[vehicle_id] = trust_result.final_score
             self.stats["trust_updates"] += 1
 
         return trust_scores
+
+    def _apply_native_trust_authority(
+        self,
+        trust_result: TrustScore,
+        comparison: Optional[Dict[str, Any]],
+    ) -> None:
+        """Adopt the passing C++ output when gated native authority is active."""
+        if not self.embedded_core_shadow.should_use_native(comparison):
+            return
+        native = comparison["native_result"]
+        trust_result.final_score = float(native["final_score"])
+        trust_result.trust_levels = np.asarray(
+            native["trust_levels"], dtype=float
+        ).copy()
+        for name in (
+            "flag_target_attack",
+            "flag_global_est_check",
+            "flag_local_est_check",
+        ):
+            setattr(trust_result, name, bool(native[name]))
 
     # ==================================================================
     #   NEIGHBOR ESTIMATE COLLECTION (merged from two methods)
@@ -2567,23 +2648,34 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             neighbor_fleet_estimates[neighbor_id] = neighbor_fleet
 
         # Calculate weights (paper or trust-based - unified call)
+        native_weight_mode = "trust_based"
+        native_weight_source_scores = trust_scores
+        native_target_local_trust = (
+            target_trust_obj.local_trust_sample
+            if target_trust_obj is not None
+            else trust_scores.get(target_id, 0.0)
+        )
         if use_startup_fixed_weights:
+            native_weight_mode = "startup"
             target_weights = self._get_startup_target_weights(
                 target_id=target_id,
                 neighbor_fleet_estimates=neighbor_fleet_estimates,
                 direct_state=direct_state,
             )
         elif self.weight_config.weight_type == "paper":
+            native_weight_mode = "paper"
             opinion_scores = (
                 self.generalized_trust_vector
                 if self.generalized_trust_vector
                 else trust_scores
             )
+            native_weight_source_scores = opinion_scores
             target_local_trust = (
                 target_trust_obj.local_trust_sample
                 if target_trust_obj is not None
                 else trust_scores.get(target_id, 0.0)
             )
+            native_target_local_trust = target_local_trust
             target_weights = self.weight_module.calculate_paper_weights_for_target(
                 target_id=target_id,
                 opinion_scores=opinion_scores,
@@ -2592,6 +2684,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 direct_measurement=direct_state,
             )
         else:
+            native_weight_mode = self.weight_config.weight_type
             target_weights = self.weight_module.calculate_weights_for_target(
                 target_id=target_id,
                 trust_scores=trust_scores,
@@ -2603,6 +2696,37 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             target_id=target_id,
             weights=target_weights,
         )
+        native_weight_candidates = [
+            (
+                int(neighbor_id),
+                float(native_weight_source_scores.get(neighbor_id, 0.0)),
+            )
+            for neighbor_id, fleet_estimate in neighbor_fleet_estimates.items()
+            if target_id in fleet_estimate
+            and self.weight_module._allow_fleet_source_for_target(
+                neighbor_id, target_id
+            )
+        ]
+        native_weights = self.embedded_core_shadow.compare_weights(
+            mode=native_weight_mode,
+            weight_config=self.weight_config,
+            neighbor_candidates=native_weight_candidates,
+            direct_available=direct_state is not None,
+            target_trust=target_trust_obj,
+            target_local_trust=native_target_local_trust,
+            direct_recovery_scale=self._direct_recovery_scale(target_id),
+            python_weights=target_weights,
+        )
+        if self.embedded_core_shadow.should_use_native(native_weights):
+            native = native_weights["native_weights"]
+            target_weights = {
+                "w0": float(native["w0"]),
+                "w_self": float(native["w_self"]),
+                "neighbors": {
+                    int(neighbor_id): float(weight)
+                    for neighbor_id, weight in native.get("neighbors", {}).items()
+                },
+            }
 
         # === Flag-Driven w₀ Adaptation ===
         components["weights"] = {
@@ -2627,6 +2751,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             }
 
         # === Neighbor Consensus Correction ===
+        native_neighbor_states = []
         for neighbor_id, neighbor_fleet in neighbor_fleet_estimates.items():
             w_neighbor = target_weights["neighbors"].get(neighbor_id, 0.0)
             if w_neighbor <= 0:
@@ -2647,12 +2772,31 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 "weight": float(w_neighbor),
                 "state": neigh_est.copy(),
             }
+            native_neighbor_states.append((int(neighbor_id), neigh_est.copy()))
 
         # === Apply Consensus Correction ===
         # Dynamics propagation f(x̂_corrected, u, dt) is applied in update()
         new_est = self._apply_state_constraints(
             current_est + total_correction, target_id=target_id
         )
+        target_model_cfg = self._get_vehicle_model_config(target_id)
+        native_correction = self.embedded_core_shadow.compare_observer(
+            current_state=current_est,
+            direct_state=direct_state,
+            neighbor_states=native_neighbor_states,
+            target_weights=target_weights,
+            max_velocity=max(
+                float(target_model_cfg.get("max_velocity", 2.0)), 1e-6
+            ),
+            max_acceleration=max(
+                float(target_model_cfg.get("max_acceleration", 5.0)), 1e-6
+            ),
+            python_corrected_state=new_est,
+        )
+        if self.embedded_core_shadow.should_use_native(native_correction):
+            new_est = np.asarray(
+                native_correction["native_state"], dtype=float
+            ).copy()
         self.stats["weight_updates"] += 1
 
         return new_est, components
@@ -3548,6 +3692,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         restored_targets = self._restore_fleet_states_from_latest_direct_states()
         self.trust_model.reset()
         self.weight_module.reset()
+        # Python Trust history was cleared, so the native temporal state and
+        # its authority evidence must restart in the same cycle.
+        self.embedded_core_shadow.reset()
         self.current_weight_result = None
         self.generalized_trust_vector = {self.vehicle_id: 1.0}
         self.stats = self._make_default_stats()
@@ -3570,7 +3717,21 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         """Get estimator statistics."""
         data = self.stats.copy()
         data["rollbacks"] = self.rollback.stats.copy()
+        data["embedded_core"] = self.embedded_core_shadow.get_status()
         return data
+
+    def get_embedded_core_status(self) -> Dict[str, Any]:
+        """Return native shadow/parity telemetry for the electronics twin UI."""
+        return self.embedded_core_shadow.get_status()
+
+    def set_embedded_core_mode(self, mode: str) -> Dict[str, Any]:
+        """Request a safety-gated embedded core authority mode."""
+        return self.embedded_core_shadow.set_mode(mode)
+
+    def reset_embedded_core_parity(self) -> Dict[str, Any]:
+        """Clear parity evidence and return the embedded core to shadow mode."""
+        self.embedded_core_shadow.reset_parity_evidence()
+        return self.embedded_core_shadow.get_status()
 
     def add_neighbor_trust_report(
         self, reporter_id: int, target_id: int, trust_score: float
@@ -3598,11 +3759,14 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self._direct_trust_delay_state.clear()
         self._rollback_trigger_delay_state.clear()
         self._received_control_inputs.clear()
+        self.embedded_core_shadow.reset()
         self._init_runtime_tracking()
 
     def __del__(self):
         if hasattr(self, "trust_weight_logger"):
             self.trust_weight_logger.stop()
+        if hasattr(self, "embedded_core_shadow"):
+            self.embedded_core_shadow.close()
 
 
 

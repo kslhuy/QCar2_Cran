@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Hướng dẫn nhanh Electronics Digital Twin: hệ thống là gì, cách build, chạy và kiểm tra.">
+  <title>Electronics Digital Twin · Quick Guide</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #07100f;
+      --panel: #0d1b18;
+      --panel-2: #11231f;
+      --line: #203b34;
+      --text: #eef8f4;
+      --muted: #9eb5ad;
+      --mint: #62e6b8;
+      --amber: #ffc86b;
+      --code: #061310;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 10% 0, rgba(61, 198, 151, 0.13), transparent 28rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.65;
+    }
+
+    a { color: inherit; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { color: var(--mint); overflow-wrap: anywhere; }
+
+    .topbar {
+      border-bottom: 1px solid var(--line);
+      background: rgba(7, 16, 15, 0.86);
+      backdrop-filter: blur(14px);
+    }
+
+    .topbar-inner, .page, footer {
+      width: min(calc(100% - 32px), 940px);
+      margin-inline: auto;
+    }
+
+    .topbar-inner {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.09em;
+      text-decoration: none;
+      text-transform: uppercase;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--mint);
+      box-shadow: 0 0 14px var(--mint);
+    }
+
+    .top-links { display: flex; gap: 16px; }
+    .top-links a { color: var(--muted); font-size: 12px; text-decoration: none; }
+    .top-links a:hover { color: var(--text); }
+
+    .page { padding: 72px 0 30px; }
+    .eyebrow {
+      margin-bottom: 14px;
+      color: var(--mint);
+      font: 700 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3 { margin-top: 0; line-height: 1.15; letter-spacing: -0.025em; }
+    h1 { max-width: 720px; margin-bottom: 18px; font-size: clamp(42px, 7vw, 72px); }
+    h1 span { color: var(--mint); }
+    h2 { margin-bottom: 14px; font-size: clamp(26px, 4vw, 38px); }
+    h3 { margin-bottom: 8px; font-size: 17px; }
+    p { margin-top: 0; }
+    .intro { max-width: 760px; margin-bottom: 36px; color: var(--muted); font-size: 18px; }
+    .section-intro { max-width: 740px; color: var(--muted); }
+    section { padding-top: 66px; }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--line);
+    }
+
+    .summary div { padding: 18px; background: var(--panel); }
+    .summary strong { display: block; margin-bottom: 4px; font-size: 14px; }
+    .summary span { color: var(--muted); font-size: 12px; }
+
+    .flow {
+      margin-top: 22px;
+      padding: 18px;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+    }
+
+    .flow-item {
+      position: relative;
+      min-width: 0;
+      padding: 14px 10px;
+      border-radius: 11px;
+      background: var(--panel-2);
+      text-align: center;
+    }
+
+    .flow-item:not(:last-child)::after {
+      position: absolute;
+      top: 50%;
+      right: -9px;
+      z-index: 2;
+      content: "→";
+      color: var(--mint);
+      transform: translateY(-50%);
+    }
+
+    .flow-item strong { display: block; font-size: 12px; }
+    .flow-item span { color: var(--muted); font-size: 10px; }
+
+    .steps { display: grid; gap: 14px; margin-top: 24px; }
+    .step, .card {
+      min-width: 0;
+      padding: 21px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+    }
+
+    .step-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+    .step-head h3 { margin: 0; }
+    .step p, .result { color: var(--muted); }
+    .number {
+      width: 31px;
+      height: 31px;
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      border-radius: 9px;
+      color: var(--mint);
+      background: rgba(98, 230, 184, 0.1);
+      font: 800 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .code-wrap { position: relative; margin-top: 12px; }
+    pre {
+      margin: 0;
+      padding: 17px 64px 17px 17px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--code);
+      color: #e0f4ec;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+
+    .copy {
+      position: absolute;
+      top: 9px;
+      right: 9px;
+      height: 30px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      background: var(--panel-2);
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 800;
+    }
+
+    .result {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-left: 3px solid var(--mint);
+      border-radius: 0 10px 10px 0;
+      background: rgba(98, 230, 184, 0.08);
+      font-size: 13px;
+    }
+
+    .check-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    ul { margin: 0; padding: 0; list-style: none; }
+    li { position: relative; margin: 9px 0; padding-left: 24px; color: var(--muted); }
+    li::before { position: absolute; left: 0; content: "✓"; color: var(--mint); font-weight: 800; }
+    .warning {
+      margin-top: 14px;
+      padding: 15px 17px;
+      border: 1px solid rgba(255, 200, 107, 0.24);
+      border-radius: 12px;
+      background: rgba(255, 200, 107, 0.08);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .warning strong { color: var(--amber); }
+
+    .docs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 22px;
+    }
+
+    .doc {
+      min-width: 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: var(--panel);
+      text-decoration: none;
+      transition: 150ms ease;
+    }
+    .doc:hover { border-color: var(--mint); transform: translateY(-2px); }
+    .doc strong { display: block; color: var(--mint); font-size: 12px; overflow-wrap: anywhere; }
+    .doc span { color: var(--muted); font-size: 11px; }
+
+    footer {
+      margin-top: 64px;
+      padding: 24px 0 38px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    @media (max-width: 700px) {
+      .page { padding-top: 50px; }
+      .summary, .check-grid, .docs { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-item:not(:last-child)::after {
+        top: auto;
+        right: 50%;
+        bottom: -13px;
+        content: "↓";
+        transform: translateX(50%);
+      }
+      section { padding-top: 54px; }
+      .top-links a:not(:last-child) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#top"><span class="dot"></span>CRAN · Electronics</a>
+      <nav class="top-links" aria-label="Tài liệu">
+        <a href="#run">Cách chạy</a>
+        <a href="#docs">Tài liệu chi tiết</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top" class="page">
+    <div class="eyebrow">Quick system guide</div>
+    <h1>Electronics<br><span>Digital Twin.</span></h1>
+    <p class="intro">PCB mô phỏng độc lập cho QCar: tự tạo dữ liệu sensor, chạy firmware C++, mô phỏng bus/V2V và kiểm thử lỗi trước khi chuyển sang phần cứng thật.</p>
+
+    <div class="summary">
+      <div><strong>Sensor riêng</strong><span>IMU · GNSS · Magnetometer</span></div>
+      <div><strong>Firmware</strong><span>Python · Native C++ · HIL</span></div>
+      <div><strong>Mặc định an toàn</strong><span>Auxiliary + Python failback</span></div>
+    </div>
+
+    <section id="system">
+      <div class="eyebrow">01 · Hệ thống</div>
+      <h2>Hệ thống hoạt động như thế nào?</h2>
+      <p class="section-intro">Twin nhận plant truth từ simulator, sau đó tự tạo measurement, noise, timing và fault. Dữ liệu PCB mặc định là auxiliary, không ghi đè sensor có sẵn của MockQCar.</p>
+      <div class="flow" aria-label="Luồng dữ liệu Electronics Digital Twin">
+        <div class="flow-item"><strong>Plant truth</strong><span>Simulator</span></div>
+        <div class="flow-item"><strong>PCB sensors</strong><span>IMU · GNSS · MAG</span></div>
+        <div class="flow-item"><strong>Sensor node</strong><span>Acquire + timestamp</span></div>
+        <div class="flow-item"><strong>Compute node</strong><span>C++ · Trust · Observer</span></div>
+        <div class="flow-item"><strong>Vehicle / V2V</strong><span>Bus · Radio</span></div>
+      </div>
+    </section>
+
+    <section id="run">
+      <div class="eyebrow">02 · Build &amp; Run</div>
+      <h2>Chạy hệ thống bằng hai lệnh.</h2>
+      <p class="section-intro">Mở PowerShell tại thư mục gốc <code>QCar2_Cran</code>. Cần environment <code>Qcar</code>, CMake/Ninja và Node.js/npm.</p>
+      <div class="steps">
+        <article class="step">
+          <div class="step-head"><span class="number">01</span><h3>Build và validation</h3></div>
+          <p>Build C++ core và chạy toàn bộ validation.</p>
+          <div class="code-wrap">
+            <button class="copy" type="button">COPY</button>
+            <pre><code>.\run_electronics_manual_test.ps1</code></pre>
+          </div>
+          <div class="result">Cần thấy <code>overall_status: PASS</code> trong <code>simulation/results/electronics_manual_validation.json</code>.</div>
+        </article>
+
+        <article class="step">
+          <div class="step-head"><span class="number">02</span><h3>Khởi động hệ thống</h3></div>
+          <p>Mở 3 fake vehicles, Ground Station bridge và web app.</p>
+          <div class="code-wrap">
+            <button class="copy" type="button">COPY</button>
+            <pre><code>.\start_electronics_manual_system.ps1 -VehicleCount 3</code></pre>
+          </div>
+          <div class="result">Mở URL do Vite in ra, sau đó nhấn <code>CONNECT BRIDGE</code>.</div>
+        </article>
+      </div>
+    </section>
+
+    <section id="check">
+      <div class="eyebrow">03 · Kiểm tra</div>
+      <h2>Những gì cần thấy trên UI.</h2>
+      <div class="check-grid">
+        <article class="card">
+          <h3>Runtime</h3>
+          <ul>
+            <li><code>Firmware = native_cpp</code></li>
+            <li>Sensor và compute node là <code>running</code></li>
+            <li><code>V2V path = firmware</code></li>
+            <li>Telemetry có frame mới</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Native authority</h3>
+          <ul>
+            <li><code>T / W / C / P checks</code> tăng</li>
+            <li><code>Authority gate = READY</code></li>
+            <li>Chọn C++ authority rồi <code>Apply core</code></li>
+            <li>Native-use tăng, failback bằng 0</li>
+          </ul>
+        </article>
+      </div>
+      <div class="warning"><strong>Safety:</strong> nếu C++ lỗi hoặc parity mismatch, authority tự trở về Python. Sau khi sửa lỗi, dùng <code>Reset parity</code>.</div>
+    </section>
+
+    <section id="hardware">
+      <div class="eyebrow">04 · Hardware / HIL</div>
+      <h2>Cùng một core có thể chạy trên phần cứng thật.</h2>
+      <p class="section-intro">Backend <code>hil_external</code> kết nối MCU/SoC qua CRHL. UDP có sẵn; UART, CAN hoặc PCIe dùng adapter. STM32 hiện tại chỉ là một profile.</p>
+    </section>
+
+    <section id="docs">
+      <div class="eyebrow">05 · Chi tiết</div>
+      <h2>Đọc thêm khi cần.</h2>
+      <div class="docs">
+        <a class="doc" href="README.md"><strong>README.md</strong><span>Kiến trúc và firmware.</span></a>
+        <a class="doc" href="MANUAL_TEST.md"><strong>MANUAL_TEST.md</strong><span>Manual/fault tests.</span></a>
+        <a class="doc" href="HARDWARE_TARGETS.md"><strong>HARDWARE_TARGETS.md</strong><span>MCU/SoC và HIL.</span></a>
+      </div>
+    </section>
+  </main>
+
+  <footer>CRAN / SEGULA · Electronics Digital Twin quick guide</footer>
+
+  <script>
+    document.querySelectorAll('.copy').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const command = button.nextElementSibling.innerText;
+        try {
+          await navigator.clipboard.writeText(command);
+          button.textContent = 'COPIED';
+        } catch (_) {
+          button.textContent = 'SELECT';
+        }
+        setTimeout(() => { button.textContent = 'COPY'; }, 1300);
+      });
+    });
+  </script>
+</body>
+</html>

@@ -44,6 +44,94 @@ sensors:
     noise_gyro: 0.01    # rad/s
     has_noise: false
 
+# CRAN/SEGULA PCB digital twin. This is an independent sensor source; the
+# existing MockQCar sensors stay unchanged while fusion.mode is "auxiliary".
+electronics:
+  enabled: true
+  seed: 1000
+  # Profiles are defaults, not an allow-list. A custom target is accepted when
+  # it declares both node roles and passes capability negotiation.
+  hardware_target:
+    profile: "cran_segula_stm32"    # generic_single_mcu/generic_dual_mcu/linux_soc/desktop_sil
+    target_id: "cran_segula_vehicle_electronics"
+    metadata:
+      board_revision: "current_pcb"
+  sensor_compute_protocol: "sensor_frame_v2" # legacy_v1 remains supported
+  sensor_compute_interface: "spi"  # shared_memory/uart/spi/can/can_fd/ethernet/udp
+  vehicle_interface: "uart"        # uart today; can/can_fd after adding a transceiver
+  fusion:
+    mode: "auxiliary"               # auxiliary, prefer_electronics, weighted_fusion
+    electronics_weight: 0.5
+  v2v:
+    enabled: true
+    mode: "firmware"                 # firmware = host↔COM↔radio; mirror = compatibility
+    bitrate_bps: 6000000
+    max_packet_size: 1500
+    incoming_queue_size: 256
+    faults:
+      enabled: true
+      fixed_delay_s: 0.0
+      jitter_s: 0.0
+      drop_probability: 0.0
+      bit_error_rate: 0.0
+  power:
+    input_voltage_v: 12.0
+    battery_internal_resistance_ohm: 0.08
+    buck_output_v: 5.0
+    buck_efficiency: 0.90
+    buck_min_input_v: 5.5
+    ldo_output_v: 3.3
+    ldo_dropout_v: 0.25
+    brownout_threshold_v: 2.9
+  mcu:
+    nav_boot_time_s: 0.05
+    com_boot_time_s: 0.08
+    brownout_threshold_v: 2.9
+  nodes:
+    sensor_node:
+      boot_time_s: 0.05
+      brownout_threshold_v: 2.9
+    compute_node:
+      boot_time_s: 0.08
+      brownout_threshold_v: 2.9
+  sensors:
+    imu_rate_hz: 200.0
+    gnss_rate_hz: 10.0
+    magnetometer_rate_hz: 100.0
+    accel_noise_std_mps2: 0.025
+    gyro_noise_std_rps: 0.002
+    magnetometer_noise_std_ut: 0.15
+    gnss_position_noise_std_m: 0.05
+    gnss_heading_noise_std_rad: 0.02
+    accel_bias_walk_std_mps2_sqrt_s: 0.0005
+    gyro_bias_walk_std_rps_sqrt_s: 0.00005
+    accel_quantum_mps2: 0.001
+    gyro_quantum_rps: 0.0001
+    magnetometer_quantum_ut: 0.01
+    temperature_c: 30.0
+  firmware:
+    backend: "native_cpp"             # hil_external connects any real MCU/SoC
+    library_path: "electronics/native/build/cran_electronics_core.dll"
+    publish_rate_hz: 20.0
+  buses:
+    sensor_compute:
+      clock_hz: 6000000
+      chip_select_setup_s: 0.000001
+      faults:
+        enabled: true
+        fixed_delay_s: 0.0
+        jitter_s: 0.0
+        drop_probability: 0.0
+        bit_error_rate: 0.0
+    vehicle:
+      baud_rate: 921600
+      faults:
+        enabled: true
+        fixed_delay_s: 0.0
+        jitter_s: 0.0
+        drop_probability: 0.0
+        bit_error_rate: 0.0
+
 initial_state:
   x: 0.0
   y: 0.0

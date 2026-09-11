@@ -268,6 +268,7 @@ class VehicleObserver:
             "gps_age": float("inf"),
             "gps_hold_window": 0.0,
             "relative_measurements_by_target": {},
+            "auxiliary_sensors": {},
         }
         # For derivative estimation when only distance is provided.
         self._last_relative_distance_by_target: Dict[int, Tuple[float, float]] = {}
@@ -2556,6 +2557,28 @@ class VehicleObserver:
         """Get current sensor data."""
         with self.lock:
             return self.sensor_data.copy()
+
+    def update_auxiliary_sensor_data(
+        self,
+        source_name: str,
+        source_data: Dict[str, Any],
+        field_overrides: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Store an independent source and apply only explicitly requested fusion."""
+        with self.lock:
+            auxiliary = self.sensor_data.setdefault("auxiliary_sensors", {})
+            auxiliary[str(source_name)] = copy.deepcopy(source_data)
+            for key, value in (field_overrides or {}).items():
+                self.sensor_data[key] = copy.deepcopy(value)
+            if field_overrides and "accelerometer" in field_overrides:
+                acceleration = np.asarray(
+                    self.sensor_data["accelerometer"], dtype=float
+                ).reshape(-1)
+                self.sensor_data["accel_magnitude"] = float(
+                    np.linalg.norm(acceleration[:2])
+                    if acceleration.size >= 2
+                    else 0.0
+                )
 
     # Old helper methods removed - fleet estimator handles data management internally
 

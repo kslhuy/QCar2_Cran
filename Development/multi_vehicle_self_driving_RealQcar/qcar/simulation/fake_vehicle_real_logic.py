@@ -28,6 +28,11 @@ from fake_initializing_state import FakeInitializingState
 # Import modular simulation components
 from simulation.mock_vehicle import MockQCar
 from simulation.config import SimulationConfig
+from electronics import (
+    ElectronicsDataGateway,
+    ElectronicsDigitalTwin,
+    MockQCarElectronicsAdapter,
+)
 
 DIRECT_SPAWN_POSES_DEGREES = [
     (-1.064, -0.673, -39.775),
@@ -100,6 +105,29 @@ class FakeVehicleWithRealLogic:
         # Create mock hardware
         self.mock_qcar = MockQCar(self.sim_config)
         self.mock_gps = self.mock_qcar.gps
+        self.electronics_twin = None
+        self.electronics_adapter = None
+        self.electronics_gateway = None
+        self.electronics_v2v_bridge = None
+        electronics_config = self.sim_config.get('electronics', {})
+        if electronics_config.get('enabled', False):
+            self.electronics_twin = ElectronicsDigitalTwin(
+                vehicle_id=self.car_id,
+                config=electronics_config,
+            )
+            self.electronics_adapter = MockQCarElectronicsAdapter(self.electronics_twin)
+            self.electronics_gateway = ElectronicsDataGateway.from_config(
+                electronics_config.get('fusion')
+            )
+            self.mock_qcar.add_step_listener(self.electronics_adapter)
+            print(
+                f"[ELECTRONICS] Car {self.car_id}: digital twin enabled "
+                f"(target={self.electronics_twin.hardware_manifest.profile}, "
+                f"topology={self.electronics_twin.hardware_manifest.topology}, "
+                f"{self.electronics_twin.sensor_compute_interface.upper()} sensor-compute, "
+                f"{self.electronics_twin.vehicle_interface.upper()} vehicle link, "
+                f"fusion={self.electronics_gateway.mode})"
+            )
         
         # Create real configuration for VehicleLogic
         self.config = self._create_real_config()
@@ -110,6 +138,16 @@ class FakeVehicleWithRealLogic:
         
         # Set a reference so the fake initialization state can access our mock hardware
         self.vehicle_logic._parent_fake_vehicle = self
+        self.vehicle_logic.electronics_twin = self.electronics_twin
+        self.vehicle_logic.electronics_gateway = self.electronics_gateway
+        if self.electronics_twin is not None:
+            electronics_v2v_config = electronics_config.get('v2v', {})
+            if electronics_v2v_config.get('enabled', True):
+                self.electronics_v2v_bridge = (
+                    self.vehicle_logic.attach_electronics_v2v_bridge(
+                        electronics_v2v_config
+                    )
+                )
         
         # Components injection will happen in _inject_mock_hardware
         self._inject_mock_hardware()
@@ -257,6 +295,11 @@ class FakeVehicleWithRealLogic:
         if self.ground_station_client:
             try:
                 self.ground_station_client.close()
+            except Exception:
+                pass
+        if self.electronics_twin is not None:
+            try:
+                self.electronics_twin.close()
             except Exception:
                 pass
 

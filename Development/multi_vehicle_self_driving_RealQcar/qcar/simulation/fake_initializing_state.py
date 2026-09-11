@@ -163,6 +163,16 @@ class FakeInitializingState(StateBase):
 
             initial_pose = self._resolve_initial_pose(parent_fake_vehicle)
             parent_fake_vehicle.mock_qcar.reset_pose(initial_pose)
+            electronics_adapter = getattr(
+                parent_fake_vehicle, 'electronics_adapter', None
+            )
+            if electronics_adapter is not None:
+                electronics_adapter.reset()
+            electronics_v2v_bridge = getattr(
+                parent_fake_vehicle, 'electronics_v2v_bridge', None
+            )
+            if electronics_v2v_bridge is not None:
+                electronics_v2v_bridge.reset_transport()
             
             # Inject mock hardware from the fake vehicle
             self.vehicle_logic.qcar = parent_fake_vehicle.mock_qcar

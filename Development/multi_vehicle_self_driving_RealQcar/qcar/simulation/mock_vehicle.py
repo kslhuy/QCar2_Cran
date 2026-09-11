@@ -2,7 +2,7 @@ import time
 import math
 import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Callable, List, Optional, Tuple
 from dataclasses import asdict, is_dataclass
 from omegaconf import OmegaConf
 
@@ -106,6 +106,10 @@ class MockQCar:
         
         # Last time read 
         self.last_time = time.time()
+        # Optional consumers of plant truth (for example the electronics twin).
+        # These listeners run after physics and the legacy vehicle sensors have
+        # been updated, so they remain a separate sensor source.
+        self._step_listeners: List[Callable[["MockQCar", float], Any]] = []
 
         print("="*70)
         print("[CAR] QCar Fake Vehicle with REAL VehicleLogic ")
@@ -581,6 +585,16 @@ class MockQCar:
         self._throttle = np.clip(throttle, -1.0, 1.0)
         self._steering = np.clip(steering, -1.0, 1.0)
 
+    def add_step_listener(self, listener: Callable[["MockQCar", float], Any]) -> None:
+        """Register a plant-truth consumer called after every physics step."""
+        if listener not in self._step_listeners:
+            self._step_listeners.append(listener)
+
+    def remove_step_listener(self, listener: Callable[["MockQCar", float], Any]) -> None:
+        """Remove a previously registered plant-truth consumer."""
+        if listener in self._step_listeners:
+            self._step_listeners.remove(listener)
+
     def step(self, dt: float):
         """Perform one simulation step."""
         # 1. Update Physics
@@ -601,6 +615,13 @@ class MockQCar:
         self.gyroscope[2] = self.angular_velocity
         # Update GPS true state
         self.gps.update_true_state(self.x, self.y, self.heading)
+
+        for listener in tuple(self._step_listeners):
+            try:
+                listener(self, dt)
+            except Exception as exc:
+                # An optional twin must not make the legacy vehicle plant stop.
+                print(f"[WARN] MockQCar step listener failed: {exc}")
 
     def get_ground_truth(self) -> Dict[str, Any]:
         """Expose ground truth for observers."""

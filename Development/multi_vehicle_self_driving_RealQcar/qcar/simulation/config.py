@@ -57,5 +57,32 @@ class SimulationConfig:
             },
             'sensors': {
                 'gps': {'update_rate': 10.0, 'noise_pos': 0.0, 'noise_theta': 0.0}
+            },
+            'electronics': {
+                'enabled': False,
+                'seed': 1000,
+                'hardware_target': {
+                    'profile': 'cran_segula_stm32'
+                },
+                'sensor_compute_protocol': 'sensor_frame_v2',
+                'sensor_compute_interface': 'spi',
+                'vehicle_interface': 'uart',
+                'fusion': {
+                    'mode': 'auxiliary',
+                    'electronics_weight': 0.5
+                },
+                'v2v': {
+                    'enabled': True,
+                    'mode': 'firmware',
+                    'bitrate_bps': 6000000.0,
+                    'max_packet_size': 1500,
+                    'faults': {
+                        'enabled': True,
+                        'fixed_delay_s': 0.0,
+                        'jitter_s': 0.0,
+                        'drop_probability': 0.0,
+                        'bit_error_rate': 0.0
+                    }
+                }
             }
         }

@@ -64,6 +64,28 @@ Note: For the more detailed software setup instructions, please refer to the [In
 
 To get started with the QCar Multi-Vehicle Control System, please follow the instructions in the [For User Guide](Development/multi_vehicle_self_driving_RealQcar/ForUser.md) for both real QCar and simulation environments. This guide provides step-by-step instructions for setting up and running the system in different scenarios.
 
+### Electronics Digital Twin manual test
+
+Build the native C++ firmware/Trust core and run the repeatable SIL acceptance
+suite from PowerShell:
+
+```powershell
+.\run_electronics_manual_test.ps1
+```
+
+After it reports `PASS`, start fake vehicles, the Ground Station bridge and the
+web UI with:
+
+```powershell
+.\start_electronics_manual_system.ps1 -VehicleCount 3
+```
+
+See the [Electronics manual test guide](Development/multi_vehicle_self_driving_RealQcar/qcar/electronics/MANUAL_TEST.md)
+for the Native-authority gate, automatic failback, V2V and fault-injection test
+procedure. HIL is hardware-neutral; see the
+[MCU/SoC target guide](Development/multi_vehicle_self_driving_RealQcar/qcar/electronics/HARDWARE_TARGETS.md)
+for custom manifests, UDP or project-specific transports and cross-compilation.
+
 ## Contributing
 
 This project is supported  by the ANR agency under the project ArtISMo ANR-20-CE48-0015. 
