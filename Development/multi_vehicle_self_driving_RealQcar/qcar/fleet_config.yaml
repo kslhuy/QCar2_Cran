@@ -57,7 +57,7 @@ vehicles:
     # ip: 192.168.137.102
     vehicle_type: "Qcar"   # Vehicle type: "Qcar" or "Limo"
     enabled: true
-    enable_v2v_attack: false # Set true to inject attacks from this car
+    enable_v2v_attack: true # Set true to inject attacks from this car
     probing: true          # Enable YOLO probing (object detection)
     calibrate: false       # Start in calibration mode
     path_number: 0         # Path selection (0, 1, 2, etc.)
@@ -178,9 +178,9 @@ logging:
   # Granular logging control
   enable_fleet_estimation_logging: false
   enable_local_estimation_logging: false
-  enable_following_leader_logging: false
+  enable_following_leader_logging: true
   enable_trust_weight_logging: false
   
   # File naming strategy
-  use_timestamped_log_files: false  # true = create new timestamped file/folder, false = use single static file (append/overwrite)
+  use_timestamped_log_files: true  # true = create new timestamped file/folder, false = use single static file (append/overwrite)
 

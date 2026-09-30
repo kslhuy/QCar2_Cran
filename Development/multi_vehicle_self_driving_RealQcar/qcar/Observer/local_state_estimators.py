@@ -9,7 +9,15 @@ import numpy as np
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Dict, Tuple
-from hal.content.qcar_functions import QCarEKF
+try:
+    from .KalmaNet.Robust.runtime_sensor_attack import RuntimeSensorAttackMixin
+except ImportError:
+    from KalmaNet.Robust.runtime_sensor_attack import RuntimeSensorAttackMixin
+
+try:
+    from hal.content.qcar_functions import QCarEKF
+except Exception:
+    QCarEKF = None
 
 
 def wrap_to_pi(angle: float) -> float:
@@ -80,7 +88,7 @@ class LocalStateEstimatorBase(ABC):
         pass
 
 
-class EKFStateEstimator(LocalStateEstimatorBase):
+class EKFStateEstimator(RuntimeSensorAttackMixin, LocalStateEstimatorBase):
     """
     Extended Kalman Filter (EKF) state estimator
     Uses QCarEKF or custom EKF implementation
@@ -106,6 +114,7 @@ class EKFStateEstimator(LocalStateEstimatorBase):
 
         super().__init__(initial_pose, logger)
 
+        self._initialize_sensor_attacks(config)
         self.use_qcar_ekf = use_qcar_ekf
         self.ekf = None
         self.ekf_initialized = False
@@ -375,6 +384,9 @@ class EKFStateEstimator(LocalStateEstimatorBase):
     def _initialize_qcar_ekf(self, initial_pose: Optional[np.ndarray]):
         """Initialize QCarEKF"""
         try:
+            if QCarEKF is None:
+                raise RuntimeError("QCarEKF is unavailable")
+
             if initial_pose is None:
                 initial_pose = np.array([0.0, 0.0, 0.0])
 
@@ -408,6 +420,18 @@ class EKFStateEstimator(LocalStateEstimatorBase):
     ) -> bool:
         """Update EKF with sensor data"""
         try:
+            attack_simulator = self.sensor_failure_simulator
+            if attack_simulator is not None:
+                (
+                    motor_tach, steering, gyro_z, throttle, acceleration,
+                    gps_data, self.last_sensor_failure_metadata,
+                ) = attack_simulator.apply(
+                    motor_tach=motor_tach, steering=steering, gyro_z=gyro_z,
+                    throttle=throttle, dt=dt, acceleration=acceleration,
+                    gps_data=gps_data,
+                )
+            else:
+                self.last_sensor_failure_metadata = None
             if self.use_qcar_ekf and self.ekf_initialized:
                 return self._update_qcar_ekf(
                     motor_tach, steering, throttle, dt, gyro_z, gps_data, acceleration
@@ -912,6 +936,9 @@ class EKFStateEstimator(LocalStateEstimatorBase):
 
     def reset(self, initial_pose: Optional[np.ndarray] = None):
         """Reset EKF state"""
+        self.last_sensor_failure_metadata = None
+        if self.sensor_failure_simulator is not None:
+            self.sensor_failure_simulator.reset()
         if initial_pose is not None:
             self.state[:3] = initial_pose
             self.state[3] = 0.0

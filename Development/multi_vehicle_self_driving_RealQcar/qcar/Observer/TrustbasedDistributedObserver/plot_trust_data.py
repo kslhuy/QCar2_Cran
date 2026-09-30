@@ -956,6 +956,283 @@ def _fig_weights(times, rows, active, focus, host_id):
     return fig
 
 
+def _fig_fleet_estimation(times, rows, active, host_id):
+    """
+    Figure 3 - Fleet State Estimation.
+
+    This plot uses the observer's final fleet estimate columns (`est_*_<id>`)
+    and does not require a focus vehicle.
+    """
+    fig = plt.figure(figsize=(16, 13))
+    fig.suptitle(
+        f"Fleet State Estimation  (Host V{host_id}, All Observer Targets)",
+        fontsize=13,
+        fontweight="bold",
+    )
+    gs = gridspec.GridSpec(4, 2, figure=fig, hspace=0.35, wspace=0.25)
+
+    def _plot_fleet_state(ax, prefix, title, ylabel, *, step=False):
+        n = 0
+        for vid in active:
+            arr = _col_to_array(rows, f"{prefix}_{vid}")
+            if not np.any(np.isfinite(arr)):
+                continue
+            if step:
+                ax.step(times, arr, where="post", label=f"V{vid}", lw=1.1, alpha=0.85)
+            else:
+                ax.plot(times, arr, label=f"V{vid}", lw=1.2, alpha=0.85)
+            n += 1
+        if n == 0:
+            _no_data(ax, title)
+        _style(ax, title, ylabel, xlabel="Time [s]")
+
+    ax = fig.add_subplot(gs[0, 0])
+    _plot_fleet_state(ax, "est_x", "Fleet Estimated X", "x [m]")
+
+    ax = fig.add_subplot(gs[0, 1])
+    _plot_fleet_state(ax, "est_y", "Fleet Estimated Y", "y [m]")
+
+    ax = fig.add_subplot(gs[1, 0])
+    _plot_fleet_state(ax, "est_theta", "Fleet Estimated Heading", "theta [rad]")
+
+    ax = fig.add_subplot(gs[1, 1])
+    _plot_fleet_state(ax, "est_v", "Fleet Estimated Velocity", "v [m/s]")
+
+    ax = fig.add_subplot(gs[2, 0])
+    _plot_fleet_state(ax, "est_a", "Fleet Estimated Acceleration", "a [m/s^2]")
+
+    ax = fig.add_subplot(gs[2, 1])
+    n = 0
+    for vid in active:
+        x = _col_to_array(rows, f"est_x_{vid}")
+        y = _col_to_array(rows, f"est_y_{vid}")
+        mask = np.isfinite(x) & np.isfinite(y)
+        if not np.any(mask):
+            continue
+        ax.plot(x[mask], y[mask], label=f"V{vid}", lw=1.3, alpha=0.85)
+        n += 1
+    if n == 0:
+        _no_data(ax, "Fleet Estimated Trajectory XY")
+    else:
+        ax.axis("equal")
+    _style(ax, "Fleet Estimated Trajectory XY", "y [m]", xlabel="x [m]")
+
+    ax = fig.add_subplot(gs[3, 0])
+    n = 0
+    for vid in active:
+        arr = _col_to_array(rows, f"est_conf_{vid}")
+        if not np.any(np.isfinite(arr)):
+            continue
+        ax.plot(times, arr, label=f"Conf V{vid}", lw=1.1, alpha=0.75)
+        n += 1
+    for col, lbl, ls in [
+        ("self_belief", "self_belief", "--"),
+        ("platoon_conf_mean", "platoon_conf_mean", "-"),
+        ("platoon_conf_min", "platoon_conf_min", ":"),
+        ("platoon_conf_max", "platoon_conf_max", ":"),
+    ]:
+        arr = _col_to_array(rows, col)
+        if np.any(np.isfinite(arr)):
+            ax.plot(times, arr, ls, lw=1.3, label=lbl, color="k")
+            n += 1
+    if n == 0:
+        _no_data(ax, "Estimation Confidence")
+    _style(ax, "Estimation Confidence", "Confidence", xlabel="Time [s]")
+
+    ax = fig.add_subplot(gs[3, 1])
+    n = 0
+    for vid in active:
+        arr = _col_to_array(rows, f"pred_mode_{vid}")
+        if np.any(np.isfinite(arr)):
+            ax.step(times, arr, where="post", label=f"V{vid}", lw=1.1, alpha=0.70)
+            n += 1
+    pred_count = _col_to_array(rows, "prediction_mode_count")
+    if np.any(np.isfinite(pred_count)):
+        ax.plot(times, pred_count, "k--", lw=1.3, label="total_pred_mode")
+        n += 1
+    if n == 0:
+        _no_data(ax, "Prediction Mode")
+    _style(ax, "Prediction Mode Flags", "Mode (0/1)", xlabel="Time [s]")
+
+    return fig
+
+
+def _fig_controller_diagnostics(times, rows, columns, focus, host_id):
+    """Plot controller command/fusion diagnostics embedded in the trust CSV."""
+    controller_columns = {
+        "host_throttle", "host_steering", "ctrl_u_final", "ctrl_delta_final",
+        "ctrl_u_raw", "ctrl_delta_raw", "ctrl_u_cacc", "ctrl_u_sensor",
+        "ctrl_alpha", "ctrl_leader_trust", "ctrl_policy_code",
+        "ctrl_sensor_gap", "ctrl_along_track_gap", "ctrl_distance_to_leader",
+        "ctrl_velocity_difference", "ctrl_hold_stop",
+        "ctrl_reverse_follow_active", "ctrl_reverse_follow_blocked",
+        "ctrl_multi_predecessor_count", "ctrl_multi_predecessor_weight_sum",
+        "ctrl_multi_predecessor_spacing_term", "ctrl_multi_predecessor_velocity_term",
+        "ctrl_multi_predecessor_acceleration_term",
+    }
+    new_controller_columns = {col for col in controller_columns if col.startswith("ctrl_")}
+    if not (new_controller_columns & set(columns)):
+        return None
+
+    fig = plt.figure(figsize=(20, 12))
+    fig.suptitle(
+        f"Controller Diagnostics  (Host V{host_id}, Focus V{focus})",
+        fontsize=13,
+        fontweight="bold",
+    )
+    gs = gridspec.GridSpec(3, 3, figure=fig, hspace=0.42, wspace=0.30)
+
+    def plot_cols(ax, specs, title, ylabel, *, step_cols=(), xlabel=""):
+        n = 0
+        for col, label, style, color in specs:
+            arr = _col_to_array(rows, col)
+            if not np.any(np.isfinite(arr)):
+                continue
+            if col in step_cols:
+                ax.step(times, arr, where="post", label=label, color=color, lw=1.35)
+            else:
+                ax.plot(times, arr, style, label=label, color=color, lw=1.35)
+            n += 1
+        if n == 0:
+            _no_data(ax, title)
+        _style(ax, title, ylabel, xlabel=xlabel)
+        return n
+
+    ax = fig.add_subplot(gs[0, 0])
+    plot_cols(
+        ax,
+        [
+            ("ctrl_u_final", "final u", "-", "tab:green"),
+            ("ctrl_u_raw", "raw u", "--", "tab:orange"),
+            ("ctrl_u_cacc", "CACC u", "-", "tab:blue"),
+            ("ctrl_u_sensor", "sensor ACC u", "-", "tab:red"),
+            ("host_throttle", "sent throttle", ":", "k"),
+        ],
+        "Longitudinal Command Fusion",
+        "u / throttle",
+    )
+
+    ax = fig.add_subplot(gs[0, 1])
+    plot_cols(
+        ax,
+        [
+            ("ctrl_delta_final", "final delta", "-", "tab:green"),
+            ("ctrl_delta_raw", "raw delta", "--", "tab:orange"),
+            ("host_steering", "sent steering", ":", "k"),
+        ],
+        "Steering Command",
+        "delta [rad]",
+    )
+
+    ax = fig.add_subplot(gs[0, 2])
+    plot_cols(
+        ax,
+        [
+            ("ctrl_alpha", "fusion alpha", "-", "tab:blue"),
+            ("ctrl_leader_trust", "leader trust", "-", "tab:green"),
+            ("ctrl_hold_stop", "hold stop", "-", "tab:red"),
+            ("v2v_attack_active", "V2V attack", "-", "tab:purple"),
+        ],
+        "Trust Fusion State",
+        "value",
+        step_cols={"ctrl_hold_stop", "v2v_attack_active"},
+    )
+    ax.set_ylim(-0.05, 1.05)
+
+    ax = fig.add_subplot(gs[1, 0])
+    plot_cols(
+        ax,
+        [
+            ("ctrl_policy_code", "policy code", "-", "tab:orange"),
+            ("ctrl_reverse_follow_active", "reverse active", "-", "tab:cyan"),
+            ("ctrl_reverse_follow_blocked", "reverse blocked", "-", "tab:red"),
+        ],
+        "Policy Code",
+        "code/state",
+        step_cols={"ctrl_policy_code", "ctrl_reverse_follow_active", "ctrl_reverse_follow_blocked"},
+    )
+
+    ax = fig.add_subplot(gs[1, 1])
+    plot_cols(
+        ax,
+        [
+            ("ctrl_distance_to_leader", "Euclidean", "-", "tab:green"),
+            ("ctrl_along_track_gap", "along-track", "-", "tab:blue"),
+            ("ctrl_sensor_gap", "sensor", "-", "tab:orange"),
+        ],
+        "Leader Gap Signals",
+        "gap [m]",
+    )
+
+    ax = fig.add_subplot(gs[1, 2])
+    plot_cols(
+        ax,
+        [
+            ("ctrl_velocity_difference", "leader-follower v", "-", "tab:cyan"),
+            (f"est_v_{focus}", f"estimated v V{focus}", "-", "tab:green"),
+            (f"trust_{focus}", f"trust V{focus}", "--", "tab:blue"),
+        ],
+        f"Velocity / Trust Context V{focus}",
+        "m/s or trust",
+    )
+
+    ax = fig.add_subplot(gs[2, 0])
+    plot_cols(
+        ax,
+        [
+            ("ctrl_multi_predecessor_count", "count", "-", "tab:orange"),
+            ("ctrl_multi_predecessor_weight_sum", "weight sum", "-", "tab:blue"),
+            ("ctrl_multi_predecessor_spacing_term", "spacing", "-", "tab:green"),
+            ("ctrl_multi_predecessor_velocity_term", "velocity", "-", "tab:cyan"),
+            ("ctrl_multi_predecessor_acceleration_term", "accel", "-", "tab:red"),
+        ],
+        "Multi-Predecessor CACC Terms",
+        "value",
+        step_cols={"ctrl_multi_predecessor_count"},
+        xlabel="Time [s]",
+    )
+
+    ax = fig.add_subplot(gs[2, 1])
+    plot_cols(
+        ax,
+        [
+            ("rollback_triggered", "rollback triggered", "-", "tab:red"),
+            ("rollback_active_count", "rollback active count", "-", "tab:orange"),
+            (f"flag_attack_{focus}", f"attack flag V{focus}", "-", "tab:pink"),
+            (f"pred_mode_{focus}", f"prediction V{focus}", "-", "tab:green"),
+        ],
+        "Trust Gate / Rollback State",
+        "state/count",
+        step_cols={"rollback_triggered", "rollback_active_count", f"flag_attack_{focus}", f"pred_mode_{focus}"},
+        xlabel="Time [s]",
+    )
+
+    ax = fig.add_subplot(gs[2, 2])
+    ax.axis("off")
+    policies = [p for p in _col_to_text(rows, "ctrl_policy") if p]
+    unique_policies = sorted(set(policies))[:12]
+    long_types = [p for p in _col_to_text(rows, "ctrl_long_type") if p]
+    lat_types = [p for p in _col_to_text(rows, "ctrl_lat_type") if p]
+    source_types = [p for p in _col_to_text(rows, "ctrl_leader_source") if p]
+    text_lines = [
+        "Policy codes:",
+        "1 legacy CACC, 2 legacy sensor blend",
+        "3 high-trust CACC, 4 trust blend",
+        "5 low-trust sensor ACC, 6 low-trust stop",
+        "10 trust unavailable sensor, 11 unavailable stop",
+        "15 no V2V, 17 no controller, 99 unknown",
+        "",
+        f"longitudinal: {', '.join(sorted(set(long_types))[:4]) or 'n/a'}",
+        f"lateral: {', '.join(sorted(set(lat_types))[:4]) or 'n/a'}",
+        f"leader source: {', '.join(sorted(set(source_types))[:4]) or 'n/a'}",
+        "policies seen:",
+        ", ".join(unique_policies) if unique_policies else "n/a",
+    ]
+    ax.text(0.02, 0.98, "\n".join(text_lines), va="top", ha="left", fontsize=9)
+
+    return fig
+
+
 def _fig_estimation(times, rows, active, focus, host_id):
     """
     Figure 3 – State Estimation
@@ -2351,6 +2628,13 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
         "w0", "w_self", "total_neighbor_weight", "trusted_neighbor_count",
         "active_vehicle_count", "is_turning", "v2v_attack_active",
         "v2v_attack_active_count",
+        "host_throttle", "host_steering",
+        "ctrl_u_final", "ctrl_delta_final", "ctrl_u_raw", "ctrl_delta_raw",
+        "ctrl_u_cacc", "ctrl_u_sensor", "ctrl_alpha", "ctrl_leader_trust",
+        "ctrl_policy_code", "ctrl_hold_stop", "ctrl_sensor_gap",
+        "ctrl_along_track_gap", "ctrl_distance_to_leader",
+        "ctrl_velocity_difference", "ctrl_reverse_follow_active",
+        "ctrl_reverse_follow_blocked",
     ]
     for col in base_cols:
         arrays[col] = arr(col)
@@ -2522,11 +2806,13 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
     final_cols = [
         (f"local_trust_{focus}", "local trust", "-"),
         (f"global_trust_{focus}", "global trust", "--"),
+        ("ctrl_alpha", "fusion alpha", ":"),
+        ("ctrl_leader_trust", "leader trust", "-."),
     ]
     for i, (col, label, ls) in enumerate(final_cols):
         add_time_line(ax_final, col, label, color=colors[i % len(colors)], ls=ls)
-    _style(ax_final, f"Final Trust Score Local and Global V{focus}",
-           "Trust [0,1]", legend=True)
+    _style(ax_final, f"Final Trust / Controller Fusion V{focus}",
+           "Trust / alpha [0,1]", legend=True)
     _set_axis_y_limits(ax_final, [arrays.get(col) for col, _, _ in final_cols],
                        bounded_unit=True)
 
@@ -2599,6 +2885,9 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
         (f"pred_mode_{focus}", "prediction", 0.75),
         ("is_turning", "turning", 0.90),
         ("v2v_attack_active", "V2V attack", 1.05),
+        ("ctrl_hold_stop", "hold stop", 1.20),
+        ("ctrl_reverse_follow_active", "reverse", 1.35),
+        ("ctrl_reverse_follow_blocked", "rev blocked", 1.50),
     ]
     for i, (col, label, offset) in enumerate(flag_cols):
         data = arrays.get(col)
@@ -2610,7 +2899,7 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
                       color=colors[i % len(colors)], lw=1.5,
                       drawstyle="steps-post", smooth=False,
                       current_marker=False)
-    ax_flags.set_ylim(-0.05, 1.20)
+    ax_flags.set_ylim(-0.05, 1.65)
     ax_flags.set_yticks([item[2] + 0.05 for item in flag_cols])
     ax_flags.set_yticklabels([item[1] for item in flag_cols], fontsize=8)
     _style(ax_flags, f"Flags V{focus}", "", xlabel="Time [s]", legend=False)
@@ -2774,6 +3063,9 @@ def _run_playback_dashboard(file_to_plot: str, times: np.ndarray,
             f"active {int(arrays['active_vehicle_count'][idx]) if np.isfinite(arrays['active_vehicle_count'][idx]) else 0}",
             f"trusted {int(arrays['trusted_neighbor_count'][idx]) if np.isfinite(arrays['trusted_neighbor_count'][idx]) else 0}",
             f"attack {int(arrays['v2v_attack_active'][idx]) if np.isfinite(arrays['v2v_attack_active'][idx]) else 0}",
+            f"policy {_format_live_value(interp_sample(arrays.get('ctrl_policy_code', [np.nan]), idx, current_t))}",
+            f"alpha  {_format_live_value(interp_sample(arrays.get('ctrl_alpha', [np.nan]), idx, current_t))}",
+            f"u      {_format_live_value(interp_sample(arrays.get('ctrl_u_final', [np.nan]), idx, current_t))}",
         ]
         status_left_text.set_text("\n".join(left_lines))
         status_mid_text.set_text("\n".join(mid_lines))
@@ -2840,7 +3132,7 @@ def main():
     )
     parser.add_argument("--file", "-f", help="path to a specific CSV file to plot")
     parser.add_argument("--all", action="store_true",
-                        help="generate figures for every candidate focus vehicle")
+                        help="generate figures for every candidate focus vehicle (default for static plots)")
     parser.add_argument("--focus", type=int,
                         help="vehicle ID to use as focus (overrides interactive choice)")
     parser.add_argument("--relative-file",
@@ -2870,10 +3162,16 @@ def main():
     args = parser.parse_args()
 
     directory = os.path.dirname(os.path.abspath(__file__))
-    csv_files = sorted(glob.glob(os.path.join(directory,
-                                              "trust_weight_log_V*.csv")))
+    csv_files = sorted(
+        set(
+            glob.glob(os.path.join(directory, "trust_weight_log_V*.csv"))
+            + glob.glob(os.path.join(directory, "results", "*", "trust_weight_log_V*.csv"))
+        ),
+        key=os.path.getmtime,
+    )
     if not csv_files:
         print("No trust log files found in:", directory)
+        print("Also checked:", os.path.join(directory, "results", "*"))
         return
 
     if args.file:
@@ -2884,7 +3182,7 @@ def main():
     else:
         print("Found files:")
         for i, f in enumerate(csv_files):
-            print(f"[{i}] {os.path.basename(f)}")
+            print(f"[{i}] {os.path.relpath(f, directory)}")
 
         choice = input(f"Select file to plot [0-{len(csv_files) - 1}]: ").strip()
         try:
@@ -2908,7 +3206,7 @@ def main():
         return
 
     # Determine host vehicle from filename
-    host_match = re.search(r"V(\d+)\.csv$", os.path.basename(file_to_plot))
+    host_match = re.search(r"V(\d+)(_[^.]*)?\.csv$", os.path.basename(file_to_plot))
     host_id = int(host_match.group(1)) if host_match else -1
 
     # Determine list of candidate focus vehicles (exclude host if possible)
@@ -2974,31 +3272,9 @@ def main():
             )
             focuses = [focus_candidates[0]]
     else:
-        focuses = [focus_candidates[0]]
+        focuses = focus_candidates
 
-    # # Choose focus vehicles according to command-line flags or interactive input
-    # if args.all:
-    #     focuses = focus_candidates
-    # elif args.focus is not None:
-    #     if args.focus in focus_candidates:
-    #         focuses = [args.focus]
-    #     else:
-    #         print(f"Requested focus V{args.focus} not in candidate list; using {focus_candidates[0]}")
-    #         focuses = [focus_candidates[0]]
-    # else:
-    #     # interactive prompt if no CLI preference provided
-    #     focus_selection = input(
-    #         "Enter a focus vehicle ID from the list above, or type 'all' to generate a separate set of figures for every candidate (default = first): "
-    #     ).strip().lower()
-
-    #     if focus_selection == "all":
-    #         focuses = focus_candidates
-    #     else:
-    #         try:
-    #             fid = int(focus_selection)
-    #             focuses = [fid] if fid in focus_candidates else [focus_candidates[0]]
-    #         except ValueError:
-    #             focuses = [focus_candidates[0]]
+    print(f"Focus vehicles for target-specific diagnostics: {focuses}")
 
     # Always compute the motion-test summary, even when matplotlib is unavailable.
     for focus in focuses:
@@ -3024,12 +3300,16 @@ def main():
     if MATPLOTLIB_IMPORT_ERROR is not None:
         return
 
-    # Build the figures (multiple sets if necessary)
+    # Build the fleet state-estimation figure once. Trust/weight diagnostics
+    # below still use a focus vehicle because those relationships are target-specific.
+    print("Plotting fleet state estimation for all observer targets ...")
+    _fig_fleet_estimation(times, rows, active, host_id)
+
+    # Build the target-specific diagnostic figures (multiple sets if necessary)
     for focus in focuses:
         print(f"Plotting figures with focus vehicle: V{focus} ...")
         _fig_trust(times, rows, active, focus, host_id)
         _fig_weights(times, rows, active, focus, host_id)
-        _fig_estimation(times, rows, active, focus, host_id)
         _fig_motion_test(
             times,
             rows,
@@ -3040,6 +3320,9 @@ def main():
         )
         _fig_impact_histograms(rows, active, focus, host_id)
         _fig_v2v_details(times, rows, active, focus, host_id)
+        controller_fig = _fig_controller_diagnostics(times, rows, columns, focus, host_id)
+        if controller_fig is not None:
+            print(f"Plotting controller diagnostics for focus vehicle: V{focus} ...")
 
     print("Plotting V2V attack timeline ...")
     _fig_attack_timeline(times, rows, columns, active, host_id)

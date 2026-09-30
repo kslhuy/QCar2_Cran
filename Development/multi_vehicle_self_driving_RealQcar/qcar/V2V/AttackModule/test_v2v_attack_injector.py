@@ -165,6 +165,7 @@ class MockV2VManager:
         self.logger = MockLogger()
         self.vehicle_observer = MockVehicleObserver(vehicle_id)
         self.v2v_communication = MockV2VCommunication(vehicle_id)
+        self._time_reference = None
         
         import threading
         self._lock = threading.RLock()
@@ -182,14 +183,26 @@ class MockV2VManager:
     def _process_received_messages(self) -> None:
         pass
     
-    def activate(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
+    def activate(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict] = None,
+    ) -> bool:
+        self._time_reference = time_reference
         return self.v2v_communication.activate(peer_vehicles, peer_ips)
     
     def deactivate(self) -> None:
         self.v2v_communication.deactivate()
     
-    def activate_v2v(self, peer_vehicles: List[int], peer_ips: List[str]) -> bool:
-        return self.activate(peer_vehicles, peer_ips)
+    def activate_v2v(
+        self,
+        peer_vehicles: List[int],
+        peer_ips: List[str],
+        time_reference: Optional[Dict] = None,
+        vehicle_manifest: Optional[Dict] = None,
+    ) -> bool:
+        return self.activate(peer_vehicles, peer_ips, time_reference=time_reference)
     
     def disable_v2v(self) -> bool:
         self.deactivate()
@@ -756,6 +769,24 @@ class TestPassthroughMethods(unittest.TestCase):
         self.assertTrue(result)
         self.assertTrue(self.mock_v2v_manager.v2v_communication.is_active)
         print("  ✓ Activate passthrough test passed")
+    
+    def test_activate_v2v_uses_shared_time_reference(self):
+        """Test activate_v2v anchors attack timing to shared V2V time."""
+        reference_epoch_s = time.time() - 15.0
+        time_reference = {
+            'source': 'ground_station',
+            'reference_time_ns': int(reference_epoch_s * 1e9),
+        }
+
+        result = self.injector.activate_v2v(
+            [2],
+            ['192.168.1.2'],
+            time_reference=time_reference,
+        )
+
+        self.assertTrue(result)
+        self.assertAlmostEqual(self.injector.get_elapsed_time(), 15.0, delta=0.5)
+        print("  ✓ Shared V2V attack timing reference test passed")
     
     def test_deactivate_passthrough(self):
         """Test deactivate method passes through."""

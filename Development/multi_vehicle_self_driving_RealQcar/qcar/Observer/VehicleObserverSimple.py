@@ -268,6 +268,7 @@ class VehicleObserver:
             "gps_age": float("inf"),
             "gps_hold_window": 0.0,
             "relative_measurements_by_target": {},
+            "auxiliary_sensors": {},
         }
         # For derivative estimation when only distance is provided.
         self._last_relative_distance_by_target: Dict[int, Tuple[float, float]] = {}
@@ -284,6 +285,7 @@ class VehicleObserver:
         self._filtered_accelerometer = np.zeros(3)
         self._accel_filter_initialized = False
         self.control_input = {"steering": 0.0, "throttle": 0.0}
+        self.controller_debug_snapshot: Dict[str, Any] = {}
         # Lateral velocity fallback estimate for SysID when 6D observer state is unavailable.
         self._vy_estimate = 0.0
         self._vy_est_last_time = 0.0
@@ -296,6 +298,7 @@ class VehicleObserver:
         self.local_observer_rate = self.observer_config.get("observer_rate", 100)
         self.fleet_observer_rate = self.observer_config.get("fleet_observer_rate", 50)
         self._last_fleet_observer_time = 0.0
+        self._last_fleet_observer_dt = 1.0 / max(float(self.fleet_observer_rate), 1e-6)
 
         # ===== Thread Safety =====
         self.lock = threading.RLock()
@@ -588,6 +591,16 @@ class VehicleObserver:
             value = getattr(vehicle_cfg, "is_physical_qcar", None)
         return self._config_bool(value, False)
 
+    def _observer_model_source_entry_path(self, entry: Any) -> str:
+        """Resolve one observer-model source entry into a path string."""
+        if isinstance(entry, str):
+            return entry.strip()
+        if not isinstance(entry, dict):
+            return ""
+        if not self._config_bool(entry.get("enabled", True), True):
+            return ""
+        return str(entry.get("path", entry.get("file", ""))).strip()
+
     def _resolve_model_source_path(self, source_cfg: Any) -> str:
         """
         Resolve observer_model_source into a concrete YAML path.
@@ -596,6 +609,12 @@ class VehicleObserver:
           observer_model_source: relative/path.yaml
           observer_model_source:
             path: relative/path.yaml
+          observer_model_source:
+            profile: real_car_61
+            profiles:
+              real_car_61: relative/path.yaml
+              qlabs_velocity:
+                path: relative/path.yaml
           observer_model_source:
             qcar_real: extra_configs/throttle_acceleration_observer_model_real.yaml
             qcar_sim: extra_configs/throttle_acceleration_observer_model_sim.yaml
@@ -609,9 +628,35 @@ class VehicleObserver:
         if not self._config_bool(source_cfg.get("enabled", True), True):
             return ""
 
-        direct_path = str(source_cfg.get("path", source_cfg.get("file", ""))).strip()
+        direct_path = self._observer_model_source_entry_path(source_cfg)
         if direct_path:
             return direct_path
+
+        raw_profile = source_cfg.get(
+            "profile",
+            source_cfg.get("selected_profile", source_cfg.get("selected", "")),
+        )
+        profile = str(raw_profile or "").strip()
+        if profile and profile.lower() not in {"auto", "default"}:
+            profiles = source_cfg.get("profiles", {})
+            profile_path = ""
+            if isinstance(profiles, dict):
+                profile_path = self._observer_model_source_entry_path(
+                    profiles.get(profile)
+                )
+            if not profile_path:
+                profile_path = self._observer_model_source_entry_path(
+                    source_cfg.get(profile)
+                )
+            if profile_path:
+                return profile_path
+            if profile.lower().endswith((".yaml", ".yml")):
+                return profile
+            if self.vehicle_logger:
+                self.vehicle_logger.log_warning(
+                    f"Unknown observer_model_source profile '{profile}'"
+                )
+            return ""
 
         host_vehicle_type = self._get_host_vehicle_type()
         if host_vehicle_type == "Limo":
@@ -1337,15 +1382,21 @@ class VehicleObserver:
 
     # ===== Timing Control =====
 
-    def _should_update_fleet_observer(self, current_time: float) -> bool:
-        """Check if fleet observer should update based on its rate (independent of local observer)"""
-        if (
-            current_time - self._last_fleet_observer_time
-            >= 1.0 / self.fleet_observer_rate
-        ):
-            self._last_fleet_observer_time = current_time
-            return True
-        return False
+    def _fleet_observer_interval(self) -> float:
+        """Configured fleet observer period in seconds."""
+        return 1.0 / max(float(self.fleet_observer_rate), 1e-6)
+
+    def _get_due_fleet_observer_dt(self, current_time: float) -> Optional[float]:
+        """Return actual fleet-observer dt when due; otherwise return None."""
+        target_interval = self._fleet_observer_interval()
+        elapsed = current_time - self._last_fleet_observer_time
+        if elapsed < target_interval:
+            return None
+
+        fleet_dt = elapsed if self._last_fleet_observer_time > 0.0 else target_interval
+        self._last_fleet_observer_dt = max(float(fleet_dt), 1e-4)
+        self._last_fleet_observer_time = current_time
+        return self._last_fleet_observer_dt
 
     # ===== Configuration =====
 
@@ -1582,8 +1633,9 @@ class VehicleObserver:
             state_info = self._update_local_observer(dt, last_steering, throttle)
 
             # Update fleet observer if it's time (independent rate control)
-            if self._should_update_fleet_observer(current_time):
-                self._update_fleet_observer_internal(dt)  # Distributed
+            fleet_dt = self._get_due_fleet_observer_dt(current_time)
+            if fleet_dt is not None:
+                self._update_fleet_observer_internal(fleet_dt)  # Distributed
 
             # Update relative observer (if enabled and measurements available)
             self._update_relative_observer(dt)
@@ -1594,6 +1646,16 @@ class VehicleObserver:
             self.vehicle_logger.log_error("Observer update error", e)
             # Return last known state instead of zeros
             return self._get_last_known_state()
+
+    def set_controller_debug_snapshot(
+        self, snapshot: Optional[Dict[str, Any]]
+    ) -> None:
+        """Cache controller diagnostics for the next fleet estimator update."""
+        with self.lock:
+            if not isinstance(snapshot, dict):
+                self.controller_debug_snapshot = {}
+                return
+            self.controller_debug_snapshot = dict(snapshot)
 
     def _update_local_observer(
         self, dt: float, last_steering: float = 0.0, last_u: float = 0.0
@@ -1765,6 +1827,16 @@ class VehicleObserver:
             ])
 
             # Update fleet estimates using pluggable estimator
+            if hasattr(self.fleet_estimator, "set_controller_debug_snapshot"):
+                with self.lock:
+                    controller_snapshot = dict(self.controller_debug_snapshot)
+                controller_snapshot.setdefault("host_steering", float(control[0]))
+                controller_snapshot.setdefault(
+                    "host_throttle",
+                    float(control[1]) if control.size > 1 else 0.0,
+                )
+                self.fleet_estimator.set_controller_debug_snapshot(controller_snapshot)
+
             current_local = self.local_state.copy()
             self.fleet_states = self.fleet_estimator.update(
                 local_state=current_local,
@@ -1832,6 +1904,12 @@ class VehicleObserver:
         with self.lock:
             self._ensure_fleet_state_cache_locked()
             if target_id >= self.fleet_states.shape[1]:
+                return None
+            if (
+                target_id != self.vehicle_id
+                and hasattr(self.fleet_estimator, "is_target_initialized")
+                and not self.fleet_estimator.is_target_initialized(target_id)
+            ):
                 return None
             return self.fleet_states[:, target_id].copy()
 
@@ -2160,6 +2238,92 @@ class VehicleObserver:
         """
         return self.fleet_estimator
 
+    def get_vehicle_trust_context(self, vehicle_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Return trust context for a vehicle when the active fleet estimator supports it.
+
+        The payload is intentionally small so control code can gate or blend
+        commands without depending on trust-estimator internals.
+        """
+        try:
+            target_id = int(vehicle_id)
+        except (TypeError, ValueError):
+            return None
+
+        with self.lock:
+            estimator = self.fleet_estimator
+            if estimator is None:
+                return None
+
+            direct_trust = None
+            trust_obj = None
+            if hasattr(estimator, "get_trust_score"):
+                try:
+                    trust_obj = estimator.get_trust_score(target_id)
+                    if trust_obj is not None and hasattr(trust_obj, "final_score"):
+                        direct_trust = float(trust_obj.final_score)
+                except Exception:
+                    trust_obj = None
+                    direct_trust = None
+
+            if direct_trust is None and hasattr(estimator, "get_all_trust_scores"):
+                try:
+                    all_scores = estimator.get_all_trust_scores()
+                    if isinstance(all_scores, dict):
+                        raw_direct = all_scores.get(
+                            target_id, all_scores.get(str(target_id))
+                        )
+                        if raw_direct is not None:
+                            direct_trust = float(raw_direct)
+                except Exception:
+                    direct_trust = None
+
+            generalized_trust = None
+            if hasattr(estimator, "get_generalized_trust_vector"):
+                try:
+                    generalized = estimator.get_generalized_trust_vector()
+                    if isinstance(generalized, dict):
+                        raw_generalized = generalized.get(
+                            target_id, generalized.get(str(target_id))
+                        )
+                        if raw_generalized is not None:
+                            generalized_trust = float(raw_generalized)
+                except Exception:
+                    generalized_trust = None
+
+            attack_flags: Dict[str, bool] = {}
+            if hasattr(estimator, "get_attack_flags"):
+                try:
+                    raw_flags = estimator.get_attack_flags()
+                    if isinstance(raw_flags, dict):
+                        flags = raw_flags.get(target_id, raw_flags.get(str(target_id), {}))
+                        if isinstance(flags, dict):
+                            attack_flags = {
+                                str(key): bool(value) for key, value in flags.items()
+                            }
+                except Exception:
+                    attack_flags = {}
+
+            trusted = None
+            if hasattr(estimator, "is_vehicle_trusted"):
+                try:
+                    trusted = bool(estimator.is_vehicle_trusted(target_id))
+                except Exception:
+                    trusted = None
+            elif direct_trust is not None:
+                trusted = bool(direct_trust >= 0.5)
+
+            if direct_trust is None and generalized_trust is None and not attack_flags:
+                return None
+
+            return {
+                "vehicle_id": target_id,
+                "direct_trust": direct_trust,
+                "generalized_trust": generalized_trust,
+                "trusted": trusted,
+                "attack_flags": attack_flags,
+            }
+
     def add_received_local_state(
         self, sender_id: int, state: Dict, timestamp_ns: int
     ) -> bool:
@@ -2361,6 +2525,12 @@ class VehicleObserver:
         if 0 <= vehicle_id < self.fleet_size:
             with self.lock:
                 self._ensure_fleet_state_cache_locked()
+                if (
+                    vehicle_id != self.vehicle_id
+                    and hasattr(self.fleet_estimator, "is_target_initialized")
+                    and not self.fleet_estimator.is_target_initialized(vehicle_id)
+                ):
+                    return None
                 return self.fleet_states[:, vehicle_id].copy()
         return None
 
@@ -2387,6 +2557,28 @@ class VehicleObserver:
         """Get current sensor data."""
         with self.lock:
             return self.sensor_data.copy()
+
+    def update_auxiliary_sensor_data(
+        self,
+        source_name: str,
+        source_data: Dict[str, Any],
+        field_overrides: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Store an independent source and apply only explicitly requested fusion."""
+        with self.lock:
+            auxiliary = self.sensor_data.setdefault("auxiliary_sensors", {})
+            auxiliary[str(source_name)] = copy.deepcopy(source_data)
+            for key, value in (field_overrides or {}).items():
+                self.sensor_data[key] = copy.deepcopy(value)
+            if field_overrides and "accelerometer" in field_overrides:
+                acceleration = np.asarray(
+                    self.sensor_data["accelerometer"], dtype=float
+                ).reshape(-1)
+                self.sensor_data["accel_magnitude"] = float(
+                    np.linalg.norm(acceleration[:2])
+                    if acceleration.size >= 2
+                    else 0.0
+                )
 
     # Old helper methods removed - fleet estimator handles data management internally
 
@@ -2653,10 +2845,18 @@ class VehicleObserver:
             fleet_data = {}
             for vehicle_id in range(self.fleet_size):
                 fs = self.fleet_states[:, vehicle_id]
-                if vehicle_id != self.vehicle_id and not np.any(fs):
-                    continue
-                # Include all tracked vehicles in fleet (zeros or not) for proper fleet estimation
-                # The receiver can decide whether to use the data based on confidence/age
+                if vehicle_id != self.vehicle_id:
+                    if hasattr(self.fleet_estimator, "is_target_initialized"):
+                        try:
+                            if not self.fleet_estimator.is_target_initialized(vehicle_id):
+                                continue
+                        except Exception:
+                            if not np.any(fs):
+                                continue
+                    elif not np.any(fs):
+                        continue
+                # Include all initialized vehicles. Explicit initialization
+                # status preserves a legitimate all-zero pose at the origin.
                 fleet_data[vehicle_id] = {
                     "x": float(self.fleet_states[0, vehicle_id]),
                     "y": float(self.fleet_states[1, vehicle_id]),
@@ -2868,6 +3068,7 @@ class VehicleObserver:
             self._filtered_accelerometer = np.zeros(3)
             self._accel_filter_initialized = False
             self.control_input = {"steering": 0.0, "throttle": 0.0}
+            self.controller_debug_snapshot = {}
             self._vy_estimate = 0.0
             self._vy_est_last_time = 0.0
             self.relative_target_id = None

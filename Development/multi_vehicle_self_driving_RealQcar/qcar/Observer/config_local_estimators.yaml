@@ -2,7 +2,7 @@
 # Default parameters for the local state estimators used by VehicleObserver
 # Place this file under qcar/Observer/ and load it when starting observers.
 
-local_estimator_type: robust_kalman_net # local_estimator_type: Which local estimator to use.
+local_estimator_type: ekf # local_estimator_type: Which local estimator to use.
                         # Options: 'ekf', 'luenberger', 'neural_luenberger', 'robust_kalman_net'
 
 enable_recording: false # enable_recording: Controls data logging to CSV.
@@ -13,14 +13,17 @@ recording_overwrite: true # recording_overwrite:
                         # false: Creates a new timestamped file every run (e.g., local_V0_123456.csv)
 
 # Calibration-derived longitudinal model source.
-# VehicleObserverSimple resolves this using:
-# - `config.vehicle.vehicle_type`
-# - `config.vehicle.is_physical_qcar`
-# so QCar hardware, QCar simulation, and Limo can each use different files.
+# profile: auto           -> choose qcar_real/qcar_sim/limo from runtime vehicle config.
+# profile: real_car_61    -> force the exported real-car acceleration calibration 61.
+# profile: qlabs_velocity -> force the QLabs steady-state throttle-velocity lookup.
 observer_model_source:
+  profile: auto
   qcar_real: extra_configs/throttle_acceleration_observer_model_real.yaml
   qcar_sim: extra_configs/throttle_acceleration_observer_model_sim.yaml
   limo: extra_configs/throttle_acceleration_observer_model_limo.yaml
+  profiles:
+    real_car_61: ../Calibration/results/online_throttle_acceleration/calibration/61/throttle_acceleration_observer_model_latest.yaml
+    qlabs_velocity: extra_configs/throttle_velocity_observer_model_qlabs.yaml
 
 
 # Local estimator defaults
@@ -84,7 +87,7 @@ local:
     model_path: models/robust_kalmannet.best_robust.pt # Required checkpoint path, relative to Observer/KalmaNet/Robust/
     enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
     enable_clean_reference_comparator: true # Evaluation-only pseudo-ground-truth: run a second EKF on clean pre-attack inputs for error analysis.
-    publish_clean_reference_output: true # Keep false for robustness evaluation; true bypasses the robust model output with the clean-reference EKF state.
+    publish_clean_reference_output: false # Publish the actual robust estimate. The clean comparator is diagnostic only.
     comparator_use_qcar_ekf: false # Use QCarEKF or fall back EKF  .
     comparator_console_log: false # Keep console quiet during runtime.
     comparator_log_interval: 100  # If console logging is enabled, log every N updates.

@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+import sys
 from typing import Dict, List
 
 import numpy as np
@@ -11,7 +12,7 @@ except ImportError:
     torch = None
 
 from robustKLnet import RSNConfig, RobustStateNet, wrap_angle_scalar
-from robust_kalmannet_dataset import RAW_KEYS, build_training_windows, compute_rmse, merge_recorded_datasets
+from robust_kalmannet_dataset import compute_rmse, load_recorded_dataset
 
 
 def build_gps_dict(dataset: Dict[str, np.ndarray], index: int) -> Dict[str, float] | None:
@@ -56,42 +57,40 @@ def run_kinematic_reference(dataset: Dict[str, np.ndarray], wheelbase: float = 0
 
 
 def run_model(dataset: Dict[str, np.ndarray], checkpoint_path: Path, sequence_length: int, device_name: str) -> np.ndarray:
+    """One causal rollout; no overlapping-window averaging or target resets."""
     if torch is None:
         raise SystemExit("torch is required for learned-model validation")
-
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    qcar_dir = Path(__file__).resolve().parents[3]
+    if str(qcar_dir) not in sys.path:
+        sys.path.insert(0, str(qcar_dir))
+    from robustKLnet import RobustKalmanNetStateEstimator
+    torch.set_num_threads(1)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     cfg_dict = checkpoint.get("config", {}) if isinstance(checkpoint, dict) else {}
-    cfg = RSNConfig(**{k: v for k, v in cfg_dict.items() if k in RSNConfig.__dataclass_fields__})
-    model = RobustStateNet(cfg)
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
-    model.load_state_dict(state_dict, strict=False)
-
-    device = torch.device("cuda" if device_name == "auto" and torch.cuda.is_available() else device_name if device_name != "auto" else "cpu")
-    model.to(device)
-    model.eval()
-
-    raw_windows, z_windows, _, x0_windows, dt_windows = build_training_windows(dataset, sequence_length=sequence_length, stride=1)
-    raw_tensors = {key: torch.from_numpy(raw_windows[key]).to(device=device, dtype=torch.float32) for key in RAW_KEYS}
-    z_tensor = torch.from_numpy(z_windows).to(device=device, dtype=torch.float32)
-    x0_tensor = torch.from_numpy(x0_windows).to(device=device, dtype=torch.float32)
-    dt_tensor = torch.from_numpy(dt_windows).to(device=device, dtype=torch.float32)
-
-    with torch.no_grad():
-        out = model(raw=raw_tensors, z_seq=z_tensor, x0=x0_tensor, teacher_forcing_state=None, dt_seq=dt_tensor)
-    predicted_windows = out["x_upd"].detach().cpu().numpy()
-
-    seq_len = predicted_windows.shape[1]
-    total_len = dataset["x_gt"].shape[0]
-    fused = np.zeros((total_len, predicted_windows.shape[-1]), dtype=np.float32)
-    counts = np.zeros(total_len, dtype=np.float32)
-    for window_idx in range(predicted_windows.shape[0]):
-        for offset in range(seq_len):
-            sample_idx = window_idx + offset
-            fused[sample_idx] += predicted_windows[window_idx, offset]
-            counts[sample_idx] += 1.0
-    counts[counts == 0.0] = 1.0
-    fused /= counts[:, None]
-    return fused
+    cfg_dict = dict(cfg_dict, model_path=str(checkpoint_path), device=device_name,
+                    sequence_length=1, streaming_inference=True,
+                    enable_ekf_comparator=False, enable_clean_reference_comparator=False,
+                    publish_clean_reference_output=False, comparator_record_to_file=False)
+    # Only the first available measurement initializes the filter, never x_gt.
+    initial = np.asarray(dataset["z"][0], dtype=float)[:3]
+    estimator = RobustKalmanNetStateEstimator(initial, cfg_dict)
+    predictions = []
+    timestamps = np.asarray(dataset["timestamps"])
+    def value(key, i, default=0.):
+        return float(dataset[key][i]) if key in dataset else default
+    for i in range(len(timestamps)):
+        dt = float(timestamps[i]-timestamps[i-1]) if i else float(cfg_dict.get("dt", .02))
+        if dt <= 0 or not np.isfinite(dt):
+            raise ValueError("Recorded timestamps must increase within a drive")
+        ok = estimator.update(motor_tach=value("motor_tach", i),
+                              steering=value("steering", i), throttle=value("throttle", i),
+                              dt=dt, gyro_z=value("gyro_z", i),
+                              gps_data=build_gps_dict(dataset, i),
+                              acceleration=np.array([value("ax", i), value("ay", i), 0.]))
+        if not ok:
+            raise RuntimeError(f"Estimator failed at sample {i}")
+        predictions.append(estimator.get_state()[:4])
+    return np.asarray(predictions)
 
 
 def main() -> None:
@@ -104,13 +103,14 @@ def main() -> None:
     parser.add_argument("--output", default="validation_metrics.json", help="Output metrics filename relative to this script")
     args = parser.parse_args()
 
-    dataset = merge_recorded_datasets(args.datasets)
-    target = np.asarray(dataset["x_gt"], dtype=np.float32)[:, :4]
-
-    kinematic_pred = run_kinematic_reference(dataset, wheelbase=args.kin_wheelbase)
+    datasets = [load_recorded_dataset(path) for path in args.datasets]
+    target = np.concatenate([np.asarray(dataset["x_gt"], dtype=np.float32)[:, :4] for dataset in datasets])
+    kinematic_pred = np.concatenate([run_kinematic_reference(dataset, wheelbase=args.kin_wheelbase) for dataset in datasets])
     metrics = {
         "dataset_files": args.datasets,
-        "target_source": dataset.get("metadata", {}).get("target_estimator_type", "unknown"),
+        "protocol": "causal_streaming_reset_per_file",
+        "target_source": [dataset.get("metadata", {}).get("target_estimator_type", "unknown") for dataset in datasets],
+        "target_note": "Recorded EKF targets measure imitation error, not physical ground-truth accuracy.",
         "kinematic_reference": compute_rmse(kinematic_pred, target),
     }
 
@@ -118,7 +118,7 @@ def main() -> None:
         checkpoint_path = Path(args.checkpoint)
         if not checkpoint_path.is_absolute():
             checkpoint_path = Path(__file__).resolve().parent / checkpoint_path
-        model_pred = run_model(dataset, checkpoint_path, args.sequence_length, args.device)
+        model_pred = np.concatenate([run_model(dataset, checkpoint_path, args.sequence_length, args.device) for dataset in datasets])
         metrics["learned"] = compute_rmse(model_pred, target)
     else:
         model_pred = None
@@ -140,4 +140,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if "--simulation" in sys.argv:
+        from simulation_benchmark import main as simulation_main
+        sys.argv.remove("--simulation")
+        simulation_main()
+    else:
+        main()

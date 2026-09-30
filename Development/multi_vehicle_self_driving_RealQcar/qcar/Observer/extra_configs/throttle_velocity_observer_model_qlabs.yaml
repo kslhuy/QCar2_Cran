@@ -1,0 +1,67 @@
+source_calibration: throttle_velocity
+source_yaml: ../../Calibration/results/online_throttle_velocity/throttle_velocity_poly.yaml
+observer_model:
+  model_name: qlabs_throttle_velocity_lookup
+  model_type: first_order_throttle_to_velocity_lookup
+  math:
+    steady_state_velocity: v_ss = interp(throttle, throttle_breakpoints, steady_state_velocity_breakpoints)
+    velocity_dynamics: v_dot = (v_ss - v) / tau
+    acceleration_output: a_model = (v_ss - v) / tau
+    discrete_prediction: v[k+1] = v[k] + dt * a_model[k]
+  recommended_longitudinal_model: velocity_lag_lookup
+  velocity_lag_model:
+    enabled: true
+    tau: 0.301
+    velocity_gain: 6.424078317861073
+    throttle_deadband: 0.0
+  velocity_lag_lookup_model: &qlabs_velocity_lookup
+    enabled: true
+    tau: 0.301
+    interpolation: linear
+    throttle_breakpoints:
+    - 0.0
+    - 0.04
+    - 0.06
+    - 0.08
+    - 0.1
+    - 0.12
+    - 0.14
+    - 0.16
+    steady_state_velocity_breakpoints:
+    - 0.0
+    - 0.21970873328874627
+    - 0.3535699959573813
+    - 0.49204861069939637
+    - 0.6231602509130707
+    - 0.758363516420704
+    - 0.8943839186208671
+    - 1.0278525307577717
+  quality:
+    source: steady_state throttle-velocity calibration
+    n_breakpoints: 8
+    note: The source calibration provides steady-state velocity only; tau is the existing observer fallback lag.
+  copy_to:
+    local_observer_config: Observer/config_local_estimators.yaml -> local.ekf
+    trust_fleet_config: Observer/TrustbasedDistributedObserver/config_trust_estimator.yaml -> vehicle.velocity_lag_lookup_model
+  config_patch:
+    local:
+      ekf:
+        longitudinal_model: velocity_lag_lookup
+        use_tachometer_update: true
+        velocity_lag_model:
+          enabled: true
+          tau: 0.301
+          velocity_gain: 6.424078317861073
+          throttle_deadband: 0.0
+        velocity_lag_lookup_model: *qlabs_velocity_lookup
+        acceleration_fusion:
+          enabled: false
+    trust_based_distributed_observer:
+      vehicle:
+        longitudinal_model: velocity_lag_lookup
+        velocity_lag_model:
+          enabled: true
+          tau: 0.301
+          velocity_gain: 6.424078317861073
+          throttle_deadband: 0.0
+        velocity_lag_lookup_model: *qlabs_velocity_lookup

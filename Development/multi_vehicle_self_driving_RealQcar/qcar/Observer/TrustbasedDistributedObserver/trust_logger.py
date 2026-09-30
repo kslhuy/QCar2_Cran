@@ -11,11 +11,31 @@ import csv
 import math
 import threading
 import queue
+from datetime import datetime
 from typing import Dict, Any, Iterable, List
 
 
 class TrustWeightLogger:
     ATTACK_VALUE_FIELDS = ("x", "y", "theta", "velocity", "acceleration", "confidence")
+    CONTROLLER_POLICY_CODES = {
+        "legacy_cacc": 1,
+        "legacy_sensor_acc_blend": 2,
+        "high_trust_cacc": 3,
+        "trust_blend": 4,
+        "low_trust_sensor_acc": 5,
+        "low_trust_stop_no_sensor": 6,
+        "low_trust_no_sensor_cacc": 7,
+        "low_trust_legacy_cacc": 8,
+        "no_sensor_legacy_cacc": 9,
+        "trust_unavailable_sensor_acc": 10,
+        "trust_unavailable_stop_no_sensor": 11,
+        "trust_unavailable_legacy_cacc": 12,
+        "reverse_follow": 13,
+        "reverse_blocked": 14,
+        "no_v2v_stop": 15,
+        "no_controller_stop": 17,
+        "hold_stop": 16,
+    }
 
     def __init__(self, output_dir: str = None, max_vehicles: int = 5):
         if output_dir is None:
@@ -65,6 +85,16 @@ class TrustWeightLogger:
         if isinstance(value, (list, tuple, set)):
             return "|".join(str(v) for v in value)
         return str(value)
+
+    @classmethod
+    def _controller_policy_code(cls, value: Any) -> float:
+        if value is None:
+            return cls._nan()
+        policy = str(value).strip().lower()
+        if not policy:
+            return cls._nan()
+        base_policy = policy.split("+", 1)[0]
+        return float(cls.CONTROLLER_POLICY_CODES.get(base_policy, 99))
 
     @staticmethod
     def _nan_stats(values: Iterable[float]) -> Dict[str, float]:
@@ -117,6 +147,35 @@ class TrustWeightLogger:
             "yolo_rel_meas_used_global_count",
             "is_turning",
             "host_steering",
+            "host_throttle",
+            "ctrl_state",
+            "ctrl_long_type",
+            "ctrl_lat_type",
+            "ctrl_leader_source",
+            "ctrl_leader_id",
+            "ctrl_leader_trust",
+            "ctrl_leader_trust_source",
+            "ctrl_policy",
+            "ctrl_policy_code",
+            "ctrl_hold_stop",
+            "ctrl_alpha",
+            "ctrl_u_final",
+            "ctrl_delta_final",
+            "ctrl_u_raw",
+            "ctrl_delta_raw",
+            "ctrl_u_cacc",
+            "ctrl_u_sensor",
+            "ctrl_sensor_gap",
+            "ctrl_along_track_gap",
+            "ctrl_distance_to_leader",
+            "ctrl_velocity_difference",
+            "ctrl_reverse_follow_active",
+            "ctrl_reverse_follow_blocked",
+            "ctrl_multi_predecessor_count",
+            "ctrl_multi_predecessor_weight_sum",
+            "ctrl_multi_predecessor_spacing_term",
+            "ctrl_multi_predecessor_velocity_term",
+            "ctrl_multi_predecessor_acceleration_term",
             "v2v_attack_enabled",
             "v2v_attack_active",
             "v2v_attack_clock_s",
@@ -172,6 +231,12 @@ class TrustWeightLogger:
                     f"b_score_{i}",
                     f"q_factor_{i}",
                     f"w_neighbor_{i}",
+                    f"direct_delay_active_{i}",
+                    f"direct_delay_count_{i}",
+                    f"direct_delay_steps_{i}",
+                    f"direct_delay_clean_local_trust_{i}",
+                    f"rollback_delay_count_{i}",
+                    f"rollback_delay_steps_{i}",
                     f"w0_final_{i}",
                     f"w_self_final_{i}",
                     f"w_neighbor_sum_final_{i}",
@@ -249,25 +314,40 @@ class TrustWeightLogger:
                 )
         return columns
 
-    def start(self, vehicle_id: int):
-        if self.recording:
-            return
+    def _log_filepath(self, vehicle_id: int, overwrite: bool) -> str:
+        if overwrite:
+            filename = f"trust_weight_log_V{vehicle_id}.csv"
+            return os.path.join(self.output_dir, filename)
+        else:
+            now = datetime.now()
+            date_dir = now.strftime("%d-%m-%y")
+            time_tag = now.strftime("%H-%M-%S_%f")
+            filename = f"trust_weight_log_V{vehicle_id}_{time_tag}.csv"
+            return os.path.join(self.output_dir, "results", date_dir, filename)
 
-        os.makedirs(self.output_dir, exist_ok=True)
-        # Always overwrite the file for this vehicle
-        filepath = os.path.join(self.output_dir, f"trust_weight_log_V{vehicle_id}.csv")
+    def start(self, vehicle_id: int, overwrite: bool = True) -> str:
+        if self.recording:
+            return ""
+
+        filepath = self._log_filepath(vehicle_id, overwrite=overwrite)
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
         try:
-            self.file = open(filepath, "w", newline="", buffering=8192)
+            mode = "w" if overwrite else "x"
+            self.file = open(filepath, mode, newline="", buffering=8192)
             self.writer = csv.DictWriter(self.file, fieldnames=self.columns)
             self.writer.writeheader()
 
             self.recording = True
             self.thread = threading.Thread(target=self._write_loop, daemon=True)
             self.thread.start()
+            return filepath
         except Exception as e:
             print(f"[TrustLogger] Failed to open log file: {e}")
             self.recording = False
+            self.file = None
+            self.writer = None
+            return ""
 
     def record(self, t: float, data: Dict[str, Any]):
         """
@@ -298,11 +378,20 @@ class TrustWeightLogger:
         prediction_debugs = self._normalize_vehicle_dict(
             data.get("prediction_debugs", {})
         )
+        direct_trust_delay = self._normalize_vehicle_dict(
+            data.get("direct_trust_delay", {})
+        )
+        rollback_trigger_delay = self._normalize_vehicle_dict(
+            data.get("rollback_trigger_delay", {})
+        )
         fleet_estimates = self._normalize_vehicle_dict(data.get("fleet_estimates", {}))
         v2v_attack = data.get("v2v_attack", {})
         if not isinstance(v2v_attack, dict):
             v2v_attack = {}
         rollback = data.get("rollback", {})
+        controller = data.get("controller", {})
+        if not isinstance(controller, dict):
+            controller = {}
         if not isinstance(rollback, dict):
             rollback = {}
         attack_by_vehicle = self._normalize_vehicle_dict(v2v_attack.get("by_vehicle", {}))
@@ -355,6 +444,35 @@ class TrustWeightLogger:
             "yolo_rel_meas_used_global_count": 0,
             "is_turning": int(data.get("is_turning", 0)),
             "host_steering": self._to_float_or_nan(data.get("host_steering", nan_val)),
+            "host_throttle": self._to_float_or_nan(data.get("host_throttle", nan_val)),
+            "ctrl_state": self._to_csv_text(controller.get("state", "")),
+            "ctrl_long_type": self._to_csv_text(controller.get("longitudinal_type", "")),
+            "ctrl_lat_type": self._to_csv_text(controller.get("lateral_type", "")),
+            "ctrl_leader_source": self._to_csv_text(controller.get("leader_source", "")),
+            "ctrl_leader_id": self._to_float_or_nan(controller.get("leader_id", nan_val)),
+            "ctrl_leader_trust": self._to_float_or_nan(controller.get("leader_trust", nan_val)),
+            "ctrl_leader_trust_source": self._to_csv_text(controller.get("leader_trust_source", "")),
+            "ctrl_policy": self._to_csv_text(controller.get("policy", "")),
+            "ctrl_policy_code": self._controller_policy_code(controller.get("policy", "")),
+            "ctrl_hold_stop": int("hold_stop" in str(controller.get("policy", "")).strip().lower()),
+            "ctrl_alpha": self._to_float_or_nan(controller.get("alpha", nan_val)),
+            "ctrl_u_final": self._to_float_or_nan(controller.get("u_final", nan_val)),
+            "ctrl_delta_final": self._to_float_or_nan(controller.get("delta_final", nan_val)),
+            "ctrl_u_raw": self._to_float_or_nan(controller.get("u_raw", nan_val)),
+            "ctrl_delta_raw": self._to_float_or_nan(controller.get("delta_raw", nan_val)),
+            "ctrl_u_cacc": self._to_float_or_nan(controller.get("u_cacc", nan_val)),
+            "ctrl_u_sensor": self._to_float_or_nan(controller.get("u_sensor", nan_val)),
+            "ctrl_sensor_gap": self._to_float_or_nan(controller.get("sensor_gap", nan_val)),
+            "ctrl_along_track_gap": self._to_float_or_nan(controller.get("along_track_gap", nan_val)),
+            "ctrl_distance_to_leader": self._to_float_or_nan(controller.get("distance_to_leader", nan_val)),
+            "ctrl_velocity_difference": self._to_float_or_nan(controller.get("velocity_difference", nan_val)),
+            "ctrl_reverse_follow_active": int(bool(controller.get("reverse_follow_active", False))),
+            "ctrl_reverse_follow_blocked": int(bool(controller.get("reverse_follow_blocked", False))),
+            "ctrl_multi_predecessor_count": self._to_float_or_nan(controller.get("multi_predecessor_count", nan_val)),
+            "ctrl_multi_predecessor_weight_sum": self._to_float_or_nan(controller.get("multi_predecessor_weight_sum", nan_val)),
+            "ctrl_multi_predecessor_spacing_term": self._to_float_or_nan(controller.get("multi_predecessor_spacing_term", nan_val)),
+            "ctrl_multi_predecessor_velocity_term": self._to_float_or_nan(controller.get("multi_predecessor_velocity_term", nan_val)),
+            "ctrl_multi_predecessor_acceleration_term": self._to_float_or_nan(controller.get("multi_predecessor_acceleration_term", nan_val)),
             "v2v_attack_enabled": int(bool(v2v_attack.get("enabled", False))),
             "v2v_attack_active": int(bool(v2v_attack.get("active", False))),
             "v2v_attack_clock_s": self._to_float_or_nan(
@@ -448,6 +566,12 @@ class TrustWeightLogger:
             row[f"b_score_{i}"] = nan_val
             row[f"q_factor_{i}"] = nan_val
             row[f"w_neighbor_{i}"] = nan_val
+            row[f"direct_delay_active_{i}"] = 0
+            row[f"direct_delay_count_{i}"] = 0
+            row[f"direct_delay_steps_{i}"] = 0
+            row[f"direct_delay_clean_local_trust_{i}"] = nan_val
+            row[f"rollback_delay_count_{i}"] = 0
+            row[f"rollback_delay_steps_{i}"] = 0
             row[f"w0_final_{i}"] = nan_val
             row[f"w_self_final_{i}"] = nan_val
             row[f"w_neighbor_sum_final_{i}"] = nan_val
@@ -709,6 +833,36 @@ class TrustWeightLogger:
                 row["yolo_rel_meas_used_global_count"] += int(
                     row[f"yolo_rel_meas_used_global_{i}"]
                 )
+
+            if i in direct_trust_delay:
+                delay_data = direct_trust_delay[i]
+                if isinstance(delay_data, dict):
+                    row[f"direct_delay_active_{i}"] = int(
+                        bool(delay_data.get("active", False))
+                    )
+                    row[f"direct_delay_count_{i}"] = self._to_float_or_nan(
+                        delay_data.get("bad_count", nan_val)
+                    )
+                    row[f"direct_delay_steps_{i}"] = self._to_float_or_nan(
+                        delay_data.get("delay_steps", nan_val)
+                    )
+                    row[f"direct_delay_clean_local_trust_{i}"] = (
+                        self._to_float_or_nan(
+                            delay_data.get("clean_local_trust", nan_val)
+                        )
+                    )
+                    present = True
+
+            if i in rollback_trigger_delay:
+                delay_data = rollback_trigger_delay[i]
+                if isinstance(delay_data, dict):
+                    row[f"rollback_delay_count_{i}"] = self._to_float_or_nan(
+                        delay_data.get("count", nan_val)
+                    )
+                    row[f"rollback_delay_steps_{i}"] = self._to_float_or_nan(
+                        delay_data.get("delay_steps", nan_val)
+                    )
+                    present = True
 
             if i in final_target_weights:
                 weight_data = final_target_weights[i]

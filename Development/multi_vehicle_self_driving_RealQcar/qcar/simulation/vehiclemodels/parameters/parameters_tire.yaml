@@ -1,0 +1,41 @@
+# Tire parameters used by the fake QCar vehicle models.
+# The QCar simulation primarily uses the static/dynamic linear tire models, but
+# the dynamic single-track and Pacejka paths still require these fields.
+
+tire:
+  # Longitudinal coefficients
+  p_cx1: 1.65
+  p_dx1: 1.0
+  p_dx3: 0.0
+  p_ex1: 0.5
+  p_kx1: 20.0
+  p_hx1: 0.0
+  p_vx1: 0.0
+  r_bx1: 10.0
+  r_bx2: 0.0
+  r_cx1: 1.0
+  r_ex1: 0.0
+  r_hx1: 0.0
+
+  # Lateral coefficients. p_ky1 is set so -p_ky1 / p_dy1 is close to the
+  # QCar linear cornering stiffness scale used by parameters_qcar.yaml.
+  p_cy1: 1.3
+  p_dy1: 1.0
+  p_dy3: 0.0
+  p_ey1: -0.5
+  p_ky1: -120.0
+  p_hy1: 0.0
+  p_hy3: 0.0
+  p_vy1: 0.0
+  p_vy3: 0.0
+  r_by1: 10.0
+  r_by2: 0.0
+  r_by3: 0.0
+  r_cy1: 1.0
+  r_ey1: 0.0
+  r_hy1: 0.0
+  r_vy1: 0.0
+  r_vy3: 0.0
+  r_vy4: 0.0
+  r_vy5: 0.0
+  r_vy6: 0.0

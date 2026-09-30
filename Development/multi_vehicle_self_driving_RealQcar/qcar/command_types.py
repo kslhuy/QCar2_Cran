@@ -38,6 +38,10 @@ class CommandType(Enum):
     START_LOCAL_SENSOR_ATTACK = "start_local_sensor_attack"
     STOP_LOCAL_SENSOR_ATTACK = "stop_local_sensor_attack"
 
+    # Electronics digital-twin commands
+    SET_ELECTRONICS_FAULT = "set_electronics_fault"
+    RESET_ELECTRONICS_TWIN = "reset_electronics_twin"
+
     # Perception commands
     ACTIVATE_PERCEPTION = "activate_perception"
     DISABLE_PERCEPTION = "disable_perception"

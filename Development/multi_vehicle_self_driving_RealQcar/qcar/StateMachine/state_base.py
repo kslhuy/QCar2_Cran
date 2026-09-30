@@ -15,10 +15,15 @@ import time
 import sys
 import os
 
-from pal.products.qcar import QCarGPS
 import numpy as np
+import copy
 """Get time spent in current state"""
 import time
+
+try:
+    from pal.products.qcar import QCarGPS
+except Exception:
+    QCarGPS = None
 
 
 # Add parent directory to sys.path to import command_types
@@ -508,6 +513,28 @@ class StateBase:
                     )
             except Exception as e:
                 self.logger.log_error("[CMD] Error stopping local sensor attack", e)
+            return None
+
+        elif command_type == CommandType.SET_ELECTRONICS_FAULT:
+            self.logger.logger.info("[CMD] Updating electronics digital-twin fault")
+            try:
+                success = self.vehicle_logic.configure_electronics_fault(data)
+                if not success:
+                    self.logger.logger.warning(
+                        "[CMD] Electronics twin is unavailable or rejected the fault"
+                    )
+            except Exception as e:
+                self.logger.log_error("[CMD] Error updating electronics fault", e)
+            return None
+
+        elif command_type == CommandType.RESET_ELECTRONICS_TWIN:
+            self.logger.logger.info("[CMD] Resetting electronics digital twin")
+            try:
+                success = self.vehicle_logic.reset_electronics_twin()
+                if not success:
+                    self.logger.logger.warning("[CMD] Electronics twin is unavailable")
+            except Exception as e:
+                self.logger.log_error("[CMD] Error resetting electronics twin", e)
             return None
 
         elif command_type == CommandType.SET_FLEET_OBSERVER:
@@ -1174,6 +1201,10 @@ class StateBase:
                 self.logger.logger.info("GPS recalibrated (simulated/Fake mode)")
             else:
                 # Physical QCar
+                if QCarGPS is None:
+                    raise RuntimeError(
+                        "QCarGPS is unavailable; install Quanser PAL to recalibrate physical QCar GPS"
+                    )
                 self.vehicle_logic.gps = QCarGPS(
                     initialPose=calibration_pose, calibrate=calibrate
                 )
@@ -1595,18 +1626,40 @@ class StateBase:
                 try:
                     state = vehicle_observer.local_estimator.get_state()
                     if state is not None:
-                        current_pose = state[:3]  # [x, y, theta]
+                        current_pose = state[:3].copy()  # [x, y, theta]
                 except:
                     pass
 
             # Get config defaults for the new estimator type
-            config_defaults = vehicle_observer.local_config_defaults.get(
-                observer_type, {}
+            config_defaults = copy.deepcopy(
+                vehicle_observer.local_config_defaults.get("common", {})
             )
+            config_defaults.update(copy.deepcopy(
+                vehicle_observer.local_config_defaults.get(observer_type, {})
+            ))
+
+            # Keep the same plant calibration and checkpoint as fake startup.
+            fake_vehicle = getattr(self.vehicle_logic, "_parent_fake_vehicle", None)
+            if fake_vehicle is not None and observer_type in {"ekf", "robust_kalman_net"}:
+                from simulation.robust_estimator_config import (
+                    simulation_estimator_params, simulation_motion_params,
+                )
+                car = fake_vehicle.mock_qcar
+                config_defaults.update(
+                    simulation_estimator_params(car)
+                    if observer_type == "robust_kalman_net"
+                    else simulation_motion_params(car)
+                )
+                config_defaults.update({
+                    "use_qcar_ekf": False,
+                    "disturbance_mode": car.disturbance_mode,
+                    "sensor_failure_simulation": {"enabled": False},
+                })
 
             # Create new estimator using factory
             new_estimator = LocalEstimatorFactory.create(
-                estimator_type=observer_type, config=config_defaults, logger=self.logger
+                estimator_type=observer_type, initial_pose=current_pose,
+                config=config_defaults, logger=self.logger
             )
 
             # Initialize the new estimator

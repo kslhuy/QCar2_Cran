@@ -206,6 +206,8 @@ class CommandHandler:
             CommandType.DISABLE_ATTACK,
             CommandType.START_LOCAL_SENSOR_ATTACK,
             CommandType.STOP_LOCAL_SENSOR_ATTACK,
+            CommandType.SET_ELECTRONICS_FAULT,
+            CommandType.RESET_ELECTRONICS_TWIN,
             CommandType.ACTIVATE_PERCEPTION,
             CommandType.DISABLE_PERCEPTION,
             CommandType.SET_PARAMS,
@@ -238,7 +240,7 @@ class CommandHandler:
             if command_type == CommandType.TRIGGER_ATTACK:
                 self.state_machine.vehicle_logic.trigger_v2v_attack(data)
             elif command_type == CommandType.DISABLE_ATTACK:
-                self.state_machine.vehicle_logic.disable_v2v_attack()
+                self.state_machine.vehicle_logic.disable_v2v_attack(data)
             return True
 
         return False

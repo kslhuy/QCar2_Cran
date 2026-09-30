@@ -160,6 +160,19 @@ class FakeInitializingState(StateBase):
             if not parent_fake_vehicle:
                 self.logger.log_error("Parent fake vehicle not found!")
                 return False
+
+            initial_pose = self._resolve_initial_pose(parent_fake_vehicle)
+            parent_fake_vehicle.mock_qcar.reset_pose(initial_pose)
+            electronics_adapter = getattr(
+                parent_fake_vehicle, 'electronics_adapter', None
+            )
+            if electronics_adapter is not None:
+                electronics_adapter.reset()
+            electronics_v2v_bridge = getattr(
+                parent_fake_vehicle, 'electronics_v2v_bridge', None
+            )
+            if electronics_v2v_bridge is not None:
+                electronics_v2v_bridge.reset_transport()
             
             # Inject mock hardware from the fake vehicle
             self.vehicle_logic.qcar = parent_fake_vehicle.mock_qcar
@@ -167,12 +180,10 @@ class FakeInitializingState(StateBase):
             
             # Disable YOLO for fake vehicles (no camera/perception)
             if hasattr(self.vehicle_logic, 'yolo_manager'):
-                self.vehicle_logic.yolo_manager.yolo_enabled = False
-                self.vehicle_logic.yolo_manager.yolo = None
-                self.vehicle_logic.yolo_manager.yolo_drive = None
+                self._initialize_mock_perception()
                 self.logger.logger.info("Mock perception disabled (fake vehicle has no camera)")
             
-            self.init_pose = self.vehicle_logic.gps.last_data
+            self.init_pose = np.asarray(self.vehicle_logic.gps.last_data, dtype=float).copy()
             self.logger.logger.info(
                 f"Initial pose: x={self.init_pose[0]:.2f}, "
                 f"y={self.init_pose[1]:.2f}, theta={self.init_pose[2]:.2f}"
@@ -190,7 +201,55 @@ class FakeInitializingState(StateBase):
             self.logger.log_error("Mock QCar initialization failed", e)
             traceback.print_exc()
             return False
+
+    def _initialize_mock_perception(self) -> bool:
+        """Disable YOLO and provide empty perception data for fake vehicles."""
+        try:
+            yolo_manager = getattr(self.vehicle_logic, 'yolo_manager', None)
+            if yolo_manager is None:
+                return True
+
+            if hasattr(yolo_manager, 'disable'):
+                yolo_manager.disable()
+            else:
+                yolo_manager.yolo_enabled = False
+                yolo_manager.yolo = None
+                yolo_manager.yolo_drive = None
+
+            try:
+                from Yolo.YoLo import YOLOData
+                yolo_manager._cached_data = YOLOData()
+            except Exception:
+                pass
+
+            self.logger.logger.info("Mock perception initialized with default YOLOData")
+            return True
+
+        except Exception as e:
+            self.logger.log_error("Mock perception initialization failed", e)
+            traceback.print_exc()
+            return False
     
+    def _resolve_initial_pose(self, parent_fake_vehicle) -> np.ndarray:
+        """Resolve the fake reset pose using the selected spawn source."""
+        pose_override = getattr(parent_fake_vehicle, 'initial_pose_override', None)
+        if pose_override is not None:
+            return np.asarray(pose_override, dtype=float)
+
+        try:
+            pose = getattr(self.config.path, 'calibration_pose', None)
+            if pose is not None:
+                return np.asarray(pose, dtype=float)
+        except Exception:
+            pass
+
+        sim_initial = getattr(parent_fake_vehicle, 'sim_config', {}).get('initial_state', {})
+        return np.array([
+            float(sim_initial.get('x', 0.0)),
+            float(sim_initial.get('y', 0.0)),
+            float(sim_initial.get('theta', 0.0)),
+        ], dtype=float)
+
 
     
     def _initialize_state_estimator(self) -> bool:
@@ -200,14 +259,22 @@ class FakeInitializingState(StateBase):
             
             # Retrieve disturbance mode from mock vehicle to ensure observer matches simulation
             disturbance_mode = parent_fake_vehicle.mock_qcar.disturbance_mode
+
+            from simulation.robust_estimator_config import simulation_estimator_params, simulation_motion_params
+            observer = self.vehicle_logic.vehicle_observer
+            selection = parent_fake_vehicle.local_estimator_override or parent_fake_vehicle.sim_config.get(
+                'state_estimation', {}).get('local_estimator_type', observer.local_estimator_type)
+            observer.local_estimator_type = selection
+            params = {'use_qcar_ekf': False, 'disturbance_mode': disturbance_mode}
+            if selection == 'robust_kalman_net':
+                params.update(simulation_estimator_params(parent_fake_vehicle.mock_qcar))
+            elif selection == 'ekf':
+                params.update(simulation_motion_params(parent_fake_vehicle.mock_qcar))
             
             success = self.vehicle_logic.vehicle_observer.initialize_local_estimator(
                 gps=parent_fake_vehicle.mock_gps,
                 initial_pose=self.init_pose,
-                estimator_params={
-                    'use_qcar_ekf': False, # Use fallback EKF for simulation
-                    'disturbance_mode': disturbance_mode 
-                }  
+                estimator_params=params,
             )
             
             if success:
@@ -230,8 +297,24 @@ class FakeInitializingState(StateBase):
     def _initialize_telemetry(self) -> bool:
         """Initialize telemetry logging if enabled (matches real InitializingState)"""
         try:
-            if self.config.logging.enable_telemetry_logging:
-                self.vehicle_logic.logger.setup_telemetry_logging(self.config.logging.data_log_dir)
+            logging_cfg = self.config.logging
+            data_logging_enabled = any(
+                bool(getattr(logging_cfg, attr, False))
+                for attr in (
+                    "enable_telemetry_logging",
+                    "enable_fleet_estimation_logging",
+                    "enable_local_estimation_logging",
+                    "enable_following_leader_logging",
+                    "enable_trust_weight_logging",
+                )
+            )
+            if data_logging_enabled:
+                self.vehicle_logic.logger.setup_telemetry_logging(
+                    logging_cfg.data_log_dir,
+                    enable_telemetry=bool(
+                        getattr(logging_cfg, "enable_telemetry_logging", True)
+                    ),
+                )
             return True
         except Exception as e:
             self.logger.log_error("Telemetry initialization failed", e)

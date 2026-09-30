@@ -1,0 +1,6 @@
+trust_training*.npz
+development*.json
+development*.npz
+baseline_dev.*
+*.log
+workflow/

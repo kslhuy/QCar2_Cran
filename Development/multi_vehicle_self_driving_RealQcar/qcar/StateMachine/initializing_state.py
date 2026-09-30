@@ -14,9 +14,18 @@ from typing import Dict, Any, Tuple, Optional
 from .state_base import StateBase
 from .vehicle_state import VehicleState, StateTransitionReason
 from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
-from pal.products.qcar import QCar, QCarGPS
-from hal.products.mats import SDCSRoadMap
 from ground_station_client import GroundStationClient
+
+try:
+    from pal.products.qcar import QCar, QCarGPS
+except Exception:
+    QCar = None
+    QCarGPS = None
+
+try:
+    from hal.products.mats import SDCSRoadMap
+except Exception:
+    SDCSRoadMap = None
 
 
 # Add parent directory to sys.path for imports
@@ -226,9 +235,23 @@ class InitializingState(StateBase):
     def _initialize_telemetry(self) -> bool:
         """Initialize telemetry logging if enabled"""
         try:
-            if self.config.logging.enable_telemetry_logging:
+            logging_cfg = self.config.logging
+            data_logging_enabled = any(
+                bool(getattr(logging_cfg, attr, False))
+                for attr in (
+                    "enable_telemetry_logging",
+                    "enable_fleet_estimation_logging",
+                    "enable_local_estimation_logging",
+                    "enable_following_leader_logging",
+                    "enable_trust_weight_logging",
+                )
+            )
+            if data_logging_enabled:
                 self.vehicle_logic.logger.setup_telemetry_logging(
-                    self.config.logging.data_log_dir
+                    logging_cfg.data_log_dir,
+                    enable_telemetry=bool(
+                        getattr(logging_cfg, "enable_telemetry_logging", True)
+                    ),
                 )
             return True
         except Exception as e:
@@ -300,6 +323,12 @@ class InitializingState(StateBase):
             return True
 
         try:
+            if SDCSRoadMap is None:
+                self.logger.log_error(
+                    "SDCSRoadMap is unavailable; install Quanser HAL for QCar path planning"
+                )
+                return False
+
             # Create roadmap
             self.vehicle_logic.roadmap = SDCSRoadMap(
                 leftHandTraffic=self.config.path.left_hand_traffic, useSmallMap=False
@@ -459,6 +488,10 @@ class InitializingState(StateBase):
 
     def _initialize_simulated_qcar(self, readRobots):
         """Initialize simulated QCar"""
+        if QCar is None or QCarGPS is None:
+            raise RuntimeError(
+                "QCar/QCarGPS are unavailable; install Quanser PAL for QCar simulation"
+            )
 
         robotsDir = readRobots()
         name = f"QC2_{self.vehicle_logic.vehicle_id}"
@@ -483,12 +516,20 @@ class InitializingState(StateBase):
 
     def _create_physical_qcar(self):
         """Create the physical QCar interface."""
+        if QCar is None:
+            raise RuntimeError(
+                "QCar is unavailable; install Quanser PAL for physical QCar"
+            )
         self.vehicle_logic.qcar = QCar(
             readMode=1, frequency=self.config.timing.controller_update_rate
         )
 
     def _create_physical_gps(self):
         """Create the physical GPS interface."""
+        if QCarGPS is None:
+            raise RuntimeError(
+                "QCarGPS is unavailable; install Quanser PAL for physical QCar GPS"
+            )
         calibrate_gps = getattr(
             self.vehicle_logic, "calibration_requested", self.config.path.calibrate
         )

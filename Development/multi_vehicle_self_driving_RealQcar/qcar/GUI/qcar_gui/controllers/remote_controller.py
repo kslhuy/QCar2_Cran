@@ -11,6 +11,8 @@ import msgpack
 import time
 import threading
 import traceback
+import logging
+from http import HTTPStatus
 from typing import Dict, List, Optional, Any, Callable, Set
 from collections import deque
 from dataclasses import dataclass, field
@@ -22,6 +24,12 @@ import asyncio
 import websockets
 from websockets.server import WebSocketServerProtocol
 import json
+
+_WEBSOCKET_LOGGER = logging.getLogger("qcar_gui.websocket")
+if not _WEBSOCKET_LOGGER.handlers:
+    _WEBSOCKET_LOGGER.addHandler(logging.NullHandler())
+_WEBSOCKET_LOGGER.propagate = False
+_WEBSOCKET_LOGGER.setLevel(logging.CRITICAL)
 
 # Add qcar directory to path for command_types import
 # Path: controllers -> qcar_gui -> GUI -> qcar (where command_types.py is located)
@@ -304,7 +312,11 @@ class QCarRemoteController:
                     f"[Ground Station] WebSocket server starting on port {self.websocket_port}"
                 )
                 async with websockets.serve(
-                    self._handle_websocket_client, "0.0.0.0", self.websocket_port
+                    self._handle_websocket_client,
+                    "0.0.0.0",
+                    self.websocket_port,
+                    process_request=self._reject_non_websocket_request,
+                    logger=_WEBSOCKET_LOGGER,
                 ):
                     await asyncio.Future()  # Run forever
 
@@ -316,6 +328,22 @@ class QCarRemoteController:
 
         self.websocket_thread = threading.Thread(target=run_loop, daemon=True)
         self.websocket_thread.start()
+
+    def _reject_non_websocket_request(self, connection, request):
+        """Return a small HTTP response for requests sent to the WS-only port."""
+        upgrade = request.headers.get("Upgrade", "")
+        connection_header = request.headers.get("Connection", "")
+        if upgrade.lower() == "websocket" and "upgrade" in connection_header.lower():
+            return None
+
+        response = connection.respond(
+            HTTPStatus.UPGRADE_REQUIRED,
+            "QCar Ground Station websocket endpoint.\n"
+            f"Connect with ws://<host>:{self.websocket_port}.\n"
+            "Open the web interface on http://localhost:3000.\n",
+        )
+        response.headers["Upgrade"] = "websocket"
+        return response
 
     async def _handle_websocket_client(self, websocket: WebSocketServerProtocol):
         """Handle a WebSocket connection from browser."""

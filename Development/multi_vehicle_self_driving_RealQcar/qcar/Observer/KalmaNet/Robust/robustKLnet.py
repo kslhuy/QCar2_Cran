@@ -28,6 +28,11 @@ except ImportError:
 
 
 try:
+    from .runtime_sensor_attack import RuntimeSensorAttackMixin
+except ImportError:
+    from runtime_sensor_attack import RuntimeSensorAttackMixin
+
+try:
     from Observer.local_state_estimators import LocalStateEstimatorBase
 except ImportError:
     class LocalStateEstimatorBase(object):
@@ -1276,7 +1281,7 @@ class RobustStateNet(nn.Module):
 # ONLINE ESTIMATOR ADAPTER
 # ============================================================
 
-class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
+class RobustKalmanNetStateEstimator(RuntimeSensorAttackMixin, LocalStateEstimatorBase):
     """
     Adapter that makes RobustStateNet usable inside VehicleObserver.
 
@@ -1308,22 +1313,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         "gps_hold_valid",
         "gps_age_sec",
     )
-    DEFAULT_BRANCH_ATTACK_TYPES = (
-        "bias",
-        "scale",
-        "freeze",
-        "noise",
-        "ramp",
-        "zero_out",
-    )
-    DEFAULT_GPS_ATTACK_TYPES = (
-        "noise",
-        "freeze",
-        "jump",
-        "dropout",
-        "reacquisition",
-    )
-
     def __init__(
         self,
         initial_pose: Optional[np.ndarray] = None,
@@ -1334,6 +1323,10 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
 
         config = config or {}
         self.config = dict(config)
+        self.estimator_backend = str(self.config.get("estimator_backend", "legacy_gru"))
+        if self.estimator_backend not in {"legacy_gru", "innovation_trust"}:
+            raise ValueError(f"Unknown Robust KalmanNet backend: {self.estimator_backend}")
+        self.trust_filter = None
 
         self.sequence_length = max(1, int(self.config.get("sequence_length", 20)))
         self.wheel_speed_scale = float(self.config.get("wheel_speed_scale", 1.0))
@@ -1386,7 +1379,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         self.publish_clean_reference_output = bool(
             self.config.get(
                 "publish_clean_reference_output",
-                self.enable_clean_reference_comparator,
+                False,
             )
         )
         self.comparator_log_interval = max(
@@ -1496,8 +1489,12 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             kin_max_acceleration=float(self.config.get("kin_max_acceleration", self.config.get("max_acceleration", 2.0))),
         )
 
-        self.model = RobustStateNet(self.model_cfg).to(self.device)
-        self.model.eval()
+        self.model = None
+        if self.estimator_backend == "legacy_gru":
+            self.model = RobustStateNet(self.model_cfg).to(self.device)
+            self.model.eval()
+        elif self.publish_clean_reference_output:
+            raise ValueError("innovation_trust must publish its own estimate; disable publish_clean_reference_output")
         active_longitudinal_model = (
             self.model_cfg.longitudinal_model or self.model_cfg.kin_velocity_model
         )
@@ -1748,152 +1745,6 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
         module_dir = Path(__file__).resolve().parent
         return (module_dir / candidate).resolve()
 
-    @classmethod
-    def _normalize_runtime_attack_config(
-        cls, config: Optional[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        normalized = copy.deepcopy(config) if isinstance(config, dict) else {}
-        target_sensor = str(normalized.pop("target_sensor", "") or "").strip().lower()
-
-        attack_types = normalized.pop("attack_types", None)
-        if attack_types is not None and "enabled_attacks" not in normalized:
-            normalized["enabled_attacks"] = attack_types
-
-        enabled_attacks = normalized.get("enabled_attacks")
-        if isinstance(enabled_attacks, str):
-            normalized["enabled_attacks"] = [enabled_attacks]
-        elif enabled_attacks is None:
-            normalized["enabled_attacks"] = list(cls.DEFAULT_BRANCH_ATTACK_TYPES)
-        else:
-            normalized["enabled_attacks"] = list(enabled_attacks)
-
-        gps_attack_types = normalized.get("gps_attack_types")
-        if isinstance(gps_attack_types, str):
-            normalized["gps_attack_types"] = [gps_attack_types]
-        elif gps_attack_types is None:
-            normalized["gps_attack_types"] = list(cls.DEFAULT_GPS_ATTACK_TYPES)
-        else:
-            normalized["gps_attack_types"] = list(gps_attack_types)
-
-        gps_enabled = normalized.pop("gps_enabled", None)
-        if gps_enabled is False:
-            normalized["gps_attack_prob"] = 0.0
-
-        if "forced_branches" in normalized:
-            forced_branches = normalized.get("forced_branches")
-            if isinstance(forced_branches, str):
-                normalized["forced_branches"] = [forced_branches]
-            else:
-                normalized["forced_branches"] = list(forced_branches or [])
-
-        branch_alias_map = {
-            "imu": "imu",
-            "steering": "steer",
-            "steer": "steer",
-            "velocity": "wheel",
-            "wheel": "wheel",
-        }
-        if target_sensor == "gps":
-            normalized["forced_branches"] = []
-            normalized["force_gps_attack"] = True
-            normalized["attack_prob"] = 0.0
-            normalized["gps_attack_prob"] = 1.0
-            normalized["immediate_attack"] = True
-        elif target_sensor in branch_alias_map:
-            normalized["forced_branches"] = [branch_alias_map[target_sensor]]
-            normalized["force_gps_attack"] = False
-            normalized["attack_prob"] = 1.0
-            normalized["gps_attack_prob"] = 0.0
-            normalized["immediate_attack"] = True
-            normalized["max_branches_attacked"] = 1
-        elif target_sensor in {"", "random"}:
-            normalized.setdefault("force_gps_attack", False)
-            normalized.setdefault("immediate_attack", True)
-        else:
-            raise ValueError(
-                "Unsupported target_sensor "
-                f"'{target_sensor}'. Expected one of: "
-                "['random', 'imu', 'steering', 'velocity', 'gps']"
-            )
-
-        return normalized
-
-    def start_sensor_attack(self, config: Optional[Dict[str, Any]] = None) -> bool:
-        try:
-            normalized_config = self._normalize_runtime_attack_config(config)
-            normalized_config["enabled"] = True
-            runtime_attack_cfg = RuntimeAttackConfig.from_dict(normalized_config)
-            self.sensor_failure_simulator = RuntimeSensorAttackSimulator(
-                runtime_attack_cfg
-            )
-            self.sensor_failure_simulation_cfg = copy.deepcopy(normalized_config)
-            self.last_sensor_failure_metadata = None
-            self._log_info(
-                "Robust KalmanNet local sensor attack enabled "
-                f"(branch_prob={runtime_attack_cfg.attack_prob}, "
-                f"gps_prob={runtime_attack_cfg.gps_attack_prob}, "
-                f"duration={runtime_attack_cfg.min_attack_steps}-"
-                f"{runtime_attack_cfg.max_attack_steps} steps)"
-            )
-            return True
-        except Exception as exc:
-            self._log_error("Failed to start Robust KalmanNet sensor attack", exc)
-            return False
-
-    def stop_sensor_attack(self) -> bool:
-        self.sensor_failure_simulator = None
-        self.last_sensor_failure_metadata = None
-        if isinstance(self.sensor_failure_simulation_cfg, dict):
-            self.sensor_failure_simulation_cfg["enabled"] = False
-        self._log_info("Robust KalmanNet local sensor attack disabled")
-        return True
-
-    def get_sensor_attack_status(self) -> Dict[str, Any]:
-        metadata = (
-            copy.deepcopy(self.last_sensor_failure_metadata)
-            if isinstance(self.last_sensor_failure_metadata, dict)
-            else {}
-        )
-        branch_attacks = metadata.get("branch_attacks", []) or []
-        gps_attack = metadata.get("gps_attack")
-        remaining_steps: List[int] = []
-        branch_types: List[str] = []
-
-        for item in branch_attacks:
-            branch_name = str(item.get("branch", "")).strip()
-            attack_type = str(item.get("attack_type", "")).strip()
-            if branch_name and attack_type:
-                branch_types.append(f"{branch_name}:{attack_type}")
-            try:
-                remaining_steps.append(int(item.get("remaining_steps", 0)))
-            except (TypeError, ValueError):
-                pass
-
-        gps_type = ""
-        if isinstance(gps_attack, dict):
-            gps_type = str(gps_attack.get("attack_type", "")).strip()
-            try:
-                remaining_steps.append(int(gps_attack.get("remaining_steps", 0)))
-            except (TypeError, ValueError):
-                pass
-
-        current_intensity = metadata.get("current_intensity", {}) or {}
-        return {
-            "local_sensor_attack_supported": True,
-            "local_sensor_attack_enabled": bool(
-                self.sensor_failure_simulator is not None
-            ),
-            "local_sensor_attack_active": bool(metadata.get("active", False)),
-            "local_sensor_attack_branch_types": "|".join(branch_types),
-            "local_sensor_attack_gps_type": gps_type,
-            "local_sensor_attack_remaining_steps": max(remaining_steps)
-            if remaining_steps
-            else 0,
-            "local_sensor_attack_intensity": float(
-                current_intensity.get("overall", 0.0)
-            ),
-        }
-
     def _log_info(self, message: str):
         if self.logger and hasattr(self.logger, "logger"):
             self.logger.logger.info(message)
@@ -2021,6 +1872,17 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             raise FileNotFoundError(
                 f"Robust KalmanNet checkpoint not found: {self.model_path}"
             )
+
+        if self.estimator_backend == "innovation_trust":
+            try:
+                from .innovation_trust import InnovationTrustFilter
+            except ImportError:
+                from innovation_trust import InnovationTrustFilter
+            self.trust_filter = InnovationTrustFilter(
+                self.internal_state, self.config, self.model_path
+            )
+            self._log_info(f"Robust KalmanNet innovation-trust checkpoint loaded from {self.model_path}")
+            return
 
         checkpoint = torch.load(self.model_path, map_location=self.device)
         self._warn_if_checkpoint_config_mismatch(checkpoint)
@@ -3312,7 +3174,8 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             )
             gps_payload = copy.deepcopy(gps_data) if isinstance(gps_data, dict) else gps_data
             acceleration_payload = acceleration
-            if self.sensor_failure_simulator is not None:
+            attack_simulator = self.sensor_failure_simulator
+            if attack_simulator is not None:
                 (
                     motor_tach,
                     steering,
@@ -3321,7 +3184,7 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                     acceleration_payload,
                     gps_payload,
                     self.last_sensor_failure_metadata,
-                ) = self.sensor_failure_simulator.apply(
+                ) = attack_simulator.apply(
                     motor_tach=float(motor_tach),
                     steering=float(steering),
                     gyro_z=float(gyro_z),
@@ -3332,36 +3195,42 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
                 )
             else:
                 self.last_sensor_failure_metadata = None
-            measurement = self._measurement_from_inputs(
-                motor_tach,
-                steering,
-                gyro_z,
-                gps_payload,
-                dt=dt,
-            )
-            raw_sample = self._raw_sample_from_inputs(
-                motor_tach,
-                steering,
-                gyro_z,
-                throttle,
-                acceleration_payload,
-                gps_payload,
-            )
-            self._append_sample(raw_sample, measurement, dt)
-
-            try:
-                estimate = self._predict_with_model()
-            except Exception:
-                self._clear_stream_state()
-                raise
+            if self.trust_filter is not None:
+                self.trust_filter.update(
+                    motor_tach=motor_tach, steering=steering, throttle=throttle,
+                    dt=dt, gyro_z=gyro_z, gps_data=gps_payload,
+                    acceleration=acceleration_payload,
+                )
+                estimate = self.trust_filter.get_state()
+                measurement = self.trust_filter.last_measurement.copy()
+                self.last_x_pred = self.trust_filter.last_prediction.copy()
+                self.last_meas_mask = self.trust_filter.last_trust.copy()
+                self.last_K = np.diag(self.trust_filter.last_gain)
+                self.last_model_output = estimate.copy()
+                self.last_gps_valid = gps_position_is_valid(gps_payload)
+                self.last_filtered_heading = float(estimate[2])
+            else:
+                measurement = self._measurement_from_inputs(
+                    motor_tach, steering, gyro_z, gps_payload, dt=dt,
+                )
+                raw_sample = self._raw_sample_from_inputs(
+                    motor_tach, steering, gyro_z, throttle,
+                    acceleration_payload, gps_payload,
+                )
+                self._append_sample(raw_sample, measurement, dt)
+                try:
+                    estimate = self._predict_with_model()
+                except Exception:
+                    self._clear_stream_state()
+                    raise
 
             if estimate is None:
                 raise RuntimeError("Robust KalmanNet did not produce an estimate")
 
-            estimate = self._apply_heading_filter_output(
-                np.asarray(estimate, dtype=np.float64),
-                gps_data=gps_payload,
-            )
+            if self.trust_filter is None:
+                estimate = self._apply_heading_filter_output(
+                    np.asarray(estimate, dtype=np.float64), gps_data=gps_payload,
+                )
 
             self._record_comparison(
                 robust_estimate=estimate,
@@ -3435,6 +3304,8 @@ class RobustKalmanNetStateEstimator(LocalStateEstimatorBase):
             if len(initial_pose) > 2:
                 self.internal_state[2] = float(initial_pose[2])
         self.state = self.internal_state[:4].astype(np.float64, copy=True)
+        if self.trust_filter is not None:
+            self.trust_filter.reset(self.internal_state)
         self._last_gps_x = None
         self._last_gps_y = None
         self._reset_heading_filter(initial_pose)

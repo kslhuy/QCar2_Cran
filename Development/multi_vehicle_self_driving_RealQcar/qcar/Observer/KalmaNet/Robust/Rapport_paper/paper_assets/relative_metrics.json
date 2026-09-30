@@ -1,0 +1,136 @@
+{
+  "ekf": {
+    "clean": {
+      "position_rmse_m": 0.5509195289085494,
+      "heading_rmse_rad": 0.6576800484614249,
+      "speed_rmse_mps": 0.7720837768835667
+    },
+    "gps_jump": {
+      "position_rmse_m": 0.018967993175357467,
+      "heading_rmse_rad": 0.6484637523498492,
+      "speed_rmse_mps": 0.7720837768835667
+    },
+    "gps_ramp": {
+      "position_rmse_m": 0.11734234256182542,
+      "heading_rmse_rad": 0.6526345328724866,
+      "speed_rmse_mps": 0.7720837768835667
+    },
+    "gps_freeze": {
+      "position_rmse_m": 0.010185062688189767,
+      "heading_rmse_rad": 0.0066682701208899894,
+      "speed_rmse_mps": 0.7720837768835667
+    },
+    "gps_dropout": {
+      "position_rmse_m": 0.3204789517311492,
+      "heading_rmse_rad": 0.270083570945363,
+      "speed_rmse_mps": 0.7720916467821287
+    },
+    "gps_noise": {
+      "position_rmse_m": 0.06458759912111713,
+      "heading_rmse_rad": 0.6146156877744553,
+      "speed_rmse_mps": 0.7720837768835667
+    },
+    "heading_bias": {
+      "position_rmse_m": 0.13887894693803993,
+      "heading_rmse_rad": 0.012982691734274621,
+      "speed_rmse_mps": 0.7720837768835667
+    },
+    "wheel_bias": {
+      "position_rmse_m": 0.14022749329769357,
+      "heading_rmse_rad": 0.2378823385983283,
+      "speed_rmse_mps": 0.012359281074604577
+    },
+    "wheel_scale": {
+      "position_rmse_m": 0.14771829144969917,
+      "heading_rmse_rad": 0.244870175708269,
+      "speed_rmse_mps": 0.012984826034924768
+    },
+    "wheel_freeze": {
+      "position_rmse_m": 0.32640503592806785,
+      "heading_rmse_rad": 0.47817448480037944,
+      "speed_rmse_mps": 0.03631078610784519
+    },
+    "imu_bias": {
+      "position_rmse_m": 0.5491876541610796,
+      "heading_rmse_rad": 0.2637713335092035,
+      "speed_rmse_mps": 0.7720837029801212
+    },
+    "steering_bias": {
+      "position_rmse_m": 0.5375380323798282,
+      "heading_rmse_rad": 0.11797691722448234,
+      "speed_rmse_mps": 0.7720837768835667
+    },
+    "gps_wheel": {
+      "position_rmse_m": 0.017923749727636645,
+      "heading_rmse_rad": 0.23555164138186274,
+      "speed_rmse_mps": 0.012359281074604577
+    }
+  },
+  "analytic_ablation": {
+    "clean": {
+      "position_rmse_m": 0.9690761414478628,
+      "heading_rmse_rad": 0.999810949330982,
+      "speed_rmse_mps": 0.9999419438610265
+    },
+    "gps_jump": {
+      "position_rmse_m": 0.9767823677269581,
+      "heading_rmse_rad": 0.999810949330982,
+      "speed_rmse_mps": 0.9999419438610265
+    },
+    "gps_ramp": {
+      "position_rmse_m": 0.3183526381280568,
+      "heading_rmse_rad": 0.999810949330982,
+      "speed_rmse_mps": 0.9999419438610265
+    },
+    "gps_freeze": {
+      "position_rmse_m": 0.7758391494005974,
+      "heading_rmse_rad": 0.8397116378159437,
+      "speed_rmse_mps": 0.9999419438610265
+    },
+    "gps_dropout": {
+      "position_rmse_m": 0.9931834901453154,
+      "heading_rmse_rad": 0.9998573458031403,
+      "speed_rmse_mps": 0.9999521363322346
+    },
+    "gps_noise": {
+      "position_rmse_m": 0.3076615293399273,
+      "heading_rmse_rad": 0.999810949330982,
+      "speed_rmse_mps": 0.9999419438610265
+    },
+    "heading_bias": {
+      "position_rmse_m": 0.9701485792014308,
+      "heading_rmse_rad": 0.9998212045916121,
+      "speed_rmse_mps": 0.9999419438610265
+    },
+    "wheel_bias": {
+      "position_rmse_m": 0.9687553537411187,
+      "heading_rmse_rad": 0.999811020335626,
+      "speed_rmse_mps": 0.999573988214583
+    },
+    "wheel_scale": {
+      "position_rmse_m": 0.5761675573663251,
+      "heading_rmse_rad": 0.999811020335626,
+      "speed_rmse_mps": 0.17563911248065422
+    },
+    "wheel_freeze": {
+      "position_rmse_m": 0.9674193713979946,
+      "heading_rmse_rad": 0.9998109867133845,
+      "speed_rmse_mps": 0.9884167240979279
+    },
+    "imu_bias": {
+      "position_rmse_m": 0.9705169892802653,
+      "heading_rmse_rad": 0.9998080734308256,
+      "speed_rmse_mps": 0.9999418481471193
+    },
+    "steering_bias": {
+      "position_rmse_m": 0.9690761414478628,
+      "heading_rmse_rad": 0.999810949330982,
+      "speed_rmse_mps": 0.9999419438610265
+    },
+    "gps_wheel": {
+      "position_rmse_m": 0.975597551899075,
+      "heading_rmse_rad": 0.999811020335626,
+      "speed_rmse_mps": 0.999573988214583
+    }
+  }
+}

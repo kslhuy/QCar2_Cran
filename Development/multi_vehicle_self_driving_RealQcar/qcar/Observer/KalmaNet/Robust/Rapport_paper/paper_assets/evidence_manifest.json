@@ -1,0 +1,12 @@
+{
+  "results\\heldout.json": "97e4d2cadd6fde54e6fa99f23e283106a07cb3caddfa9f54f065591dc51def43",
+  "results\\heldout.npz": "a7d7b0c35e6f43274a3028aa36b00883344313d1b1a3bfefccb4073a63575cbf",
+  "results\\closed_loop.json": "369884d8069837ab22c27b2ce07c263b06c4753b0a1c8dfb92fdfc44298b474e",
+  "results\\closed_loop.npz": "74d002c9504b4d690ce4e1f490d0fac4d4626157a136a231304f57233a174a2b",
+  "results\\stress_mismatch.json": "b46c8769473e2c6f5487892681a2b20718376af684fd748de2ecbc3948e9c217",
+  "results\\stress_mismatch.npz": "dd9b3bf0cc0bcb11bdd7ce969c7738fac57d767394acf931bb806ca8fce73d92",
+  "results\\native_rate.json": "d9c11a1ea3b892f4ef22b0a8f3dc0e4be2e62d56ed75b9b1c2ef2ee2f7dab650",
+  "results\\native_rate.npz": "029695daa192c9421475ab6150c94090ded26cf85579c9515be98baff7e1211e",
+  "models/innovation_trust_sim.npz": "42fc0835b0f22c2f777ad7a9557ec2e0925c85c5ddec1b7b8a289fb0d6851478",
+  "models/innovation_trust_sim.history.json": "9e879a45054b68b2ff2d4ac0f0056bd97885b85a22b3585d750c5cf6b92078d5"
+}

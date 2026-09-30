@@ -1,0 +1,274 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{bm}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\T}{\mathcal{T}}
+\newcommand{\Lset}{\mathcal{L}}
+\newcommand{\TopK}{\operatorname{Top}_{\kappa}}
+
+\title{Trust-Aware Weight Calculation for the Distributed Observer}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Purpose}
+
+This note summarizes the weighting rule used by the trust-aware distributed
+observer. The presentation is intentionally simpler than the software
+implementation: it keeps the main mathematical structure and collects secondary
+implementation safeguards into compact terms. The objective is to obtain a
+row-stochastic set of weights for each host vehicle \(i\) and target vehicle
+\(j\), so that reliable direct measurements and trusted neighbor estimates
+receive higher influence while unreliable information is automatically
+attenuated.
+
+\section{Notation}
+
+Let \(i\) denote the host vehicle that runs the observer and let \(j\) denote
+the target vehicle being estimated. At time \(k\),
+\(\hat{\bm{x}}_{i}^{j}(k)\in\R^{n}\) is the current estimate of target \(j\)
+stored by host \(i\). The target's direct V2V measurement is denoted by
+\(\bm{z}_{j}(k)\), and \(\hat{\bm{x}}_{\ell}^{j}(k)\) denotes neighbor
+\(\ell\)'s estimate of target \(j\).
+
+The trust model provides two types of scores:
+\begin{itemize}
+    \item \(T_{i,\ell}(k)\in[0,1]\): host \(i\)'s trust in neighbor
+    \(\ell\) as an information source.
+    \item \(L_{i,j}(k)\in[0,1]\): local/direct trust in target \(j\)'s
+    broadcast measurement.
+\end{itemize}
+The design parameters are the trust threshold \(\theta_T\), the maximum number
+of neighbors \(\kappa\), the nominal direct-measurement gain \(a_0\), the
+nominal self/prediction gain \(a_s\), the nominal neighbor budget
+\(a_N=1-a_0-a_s\), and the maximum per-neighbor weight \(w_{\max}\). In the
+current configuration, typical values are \(a_0=0.4\), \(a_s=0.2\),
+\(a_N=0.4\), \(\theta_T=0.5\), and \(w_{\max}=0.4\).
+
+\section{Trusted Information Set}
+
+For each target \(j\), host \(i\) first selects the neighbors that both provide
+an estimate of \(j\) and pass the trust threshold:
+\begin{equation}
+    \Lset_i^j(k)
+    =
+    \TopK
+    \left\{
+        \ell \in \N_i \setminus \{j\}
+        \; \middle| \;
+        \hat{\bm{x}}_{\ell}^{j}(k) \ \text{is available},
+        \ T_{i,\ell}(k) \geq \theta_T
+    \right\},
+    \label{eq:trusted_set}
+\end{equation}
+where \(\TopK\{\cdot\}\) keeps at most \(\kappa\) neighbors, sorted by
+descending trust. The target \(j\) itself is not used as a neighbor source for
+estimating \(j\); its information enters only through the direct measurement
+channel.
+
+The selected neighbor trust scores are normalized as
+\begin{equation}
+    b_{i,\ell}^{j}(k)
+    =
+    \frac{T_{i,\ell}(k)}
+    {\sum_{r\in\Lset_i^j(k)} T_{i,r}(k)},
+    \qquad
+    \ell\in\Lset_i^j(k),
+    \label{eq:neighbor_basis}
+\end{equation}
+when the denominator is nonzero. These normalized values determine how the
+neighbor budget is distributed.
+
+\section{Raw Channel Scores}
+
+The observer uses three information channels: direct measurement, self
+prediction, and neighbor consensus. Define
+\[
+    \chi_{i,j}(k)=
+    \begin{cases}
+        1, & \text{if the direct measurement } \bm{z}_j(k) \text{ is available and accepted},\\
+        0, & \text{otherwise}.
+    \end{cases}
+\]
+The raw channel scores are
+\begin{align}
+    \bar{w}_{0,i}^{j}(k)
+    &=
+    a_0 \, \chi_{i,j}(k) \, L_{i,j}(k) \, \phi_0^j(k),
+    \label{eq:raw_direct}
+    \\
+    \bar{w}_{s,i}^{j}(k)
+    &=
+    a_s \, \rho_{s,i}^{j}(k) \, \phi_s^j(k),
+    \label{eq:raw_self}
+    \\
+    \bar{w}_{i,\ell}^{j}(k)
+    &=
+    a_N \, b_{i,\ell}^{j}(k) \, \phi_N^j(k),
+    \qquad \ell\in\Lset_i^j(k).
+    \label{eq:raw_neighbor}
+\end{align}
+Here \(w_0\) weights the direct measurement, \(w_s\) is the residual
+self/prediction weight, and \(w_{i,\ell}^{j}\) weights neighbor \(\ell\)'s
+estimate of target \(j\). The factors \(\phi_0^j,\phi_s^j,\phi_N^j\) are
+compact confidence multipliers derived from the attack flags; they are equal to
+one during normal operation. The self confidence \(\rho_{s,i}^{j}\in[0,1]\)
+can be chosen from the self-consistency score of the trust model. A practical
+choice is
+\begin{equation}
+    \rho_{s,i}^{j}(k)
+    =
+    \gamma_{\min} + (1-\gamma_{\min})\gamma_{s,i}^{j}(k),
+    \label{eq:self_confidence}
+\end{equation}
+where \(\gamma_{s,i}^{j}\in[0,1]\) is the self-consistency score and
+\(\gamma_{\min}\) prevents the self channel from vanishing.
+
+\section{Normalization and Influence Cap}
+
+The raw scores are normalized jointly:
+\begin{equation}
+    S_i^j(k)
+    =
+    \bar{w}_{0,i}^{j}(k)
+    +
+    \bar{w}_{s,i}^{j}(k)
+    +
+    \sum_{\ell\in\Lset_i^j(k)} \bar{w}_{i,\ell}^{j}(k).
+\end{equation}
+If \(S_i^j(k)>0\), the preliminary weights are
+\begin{equation}
+    \tilde{w}_{q,i}^{j}(k)
+    =
+    \frac{\bar{w}_{q,i}^{j}(k)}{S_i^j(k)},
+    \qquad
+    q\in\{0,s\}\cup\Lset_i^j(k).
+    \label{eq:prelim_weights}
+\end{equation}
+If \(S_i^j(k)=0\), the observer falls back to the self channel:
+\(w_{s,i}^{j}(k)=1\).
+
+To prevent one neighbor from dominating the update, each neighbor weight is
+capped:
+\begin{equation}
+    w_{i,\ell}^{j}(k) \leq w_{\max},
+    \qquad \ell\in\Lset_i^j(k).
+    \label{eq:cap_constraint}
+\end{equation}
+Any excess weight is redistributed among the remaining uncapped neighbors in
+proportion to \(b_{i,\ell}^{j}\). If no uncapped neighbor remains, the excess is
+assigned to the self channel. Finally,
+\begin{equation}
+    w_{s,i}^{j}(k)
+    =
+    1
+    -
+    w_{0,i}^{j}(k)
+    -
+    \sum_{\ell\in\Lset_i^j(k)} w_{i,\ell}^{j}(k),
+    \label{eq:self_residual}
+\end{equation}
+which gives the row-stochastic property
+\begin{equation}
+    w_{0,i}^{j}(k)
+    +
+    w_{s,i}^{j}(k)
+    +
+    \sum_{\ell\in\Lset_i^j(k)} w_{i,\ell}^{j}(k)
+    =
+    1.
+    \label{eq:row_stochastic}
+\end{equation}
+
+\section{Observer Update}
+
+Using the weights above, the consensus-corrected estimate is written as
+\begin{equation}
+    \bm{x}_{c,i}^{j}(k)
+    =
+    w_{s,i}^{j}(k)\hat{\bm{x}}_{i}^{j}(k)
+    +
+    w_{0,i}^{j}(k)\bm{z}_{j}(k)
+    +
+    \sum_{\ell\in\Lset_i^j(k)}
+    w_{i,\ell}^{j}(k)\hat{\bm{x}}_{\ell}^{j}(k).
+    \label{eq:convex_update}
+\end{equation}
+Equivalently, this can be written in correction form as
+\begin{equation}
+    \bm{x}_{c,i}^{j}(k)
+    =
+    \hat{\bm{x}}_{i}^{j}(k)
+    +
+    w_{0,i}^{j}(k)
+    \left(\bm{z}_{j}(k)-\hat{\bm{x}}_{i}^{j}(k)\right)
+    +
+    \sum_{\ell\in\Lset_i^j(k)}
+    w_{i,\ell}^{j}(k)
+    \left(\hat{\bm{x}}_{\ell}^{j}(k)-\hat{\bm{x}}_{i}^{j}(k)\right).
+    \label{eq:correction_update}
+\end{equation}
+The corrected state is then propagated through the target dynamics:
+\begin{equation}
+    \hat{\bm{x}}_{i}^{j}(k+1)
+    =
+    f_j\!\left(
+        \bm{x}_{c,i}^{j}(k),
+        \bm{u}_{j}(k),
+        T_s
+    \right),
+    \label{eq:prediction}
+\end{equation}
+where \(f_j(\cdot)\) is the discrete-time vehicle model and \(T_s\) is the
+sampling period.
+
+\section{Paper-Style Simplified Variant}
+
+For a more compact theoretical presentation, the same idea can be expressed as
+an equal-weight rule over a legitimate information set. Define
+\begin{equation}
+    \T_i^j(k)
+    =
+    \Lset_i^j(k)
+    \cup
+    \left\{0 \; \middle| \; \chi_{i,j}(k)=1,\ L_{i,j}(k)\geq\theta_T\right\},
+\end{equation}
+where the index \(0\) denotes the direct measurement channel. Let
+\begin{equation}
+    n_i^j(k)=\max\left\{\kappa,\ |\T_i^j(k)|+1\right\}.
+\end{equation}
+Then every legitimate external channel receives
+\begin{equation}
+    w_{q,i}^{j}(k)
+    =
+    \frac{1}{n_i^j(k)},
+    \qquad q\in\T_i^j(k),
+\end{equation}
+and the remaining mass is assigned to the self channel:
+\begin{equation}
+    w_{s,i}^{j}(k)
+    =
+    1
+    -
+    \sum_{q\in\T_i^j(k)} w_{q,i}^{j}(k).
+\end{equation}
+This form is less adaptive than the trust-proportional rule, but it is useful
+for stability analysis because all accepted external sources have bounded and
+uniform influence.
+
+\section{Summary}
+
+The implemented observer can therefore be interpreted as a trust-weighted
+convex fusion rule. Direct measurements are weighted by their local trust,
+neighbor estimates are weighted by source trust, every neighbor is capped to
+avoid dominance, and the remaining mass stays with the host's own predicted
+state. This gives a simple, row-stochastic observer update that is suitable for
+both implementation and academic presentation.
+
+\end{document}

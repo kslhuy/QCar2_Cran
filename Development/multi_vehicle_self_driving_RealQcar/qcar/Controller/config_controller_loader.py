@@ -9,7 +9,10 @@ import yaml
 import os
 import numpy as np
 from typing import Dict, Any, Optional
-from pal.products.qcar import IS_PHYSICAL_QCAR
+try:
+    from pal.products.qcar import IS_PHYSICAL_QCAR
+except Exception:
+    IS_PHYSICAL_QCAR = False
 
 
 class ControllerConfig:
@@ -49,11 +52,25 @@ class ControllerConfig:
 
     def get_longitudinal_controller_type(self) -> str:
         """Get the selected longitudinal controller type (legacy)"""
-        return self.config.get("longitudinal_controller_type", "cacc")
+        return self.normalize_longitudinal_controller_type(
+            self.config.get("longitudinal_controller_type", "cacc")
+        )
 
     def get_lateral_controller_type(self) -> str:
         """Get the selected lateral controller type (legacy)"""
         return self.config.get("lateral_controller_type", "pure_pursuit")
+
+    @staticmethod
+    def normalize_longitudinal_controller_type(controller_type: Any) -> str:
+        """Map feature-mode names onto concrete longitudinal controllers."""
+        normalized = str(controller_type or "").strip().lower()
+        aliases = {
+            "trust_longitudinal_fusion": "cacc",
+            "multi_cacc": "multi_predecessor_cacc",
+            "multipredecessor_cacc": "multi_predecessor_cacc",
+            "multi-predecessor-cacc": "multi_predecessor_cacc",
+        }
+        return aliases.get(normalized, normalized or "cacc")
 
     # ------------------------------------------------------------------
     # State-specific controller type getters (path vs leader)
@@ -61,9 +78,11 @@ class ControllerConfig:
 
     def get_path_longitudinal_type(self) -> str:
         """Get longitudinal controller type for Following Path state."""
-        return self.config.get(
-            "path_longitudinal_controller_type",
-            self.get_longitudinal_controller_type(),  # legacy fallback
+        return self.normalize_longitudinal_controller_type(
+            self.config.get(
+                "path_longitudinal_controller_type",
+                self.get_longitudinal_controller_type(),  # legacy fallback
+            )
         )
 
     def get_path_lateral_type(self) -> str:
@@ -75,9 +94,11 @@ class ControllerConfig:
 
     def get_leader_longitudinal_type(self) -> str:
         """Get longitudinal controller type for Following Leader state."""
-        return self.config.get(
-            "leader_longitudinal_controller_type",
-            self.get_longitudinal_controller_type(),  # legacy fallback
+        return self.normalize_longitudinal_controller_type(
+            self.config.get(
+                "leader_longitudinal_controller_type",
+                self.get_longitudinal_controller_type(),  # legacy fallback
+            )
         )
 
     def get_leader_lateral_type(self) -> str:
@@ -123,9 +144,14 @@ class ControllerConfig:
             "distance_smoothing": sensor_acc_cfg.get("distance_smoothing", 0.6),
         }
 
-    def get_leader_longitudinal_state_source_config(self) -> Dict[str, Any]:
-        """Get leader-state source selection for FOLLOWING_LEADER longitudinal control."""
-        source_cfg = self.config.get("leader_longitudinal_state_source", {})
+    def get_leader_source_config(self) -> Dict[str, Any]:
+        """Get the single leader-state source used by FOLLOWING_LEADER control."""
+        source_cfg = self.config.get("leader_source", {})
+        if isinstance(source_cfg, str):
+            source_cfg = {"mode": source_cfg}
+        if not isinstance(source_cfg, dict):
+            source_cfg = {}
+
         mode = str(source_cfg.get("mode", "direct_v2v_attacked")).strip().lower()
         legacy_mode_map = {
             "direct_v2v": "direct_v2v_attacked",
@@ -141,10 +167,95 @@ class ControllerConfig:
         }:
             mode = "direct_v2v_attacked"
 
-        return {
-            "mode": mode,
-            "fallback_to_v2v": source_cfg.get("fallback_to_v2v", True),
+        return {"mode": mode}
+
+    def get_trust_longitudinal_fusion_config(self) -> Dict[str, Any]:
+        """Get trust-aware longitudinal command-fusion settings."""
+        cfg = self.config.get("trust_longitudinal_fusion", {})
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        def _as_bool(value: Any, default: bool = False) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "on"}
+            return default if value is None else bool(value)
+
+        def _as_float(value: Any, default: float) -> float:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return default
+            return parsed if np.isfinite(parsed) else default
+
+        trust_low = float(np.clip(_as_float(cfg.get("trust_low", 0.50), 0.50), 0.0, 1.0))
+        trust_high = float(np.clip(_as_float(cfg.get("trust_high", 0.80), 0.80), 0.0, 1.0))
+        if trust_high <= trust_low:
+            trust_low = 0.50
+            trust_high = 0.80
+
+        unavailable_policy = str(
+            cfg.get("unavailable_policy", "legacy_cacc")
+        ).strip().lower()
+        if unavailable_policy not in {"legacy_cacc", "sensor_acc_or_stop"}:
+            unavailable_policy = "legacy_cacc"
+
+        low_trust_policy = str(
+            cfg.get("low_trust_policy", "sensor_acc_or_stop")
+        ).strip().lower()
+        if low_trust_policy not in {
+            "sensor_acc_or_stop",
+            "sensor_acc_or_cacc",
+            "legacy_cacc",
+        }:
+            low_trust_policy = "sensor_acc_or_stop"
+
+        alpha_mode = str(
+            cfg.get("alpha_mode", "threshold_map")
+        ).strip().lower()
+        alpha_mode_aliases = {
+            "threshold": "threshold_map",
+            "threshold_mapping": "threshold_map",
+            "trust_threshold": "threshold_map",
+            "opinion": "direct_opinion",
+            "raw_opinion": "direct_opinion",
+            "direct": "direct_opinion",
         }
+        alpha_mode = alpha_mode_aliases.get(alpha_mode, alpha_mode)
+        if alpha_mode not in {"threshold_map", "direct_opinion"}:
+            alpha_mode = "threshold_map"
+
+        opinion_scope = str(
+            cfg.get("opinion_scope", "direct_leader")
+        ).strip().lower()
+        opinion_scope_aliases = {
+            "leader": "direct_leader",
+            "direct": "direct_leader",
+            "leader_only": "direct_leader",
+            "predecessors": "used_predecessors",
+            "all_predecessors": "used_predecessors",
+            "paper": "used_predecessors",
+        }
+        opinion_scope = opinion_scope_aliases.get(opinion_scope, opinion_scope)
+        if opinion_scope not in {"direct_leader", "used_predecessors"}:
+            opinion_scope = "direct_leader"
+
+        return {
+            "enabled": _as_bool(cfg.get("enabled", False), False),
+            "trust_low": trust_low,
+            "trust_high": trust_high,
+            "unavailable_policy": unavailable_policy,
+            "low_trust_policy": low_trust_policy,
+            "alpha_mode": alpha_mode,
+            "opinion_scope": opinion_scope,
+        }
+
+    def get_multi_predecessor_cacc_config(self) -> Dict[str, Any]:
+        """Get optional multi-predecessor CACC feedforward settings."""
+        cacc_config = self.config.get("cacc", {})
+        cfg = cacc_config.get("multi_predecessor", {})
+        return dict(cfg) if isinstance(cfg, dict) else {}
 
     def get_command_smoothing_config(self) -> Dict[str, Dict[str, float]]:
         """Get command smoothing filter parameters."""
@@ -171,6 +282,7 @@ class ControllerConfig:
         types = []
         if "cacc" in self.config:
             types.append("cacc")
+            types.append("multi_predecessor_cacc")
         if "pid" in self.config:
             types.append("pid")
         if "qcar2_speed" in self.config:
@@ -217,9 +329,12 @@ class ControllerConfig:
         """
         if controller_type is None:
             controller_type = self.get_longitudinal_controller_type()
+        controller_type = self.normalize_longitudinal_controller_type(controller_type)
 
         if controller_type == "cacc":
             return self._get_cacc_params()
+        elif controller_type == "multi_predecessor_cacc":
+            return self._get_multi_predecessor_cacc_params()
         elif controller_type == "pid":
             return self._get_pid_params()
         elif controller_type == "qcar2_speed":
@@ -309,6 +424,7 @@ class ControllerConfig:
             "target_velocity_turn_scale": cacc_config.get(
                 "target_velocity_turn_scale", 0.35
             ),
+            "multi_predecessor": cacc_config.get("multi_predecessor", {}),
             "limo_max_speed": cacc_config.get("limo_max_speed", 0.8),
             "limo_max_accel": cacc_config.get("limo_max_accel", 0.4),
             "limo_max_decel": cacc_config.get("limo_max_decel", 0.8),
@@ -320,6 +436,14 @@ class ControllerConfig:
             ),
             "limo_close_gap_gain": cacc_config.get("limo_close_gap_gain", 0.8),
         }
+
+    def _get_multi_predecessor_cacc_params(self) -> Dict[str, Any]:
+        """Get CACC parameters with multi-predecessor cooperation enabled."""
+        params = self._get_cacc_params()
+        multi_cfg = dict(params.get("multi_predecessor", {}) or {})
+        multi_cfg["enabled"] = True
+        params["multi_predecessor"] = multi_cfg
+        return params
 
     def _get_pid_params(self) -> Dict[str, Any]:
         """Get PID controller parameters"""
