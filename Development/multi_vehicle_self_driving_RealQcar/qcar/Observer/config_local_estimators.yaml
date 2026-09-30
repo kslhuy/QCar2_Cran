@@ -87,7 +87,7 @@ local:
     model_path: models/robust_kalmannet.best_robust.pt # Required checkpoint path, relative to Observer/KalmaNet/Robust/
     enable_ekf_comparator: true # Disable online EKF comparison for normal runtime; enable only when debugging.
     enable_clean_reference_comparator: true # Evaluation-only pseudo-ground-truth: run a second EKF on clean pre-attack inputs for error analysis.
-    publish_clean_reference_output: true # Keep false for robustness evaluation; true bypasses the robust model output with the clean-reference EKF state.
+    publish_clean_reference_output: false # Publish the actual robust estimate. The clean comparator is diagnostic only.
     comparator_use_qcar_ekf: false # Use QCarEKF or fall back EKF  .
     comparator_console_log: false # Keep console quiet during runtime.
     comparator_log_interval: 100  # If console logging is enabled, log every N updates.

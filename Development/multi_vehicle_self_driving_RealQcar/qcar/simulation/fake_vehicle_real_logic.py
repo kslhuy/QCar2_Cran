@@ -50,7 +50,8 @@ class FakeVehicleWithRealLogic:
                  tire_model: Optional[str] = None,
                  longitudinal_model: Optional[str] = None,
                  steering_model: Optional[str] = None,
-                 use_direct_poses: bool = False):
+                 use_direct_poses: bool = False,
+                 local_estimator: Optional[str] = None):
         self.car_id = car_id
         self.host_ip = host_ip
         self.base_port = base_port
@@ -60,6 +61,7 @@ class FakeVehicleWithRealLogic:
             if self.initial_pose_override is not None
             else "path calibration pose"
         )
+        self.local_estimator_override = local_estimator
         
         # 1. Load and Configure MockQCar
         self.sim_config = SimulationConfig.get_default_config()
@@ -316,6 +318,7 @@ def main():
     tire_model = None
     longitudinal_model = None
     steering_model = None
+    local_estimator = None
     use_direct_poses = False
     
     # Parse args (Backward functionality)
@@ -331,6 +334,11 @@ def main():
             continue
         if val.startswith("--steering-model=") or val.startswith("steering_model="):
             steering_model = arg.split("=", 1)[1]
+            continue
+        if val.startswith("--local-estimator="):
+            local_estimator = arg.split("=", 1)[1]
+            if local_estimator not in {"ekf", "robust_kalman_net"}:
+                raise ValueError("--local-estimator must be ekf or robust_kalman_net")
             continue
 
         if val in ['0', 'kinematic', 'ks']: dynamic_model_type = 0
@@ -369,7 +377,8 @@ def main():
                                           tire_model=tire_model,
                                           longitudinal_model=longitudinal_model,
                                           steering_model=steering_model,
-                                          use_direct_poses=use_direct_poses)
+                                          use_direct_poses=use_direct_poses,
+                                          local_estimator=local_estimator)
     except Exception as e:
         print(f"❌ Failed to create vehicle: {e}")
         import traceback

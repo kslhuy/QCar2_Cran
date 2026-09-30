@@ -1992,4 +1992,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--simulation-trust" in sys.argv:
+        from train_innovation_trust import main as train_simulation_trust
+        train_simulation_trust([arg for arg in sys.argv[1:] if arg != "--simulation-trust"])
+    else:
+        main()

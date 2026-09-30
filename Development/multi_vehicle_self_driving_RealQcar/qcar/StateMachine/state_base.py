@@ -16,6 +16,7 @@ import sys
 import os
 
 import numpy as np
+import copy
 """Get time spent in current state"""
 import time
 
@@ -1625,18 +1626,40 @@ class StateBase:
                 try:
                     state = vehicle_observer.local_estimator.get_state()
                     if state is not None:
-                        current_pose = state[:3]  # [x, y, theta]
+                        current_pose = state[:3].copy()  # [x, y, theta]
                 except:
                     pass
 
             # Get config defaults for the new estimator type
-            config_defaults = vehicle_observer.local_config_defaults.get(
-                observer_type, {}
+            config_defaults = copy.deepcopy(
+                vehicle_observer.local_config_defaults.get("common", {})
             )
+            config_defaults.update(copy.deepcopy(
+                vehicle_observer.local_config_defaults.get(observer_type, {})
+            ))
+
+            # Keep the same plant calibration and checkpoint as fake startup.
+            fake_vehicle = getattr(self.vehicle_logic, "_parent_fake_vehicle", None)
+            if fake_vehicle is not None and observer_type in {"ekf", "robust_kalman_net"}:
+                from simulation.robust_estimator_config import (
+                    simulation_estimator_params, simulation_motion_params,
+                )
+                car = fake_vehicle.mock_qcar
+                config_defaults.update(
+                    simulation_estimator_params(car)
+                    if observer_type == "robust_kalman_net"
+                    else simulation_motion_params(car)
+                )
+                config_defaults.update({
+                    "use_qcar_ekf": False,
+                    "disturbance_mode": car.disturbance_mode,
+                    "sensor_failure_simulation": {"enabled": False},
+                })
 
             # Create new estimator using factory
             new_estimator = LocalEstimatorFactory.create(
-                estimator_type=observer_type, config=config_defaults, logger=self.logger
+                estimator_type=observer_type, initial_pose=current_pose,
+                config=config_defaults, logger=self.logger
             )
 
             # Initialize the new estimator

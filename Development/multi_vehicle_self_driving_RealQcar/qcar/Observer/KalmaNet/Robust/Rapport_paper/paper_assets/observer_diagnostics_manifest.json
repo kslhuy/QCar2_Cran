@@ -1,0 +1,152 @@
+{
+  "seed": 101,
+  "duration_s": 60,
+  "dt_s": 0.02,
+  "checkpoint_sha256": "42fc0835b0f22c2f777ad7a9557ec2e0925c85c5ddec1b7b8a289fb0d6851478",
+  "checks": [
+    {
+      "scenario": "gps_jump",
+      "estimator": "ekf",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_jump",
+      "estimator": "analytic_ablation",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_jump",
+      "estimator": "robust",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_ramp",
+      "estimator": "ekf",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_ramp",
+      "estimator": "analytic_ablation",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_ramp",
+      "estimator": "robust",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_freeze",
+      "estimator": "ekf",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_freeze",
+      "estimator": "analytic_ablation",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_freeze",
+      "estimator": "robust",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_dropout",
+      "estimator": "ekf",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_dropout",
+      "estimator": "analytic_ablation",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_dropout",
+      "estimator": "robust",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_noise",
+      "estimator": "ekf",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_noise",
+      "estimator": "analytic_ablation",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_noise",
+      "estimator": "robust",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "heading_bias",
+      "estimator": "ekf",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "heading_bias",
+      "estimator": "analytic_ablation",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "heading_bias",
+      "estimator": "robust",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "wheel_bias",
+      "estimator": "ekf",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "wheel_bias",
+      "estimator": "analytic_ablation",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "wheel_bias",
+      "estimator": "robust",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "wheel_scale",
+      "estimator": "ekf",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "wheel_scale",
+      "estimator": "analytic_ablation",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "wheel_scale",
+      "estimator": "robust",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_wheel",
+      "estimator": "ekf",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_wheel",
+      "estimator": "analytic_ablation",
+      "maximum_saved_state_difference": 0.0
+    },
+    {
+      "scenario": "gps_wheel",
+      "estimator": "robust",
+      "maximum_saved_state_difference": 0.0
+    }
+  ],
+  "note": "Gains are sensitivities of each method's own correction, not matched-prior experiments.",
+  "source_sha256": {
+    "Observer\\KalmaNet\\Robust\\Rapport_paper\\build_observer_figures.py": "115c58279916f1eb86aefc3c85c7b21b73103079052f905f510c8c595edfbc89",
+    "Observer\\KalmaNet\\Robust\\Rapport_paper\\build_paper_assets.py": "325978a6f7de65eed35a2a70a78a12b8d68deedaea01c0c677b429fbc3075962",
+    "Observer\\KalmaNet\\Robust\\innovation_trust.py": "73c8ada9fb0a2bb5ac003b356d61df90a2a20d09c18c85a68900faf6e20aa893",
+    "Observer\\KalmaNet\\Robust\\robustKLnet.py": "76d9881813de1d81eef2d59ef8f129fab18813e75bea89a19f17288d7df11c94",
+    "Observer\\KalmaNet\\Robust\\simulation_benchmark.py": "327866ff8677a8037891be8858289a5fc767fe9b2eb51f6be66132eff9454444",
+    "Observer\\local_state_estimators.py": "a5a0ce05461b7abfd1a295318d351f72623cfaddbb5d5dafea0d5db6711980ef"
+  }
+}

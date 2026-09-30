@@ -670,7 +670,7 @@ class VehicleLogic:
         return {key: status.get(key) for key in allowed_keys}
 
     def start_local_sensor_attack(self, config: Optional[dict] = None) -> bool:
-        """Enable runtime RKNet local sensor attack injection for this vehicle."""
+        """Enable runtime local sensor attack injection for a supported estimator."""
         vehicle_observer = getattr(self, "vehicle_observer", None)
         if vehicle_observer is None:
             self.vehicle_logger.logger.warning(
@@ -682,11 +682,11 @@ class VehicleLogic:
         estimator_type = str(
             getattr(vehicle_observer, "local_estimator_type", "")
         ).strip()
-        if estimator_type != "robust_kalman_net" or not hasattr(
+        if estimator_type not in {"ekf", "robust_kalman_net"} or not hasattr(
             estimator, "start_sensor_attack"
         ):
             self.vehicle_logger.logger.warning(
-                "Local sensor attack ignored: active local observer is not robust_kalman_net"
+                "Local sensor attack ignored: active local observer does not support sensor attacks"
             )
             return False
 
@@ -699,7 +699,7 @@ class VehicleLogic:
         return success
 
     def stop_local_sensor_attack(self) -> bool:
-        """Disable runtime RKNet local sensor attack injection for this vehicle."""
+        """Disable runtime local sensor attack injection for a supported estimator."""
         vehicle_observer = getattr(self, "vehicle_observer", None)
         if vehicle_observer is None:
             self.vehicle_logger.logger.warning(
@@ -711,11 +711,11 @@ class VehicleLogic:
         estimator_type = str(
             getattr(vehicle_observer, "local_estimator_type", "")
         ).strip()
-        if estimator_type != "robust_kalman_net" or not hasattr(
+        if estimator_type not in {"ekf", "robust_kalman_net"} or not hasattr(
             estimator, "stop_sensor_attack"
         ):
             self.vehicle_logger.logger.warning(
-                "Local sensor attack stop ignored: active local observer is not robust_kalman_net"
+                "Local sensor attack stop ignored: active local observer does not support sensor attacks"
             )
             return False
 

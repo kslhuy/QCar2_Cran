@@ -1,0 +1,2165 @@
+{
+  "recovery_window_s": 3,
+  "results": [
+    {
+      "seed": 101,
+      "scenario": "gps_jump",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.996423880604224,
+      "heading_rmse_rad": 0.008698373254805068,
+      "speed_rmse_mps": 0.006963610465670786
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_jump",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.1722254520791219,
+      "heading_rmse_rad": 0.008991781980859198,
+      "speed_rmse_mps": 0.007417465743041649
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_jump",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.02040927667559874,
+      "heading_rmse_rad": 0.006110303768954269,
+      "speed_rmse_mps": 0.005818690967622447
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_jump",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016665981396748197,
+      "heading_rmse_rad": 0.006183203461624242,
+      "speed_rmse_mps": 0.006221485050798358
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_jump",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.020065549545786456,
+      "heading_rmse_rad": 0.0061093005132748035,
+      "speed_rmse_mps": 0.0058184122898752395
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_jump",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.014965106180285405,
+      "heading_rmse_rad": 0.006182816430484632,
+      "speed_rmse_mps": 0.0062208072126484935
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_ramp",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.9708937494168643,
+      "heading_rmse_rad": 0.008602454211111563,
+      "speed_rmse_mps": 0.006963610465670786
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_ramp",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.26961077176509796,
+      "heading_rmse_rad": 0.009099693303577655,
+      "speed_rmse_mps": 0.007417465743041649
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_ramp",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.3640536058106434,
+      "heading_rmse_rad": 0.006110303768954269,
+      "speed_rmse_mps": 0.005818690967622447
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_ramp",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.08930658257266602,
+      "heading_rmse_rad": 0.006183203461624242,
+      "speed_rmse_mps": 0.006221485050798358
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_ramp",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.1024939530511169,
+      "heading_rmse_rad": 0.0061093005132748035,
+      "speed_rmse_mps": 0.0058184122898752395
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_ramp",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.024715676984013096,
+      "heading_rmse_rad": 0.006182816430484632,
+      "speed_rmse_mps": 0.0062208072126484935
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_freeze",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 3.0555566756699215,
+      "heading_rmse_rad": 1.9110250953318084,
+      "speed_rmse_mps": 0.006963610465670786
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_freeze",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.7207368107305963,
+      "heading_rmse_rad": 0.234634957834068,
+      "speed_rmse_mps": 0.007417465743041649
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.021223511779403098,
+      "heading_rmse_rad": 0.006616192186165781,
+      "speed_rmse_mps": 0.005818690967622447
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016977850496919886,
+      "heading_rmse_rad": 0.006536695188365478,
+      "speed_rmse_mps": 0.006221485050798358
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_freeze",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.015464218974809823,
+      "heading_rmse_rad": 0.006543411257110404,
+      "speed_rmse_mps": 0.0058184122898752395
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_freeze",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016625913374330555,
+      "heading_rmse_rad": 0.00653544538857744,
+      "speed_rmse_mps": 0.0062208072126484935
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_dropout",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.10618823862534994,
+      "heading_rmse_rad": 0.03488843679289745,
+      "speed_rmse_mps": 0.006963610465670786
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_dropout",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.02641022325230276,
+      "heading_rmse_rad": 0.008995977758991807,
+      "speed_rmse_mps": 0.007417465743041649
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_dropout",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.030857700663290598,
+      "heading_rmse_rad": 0.00565157886015133,
+      "speed_rmse_mps": 0.005818690967622447
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_dropout",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016869117069822744,
+      "heading_rmse_rad": 0.006533842520637235,
+      "speed_rmse_mps": 0.006221485050798358
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_dropout",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.03056316775459725,
+      "heading_rmse_rad": 0.005651532370918317,
+      "speed_rmse_mps": 0.005818499272685319
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_dropout",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016283863582594225,
+      "heading_rmse_rad": 0.006533386635037872,
+      "speed_rmse_mps": 0.006220813635422152
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_noise",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.43752341170442943,
+      "heading_rmse_rad": 0.009973999543915629,
+      "speed_rmse_mps": 0.006963610465670786
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_noise",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.04432859534957567,
+      "heading_rmse_rad": 0.008896713406055643,
+      "speed_rmse_mps": 0.007417465743041649
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_noise",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.07816595635068488,
+      "heading_rmse_rad": 0.006110303768954269,
+      "speed_rmse_mps": 0.005818690967622447
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_noise",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.024396567965742886,
+      "heading_rmse_rad": 0.006183203461624242,
+      "speed_rmse_mps": 0.006221485050798358
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_noise",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.02068202740314398,
+      "heading_rmse_rad": 0.0061093005132748035,
+      "speed_rmse_mps": 0.0058184122898752395
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_noise",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.015432847610723693,
+      "heading_rmse_rad": 0.006182816430484632,
+      "speed_rmse_mps": 0.0062208072126484935
+    },
+    {
+      "seed": 101,
+      "scenario": "heading_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.14580328934834547,
+      "heading_rmse_rad": 0.8885812764452887,
+      "speed_rmse_mps": 0.006963610465670786
+    },
+    {
+      "seed": 101,
+      "scenario": "heading_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.029209731835210032,
+      "heading_rmse_rad": 0.09535788410798088,
+      "speed_rmse_mps": 0.007417465743041649
+    },
+    {
+      "seed": 101,
+      "scenario": "heading_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.010968289490515112,
+      "heading_rmse_rad": 0.005651578862645867,
+      "speed_rmse_mps": 0.005818690967622447
+    },
+    {
+      "seed": 101,
+      "scenario": "heading_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012880889420121727,
+      "heading_rmse_rad": 0.006533845477023647,
+      "speed_rmse_mps": 0.006221485050798358
+    },
+    {
+      "seed": 101,
+      "scenario": "heading_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.009963680717837722,
+      "heading_rmse_rad": 0.0056515324412036005,
+      "speed_rmse_mps": 0.0058184122898752395
+    },
+    {
+      "seed": 101,
+      "scenario": "heading_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012636890855016984,
+      "heading_rmse_rad": 0.006533050657698675,
+      "speed_rmse_mps": 0.0062208072126484935
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.13356045633196006,
+      "heading_rmse_rad": 0.038273717340911236,
+      "speed_rmse_mps": 0.6086742102112108
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.04249583372878533,
+      "heading_rmse_rad": 0.009369679651157405,
+      "speed_rmse_mps": 0.02658889377228321
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.010994917780416422,
+      "heading_rmse_rad": 0.006110303768954269,
+      "speed_rmse_mps": 0.00042052359026914206
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012711274401034416,
+      "heading_rmse_rad": 0.006183203461624242,
+      "speed_rmse_mps": 0.006559246163666306
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.010199769407305024,
+      "heading_rmse_rad": 0.006109299809265142,
+      "speed_rmse_mps": 0.0004204963469302753
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012506820659539892,
+      "heading_rmse_rad": 0.006182816019823556,
+      "speed_rmse_mps": 0.00652090615998961
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_scale",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.1309152306927338,
+      "heading_rmse_rad": 0.03619669070842868,
+      "speed_rmse_mps": 0.5931095416281238
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_scale",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.03191388348266831,
+      "heading_rmse_rad": 0.009155385240159297,
+      "speed_rmse_mps": 0.01845711227447179
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_scale",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.01099428785498085,
+      "heading_rmse_rad": 0.006110303768954269,
+      "speed_rmse_mps": 0.0004205985567118814
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_scale",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012710706704782538,
+      "heading_rmse_rad": 0.006183203461624242,
+      "speed_rmse_mps": 0.006559257578892628
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_scale",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.01019977728408887,
+      "heading_rmse_rad": 0.006109299809265142,
+      "speed_rmse_mps": 0.0004204963474298602
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_scale",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012507943976636638,
+      "heading_rmse_rad": 0.006182816019823556,
+      "speed_rmse_mps": 0.006515036321878549
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_freeze",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.049349429426912006,
+      "heading_rmse_rad": 0.013665631384817217,
+      "speed_rmse_mps": 0.21300785259903898
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_freeze",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.029209287462196025,
+      "heading_rmse_rad": 0.00896464962408275,
+      "speed_rmse_mps": 0.01916938326122783
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.010917409542001013,
+      "heading_rmse_rad": 0.006110303768954269,
+      "speed_rmse_mps": 0.0037785052134986586
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012711290588423073,
+      "heading_rmse_rad": 0.006183203461624242,
+      "speed_rmse_mps": 0.006559180007254769
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_freeze",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.010121693532885044,
+      "heading_rmse_rad": 0.006109300129920354,
+      "speed_rmse_mps": 0.0034252683891919577
+    },
+    {
+      "seed": 101,
+      "scenario": "wheel_freeze",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012478200993516564,
+      "heading_rmse_rad": 0.006182816019823556,
+      "speed_rmse_mps": 0.0065157934487957035
+    },
+    {
+      "seed": 101,
+      "scenario": "imu_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.020445401682611223,
+      "heading_rmse_rad": 0.03307749601652201,
+      "speed_rmse_mps": 0.006963610465670786
+    },
+    {
+      "seed": 101,
+      "scenario": "imu_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.023637463055167552,
+      "heading_rmse_rad": 0.010157599303731037,
+      "speed_rmse_mps": 0.007417465743041649
+    },
+    {
+      "seed": 101,
+      "scenario": "imu_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.010992442469689957,
+      "heading_rmse_rad": 0.0063408155568461695,
+      "speed_rmse_mps": 0.005818690967622447
+    },
+    {
+      "seed": 101,
+      "scenario": "imu_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.01277891458561473,
+      "heading_rmse_rad": 0.006184345289829181,
+      "speed_rmse_mps": 0.006221485050798358
+    },
+    {
+      "seed": 101,
+      "scenario": "imu_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.01032537373751246,
+      "heading_rmse_rad": 0.00634007168983031,
+      "speed_rmse_mps": 0.0058184113060858345
+    },
+    {
+      "seed": 101,
+      "scenario": "imu_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012401115663030142,
+      "heading_rmse_rad": 0.006183719351310609,
+      "speed_rmse_mps": 0.006220807205415566
+    },
+    {
+      "seed": 101,
+      "scenario": "steering_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.021421140521538082,
+      "heading_rmse_rad": 0.0806739114869559,
+      "speed_rmse_mps": 0.006963610465670786
+    },
+    {
+      "seed": 101,
+      "scenario": "steering_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.02361100049643842,
+      "heading_rmse_rad": 0.011930164304692561,
+      "speed_rmse_mps": 0.007417465743041649
+    },
+    {
+      "seed": 101,
+      "scenario": "steering_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.010958686750810189,
+      "heading_rmse_rad": 0.006110303768954269,
+      "speed_rmse_mps": 0.005818690967622447
+    },
+    {
+      "seed": 101,
+      "scenario": "steering_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012743519387081936,
+      "heading_rmse_rad": 0.006183203461624242,
+      "speed_rmse_mps": 0.006221485050798358
+    },
+    {
+      "seed": 101,
+      "scenario": "steering_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.010167732369171328,
+      "heading_rmse_rad": 0.0061093005132748035,
+      "speed_rmse_mps": 0.0058184122898752395
+    },
+    {
+      "seed": 101,
+      "scenario": "steering_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.01252726442001358,
+      "heading_rmse_rad": 0.006182816430484632,
+      "speed_rmse_mps": 0.0062208072126484935
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_wheel",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 1.0464309038455888,
+      "heading_rmse_rad": 0.0384032717559471,
+      "speed_rmse_mps": 0.6086742102112108
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_wheel",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.2004616777219074,
+      "heading_rmse_rad": 0.009813782055217867,
+      "speed_rmse_mps": 0.02658889377228321
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_wheel",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.019540710070202336,
+      "heading_rmse_rad": 0.006110303768954269,
+      "speed_rmse_mps": 0.00042052359026914206
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_wheel",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.0166197268296074,
+      "heading_rmse_rad": 0.006183203461624242,
+      "speed_rmse_mps": 0.006559246163666306
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_wheel",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.019165119336262575,
+      "heading_rmse_rad": 0.006109299809265142,
+      "speed_rmse_mps": 0.0004204963469302753
+    },
+    {
+      "seed": 101,
+      "scenario": "gps_wheel",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.014908718146661745,
+      "heading_rmse_rad": 0.006182816019823556,
+      "speed_rmse_mps": 0.00652090615998961
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_jump",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 1.2471830239542248,
+      "heading_rmse_rad": 0.009564541284919605,
+      "speed_rmse_mps": 0.006796653352854003
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_jump",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.20231580124397452,
+      "heading_rmse_rad": 0.008730880286950715,
+      "speed_rmse_mps": 0.006476438799053153
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_jump",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.012860278850549765,
+      "heading_rmse_rad": 0.0060671009552578994,
+      "speed_rmse_mps": 0.005720867548375439
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_jump",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016083246208411194,
+      "heading_rmse_rad": 0.005469236867171671,
+      "speed_rmse_mps": 0.005395683876971416
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_jump",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.01289961131992345,
+      "heading_rmse_rad": 0.006065845194750337,
+      "speed_rmse_mps": 0.005720564821649447
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_jump",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016098392693948724,
+      "heading_rmse_rad": 0.005467837770169973,
+      "speed_rmse_mps": 0.005395435068723532
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_ramp",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.972694709288101,
+      "heading_rmse_rad": 0.009081801968122775,
+      "speed_rmse_mps": 0.006796653352854003
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_ramp",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.26207169715689926,
+      "heading_rmse_rad": 0.00883564231653221,
+      "speed_rmse_mps": 0.006476438799053153
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_ramp",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.36028844014095945,
+      "heading_rmse_rad": 0.0060671009552578994,
+      "speed_rmse_mps": 0.005720867548375439
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_ramp",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.11365876337638031,
+      "heading_rmse_rad": 0.005469236867171671,
+      "speed_rmse_mps": 0.005395683876971416
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_ramp",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.14345332290148566,
+      "heading_rmse_rad": 0.006065845194750337,
+      "speed_rmse_mps": 0.005720564821649447
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_ramp",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.030072078120249715,
+      "heading_rmse_rad": 0.005467837770169973,
+      "speed_rmse_mps": 0.005395435068723532
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_freeze",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 3.202676640532238,
+      "heading_rmse_rad": 1.439582941745755,
+      "speed_rmse_mps": 0.006796653352854003
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_freeze",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.818537937389365,
+      "heading_rmse_rad": 0.1499088114107925,
+      "speed_rmse_mps": 0.006476438799053153
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.043396978070275774,
+      "heading_rmse_rad": 0.012870284816300436,
+      "speed_rmse_mps": 0.005720867548375439
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016743376888360695,
+      "heading_rmse_rad": 0.006767408309000641,
+      "speed_rmse_mps": 0.005395683876971416
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_freeze",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.01971620809086128,
+      "heading_rmse_rad": 0.0051213232329356505,
+      "speed_rmse_mps": 0.005720564821649447
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_freeze",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.014762400616917193,
+      "heading_rmse_rad": 0.006725187741682593,
+      "speed_rmse_mps": 0.005395435068723532
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_dropout",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.08071592924689104,
+      "heading_rmse_rad": 0.03255397691221176,
+      "speed_rmse_mps": 0.006796653352854003
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_dropout",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.022972527205474134,
+      "heading_rmse_rad": 0.008716410228134098,
+      "speed_rmse_mps": 0.006476438799053153
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_dropout",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.01998553179673448,
+      "heading_rmse_rad": 0.005468416660743882,
+      "speed_rmse_mps": 0.005720867548375439
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_dropout",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.015724454019108543,
+      "heading_rmse_rad": 0.006769395388319037,
+      "speed_rmse_mps": 0.005395683876971416
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_dropout",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.019995554400127322,
+      "heading_rmse_rad": 0.00546892121658132,
+      "speed_rmse_mps": 0.005720825281248524
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_dropout",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.015443526937934687,
+      "heading_rmse_rad": 0.006768380035452236,
+      "speed_rmse_mps": 0.0053954351319077725
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_noise",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.4086138214673548,
+      "heading_rmse_rad": 0.0103317164053961,
+      "speed_rmse_mps": 0.006796653352854003
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_noise",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.05537950583750119,
+      "heading_rmse_rad": 0.008386465864574512,
+      "speed_rmse_mps": 0.006476438799053153
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_noise",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.0855750792085368,
+      "heading_rmse_rad": 0.0060671009552578994,
+      "speed_rmse_mps": 0.005720867548375439
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_noise",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.023732905511436638,
+      "heading_rmse_rad": 0.005469236867171671,
+      "speed_rmse_mps": 0.005395683876971416
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_noise",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.02330594124291606,
+      "heading_rmse_rad": 0.006065845194750337,
+      "speed_rmse_mps": 0.005720564821649447
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_noise",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016856225266692955,
+      "heading_rmse_rad": 0.005467837770169973,
+      "speed_rmse_mps": 0.005395435068723532
+    },
+    {
+      "seed": 102,
+      "scenario": "heading_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.12188985723547893,
+      "heading_rmse_rad": 0.8903041057473868,
+      "speed_rmse_mps": 0.006796653352854003
+    },
+    {
+      "seed": 102,
+      "scenario": "heading_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.031568508645397106,
+      "heading_rmse_rad": 0.09738921995294253,
+      "speed_rmse_mps": 0.006476438799053153
+    },
+    {
+      "seed": 102,
+      "scenario": "heading_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011488196060958914,
+      "heading_rmse_rad": 0.005468416578126465,
+      "speed_rmse_mps": 0.005720867548375439
+    },
+    {
+      "seed": 102,
+      "scenario": "heading_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012487014905787219,
+      "heading_rmse_rad": 0.006769391734589745,
+      "speed_rmse_mps": 0.005395683876971416
+    },
+    {
+      "seed": 102,
+      "scenario": "heading_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011323938428505336,
+      "heading_rmse_rad": 0.005468919954849713,
+      "speed_rmse_mps": 0.005720564821649447
+    },
+    {
+      "seed": 102,
+      "scenario": "heading_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.011898962520041264,
+      "heading_rmse_rad": 0.0067605378031291175,
+      "speed_rmse_mps": 0.005395435068723532
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.13695537943598518,
+      "heading_rmse_rad": 0.0410537992595691,
+      "speed_rmse_mps": 0.6088182788860474
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.0360735132982739,
+      "heading_rmse_rad": 0.01310543574756437,
+      "speed_rmse_mps": 0.027003910851280465
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011830865855877257,
+      "heading_rmse_rad": 0.0060671009552578994,
+      "speed_rmse_mps": 0.0008138844174422986
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.013231214731446124,
+      "heading_rmse_rad": 0.005469236867171671,
+      "speed_rmse_mps": 0.0054739258140302635
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011628959845471527,
+      "heading_rmse_rad": 0.006065846080310955,
+      "speed_rmse_mps": 0.0008138711921173892
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012506135798259077,
+      "heading_rmse_rad": 0.005467836100456416,
+      "speed_rmse_mps": 0.005472958674692257
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_scale",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.11212206348334855,
+      "heading_rmse_rad": 0.034525479302792046,
+      "speed_rmse_mps": 0.4961423661443137
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_scale",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.03261910644235397,
+      "heading_rmse_rad": 0.012116177688286272,
+      "speed_rmse_mps": 0.023422895579639145
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_scale",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.04390187694623299,
+      "heading_rmse_rad": 0.0060671009552578994,
+      "speed_rmse_mps": 0.060330355355257305
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_scale",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.014453463370955093,
+      "heading_rmse_rad": 0.005469236867171671,
+      "speed_rmse_mps": 0.005473061064200572
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_scale",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011627897615171433,
+      "heading_rmse_rad": 0.006065846080310955,
+      "speed_rmse_mps": 0.0008188406048541502
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_scale",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.01250311303040033,
+      "heading_rmse_rad": 0.005467836100456416,
+      "speed_rmse_mps": 0.005472552387351078
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_freeze",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.05625349603517687,
+      "heading_rmse_rad": 0.01838986351508602,
+      "speed_rmse_mps": 0.23614323021918177
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_freeze",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.024088248785941027,
+      "heading_rmse_rad": 0.009612760473024737,
+      "speed_rmse_mps": 0.01097364482620362
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.012080298237500205,
+      "heading_rmse_rad": 0.0060671009552578994,
+      "speed_rmse_mps": 0.002442745193685512
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.013231116152341566,
+      "heading_rmse_rad": 0.005469236867171671,
+      "speed_rmse_mps": 0.005473911425149158
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_freeze",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011844106381928747,
+      "heading_rmse_rad": 0.006065844053721925,
+      "speed_rmse_mps": 0.00225076065407794
+    },
+    {
+      "seed": 102,
+      "scenario": "wheel_freeze",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012324488721221657,
+      "heading_rmse_rad": 0.005467836100456416,
+      "speed_rmse_mps": 0.005470870594647665
+    },
+    {
+      "seed": 102,
+      "scenario": "imu_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.021004819275124608,
+      "heading_rmse_rad": 0.034032640900647816,
+      "speed_rmse_mps": 0.006796653352854003
+    },
+    {
+      "seed": 102,
+      "scenario": "imu_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.021439471197670635,
+      "heading_rmse_rad": 0.010700180605434706,
+      "speed_rmse_mps": 0.006476438799053153
+    },
+    {
+      "seed": 102,
+      "scenario": "imu_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011850119318350779,
+      "heading_rmse_rad": 0.005823938197236626,
+      "speed_rmse_mps": 0.005720867548375439
+    },
+    {
+      "seed": 102,
+      "scenario": "imu_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.013354318417728234,
+      "heading_rmse_rad": 0.005444727860625584,
+      "speed_rmse_mps": 0.005395683876971416
+    },
+    {
+      "seed": 102,
+      "scenario": "imu_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011689190353788336,
+      "heading_rmse_rad": 0.0058225105132732515,
+      "speed_rmse_mps": 0.00572056503421075
+    },
+    {
+      "seed": 102,
+      "scenario": "imu_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.013049148760109444,
+      "heading_rmse_rad": 0.0054436092780174574,
+      "speed_rmse_mps": 0.0053954349827948465
+    },
+    {
+      "seed": 102,
+      "scenario": "steering_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.02151561066251349,
+      "heading_rmse_rad": 0.06814052319281072,
+      "speed_rmse_mps": 0.006796653352854003
+    },
+    {
+      "seed": 102,
+      "scenario": "steering_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.021355211976072385,
+      "heading_rmse_rad": 0.014926429743763521,
+      "speed_rmse_mps": 0.006476438799053153
+    },
+    {
+      "seed": 102,
+      "scenario": "steering_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011864210433335647,
+      "heading_rmse_rad": 0.0060671009552578994,
+      "speed_rmse_mps": 0.005720867548375439
+    },
+    {
+      "seed": 102,
+      "scenario": "steering_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.01334432190491313,
+      "heading_rmse_rad": 0.005469236867171671,
+      "speed_rmse_mps": 0.005395683876971416
+    },
+    {
+      "seed": 102,
+      "scenario": "steering_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011638597934134501,
+      "heading_rmse_rad": 0.006065845194750337,
+      "speed_rmse_mps": 0.005720564821649447
+    },
+    {
+      "seed": 102,
+      "scenario": "steering_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012548835175730511,
+      "heading_rmse_rad": 0.005467837770169973,
+      "speed_rmse_mps": 0.005395435068723532
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_wheel",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 1.3512471997515696,
+      "heading_rmse_rad": 0.04195886817485744,
+      "speed_rmse_mps": 0.6088182788860474
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_wheel",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.22978442100064334,
+      "heading_rmse_rad": 0.01327777549126722,
+      "speed_rmse_mps": 0.027003910851280465
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_wheel",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.012027552437669706,
+      "heading_rmse_rad": 0.0060671009552578994,
+      "speed_rmse_mps": 0.0008138844174422986
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_wheel",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016158550563305427,
+      "heading_rmse_rad": 0.005469236867171671,
+      "speed_rmse_mps": 0.0054739258140302635
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_wheel",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.012040120089609424,
+      "heading_rmse_rad": 0.006065846080310955,
+      "speed_rmse_mps": 0.0008138711921173892
+    },
+    {
+      "seed": 102,
+      "scenario": "gps_wheel",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.015979405872800095,
+      "heading_rmse_rad": 0.005467836100456416,
+      "speed_rmse_mps": 0.005472958674692257
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_jump",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 1.3216027731943922,
+      "heading_rmse_rad": 0.008577369841105765,
+      "speed_rmse_mps": 0.007073281500901104
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_jump",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.22976801003949954,
+      "heading_rmse_rad": 0.00996327268675993,
+      "speed_rmse_mps": 0.0071473026580442895
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_jump",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011713475390963873,
+      "heading_rmse_rad": 0.005071626797257427,
+      "speed_rmse_mps": 0.0059946506916078186
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_jump",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.01599740620861844,
+      "heading_rmse_rad": 0.006099419192836634,
+      "speed_rmse_mps": 0.00604405737560514
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_jump",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.01163285588354891,
+      "heading_rmse_rad": 0.005071070428988935,
+      "speed_rmse_mps": 0.005994396090045177
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_jump",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.013703902580666722,
+      "heading_rmse_rad": 0.006098129952031547,
+      "speed_rmse_mps": 0.0060436504017563186
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_ramp",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.9728860893982971,
+      "heading_rmse_rad": 0.008601874697409391,
+      "speed_rmse_mps": 0.007073281500901104
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_ramp",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.2627554480611453,
+      "heading_rmse_rad": 0.010123015554392396,
+      "speed_rmse_mps": 0.0071473026580442895
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_ramp",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.34825301530250463,
+      "heading_rmse_rad": 0.005071626797257427,
+      "speed_rmse_mps": 0.0059946506916078186
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_ramp",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.10945874450766221,
+      "heading_rmse_rad": 0.006099419192836634,
+      "speed_rmse_mps": 0.00604405737560514
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_ramp",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.0866841717064054,
+      "heading_rmse_rad": 0.005071070428988935,
+      "speed_rmse_mps": 0.005994396090045177
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_ramp",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.02524023929085823,
+      "heading_rmse_rad": 0.006098129952031547,
+      "speed_rmse_mps": 0.0060436504017563186
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_freeze",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 3.250342462230575,
+      "heading_rmse_rad": 1.5962741627367034,
+      "speed_rmse_mps": 0.007073281500901104
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_freeze",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.6703245662364815,
+      "heading_rmse_rad": 0.16383204272804908,
+      "speed_rmse_mps": 0.0071473026580442895
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.04497010685702583,
+      "heading_rmse_rad": 0.011398142276427346,
+      "speed_rmse_mps": 0.0059946506916078186
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.01546979620608924,
+      "heading_rmse_rad": 0.006919081136509941,
+      "speed_rmse_mps": 0.00604405737560514
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_freeze",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.041314035624447805,
+      "heading_rmse_rad": 0.010777910545316552,
+      "speed_rmse_mps": 0.005994396090045177
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_freeze",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.012240350912895619,
+      "heading_rmse_rad": 0.006914134802829482,
+      "speed_rmse_mps": 0.0060436504017563186
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_dropout",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.148958690061852,
+      "heading_rmse_rad": 0.05307065221324754,
+      "speed_rmse_mps": 0.007073281500901104
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_dropout",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.02569183574404059,
+      "heading_rmse_rad": 0.009846382112529072,
+      "speed_rmse_mps": 0.0071473026580442895
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_dropout",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.04664069885398315,
+      "heading_rmse_rad": 0.01248065073505205,
+      "speed_rmse_mps": 0.0059946506916078186
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_dropout",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.014972492312767429,
+      "heading_rmse_rad": 0.006943537434750187,
+      "speed_rmse_mps": 0.00604405737560514
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_dropout",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.046607540051033305,
+      "heading_rmse_rad": 0.012478672630326293,
+      "speed_rmse_mps": 0.005994520196273259
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_dropout",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.014483566174526495,
+      "heading_rmse_rad": 0.00694224283247663,
+      "speed_rmse_mps": 0.006043652196153908
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_noise",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.4180744536625576,
+      "heading_rmse_rad": 0.010580057956831115,
+      "speed_rmse_mps": 0.007073281500901104
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_noise",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.05354694371713048,
+      "heading_rmse_rad": 0.009729716989457095,
+      "speed_rmse_mps": 0.0071473026580442895
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_noise",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.09545687700795848,
+      "heading_rmse_rad": 0.005071626797257427,
+      "speed_rmse_mps": 0.0059946506916078186
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_noise",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.021679011046390934,
+      "heading_rmse_rad": 0.006099419192836634,
+      "speed_rmse_mps": 0.00604405737560514
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_noise",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.02011755522521167,
+      "heading_rmse_rad": 0.005071070428988935,
+      "speed_rmse_mps": 0.005994396090045177
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_noise",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.014065343916886994,
+      "heading_rmse_rad": 0.006098129952031547,
+      "speed_rmse_mps": 0.0060436504017563186
+    },
+    {
+      "seed": 103,
+      "scenario": "heading_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.16167528024684827,
+      "heading_rmse_rad": 0.8905909943092561,
+      "speed_rmse_mps": 0.007073281500901104
+    },
+    {
+      "seed": 103,
+      "scenario": "heading_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.028942876233707213,
+      "heading_rmse_rad": 0.09660417091577012,
+      "speed_rmse_mps": 0.0071473026580442895
+    },
+    {
+      "seed": 103,
+      "scenario": "heading_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.016083628257853297,
+      "heading_rmse_rad": 0.012480651023107508,
+      "speed_rmse_mps": 0.0059946506916078186
+    },
+    {
+      "seed": 103,
+      "scenario": "heading_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.011445921498934267,
+      "heading_rmse_rad": 0.006943479766155463,
+      "speed_rmse_mps": 0.00604405737560514
+    },
+    {
+      "seed": 103,
+      "scenario": "heading_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.015520608742638957,
+      "heading_rmse_rad": 0.012478677656704573,
+      "speed_rmse_mps": 0.005994396090045177
+    },
+    {
+      "seed": 103,
+      "scenario": "heading_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.010981287121542732,
+      "heading_rmse_rad": 0.006942551080575763,
+      "speed_rmse_mps": 0.0060436504017563186
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.13731686836399604,
+      "heading_rmse_rad": 0.035643233724529134,
+      "speed_rmse_mps": 0.6089051486121373
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.038774029798961926,
+      "heading_rmse_rad": 0.01099725903142413,
+      "speed_rmse_mps": 0.02685087447544644
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.012097833973991782,
+      "heading_rmse_rad": 0.005071626797257427,
+      "speed_rmse_mps": 7.393797226102396e-05
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.011114907348614247,
+      "heading_rmse_rad": 0.006099419192836634,
+      "speed_rmse_mps": 0.006104538242633274
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011347430578820676,
+      "heading_rmse_rad": 0.005071074483501584,
+      "speed_rmse_mps": 7.393839082293822e-05
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.010564303673737471,
+      "heading_rmse_rad": 0.006098130612639523,
+      "speed_rmse_mps": 0.00610781254981734
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_scale",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.14291879446806396,
+      "heading_rmse_rad": 0.040719705685958375,
+      "speed_rmse_mps": 0.6399428391362386
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_scale",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.02635895368392688,
+      "heading_rmse_rad": 0.009998157171579923,
+      "speed_rmse_mps": 0.019724748796333506
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_scale",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.019159243610657448,
+      "heading_rmse_rad": 0.005071626797257427,
+      "speed_rmse_mps": 0.04108744403747399
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_scale",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.02992171136338557,
+      "heading_rmse_rad": 0.006099419192836634,
+      "speed_rmse_mps": 0.00909056703731923
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_scale",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011348175791449904,
+      "heading_rmse_rad": 0.005071074483501584,
+      "speed_rmse_mps": 7.780896387463868e-05
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_scale",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.010562786778914158,
+      "heading_rmse_rad": 0.006098130612639523,
+      "speed_rmse_mps": 0.006109158622336872
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_freeze",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.05147837728478937,
+      "heading_rmse_rad": 0.01623882259137894,
+      "speed_rmse_mps": 0.2068072630498367
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_freeze",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.02245275487766975,
+      "heading_rmse_rad": 0.009506070212796397,
+      "speed_rmse_mps": 0.009711644574328887
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.012034623705526678,
+      "heading_rmse_rad": 0.005071626797257427,
+      "speed_rmse_mps": 0.0022940650440302856
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_freeze",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.011114899586453496,
+      "heading_rmse_rad": 0.006099419192836634,
+      "speed_rmse_mps": 0.0061045095984929975
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_freeze",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.01128818901394456,
+      "heading_rmse_rad": 0.005071074694276636,
+      "speed_rmse_mps": 0.002096320120041279
+    },
+    {
+      "seed": 103,
+      "scenario": "wheel_freeze",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.010508653870146075,
+      "heading_rmse_rad": 0.006098130612639523,
+      "speed_rmse_mps": 0.006106683001002141
+    },
+    {
+      "seed": 103,
+      "scenario": "imu_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.022914686441912205,
+      "heading_rmse_rad": 0.03537995774682613,
+      "speed_rmse_mps": 0.007073281500901104
+    },
+    {
+      "seed": 103,
+      "scenario": "imu_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.022202748412423676,
+      "heading_rmse_rad": 0.011305905459829381,
+      "speed_rmse_mps": 0.0071473026580442895
+    },
+    {
+      "seed": 103,
+      "scenario": "imu_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.01218885016008108,
+      "heading_rmse_rad": 0.004915387198708547,
+      "speed_rmse_mps": 0.0059946506916078186
+    },
+    {
+      "seed": 103,
+      "scenario": "imu_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.011195699168125316,
+      "heading_rmse_rad": 0.0062344018972775245,
+      "speed_rmse_mps": 0.00604405737560514
+    },
+    {
+      "seed": 103,
+      "scenario": "imu_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011437793680025798,
+      "heading_rmse_rad": 0.004914777227126917,
+      "speed_rmse_mps": 0.0059943925508946635
+    },
+    {
+      "seed": 103,
+      "scenario": "imu_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.010081294164487543,
+      "heading_rmse_rad": 0.006233612319203775,
+      "speed_rmse_mps": 0.0060436504017563186
+    },
+    {
+      "seed": 103,
+      "scenario": "steering_bias",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.024798476508542847,
+      "heading_rmse_rad": 0.09029622007736607,
+      "speed_rmse_mps": 0.007073281500901104
+    },
+    {
+      "seed": 103,
+      "scenario": "steering_bias",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.022179757371249446,
+      "heading_rmse_rad": 0.013047052064252036,
+      "speed_rmse_mps": 0.0071473026580442895
+    },
+    {
+      "seed": 103,
+      "scenario": "steering_bias",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.012136410566531522,
+      "heading_rmse_rad": 0.005071626797257427,
+      "speed_rmse_mps": 0.0059946506916078186
+    },
+    {
+      "seed": 103,
+      "scenario": "steering_bias",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.011210178213442041,
+      "heading_rmse_rad": 0.006099419192836634,
+      "speed_rmse_mps": 0.00604405737560514
+    },
+    {
+      "seed": 103,
+      "scenario": "steering_bias",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011455309049852777,
+      "heading_rmse_rad": 0.005071070428988935,
+      "speed_rmse_mps": 0.005994396090045177
+    },
+    {
+      "seed": 103,
+      "scenario": "steering_bias",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.010718268565739668,
+      "heading_rmse_rad": 0.006098129952031547,
+      "speed_rmse_mps": 0.0060436504017563186
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_wheel",
+      "estimator": "ekf",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 1.2965945405606254,
+      "heading_rmse_rad": 0.03577244813078288,
+      "speed_rmse_mps": 0.6089051486121373
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_wheel",
+      "estimator": "ekf",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.20402851794595053,
+      "heading_rmse_rad": 0.010827812114202105,
+      "speed_rmse_mps": 0.02685087447544644
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_wheel",
+      "estimator": "analytic_ablation",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011154277900100592,
+      "heading_rmse_rad": 0.005071626797257427,
+      "speed_rmse_mps": 7.393797226102396e-05
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_wheel",
+      "estimator": "analytic_ablation",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.016151663846779078,
+      "heading_rmse_rad": 0.006099419192836634,
+      "speed_rmse_mps": 0.006104538242633274
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_wheel",
+      "estimator": "robust",
+      "phase": "attack",
+      "sample_count": 1110,
+      "position_rmse_m": 0.011058635315968108,
+      "heading_rmse_rad": 0.005071074483501584,
+      "speed_rmse_mps": 7.393839082293822e-05
+    },
+    {
+      "seed": 103,
+      "scenario": "gps_wheel",
+      "estimator": "robust",
+      "phase": "recovery_3s",
+      "sample_count": 300,
+      "position_rmse_m": 0.014186169468048473,
+      "heading_rmse_rad": 0.006098130612639523,
+      "speed_rmse_mps": 0.00610781254981734
+    }
+  ]
+}

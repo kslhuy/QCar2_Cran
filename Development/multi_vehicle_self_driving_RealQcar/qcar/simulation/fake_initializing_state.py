@@ -259,14 +259,22 @@ class FakeInitializingState(StateBase):
             
             # Retrieve disturbance mode from mock vehicle to ensure observer matches simulation
             disturbance_mode = parent_fake_vehicle.mock_qcar.disturbance_mode
+
+            from simulation.robust_estimator_config import simulation_estimator_params, simulation_motion_params
+            observer = self.vehicle_logic.vehicle_observer
+            selection = parent_fake_vehicle.local_estimator_override or parent_fake_vehicle.sim_config.get(
+                'state_estimation', {}).get('local_estimator_type', observer.local_estimator_type)
+            observer.local_estimator_type = selection
+            params = {'use_qcar_ekf': False, 'disturbance_mode': disturbance_mode}
+            if selection == 'robust_kalman_net':
+                params.update(simulation_estimator_params(parent_fake_vehicle.mock_qcar))
+            elif selection == 'ekf':
+                params.update(simulation_motion_params(parent_fake_vehicle.mock_qcar))
             
             success = self.vehicle_logic.vehicle_observer.initialize_local_estimator(
                 gps=parent_fake_vehicle.mock_gps,
                 initial_pose=self.init_pose,
-                estimator_params={
-                    'use_qcar_ekf': False, # Use fallback EKF for simulation
-                    'disturbance_mode': disturbance_mode 
-                }  
+                estimator_params=params,
             )
             
             if success:

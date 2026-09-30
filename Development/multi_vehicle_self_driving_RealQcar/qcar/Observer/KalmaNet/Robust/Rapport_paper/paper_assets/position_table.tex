@@ -1,0 +1,19 @@
+\begin{tabular}{lrrrr}
+\toprule
+Condition & EKF & Legacy GRU & Analytical & Hybrid \\
+\midrule
+Clean & 0.0217 & 0.7342 & 0.0123 & 0.0120 \\
+GPS jump & 0.7308 & 0.9750 & 0.0142 & 0.0139 \\
+GPS ramp & 0.5975 & 0.9206 & 0.2202 & 0.0701 \\
+GPS freeze & 1.9428 & 2.4595 & 0.0255 & 0.0198 \\
+GPS dropout & 0.0724 & 4.3690 & 0.0234 & 0.0232 \\
+GPS noise & 0.2574 & 0.2297 & 0.0540 & 0.0166 \\
+Heading bias & 0.0896 & 0.9627 & 0.0128 & 0.0124 \\
+Tachometer bias & 0.0851 & 1.2780 & 0.0123 & 0.0119 \\
+Tachometer scale & 0.0808 & 1.1376 & 0.0207 & 0.0119 \\
+Tachometer freeze & 0.0366 & 1.2176 & 0.0123 & 0.0119 \\
+IMU bias & 0.0218 & 0.7362 & 0.0123 & 0.0120 \\
+Steering bias & 0.0222 & 1.0482 & 0.0123 & 0.0120 \\
+GPS + tachometer & 0.7565 & 1.4769 & 0.0139 & 0.0136 \\
+\bottomrule
+\end{tabular}

@@ -1,5 +1,10 @@
 # Simulation Parameters for Fake QCar
 
+# Simulation-specific checkpoint and matching plant calibration are selected
+# in fake_initializing_state.py. Override with --local-estimator=ekf to compare.
+state_estimation:
+  local_estimator_type: robust_kalman_net
+
 vehicle:
   id: 0
   model_type: "kinematic"   # Options: kinematic, dynamic, qlpv_legacy, qlpv_matrix

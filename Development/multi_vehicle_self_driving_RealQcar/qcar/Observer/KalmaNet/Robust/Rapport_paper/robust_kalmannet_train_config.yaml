@@ -1,4 +1,9 @@
 # Robust KalmaNet offline training config
+# This YAML configures the historical GRU/recorded-data trainer.
+# For the revised simulation backend and true MockQCar targets run:
+# python train_robust_kalmannet.py --simulation-trust --epochs 60 --rounds 2
+# Evaluate it with validate_robust_kalmannet.py --simulation --checkpoint
+# models/innovation_trust_sim.npz --legacy --duration 60
 #
 # State order used by the training loss:
 # [x, y, psi, v]

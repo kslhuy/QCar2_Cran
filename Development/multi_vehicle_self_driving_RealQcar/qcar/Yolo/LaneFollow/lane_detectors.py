@@ -36,8 +36,9 @@ from enum import Enum
 # Import to detect if running on physical QCar or simulation
 try:
     from pal.products.qcar import IS_PHYSICAL_QCAR
-except ImportError:
-    IS_PHYSICAL_QCAR = False  # Default to simulation if import fails
+except (ImportError, OSError):
+    # PAL may be installed without its native Quanser runtime libraries.
+    IS_PHYSICAL_QCAR = False  # Default to simulation if the SDK cannot load
 
 from .lane_detection_interface import (
     LaneDetectorBase,

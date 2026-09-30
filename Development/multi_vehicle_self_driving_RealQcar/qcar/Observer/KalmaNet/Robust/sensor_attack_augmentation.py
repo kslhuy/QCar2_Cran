@@ -1010,7 +1010,7 @@ class RuntimeSensorAttackSimulator:
         accel = np.asarray(
             acceleration if acceleration is not None else np.zeros(3, dtype=np.float64),
             dtype=np.float64,
-        ).reshape(-1)
+        ).reshape(-1).copy()
         if accel.size < 3:
             accel_padded = np.zeros(3, dtype=np.float64)
             accel_padded[: accel.size] = accel

@@ -1,18 +1,19 @@
-PWD C:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Robust
+PWD c:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Robust\Rapport_paper
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\miktex\data\le\pdftex\pdflatex.fmt
-INPUT robust_kalmannet_trust_report.tex
+INPUT c:\Users\Quang Huy Nugyen\Desktop\PHD_paper\Simulation\QCAR\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar\Observer\KalmaNet\Robust\Rapport_paper\robust_kalmannet_trust_report.tex
 OUTPUT robust_kalmannet_trust_report.log
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\article.cls
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\article.cls
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\size11.clo
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\size11.clo
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\size11.clo
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmr10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\size10.clo
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\size10.clo
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\size10.clo
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\fontenc.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\fontenc.sty
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecrm1095.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecrm1000.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\inputenc.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\base\inputenc.sty
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\lmodern.sty
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\lmodern.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\geometry\geometry.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\geometry\geometry.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\graphics\keyval.sty
@@ -44,6 +45,8 @@ INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\booktabs
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\booktabs\booktabs.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\tools\array.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\tools\array.sty
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\tools\tabularx.sty
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\tools\tabularx.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\graphics\graphicx.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\graphics\graphicx.sty
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\graphics\graphics.sty
@@ -224,8 +227,10 @@ INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\generic\pgf\li
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\generic\pgf\libraries\pgflibraryarrows.meta.code.tex
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\generic\pgf\frontendlayer\tikz\libraries\tikzlibrarypositioning.code.tex
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\generic\pgf\frontendlayer\tikz\libraries\tikzlibrarypositioning.code.tex
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\generic\pgf\frontendlayer\tikz\libraries\tikzlibraryfit.code.tex
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\generic\pgf\frontendlayer\tikz\libraries\tikzlibraryfit.code.tex
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\t1lmr.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\t1lmr.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\t1lmr.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmr10.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\l3backend\l3backend-pdftex.def
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\l3backend\l3backend-pdftex.def
 INPUT .\robust_kalmannet_trust_report.aux
@@ -249,20 +254,30 @@ OUTPUT robust_kalmannet_trust_report.pdf
 INPUT .\robust_kalmannet_trust_report.out
 INPUT .\robust_kalmannet_trust_report.out
 OUTPUT robust_kalmannet_trust_report.out
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecrm1728.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecrm1200.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmr12.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmr8.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmr6.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmmi12.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmmi8.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmmi6.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmsy10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmsy8.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmsy6.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmex10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmex8.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmex7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmr17.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmr12.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\ot1lmr.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\ot1lmr.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\ot1lmr.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmr12.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmr8.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmr6.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\omllmm.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\omllmm.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\omllmm.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmi12.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmi8.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmi6.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\omslmsy.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\omslmsy.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\omslmsy.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmsy10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmsy8.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmsy6.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\omxlmex.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\omxlmex.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\omxlmex.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmex10.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\amsfonts\umsa.fd
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\amsfonts\umsa.fd
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\amsfonts\umsa.fd
@@ -275,96 +290,184 @@ INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\amsfonts
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msbm10.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msbm10.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msbm7.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbx12.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbx8.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbx6.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmmib10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmmib8.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmmib6.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbsy10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmbsy8.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmbsy6.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecrm1000.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecbx1000.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmex7.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmex7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmbx12.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmbx8.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmbx6.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmib10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmib10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmib7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmbsy10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmbsy10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmbsy7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmr9.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmbx9.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmbx10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmr12.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmbx12.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\t1lmtt.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\t1lmtt.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\tex\latex\lm\t1lmtt.fd
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmtt10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmr10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmr7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmr5.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmi10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmi7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmi5.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmsy10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmsy7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmsy5.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msam10.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msam7.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msam5.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msbm10.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msbm7.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msbm5.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbx10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbx7.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbx5.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmmib10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmmib7.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmmib5.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbsy10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmbsy7.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\cmextra\cmbsy5.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecrm1440.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecbx1440.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmmi10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmsy10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmex10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmbx10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmbx7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmbx5.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmib10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmib7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmib5.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmbsy10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmbsy7.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmbsy5.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\map\pdftex\pdftex.map
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\enc\dvips\lm\lm-ec.enc
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\enc\dvips\lm\lm-mathit.enc
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\enc\dvips\lm\lm-rm.enc
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\enc\dvips\lm\lm-mathsy.enc
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmr9.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmi9.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmsy9.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msam10.tfm
 INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\amsfonts\symbols\msbm10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbx10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmmib10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\cm\cmbsy10.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecbx1200.tfm
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\map\pdftex\pdftex.map
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\tcrm1095.tfm
-INPUT .\report_figures\kalmarobust_result-12.png
-INPUT .\report_figures\kalmarobust_result-12.png
-INPUT .\report_figures\kalmarobust_result-12.png
-INPUT .\report_figures\kalmarobust_result-12.png
-INPUT .\report_figures\kalmarobust_result-12.png
-INPUT .\report_figures\kalmarobust_result-12.png
-INPUT .\report_figures\kalmarobust_result-13.png
-INPUT .\report_figures\kalmarobust_result-13.png
-INPUT .\report_figures\kalmarobust_result-13.png
-INPUT .\report_figures\kalmarobust_result-13.png
-INPUT .\report_figures\kalmarobust_result-13.png
-INPUT .\report_figures\kalmarobust_result-13.png
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\jknappen\ec\ecti1095.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\rm-lmbx9.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmmib10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\lmbsy10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmbx12.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmri10.tfm
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\enc\dvips\lm\lm-mathex.enc
+INPUT .\paper_assets\training_table.tex
+INPUT .\paper_assets\training_table.tex
+INPUT paper_assets\training_table.tex
+INPUT .\paper_assets\training_history.pdf
+INPUT .\paper_assets\training_history.pdf
+INPUT .\paper_assets\training_history.pdf
+INPUT .\paper_assets\training_history.pdf
+INPUT .\paper_assets\training_history.pdf
+INPUT .\paper_assets\position_table.tex
+INPUT .\paper_assets\position_table.tex
+INPUT paper_assets\position_table.tex
+INPUT .\paper_assets\heading_speed_table.tex
+INPUT .\paper_assets\heading_speed_table.tex
+INPUT paper_assets\heading_speed_table.tex
+INPUT .\paper_assets\performance_overview.pdf
+INPUT .\paper_assets\performance_overview.pdf
+INPUT .\paper_assets\performance_overview.pdf
+INPUT .\paper_assets\performance_overview.pdf
+INPUT .\paper_assets\performance_overview.pdf
+INPUT .\paper_assets\relative_performance.pdf
+INPUT .\paper_assets\relative_performance.pdf
+INPUT .\paper_assets\relative_performance.pdf
+INPUT .\paper_assets\relative_performance.pdf
+INPUT .\paper_assets\relative_performance.pdf
+INPUT .\paper_assets\trust_factor_comparison.pdf
+INPUT .\paper_assets\trust_factor_comparison.pdf
+INPUT .\paper_assets\trust_factor_comparison.pdf
+INPUT .\paper_assets\trust_factor_comparison.pdf
+INPUT .\paper_assets\trust_factor_comparison.pdf
+INPUT .\paper_assets\mask_channel_outputs.pdf
+INPUT .\paper_assets\mask_channel_outputs.pdf
+INPUT .\paper_assets\mask_channel_outputs.pdf
+INPUT .\paper_assets\mask_channel_outputs.pdf
+INPUT .\paper_assets\mask_channel_outputs.pdf
+INPUT .\paper_assets\gain_correction_comparison.pdf
+INPUT .\paper_assets\gain_correction_comparison.pdf
+INPUT .\paper_assets\gain_correction_comparison.pdf
+INPUT .\paper_assets\gain_correction_comparison.pdf
+INPUT .\paper_assets\gain_correction_comparison.pdf
+INPUT .\paper_assets\gain_matrix_snapshot.pdf
+INPUT .\paper_assets\gain_matrix_snapshot.pdf
+INPUT .\paper_assets\gain_matrix_snapshot.pdf
+INPUT .\paper_assets\gain_matrix_snapshot.pdf
+INPUT .\paper_assets\gain_matrix_snapshot.pdf
+INPUT .\paper_assets\observer_state_comparison.pdf
+INPUT .\paper_assets\observer_state_comparison.pdf
+INPUT .\paper_assets\observer_state_comparison.pdf
+INPUT .\paper_assets\observer_state_comparison.pdf
+INPUT .\paper_assets\observer_state_comparison.pdf
+INPUT .\paper_assets\attack_recovery_performance.pdf
+INPUT .\paper_assets\attack_recovery_performance.pdf
+INPUT .\paper_assets\attack_recovery_performance.pdf
+INPUT .\paper_assets\attack_recovery_performance.pdf
+INPUT .\paper_assets\attack_recovery_performance.pdf
+INPUT .\paper_assets\closed_loop_table.tex
+INPUT .\paper_assets\closed_loop_table.tex
+INPUT paper_assets\closed_loop_table.tex
+INPUT .\paper_assets\closed_loop_example.pdf
+INPUT .\paper_assets\closed_loop_example.pdf
+INPUT .\paper_assets\closed_loop_example.pdf
+INPUT .\paper_assets\closed_loop_example.pdf
+INPUT .\paper_assets\closed_loop_example.pdf
+INPUT .\paper_assets\stress_table.tex
+INPUT .\paper_assets\stress_table.tex
+INPUT paper_assets\stress_table.tex
+INPUT .\paper_assets\control_stress_comparison.pdf
+INPUT .\paper_assets\control_stress_comparison.pdf
+INPUT .\paper_assets\control_stress_comparison.pdf
+INPUT .\paper_assets\control_stress_comparison.pdf
+INPUT .\paper_assets\control_stress_comparison.pdf
+INPUT .\paper_assets\runtime_table.tex
+INPUT .\paper_assets\runtime_table.tex
+INPUT paper_assets\runtime_table.tex
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\tfm\public\lm\ec-lmtt9.tfm
 INPUT robust_kalmannet_trust_report.aux
 INPUT .\robust_kalmannet_trust_report.out
 INPUT .\robust_kalmannet_trust_report.out
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecti1095.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecti1095.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\tcrm1095.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\tcrm1095.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecbx1200.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecbx1200.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecrm1095.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecrm1095.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecbx1440.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecbx1440.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecrm1000.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecrm1000.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecbx1000.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecbx1000.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecrm1200.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecrm1200.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecrm1728.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\MiKTeX\fonts\pk\ljfour\jknappen\ec\dpi600\ecrm1728.pk
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmex10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmex10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi7.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi7.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi8.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmi8.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmib10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmmib10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmr10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmr10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmr8.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmr8.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmsy10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmsy10.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmsy8.pfb
-INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\cm\cmsy8.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmbx10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmbx10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmbx12.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmbx12.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmbx9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmbx9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmex10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmex10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmi10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmi10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmi6.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmi6.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmi7.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmi7.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmi9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmi9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmib10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmmib10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr12.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr12.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr17.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr17.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr6.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr6.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr7.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr7.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmr9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmri10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmri10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmsy10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmsy10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmsy6.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmsy6.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmsy7.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmsy7.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmsy9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmsy9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmtt10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmtt10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmtt9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\lm\lmtt9.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\symbols\msbm10.pfb
+INPUT C:\Users\Quang Huy Nugyen\AppData\Local\Programs\MiKTeX\fonts\type1\public\amsfonts\symbols\msbm10.pfb

@@ -41,6 +41,130 @@
 \begin{document}
 \maketitle
 
+\begin{center}
+\fbox{\parbox{0.94\linewidth}{\textbf{Implementation revision, September 2026.}
+The simulation backend has been redesigned and retrained. The new continuous,
+ground-truth experiments below supersede the historical sliding-window
+validation as evidence of simulation robustness. The original GRU checkpoint
+and the historical method description are retained for comparison.}}
+\end{center}
+
+\section*{Current simulation implementation and reproducible results}
+
+\paragraph{What changed.}
+The \texttt{innovation\_trust} backend retains a calibrated motion model and
+learns measurement reliability with a shared 12--24--1 ReLU network (337
+parameters). It replaces unrestricted recurrent gain matrices with positive,
+diagonal covariance gains. Thus a position fault cannot directly change speed
+or heading through an off-diagonal learned gain. GPS heading is checked before
+fusion; an already corrupted heading filter is not treated as an independent
+measurement. The four wheel-speed copies in the historical input are treated
+as one tachometer source. The simulator's 0.26 m wheelbase, throttle lookup,
+steering actuator lag, and speed-dependent acceleration limit are represented
+explicitly. These are static model parameters, not access to plant state.
+
+\paragraph{Causal trust and bounded updates.}
+For each channel, features describe the scaled innovation, its discrepancy
+from an odometry anchor, measurement-motion disagreement, accumulated
+discrepancy, frozen-signal duration, speed, yaw rate, measurement interval, and
+channel identity. The anchor propagates without the fast GPS position
+corrections and aligns slowly only under small, trusted discrepancies.
+Writing $r_j=z_j-x^-_j$, $a_j$ for availability, and $e_j$ for the maximum of
+innovation and scaled anchor discrepancy, the update has the form
+\begin{align*}
+ \gamma_j &= a_j\,\exp\{-\min[(e_j/c_j)^4,60]\}
+                  \sigma(\mathrm{MLP}(f_j)),\\
+ K_j &= P^-_j/(P^-_j+R_j),\qquad
+ x^+_j=x^-_j+K_j\gamma_j r_j,\\
+ P^+_j&=\max\{(1-K_j\gamma_j)P^-_j,10^{-9}\}.
+\end{align*}
+Heading residuals and estimates are wrapped. Position trust is shared across
+the two GPS coordinates; heading and velocity trust remain independent.
+Explicit stale/non-finite measurement handling and frozen-signal checks also
+apply. Frozen tachometer rejection protects the pose predictor as well as the
+velocity correction. Prediction can still drift if independent sources are
+simultaneously unavailable or the calibration is wrong.
+
+\paragraph{Training and loss.}
+Training uses the actual \texttt{MockQCar} plant from
+\texttt{fake\_vehicle\_real\_logic.py}, with six drive seeds (1--6), two
+validation seeds (21--22), 30 s drives, 5/10/20 Hz GPS, sensor noise, and modest
+plant calibration perturbations. Each drive is replayed with 13 clean/fault
+conditions. The loss combines balanced binary cross entropy for soft sensor
+reliability targets with 0.08 times a normalized, bounded state-correction
+squared error. A second data-collection/training pass uses the first learned
+filter's causal states to reduce distribution mismatch. Targets and attack
+labels are used only offline. The checkpoint never receives attack labels,
+clean reference signals, or true state at inference.
+
+\paragraph{Evaluation protocol.}
+The primary test uses three unused seeds (101--103), 60 s continuous drives,
+50 Hz estimation, 10 Hz noisy GPS, and two fault episodes per drive. One
+initial pose is provided from the known spawn pose; there are no target resets
+or overlapping-window averages. All estimators receive the same corrupted
+sensor samples. The existing fallback EKF and historical GRU receive the same
+nominal calibration; the analytical ablation disables only the trust MLP.
+Metrics compare directly with simulated plant truth. Detailed heading, speed,
+tail-error, and runtime results are in \texttt{results/summary.json}.
+
+\IfFileExists{results/heldout_table.tex}{\input{results/heldout_table.tex}}{}
+\begin{figure}[htbp]\centering
+\IfFileExists{results/heldout_comparison.png}{\includegraphics[width=\linewidth]{results/heldout_comparison.png}}{}
+\caption{Continuous held-out estimation. Logarithmic axes preserve both clean
+accuracy and large attack errors. The analytical ablation separates the
+learned trust contribution from the new physical predictor and guards.}
+\end{figure}
+
+\paragraph{Closed-loop and stress tests.}
+A separate headless test connects estimated state to the repository's Stanley
+and PID controllers and runs the same MockQCar plant on a circular path. This
+is a feedback-control test, not a full networked ground-station or default
+pure-pursuit workflow. Unused seeds 401--403 run 40 s each with 14 s attacks.
+Additional tests use 5 Hz GPS with a 20\% time-constant error and a 10\%
+steady-state speed error, and the simulation's 200 Hz noise-free sensor
+setting. Simultaneous GPS and wheel attacks with model error remain a harder
+case: odometry has no independent absolute position reference and can drift.
+In that combined-fault calibration stress test, position RMSE was 0.464 m
+for the revision versus 0.657 m for EKF; the analytical ablation reached
+0.402 m. Learned trust therefore does not improve every stress condition.
+These experiments do not establish physical-car robustness or immunity to
+arbitrary coordinated, physically consistent spoofing.
+
+\begin{figure}[htbp]\centering
+\IfFileExists{results/closed_loop_tracking.png}{\includegraphics[width=\linewidth]{results/closed_loop_tracking.png}}{}
+\caption{Closed-loop path and speed error after the initial 3 s startup period.
+The EKF and revised estimator drive separate plant trajectories.}
+\end{figure}
+
+\paragraph{Runtime integration.}
+The fake vehicle's simulation settings now select the revised backend.
+Initialization loads the new checkpoint and supplies the plant's static
+calibration through the simulation configuration helper. NumPy inference
+uses the exported neural weights without a training graph. The clean-reference
+publication bypass is disabled. The historical real-car training YAML and
+checkpoint remain available. From the \texttt{Robust} folder, run these
+PowerShell commands:
+\begingroup\footnotesize
+\begin{verbatim}
+python train_robust_kalmannet.py --simulation-trust --epochs 60 --rounds 2
+python validate_robust_kalmannet.py --simulation --duration 60 --legacy `
+  --checkpoint models/innovation_trust_sim.npz --output results/heldout.json
+python closed_loop_benchmark.py
+python -m unittest test_innovation_trust -v
+python summarize_simulation_results.py
+\end{verbatim}
+\endgroup
+Normal fake-car startup uses the new simulation default. To select the existing
+EKF, append the option shown below. Runtime fault injection remains available
+and is disabled by default.
+\begin{verbatim}
+--local-estimator=ekf
+\end{verbatim}
+The following sections document the historical GRU version and its older
+recorded-data results; those targets were EKF estimates, not physical truth.
+\clearpage
+\section*{Archived GRU description and earlier results}
+
 \begin{abstract}
 This article presents a robust KalmaNet-style state estimator for the QCar
 platform. The estimator preserves a physics-based vehicle prediction model and
