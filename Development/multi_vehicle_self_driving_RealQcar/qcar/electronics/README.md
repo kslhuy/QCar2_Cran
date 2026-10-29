@@ -61,7 +61,8 @@ currently includes:
 - a fail-safe binding that first replays Python Trust/Observer stages in shadow,
   then permits explicit C++ authority only after the configured four-stage
   parity gate; every authoritative result remains cross-checked and one mismatch
-  immediately fails back to Python.
+  stops the authoritative run. Python shadow mode must be explicitly selected
+  again; the runtime does not automatically change the chosen backend.
 
 This is a transaction/functional-level twin. It does not attempt analog SPICE,
 RF propagation, pin-level MCU instruction emulation or PCB thermal simulation.
@@ -159,7 +160,7 @@ requires a CAN/CAN-FD transceiver and connector/protection in a PCB revision.
    prediction variants behind the same ABI. Ground Station now exposes separate
    Trust/weight/correction/prediction parity and an evidence-count authority gate.
 5. **Implemented for SIL:** safety-gated Native authority, automatic Python
-   failback, Ground Station mode/reset controls, repeatable fault presets and a
+   authority fault reporting, Ground Station mode/reset controls, repeatable fault presets and a
    JSON-producing end-to-end manual validation suite.
 6. **Implemented:** generic hardware manifests, single/dual-node topology,
    capability handshake, CRC-framed HIL protocol, UDP/adapter transport,

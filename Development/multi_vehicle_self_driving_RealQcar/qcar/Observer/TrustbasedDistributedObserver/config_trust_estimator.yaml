@@ -5,7 +5,7 @@
 # =====================================================================
 # Fleet Estimator Type Selection
 # =====================================================================
-# Options: 'trust_consensus', 'trust_kalman'
+# Implemented trust estimator: 'trust_consensus'
 fleet_estimator_type: trust_consensus
 
 # Calibration-derived longitudinal model source.
@@ -204,6 +204,10 @@ weight:
 # Observer/Estimator Gains
 # =====================================================================
 observer:
+  relative_measurement_source: external # external (raw/UIO sensor) or clean_v2v (test reference)
+  recovery_state_source: estimate # estimate, direct_v2v, or clean_v2v (test reference)
+  require_relative_measurement: true # Require the selected source; do not silently change it.
+  relative_measurement_max_age_s: 0.2
   observer_gain: 0.1              # Measurement correction gain (L in Luenberger)
   consensus_gain: 0.2             # Consensus correction gain
   
@@ -223,12 +227,12 @@ observer:
   #                   host-target distance, blend that prediction with the
   #                   normal model prediction, blend clean target theta with
   #                   host theta, and fall back to host velocity/acceleration
-  dynamics_prediction_mode: mixed_clean_data
+  dynamics_prediction_mode: model
 
   # When true, clean_data may re-anchor x/y to the clean V2V target pose when
   # attack flags are active. For mixed_clean_data, this enables the same
   # host-relative anchor used by relative_host_anchor_mixed; false disables it.
-  force_clean_pose_anchor: true
+  force_clean_pose_anchor: false
 
   # When true, a rollback event gets one final current-time anchor/alignment
   # pass after replay finishes. This does not run during normal/no-attack
@@ -268,7 +272,7 @@ observer:
   # measurement gate and w0 weighting is delayed by this many estimator steps.
   # Example: 8 steps ~= 0.32 s at 25 Hz, allowing attacked direct packets to
   # contaminate the estimate before trust rejection closes w0.
-  direct_trust_application_delay_steps: 4
+  direct_trust_application_delay_steps: 0
   # Final output low-pass filter on each target estimate:
   # x_filt = alpha * x_new + (1 - alpha) * x_prev
   # lower alpha = smoother but more lag
@@ -321,7 +325,7 @@ vehicle:
   max_velocity: 2.0               # Maximum velocity m/s
   max_acceleration: 2.0           # Match real-QCar longitudinal limit used elsewhere
   max_steering: 0.5               # Maximum steering angle rad
-  control_timeout_s: 1.0          # After this, predict targets with constant velocity
+  control_timeout_s: 1.0          # Expired target control makes model-based output unavailable.
   
   # Longitudinal-model defaults come from `observer_model_source` above.
   # The referenced calibration file injects:
@@ -349,6 +353,7 @@ timestamp_alignment:
 # Logging and Debugging
 # =====================================================================
 logging:
+  enabled: true                  # Specialized trust CSV recording; false avoids diagnostic formatting/I/O.
   log_trust_scores: true          # Log trust scores each update
   log_weight_updates: true        # Log weight calculations
   log_attack_flags: true          # Log attack detection flags

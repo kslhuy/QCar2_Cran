@@ -6,16 +6,22 @@ Stores and retrieves externally measured host-target relative states
 """
 
 import time
+from threading import RLock
+from typing import Any, Dict, Optional
+
 import numpy as np
-from typing import Dict, Optional
 
 
 class ExternalMeasurementCache:
     """Thread-safe cache for external relative measurements (e.g. YOLO / radar)."""
 
     def __init__(self, max_age_s: float = 1.0):
-        self._data: Dict[int, Dict[str, float]] = {}
-        self._max_age_ns = int(max(0.05, float(max_age_s)) * 1e9)
+        max_age_s = float(max_age_s)
+        if not np.isfinite(max_age_s) or max_age_s <= 0:
+            raise ValueError("Measurement max age must be positive and finite")
+        self._data: Dict[int, Dict[str, Any]] = {}
+        self._max_age_ns = int(max_age_s * 1e9)
+        self._lock = RLock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -35,7 +41,7 @@ class ExternalMeasurementCache:
         try:
             tid = int(target_id)
             dist = float(distance)
-            if not np.isfinite(dist) or dist <= 0.0:
+            if tid < 0 or not np.isfinite(dist) or dist <= 0.0:
                 return False
 
             rel_vel = float(relative_velocity) if relative_velocity is not None else float("nan")
@@ -63,36 +69,44 @@ class ExternalMeasurementCache:
                 rel_bearing = float("nan")
 
             ts_ns = int(timestamp_ns) if timestamp_ns is not None else int(time.time_ns())
-            self._data[tid] = {
+            if ts_ns <= 0:
+                return False
+            entry = {
                 "distance": dist,
                 "relative_velocity": rel_vel,
                 "relative_bearing": rel_bearing,
                 "confidence": rel_conf,
-                "timestamp_ns": float(ts_ns),
+                "timestamp_ns": ts_ns,
                 "source": str(source),
             }
+            with self._lock:
+                previous = self._data.get(tid)
+                if previous is not None and ts_ns < previous["timestamp_ns"]:
+                    return False
+                self._data[tid] = entry
             return True
-        except Exception:
+        except (TypeError, ValueError, OverflowError):
             return False
 
     def clear(self, target_id: Optional[int] = None) -> None:
         """Clear cached external relative measurement(s)."""
-        if target_id is None:
-            self._data.clear()
-            return
-        try:
-            self._data.pop(int(target_id), None)
-        except Exception:
-            pass
+        with self._lock:
+            if target_id is None:
+                self._data.clear()
+            else:
+                self._data.pop(int(target_id), None)
 
-    def get(self, target_id: int, current_time_ns: int) -> Optional[Dict[str, float]]:
+    def get(self, target_id: int, current_time_ns: int) -> Optional[Dict[str, Any]]:
         """Return fresh external relative measurement for the target, if available."""
-        entry = self._data.get(int(target_id))
+        with self._lock:
+            stored = self._data.get(int(target_id))
+            entry = dict(stored) if stored is not None else None
         if not entry:
             return None
         ts_ns = int(entry.get("timestamp_ns", 0.0))
         if ts_ns <= 0:
             return None
-        if (int(current_time_ns) - ts_ns) > self._max_age_ns:
+        age_ns = int(current_time_ns) - ts_ns
+        if age_ns < 0 or age_ns > self._max_age_ns:
             return None
         return entry

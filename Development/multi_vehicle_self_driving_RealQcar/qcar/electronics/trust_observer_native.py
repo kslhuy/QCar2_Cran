@@ -523,8 +523,10 @@ class NativeTrustObserverCore:
     ) -> np.ndarray:
         """Propagate a corrected target state with the embedded C++ model."""
         state = np.ascontiguousarray(corrected_state, dtype=np.float64).reshape(-1)
-        if state.size < 4:
-            raise ValueError("prediction requires at least four state values")
+        if state.size < 4 or not np.isfinite(state).all():
+            raise ValueError("prediction requires at least four finite state values")
+        if not np.isfinite(dt) or dt < 0:
+            raise ValueError("prediction dt must be nonnegative and finite")
         clean = None
         clean_ptr = None
         if clean_state is not None:
@@ -534,22 +536,35 @@ class NativeTrustObserverCore:
             clean_ptr = clean.ctypes.data_as(ctypes.POINTER(ctypes.c_double))
 
         normalized_mode = str(prediction_mode).strip().lower()
-        mode_value = {
+        modes = {
             "none": 0,
             "model": 1,
             "dead_reckoning": 2,
             "clean_data": 3,
             "mixed_clean_data": 4,
             "relative_host_anchor_mixed": 4,
-        }.get(normalized_mode, 1)
-        longitudinal_value = {
+        }
+        if normalized_mode not in modes:
+            raise ValueError(f"Unknown native prediction mode: {normalized_mode}")
+        mode_value = modes[normalized_mode]
+        models = {
             "constant_velocity": 0,
             "velocity_lag": 1,
             "velocity_lag_lookup": 2,
             "velocity_command": 3,
             "acceleration_lag": 4,
             "simple_acceleration": 5,
-        }.get(str(model_config.get("longitudinal_model", "constant_velocity")).lower(), 0)
+        }
+        model_name = str(model_config.get("longitudinal_model", "constant_velocity")).lower()
+        if model_name not in models:
+            raise ValueError(f"Unknown native longitudinal model: {model_name}")
+        longitudinal_value = models[model_name]
+        if dt > 0 and mode_value not in (0, 2, 3):
+            if control is None or len(control) != 2 or not np.isfinite(control).all():
+                raise ValueError("Native model prediction requires the target's control")
+        if dt > 0 and (mode_value == 3 or (mode_value == 4 and attack_anchor_active)):
+            if clean is None or not np.isfinite(clean).all():
+                raise ValueError("Selected native clean-reference prediction requires a finite clean state")
         steering = float(control[0]) if control is not None and len(control) > 0 else 0.0
         throttle = float(control[1]) if control is not None and len(control) > 1 else 0.0
 
@@ -641,6 +656,11 @@ class NativeTrustObserverCore:
             if throttle_points.size == velocity_points.size
             else 0
         )
+        if dt > 0 and mode_value not in (0, 2, 3) and longitudinal_value == 2:
+            if (lookup_count < 2 or not np.isfinite(throttle_points).all()
+                    or not np.isfinite(velocity_points).all()
+                    or not np.all(np.diff(throttle_points) > 0)):
+                raise ValueError("Native lookup prediction requires a finite, strictly increasing table")
         output = np.empty(state.size, dtype=np.float64)
         code = int(
             self._library.cran_observer_predict(
@@ -784,6 +804,9 @@ class TrustObserverShadow:
 
     def should_use_native(self, comparison: Optional[Mapping[str, Any]]) -> bool:
         """Return True only for a passing result while authority remains active."""
+        if self.mode == "native_authority" and (
+                not self.available or comparison is None or not comparison.get("passed", False)):
+            raise RuntimeError("Selected native observer failed; automatic Python fallback is disabled")
         accepted = bool(
             self.mode == "native_authority"
             and comparison is not None
@@ -804,14 +827,12 @@ class TrustObserverShadow:
         return accepted
 
     def _trip_authority(self, stage: str, reason: str) -> None:
-        """Fail safe to Python after an authority-stage mismatch or runtime fault."""
+        """Stop an authoritative run instead of switching its backend."""
         if self.mode != "native_authority":
             return
-        self.mode = "shadow"
-        self.failback_count += 1
-        self.last_failback_stage = str(stage)
-        self.last_failback_reason = str(reason)
-        self.last_mode_change_reason = f"automatic failback at {stage}: {reason}"
+        self.available = False
+        self.reason = f"native authority failed at {stage}: {reason}"
+        raise RuntimeError(self.reason)
 
     def reset(self) -> None:
         if self.core is not None:
@@ -820,6 +841,10 @@ class TrustObserverShadow:
 
     def reset_parity_evidence(self) -> None:
         """Clear gate evidence without desynchronizing native Trust memory."""
+        if self.core is not None and self.reason.startswith("native authority failed at"):
+            # An explicit reset permits a new shadow evaluation, never authority.
+            self.available = True
+            self.reason = "ready"
         self.trust_comparisons = 0
         self.weight_comparisons = 0
         self.observer_comparisons = 0
@@ -1105,7 +1130,7 @@ class TrustObserverShadow:
             "available": self.available,
             "mode": self.mode,
             "configured_mode": self.configured_mode,
-            "authority_active": self.mode == "native_authority",
+            "authority_active": self.mode == "native_authority" and self.available,
             "backend": "native_cpp",
             "reason": self.reason,
             "library": None

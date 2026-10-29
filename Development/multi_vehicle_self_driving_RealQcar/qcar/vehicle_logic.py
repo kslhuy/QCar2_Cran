@@ -17,6 +17,7 @@ except Exception:
 # from hal.products.mats import SDCSRoadMap
 
 from config_main import VehicleMainConfig
+from pcb_connection import PcbConnectionMonitor
 from logging_utils import VehicleLogger, PerformanceMonitor
 from StateMachine import VehicleState, VehicleStateMachine, Gear
 from ground_station_client import GroundStationClient
@@ -70,6 +71,7 @@ class VehicleLogic:
         self.programme_type = config.vehicle.programme_type
         self.is_physical_qcar = IS_PHYSICAL_QCAR
         setattr(config.vehicle, "is_physical_qcar", bool(self.is_physical_qcar))
+        self.pcb_connection_monitor = PcbConnectionMonitor.from_environment(self.vehicle_id)
 
 
         # self.Is_Limo_Car = config.network.car_id
@@ -1036,8 +1038,9 @@ class VehicleLogic:
                 # 1. Sensor Data Reading and GPS Update
                 # 2. Observer Update (handles both local and fleet internally)
                 if self._should_update_observer(loop_start):
-                    self._update_sensor_data(actual_dt)
-                    self._observer_update(actual_dt)
+                    observer_dt = self._scheduled_observer_dt
+                    self._update_sensor_data(observer_dt)
+                    self._observer_update(observer_dt)
 
                 # 3. Control Logic (high frequency)
                 if self._should_update_control(loop_start):
@@ -1073,6 +1076,7 @@ class VehicleLogic:
             self.vehicle_logger.logger.info("Control loop interrupted by user")
         except Exception as e:
             self.vehicle_logger.log_error("Control loop error", e)
+            raise RuntimeError("Vehicle control loop failed") from e
         finally:
             self._shutdown()
 
@@ -1084,6 +1088,8 @@ class VehicleLogic:
     def _should_update_observer(self, current_time: float) -> bool:
         """Check if local observer should update based on rate"""
         if current_time - self._last_observer_time >= 1.0 / self.observer_rate:
+            self._scheduled_observer_dt = (current_time - self._last_observer_time
+                if self._last_observer_time > 0 else 1.0 / self.observer_rate)
             self._last_observer_time = current_time
             return True
         return False
@@ -1137,7 +1143,8 @@ class VehicleLogic:
         try:
             if self.qcar is not None:
                 # Use VehicleObserver to update sensor data
-                self.vehicle_observer.update_sensor_data(self.qcar)
+                if not self.vehicle_observer.update_sensor_data(self.qcar):
+                    raise RuntimeError("Required vehicle sensor read failed")
                 self._update_electronics_sensor_source()
 
                 # Handle YOLO logic using YOLOManager (only if enabled)
@@ -1166,6 +1173,7 @@ class VehicleLogic:
 
         except Exception as e:
             self.vehicle_logger.log_error("Sensor data update error", e)
+            raise RuntimeError("Vehicle sensor acquisition failed") from e
 
     def _update_electronics_sensor_source(self) -> None:
         """Expose PCB measurements separately, with opt-in fusion policy."""
@@ -1408,6 +1416,7 @@ class VehicleLogic:
 
         except Exception as e:
             self.vehicle_logger.log_error("Observer update error", e)
+            raise RuntimeError("Observer failed; stopping the control loop") from e
 
     # ===== Control Logic Methods =====
     def _control_logic_update(self, dt: float) -> bool:
@@ -1766,6 +1775,13 @@ class VehicleLogic:
         status_msg.update(self._get_platoon_status())
         status_msg.update(self._get_cached_periodic_static_status())
         status_msg.update(self._get_local_sensor_attack_status_compact())
+        status_msg["runtime_mode"] = (
+            "simulator" if getattr(self, "_parent_fake_vehicle", None) is not None
+            else "physical" if self.is_physical_qcar else "virtual"
+        )
+        monitor = getattr(self, "pcb_connection_monitor", None)
+        if monitor is not None:
+            status_msg["pcb_connection"] = monitor.get_status()
 
         electronics_twin = getattr(self, "electronics_twin", None)
         if electronics_twin is not None:
@@ -2039,6 +2055,10 @@ class VehicleLogic:
                 self.yolo_manager.yolo.terminate()
             except Exception as e:
                 self.vehicle_logger.logger.error(f"YOLO receiver shutdown error: {e}")
+
+        monitor = getattr(self, "pcb_connection_monitor", None)
+        if monitor is not None:
+            monitor.close()
 
         # Shutdown V2V Manager (which handles V2V communication internally)
         if hasattr(self, "v2v_manager"):

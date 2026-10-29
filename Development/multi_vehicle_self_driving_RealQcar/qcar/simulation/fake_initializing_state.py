@@ -68,8 +68,7 @@ class FakeInitializingState(StateBase):
         
         # Check for timeout (matches real InitializingState)
         if elapsed_time > self.TIMEOUT:
-            self.logger.log_warning(f"[!] Fake initialization timeout ({self.TIMEOUT}s), proceeding anyway")
-            return throttle, steering, (VehicleState.WAITING_FOR_START, StateTransitionReason.INITIALIZATION_COMPLETE)
+            raise RuntimeError(f"Fake initialization failed after {self.TIMEOUT}s; refusing to report ready")
         
         # Wait for initial system settle time (matches real InitializingState)
         if elapsed_time < self.INITIAL_DELAY:
@@ -173,6 +172,8 @@ class FakeInitializingState(StateBase):
             )
             if electronics_v2v_bridge is not None:
                 electronics_v2v_bridge.reset_transport()
+            if getattr(parent_fake_vehicle, 'relative_sensor', None) is not None:
+                parent_fake_vehicle.relative_sensor.reset()
             
             # Inject mock hardware from the fake vehicle
             self.vehicle_logic.qcar = parent_fake_vehicle.mock_qcar
@@ -270,6 +271,11 @@ class FakeInitializingState(StateBase):
                 params.update(simulation_estimator_params(parent_fake_vehicle.mock_qcar))
             elif selection == 'ekf':
                 params.update(simulation_motion_params(parent_fake_vehicle.mock_qcar))
+
+            # The distributed predictor uses the same static plant calibration,
+            # never the plant's instantaneous motion or clean sensor values.
+            fleet_params = observer.fleet_config_defaults.setdefault(observer.fleet_estimator_type, {})
+            fleet_params.setdefault('vehicle', {}).update(simulation_motion_params(parent_fake_vehicle.mock_qcar))
             
             success = self.vehicle_logic.vehicle_observer.initialize_local_estimator(
                 gps=parent_fake_vehicle.mock_gps,
@@ -291,7 +297,7 @@ class FakeInitializingState(StateBase):
         except Exception as e:
             self.logger.log_error("State estimator initialization failed", e)
             traceback.print_exc()
-            return False
+            raise RuntimeError("Simulation observer initialization failed") from e
   
     
     def _initialize_telemetry(self) -> bool:

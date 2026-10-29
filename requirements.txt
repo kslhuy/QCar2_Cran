@@ -178,6 +178,8 @@ pyqtgraph==0.13.7
 
 pyreadline3==3.5.4
 
+pyserial==3.5
+
 pytest==9.0.2
 
 python-dateutil==2.9.0.post0

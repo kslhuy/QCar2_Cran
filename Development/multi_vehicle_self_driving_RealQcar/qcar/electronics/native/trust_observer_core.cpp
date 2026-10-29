@@ -238,6 +238,31 @@ void predict_vehicle_model(
     std::size_t lookup_count,
     double* output) {
     std::copy(state, state + state_dim, output);
+    double max_step = 0.05;
+    switch (config.longitudinal_model) {
+        case CRAN_LONGITUDINAL_VELOCITY_LAG:
+            max_step = std::min(max_step, 0.25 * config.velocity_lag_tau); break;
+        case CRAN_LONGITUDINAL_VELOCITY_LAG_LOOKUP:
+            max_step = std::min(max_step, 0.25 * config.velocity_lag_lookup_tau); break;
+        case CRAN_LONGITUDINAL_VELOCITY_COMMAND:
+            max_step = std::min(max_step, 0.25 * config.velocity_command_tau); break;
+        case CRAN_LONGITUDINAL_ACCELERATION_LAG:
+            max_step = std::min(max_step, 0.25 * config.accel_lag_tau); break;
+        default: break;
+    }
+    if (config.dt > max_step * (1.0 + 1e-12)) {
+        const int steps = static_cast<int>(std::ceil(config.dt / max_step));
+        CranPredictionConfig step_config = config;
+        step_config.dt = config.dt / steps;
+        std::vector<double> previous(state, state + state_dim);
+        for (int i = 0; i < steps; ++i) {
+            predict_vehicle_model(previous.data(), state_dim, step_config,
+                                  throttle_breakpoints, velocity_breakpoints, lookup_count, output);
+            apply_state_constraints(output, state_dim, config.max_velocity, config.max_acceleration);
+            std::copy(output, output + state_dim, previous.begin());
+        }
+        return;
+    }
     const double x = state[0];
     const double y = state[1];
     const double theta = state[2];
@@ -284,11 +309,15 @@ void predict_vehicle_model(
         double steady_velocity = 0.0;
         if (lookup_count >= 2U && throttle_breakpoints != nullptr &&
             velocity_breakpoints != nullptr) {
+            const bool reflect_reverse = throttle < 0.0 && throttle_breakpoints[0] >= 0.0;
             steady_velocity = interpolate_clamped(
-                throttle,
+                reflect_reverse ? -throttle : throttle,
                 throttle_breakpoints,
                 velocity_breakpoints,
                 lookup_count);
+            if (reflect_reverse) {
+                steady_velocity = -steady_velocity;
+            }
         } else {
             double throttle_effective = throttle;
             const double deadband = std::max(config.velocity_lag_deadband, 0.0);
@@ -794,6 +823,47 @@ int cran_observer_predict(
          (throttle_breakpoints == nullptr || velocity_breakpoints == nullptr))) {
         return -1;
     }
+    if (!std::isfinite(config->dt) || config->dt < 0.0 ||
+        config->prediction_mode > CRAN_PREDICTION_RELATIVE_HOST_ANCHOR_MIXED ||
+        config->longitudinal_model > CRAN_LONGITUDINAL_SIMPLE_ACCELERATION ||
+        !std::all_of(corrected_state, corrected_state + state_dim,
+                     [](double value) { return std::isfinite(value); })) {
+        return -1;
+    }
+    const bool model_required = config->dt > 0.0 &&
+        (config->prediction_mode == CRAN_PREDICTION_MODEL ||
+         config->prediction_mode == CRAN_PREDICTION_RELATIVE_HOST_ANCHOR_MIXED);
+    const bool clean_required = config->dt > 0.0 &&
+        (config->prediction_mode == CRAN_PREDICTION_CLEAN_DATA ||
+         (config->prediction_mode == CRAN_PREDICTION_RELATIVE_HOST_ANCHOR_MIXED &&
+          config->attack_anchor_active != 0U));
+    if (model_required && (!std::isfinite(config->wheelbase) || config->wheelbase <= 0.0 ||
+        !std::isfinite(config->velocity_lag_tau) || config->velocity_lag_tau <= 0.0 ||
+        !std::isfinite(config->velocity_lag_lookup_tau) || config->velocity_lag_lookup_tau <= 0.0 ||
+        !std::isfinite(config->velocity_command_tau) || config->velocity_command_tau <= 0.0 ||
+        !std::isfinite(config->accel_lag_tau) || config->accel_lag_tau <= 0.0)) {
+        return -1;
+    }
+    if ((model_required && (config->has_control == 0U ||
+                           !std::isfinite(config->steering) || !std::isfinite(config->throttle))) ||
+        (clean_required && (config->has_clean_state == 0U || clean_state == nullptr))) {
+        return -1;
+    }
+    if (clean_required && !std::all_of(clean_state, clean_state + state_dim,
+                                      [](double value) { return std::isfinite(value); })) {
+        return -1;
+    }
+    if (model_required && config->longitudinal_model == CRAN_LONGITUDINAL_VELOCITY_LAG_LOOKUP) {
+        if (lookup_count < 2U) {
+            return -1;
+        }
+        for (std::size_t i = 0; i < lookup_count; ++i) {
+            if (!std::isfinite(throttle_breakpoints[i]) || !std::isfinite(velocity_breakpoints[i]) ||
+                (i > 0U && throttle_breakpoints[i] <= throttle_breakpoints[i - 1U])) {
+                return -1;
+            }
+        }
+    }
     std::copy(corrected_state, corrected_state + state_dim, predicted_state);
     if (config->dt <= 0.0 || config->prediction_mode == CRAN_PREDICTION_NONE) {
         apply_state_constraints(
@@ -814,8 +884,10 @@ int cran_observer_predict(
             base_x = clean_state[0];
             base_y = clean_state[1];
         }
-        predicted_state[0] = base_x + velocity * std::cos(theta) * config->dt;
-        predicted_state[1] = base_y + velocity * std::sin(theta) * config->dt;
+        const double propagation_dt = config->force_clean_pose_anchor != 0U && has_clean
+            ? 0.0 : config->dt;
+        predicted_state[0] = base_x + velocity * std::cos(theta) * propagation_dt;
+        predicted_state[1] = base_y + velocity * std::sin(theta) * propagation_dt;
         predicted_state[2] = wrap_angle(theta);
         predicted_state[3] = velocity;
         if (state_dim > 4U) {
@@ -884,8 +956,9 @@ int cran_observer_predict(
             has_position_anchor = true;
         }
 
-        const double anchor_x = base_x + velocity * std::cos(theta) * config->dt;
-        const double anchor_y = base_y + velocity * std::sin(theta) * config->dt;
+        const double anchor_dt = has_position_anchor ? 0.0 : config->dt;
+        const double anchor_x = base_x + velocity * std::cos(theta) * anchor_dt;
+        const double anchor_y = base_y + velocity * std::sin(theta) * anchor_dt;
         if (has_position_anchor) {
             const double anchor_weight = std::max(config->anchor_position_weight, 0.0);
             const double estimate_weight = std::max(config->estimate_position_weight, 0.0);

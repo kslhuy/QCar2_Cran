@@ -5,7 +5,7 @@ Loads controller parameters from YAML configuration files.
 Provides a centralized way to manage all controller settings.
 """
 
-import yaml
+from config_io import load_yaml_mapping
 import os
 import numpy as np
 from typing import Dict, Any, Optional
@@ -45,10 +45,7 @@ class ControllerConfig:
                 f"Please create a config_controller.yaml file or use config_controller_sim.yaml as template"
             )
 
-        with open(self.config_path, "r") as f:
-            config = yaml.safe_load(f)
-
-        return config
+        return load_yaml_mapping(self.config_path)
 
     def get_longitudinal_controller_type(self) -> str:
         """Get the selected longitudinal controller type (legacy)"""
@@ -132,6 +129,8 @@ class ControllerConfig:
         sensor_acc_cfg = self.config.get("leader_sensor_acc", {})
         return {
             "enabled": sensor_acc_cfg.get("enabled", False),
+            "gap_source": self._validate_gap_source(sensor_acc_cfg.get("gap_source", "relative_sensor")),
+            "measurement_max_age_s": float(sensor_acc_cfg.get("measurement_max_age_s", 0.2)),
             "blend_alpha": sensor_acc_cfg.get("blend_alpha", 0.7),
             "desired_distance": sensor_acc_cfg.get("desired_distance", 0.35),
             "time_headway": sensor_acc_cfg.get("time_headway", 0.0),
@@ -143,6 +142,13 @@ class ControllerConfig:
             "max_offset": sensor_acc_cfg.get("max_offset", 0.75),
             "distance_smoothing": sensor_acc_cfg.get("distance_smoothing", 0.6),
         }
+
+    @staticmethod
+    def _validate_gap_source(value: str) -> str:
+        source = str(value).strip().lower()
+        if source not in {"relative_sensor", "clean_v2v"}:
+            raise ValueError(f"Unknown controller gap source: {source}")
+        return source
 
     def get_leader_source_config(self) -> Dict[str, Any]:
         """Get the single leader-state source used by FOLLOWING_LEADER control."""
@@ -198,13 +204,14 @@ class ControllerConfig:
         unavailable_policy = str(
             cfg.get("unavailable_policy", "legacy_cacc")
         ).strip().lower()
-        if unavailable_policy not in {"legacy_cacc", "sensor_acc_or_stop"}:
+        if unavailable_policy not in {"legacy_cacc", "sensor_acc_or_stop", "stop"}:
             unavailable_policy = "legacy_cacc"
 
         low_trust_policy = str(
             cfg.get("low_trust_policy", "sensor_acc_or_stop")
         ).strip().lower()
         if low_trust_policy not in {
+            "stop",
             "sensor_acc_or_stop",
             "sensor_acc_or_cacc",
             "legacy_cacc",

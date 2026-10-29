@@ -231,13 +231,14 @@ class FollowingLeaderState(StateBase):
         unavailable_policy = str(
             fusion_cfg.get("unavailable_policy", "legacy_cacc")
         ).strip().lower()
-        if unavailable_policy not in {"legacy_cacc", "sensor_acc_or_stop"}:
+        if unavailable_policy not in {"legacy_cacc", "sensor_acc_or_stop", "stop"}:
             unavailable_policy = "legacy_cacc"
 
         low_trust_policy = str(
             fusion_cfg.get("low_trust_policy", "sensor_acc_or_stop")
         ).strip().lower()
         if low_trust_policy not in {
+            "stop",
             "sensor_acc_or_stop",
             "sensor_acc_or_cacc",
             "legacy_cacc",
@@ -292,6 +293,8 @@ class FollowingLeaderState(StateBase):
         """Load optional local sensor ACC branch for close-range stop control."""
         sensor_cfg = {
             "enabled": False,
+            "gap_source": "relative_sensor",
+            "measurement_max_age_s": 0.2,
             "blend_alpha": 0.7,
             "desired_distance": 0.35,
             "time_headway": 0.0,
@@ -309,6 +312,8 @@ class FollowingLeaderState(StateBase):
         if controller_config and hasattr(controller_config, "get_leader_sensor_acc_config"):
             sensor_cfg.update(controller_config.get_leader_sensor_acc_config())
 
+        if sensor_cfg["gap_source"] not in {"relative_sensor", "clean_v2v"}:
+            raise ValueError(f"Unknown controller gap source: {sensor_cfg['gap_source']}")
         self.sensor_acc_config = sensor_cfg
         self.sensor_acc_controller = None
         self._sensor_acc_distance_filtered = None
@@ -786,68 +791,49 @@ class FollowingLeaderState(StateBase):
 
         return float(self._sensor_acc_distance_filtered)
 
-    def _fill_sensor_acc_distance_from_clean_v2v(
-        self,
-        follower_state: Dict[str, Any],
-        leader_state: Dict[str, Any],
+    def _fill_sensor_acc_distance(
+        self, follower_state: Dict[str, Any], leader_state: Dict[str, Any],
     ) -> Optional[float]:
-        """Use the clean V2V channel as a YOLO-distance substitute in simulation."""
-        if follower_state.get("sensor_leader_distance_filtered") is not None:
-            return float(follower_state["sensor_leader_distance_filtered"])
-
-        v2v_manager = getattr(self.vehicle_logic, "v2v_manager", None)
-        if v2v_manager is None or not hasattr(v2v_manager, "get_latest_local_state_raw"):
-            return None
-
+        """Read the configured gap source, including clean V2V for controlled tests."""
+        source = self.sensor_acc_config.get("gap_source", "relative_sensor")
         leader_id = leader_state.get("vehicle_id")
         if leader_id is None:
             leader_id = self._get_direct_leader_vehicle_id()
-        try:
-            leader_id = int(leader_id)
-        except (TypeError, ValueError):
+        if leader_id is None:
             return None
-
-        try:
-            clean_data = v2v_manager.get_latest_local_state_raw(
-                leader_id, channel="clean"
-            )
-        except Exception as exc:
-            self.logger.logger.debug(
-                f"[FOLLOW] Clean V2V gap fallback unavailable: {exc}"
-            )
+        if source == "relative_sensor":
+            existing = follower_state.get("sensor_leader_distance_filtered")
+            if existing is not None:
+                return float(existing)
+            observer = getattr(self.vehicle_logic, "vehicle_observer", None)
+            if observer is None:
+                return None
+            measurement = observer.get_relative_measurement_for_control(int(leader_id))
+            if measurement is None:
+                return None
+            distance = float(measurement["distance"])
+            source_label = measurement["source"]
+        elif source == "clean_v2v":
+            manager = getattr(self.vehicle_logic, "v2v_manager", None)
+            if manager is None:
+                return None
+            reference = manager.get_latest_local_state_raw(
+                int(leader_id), channel="clean",
+                max_age_s=float(self.sensor_acc_config.get("measurement_max_age_s", 0.2)))
+            if reference is None:
+                return None
+            distance = float(np.hypot(float(reference["x"]) - float(follower_state["x"]),
+                                     float(reference["y"]) - float(follower_state["y"])))
+            source_label = "clean_v2v"
+        else:
+            raise ValueError(f"Unknown controller gap source: {source}")
+        max_distance = float(self.sensor_acc_config.get("max_distance", 2.0))
+        if not np.isfinite(distance) or not 0 < distance <= max_distance:
             return None
-
-        if not clean_data:
-            return None
-
-        try:
-            follower_x = float(follower_state["x"])
-            follower_y = float(follower_state["y"])
-            leader_x = float(clean_data["x"])
-            leader_y = float(clean_data["y"])
-        except (KeyError, TypeError, ValueError):
-            return None
-
-        clean_gap = None
-        along_track = self._compute_along_track_gap(
-            follower_x, follower_y, leader_x, leader_y
-        )
-        if along_track is not None:
-            clean_gap = float(along_track[0])
-
-        if clean_gap is None or clean_gap <= 0.0:
-            clean_gap = float(np.hypot(leader_x - follower_x, leader_y - follower_y))
-
-        if not np.isfinite(clean_gap) or clean_gap <= 0.0:
-            return None
-
-        max_distance = max(float(self.sensor_acc_config.get("max_distance", 2.0)), 1e-3)
-        clean_gap = float(np.clip(clean_gap, 1e-3, max_distance))
-
-        follower_state["sensor_leader_distance"] = clean_gap
-        follower_state["sensor_leader_distance_filtered"] = clean_gap
-        follower_state["sensor_leader_distance_source"] = "clean_v2v"
-        return clean_gap
+        follower_state["sensor_leader_distance"] = distance
+        follower_state["sensor_leader_distance_filtered"] = distance
+        follower_state["sensor_leader_distance_source"] = source_label
+        return distance
 
     def _attach_clean_v2v_leader_baseline(
         self,
@@ -1260,11 +1246,7 @@ class FollowingLeaderState(StateBase):
         """Compute the local sensor ACC fallback command when a valid gap exists."""
         if self.sensor_acc_controller is None:
             return None
-        if follower_state.get("sensor_leader_distance_filtered") is None:
-            self._fill_sensor_acc_distance_from_clean_v2v(
-                follower_state, leader_state
-            )
-        if follower_state.get("sensor_leader_distance_filtered") is None:
+        if self._fill_sensor_acc_distance(follower_state, leader_state) is None:
             return None
         return float(
             self.sensor_acc_controller.compute_throttle(
@@ -1416,6 +1398,13 @@ class FollowingLeaderState(StateBase):
         alpha = self._compute_trust_fusion_alpha_for_mode(
             fusion_opinion, trust_low, trust_high
         )
+
+        if ((alpha is None and cfg.get("unavailable_policy") == "stop")
+                or (fusion_opinion is not None and float(fusion_opinion) < trust_low
+                    and cfg.get("low_trust_policy") == "stop")):
+            self._set_longitudinal_fusion_log_fields(
+                follower_state, u_cacc, None, 0.0, "required_trust_unavailable_or_low_stop")
+            return 0.0
 
         u_sensor = self._compute_sensor_acc_command(
             follower_state, leader_state, dt

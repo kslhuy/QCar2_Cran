@@ -403,10 +403,10 @@ class EKFStateEstimator(RuntimeSensorAttackMixin, LocalStateEstimatorBase):
         except Exception as e:
             if self.logger:
                 self.logger.log_error(
-                    "QCarEKF initialization failed, using fallback EKF", e
+                    "Selected QCarEKF initialization failed", e
                 )
-            self.use_qcar_ekf = False
             self.ekf_initialized = False
+            raise RuntimeError("Selected QCarEKF is unavailable; select use_qcar_ekf: false for the built-in EKF") from e
 
     def update(
         self,
@@ -432,7 +432,9 @@ class EKFStateEstimator(RuntimeSensorAttackMixin, LocalStateEstimatorBase):
                 )
             else:
                 self.last_sensor_failure_metadata = None
-            if self.use_qcar_ekf and self.ekf_initialized:
+            if self.use_qcar_ekf:
+                if not self.ekf_initialized:
+                    raise RuntimeError("Selected QCarEKF is not initialized")
                 return self._update_qcar_ekf(
                     motor_tach, steering, throttle, dt, gyro_z, gps_data, acceleration
                 )
@@ -897,7 +899,7 @@ class EKFStateEstimator(RuntimeSensorAttackMixin, LocalStateEstimatorBase):
                 y_res[2] = wrap_to_pi(y_res[2])
 
             S = H @ P_pred @ H.T + R_meas
-            K = P_pred @ H.T @ np.linalg.inv(S)
+            K = np.linalg.solve(S, H @ P_pred).T
             if has_gps and self.use_tachometer_update:
                 measurement_labels = ("x", "y", "theta", "v")
             elif has_gps:
@@ -910,7 +912,9 @@ class EKFStateEstimator(RuntimeSensorAttackMixin, LocalStateEstimatorBase):
             # Wrap heading state
             self.state[2] = wrap_to_pi(self.state[2])
 
-            self.P = (np.eye(self.state_dim) - K @ H) @ P_pred
+            identity_residual = np.eye(self.state_dim) - K @ H
+            self.P = identity_residual @ P_pred @ identity_residual.T + K @ R_meas @ K.T
+            self.P = 0.5 * (self.P + self.P.T)
 
             self.last_update_time = time.time()
             return True

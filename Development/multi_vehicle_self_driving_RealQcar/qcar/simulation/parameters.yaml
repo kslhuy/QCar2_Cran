@@ -39,15 +39,36 @@ disturbances:
     value: 0.8
 
 sensors:
+  seed: 41000
+  wheel:
+    has_noise: true
+    noise_speed: 0.012 # m/s
+  # Independent surround radar abstraction. World poses stay inside the sensor;
+  # observer inputs contain only delayed/noisy relative detections.
+  relative:
+    enabled: true
+    vehicle_ids: [0, 1, 2, 3, 4]
+    world_base_port: 49000
+    rate_hz: 20.0
+    world_max_age_s: 0.15
+    min_range_m: 0.1
+    max_range_m: 8.0
+    field_of_view_deg: 360.0
+    latency_s: 0.03
+    range_noise_std_m: 0.02
+    range_rate_noise_std_mps: 0.03
+    bearing_noise_std_rad: 0.01
+    drop_probability: 0.01
+    seed: 31000
   gps:
-    update_rate: 200.0    # Hz
+    update_rate: 10.0    # Hz
     noise_pos: 0.05     # Standard deviation (m)
     noise_theta: 0.02   # Standard deviation (rad)
-    has_noise: false
+    has_noise: true
   imu:
     noise_accel: 0.1    # m/s^2
     noise_gyro: 0.01    # rad/s
-    has_noise: false
+    has_noise: true
 
 # CRAN/SEGULA PCB digital twin. This is an independent sensor source; the
 # existing MockQCar sensors stay unchanged while fusion.mode is "auxiliary".

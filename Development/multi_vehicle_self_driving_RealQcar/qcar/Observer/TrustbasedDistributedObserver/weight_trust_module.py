@@ -45,20 +45,23 @@ class WeightConfig:
     local_bad_zero_w0_neighbor_total_cap: float = 0.01 # Cap on total neighbor weight when local measurement is flagged bad (w0=0) , Good for prediction-only fallback but still allowing some neighbor influence if all neighbors are good.
 
     # Flag-driven w₀ adaptation factors
-    flag_w0_target_attack_factor: float = 1.0    # Keep w₀ full when target under attack (local is reliable)
-    flag_w0_global_est_check_factor: float = 0.3 # Reduce w₀ when local sensors are faulty
+    flag_w0_target_attack_factor: float = 0.25
+    flag_w0_global_est_check_factor: float = 1.25
     flag_w0_local_est_check_factor: float = 0.5  # Reduce w₀ when local measurements unreliable
 
     def __post_init__(self):
-        """
-        Align legacy defaults with the current flag semantics.
-
-        Explicit config values loaded from YAML still override these fields.
-        """
-        if self.flag_w0_target_attack_factor == 1.0:
-            self.flag_w0_target_attack_factor = 0.25
-        if self.flag_w0_global_est_check_factor == 0.3:
-            self.flag_w0_global_est_check_factor = 1.25
+        """Validate settings without rewriting explicitly selected values."""
+        if self.weight_type not in {"equal", "trust_based", "graph_based", "paper"}:
+            raise ValueError(f"Unknown trust weight type: {self.weight_type}")
+        for name in ("w0_fixed", "w_self_base", "w_cap", "eta", "trust_threshold"):
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError(f"{name} must be finite and in [0, 1]")
+        for name in ("flag_w0_target_attack_factor", "flag_w0_global_est_check_factor",
+                     "flag_w0_local_est_check_factor"):
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f"{name} must be nonnegative and finite")
 
     @classmethod
     def from_dict(cls, d: dict) -> "WeightConfig":

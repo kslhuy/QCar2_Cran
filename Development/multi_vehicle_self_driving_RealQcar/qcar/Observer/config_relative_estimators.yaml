@@ -3,9 +3,9 @@
 # Place this file under qcar/Observer/ and load it when starting observers.
 
 relative_estimator_type: sa_acc_uio
-enable_relative: enabled # enable_relative: Master switch for relative estimation.
+enable_relative: true # Enabled: only UIO output is routed to distributed trust.
                         # true: Enables the relative estimator and all related logic.
-                        # false: Disables the relative estimator entirely, saving compute and ignoring any relative measurement inputs.
+                        # false: Routes raw relative measurements directly to trust without UIO processing.
 
 # Separate relative UIO CSV recording. Files are written asynchronously as
 # relative_uio_log_V{id}.csv so trust logging and relative-observer diagnostics
@@ -29,7 +29,8 @@ relative:
     k2: 2.5       # Controller gain 2
     alpha_lmi: 0.5 # LMI decay rate
     prefer_external_relative_measurement: true
-    measurement_max_age_s: 1.0
+    measurement_max_age_s: 0.2
+    unknown_target_acceleration: true # Estimate the lumped unknown input; do not borrow target V2V acceleration.
     
     # MATLAB precomputed gains from Relative_obs/SA_ACC_UIO.m.
     # When K is configured, the Python observer skips CVXPY and uses these
@@ -39,8 +40,4 @@ relative:
       - [0.0, 1.0]
       - [0.5, -100.0]
       - [-8.3, 1427.2]
-    L:
-      - [0.5, 0.0]
-      - [0.0, 1.0]
-      - [0.5, -100.0]
-      - [-15.3, 2757.1]
+    # L is derived from K + (Az - K*Ce)*Qz. Do not mix independently rounded gains.

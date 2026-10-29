@@ -191,6 +191,7 @@ def load_fleet_observer_config() -> Dict[str, Any]:
         k
         for k, v in fleet_section.items()
         if isinstance(v, dict) and k not in _global_keys
+        and k in {"consensus", "distributed_luenberger", "trust_consensus"}
     ]
 
     default_type = cfg.get(

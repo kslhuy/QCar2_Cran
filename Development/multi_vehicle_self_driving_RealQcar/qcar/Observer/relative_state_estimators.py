@@ -7,8 +7,8 @@ Implements Unknown Input Observers (UIO) and other relative estimation strategie
 import numpy as np
 import time
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Tuple
-import scipy.linalg
+from typing import Optional, Dict
+import importlib.util
 from Observer.TrustbasedDistributedObserver.external_measurement_cache import (
     ExternalMeasurementCache,
 )
@@ -16,12 +16,9 @@ from Observer.Relative_obs.relative_uio_logger import (
     RelativeUIOLogger,
 )
 
-# Try importing cvxpy for LMI solving
-try:
-    import cvxpy as cp
-    CVXPY_AVAILABLE = True
-except ImportError:
-    CVXPY_AVAILABLE = False
+# Configured gains need no solver. Loading CVXPY before CasADi causes a native
+# shutdown crash in the Windows Qcar environment, so load it only for LMI design.
+CVXPY_AVAILABLE = importlib.util.find_spec("cvxpy") is not None
 
 
 def wrap_to_pi(angle: float) -> float:
@@ -160,11 +157,11 @@ class RelativeStateEstimatorBase(ABC):
                 ext_rel_velocity = float(
                     external.get("relative_velocity", float("nan"))
                 )
-                if np.isfinite(ext_distance) and ext_distance > 0.0:
+                if np.isfinite(ext_distance) and ext_distance > 0.0 and np.isfinite(ext_rel_velocity):
                     y_meas = np.array(
                         [
                             ext_distance,
-                            ext_rel_velocity if np.isfinite(ext_rel_velocity) else 0.0,
+                            ext_rel_velocity,
                         ],
                         dtype=float,
                     )
@@ -183,8 +180,8 @@ class RelativeStateEstimatorBase(ABC):
 
         if y_meas is None and measurement is not None:
             arr = np.asarray(measurement, dtype=float).flatten()
-            if arr.size > 0 and np.isfinite(arr[0]) and arr[0] > 0.0:
-                rel_velocity = arr[1] if arr.size > 1 and np.isfinite(arr[1]) else 0.0
+            if arr.size >= 2 and np.all(np.isfinite(arr[:2])) and arr[0] > 0.0:
+                rel_velocity = arr[1]
                 y_meas = np.array([float(arr[0]), float(rel_velocity)], dtype=float)
                 self._last_measurement_info = {
                     "source": "direct_argument",
@@ -382,6 +379,10 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         
         # System parameters (defaults from MATLAB script)
         self.Ts = self.config.get('Ts', 0.01)
+        if not np.isfinite(self.Ts) or self.Ts <= 0:
+            raise ValueError("SA_ACC_UIO Ts must be positive and finite")
+        if _as_bool(self.config.get("use_fake_relative_measurements", False)):
+            raise ValueError("SA_ACC_UIO does not accept V2V-synthesized measurements")
         self.tau = self.config.get('tau', 0.4)
         self.li = self.config.get('li', 5.0)
         self.Li = self.config.get('Li', 8.0)
@@ -391,6 +392,12 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         
         # Derived parameter k3
         self.k3 = self.config.get('k3', (1 - self.h * self.k1 * self.k2))
+
+        if not np.all(np.isfinite([self.tau, self.h, self.li, self.Li,
+                                   self.k1, self.k2, self.k3])):
+            raise ValueError("SA_ACC_UIO model parameters must be finite")
+        if self.tau <= 0 or self.h <= 0 or self.li < 0 or self.Li < 0:
+            raise ValueError("SA_ACC_UIO requires positive tau/h and nonnegative lengths")
         
         # Observer LMI alpha
         self.alpha_lmi = self.config.get('alpha_lmi', 0.5)
@@ -603,6 +610,8 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         # [E; Ce] is (3+2) x 4 = 5x4 matrix.
         
         mat_EC = np.vstack([self.E, self.Ce]) # 5x4
+        if np.linalg.matrix_rank(mat_EC) != self.state_dim:
+            raise ValueError("SA_ACC_UIO descriptor is not reconstructible: [E; Ce] lacks full column rank")
         
         # Pseudo-inverse is safer than performing inv(M.T @ M) @ M.T explicitly if ill-conditioned,
         # but MATLAB code does the explicit formula. We'll use pinv for stability equivalent.
@@ -614,6 +623,9 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         
         # Qz = g_invEC(:, 4:5) -> Columns 4,5 (indices 3,4 in Python)
         self.Qz = g_invEC[:, 3:5] # 4x2
+        if not np.allclose(self.Pz @ self.E + self.Qz @ self.Ce,
+                           np.eye(self.state_dim), atol=1e-8, rtol=1e-8):
+            raise ValueError("SA_ACC_UIO descriptor reconstruction identity failed")
         
         # M = Pz * Be (Be = Bd)
         self.M = self.Pz @ self.Bd
@@ -656,6 +668,7 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
                     self.logger.logger.info("SA_ACC_UIO: Using configured K gain; L will be derived.")
         elif CVXPY_AVAILABLE:
             try:
+                import cvxpy as cp
                 if self.logger:
                     self.logger.logger.info("SA_ACC_UIO: Solving LMI with CVXPY...")
                 
@@ -741,28 +754,12 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
                     P_val = 0.5 * (P_val + P_val.T)
                     eig_min = float(np.min(np.linalg.eigvalsh(P_val)))
 
-                    # Compute K = inv(P) * Z'. Use SVD least-squares only as
-                    # a defensive fallback for inaccurate solver outputs.
+                    # Invalid solver output must not become a different design.
                     gain_method = "solve"
                     p_cond = float(np.linalg.cond(P_val))
-                    if eig_min <= 0 or not np.isfinite(p_cond):
-                        gain_method = "least_squares"
-                        if self.logger:
-                            self.logger.log_warning(
-                                "SA_ACC_UIO: LMI returned a rank-deficient P "
-                                f"(min_eig={eig_min:.3e}); using least-squares gain recovery."
-                            )
-                        self.K = np.linalg.lstsq(P_val, Z_val.T, rcond=None)[0] # 4x2
-                    elif p_cond > cond_limit:
-                        gain_method = "least_squares"
-                        if self.logger:
-                            self.logger.log_warning(
-                                "SA_ACC_UIO: LMI P is ill-conditioned "
-                                f"(cond={p_cond:.3e}); using least-squares gain recovery."
-                            )
-                        self.K = np.linalg.lstsq(P_val, Z_val.T, rcond=None)[0] # 4x2
-                    else:
-                        self.K = np.linalg.solve(P_val, Z_val.T) # 4x2
+                    if eig_min <= 0 or not np.isfinite(p_cond) or p_cond > cond_limit:
+                        raise ValueError("SA_ACC_UIO LMI P is singular or ill-conditioned")
+                    self.K = np.linalg.solve(P_val, Z_val.T) # 4x2
                     self._gain_source = "cvxpy"
                     if self.logger:
                         self.logger.logger.info(
@@ -771,22 +768,23 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
                             f"cond(P)={p_cond:.3e}, method={gain_method}"
                         )
                 else:
-                    if self.logger:
-                        self.logger.log_warning(f"SA_ACC_UIO: LMI solver failed. Status: {prob.status}")
+                    raise RuntimeError(f"SA_ACC_UIO LMI solver failed: {prob.status}")
                         
             except Exception as e:
-                if self.logger:
-                    self.logger.log_error("SA_ACC_UIO: CVXPY error", e)
+                raise RuntimeError("SA_ACC_UIO gain design failed") from e
         else:
-            if self.logger:
-                self.logger.log_warning("SA_ACC_UIO: CVXPY not available. Using fallback/zero gains.")
+            raise RuntimeError("SA_ACC_UIO needs configured K or CVXPY; zero-gain fallback is forbidden")
         
         # Compute final observer matrices
         # N = Az - K * Ce
         self.N = self.Az - self.K @ self.Ce
+        if not np.all(np.isfinite(self.K)) or np.max(np.abs(np.linalg.eigvals(self.N))) >= 1.0:
+            raise ValueError("SA_ACC_UIO gain must yield a finite, Schur-stable observer")
         
         # L = K + N * Qz
         if self._fixed_L is not None:
+            if not np.allclose(self._fixed_L, self.K + self.N @ self.Qz, rtol=1e-6, atol=1e-8):
+                raise ValueError("SA_ACC_UIO configured L is inconsistent with K and the model")
             self.L = self._fixed_L.copy()
         else:
             self.L = self.K + self.N @ self.Qz
@@ -794,162 +792,65 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
         # Initialize w state (4x1)
         self.w = np.zeros(4)
 
-    def update(self, measurement: Optional[np.ndarray], dt: float, 
+    def update(self, measurement: Optional[np.ndarray], dt: float,
                control_input: Optional[np.ndarray],
                target_vehicle_state: Optional[np.ndarray] = None,
                host_vehicle_state: Optional[np.ndarray] = None,
                target_id: Optional[int] = None,
                current_time_ns: Optional[int] = None) -> np.ndarray:
+        """Run the descriptor UIO on its fixed Ts grid using independent sensing.
+
+        The descriptor's first state is bumper gap (sensor range minus li).
+        With unknown_target_acceleration, the last state estimates the lumped
+        unknown longitudinal input, not an independently identified cyberattack.
+        No V2V-derived measurement or missing-velocity substitution is allowed.
         """
-        Update the UIO observer.
-        
-        Args:
-            measurement: y(k) vector. Expects 2 elements: [y1, y2]
-                         Typically relative distance/velocity or similar.
-                         MATLAB: y(:,i) = Cd*psi(:,i) + ... -> 2 outputs.
-            dt: Time step (unused if fixed Ts, but kept for interface)
-            target_vehicle_state: Not explicitly used in update equation W(k+1) except via input?
-            host_vehicle_state: xf(2, i-1) used in MATLAB (velocity of host).
-            
-        MATLAB Update:
-           ksi_hat(:,i) = w(:,i) + Qz*y(:,i)
-           w(:,i+1) = N*w(:,i) + L*y(:,i) + M*xf(2,i) + G*mu(i) + Pz*deltae
-           
-           Wait, mu(i) is unknown input? Or known?
-           In MATLAB simulation: mu(i) = ai_1(i) + fc(i). 
-           But the observer equations use G*mu(i-1)? 
-           Actually, UIO is designed to estimate unknown input, but if 'mu' is passed 
-           in line 173: `M*xf(2,i-1) + G*mu(i-1)`, it implies mu is KNOWN input?
-           
-           Re-reading MATLAB:
-           System: E*x(k+1) = Ae*x(k) + Be*u(k) + Fe*d(k) ...
-           Be = Bd (input matrix for host velocity xf(2)). 
-           Fe = Fd.
-           
-           In MATLAB `w(:,i+1) = ... G*mu(i-1) ...`
-           If mu is the attack + acceleration, we typically don't know it.
-           Usually UIO decouples unknown input.
-           
-           Let's look at `Fe`. Fd = Ts*Fc. Fc = [0;0;k3/tau].
-           This term relates to `mu`.
-           
-           If this is an Unknown Input Observer, we should not need `mu`.
-           However, in the MATLAB code line 173: `G*mu(i-1)`.
-           This implies this specific implementation treats `mu` as a KNOWN input in that simulation context?
-           OR `G` matrix is zero?
-           G = Pz * Fe.
-           If unknown input is decoupled, then Pz*Fe should be 0.
-           Let's check `g_invEC` definition. `g_invEC * [E; Ce]' = I`.
-           This decouples E.
-           The standard UIO condition is to decouple the unknown input direction.
-           
-           If `mu` is unknown, we cannot use it in update.
-           I will assume `mu` is 0 or ignored in the observer update if it's truly unknown, 
-           OR the python implementation needs to accept it if it's known (e.g. communicated acceleration).
-           
-           In SA-ACC, `mu` is often the target vehicle acceleration (via V2V). 
-           So it might be treated as known input, and `fc` (attack) is the unknown part?
-           The matrix `Wd` is for `fc`.
-           E = [I Wd]. The "unknown" part being estimated/decoupled is related to `Wd` (the attack/disturbance).
-           `mu` (target acceleration) is treated as KNOWN (from V2V).
-           
-           So arguments needed:
-           - measurement (y)
-           - host_velocity (u_host, xf(2))
-           - target_acceleration (u_target, mu) (Comm. acc)
-        """
-        
-        # Parse inputs
         y_k = self._resolve_relative_measurement(
-            measurement=measurement,
-            target_id=target_id,
-            current_time_ns=current_time_ns,
+            measurement, target_id=target_id, current_time_ns=current_time_ns
         )
-
-        # Inputs
-        # Host velocity (xf(2))
-        u_host_vel = 0.0
-        if host_vehicle_state is not None and len(host_vehicle_state) > 3:
-            # Assuming state [x, y, theta, v, a]
-            u_host_vel = float(host_vehicle_state[3])
-
-        # Target acceleration (mu)
-        u_target_acc = 0.0
-        if target_vehicle_state is not None and len(target_vehicle_state) > 4:
-            # Assuming state [x, y, theta, v, a]
-            u_target_acc = float(target_vehicle_state[4])
-
-        # Check if we should synthesize the measurement from V2V data as a fallback.
-        use_fake_meas = _as_bool(
-            self.config.get("use_fake_relative_measurements", False), False
-        )
-        if y_k is None and use_fake_meas:
-            if host_vehicle_state is not None and target_vehicle_state is not None:
-                y_k = self._compute_relative_measurement_from_v2v(
-                    host_vehicle_state, target_vehicle_state
-                )
-                self._last_measurement_info = {
-                    "source": "v2v_state_fallback",
-                    "confidence": float("nan"),
-                    "timestamp_ns": float(current_time_ns)
-                    if current_time_ns is not None
-                    else float("nan"),
-                    "age_s": 0.0 if current_time_ns is not None else float("nan"),
-                }
-            elif self.logger:
-                self.logger.logger.warning(
-                    "Relative estimator missing external measurement and V2V fallback states."
-                )
-
         if y_k is None:
-            self._record_relative_uio_sample(
-                current_time_ns=current_time_ns,
-                target_id=target_id,
-                dt=dt,
-                y_k=None,
-                host_vehicle_state=host_vehicle_state,
-                target_vehicle_state=target_vehicle_state,
-                u_host_vel=u_host_vel,
-                u_target_acc=u_target_acc,
-                measurement_used=False,
+            raise RuntimeError("Relative UIO requires a fresh range and range-rate measurement")
+        if not np.isfinite(dt) or dt <= 0:
+            raise ValueError("Relative UIO dt must be positive and finite")
+        if host_vehicle_state is None or not np.isfinite(host_vehicle_state[3]):
+            raise ValueError("Relative UIO requires a valid local host velocity")
+        u_host_vel = float(host_vehicle_state[3])
+        if _as_bool(self.config.get("unknown_target_acceleration", True), True):
+            # Target acceleration lies in the same input direction as Wd and
+            # is part of the estimated unknown input in this configured model.
+            u_target_acc = 0.0
+        else:
+            if target_vehicle_state is None or not np.isfinite(target_vehicle_state[4]):
+                raise ValueError("Relative UIO requires communicated target acceleration")
+            u_target_acc = float(target_vehicle_state[4])
+        y_k = y_k.copy()
+        y_k[0] -= self.li
+        if not getattr(self, "_has_measurement", False):
+            self.state = np.array([y_k[0], y_k[1], 0.0, 0.0])
+            self.w = self.state - self.Qz @ y_k
+            self._step_remainder = 0.0
+            self._has_measurement = True
+        self._step_remainder += float(dt)
+        steps = int((self._step_remainder + 1e-12) / self.Ts)
+        if steps > 100:
+            raise RuntimeError("Relative UIO update gap exceeds 100 sample periods")
+        for _ in range(steps):
+            self.state = self.w + self.Qz @ y_k
+            self.w = (
+                self.N @ self.w + self.L @ y_k
+                + self.M.flatten() * u_host_vel
+                + self.G.flatten() * u_target_acc + self.Pz_deltad.flatten()
             )
-            return self.state.copy()
-
-        # 1. Estimation Step: ksi_hat = w + Qz*y
-        ksi_hat = self.w + self.Qz @ y_k
-        
-        # 2. Update auxiliary state w for NEXT step
-        # w(k+1) = N*w(k) + L*y(k) + M*u_host + G*u_pre + Pz*deltae
-        
-        # M is 4x1? Bd is 3x1. Pz is 4x3. M = Pz*Bd -> 4x1.
-        # u_host_vel is scalar.
-        term_M = self.M.flatten() * u_host_vel
-        
-        # G = Pz*Fd. Fd is 3x1. G is 4x1.
-        term_G = self.G.flatten() * u_target_acc
-        
-        term_Pz_delta = self.Pz_deltad.flatten()
-        
-        # Update w
-        self.w = (self.N @ self.w) + (self.L @ y_k) + term_M + term_G + term_Pz_delta
-        
-        # Store state
-        self.state = ksi_hat
+        self._step_remainder -= steps * self.Ts
+        if not np.all(np.isfinite(self.state)) or not np.all(np.isfinite(self.w)):
+            raise RuntimeError("Relative UIO produced non-finite state")
         self.last_update_time = time.time()
-
         self._record_relative_uio_sample(
-            current_time_ns=current_time_ns,
-            target_id=target_id,
-            dt=dt,
-            y_k=y_k,
-            host_vehicle_state=host_vehicle_state,
-            target_vehicle_state=target_vehicle_state,
-            u_host_vel=u_host_vel,
-            u_target_acc=u_target_acc,
-            measurement_used=True,
+            current_time_ns=current_time_ns, target_id=target_id, dt=dt, y_k=y_k,
+            host_vehicle_state=host_vehicle_state, target_vehicle_state=target_vehicle_state,
+            u_host_vel=u_host_vel, u_target_acc=u_target_acc, measurement_used=True,
         )
-        
-        return ksi_hat
+        return self.state.copy()
 
     def get_state(self) -> np.ndarray:
         return self.state.copy()
@@ -957,6 +858,8 @@ class SA_ACC_UIO_Estimator(RelativeStateEstimatorBase):
     def reset(self):
         self.w = np.zeros(4)
         self.state = np.zeros(4)
+        self._has_measurement = False
+        self._step_remainder = 0.0
         self._relative_log_start_time_ns = None
 
 class RelativeEstimatorFactory:
