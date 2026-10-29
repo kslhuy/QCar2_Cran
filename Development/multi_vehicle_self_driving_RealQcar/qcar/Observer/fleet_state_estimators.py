@@ -5,11 +5,8 @@ Provides different distributed state estimation strategies with a common interfa
 Easy to switch between different algorithms (Consensus, Kalman Consensus, etc.).
 """
 import numpy as np
-import time
-import os
-import yaml
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 from collections import defaultdict
 
 # Canonical ordering for state fields used in V2V/local state messages.
@@ -23,6 +20,8 @@ def _normalize_state_array(state_array, expected_dim: int, logger=None) -> Optio
     """
     try:
         arr = np.asarray(state_array, dtype=float).flatten()
+        if arr.size < min(expected_dim, 4) or not np.all(np.isfinite(arr)):
+            return None
         if arr.shape[0] == expected_dim:
             return arr
         if arr.shape[0] > expected_dim:
@@ -48,6 +47,8 @@ def _state_dict_to_array(state_dict: Dict, expected_dim: int, logger=None) -> Op
     Convert a state dict (as used in communication/log layers) to ndarray in canonical order.
     """
     try:
+        if not all(key in state_dict for key in STATE_FIELDS[:min(expected_dim, 4)]):
+            return None
         base_arr = np.array([state_dict.get(k, 0.0) for k in STATE_FIELDS], dtype=float)
         return _normalize_state_array(base_arr, expected_dim, logger=logger)
     except Exception as exc:
@@ -89,7 +90,14 @@ class FleetStateEstimatorBase(ABC):
         self.received_fleet_states = defaultdict(list) # vehicle_sender_id -> [(timestamp_ns, fleet_state)]
 
 
-        self.max_state_age_ns = int(1.0 * 1e9)  # 1 second in nanoseconds
+        fleet_config = self.config.get("fleet", self.config)
+        self.max_state_age_ns = int(fleet_config.get("max_state_age_ns", 1_000_000_000))
+        if self.max_state_age_ns <= 0:
+            raise ValueError("Fleet max_state_age_ns must be positive")
+        self.received_local_states_limit = int(fleet_config.get("received_local_states_limit", 10))
+        self.received_fleet_states_limit = int(fleet_config.get("received_fleet_states_limit", 5))
+        if min(self.received_local_states_limit, self.received_fleet_states_limit) <= 0:
+            raise ValueError("Fleet history limits must be positive")
     
     @abstractmethod
     def update(self, local_state: np.ndarray, dt: float, 
@@ -116,7 +124,7 @@ class FleetStateEstimatorBase(ABC):
         """
         # self.logger.logger.debug(f"Adding received local state from vehicle_id {sender_id}")
         try:
-            if sender_id == self.vehicle_id:
+            if int(sender_id) < 0 or sender_id == self.vehicle_id or int(timestamp_ns) <= 0:
                 return False  # Don't store own state
 
             state_vec: Optional[np.ndarray] = None
@@ -130,10 +138,11 @@ class FleetStateEstimatorBase(ABC):
 
             # Store timestamp in nanoseconds (keep ndarray only)
             self.received_local_states[sender_id].append((timestamp_ns, state_vec.copy()))
+            self.received_local_states[sender_id].sort(key=lambda item: item[0])
 
             # Keep only recent history (default 10 entries)
-            if len(self.received_local_states[sender_id]) > 10:
-                self.received_local_states[sender_id] = self.received_local_states[sender_id][-10:]
+            if len(self.received_local_states[sender_id]) > self.received_local_states_limit:
+                self.received_local_states[sender_id] = self.received_local_states[sender_id][-self.received_local_states_limit:]
 
             return True
 
@@ -143,44 +152,33 @@ class FleetStateEstimatorBase(ABC):
             return False
 
     def add_received_fleet_state(self, sender_id: int, fleet_estimates: Dict, timestamp_ns: int) -> bool:
-        """Add a received FLEET state broadcast from another vehicle.
-
-        Default implementation stores the raw fleet dictionary in
-        `received_fleet_states` and also unpacks per-vehicle states into
-        `received_states` for easy access by other algorithms.
-        """
+        """Accept an isolated, finite snapshot; reject a malformed packet atomically."""
         try:
-            if sender_id == self.vehicle_id:
+            sender_id, timestamp_ns = int(sender_id), int(timestamp_ns)
+            if sender_id < 0 or sender_id == self.vehicle_id or timestamp_ns <= 0:
                 return False
-
-            # Check for new vehicle IDs and expand capacity if required
-            try:
-                max_id_in_msg = max((int(vid) for vid in fleet_estimates.keys()), default=0)
-            except Exception:
-                max_id_in_msg = 0
-
-            if max_id_in_msg >= self.fleet_size:
-                self._ensure_fleet_capacity(max_id_in_msg)
-
-            # Convert keys to int (handles JSON serialization which makes all keys strings)
-            try:
-                fleet_estimates = {int(k): v for k, v in fleet_estimates.items()}
-            except (ValueError, TypeError):
-                pass
-
-            # Store the raw fleet dictionary with timestamp
-            self.received_fleet_states[sender_id].append((timestamp_ns, fleet_estimates))
-
-
-            # Limit history for fleet snapshots per neighbor (default 5)
-            if len(self.received_fleet_states[sender_id]) > 5:
-                self.received_fleet_states[sender_id] = self.received_fleet_states[sender_id][-5:]
-
+            snapshot = {}
+            for key, state in fleet_estimates.items():
+                target_id = int(key)
+                if target_id < 0 or not isinstance(state, dict):
+                    return False
+                vector = _state_dict_to_array(state, self.state_dim, logger=self.logger)
+                if vector is None:
+                    return False
+                entry = dict(state)
+                # State values are scalars; retain the other protocol metadata.
+                entry.update({name: float(vector[i]) for i, name in
+                              enumerate(STATE_FIELDS[:min(self.state_dim, len(STATE_FIELDS))])})
+                snapshot[target_id] = entry
+            if snapshot:
+                self._ensure_fleet_capacity(max(snapshot))
+            self.received_fleet_states[sender_id].append((timestamp_ns, snapshot))
+            self.received_fleet_states[sender_id].sort(key=lambda item: item[0])
+            self.received_fleet_states[sender_id] = self.received_fleet_states[sender_id][-self.received_fleet_states_limit:]
             return True
-
-        except Exception as e:
+        except (TypeError, ValueError, AttributeError, OverflowError) as exc:
             if self.logger:
-                self.logger.log_error("Add received fleet state error", e)
+                self.logger.log_error("Rejected malformed fleet state", exc)
             return False
 
     def _get_latest_fleet_data(self, neighbor_id: int, current_time_ns: int) -> Optional[Dict]:
@@ -197,7 +195,7 @@ class FleetStateEstimatorBase(ABC):
 
         # Iterate backwards to find newest valid data
         for ts_ns, fleet_data in reversed(history):
-            if (current_time_ns - ts_ns) <= self.max_state_age_ns:
+            if 0 <= current_time_ns - ts_ns <= self.max_state_age_ns:
                 return fleet_data
         return None
 
@@ -221,7 +219,7 @@ class FleetStateEstimatorBase(ABC):
         # Iterate backwards (newest first) and return first valid entry
         for timestamp_ns, state in reversed(states_list):
             age_ns = current_time_ns - timestamp_ns
-            if age_ns > self.max_state_age_ns:
+            if age_ns < 0 or age_ns > self.max_state_age_ns:
                 continue
 
             # History stores ndarray; older entries might still be dict, so normalize defensively
@@ -291,6 +289,10 @@ class FleetStateEstimatorBase(ABC):
         self.received_local_states.clear()
         self.received_fleet_states.clear()
 
+    def close(self) -> None:
+        """Release optional estimator resources. Stateless estimators own none."""
+        return None
+
     def _cleanup_old_data(self, current_time_ns: int):
         """Clean up old entries from both received_states and received_fleet_states."""
         try:
@@ -346,6 +348,10 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
         # Consensus gain (0-1, higher = faster consensus but less stable)
         self.consensus_gain = self.config.get('consensus_gain', 0.3)
         self.direct_gain = self.config.get('direct_gain', 0.5)
+        if (not np.all(np.isfinite([self.consensus_gain, self.direct_gain]))
+                or min(self.consensus_gain, self.direct_gain) < 0
+                or self.consensus_gain + self.direct_gain > 1.0 + 1e-12):
+            raise ValueError("Consensus gains must be nonnegative and sum to at most one")
     
     def update(self, local_state: np.ndarray, dt: float, 
                current_time_ns: int, control: np.ndarray) -> np.ndarray:
@@ -358,7 +364,9 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
                    + k_direct    * (Target_T's Self_Report - Host_H's Est(T))
         """
         try:
-            # 1. Ensure capacity and set own state (Ground Truth for self)
+            if not np.isfinite(dt) or dt <= 0 or not np.all(np.isfinite(local_state)):
+                raise ValueError("Consensus update requires finite state and positive dt")
+            # 1. Ensure capacity and set own local estimate
             self._ensure_fleet_capacity(self.vehicle_id)
             self.fleet_states[:, self.vehicle_id] = local_state.copy()
             
@@ -390,7 +398,9 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
                         ])
                         
                         # Add difference (Neighbor - Self)
-                        consensus_accum += (neigh_est_vec - current_est)
+                        residual = neigh_est_vec - current_est
+                        residual[2] = np.arctan2(np.sin(residual[2]), np.cos(residual[2]))
+                        consensus_accum += residual
                         neighbor_count += 1
                 
                 if neighbor_count > 0:
@@ -404,10 +414,14 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
                 
                 if direct_state is not None:
                     # Innovation: Direct_Broadcast - Current_Estimate
-                    total_correction += self.direct_gain * (direct_state - current_est)
+                    residual = direct_state - current_est
+                    residual[2] = np.arctan2(np.sin(residual[2]), np.cos(residual[2]))
+                    total_correction += self.direct_gain * residual
                 
                 # --- Step D: Apply Update ---
                 self.fleet_states[:, target_id] = current_est + total_correction
+                self.fleet_states[2, target_id] = np.arctan2(
+                    np.sin(self.fleet_states[2, target_id]), np.cos(self.fleet_states[2, target_id]))
 
             # 3. Cleanup old data from both storages
             self._cleanup_old_data(current_time_ns)
@@ -417,7 +431,7 @@ class ConsensusFleetEstimator(FleetStateEstimatorBase):
         except Exception as e:
             if self.logger:
                 self.logger.log_error("Consensus fleet update error", e)
-            return self.fleet_states.copy()
+            raise RuntimeError("Selected consensus observer update failed") from e
     
 
 class FleetEstimatorFactory:

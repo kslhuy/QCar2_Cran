@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -19,6 +20,9 @@ from Observer.TrustbasedDistributedObserver.trust_model import TrustScore  # noq
 
 class CleanV2VRelativeMeasurementTests(unittest.TestCase):
     def setUp(self):
+        logging_patch = patch("Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator.TrustWeightLogger.start", return_value="")
+        logging_patch.start()
+        self.addCleanup(logging_patch.stop)
         self.estimator = TrustBasedFleetEstimator(
             vehicle_id=1,
             fleet_size=2,
@@ -35,7 +39,7 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
         }
         self.estimator.fleet_states[:, 1] = np.array([0.0, 0.0, 0.0, 1.0, 0.0])
 
-    def test_clean_v2v_relative_measurement_overrides_attacked_geometry(self):
+    def test_clean_v2v_is_not_an_independent_relative_measurement(self):
         self.estimator.add_received_local_state(
             sender_id=0,
             state={
@@ -64,9 +68,9 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
         self.assertIn(0, trust_scores)
         trust = self.estimator.get_trust_score(0)
         self.assertIsNotNone(trust)
-        self.assertEqual(trust.relative_measurement_source, "v2v_clean_local_state")
-        self.assertTrue(trust.relative_distance_measurement_used)
-        self.assertAlmostEqual(trust.y_local_distance, 5.0, places=6)
+        self.assertEqual(trust.relative_measurement_source, "")
+        self.assertFalse(trust.relative_distance_measurement_used)
+        self.assertAlmostEqual(trust.y_local_distance, 100.0, places=6)
         self.assertAlmostEqual(trust.y_true_distance, 100.0, places=6)
         self.assertAlmostEqual(trust.y_local_rel_velocity, 0.0, places=6)
 
@@ -110,7 +114,7 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
         self.assertAlmostEqual(trust.y_local_distance, 7.0, places=6)
         self.assertAlmostEqual(trust.y_local_rel_velocity, 0.25, places=6)
 
-    def test_gamma_self_uses_clean_v2v_bearing_when_range_matches(self):
+    def test_gamma_self_uses_independent_sensor_bearing_when_range_matches(self):
         self.estimator.trust_model.config.use_relative_velocity_in_relative_trust = False
         self.estimator.trust_model.config.use_relative_bearing_in_gamma_self = True
         self.estimator.trust_model.config.gamma_self_bearing_tau2 = 0.25
@@ -137,6 +141,9 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
             timestamp_ns=self.current_time_ns,
         )
         self.estimator.fleet_states[:, 0] = np.array([5.0, 0.0, 0.0, 1.0, 0.0])
+        self.estimator.set_external_relative_measurement(
+            target_id=0, distance=5.0, relative_velocity=0.0,
+            relative_bearing=np.pi / 2, timestamp_ns=self.current_time_ns, source="radar")
 
         self.estimator._update_trust_scores(self.current_time_ns)
 
@@ -242,7 +249,7 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
         self.assertTrue(after_startup_signals[0]["flag_local_est_check"])
 
 
-    def test_attack_recovery_reset_reanchors_to_clean_v2v_state(self):
+    def test_attack_recovery_reset_does_not_publish_clean_v2v_state(self):
         self.estimator.fleet_states[:, 0] = np.array([100.0, 0.0, 0.0, 1.0, 0.0])
         self.estimator.add_received_clean_local_state(
             sender_id=0,
@@ -266,7 +273,7 @@ class CleanV2VRelativeMeasurementTests(unittest.TestCase):
 
         self.estimator.reset_attack_recovery_state()
 
-        self.assertAlmostEqual(self.estimator.fleet_states[0, 0], 5.0, places=6)
+        self.assertAlmostEqual(self.estimator.fleet_states[0, 0], 100.0, places=6)
         self.assertEqual(self.estimator.rollback.malicious_vehicles, set())
         self.assertIsNone(self.estimator.get_trust_score(0))
 

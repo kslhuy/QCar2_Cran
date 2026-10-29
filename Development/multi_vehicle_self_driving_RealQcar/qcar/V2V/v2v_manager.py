@@ -997,16 +997,24 @@ class V2VManager:
         return messages
     
     def get_latest_local_state_raw(
-        self, vehicle_id: int, channel: str = "attacked"
+        self, vehicle_id: int, channel: str = "attacked",
+        max_age_s: Optional[float] = None, current_time_ns: Optional[int] = None,
     ) -> Optional[dict]:
-        """Get latest local state from a specific vehicle"""
+        """Return a snapshot of the selected channel, optionally bounded by age."""
         with self._lock:
             store = self._get_local_state_store(channel)
-            if vehicle_id in store:
-                states = store[vehicle_id]
-                if states:
-                    return states[-1][1]  # Return data part of (timestamp, data)
-        return None
+            states = store.get(vehicle_id)
+            if not states:
+                return None
+            timestamp_ns, data = states[-1]
+            if max_age_s is not None:
+                if not np.isfinite(max_age_s) or max_age_s <= 0:
+                    raise ValueError("V2V max_age_s must be positive and finite")
+                now_ns = (self._to_reference_time_ns(time.time_ns())
+                          if current_time_ns is None else int(current_time_ns))
+                if not 0 <= now_ns - timestamp_ns <= max_age_s * 1e9:
+                    return None
+            return dict(data)
     
     def get_latest_fleet_state_raw(
         self, vehicle_id: int, channel: str = "attacked"

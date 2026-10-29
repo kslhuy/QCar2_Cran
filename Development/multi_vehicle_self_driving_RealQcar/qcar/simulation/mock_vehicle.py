@@ -16,10 +16,9 @@ from .vehiclemodels.vehicle_dynamics_st import vehicle_dynamics_st
 from .vehiclemodels.vehicle_dynamics_qlpv import (
     vehicle_dynamics_qlpv, 
     get_tire_residuals,
-    get_lateral_acceleration,
     compute_tire_forces_linear,
 )
-from .vehiclemodels.vehicle_parameters import setup_vehicle_parameters, VehicleParameters
+from .vehiclemodels.vehicle_parameters import setup_vehicle_parameters
 from Observer.LocalNeuralObs.qlpv_vehicle_dynamics_obs import QLPVVehicleDynamicsObs
 
 class MockQCar:
@@ -38,6 +37,8 @@ class MockQCar:
         self.vehicle_conf = config.get('vehicle', {})
         
         self.car_id = self.vehicle_conf.get('id', 0)
+        self._sensor_rng = np.random.default_rng(
+            int(config.get('sensors', {}).get('seed', 41000)) + int(self.car_id))
         self.model_type = self.vehicle_conf.get('model_type', 'kinematic')
         self.tire_model = self.vehicle_conf.get('tire_model', 'pacejka')
         print(f"Tire Model: {self.tire_model}")
@@ -580,11 +581,6 @@ class MockQCar:
         self.gps.last_update_time = time.time()
         self.gps.new_data_ready = True
 
-    def write(self, throttle: float, steering: float):
-        """Set control inputs."""
-        self._throttle = np.clip(throttle, -1.0, 1.0)
-        self._steering = np.clip(steering, -1.0, 1.0)
-
     def add_step_listener(self, listener: Callable[["MockQCar", float], Any]) -> None:
         """Register a plant-truth consumer called after every physics step."""
         if listener not in self._step_listeners:
@@ -613,6 +609,15 @@ class MockQCar:
         # 3. Update Sensors
         self.motorTach = self.velocity
         self.gyroscope[2] = self.angular_velocity
+        sensor_config = self.config.get('sensors', {})
+        wheel_config = sensor_config.get('wheel', {})
+        if wheel_config.get('has_noise', False):
+            self.motorTach += self._sensor_rng.normal(0.0, float(wheel_config['noise_speed']))
+        imu_config = sensor_config.get('imu', {})
+        if imu_config.get('has_noise', False):
+            self.gyroscope[2] += self._sensor_rng.normal(0.0, float(imu_config['noise_gyro']))
+            self.accelerometer = np.asarray(self.accelerometer, dtype=float) + self._sensor_rng.normal(
+                0.0, float(imu_config['noise_accel']), 3)
         # Update GPS true state
         self.gps.update_true_state(self.x, self.y, self.heading)
 

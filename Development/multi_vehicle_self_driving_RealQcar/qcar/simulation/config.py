@@ -1,6 +1,5 @@
-import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from omegaconf import OmegaConf
 
 class SimulationConfig:
@@ -29,14 +28,11 @@ class SimulationConfig:
         if not path.exists():
             raise FileNotFoundError(f"Configuration file not found: {path}")
             
-        try:
-            # Use OmegaConf for robust loading
-            conf = OmegaConf.load(str(path))
-            return OmegaConf.to_object(conf) # Return as standard dict
-        except Exception as e:
-            print(f"Error loading config with OmegaConf: {e}, falling back to yaml")
-            with open(path, 'r') as f:
-                return yaml.safe_load(f)
+        conf = OmegaConf.load(str(path))
+        config = OmegaConf.to_object(conf)
+        if not isinstance(config, dict):
+            raise ValueError(f"Simulation configuration must be a mapping: {path}")
+        return config
 
     @staticmethod
     def get_default_config() -> Dict[str, Any]:

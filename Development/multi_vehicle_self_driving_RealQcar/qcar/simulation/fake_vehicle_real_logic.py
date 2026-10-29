@@ -5,13 +5,10 @@ This entry point uses the qcar.simulation package for vehicle dynamics and distu
 import sys
 import os
 import time
-import socket
-import json
-import threading
 import math
 import numpy as np
 from threading import Event
-from typing import Dict, Any, Optional
+from typing import Optional
 
 # Add parent directory to path to import qcar modules if needed
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,7 +18,6 @@ if parent_dir not in sys.path:
 # Import the REAL VehicleLogic and related classes
 from vehicle_logic import VehicleLogic
 from config_main import VehicleMainConfig
-from StateMachine.vehicle_state_machine import VehicleStateMachine
 from StateMachine.vehicle_state import VehicleState
 from fake_initializing_state import FakeInitializingState
 
@@ -64,13 +60,7 @@ class FakeVehicleWithRealLogic:
         self.local_estimator_override = local_estimator
         
         # 1. Load and Configure MockQCar
-        self.sim_config = SimulationConfig.get_default_config()
-        try:
-            loaded = SimulationConfig.load_config('parameters.yaml')
-            if loaded:
-                self.sim_config.update(loaded)
-        except Exception:
-            print("⚠️ Could not load parameters.yaml, using defaults/args")
+        self.sim_config = SimulationConfig.load_config('parameters.yaml')
 
         # Override with arguments
         self.sim_config['vehicle']['id'] = car_id
@@ -153,6 +143,11 @@ class FakeVehicleWithRealLogic:
         
         # Components injection will happen in _inject_mock_hardware
         self._inject_mock_hardware()
+
+        from simulation.relative_sensor import LoopbackRelativeSensor
+        relative_config = self.sim_config.get('sensors', {}).get('relative', {})
+        self.relative_sensor = (LoopbackRelativeSensor(self.car_id, relative_config)
+                                if relative_config.get('enabled', False) else None)
         
         # Monkey patch _observer_update
         self._patch_observer_update()
@@ -168,19 +163,7 @@ class FakeVehicleWithRealLogic:
     def _create_real_config(self) -> VehicleMainConfig:
         """Create real configuration for VehicleLogic."""
         fleet_config_path = os.path.join(parent_dir, "fleet_config.yaml")
-        if os.path.exists(fleet_config_path):
-            try:
-                config = VehicleMainConfig.from_fleet_yaml(fleet_config_path, self.car_id)
-                print(
-                    f"[CONFIG] Loaded fleet_config.yaml for fake car {self.car_id} "
-                    f"(path_number={config.path.path_number})"
-                )
-            except Exception as e:
-                print(f"[WARN] Could not load fleet_config.yaml for fake car {self.car_id}: {e}")
-                config = VehicleMainConfig()
-        else:
-            print(f"[WARN] fleet_config.yaml not found at {fleet_config_path}; using defaults")
-            config = VehicleMainConfig()
+        config = VehicleMainConfig.from_fleet_yaml(fleet_config_path, self.car_id)
 
         config.network.car_id = self.car_id
         config.network.host_ip = self.host_ip
@@ -195,11 +178,7 @@ class FakeVehicleWithRealLogic:
     def _get_direct_spawn_pose(self) -> Optional[np.ndarray]:
         """Return the same direct pose used by initCars_Studio.py -u."""
         if self.car_id < 0 or self.car_id >= len(DIRECT_SPAWN_POSES_DEGREES):
-            print(
-                f"[WARN] No initCars_Studio.py -u direct pose for car {self.car_id}; "
-                "falling back to path calibration pose"
-            )
-            return None
+            raise ValueError(f"No configured direct spawn pose for car {self.car_id}")
 
         x, y, theta_deg = DIRECT_SPAWN_POSES_DEGREES[self.car_id]
         return np.array([x, y, math.radians(theta_deg)], dtype=float)
@@ -236,38 +215,20 @@ class FakeVehicleWithRealLogic:
         print(f"🔧 Car {self.car_id}: Mock hardware injection deferred to initialization state")
     
     def _patch_observer_update(self):
-        """Monkey patch VehicleLogic._observer_update to inject ground truth provider"""
+        """Feed independent detections before estimation; never inject plant truth into observers."""
         original_observer_update = self.vehicle_logic._observer_update
-        
-        def patched_observer_update(dt: float):
-            original_observer_update(dt)
-            try:
-                if hasattr(self.vehicle_logic, 'vehicle_observer'):
-                    est = self.vehicle_logic.vehicle_observer.get_local_estimator()
-                    
-                    # Inject Ground Truth Provider if missing
-                    if est and hasattr(est, 'set_ground_truth_provider') and getattr(est, 'ground_truth_provider', None) is None:
-                        print(f"✅ [SIM] Injecting MockQCar as Ground Truth Provider into Observer")
-                        est.set_ground_truth_provider(self.mock_qcar)
 
-                    # Patch internal observer update for true steering
-                    if est and hasattr(est, 'observer') and not getattr(est, '_patched_steering', False):
-                        print(f"✅ [SIM] Monkey-patching Observer.update to inject true steering")
-                        original_obs_update = est.observer.update
-                        
-                        def patched_obs_update(measurement, control_input, **kwargs):
-                            true_delta = self.mock_qcar.current_steering_angle
-                            u_flat = np.array(control_input).reshape(-1)
-                            throttle_cmd = u_flat[1] if len(u_flat) > 1 else 0.0
-                            steering_cmd = u_flat[0]
-                            u_new = np.array([steering_cmd, throttle_cmd, true_delta])
-                            return original_obs_update(measurement, u_new, **kwargs)
-                        
-                        est.observer.update = patched_obs_update
-                        est._patched_steering = True
-            except Exception:
-                pass
-                
+        def patched_observer_update(dt: float):
+            if self.relative_sensor is not None:
+                for packet in self.relative_sensor.poll(self.mock_qcar):
+                    self.vehicle_logic.vehicle_observer.update_relative_measurement(
+                        measurement=np.array([packet["distance"], packet["relative_velocity"]]),
+                        target_id=packet["target_id"], source=packet["source"],
+                        measurement_confidence=packet["confidence"],
+                        timestamp_ns=packet["timestamp_ns"], relative_bearing=packet["relative_bearing"],
+                    )
+            original_observer_update(dt)
+
         self.vehicle_logic._observer_update = patched_observer_update
 
     def start_simulation(self):
@@ -286,14 +247,16 @@ class FakeVehicleWithRealLogic:
             print(f"❌ Car {self.car_id}: VehicleLogic error - {e}")
             import traceback
             traceback.print_exc()
+            raise
         finally:
-            self.running = False
-            self.kill_event.set()
+            self.stop()
     
     def stop(self):
         """Stop the simulation"""
         self.running = False
         self.kill_event.set()
+        if self.relative_sensor is not None:
+            self.relative_sensor.close()
         if self.ground_station_client:
             try:
                 self.ground_station_client.close()
@@ -407,7 +370,7 @@ def main():
         print(f"\n🛑 Shutting down...")
     finally:
         vehicle.stop()
-        return 0
+    return 0
 
 if __name__ == '__main__':
     sys.exit(main())

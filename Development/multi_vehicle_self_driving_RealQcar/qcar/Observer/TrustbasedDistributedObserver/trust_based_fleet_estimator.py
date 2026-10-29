@@ -56,6 +56,8 @@ from Observer.TrustbasedDistributedObserver.contamination_rollback import (
 )
 from Observer.TrustbasedDistributedObserver.estimator_config import (
     ObserverSettings,
+    ReferenceSettings,
+    CLEAN_PREDICTION_MODES,
     PredictionSettings,
     RollbackSettings,
     as_bool,
@@ -80,16 +82,16 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     Uses the TriP Trust Model for trust evaluation and the Weight Trust Module
     for adaptive weight calculation.
 
-    Algorithm (Correction-then-Prediction):
+    Algorithm (Prediction-then-Correction, current-time output):
     For each target vehicle T estimated by host H:
     1. Evaluate trust for all vehicles using TriP model
     2. Calculate adaptive weights based on trust scores
-    3. Consensus correction:
-       x̂_corrected(T) = x̂_old(T)
-                       + w0 * (T's_broadcast - x̂_old(T))
-                       + Σ w_N * (Neighbor_N's_estimate(T) - x̂_old(T))
-    4. Dynamics prediction:
-       x̂_new(T) = f(x̂_corrected(T), u_T, dt)
+    3. Predict the previous estimate to the current timestamp:
+       x̂_prior(T) = f(x̂_old(T), u_T, dt)
+    4. Correct using broadcasts aligned to that same timestamp:
+       x̂_new(T) = x̂_prior(T)
+                  + w0 * (T's_broadcast - x̂_prior(T))
+                  + Σ w_N * (Neighbor_N's_estimate(T) - x̂_prior(T))
 
     Where:
     - w0: Weight for direct measurement (from target)
@@ -158,11 +160,16 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         # so numeric zero checks cannot distinguish an origin pose from a target
         # that has not supplied its first direct V2V state yet.
         self._initialized_target_ids: Set[int] = {self.vehicle_id}
+        self._target_state_time_ns: Dict[int, int] = {}
 
         # External relative measurements (e.g. YOLO / radar)
+        self.reference_settings = ReferenceSettings.from_config(self.config)
+        self.relative_measurement_source = self.reference_settings.relative_measurement_source
+        self.recovery_state_source = self.reference_settings.recovery_state_source
+        self.require_relative_measurement = self.reference_settings.require_relative_measurement
         self._ext_cache = ExternalMeasurementCache(
-            max_age_s=self.trust_config.max_message_age_s
-        )
+            max_age_s=self.reference_settings.relative_measurement_max_age_s)
+        self.target_availability: Dict[int, str] = {}
 
         # Cache for current weight result
         self.current_weight_result: Optional[WeightResult] = None
@@ -220,6 +227,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self._init_vehicle_model_settings(vehicle_config)
 
         self._log_prediction_settings()
+        if self.logger:
+            self.logger.logger.info("Observer reference inputs: %s", self.get_reference_status())
 
         # Initialize specialized logger for trusts & weights
         logging_config = self._get_config_section("logging")
@@ -234,10 +243,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             output_dir=os.path.dirname(os.path.abspath(__file__)),
             max_vehicles=max(1, fleet_size),
         )
-        filepath = self.trust_weight_logger.start(
-            vehicle_id,
-            overwrite=trust_recording_overwrite,
-        )
+        filepath = ""
+        if as_bool(logging_config.get("enabled", True), True):
+            filepath = self.trust_weight_logger.start(vehicle_id, overwrite=trust_recording_overwrite)
         if filepath and self.logger:
             self.logger.logger.info(f"Trust weight recording to {filepath}")
         self._init_runtime_tracking()
@@ -391,25 +399,41 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     def add_received_local_state(
         self, sender_id: int, state, timestamp_ns: int
     ) -> bool:
-        """Intercept to cache the sender's control_input before converting to ndarray."""
-        if isinstance(state, dict):
-            ctrl = state.get("control_input", {})
-            if ctrl:
-                self._received_control_inputs[sender_id] = {
-                    "steering": float(ctrl.get("steering", 0.0)),
-                    "throttle": float(ctrl.get("throttle", 0.0)),
-                    "timestamp_ns": float(timestamp_ns),
-                }
-        return super().add_received_local_state(sender_id, state, timestamp_ns)
+        """Validate atomically and separate estimate time from packet/control time."""
+        try:
+            timestamp_ns = int(timestamp_ns)
+            estimate_ns = int(state.get("estimate_timestamp_ns", timestamp_ns)) if isinstance(state, dict) else timestamp_ns
+            if not 0 < estimate_ns <= timestamp_ns:
+                return False
+            candidate_control = None
+            if isinstance(state, dict) and state.get("control_input"):
+                ctrl = state["control_input"]
+                steering, throttle = float(ctrl["steering"]), float(ctrl["throttle"])
+                if not np.all(np.isfinite([steering, throttle])):
+                    return False
+                candidate_control = dict(steering=steering, throttle=throttle, timestamp_ns=timestamp_ns)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+        accepted = super().add_received_local_state(sender_id, state, estimate_ns)
+        if accepted and candidate_control is not None:
+            previous = self._received_control_inputs.get(sender_id)
+            if previous is None or timestamp_ns >= previous["timestamp_ns"]:
+                self._received_control_inputs[sender_id] = candidate_control
+        return accepted
 
     def add_received_clean_local_state(
         self, sender_id: int, state, timestamp_ns: int
     ) -> bool:
         """
-        Store clean V2V local state for trust-only relative checks.
+        Store clean V2V for diagnostics and explicitly selected test modes.
 
         This channel must not alter the attacked/control-path estimate updates.
         """
+        if isinstance(state, dict):
+            estimate_ns = int(state.get("estimate_timestamp_ns", timestamp_ns))
+            if not 0 < estimate_ns <= int(timestamp_ns):
+                return False
+            timestamp_ns = estimate_ns
         if sender_id == self.vehicle_id:
             return False
 
@@ -424,9 +448,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.received_clean_local_states[int(sender_id)].append(
             (int(timestamp_ns), state_vec.copy())
         )
-        if len(self.received_clean_local_states[int(sender_id)]) > 10:
+        self.received_clean_local_states[int(sender_id)].sort(key=lambda item: item[0])
+        if len(self.received_clean_local_states[int(sender_id)]) > self.received_local_states_limit:
             self.received_clean_local_states[int(sender_id)] = (
-                self.received_clean_local_states[int(sender_id)][-10:]
+                self.received_clean_local_states[int(sender_id)][-self.received_local_states_limit:]
             )
         return True
 
@@ -1462,17 +1487,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         cached = self._received_control_inputs.get(target_id)
         if cached is not None:
             if current_time_ns is not None:
-                age_s = (
-                    float(current_time_ns) - float(cached.get("timestamp_ns", current_time_ns))
-                ) / 1e9
-                if age_s > max(self.control_timeout_s, 0.0):
+                age_s = (int(current_time_ns) - int(cached.get("timestamp_ns", current_time_ns))) / 1e9
+                if not 0 <= age_s <= self.control_timeout_s:
                     cached = None
         if cached is not None:
             return np.array([cached["steering"], cached["throttle"]])
 
-        model_cfg = self._get_vehicle_model_config(target_id)
-        if bool(model_cfg.get("allow_host_control_fallback", False)):
-            return host_control
         return None
 
     def _initialize_targets_from_direct_states(self, current_time_ns: int) -> Set[int]:
@@ -1521,6 +1541,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 initial_state[: self.state_dim], target_id=target_id
             )
             self._initialized_target_ids.add(target_id)
+            self._target_state_time_ns[target_id] = int(current_time_ns)
             initialized_now.add(target_id)
 
         return initialized_now
@@ -1548,6 +1569,11 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             Updated fleet states [state_dim x fleet_size]
         """
         try:
+            if not np.isfinite(dt) or dt <= 0:
+                raise ValueError("Fleet observer dt must be positive and finite")
+            if not np.all(np.isfinite(local_state)):
+                raise ValueError("Fleet observer requires a finite host state")
+            self._last_update_time_ns = int(current_time_ns)
             # 1. Ensure capacity and set own state
             self._ensure_fleet_capacity(self.vehicle_id)
             self.fleet_states[:, self.vehicle_id] = local_state.copy()
@@ -1622,19 +1648,15 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             for target_id in trust_scores.keys():
                 if target_id == self.vehicle_id:
                     continue
+                if not self.is_target_available(target_id, current_time_ns):
+                    continue
 
                 current_est = self.fleet_states[:, target_id].copy()
 
-                normal_est, components = self._trust_weighted_update_with_components(
-                    target_id=target_id,
-                    current_time_ns=current_time_ns,
-                    trust_scores=trust_scores,
-                    control=control,
-                    dt=dt,
-                )
-                # Correction-then-Prediction: propagate the
-                # consensus-corrected state through dynamics
-                # x̂_new = f(x̂_corrected, u, dt)
+                target_dt = (current_time_ns - self._target_state_time_ns.get(
+                    target_id, current_time_ns)) / 1e9
+                if target_dt < 0:
+                    raise ValueError("Fleet target timestamp moved backwards")
                 target_ctrl = self._get_target_control(
                     target_id, control, current_time_ns=current_time_ns
                 )
@@ -1666,10 +1688,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     )
                 )
                 target_prediction_mode[target_id] = bool(prediction_mode != "none")
-                consensus_est = normal_est.copy()
-                consensus_estimates[target_id] = self._state_vector_to_log_dict(
-                    consensus_est
-                )
+                prediction_input = current_est.copy()
                 clean_reference = self._get_clean_reference_log_state(
                     target_id=target_id,
                     current_time_ns=current_time_ns,
@@ -1682,11 +1701,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     host_anchor_snapshot = self._build_relative_host_anchor_snapshot(
                         target_id=target_id,
                         current_time_ns=current_time_ns,
-                        reference_state=consensus_est,
+                        reference_state=prediction_input,
                     )
 
-                components["prediction"] = {
-                    "dt": float(dt),
+                prediction_components = {
+                    "dt": float(target_dt),
+                    "order": "predict_then_correct",
                     "control": None
                     if target_ctrl is None
                     else np.asarray(target_ctrl, dtype=float).copy(),
@@ -1700,9 +1720,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 }
                 predicted_est = self._apply_state_constraints(
                     self._predict_dynamics(
-                        consensus_est,
+                        prediction_input,
                         target_ctrl,
-                        dt,
+                        target_dt,
                         target_id=target_id,
                         current_time_ns=current_time_ns,
                         force_clean_pose_anchor=force_clean_pose_anchor,
@@ -1724,10 +1744,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                         dtype=float,
                     )
                 native_prediction = self.embedded_core_shadow.compare_prediction(
-                    corrected_state=consensus_est,
+                    corrected_state=prediction_input,
                     clean_state=native_clean_state,
                     control=target_ctrl,
-                    dt=dt,
+                    dt=target_dt,
                     prediction_mode=prediction_mode,
                     model_config=target_model_cfg,
                     prediction_options={
@@ -1750,17 +1770,26 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                     predicted_est = np.asarray(
                         native_prediction["native_state"], dtype=float
                     ).copy()
-                normal_est = predicted_est
+                normal_est, components = self._trust_weighted_update_with_components(
+                    target_id=target_id,
+                    current_time_ns=current_time_ns,
+                    trust_scores=trust_scores,
+                    control=control,
+                    dt=target_dt,
+                    prior_state=predicted_est,
+                )
+                components["prediction"] = prediction_components
+                consensus_estimates[target_id] = self._state_vector_to_log_dict(normal_est)
                 post_prediction_estimates[target_id] = self._state_vector_to_log_dict(
-                    normal_est
+                    predicted_est
                 )
                 prediction_debugs[target_id] = self._build_prediction_debug(
                     prediction_mode=prediction_mode,
-                    consensus_state=consensus_est,
-                    predicted_state=normal_est,
+                    consensus_state=prediction_input,
+                    predicted_state=predicted_est,
                     target_control=target_ctrl,
                     host_control=control,
-                    dt=dt,
+                    dt=target_dt,
                     attack_relative_host_anchor_active=attack_relative_host_anchor_active,
                 )
                 attack_alpha_override = None
@@ -1783,6 +1812,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 )
 
                 self.fleet_states[:, target_id] = final_est
+                self._target_state_time_ns[target_id] = int(current_time_ns)
+                components["output_filter"] = {
+                    "enabled": self.enable_output_low_pass,
+                    "alpha": (self.output_low_pass_alpha if attack_alpha_override is None
+                              else attack_alpha_override),
+                }
                 step_targets[target_id] = components
 
             rollback_status = self.rollback.get_status()
@@ -1846,7 +1881,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         except Exception as e:
             if self.logger:
                 self.logger.log_error("TrustBasedFleetEstimator update error", e)
-            return self.fleet_states.copy()
+            raise RuntimeError("Distributed trust update failed") from e
 
     # ==================================================================
     #   TRUST SCORE UPDATE
@@ -1874,6 +1909,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             )
 
             if latest is None:
+                self.target_availability[vehicle_id] = "local_packet_unavailable"
                 trust_result = self.trust_model.update_missing_observation(
                     target_id=vehicle_id, current_time_ns=current_time_ns
                 )
@@ -1888,6 +1924,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 continue
 
             packet_ts_ns, latest_state = latest
+            latest_state = self._align_state_array_to_time(
+                latest_state, packet_ts_ns, current_time_ns, vehicle_id)
 
             target_data = VehicleData(
                 vehicle_id=vehicle_id,
@@ -1899,8 +1937,18 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 timestamp_ns=packet_ts_ns,
             )
 
-            # Attach external relative measurement if available
-            external_rel = self._ext_cache.get(vehicle_id, current_time_ns)
+            # Use exactly the selected evidence source; missing data never changes it.
+            external_rel = None
+            if self.relative_measurement_source == "clean_v2v":
+                if not self._attach_clean_v2v_relative_measurement(target_data, current_time_ns):
+                    self.target_availability[vehicle_id] = "clean_v2v_reference_unavailable"
+                    continue
+            else:
+                external_rel = self._ext_cache.get(vehicle_id, current_time_ns)
+                if self.require_relative_measurement and external_rel is None:
+                    self.target_availability[vehicle_id] = "relative_measurement_unavailable"
+                    continue
+            self.target_availability[vehicle_id] = "available"
             if external_rel is not None:
                 target_data.distance_from_host = float(
                     external_rel.get("distance", float("nan"))
@@ -1924,11 +1972,6 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 target_data.relative_measurement_timestamp_ns = int(
                     external_rel.get("timestamp_ns", 0.0)
                 )
-            else:
-                self._attach_clean_v2v_relative_measurement(
-                    target_data=target_data,
-                    current_time_ns=current_time_ns,
-                )
 
             self.trust_model.update_beacon_reception(
                 vehicle_id, True, packet_ts_ns / 1e9
@@ -1942,6 +1985,10 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 self.vehicle_id, current_time_ns, exclude_self=True
             )
             host_target_estimate = self.fleet_states[:, vehicle_id].copy()
+            host_target_estimate = self._align_state_array_to_time(
+                host_target_estimate,
+                self._target_state_time_ns.get(vehicle_id, current_time_ns),
+                current_time_ns, vehicle_id)
 
             target_fleet_data = None
             fleet_entry = self._get_latest_fleet_data_with_timestamp(
@@ -2051,7 +2098,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             return None
         history = self.received_local_states[vehicle_id]
         for ts_ns, state in reversed(history):
-            if (current_time_ns - ts_ns) > self.max_state_age_ns:
+            if not 0 <= current_time_ns - ts_ns <= self.max_state_age_ns:
                 continue
             if isinstance(state, dict):
                 state_vec = _state_dict_to_array(
@@ -2068,12 +2115,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     def _get_latest_clean_received_state_with_timestamp(
         self, vehicle_id: int, current_time_ns: int
     ) -> Optional[Tuple[int, np.ndarray]]:
-        """Return the latest valid clean-channel local state for trust-only use."""
+        """Return a fresh clean-channel sample for diagnostics or selected test inputs."""
         if vehicle_id not in self.received_clean_local_states:
             return None
         history = self.received_clean_local_states[vehicle_id]
         for ts_ns, state in reversed(history):
-            if (current_time_ns - ts_ns) > self.max_state_age_ns:
+            if not 0 <= current_time_ns - ts_ns <= self.max_state_age_ns:
                 continue
             if isinstance(state, dict):
                 state_vec = _state_dict_to_array(
@@ -2104,48 +2151,44 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             target_id=target_id,
         )
 
+    def _require_clean_reference_state(self, target_id: int, current_time_ns: Optional[int]) -> np.ndarray:
+        """Fail explicitly when a selected test-reference input is unavailable."""
+        if current_time_ns is None:
+            raise ValueError("Clean-V2V prediction requires a current timestamp")
+        state = self._get_latest_clean_aligned_state(target_id, current_time_ns)
+        if state is None:
+            raise RuntimeError(f"Clean-V2V test reference is unavailable for target {target_id}")
+        return state
+
     def _attach_clean_v2v_relative_measurement(
-        self, target_data: VehicleData, current_time_ns: int
-    ) -> None:
-        """
-        Build an independent relative measurement from the clean V2V channel.
-
-        This uses the clean broadcast only for trust validation. The attacked
-        local-state path remains the primary control/estimation input.
-        """
-        clean_entry = self._get_latest_clean_received_state_with_timestamp(
-            int(target_data.vehicle_id), current_time_ns
-        )
-        if clean_entry is None or not self.host_state:
-            return
-
-        clean_ts_ns, clean_state = clean_entry
+        self, target_data: VehicleData, current_time_ns: int,
+    ) -> bool:
+        """Attach an explicitly selected clean-V2V test reference."""
+        entry = self._get_latest_clean_received_state_with_timestamp(
+            int(target_data.vehicle_id), current_time_ns)
+        if entry is None or not self.host_state:
+            return False
+        timestamp, state = entry
+        if current_time_ns - timestamp > self.reference_settings.relative_measurement_max_age_s * 1e9:
+            return False
+        aligned = self._align_state_array_to_time(
+            state, timestamp, current_time_ns, int(target_data.vehicle_id))
         clean_target = VehicleData(
-            vehicle_id=int(target_data.vehicle_id),
-            x=float(clean_state[0]),
-            y=float(clean_state[1]),
-            theta=float(clean_state[2]),
-            velocity=float(clean_state[3]),
-            acceleration=float(clean_state[4]) if len(clean_state) > 4 else 0.0,
-            timestamp_ns=int(clean_ts_ns),
+            vehicle_id=int(target_data.vehicle_id), x=float(aligned[0]), y=float(aligned[1]),
+            theta=float(aligned[2]), velocity=float(aligned[3]), acceleration=float(aligned[4]),
+            timestamp_ns=timestamp,
         )
-        rel_distance, _ = self.trust_model._resolve_relative_distance(
-            self.host_state, clean_target
-        )
-        rel_velocity = self.trust_model._estimate_radial_relative_velocity(
-            self.host_state, clean_target
-        )
-        rel_bearing = self.trust_model._relative_bearing_from_geometry(
-            self.host_state, clean_target
-        )
-
-        target_data.distance_from_host = float(rel_distance)
-        target_data.relative_velocity_from_host = float(rel_velocity)
+        target_data.distance_from_host = self.trust_model._resolve_relative_distance(
+            self.host_state, clean_target)[0]
+        target_data.relative_velocity_from_host = self.trust_model._estimate_radial_relative_velocity(
+            self.host_state, clean_target)
+        target_data.relative_bearing_from_host = self.trust_model._relative_bearing_from_geometry(
+            self.host_state, clean_target)
+        target_data.relative_heading = target_data.relative_bearing_from_host
         target_data.relative_measurement_confidence = 1.0
-        target_data.relative_bearing_from_host = float(rel_bearing)
-        target_data.relative_heading = float(rel_bearing)
         target_data.relative_measurement_source = "v2v_clean_local_state"
-        target_data.relative_measurement_timestamp_ns = int(clean_ts_ns)
+        target_data.relative_measurement_timestamp_ns = timestamp
+        return True
 
     def _get_latest_fleet_data_with_timestamp(
         self, neighbor_id: int, current_time_ns: int
@@ -2155,7 +2198,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             return None
         history = self.received_fleet_states[neighbor_id]
         for ts_ns, fleet_data in reversed(history):
-            if (current_time_ns - ts_ns) <= self.max_state_age_ns:
+            if 0 <= current_time_ns - ts_ns <= self.max_state_age_ns:
                 return ts_ns, fleet_data
         return None
 
@@ -2202,7 +2245,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         if not self._timestamp_alignment_enabled() or not isinstance(state_dict, dict):
             return dict(state_dict) if isinstance(state_dict, dict) else {}
 
-        dt = (float(current_time_ns) - float(snapshot_ts_ns)) / 1e9
+        dt = (int(current_time_ns) - int(snapshot_ts_ns)) / 1e9
         if dt <= 0.0 or dt > self._max_alignment_s():
             return dict(state_dict)
 
@@ -2261,7 +2304,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 continue
             aligned[vid] = self._align_state_dict_to_time(
                 state_dict=state_dict,
-                snapshot_ts_ns=snapshot_ts_ns,
+                snapshot_ts_ns=int(state_dict.get("estimate_timestamp_ns", snapshot_ts_ns)),
                 current_time_ns=current_time_ns,
                 target_id=vid,
             )
@@ -2584,9 +2627,11 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         trust_scores: Dict[int, float],
         control: np.ndarray,
         dt: float,
+        prior_state: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, Dict]:
         """Update estimate for a target vehicle and return replayable contribution terms."""
-        current_est = self.fleet_states[:, target_id].copy()
+        current_est = (self.fleet_states[:, target_id] if prior_state is None
+                       else np.asarray(prior_state, dtype=float)).copy()
         total_correction = np.zeros(self.state_dim)
         use_startup_fixed_weights = self._use_startup_fixed_weights(current_time_ns)
         apply_trust_channel_gating = not (
@@ -2775,7 +2820,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             native_neighbor_states.append((int(neighbor_id), neigh_est.copy()))
 
         # === Apply Consensus Correction ===
-        # Dynamics propagation f(x̂_corrected, u, dt) is applied in update()
+        # The caller has already propagated the prior to the measurement time.
         new_est = self._apply_state_constraints(
             current_est + total_correction, target_id=target_id
         )
@@ -2823,142 +2868,22 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
     #   DYNAMICS & CONSTRAINTS
     # ==================================================================
     def _predict_from_clean_data_motion(
-        self,
-        state: np.ndarray,
-        dt: float,
-        target_id: int,
-        current_time_ns: Optional[int] = None,
-        force_clean_pose_anchor: bool = False,
+        self, state: np.ndarray, dt: float, target_id: int,
+        current_time_ns: Optional[int] = None, force_clean_pose_anchor: bool = False,
     ) -> np.ndarray:
-        """
-        Predict using the clean V2V target broadcast as the motion source.
-
-        This keeps the host's current x/y estimate continuity, but drives the
-        motion with clean theta/velocity/acceleration for testing.
-        When `force_clean_pose_anchor` is enabled, x/y starts from the aligned
-        clean V2V pose instead of the rollback/consensus pose.
-        """
-        state = np.asarray(state, dtype=float).copy()
-        if dt <= 0.0:
-            return state
-
-        clean_state = None
-        if current_time_ns is not None:
-            clean_entry = self._get_latest_clean_received_state_with_timestamp(
-                target_id, current_time_ns
-            )
-            if clean_entry is not None:
-                clean_ts_ns, clean_state_raw = clean_entry
-                clean_state = self._align_state_array_to_time(
-                    clean_state_raw,
-                    snapshot_ts_ns=clean_ts_ns,
-                    current_time_ns=current_time_ns,
-                    target_id=target_id,
-                )
-        else:
-            history = self.received_clean_local_states.get(int(target_id), [])
-            if history:
-                clean_state = _normalize_state_array(
-                    history[-1][1], self.state_dim, logger=self.logger
-                )
-
-        if clean_state is None:
-            theta = float(state[2]) if state.shape[0] > 2 else 0.0
-            velocity = float(state[3]) if state.shape[0] > 3 else 0.0
-            acceleration = float(state[4]) if state.shape[0] > 4 else 0.0
-        else:
-            clean_state = np.asarray(clean_state, dtype=float).copy()
-            theta = float(clean_state[2]) if clean_state.shape[0] > 2 else 0.0
-            velocity = float(clean_state[3]) if clean_state.shape[0] > 3 else 0.0
-            acceleration = (
-                float(clean_state[4])
-                if clean_state.shape[0] > 4
-                else float(state[4]) if state.shape[0] > 4 else 0.0
-            )
-
-        predicted = state.copy()
-        base_x = float(state[0])
-        base_y = float(state[1])
-        if force_clean_pose_anchor and clean_state is not None:
-            if clean_state.shape[0] > 0:
-                base_x = float(clean_state[0])
-            if clean_state.shape[0] > 1:
-                base_y = float(clean_state[1])
-        predicted[0] = base_x + velocity * np.cos(theta) * dt
-        predicted[1] = base_y + velocity * np.sin(theta) * dt
-        if predicted.shape[0] > 2:
-            predicted[2] = self._wrap_angle(theta)
-        if predicted.shape[0] > 3:
-            predicted[3] = velocity
-        if predicted.shape[0] > 4:
-            predicted[4] = acceleration
-        return predicted
-
-    def _predict_from_mixed_clean_data_motion(
-        self,
-        state: np.ndarray,
-        dt: float,
-        target_id: int,
-        current_time_ns: Optional[int] = None,
-        force_clean_pose_anchor: bool = False,
-    ) -> np.ndarray:
-        """
-        Predict using clean V2V heading with host/estimator speed persistence.
-
-        Theta comes from the clean target broadcast when available, while
-        velocity and acceleration stay on the current estimator state.
-        When `force_clean_pose_anchor` is enabled, x/y starts from the aligned
-        clean V2V pose instead of the rollback/consensus pose.
-        """
-        state = np.asarray(state, dtype=float).copy()
-        if dt <= 0.0:
-            return state
-
-        clean_state = None
-        if current_time_ns is not None:
-            clean_entry = self._get_latest_clean_received_state_with_timestamp(
-                target_id, current_time_ns
-            )
-            if clean_entry is not None:
-                clean_ts_ns, clean_state_raw = clean_entry
-                clean_state = self._align_state_array_to_time(
-                    clean_state_raw,
-                    snapshot_ts_ns=clean_ts_ns,
-                    current_time_ns=current_time_ns,
-                    target_id=target_id,
-                )
-        else:
-            history = self.received_clean_local_states.get(int(target_id), [])
-            if history:
-                clean_state = _normalize_state_array(
-                    history[-1][1], self.state_dim, logger=self.logger
-                )
-
-        theta = float(state[2]) if state.shape[0] > 2 else 0.0
-        velocity = float(state[3]) if state.shape[0] > 3 else 0.0
-        acceleration = float(state[4]) if state.shape[0] > 4 else 0.0
-
-        if clean_state is not None:
-            clean_state = np.asarray(clean_state, dtype=float).copy()
-            if clean_state.shape[0] > 2:
-                theta = float(clean_state[2])
-
-        predicted = state.copy()
-        base_x = float(state[0])
-        base_y = float(state[1])
-        if force_clean_pose_anchor and clean_state is not None:
-            if clean_state.shape[0] > 0:
-                base_x = float(clean_state[0])
-            if clean_state.shape[0] > 1:
-                base_y = float(clean_state[1])
-        predicted[0] = base_x + velocity * np.cos(theta) * dt
-        predicted[1] = base_y + velocity * np.sin(theta) * dt
-        if predicted.shape[0] > 2:
-            predicted[2] = self._wrap_angle(theta)
-        if predicted.shape[0] > 3:
-            predicted[3] = velocity
-        if predicted.shape[0] > 4:
-            predicted[4] = acceleration
+        """Test mode: propagate with clean target motion; optionally anchor its pose."""
+        predicted = np.asarray(state, dtype=float).copy()
+        if dt <= 0:
+            return predicted
+        clean = self._require_clean_reference_state(target_id, current_time_ns)
+        theta, velocity = float(clean[2]), float(clean[3])
+        predicted[0] += velocity * np.cos(theta) * dt
+        predicted[1] += velocity * np.sin(theta) * dt
+        if force_clean_pose_anchor:
+            # The reference is already aligned to the output timestamp.
+            predicted[:2] = clean[:2]
+        predicted[2:] = clean[2: self.state_dim]
+        predicted[2] = self._wrap_angle(theta)
         return predicted
 
     def _predict_from_relative_host_anchor_mixed_motion(
@@ -3000,25 +2925,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             target_id=target_id,
         )
 
-        clean_state = None
-        if current_time_ns is not None:
-            clean_entry = self._get_latest_clean_received_state_with_timestamp(
-                target_id, current_time_ns
-            )
-            if clean_entry is not None:
-                clean_ts_ns, clean_state_raw = clean_entry
-                clean_state = self._align_state_array_to_time(
-                    clean_state_raw,
-                    snapshot_ts_ns=clean_ts_ns,
-                    current_time_ns=current_time_ns,
-                    target_id=target_id,
-                )
-        else:
-            history = self.received_clean_local_states.get(int(target_id), [])
-            if history:
-                clean_state = _normalize_state_array(
-                    history[-1][1], self.state_dim, logger=self.logger
-                )
+        clean_state = self._require_clean_reference_state(target_id, current_time_ns)
 
         anchor_snapshot = self._copy_host_anchor_snapshot(host_anchor_snapshot)
         if anchor_snapshot is None and current_time_ns is not None:
@@ -3098,8 +3005,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 base_y = float(clean_state[1])
             has_position_anchor = True
 
-        anchor_predicted_x = base_x + velocity * np.cos(theta) * dt
-        anchor_predicted_y = base_y + velocity * np.sin(theta) * dt
+        anchor_dt = 0.0 if has_position_anchor else dt
+        anchor_predicted_x = base_x + velocity * np.cos(theta) * anchor_dt
+        anchor_predicted_y = base_y + velocity * np.sin(theta) * anchor_dt
         if has_position_anchor and model_predicted.shape[0] > 1:
             anchor_w = max(
                 float(
@@ -3216,7 +3124,22 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         target_id: int,
     ) -> np.ndarray:
         """Predict next state using the configured vehicle model."""
+        if not np.isfinite(dt) or dt < 0:
+            raise ValueError("Vehicle prediction dt must be nonnegative and finite")
         model_cfg = self._get_vehicle_model_config(target_id)
+        tau_key = {"velocity_lag": "velocity_lag_tau", "velocity_lag_lookup": "velocity_lag_lookup_tau",
+                   "velocity_command": "velocity_command_tau", "acceleration_lag": "accel_lag_tau"}.get(
+                       model_cfg.get("longitudinal_model"))
+        max_step = min(0.05, 0.25 * float(model_cfg[tau_key])) if tau_key else 0.05
+        # A recovered target may have missed several fleet ticks. Bound the
+        # Euler integration step instead of applying its whole gap in one step.
+        if dt > max_step * (1 + 1e-12):
+            steps = int(np.ceil(dt / max_step))
+            predicted = np.asarray(state, dtype=float).copy()
+            for _ in range(steps):
+                predicted = self._predict_with_vehicle_model(predicted, control, dt / steps, target_id)
+                predicted = self._apply_state_constraints(predicted, target_id=target_id)
+            return predicted
         x, y, theta, v = state[:4]
         a = state[4] if len(state) > 4 else 0.0
 
@@ -3228,12 +3151,9 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             return state
 
         has_control = control is not None
-        if has_control:
-            steering = float(control[0]) if len(control) > 0 else 0.0
-            throttle = float(control[1]) if len(control) > 1 else 0.0
-        else:
-            steering = 0.0
-            throttle = 0.0
+        if not has_control or len(control) != 2 or not np.all(np.isfinite(control)):
+            raise RuntimeError("Model prediction requires the target's fresh control; no constant-velocity fallback")
+        steering, throttle = float(control[0]), float(control[1])
 
         steering = float(
             np.clip(
@@ -3252,10 +3172,7 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
             model_cfg.get("longitudinal_model", "constant_velocity")
         ).strip().lower()
 
-        if not has_control:
-            v_new = v
-            a_new = 0.0
-        elif longitudinal_model == "velocity_lag":
+        if longitudinal_model == "velocity_lag":
             deadband = max(float(model_cfg.get("velocity_lag_deadband", 0.0)), 0.0)
             throttle_eff = float(throttle)
             if deadband > 0.0:
@@ -3282,17 +3199,12 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
                 throttle_breakpoints.size >= 2
                 and throttle_breakpoints.size == velocity_breakpoints.size
             ):
-                v_ss = float(
-                    np.interp(float(throttle), throttle_breakpoints, velocity_breakpoints)
-                )
+                if throttle < 0 and throttle_breakpoints[0] >= 0:
+                    v_ss = -float(np.interp(-throttle, throttle_breakpoints, velocity_breakpoints))
+                else:
+                    v_ss = float(np.interp(throttle, throttle_breakpoints, velocity_breakpoints))
             else:
-                deadband = max(float(model_cfg.get("velocity_lag_deadband", 0.0)), 0.0)
-                throttle_eff = float(throttle)
-                if deadband > 0.0:
-                    throttle_eff = float(
-                        np.sign(throttle) * max(abs(float(throttle)) - deadband, 0.0)
-                    )
-                v_ss = float(model_cfg["velocity_gain"]) * throttle_eff
+                raise ValueError("velocity_lag_lookup requires a configured throttle/velocity table")
             tau_lookup = float(
                 model_cfg.get("velocity_lag_lookup_tau", model_cfg["velocity_lag_tau"])
             )
@@ -3315,9 +3227,11 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         elif longitudinal_model == "simple_acceleration":
             a_new = throttle
             v_new = v + a_new * dt
-        else:
+        elif longitudinal_model == "constant_velocity":
             v_new = v
             a_new = 0.0
+        else:
+            raise ValueError(f"Unknown longitudinal prediction model: {longitudinal_model}")
 
         return np.array([x_new, y_new, theta_new, v_new, a_new])
 
@@ -3369,6 +3283,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self, state: np.ndarray, target_id: int = -1
     ) -> np.ndarray:
         """Apply physical constraints to state."""
+        if not np.all(np.isfinite(state)):
+            raise ValueError("Fleet state must be finite before applying physical constraints")
         model_cfg = self._get_vehicle_model_config(target_id)
         constrained = state.copy()
         constrained[2] = np.arctan2(np.sin(state[2]), np.cos(state[2]))
@@ -3441,6 +3357,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         prediction_debugs: Optional[Dict[int, Dict[str, float]]] = None,
     ) -> None:
         """Build and emit per-step trust/weight log data."""
+        if not self.trust_weight_logger.recording:
+            return
         target_components = target_components or {}
         final_target_weights: Dict[int, Dict] = {}
         for target_id, components in target_components.items():
@@ -3619,6 +3537,56 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         except (TypeError, ValueError):
             return False
 
+    def get_target_state_at_time(self, target_id: int, current_time_ns: int) -> Optional[np.ndarray]:
+        """Expose the selected predictor at read time without advancing its cache."""
+        if not self.is_target_available(target_id, current_time_ns):
+            return None
+        state = self.fleet_states[:, target_id].copy()
+        snapshot_ns = self._target_state_time_ns.get(target_id, current_time_ns)
+        dt = (int(current_time_ns) - int(snapshot_ns)) / 1e9
+        if dt < 0:
+            return None
+        trust = self.trust_model.get_trust_score(target_id)
+        attacked = self._has_active_attack_flags(trust) or self._is_target_quarantined_by_rollback(target_id)
+        mode = self._get_vehicle_model_config(target_id)["dynamics_prediction_mode"]
+        force_anchor = self.force_clean_pose_anchor and mode in CLEAN_PREDICTION_MODES and attacked
+        host_anchor_active = attacked and (mode == "relative_host_anchor_mixed"
+                                          or (mode == "mixed_clean_data" and force_anchor))
+        return self._apply_state_constraints(self._predict_dynamics(
+            state, self._get_target_control(target_id, None, current_time_ns), dt,
+            target_id=target_id, current_time_ns=current_time_ns,
+            force_clean_pose_anchor=force_anchor,
+            attack_relative_host_anchor_active=host_anchor_active,
+        ), target_id=target_id)
+
+    def is_target_available(self, target_id: int, current_time_ns: int) -> bool:
+        """Check the inputs required by the selected source and prediction mode."""
+        if not self.is_target_initialized(target_id):
+            return False
+        if target_id == self.vehicle_id:
+            return True
+        reason = "available"
+        clean_entry = None
+        mode = self._get_vehicle_model_config(target_id)["dynamics_prediction_mode"]
+        if self._get_latest_received_state_with_timestamp(target_id, current_time_ns) is None:
+            reason = "local_packet_unavailable"
+        elif self.relative_measurement_source == "clean_v2v":
+            clean_entry = self._get_latest_clean_received_state_with_timestamp(target_id, current_time_ns)
+            if (clean_entry is None or current_time_ns - clean_entry[0]
+                    > self.reference_settings.relative_measurement_max_age_s * 1e9):
+                reason = "clean_v2v_reference_unavailable"
+        elif self.require_relative_measurement and self._ext_cache.get(target_id, current_time_ns) is None:
+            reason = "relative_measurement_unavailable"
+        if reason == "available" and mode in CLEAN_PREDICTION_MODES:
+            clean_entry = clean_entry or self._get_latest_clean_received_state_with_timestamp(target_id, current_time_ns)
+            if clean_entry is None:
+                reason = "clean_v2v_prediction_unavailable"
+        if (reason == "available" and mode in {"model", "mixed_clean_data", "relative_host_anchor_mixed"}
+                and self._get_target_control(target_id, None, current_time_ns) is None):
+            reason = "target_control_unavailable"
+        self.target_availability[target_id] = reason
+        return reason == "available"
+
     def get_trust_score(self, vehicle_id: int) -> Optional[TrustScore]:
         """Get detailed trust score for a vehicle."""
         return self.trust_model.get_trust_score(vehicle_id)
@@ -3647,49 +3615,44 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         """Get current consensus weights."""
         return self.weight_module.get_weights_array()
 
-    def _restore_fleet_states_from_latest_direct_states(self) -> List[int]:
-        """Seed external estimates from latest clean/direct V2V state after attack disable."""
-        restored: List[int] = []
+    def _restore_fleet_states_from_selected_source(self, current_time_ns: int) -> List[int]:
+        """Reseed only from the recovery source explicitly chosen for this run."""
+        source = self.recovery_state_source
+        if source == "estimate":
+            return []
+        lookup = (self._get_latest_clean_received_state_with_timestamp
+                  if source == "clean_v2v" else self._get_latest_received_state_with_timestamp)
+        restored = []
         for target_id in range(self.fleet_size):
-            target_id = int(target_id)
             if target_id == self.vehicle_id:
                 continue
-
-            history = self.received_clean_local_states.get(target_id)
-            if not history:
-                history = self.received_local_states.get(target_id)
-            if not history:
+            entry = lookup(target_id, current_time_ns)
+            if entry is None:
+                self.target_availability[target_id] = f"{source}_recovery_unavailable"
                 continue
-
-            try:
-                _, state = history[-1]
-                arr = np.asarray(state, dtype=float).reshape(-1)
-                if arr.size < self.state_dim:
-                    arr = np.pad(arr, (0, self.state_dim - arr.size), mode="constant")
-                restored_state = self._apply_state_constraints(
-                    arr[: self.state_dim], target_id=target_id
-                )
-                self._ensure_fleet_capacity(target_id)
-                self.fleet_states[:, target_id] = restored_state
-                self._initialized_target_ids.add(target_id)
-                restored.append(target_id)
-            except Exception as exc:
-                if self.logger:
-                    self.logger.logger.debug(
-                        "Skipping attack-recovery state restore for target %s: %s",
-                        target_id,
-                        exc,
-                    )
+            timestamp, state = entry
+            aligned = self._align_state_array_to_time(state, timestamp, current_time_ns, target_id)
+            if not np.all(np.isfinite(aligned)):
+                raise ValueError(f"Invalid {source} recovery state for target {target_id}")
+            self.fleet_states[:, target_id] = self._apply_state_constraints(aligned, target_id=target_id)
+            self._initialized_target_ids.add(target_id)
+            self._target_state_time_ns[target_id] = int(current_time_ns)
+            restored.append(target_id)
         return restored
 
-    def reset_attack_recovery_state(self) -> None:
+    def reset_attack_recovery_state(self, current_time_ns: Optional[int] = None) -> None:
         """
-        Clear trust/rollback memory and re-anchor estimates after attack restore.
+        Clear trust/rollback memory after explicit attack restore.
 
-        The latest clean V2V state is used when available so stale attack-era
-        fleet estimates do not immediately re-trigger global rollback.
+        The configured recovery source controls whether estimates are retained
+        or reseeded from direct/clean V2V. Source selection never changes itself.
         """
-        restored_targets = self._restore_fleet_states_from_latest_direct_states()
+        restored_targets = []
+        if self.recovery_state_source != "estimate":
+            now_ns = current_time_ns if current_time_ns is not None else getattr(self, "_last_update_time_ns", None)
+            if now_ns is None:
+                raise ValueError("Reference recovery requires an observer timestamp")
+            restored_targets = self._restore_fleet_states_from_selected_source(int(now_ns))
         self.trust_model.reset()
         self.weight_module.reset()
         # Python Trust history was cleared, so the native temporal state and
@@ -3720,6 +3683,22 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         data["embedded_core"] = self.embedded_core_shadow.get_status()
         return data
 
+    def get_reference_status(self) -> Dict[str, Any]:
+        """Expose which explicitly selected inputs make this a reference-assisted test."""
+        return {
+            "relative_measurement_source": self.relative_measurement_source,
+            "prediction_mode": self.dynamics_prediction_mode,
+            "force_clean_pose_anchor": self.force_clean_pose_anchor,
+            "recovery_state_source": self.recovery_state_source,
+            "test_reference_active": (
+                self.relative_measurement_source == "clean_v2v"
+                or self.recovery_state_source == "clean_v2v"
+                or self.dynamics_prediction_mode in CLEAN_PREDICTION_MODES
+                or any(model["dynamics_prediction_mode"] in CLEAN_PREDICTION_MODES
+                       for model in self.vehicle_model_overrides.values())
+            ),
+        }
+
     def get_embedded_core_status(self) -> Dict[str, Any]:
         """Return native shadow/parity telemetry for the electronics twin UI."""
         return self.embedded_core_shadow.get_status()
@@ -3748,6 +3727,8 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.controller_debug_snapshot = {}
         self.received_clean_local_states.clear()
         self._initialized_target_ids = {self.vehicle_id}
+        self._target_state_time_ns.clear()
+        self.target_availability.clear()
         self._ext_cache.clear()
         self.current_weight_result = None
         self.generalized_trust_vector = {self.vehicle_id: 1.0}
@@ -3762,11 +3743,15 @@ class TrustBasedFleetEstimator(FleetStateEstimatorBase):
         self.embedded_core_shadow.reset()
         self._init_runtime_tracking()
 
-    def __del__(self):
+    def close(self) -> None:
+        """Idempotently close CSV recording and the optional native shadow."""
         if hasattr(self, "trust_weight_logger"):
             self.trust_weight_logger.stop()
         if hasattr(self, "embedded_core_shadow"):
             self.embedded_core_shadow.close()
+
+    def __del__(self):
+        self.close()
 
 
 
@@ -3800,5 +3785,5 @@ def create_trust_based_estimator(
     else:
         raise ValueError(
             f"Unknown trust-based estimator type: {estimator_type}. "
-            f"Available: ['trust_consensus', 'trust_kalman']"
+            f"Available: ['trust_consensus']"
         )

@@ -56,6 +56,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         
         # Flag for delegating to consensus estimator if specified in config
         self.consensus_estimator = None
+        self.recorder = None
         
         # Initialize vehicle-specific parameters
         self.m_i = self.config.get('m_i', 0.5)
@@ -136,34 +137,22 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                             [0, 0, 0]])
         self.local_measurement_dim = 2 # measuring relative position and velocity pi - pi-1 vi
 
-        # CRITICAL: Validate and correct gain matrix dimensions
+        # Validate the selected design; do not invent a replacement gain.
         dim_distributed_observer = 3 * self.observer_size
         
         # Validate observer_gain: should be [dim_distributed_observer x local_measurement_dim]
         expected_observer_gain_shape = (dim_distributed_observer, self.local_measurement_dim)
-        if hasattr(self.observer_gain, 'shape'):
-            if self.observer_gain.shape != expected_observer_gain_shape:
-                if self.logger:
-                    self.logger.logger.error(
-                        f"Vehicle {self.vehicle_id}: observer_gain shape mismatch! "
-                        f"Expected {expected_observer_gain_shape}, got {self.observer_gain.shape}. "
-                        f"Using default identity-based gain."
-                    )
-                # Use a simple default gain matrix
-                self.observer_gain = np.eye(dim_distributed_observer, self.local_measurement_dim) * 0.1
+        self.observer_gain = np.asarray(self.observer_gain, dtype=float)
+        if (self.observer_gain.shape != expected_observer_gain_shape
+                or not np.isfinite(self.observer_gain).all()):
+            raise ValueError(f"Distributed observer_gain must be finite with shape {expected_observer_gain_shape}")
         
         # Validate consensus_gain: should be [dim_distributed_observer x dim_distributed_observer]
         expected_consensus_gain_shape = (dim_distributed_observer, dim_distributed_observer)
-        if hasattr(self.consensus_gain, 'shape'):
-            if self.consensus_gain.shape != expected_consensus_gain_shape:
-                if self.logger:
-                    self.logger.logger.error(
-                        f"Vehicle {self.vehicle_id}: consensus_gain shape mismatch! "
-                        f"Expected {expected_consensus_gain_shape}, got {self.consensus_gain.shape}. "
-                        f"Using default identity-based gain."
-                    )
-                # Use a simple default gain matrix
-                self.consensus_gain = np.eye(dim_distributed_observer) * 0.2
+        self.consensus_gain = np.asarray(self.consensus_gain, dtype=float)
+        if (self.consensus_gain.shape != expected_consensus_gain_shape
+                or not np.isfinite(self.consensus_gain).all()):
+            raise ValueError(f"Distributed consensus_gain must be finite with shape {expected_consensus_gain_shape}")
 
         # Communication weights (uniform for now)
         self.weights = np.ones(self.observer_size) / self.observer_size
@@ -176,8 +165,9 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             self.adjacency_matrix = self._create_fully_connected_topology()
 
         # Validate adjacency matrix dimensions
-        if self.adjacency_matrix.shape != (self.observer_size, self.observer_size):
-            self.adjacency_matrix = self._create_fully_connected_topology()
+        if (self.adjacency_matrix.shape != (self.observer_size, self.observer_size)
+                or not np.isfinite(self.adjacency_matrix).all() or np.any(self.adjacency_matrix < 0)):
+            raise ValueError("Distributed adjacency_matrix has an invalid shape or weight")
         
         # Cache neighbor list at initialization
         self.my_neighbors = self.get_neighbors(self.vehicle_id)
@@ -256,9 +246,16 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
     
     def stop_recording(self):
         """Stop the debug data recorder and close the file."""
-        if self.recorder is not None:
+        if getattr(self, "recorder", None) is not None:
             self.recorder.stop()
             self.recorder = None
+
+    def close(self):
+        """Release the optional recorder and delegated estimator."""
+        self.stop_recording()
+        delegate = getattr(self, "consensus_estimator", None)
+        if delegate is not None:
+            delegate.close()
     
     def __del__(self):
         """Cleanup: stop recording when estimator is destroyed."""
@@ -621,172 +618,27 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
     
     
     def _compute_consensus_term(self, x_vec: np.ndarray, current_time_ns: int) -> np.ndarray:
-        """
-        Compute consensus correction term based on neighbor states.
-        
-        IMPROVED: Prioritizes directly received observer states (x_vec) from neighbors
-        to avoid di0 conversion errors. Falls back to fleet_states conversion if
-        direct observer states are not available.
-        
-        Args:
-            x_vec: Current observer state vector [3*observer_size]
-            current_time_ns: Current time in nanoseconds
-        
-        Returns:
-            consensus_term: Consensus correction [3*observer_size]
-        """
-        dim_distributed_observer = 3 * self.observer_size
-        consensus_term = np.zeros(dim_distributed_observer)
-        consensus_accum = np.zeros(dim_distributed_observer)
-        neighbor_count = 0
-        
-        if self.logger and self.debug_recording_enabled:
-            self.logger.logger.debug(
-                f"Vehicle {self.vehicle_id}: Starting consensus calculation. "
-                f"My neighbors: {self.my_neighbors}, x_vec norm: {np.linalg.norm(x_vec):.6f}"
-            )
-        
-        # Loop through each neighbor defined by adjacency matrix
+        """Use complete canonical fleet packets in the common leader-relative frame."""
+        accumulated = np.zeros(3 * self.observer_size)
+        expected_ids = set(range(self.fleet_size))
         for neighbor_id in self.my_neighbors:
-            neighbor_x_vec = None
-            source = "none"
-            
-            # --- Step 1: Try to get DIRECT observer state (Primary Source - No conversion needed) ---
-            neighbor_x_vec = self._get_latest_observer_state(neighbor_id, current_time_ns)
-            
-            if neighbor_x_vec is not None:
-                # Validate dimension
-                if len(neighbor_x_vec) == dim_distributed_observer:
-                    source = "direct_observer"
-                    if self.logger and self.debug_recording_enabled:
-                        self.logger.logger.debug(
-                            f"Vehicle {self.vehicle_id}: Using DIRECT observer state from neighbor {neighbor_id}"
-                        )
-                else:
-                    # Dimension mismatch, discard and try fallback
-                    neighbor_x_vec = None
-                    if self.logger:
-                        self.logger.logger.warning(
-                            f"Vehicle {self.vehicle_id}: Observer state dimension mismatch from neighbor {neighbor_id}. "
-                            f"Expected {dim_distributed_observer}, got {len(neighbor_x_vec)}. Falling back."
-                        )
-            
-            # --- Step 2: Fallback to FLEET states conversion if direct observer state not available ---
-            if neighbor_x_vec is None:
-                neighbor_fleet_dict = self._get_latest_fleet_data(neighbor_id, current_time_ns)
-                
-                # Validate fleet data completeness
-                is_complete_fleet = False
-                missing_vehicles = []
-                
-                if neighbor_fleet_dict is not None:
-                    expected_vehicles = set(range(self.fleet_size))
-                    received_vehicles = set(int(vid) for vid in neighbor_fleet_dict.keys())
-                    missing_vehicles = list(expected_vehicles - received_vehicles)
-                    
-                    if not missing_vehicles:
-                        is_complete_fleet = True
-                
-                # Fill missing vehicles with local state broadcasts or current estimates
-                if not is_complete_fleet:
-                    if neighbor_fleet_dict is None:
-                        neighbor_fleet_dict = {}
-                    
-                    for vid in missing_vehicles:
-                        vehicle_local_state = self._get_latest_received_state(vid, current_time_ns)
-                        
-                        if vehicle_local_state is not None:
-                            neighbor_fleet_dict[vid] = {
-                                'x': float(vehicle_local_state[0]),
-                                'y': float(vehicle_local_state[1]),
-                                'theta': float(vehicle_local_state[2]),
-                                'velocity': float(vehicle_local_state[3]),
-                                'acceleration': float(vehicle_local_state[4] if len(vehicle_local_state) > 4 else 0.0)
-                            }
-                        else:
-                            neighbor_fleet_dict[vid] = {
-                                'x': float(self.fleet_states[0, vid]),
-                                'y': float(self.fleet_states[1, vid]),
-                                'theta': float(self.fleet_states[2, vid]),
-                                'velocity': float(self.fleet_states[3, vid]),
-                                'acceleration': float(self.fleet_states[4, vid])
-                            }
-                        if self.logger:
-                            self.logger.logger.warning(
-                                f"Vehicle {self.vehicle_id}: Missing state for vehicle {vid} from neighbor {neighbor_id}. "
-                                f"Falling back to local state or estimate. Missing vehicles: {missing_vehicles}"
-                            )
-                
-                # Build neighbor's complete fleet_states matrix
-                if neighbor_fleet_dict:
-                    neighbor_fleet_states = np.zeros((self.state_dim, self.fleet_size))
-                    
-                    for vid, vehicle_state in neighbor_fleet_dict.items():
-                        try:
-                            vid_int = int(vid)
-                            if 0 <= vid_int < self.fleet_size:
-                                neighbor_fleet_states[0, vid_int] = vehicle_state.get('x', 0.0)
-                                neighbor_fleet_states[1, vid_int] = vehicle_state.get('y', 0.0)
-                                neighbor_fleet_states[2, vid_int] = vehicle_state.get('theta', 0.0)
-                                neighbor_fleet_states[3, vid_int] = vehicle_state.get('velocity', vehicle_state.get('v', 0.0))
-                                neighbor_fleet_states[4, vid_int] = vehicle_state.get('acceleration', 0.0)
-                            
-                        except (ValueError, TypeError) as e:
-                            if self.logger:
-                                self.logger.logger.error(
-                                    f"Vehicle {self.vehicle_id}: Invalid vehicle_id {vid} from neighbor {neighbor_id}: {e}"
-                                )
-                            continue
-                    
-                    # Convert to distributed observer state format (introduces di0 error!)
-                    neighbor_x_vec, neighbor_di0_values = self._transfer_fleet_states_to_estimated_states(
-                        neighbor_fleet_states, current_time_ns
-                    )
-                    source = "fleet_conversion"
-            
-            # --- Step 3: Calculate consensus difference with adjacency weight ---
-            if neighbor_x_vec is not None:
-                my_matrix_idx = self.vehicle_id - 1
-                neighbor_matrix_idx = neighbor_id - 1
-                weight = self.adjacency_matrix[my_matrix_idx, neighbor_matrix_idx]
-                
-                # Accumulate weighted difference: (own_estimate - neighbor_estimate)
-                consensus_diff = x_vec - neighbor_x_vec
-                consensus_accum += weight * consensus_diff
-                neighbor_count += 1
-                
-                if self.logger and self.debug_recording_enabled:
-                    self.logger.logger.debug(
-                        f"Vehicle {self.vehicle_id}: Neighbor {neighbor_id} (source={source}) - "
-                        f"weight={weight:.6f}, diff_norm={np.linalg.norm(consensus_diff):.6f}, "
-                        f"neighbor_x_norm={np.linalg.norm(neighbor_x_vec):.6f}, "
-                        f"accum_norm={np.linalg.norm(consensus_accum):.6f}"
-                    )
-        
-        # --- Step 4: Apply consensus gain ---
-        if neighbor_count > 0:
-            consensus_term = self.consensus_gain @ consensus_accum 
-            # Numerical protection: prevent consensus term explosion
-            consensus_norm = np.linalg.norm(consensus_term)
-            max_consensus_threshold = 50.0
-            if consensus_norm > max_consensus_threshold:
-                consensus_term = consensus_term / consensus_norm * max_consensus_threshold
-            
-            if self.logger and self.debug_recording_enabled:
-                self.logger.logger.debug(
-                    f"Vehicle {self.vehicle_id}: Consensus applied. "
-                    f"accum_norm={np.linalg.norm(consensus_accum):.6f}, "
-                    f"gain shape={self.consensus_gain.shape}, "
-                    f"term_norm={consensus_norm:.6f}"
-                )
-        else:
-            consensus_term = np.zeros(dim_distributed_observer)
-            if self.logger and self.debug_recording_enabled:
-                self.logger.logger.debug(
-                    f"Vehicle {self.vehicle_id}: No neighbors found for consensus"
-                )
-        
-        return consensus_term
+            snapshot = self._get_latest_fleet_data(neighbor_id, current_time_ns)
+            if snapshot is None or not expected_ids.issubset(snapshot):
+                # A missing peer contributes no consensus evidence; do not
+                # fabricate its missing entries from this host's own estimate.
+                continue
+            states = np.array([[snapshot[vehicle].get(field, 0.) for vehicle in range(self.fleet_size)]
+                               for field in ("x", "y", "theta", "velocity", "acceleration")])
+            if not np.isfinite(states).all():
+                raise ValueError("Distributed Luenberger received non-finite peer states")
+            neighbor_state, _ = self._transfer_fleet_states_to_estimated_states(states, current_time_ns)
+            weight = self.adjacency_matrix[self.vehicle_id - 1, neighbor_id - 1]
+            accumulated += weight * (x_vec - neighbor_state)
+        correction = self.consensus_gain @ accumulated
+        norm = np.linalg.norm(correction)
+        if norm > 50.:
+            correction *= 50. / norm
+        return correction
 
     def compute_output_matrix_Ci(self, i: int) -> np.ndarray:
         """
@@ -881,90 +733,30 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         except Exception as e:
             if self.logger:
                 self.logger.log_error(f"Error loading extra config for vehicle {self.vehicle_id}", e)
+            raise RuntimeError("Selected distributed Luenberger configuration failed") from e
     
     def _load_K_matrices_from_yaml(self) -> Dict:
-        """
-        Load K matrices for all follower vehicles from their respective yaml config files.
-        
-        Each carX.yaml should contain a 'K_matrices' section under 'observer':
-            observer:
-                K_matrices:
-                    0: [[-0.3105, -0.5413, 0.0062]]   # K_i0
-                    1: [[-0.0481, -0.0799, 0.0417]]   # K_i1 (for vehicle >= 2)
-        
-        Returns:
-            K_all_vehicles: Dict[int, Dict[int, np.ndarray]] mapping vehicle_id -> {j: K_ij}
-        """
-        K_all_vehicles = {}
-        
-        # Default fallback K matrices (used if yaml loading fails)
-        default_K_matrices = {
-            1: {
-                0: np.array([[-0.3105, -0.5413, 0.0062]])
-            },
-            2: {
-                0: np.array([[-0.3203, -0.4258, -0.0517]]),
-                1: np.array([[-0.0481, -0.0799, 0.0417]])
-            },
-            3: {
-                0: np.array([[-0.3555, -0.4238, -0.0850]]),
-                1: np.array([[-0.0351, -0.0553, 0.0272]]),
-                2: np.array([[-0.0336, -0.0528, 0.0339]])
-            }
-        }
-        
-        # Get config directory (set in _load_extra_config or default)
-        config_dir = getattr(self, '_extra_config_dir', 
-                            os.path.join(os.path.dirname(os.path.dirname(__file__)), 'extra_configs'))
-        
-        # Load K matrices for each follower vehicle (1 to observer_size)
+        """Load finite configured controller gains; never substitute other gains."""
+        from config_io import load_yaml_mapping
+
+        config_dir = getattr(self, "_extra_config_dir",
+                             os.path.join(os.path.dirname(os.path.dirname(__file__)), "extra_configs"))
+        all_gains = {}
         for vehicle_id in range(1, self.observer_size + 1):
-            config_file = os.path.join(config_dir, f'car{vehicle_id}.yaml')
-            
-            try:
-                if os.path.exists(config_file):
-                    with open(config_file, 'r') as f:
-                        config = yaml.safe_load(f)
-                    
-                    if config and 'observer' in config and 'K_matrices' in config['observer']:
-                        K_matrices_raw = config['observer']['K_matrices']
-                        K_all_vehicles[vehicle_id] = {}
-                        
-                        for j_str, K_values in K_matrices_raw.items():
-                            j = int(j_str)  # Convert string key to int
-                            K_all_vehicles[vehicle_id][j] = np.array(K_values)
-                        
-                        if self.logger:
-                            self.logger.logger.info(
-                                f"Loaded K matrices for vehicle {vehicle_id} from {config_file}: "
-                                f"keys={list(K_all_vehicles[vehicle_id].keys())}"
-                            )
-                    else:
-                        # No K_matrices in config, use default
-                        if vehicle_id in default_K_matrices:
-                            K_all_vehicles[vehicle_id] = default_K_matrices[vehicle_id]
-                            if self.logger:
-                                self.logger.logger.warning(
-                                    f"No K_matrices found in {config_file}, using default for vehicle {vehicle_id}"
-                                )
-                else:
-                    # Config file not found, use default
-                    if vehicle_id in default_K_matrices:
-                        K_all_vehicles[vehicle_id] = default_K_matrices[vehicle_id]
-                        if self.logger:
-                            self.logger.logger.warning(
-                                f"Config file {config_file} not found, using default K matrices for vehicle {vehicle_id}"
-                            )
-            except Exception as e:
-                # Error loading, use default
-                if vehicle_id in default_K_matrices:
-                    K_all_vehicles[vehicle_id] = default_K_matrices[vehicle_id]
-                if self.logger:
-                    self.logger.log_error(
-                        f"Error loading K matrices for vehicle {vehicle_id} from {config_file}", e
-                    )
-        
-        return K_all_vehicles
+            filename = os.path.join(config_dir, f"car{vehicle_id}.yaml")
+            config = load_yaml_mapping(filename)
+            raw_gains = config.get("observer", {}).get("K_matrices")
+            if not isinstance(raw_gains, dict) or not raw_gains:
+                raise ValueError(f"Missing K_matrices for follower {vehicle_id}: {filename}")
+            gains = {}
+            for raw_id, values in raw_gains.items():
+                source_id = int(raw_id)
+                matrix = np.asarray(values, dtype=float)
+                if source_id < 0 or matrix.shape != (1, 3) or not np.isfinite(matrix).all():
+                    raise ValueError(f"Invalid K matrix for follower {vehicle_id}, source {source_id}")
+                gains[source_id] = matrix
+            all_gains[vehicle_id] = gains
+        return all_gains
     
     def update(self, local_state: np.ndarray, dt: float, 
                current_time_ns: int, control: np.ndarray) -> np.ndarray:
@@ -1001,6 +793,8 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
             
             # Transfer the estimated states back to fleet_states. 
             self.fleet_states, _ = self._transfer_estimated_states_to_fleet_states(self.estimated_state, local_state, current_time_ns)
+            if not np.all(np.isfinite(self.fleet_states)):
+                raise RuntimeError("Distributed Luenberger produced a non-finite state")
             # Cleanup old data
             self._cleanup_old_data(current_time_ns)
             
@@ -1014,12 +808,12 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
                 self.recorder.record(t, self.debug_data)
                 self._update_count += 1
             
-            return self.fleet_states
+            return self.fleet_states.copy()
             
         except Exception as e:
             if self.logger:
                 self.logger.log_error("Distributed Luenberger update error", e)
-            return self.fleet_states
+            raise RuntimeError("Selected distributed Luenberger update failed") from e
     
     def _fake_estimated_state_for_debugging(self, estimated_state: np.ndarray, local_state: np.ndarray, 
                                            current_time_ns: int) -> np.ndarray:
@@ -1145,15 +939,9 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
         # fleet_states = self.fleet_states  # ❌ This was overriding the parameter!
         
         # Get leader (vehicle 0) absolute state
-        state_leader = self._get_latest_received_state(0, current_time_ns)
-        if state_leader is not None:
-            p0 = state_leader[0]
-            v0 = state_leader[3]
-            a0 = state_leader[4]
-        else:
-            p0 = fleet_states[0, 0]
-            v0 = fleet_states[3, 0]
-            a0 = fleet_states[4, 0]
+        p0 = fleet_states[0, 0]
+        v0 = fleet_states[3, 0]
+        a0 = fleet_states[4, 0]
         
         # Initialize estimated state matrix [3 x observer_size]
         estimated_state_mat = np.zeros((3, self.observer_size))

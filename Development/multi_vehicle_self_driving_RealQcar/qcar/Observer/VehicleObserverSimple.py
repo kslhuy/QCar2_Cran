@@ -16,11 +16,10 @@ Architecture:
 import numpy as np
 import threading
 import time
-import yaml
 import os
 import copy
+from config_io import load_yaml_mapping
 from typing import Any, Dict, List, Optional, Tuple
-from collections import defaultdict
 
 from Observer.local_state_estimators import (
     LocalEstimatorFactory,
@@ -108,18 +107,13 @@ class VehicleObserver:
                     loaded, trust_child_loaded
                 )
             except Exception as trust_cfg_error:
-                if self.vehicle_logger:
-                    self.vehicle_logger.log_warning(
-                        f"Trust child config not applied: {trust_cfg_error}"
-                    )
+                raise RuntimeError("Cannot load trust observer configuration") from trust_cfg_error
 
             if not isinstance(loaded, dict):
                 loaded = {}
 
             self.fleet_config_defaults = loaded.get("fleet", {})
-            selected_fleet_type = loaded.get("fleet_estimator_type")
-            if selected_fleet_type:
-                self.fleet_estimator_type = selected_fleet_type
+            self.fleet_estimator_type = loaded["fleet_estimator_type"]
 
             # Load fleet recording config
             self.fleet_recording_enabled = loaded.get("enable_recording", False)
@@ -134,10 +128,7 @@ class VehicleObserver:
                 f"Loaded fleet estimator config: {self.fleet_estimator_type}"
             )
         except Exception as e:
-            if self.vehicle_logger:
-                self.vehicle_logger.log_warning(
-                    f"Failed to load fleet config file: {e}"
-                )
+            raise RuntimeError("Cannot load fleet estimator configuration") from e
 
         # Load local estimator defaults from config file (acts as global defaults)
         self.local_config_defaults = {}
@@ -148,7 +139,7 @@ class VehicleObserver:
             loaded = self._load_yaml_dict(config_path)
             loaded = self._apply_local_model_source(loaded, config_path)
             self.local_config_defaults = loaded.get("local", {})
-            self.local_estimator_type = loaded.get("local_estimator_type")
+            self.local_estimator_type = loaded["local_estimator_type"]
 
             # Load local recording config
             self.local_recording_enabled = loaded.get("enable_recording", False)
@@ -160,10 +151,7 @@ class VehicleObserver:
                 f"Loaded local estimator config: {self.local_estimator_type}"
             )
         except Exception as e:
-            if self.vehicle_logger:
-                self.vehicle_logger.log_warning(
-                    f"Failed to load local config file: {e}"
-                )
+            raise RuntimeError("Cannot load local estimator configuration") from e
 
         # State dimensions: [x, y, theta, v, a] - position, orientation, velocity, acceleration
         self.state_dim = 5
@@ -183,33 +171,17 @@ class VehicleObserver:
             config_path = os.path.join(
                 os.path.dirname(__file__), "config_relative_estimators.yaml"
             )
-            with open(config_path, "r") as f:
-                loaded = yaml.safe_load(f)
-                self.relative_config_defaults = loaded.get("relative", {})
-                self.relative_estimator_type = loaded.get(
-                    "relative_estimator_type", "sa_acc_uio"
-                )
-                self.enable_relative = self._config_bool(
-                    loaded.get("enable_relative", False), False
-                )
-                self.relative_recording_enabled = self._config_bool(
-                    loaded.get("enable_recording", True), True
-                )
-                self.relative_recording_overwrite = self._config_bool(
-                    loaded.get("recording_overwrite", True), True
-                )
-                self.relative_recording_output_dir = loaded.get(
-                    "recording_output_dir", None
-                )
-
-                self.vehicle_logger.logger.info(
-                    f"Loaded relative estimator config: {self.relative_estimator_type}, Enabled: {self.enable_relative}"
-                )
+            loaded = load_yaml_mapping(config_path)
+            self.relative_config_defaults = loaded.get("relative", {})
+            self.relative_estimator_type = loaded["relative_estimator_type"]
+            self.enable_relative = self._config_bool(loaded.get("enable_relative", False), False)
+            self.relative_recording_enabled = self._config_bool(loaded.get("enable_recording", True), True)
+            self.relative_recording_overwrite = self._config_bool(loaded.get("recording_overwrite", True), True)
+            self.relative_recording_output_dir = loaded.get("recording_output_dir")
+            self.vehicle_logger.logger.info(
+                f"Loaded relative estimator config: {self.relative_estimator_type}, Enabled: {self.enable_relative}")
         except Exception as e:
-            if self.vehicle_logger:
-                self.vehicle_logger.log_warning(
-                    f"Failed to load relative config file: {e}"
-                )
+            raise RuntimeError("Cannot load relative estimator configuration") from e
 
         # ===== Local State Estimator (pluggable) =====
         self.local_estimator: Optional[LocalStateEstimatorBase] = None
@@ -225,6 +197,9 @@ class VehicleObserver:
 
         # ===== Relative State Estimator (pluggable) =====
         self.relative_estimator: Optional[RelativeStateEstimatorBase] = None
+        self.relative_estimators: Dict[int, RelativeStateEstimatorBase] = {}
+        self.relative_status: Dict[int, Dict[str, Any]] = {}
+        self._relative_processed_timestamp: Dict[int, int] = {}
         # Will be initialized if enabled
 
         # ===== State Cache (for quick access) =====
@@ -558,10 +533,8 @@ class VehicleObserver:
 
     @staticmethod
     def _load_yaml_dict(config_path: str) -> Dict[str, Any]:
-        """Load a YAML file and normalize missing/non-dict content to {}."""
-        with open(config_path, "r") as f:
-            loaded = yaml.safe_load(f) or {}
-        return loaded if isinstance(loaded, dict) else {}
+        """Load an independent configuration mapping from the shared revision cache."""
+        return load_yaml_mapping(config_path)
 
     def _get_host_vehicle_type(self) -> str:
         """Resolve the host vehicle type from runtime config."""
@@ -703,11 +676,7 @@ class VehicleObserver:
         try:
             return self._load_yaml_dict(source_path)
         except Exception as exc:
-            if self.vehicle_logger:
-                self.vehicle_logger.log_warning(
-                    f"Failed to load observer model source '{source_path}': {exc}"
-                )
-            return {}
+            raise RuntimeError(f"Cannot load configured observer model: {source_path}") from exc
 
     def _build_local_model_source_patch(
         self, model_source_cfg: Dict[str, Any]
@@ -848,6 +817,9 @@ class VehicleObserver:
         # trust_cfg["fleet"]["trust_consensus"/"trust_kalman"].
         child_fleet = trust_cfg.get("fleet", {})
         if isinstance(child_fleet, dict):
+            for key in ("max_state_age_ns", "received_local_states_limit", "received_fleet_states_limit"):
+                if key in child_fleet:
+                    fleet_section[key] = copy.deepcopy(child_fleet[key])
             child_consensus = child_fleet.get("trust_consensus", {})
             child_kalman = child_fleet.get("trust_kalman", {})
             if isinstance(child_consensus, dict):
@@ -902,7 +874,7 @@ class VehicleObserver:
             self._deep_merge_dict(trust_consensus.setdefault("logging", {}), child_logging)
             self._deep_merge_dict(trust_kalman.setdefault("logging", {}), child_logging)
 
-        for section_name in ("vehicle_models", "timestamp_alignment"):
+        for section_name in ("vehicle_models", "timestamp_alignment", "embedded_core"):
             child_section = trust_cfg.get(section_name, {})
             if isinstance(child_section, dict):
                 self._deep_merge_dict(
@@ -949,6 +921,8 @@ class VehicleObserver:
     def _coerce_local_output_state(self, state: np.ndarray) -> np.ndarray:
         """Normalize estimator output to the canonical 5D local-state layout."""
         state_arr = np.asarray(state, dtype=float).flatten()
+        if state_arr.size not in (4, 5) or not np.all(np.isfinite(state_arr)):
+            raise ValueError("Local estimator must return a finite 4D or 5D state")
         local_state = np.zeros(self.state_dim, dtype=float)
         if state_arr.size > 0:
             copy_len = min(state_arr.size, self.state_dim)
@@ -1158,6 +1132,9 @@ class VehicleObserver:
         fleet_config = self.fleet_config_defaults.get(self.fleet_estimator_type, {})
         if isinstance(fleet_config, dict) and fleet_config:
             resolved = copy.deepcopy(fleet_config)
+            for key in ("max_state_age_ns", "received_local_states_limit", "received_fleet_states_limit"):
+                if key in self.fleet_config_defaults:
+                    resolved.setdefault(key, self.fleet_config_defaults[key])
             if self.vehicle_geometry_config:
                 vehicle_cfg = resolved.setdefault("vehicle", {})
                 if not isinstance(vehicle_cfg, dict):
@@ -1205,92 +1182,34 @@ class VehicleObserver:
                 comparator_cfg.setdefault("kin_wheelbase", wheelbase)
 
     def _create_fleet_estimator(self):
-        """Create fleet state estimator using factory"""
-        try:
-            fleet_config = self._resolve_fleet_estimator_config()
-            self.fleet_estimator = FleetEstimatorFactory.create(
-                estimator_type=self.fleet_estimator_type,
-                vehicle_id=self.vehicle_id,
-                fleet_size=self.fleet_size,
-                state_dim=self.state_dim,
-                config=fleet_config,
-                logger=self.vehicle_logger,
-            )
-
-            # self.vehicle_logger.logger.info(f"Fleet estimator created: {self.fleet_estimator_type}")
-            # Add logging of created estimator type
-            self.vehicle_logger.logger.info(
-                f"Fleet estimator instance: {type(self.fleet_estimator).__name__} "
-                f"(configured type='{self.fleet_estimator_type}')"
-            )
-
-        except Exception as e:
-            self.vehicle_logger.log_error(
-                f"Failed to create fleet estimator: {self.fleet_estimator_type}", e
-            )
-            # Fallback to consensus
-            self.fleet_estimator = FleetEstimatorFactory.create(
-                estimator_type="consensus",
-                vehicle_id=self.vehicle_id,
-                fleet_size=self.fleet_size,
-                state_dim=self.state_dim,
-                config={"consensus_gain": 0.3},
-                logger=self.vehicle_logger,
-            )
+        """Create exactly the configured algorithm; propagate configuration failures."""
+        self.fleet_estimator = FleetEstimatorFactory.create(
+            estimator_type=self.fleet_estimator_type,
+            vehicle_id=self.vehicle_id, fleet_size=self.fleet_size,
+            state_dim=self.state_dim, config=self._resolve_fleet_estimator_config(),
+            logger=self.vehicle_logger,
+        )
+        self.vehicle_logger.logger.info(
+            f"Fleet estimator instance: {type(self.fleet_estimator).__name__} "
+            f"(configured type='{self.fleet_estimator_type}')"
+        )
 
     def initialize_relative_estimator(self, config_overrides: Dict = None):
-        """
-        Initialize relative state estimator if enabled.
-        """
+        """Validate the configured UIO now; allocate independent target states on demand."""
         if not self.enable_relative:
             return False
-
-        try:
-            params = copy.deepcopy(
-                self.relative_config_defaults.get(self.relative_estimator_type, {})
-            )
-            if config_overrides:
-                params.update(config_overrides)
-            params.setdefault("vehicle_id", self.vehicle_id)
-            params.setdefault("enable_recording", self.relative_recording_enabled)
-            params.setdefault("recording_overwrite", self.relative_recording_overwrite)
-            if self.relative_recording_output_dir is not None:
-                params.setdefault(
-                    "recording_output_dir", self.relative_recording_output_dir
-                )
-
-            self.relative_estimator = RelativeEstimatorFactory.create(
-                estimator_type=self.relative_estimator_type,
-                config=params,
-                logger=self.vehicle_logger,
-            )
-
-            for target_id, measurement in self.sensor_data.get(
-                "relative_measurements_by_target", {}
-            ).items():
-                if not hasattr(
-                    self.relative_estimator, "set_external_relative_measurement"
-                ):
-                    break
-                self.relative_estimator.set_external_relative_measurement(
-                    target_id=int(target_id),
-                    distance=float(measurement.get("distance", 0.0)),
-                    relative_velocity=measurement.get("relative_velocity"),
-                    timestamp_ns=measurement.get("timestamp_ns"),
-                    source=str(measurement.get("source", "external_sensor")),
-                    measurement_confidence=measurement.get("confidence"),
-                )
-
-            self.vehicle_logger.logger.info(
-                f"Relative estimator initialized: {self.relative_estimator_type}"
-            )
-            return True
-        except Exception as e:
-            self.vehicle_logger.log_error(
-                f"Relative estimator initialization failed: {self.relative_estimator_type}",
-                e,
-            )
-            return False
+        params = copy.deepcopy(self.relative_config_defaults[self.relative_estimator_type])
+        params.update(config_overrides or {})
+        params.update(vehicle_id=self.vehicle_id, enable_recording=self.relative_recording_enabled,
+                      recording_overwrite=self.relative_recording_overwrite)
+        if self.relative_recording_output_dir is not None:
+            params["recording_output_dir"] = self.relative_recording_output_dir
+        self._relative_params = params
+        self.relative_estimator = RelativeEstimatorFactory.create(
+            self.relative_estimator_type, config=params, logger=self.vehicle_logger
+        )
+        self.vehicle_logger.logger.info(f"Relative estimator initialized: {self.relative_estimator_type}")
+        return True
 
     def initialize_local_estimator(
         self, gps=None, initial_pose=None, estimator_params: Dict = None
@@ -1360,6 +1279,11 @@ class VehicleObserver:
                 logger=self.vehicle_logger,
                 config=estimator_params,
             )
+            initial_state = self._coerce_local_output_state(self.local_estimator.get_state())
+            with self.lock:
+                self.local_state = initial_state.copy()
+                self.position = initial_state[:3].copy()
+                self.velocity = float(initial_state[3])
 
             self.vehicle_logger.logger.info(
                 f"Local estimator initialized: {self.local_estimator_type}"
@@ -1378,7 +1302,8 @@ class VehicleObserver:
             self.vehicle_logger.log_error(
                 f"Local estimator initialization failed: {self.local_estimator_type}", e
             )
-            return False
+            self.local_estimator = None
+            raise RuntimeError(f"Cannot initialize {self.local_estimator_type}") from e
 
     # ===== Timing Control =====
 
@@ -1632,20 +1557,27 @@ class VehicleObserver:
             # Update local observer (always - rate controlled by vehicle_logic)
             state_info = self._update_local_observer(dt, last_steering, throttle)
 
+            # Independent sensing -> per-target UIO -> trust, in this order.
+            self._update_relative_observer(dt)
+
             # Update fleet observer if it's time (independent rate control)
             fleet_dt = self._get_due_fleet_observer_dt(current_time)
             if fleet_dt is not None:
                 self._update_fleet_observer_internal(fleet_dt)  # Distributed
 
-            # Update relative observer (if enabled and measurements available)
-            self._update_relative_observer(dt)
+            state_info["relative_observer_status"] = copy.deepcopy(self.relative_status)
+            state_info["fleet_observer_status"] = {
+                "active": self.v2v_active, "type": self.fleet_estimator_type,
+                "targets": dict(getattr(self.fleet_estimator, "target_availability", {})),
+            }
+            if hasattr(self.fleet_estimator, "get_reference_status"):
+                state_info["fleet_observer_status"].update(self.fleet_estimator.get_reference_status())
 
             return state_info
 
         except Exception as e:
             self.vehicle_logger.log_error("Observer update error", e)
-            # Return last known state instead of zeros
-            return self._get_last_known_state()
+            raise RuntimeError("Observer pipeline update failed") from e
 
     def set_controller_debug_snapshot(
         self, snapshot: Optional[Dict[str, Any]]
@@ -1698,7 +1630,7 @@ class VehicleObserver:
                         "age_sec": float(self.sensor_data.get("gps_age", float("inf"))),
                         "has_fix": True,
                     }
-            elif self.sensor_data.get("gps_valid", False):
+            elif self.sensor_data.get("gps_fresh", False):
                 gps_data = {
                     "x": self.sensor_data["gps_position"][0],
                     "y": self.sensor_data["gps_position"][1],
@@ -1718,16 +1650,19 @@ class VehicleObserver:
             )
 
             if not success:
-                return self._get_last_known_state()
+                raise RuntimeError(f"{self.local_estimator_type} rejected its update")
 
             # Get current state from estimator (returns numpy array directly)
             state = self.local_estimator.get_state()
+            if not np.all(np.isfinite(state)):
+                raise RuntimeError(f"{self.local_estimator_type} produced a non-finite state")
 
             # GPS validity is tracked at observer level based on actual GPS reading
             gps_valid = self.sensor_data.get("gps_valid", False)
 
             with self.lock:
                 self.local_state = self._apply_local_output_lpf(state)
+                self._local_state_time_ns = time.time_ns()
                 self.position = self.local_state[:3].copy()  # [x, y, theta]
                 self.velocity = float(self.local_state[3])
                 self.gps_valid = gps_valid  # GPS validity from sensor data
@@ -1765,7 +1700,7 @@ class VehicleObserver:
 
         except Exception as e:
             self.vehicle_logger.log_error("Local observer update error", e)
-            return self._get_last_known_state()
+            raise RuntimeError("Local observer update failed") from e
 
     def get_local_sensor_attack_status(self) -> dict:
         """Expose local sensor attack status when supported by the active estimator."""
@@ -1886,6 +1821,7 @@ class VehicleObserver:
 
         except Exception as e:
             self.vehicle_logger.log_error("Fleet observer update error", e)
+            raise RuntimeError("Fleet observer update failed") from e
 
     def set_relative_target(self, target_id: Optional[int]) -> None:
         """Set the single target tracked by the relative observer."""
@@ -1896,6 +1832,26 @@ class VehicleObserver:
         """Return the currently selected relative-observer target."""
         with self.lock:
             return self.relative_target_id
+
+    def get_relative_measurement_for_control(self, target_id: int) -> Optional[Dict[str, Any]]:
+        """Return only the explicitly selected, fresh relative measurement path."""
+        with self.lock:
+            entry = self.sensor_data["relative_measurements_by_target"].get(int(target_id))
+            if entry is None:
+                return None
+            max_age_ns = int(float(self.relative_config_defaults[self.relative_estimator_type].get(
+                "measurement_max_age_s", 0.2)) * 1e9)
+            if not 0 <= time.time_ns() - int(entry["timestamp_ns"]) <= max_age_ns:
+                return None
+            result = dict(entry)
+            if self.enable_relative:
+                estimator = self.relative_estimators.get(int(target_id))
+                if estimator is None or self._relative_processed_timestamp.get(int(target_id)) != int(entry["timestamp_ns"]):
+                    return None
+                state = estimator.get_state()
+                result.update(distance=float(state[0] + estimator.li), relative_velocity=float(state[1]),
+                              source=f"relative_uio:{entry['source']}")
+            return result
 
     def _get_target_vehicle_state(self, target_id: Optional[int]) -> Optional[np.ndarray]:
         """Return the latest cached fleet state for the selected target."""
@@ -1954,120 +1910,105 @@ class VehicleObserver:
             self.fleet_states = expanded
 
     def _publish_relative_measurement(
-        self,
-        target_id: int,
-        distance: float,
-        relative_velocity: Optional[float],
-        timestamp_ns: int,
-        source: str,
-        measurement_confidence: float,
+        self, target_id: int, distance: float, relative_velocity: Optional[float],
+        timestamp_ns: int, source: str, measurement_confidence: float,
+        relative_bearing: Optional[float] = None,
     ) -> None:
-        """Store one target measurement locally and forward it to interested estimators."""
-        target_int = int(target_id)
-        rel_velocity = (
-            float(relative_velocity)
-            if relative_velocity is not None and np.isfinite(relative_velocity)
-            else float("nan")
+        """Route raw sensing to UIO, or directly to trust when UIO is explicitly disabled."""
+        target = int(target_id)
+        entry = dict(
+            distance=float(distance),
+            relative_velocity=float(relative_velocity) if relative_velocity is not None else float("nan"),
+            confidence=float(measurement_confidence), timestamp_ns=int(timestamp_ns),
+            relative_bearing=relative_bearing, source=str(source),
         )
-
-        message_timestamp_ns = self.to_v2v_reference_time_ns(timestamp_ns)
-
         with self.lock:
-            self._last_relative_distance_by_target[target_int] = (
-                float(distance),
-                float(message_timestamp_ns) / 1e9,
-            )
-            self.sensor_data["relative_measurements_by_target"][target_int] = {
-                "distance": float(distance),
-                "relative_velocity": rel_velocity,
-                "confidence": float(measurement_confidence),
-                "timestamp_ns": int(message_timestamp_ns),
-                "source": str(source),
-            }
-
-        self.set_relative_target(target_int)
-
-        if (
-            self.fleet_estimator is not None
-            and hasattr(self.fleet_estimator, "set_external_relative_measurement")
-        ):
-            try:
+            previous = self.sensor_data["relative_measurements_by_target"].get(target)
+            if previous is not None and int(timestamp_ns) < int(previous["timestamp_ns"]):
+                return
+            self._last_relative_distance_by_target[target] = (float(distance), int(timestamp_ns) / 1e9)
+            self.sensor_data["relative_measurements_by_target"][target] = entry
+        self.set_relative_target(target)
+        if not self.enable_relative and self.fleet_estimator is not None:
+            if hasattr(self.fleet_estimator, "set_external_relative_measurement"):
                 self.fleet_estimator.set_external_relative_measurement(
-                    target_id=target_int,
-                    distance=float(distance),
-                    relative_velocity=(
-                        rel_velocity if np.isfinite(rel_velocity) else None
-                    ),
-                    timestamp_ns=int(message_timestamp_ns),
-                    source=str(source),
-                    measurement_confidence=float(measurement_confidence),
-                )
-            except TypeError:
-                self.fleet_estimator.set_external_relative_measurement(
-                    target_id=target_int,
-                    distance=float(distance),
-                    relative_velocity=(
-                        rel_velocity if np.isfinite(rel_velocity) else None
-                    ),
-                    timestamp_ns=int(message_timestamp_ns),
-                    source=str(source),
-                )
-
-        if (
-            self.relative_estimator is not None
-            and hasattr(self.relative_estimator, "set_external_relative_measurement")
-        ):
-            try:
-                self.relative_estimator.set_external_relative_measurement(
-                    target_id=target_int,
-                    distance=float(distance),
-                    relative_velocity=(
-                        rel_velocity if np.isfinite(rel_velocity) else None
-                    ),
-                    timestamp_ns=int(timestamp_ns),
-                    source=str(source),
-                    measurement_confidence=float(measurement_confidence),
-                )
-            except TypeError:
-                self.relative_estimator.set_external_relative_measurement(
-                    target_id=target_int,
-                    distance=float(distance),
-                    relative_velocity=(
-                        rel_velocity if np.isfinite(rel_velocity) else None
-                    ),
-                    timestamp_ns=int(timestamp_ns),
-                    source=str(source),
+                    target_id=target, distance=distance, relative_velocity=relative_velocity,
+                    timestamp_ns=self.to_v2v_reference_time_ns(timestamp_ns), source=source,
+                    measurement_confidence=measurement_confidence, relative_bearing=relative_bearing,
                 )
 
     def _update_relative_observer(self, dt: float):
-        """
-        Update relative state observer.
-        """
-        try:
-            if not self.enable_relative or self.relative_estimator is None:
-                return
-
-            target_id = self.get_relative_target()
-            if target_id is None:
-                return
-
-            host_state = self.local_state  # [x, y, theta, v, a]
-            target_state = self._get_target_vehicle_state(target_id)
-            current_time_ns = time.time_ns()
-
-            # Update
-            self.relative_state = self.relative_estimator.update(
-                measurement=None,
-                dt=dt,
-                control_input=self.control_input,
-                target_vehicle_state=target_state,
-                host_vehicle_state=host_state,
-                target_id=target_id,
-                current_time_ns=current_time_ns,
+        """Update each target once per sensor sample, before distributed trust."""
+        if not self.enable_relative:
+            return
+        if self.relative_estimator is None:
+            raise RuntimeError("Enabled relative estimator is not initialized")
+        now_ns = time.time_ns()
+        max_age_ns = int(float(self._relative_params.get("measurement_max_age_s", 0.2)) * 1e9)
+        with self.lock:
+            measurements = {target: dict(entry) for target, entry in
+                            self.sensor_data["relative_measurements_by_target"].items()}
+        for target, entry in measurements.items():
+            timestamp = int(entry["timestamp_ns"])
+            age_ns = now_ns - timestamp
+            valid = (
+                0 <= age_ns <= max_age_ns
+                and np.isfinite(entry["relative_velocity"])
+                and np.isfinite(entry["distance"]) and entry["distance"] > 0
             )
-
-        except Exception as e:
-            self.vehicle_logger.log_error("Relative observer update error", e)
+            self.relative_status[target] = {
+                "available": bool(valid), "source": entry["source"],
+                "timestamp_ns": timestamp, "reason": "" if valid else "missing_or_stale_measurement",
+            }
+            if not valid:
+                if self.fleet_estimator is not None and hasattr(self.fleet_estimator, "clear_external_relative_measurement"):
+                    self.fleet_estimator.clear_external_relative_measurement(target)
+                estimator = self.relative_estimators.get(target)
+                if estimator is not None:
+                    estimator.reset()
+                self._relative_processed_timestamp.pop(target, None)
+                continue
+            previous = self._relative_processed_timestamp.get(target)
+            if previous is not None and timestamp <= previous:
+                continue
+            if target not in self.relative_estimators:
+                if not self.relative_estimators:
+                    estimator = self.relative_estimator
+                else:
+                    params = dict(self._relative_params, vehicle_id=f"{self.vehicle_id}_target{target}")
+                    estimator = RelativeEstimatorFactory.create(
+                        self.relative_estimator_type, config=params, logger=self.vehicle_logger
+                    )
+                self.relative_estimators[target] = estimator
+            estimator = self.relative_estimators[target]
+            sample_dt = estimator.Ts if previous is None else (timestamp - previous) / 1e9
+            if sample_dt > max_age_ns / 1e9:
+                estimator.reset()
+                sample_dt = estimator.Ts
+            estimator.set_external_relative_measurement(
+                target_id=target, distance=entry["distance"], relative_velocity=entry["relative_velocity"],
+                timestamp_ns=timestamp, source=entry["source"], measurement_confidence=entry["confidence"])
+            state = estimator.update(
+                measurement=None,
+                dt=sample_dt, control_input=self.control_input,
+                host_vehicle_state=self.local_state.copy(), target_id=target,
+                current_time_ns=now_ns,
+            )
+            distance = float(state[0] + estimator.li)
+            if not np.all(np.isfinite(state)) or distance <= 0:
+                raise RuntimeError(f"Relative UIO produced an invalid state for target {target}")
+            self._relative_processed_timestamp[target] = timestamp
+            self.relative_state = state.copy()
+            if self.fleet_estimator is not None and hasattr(self.fleet_estimator, "set_external_relative_measurement"):
+                accepted = self.fleet_estimator.set_external_relative_measurement(
+                    target_id=target, distance=distance, relative_velocity=float(state[1]),
+                    timestamp_ns=self.to_v2v_reference_time_ns(timestamp),
+                    source=f"relative_uio:{entry['source']}",
+                    measurement_confidence=entry["confidence"],
+                    relative_bearing=entry.get("relative_bearing"),
+                )
+                if not accepted:
+                    raise RuntimeError(f"Trust observer rejected UIO output for target {target}")
 
     def update_relative_measurement(
         self,
@@ -2076,6 +2017,7 @@ class VehicleObserver:
         source: str = "external_sensor",
         measurement_confidence: Optional[float] = None,
         timestamp_ns: Optional[int] = None,
+        relative_bearing: Optional[float] = None,
     ):
         """
         Update relative measurement (e.g. from YOLO/radar).
@@ -2180,9 +2122,11 @@ class VehicleObserver:
                 timestamp_ns=now_ns,
                 source=source_name,
                 measurement_confidence=dynamic_conf,
+                relative_bearing=relative_bearing,
             )
         except Exception as e:
             self.vehicle_logger.log_error("Update relative measurement error", e)
+            raise RuntimeError("Relative measurement routing failed") from e
 
     def set_local_estimator(self, estimator: LocalStateEstimatorBase):
         """
@@ -2525,12 +2469,21 @@ class VehicleObserver:
         if 0 <= vehicle_id < self.fleet_size:
             with self.lock:
                 self._ensure_fleet_state_cache_locked()
+                if (vehicle_id != self.vehicle_id
+                        and hasattr(self.fleet_estimator, "is_target_available")
+                        and not self.fleet_estimator.is_target_available(vehicle_id, self.to_v2v_reference_time_ns())):
+                    return None
                 if (
                     vehicle_id != self.vehicle_id
                     and hasattr(self.fleet_estimator, "is_target_initialized")
                     and not self.fleet_estimator.is_target_initialized(vehicle_id)
                 ):
                     return None
+                if vehicle_id == self.vehicle_id:
+                    return self.local_state.copy()
+                if hasattr(self.fleet_estimator, "get_target_state_at_time"):
+                    return self.fleet_estimator.get_target_state_at_time(
+                        vehicle_id, self.to_v2v_reference_time_ns())
                 return self.fleet_states[:, vehicle_id].copy()
         return None
 
@@ -2819,6 +2772,8 @@ class VehicleObserver:
         with self.lock:
             payload = {
                 "vehicle_id": self.vehicle_id,
+                "estimate_timestamp_ns": self.to_v2v_reference_time_ns(
+                    getattr(self, "_local_state_time_ns", time.time_ns())),
                 "x": float(self.local_state[0]),
                 "y": float(self.local_state[1]),
                 "theta": float(self.local_state[2]),
@@ -2844,8 +2799,13 @@ class VehicleObserver:
             self._ensure_fleet_state_cache_locked()
             fleet_data = {}
             for vehicle_id in range(self.fleet_size):
-                fs = self.fleet_states[:, vehicle_id]
+                fs = self.get_vehicle_state(vehicle_id)
+                if fs is None:
+                    continue
                 if vehicle_id != self.vehicle_id:
+                    if (hasattr(self.fleet_estimator, "is_target_available")
+                            and not self.fleet_estimator.is_target_available(vehicle_id, self.to_v2v_reference_time_ns())):
+                        continue
                     if hasattr(self.fleet_estimator, "is_target_initialized"):
                         try:
                             if not self.fleet_estimator.is_target_initialized(vehicle_id):
@@ -2858,13 +2818,16 @@ class VehicleObserver:
                 # Include all initialized vehicles. Explicit initialization
                 # status preserves a legitimate all-zero pose at the origin.
                 fleet_data[vehicle_id] = {
-                    "x": float(self.fleet_states[0, vehicle_id]),
-                    "y": float(self.fleet_states[1, vehicle_id]),
-                    "theta": float(self.fleet_states[2, vehicle_id]),
-                    "velocity": float(self.fleet_states[3, vehicle_id]),
-                    "acceleration": float(self.fleet_states[4, vehicle_id])
+                    "x": float(fs[0]),
+                    "y": float(fs[1]),
+                    "theta": float(fs[2]),
+                    "velocity": float(fs[3]),
+                    "acceleration": float(fs[4])
                     if self.fleet_states.shape[0] > 4
                     else 0.0,
+                    "estimate_timestamp_ns": self.to_v2v_reference_time_ns(
+                        getattr(self, "_local_state_time_ns", time.time_ns()))
+                    if vehicle_id == self.vehicle_id else self.to_v2v_reference_time_ns(),
                     "confidence": 1.0
                     if vehicle_id == self.vehicle_id
                     else 0.8,  # Higher confidence for own state
@@ -2875,6 +2838,8 @@ class VehicleObserver:
                 "fleet_states": fleet_data,
                 "source": "fleet_consensus",
             }
+            if hasattr(self.fleet_estimator, "get_reference_status"):
+                payload["reference_inputs"] = self.fleet_estimator.get_reference_status()
             payload.update(self._build_v2v_time_payload_locked())
             return payload
 
@@ -2956,7 +2921,7 @@ class VehicleObserver:
             vehicle_manifest: Optional per-vehicle metadata from the ground station
         """
         with self.lock:
-            old_fleet_size = self.fleet_size
+            previous_estimator = self.fleet_estimator
             self.fleet_size = new_fleet_size
             normalized_time_reference = self._normalize_v2v_time_reference(
                 time_reference
@@ -2982,6 +2947,8 @@ class VehicleObserver:
                     config=fleet_config,
                     logger=self.vehicle_logger,
                 )
+                if previous_estimator is not None:
+                    previous_estimator.close()
                 if hasattr(self.fleet_estimator, "set_time_reference"):
                     self.fleet_estimator.set_time_reference(normalized_time_reference)
 
@@ -3015,6 +2982,13 @@ class VehicleObserver:
                 self.vehicle_logger.log_error(
                     "Fleet estimation reinitialization failed", e
                 )
+                self.v2v_active = False
+                if previous_estimator is not None:
+                    previous_estimator.close()
+                if self.fleet_estimator is not None:
+                    self.fleet_estimator.close()
+                self.fleet_estimator = None
+                raise RuntimeError(f"Cannot initialize fleet algorithm {self.fleet_estimator_type}") from e
 
     def reset_fleet_estimation(self):
         """
@@ -3038,6 +3012,13 @@ class VehicleObserver:
                 self.fleet_estimator.reset()
 
             # Reset relative estimator
+            for estimator in self.relative_estimators.values():
+                estimator.reset()
+                if estimator is not self.relative_estimator:
+                    estimator.stop_recording()
+            self.relative_estimators.clear()
+            self.relative_status.clear()
+            self._relative_processed_timestamp.clear()
             if self.relative_estimator is not None:
                 self.relative_estimator.reset()
                 if hasattr(
@@ -3093,6 +3074,8 @@ class VehicleObserver:
     def stop(self):
         """Stop all observer activities and close recorders."""
         try:
+            if self.fleet_estimator is not None:
+                self.fleet_estimator.close()
             # Stop local recorder
             if self.local_recorder:
                 self.local_recorder.stop()
@@ -3114,6 +3097,9 @@ class VehicleObserver:
             ):
                 self.relative_estimator.stop_recording()
                 self.vehicle_logger.logger.info("Relative UIO recorder stopped")
+            for estimator in self.relative_estimators.values():
+                if estimator is not self.relative_estimator:
+                    estimator.stop_recording()
 
         except Exception as e:
             if self.vehicle_logger:

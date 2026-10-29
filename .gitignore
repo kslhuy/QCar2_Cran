@@ -3,6 +3,13 @@ Development/install/*
 dev/install/*
 Development/log/*
 __pycache__/
+.pytest_cache/
+.serena/
+
+# Generated observer verification artifacts (keep datasets and paper results).
+tmp/observer_pipeline_verification.json
+tmp/mean_attack_no_fallback/
+tmp/mean_attack_no_fallback_dos/
 **/node_modules/*
 .agent/skills
 

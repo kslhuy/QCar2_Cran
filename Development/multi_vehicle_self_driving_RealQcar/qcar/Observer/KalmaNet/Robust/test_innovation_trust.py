@@ -105,6 +105,10 @@ class InnovationTrustTests(unittest.TestCase):
         import logging
         # Exercise the actual merge/factory path without starting fleet services.
         observer = VehicleObserver.__new__(VehicleObserver)
+        import threading
+        observer.state_dim = 5
+        observer.lock = threading.RLock()
+        observer.sensor_data = {"accelerometer": np.zeros(3)}
         # No services/resources were started by this initialization-only harness.
         observer.stop = lambda: None
         observer.local_estimator_type = "robust_kalman_net"

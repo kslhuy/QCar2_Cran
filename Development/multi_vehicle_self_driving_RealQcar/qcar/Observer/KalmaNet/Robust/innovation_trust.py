@@ -38,7 +38,7 @@ class InnovationTrustFilter:
                     raise ValueError("Not an innovation-trust checkpoint")
                 self.weights = [np.asarray(payload[k], dtype=float)
                                 for k in ("w1", "b1", "w2", "b2")]
-                if self.weights[0].shape[1] != self.FEATURE_COUNT:
+                if self.weights[0].ndim != 2 or self.weights[0].shape[1] != self.FEATURE_COUNT:
                     raise ValueError("Checkpoint feature layout mismatch")
                 w1, b1, w2, b2 = self.weights
                 if (w1.ndim != 2 or b1.shape != (len(w1),) or w2.shape != (1, len(w1))
@@ -54,6 +54,8 @@ class InnovationTrustFilter:
         self.state = np.zeros(4)
         if initial_pose is not None:
             p = np.asarray(initial_pose).reshape(-1)
+            if not np.all(np.isfinite(p)):
+                raise ValueError("Initial innovation-trust state must be finite")
             self.state[:min(len(p), 4)] = p[:4]
         self.anchor = self.state.copy()
         self.drive_velocity = self.state[3]
@@ -213,7 +215,11 @@ class InnovationTrustFilter:
         effective = gain*trust
         self.state = pred+effective*residual
         self.state[2] = wrap(self.state[2])
-        self.covariance = np.maximum((1-effective)*self.covariance, 1e-9)
+        # Trust changes K, so the optimal-gain shortcut (1-K)*P no longer
+        # applies. This is the scalar Joseph update for the applied gain.
+        self.covariance = np.maximum(
+            (1-effective)**2*self.covariance + effective**2*self.noise**2, 1e-9
+        )
         # Slow anchor alignment is allowed only for small, trusted discrepancies.
         for j in range(3):
             if trust[j] > .8 and abs(anchor_res[j]) < scale[j]*.65:

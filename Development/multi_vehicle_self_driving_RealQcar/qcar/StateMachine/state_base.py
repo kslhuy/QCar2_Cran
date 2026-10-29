@@ -87,14 +87,6 @@ class StateBase:
         """Called when exiting this state"""
         pass
 
-    def _init_controllers(self):
-        """
-        Initialize controllers specific to this state.
-        Override this in subclasses to initialize state-specific controllers.
-        Called once during state initialization.
-        """
-        pass
-
     def get_time_in_state(self) -> float:
 
         if self.state_entry_time:

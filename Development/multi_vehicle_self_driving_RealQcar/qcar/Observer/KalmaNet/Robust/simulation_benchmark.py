@@ -54,6 +54,9 @@ def generate_drive(seed=1, duration=30.0, dt=0.02, gps_hz=10.0,
     cfg["vehicle"].update(model_type=model_type, longitudinal_model="qlabs_velocity")
     cfg["electronics"]["enabled"] = False
     cfg["sensors"]["gps"]["has_noise"] = False
+    # This benchmark adds its own seeded noise below; avoid adding it twice.
+    cfg["sensors"]["imu"]["has_noise"] = False
+    cfg["sensors"]["wheel"]["has_noise"] = False
     cfg["initial_state"].update(x=0.0, y=0.0, theta=float(rng.uniform(-2, 2)), v=0.0)
     with contextlib.redirect_stdout(io.StringIO()):
         car = MockQCar(cfg)

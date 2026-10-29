@@ -1,13 +1,20 @@
 # Trust-Based Distributed Observer
 
+The default runtime uses independent relative sensing through per-target
+UIOs. Clean V2V remains available as an explicitly selected test reference for
+trust, prediction and recovery. Unavailable inputs do not change the selected
+source or algorithm. See the
+[complete observer simulation workflow](../../simulation/README_observer_pipeline.md)
+for configuration, failure behaviour and integration checks.
+
 This observer estimates every vehicle state with trust-aware distributed
 consensus. The important path is:
 
 1. receive target `local_state` packets and neighbor `fleet_state` packets;
 2. compute trust for each target;
 3. compute per-target fusion weights;
-4. correct the current estimate with direct and neighbor information;
-5. predict the corrected state with the vehicle dynamics model;
+4. predict the previous estimate to the current timestamp;
+5. correct that prior with direct and neighbor information aligned to the same time;
 6. optionally rollback recent contaminated updates when trust later fails.
 
 The main files are:
@@ -45,8 +52,8 @@ weight:
 observer:
   dynamics_prediction_mode: model
   rollback_enabled: true
-  rollback_window_size: 50
-  rollback_trusted_state_guard_steps: 5
+  rollback_window_size: 16
+  rollback_trusted_state_guard_steps: 8
 ```
 
 `include_target_self_fleet_estimate: false` is important: `w0` uses only the
@@ -90,7 +97,7 @@ For each target `j`, the observer builds live weights over:
 
 - `w0`: the target's direct local-state packet `z_j`;
 - `w_l`: neighbor `l`'s fleet estimate of target `j`;
-- `w_self`: the residual weight left on the host's previous estimate.
+- `w_self`: the residual weight left on the host's predicted prior.
 
 Only trusted neighbors are used:
 
@@ -126,10 +133,10 @@ x_corr_j = x_hat_j
 `w_self` is not applied as a separate correction term. It is the remaining
 weight on the previous host estimate because the update is written as deltas.
 
-After correction, the observer predicts:
+Before correction, the observer predicts:
 
 ```text
-x_next_j = f(x_corr_j, u_j, dt)
+x_prior_j = f(x_previous_j, u_j, dt)
 ```
 
 With the current config:
@@ -138,10 +145,10 @@ With the current config:
 dynamics_prediction_mode: model
 ```
 
-`model` means the standard vehicle dynamics path is used after consensus. Other
-modes exist for experiments (`clean_data`, `mixed_clean_data`,
-`relative_host_anchor_mixed`, `dead_reckoning`, `none`), but the normal
-algorithm should be read as correction first, model prediction second.
+`model` means the standard vehicle dynamics path produces the consensus prior.
+Explicit `dead_reckoning` and `none` modes are also supported. Clean-assisted
+test modes (`clean_data`, `mixed_clean_data`, `relative_host_anchor_mixed`) remain
+selectable and are identified in observer reference status.
 
 ## Rollback
 
@@ -149,8 +156,8 @@ Rollback is enabled in the current config:
 
 ```yaml
 rollback_enabled: true
-rollback_window_size: 50
-rollback_trusted_state_guard_steps: 5
+rollback_window_size: 16
+rollback_trusted_state_guard_steps: 8
 ```
 
 Each update stores replay data: the pre-update fleet state, direct contribution,

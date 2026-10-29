@@ -11,6 +11,12 @@ It runs five synthetic vehicles in one Python process, feeds the current
 `TrustBasedFleetEstimator`, applies the six MATLAB `Mix_test` attack cases, and
 writes attack-impact metrics.
 
+Independent simulated relative sensors and per-target SA_ACC_UIOs provide
+trust evidence by default. Select `--relative-source clean_v2v` for an explicit
+clean-reference experiment. This
+runner still uses synthetic local states rather than a local Robust KalmanNet;
+use [observer_pipeline](README_observer_pipeline.md) to exercise all three layers.
+
 ## Default Experiment
 
 Defaults are aligned with `simulation/matlab/main_mean_attack_plot.m` where it
@@ -92,6 +98,9 @@ Main summary:
 Results_Mix_test_Attacker_V0.csv
 ```
 
+`experiment_config.json` records the selected sources, prediction mode, seed,
+attack configuration and whether the run uses a clean test reference.
+
 Columns:
 
 | Column | Meaning |
@@ -130,9 +139,10 @@ case_02_trust_logs/
 - This runner does not modify or launch the real `VehicleLogic` runtime.
 - It uses the current Python `TrustBasedFleetEstimator` directly.
 - The batch override uses `dynamics_prediction_mode=model` by default so clean
-  V2V data is not used as the prediction source. Override with:
+  V2V data is not used as the prediction source by default. Clean-assisted
+  test modes remain selectable, for example:
 
 ```powershell
-python Development/multi_vehicle_self_driving_RealQcar/qcar/simulation/mean_attack_batch.py --prediction-mode clean_data
+python Development/multi_vehicle_self_driving_RealQcar/qcar/simulation/mean_attack_batch.py --prediction-mode clean_data --relative-source clean_v2v
 ```
 

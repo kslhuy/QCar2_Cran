@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import sys
 from dataclasses import dataclass
@@ -28,6 +29,10 @@ from Observer.TrustbasedDistributedObserver import (  # noqa: E402
     trust_based_fleet_estimator as trust_estimator_module,
 )
 from Observer.TrustbasedDistributedObserver.trust_logger import TrustWeightLogger  # noqa: E402
+from Observer.TrustbasedDistributedObserver.estimator_config import (  # noqa: E402
+    CLEAN_PREDICTION_MODES,
+    normalize_dynamics_prediction_mode,
+)
 
 TrustBasedFleetEstimator = trust_estimator_module.TrustBasedFleetEstimator
 
@@ -126,7 +131,7 @@ def fleet_to_dict(fleet_states: np.ndarray, fleet_size: int) -> Dict[int, Dict[s
     return data
 
 
-def load_trust_config(prediction_mode: str) -> Dict[str, Any]:
+def load_trust_config(prediction_mode: str, relative_source: str = "external") -> Dict[str, Any]:
     """Load the trust child YAML and flatten it like VehicleObserver does."""
     config_path = (
         QCAR_ROOT
@@ -151,6 +156,7 @@ def load_trust_config(prediction_mode: str) -> Dict[str, Any]:
     # Keep the batch experiment honest: do not use clean V2V as the prediction
     # source unless explicitly requested.
     config["dynamics_prediction_mode"] = prediction_mode
+    config["relative_measurement_source"] = relative_source
     config["vehicle"]["dynamics_prediction_mode"] = prediction_mode
     config["vehicle"]["longitudinal_model"] = "simple_acceleration"
     config["vehicle"]["max_velocity"] = max(float(config["vehicle"].get("max_velocity", 2.0)), 3.0)
@@ -386,6 +392,16 @@ def run_case(
     states = make_initial_states(args.num_vehicles)
     case_log_dir = output_dir / f"case_{attack_case.case_number:02d}_trust_logs"
     estimators = create_estimators(args.num_vehicles, config, states, case_log_dir)
+    from simulation.config import SimulationConfig
+    from simulation.relative_sensor import MockRelativeSensor
+    from Observer.relative_state_estimators import SA_ACC_UIO_Estimator
+    sensor_config = dict(SimulationConfig.load_config()["sensors"]["relative"],
+                         max_range_m=30.0, seed=args.seed, drop_probability=0.0)
+    with (QCAR_ROOT / "Observer/config_relative_estimators.yaml").open(encoding="utf-8") as handle:
+        relative_config = yaml.safe_load(handle)["relative"]["sa_acc_uio"]
+    relative_sensors = [MockRelativeSensor(sensor_config, host) for host in range(args.num_vehicles)]
+    relative_observers = {}
+    relative_timestamps = {}
     non_attacker_ids = [vid for vid in range(args.num_vehicles) if vid != args.attacker_id]
 
     times: List[float] = []
@@ -445,6 +461,26 @@ def run_case(
             )
 
             for host_id, estimator in enumerate(estimators):
+                world = {vid: (current_time_ns, [states[vid, 0], states[vid, 1], states[vid, 2],
+                            states[vid, 3] * np.cos(states[vid, 2]), states[vid, 3] * np.sin(states[vid, 2])])
+                         for vid in range(args.num_vehicles)}
+                for packet in relative_sensors[host_id].sample(world[host_id][1], world, current_time_ns):
+                    target = packet["target_id"]
+                    key = (host_id, target)
+                    if key not in relative_observers:
+                        relative_observers[key] = SA_ACC_UIO_Estimator(relative_config)
+                    uio = relative_observers[key]
+                    previous = relative_timestamps.get(key)
+                    sample_dt = uio.Ts if previous is None else (packet["timestamp_ns"] - previous) / 1e9
+                    relative_state = uio.update(
+                        np.array([packet["distance"], packet["relative_velocity"]]),
+                        sample_dt, None, host_vehicle_state=states[host_id],
+                        target_id=target, current_time_ns=packet["timestamp_ns"])
+                    relative_timestamps[key] = packet["timestamp_ns"]
+                    estimator.set_external_relative_measurement(
+                        target, float(relative_state[0] + uio.li), float(relative_state[1]),
+                        packet["timestamp_ns"], "relative_uio:simulated_radar", packet["confidence"],
+                        packet["relative_bearing"])
                 if hasattr(estimator, "set_v2v_attack_status"):
                     estimator.set_v2v_attack_status(attack_status)
 
@@ -459,11 +495,8 @@ def run_case(
                             state=local_payload,
                             timestamp_ns=current_time_ns,
                         )
-                        estimator.add_received_clean_local_state(
-                            sender_id=sender_id,
-                            state=clean_local[sender_id],
-                            timestamp_ns=current_time_ns,
-                        )
+                    estimator.add_received_clean_local_state(
+                        sender_id=sender_id, state=clean_local[sender_id], timestamp_ns=current_time_ns)
 
                     fleet_payload = fleet_payloads[sender_id]
                     if fleet_payload is not None:
@@ -682,6 +715,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="model",
         help="Fleet estimator dynamics_prediction_mode for this batch.",
     )
+    parser.add_argument("--relative-source", choices=("external", "clean_v2v"), default="external",
+                        help="Relative trust evidence: sensor/UIO or an explicit clean-V2V test reference.")
     parser.add_argument(
         "--output-dir",
         default=str(Path(__file__).resolve().parent / "results" / "mean_attack_batch"),
@@ -700,7 +735,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_cases = set(parse_case_selection(args.cases))
-    config = load_trust_config(args.prediction_mode)
+    args.prediction_mode = normalize_dynamics_prediction_mode(args.prediction_mode)
+    config = load_trust_config(args.prediction_mode, args.relative_source)
+    metadata = dict(vars(args), local_state_source="synthetic",
+                    test_reference_active=(args.relative_source == "clean_v2v"
+                                           or args.prediction_mode in CLEAN_PREDICTION_MODES))
+    (output_dir / "experiment_config.json").write_text(
+        json.dumps(metadata, indent=2, allow_nan=False), encoding="utf-8")
 
     all_rows: List[Dict[str, Any]] = []
     for attack_case in MIX_TEST_CASES:
@@ -708,7 +749,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             continue
         print(
             f"[case {attack_case.case_number}] {attack_case.label} "
-            f"attacker=V{args.attacker_id} data_type={args.data_type}"
+            f"attacker=V{args.attacker_id} data_type={args.data_type} "
+            f"relative_source={args.relative_source} prediction={args.prediction_mode}"
         )
         all_rows.extend(run_case(attack_case, args, config, output_dir))
 

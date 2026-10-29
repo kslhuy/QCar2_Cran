@@ -57,13 +57,13 @@ class MockQCarGPS:
     @property
     def position(self):
         """Return [x, y, z] position."""
-        return np.array([self.x, self.y, 0.0])
+        return np.array([self.last_data[0], self.last_data[1], 0.0])
 
     @property
     def orientation(self):
         """Return [roll, pitch, yaw] orientation."""
         # Simulated QCar uses [roll, pitch, yaw]
-        return np.array([0.0, 0.0, self.theta])
+        return np.array([0.0, 0.0, self.last_data[2]])
 
     def update_true_state(self, x, y, theta):
         """Update the ground truth from the vehicle."""

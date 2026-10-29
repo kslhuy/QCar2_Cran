@@ -255,7 +255,7 @@ class NativeTrustObserverParityTests(unittest.TestCase):
         )
 
         for mode in ("startup", "equal", "paper", "trust_based"):
-            config = WeightConfig(weight_type=mode, **base_values)
+            config = WeightConfig(weight_type="trust_based" if mode == "startup" else mode, **base_values)
             module = WeightTrustModule(
                 vehicle_id=0, fleet_size=6, config=config
             )
@@ -329,6 +329,8 @@ class NativeTrustObserverParityTests(unittest.TestCase):
         harness.state_dim = 5
         harness.logger = None
         harness.received_clean_local_states = {}
+        harness.max_state_age_ns = 1_000_000_000
+        harness.timestamp_alignment_config = {"enabled": False}
         options = NativeTrustObserverParityTests._prediction_options()
         harness.relative_host_anchor_anchor_position_weight = options[
             "anchor_position_weight"
@@ -452,14 +454,14 @@ class NativeTrustObserverParityTests(unittest.TestCase):
             "relative_y": 0.24,
         }
         harness = self._prediction_harness(model, "mixed_clean_data")
-        harness.received_clean_local_states = {3: [(0, clean.copy())]}
+        harness.received_clean_local_states = {3: [(1_000_000_000, clean.copy())]}
         expected = harness._apply_state_constraints(
             harness._predict_dynamics(
                 state.copy(),
                 control,
                 dt,
                 target_id=3,
-                current_time_ns=None,
+                current_time_ns=1_000_000_000,
                 force_clean_pose_anchor=True,
                 attack_relative_host_anchor_active=True,
                 host_anchor_snapshot=anchor,
@@ -487,7 +489,7 @@ class NativeTrustObserverParityTests(unittest.TestCase):
                 control,
                 dt,
                 target_id=3,
-                current_time_ns=None,
+                current_time_ns=1_000_000_000,
                 force_clean_pose_anchor=True,
             ),
             target_id=3,
@@ -508,6 +510,29 @@ class NativeTrustObserverParityTests(unittest.TestCase):
             actual_clean, expected_clean, rtol=0.0, atol=1e-13
         )
 
+    def test_stiff_and_reverse_lookup_prediction_match_python(self) -> None:
+        for dt, throttle, tau in ((.2, -.1, .001), (1.3, -.2, .3)):
+            model = normalize_vehicle_model_config({
+                "longitudinal_model": "velocity_lag_lookup", "velocity_lag_lookup_model": {
+                    "tau": tau, "throttle_breakpoints": [0., .1, .2],
+                    "steady_state_velocity_breakpoints": [0., .5, 1.]}})
+            state = np.array([0., 0., 0., 0., 0.])
+            control = np.array([0., throttle])
+            harness = self._prediction_harness(model, "model")
+            expected = harness._apply_state_constraints(
+                harness._predict_dynamics(state, control, dt, target_id=1), target_id=1)
+            actual = self.core.observer_predict(
+                corrected_state=state, clean_state=None, control=control, dt=dt,
+                prediction_mode="model", model_config=model, prediction_options=self._prediction_options(),
+                force_clean_pose_anchor=False, attack_anchor_active=False, host_anchor=None)
+            np.testing.assert_allclose(actual, expected, rtol=0., atol=1e-12)
+            self.assertLess(actual[3], 0.)
+        with self.assertRaises(ValueError):
+            self.core.observer_predict(
+                corrected_state=state, clean_state=None, control=None, dt=.1,
+                prediction_mode="model", model_config=model, prediction_options=self._prediction_options(),
+                force_clean_pose_anchor=False, attack_anchor_active=False, host_anchor=None)
+
     def test_none_dead_reckoning_and_no_control_prediction_match_python(self) -> None:
         state = np.array([-0.2, 0.7, -2.8, 0.54, 0.19])
         dt = 0.06
@@ -525,7 +550,7 @@ class NativeTrustObserverParityTests(unittest.TestCase):
             },
             "model",
         )
-        for mode in ("none", "dead_reckoning", "mixed_clean_data"):
+        for mode in ("none", "dead_reckoning"):
             harness = self._prediction_harness(model, mode)
             expected = harness._apply_state_constraints(
                 harness._predict_dynamics(
@@ -562,6 +587,7 @@ class NativeTrustObserverParityTests(unittest.TestCase):
         with config_path.open("r", encoding="utf-8") as stream:
             config = yaml.safe_load(stream)
         config["embedded_core"]["authority_min_comparisons_per_stage"] = 20
+        config["logging"]["enabled"] = False
         estimator = TrustBasedFleetEstimator(
             vehicle_id=0,
             fleet_size=3,
@@ -585,6 +611,9 @@ class NativeTrustObserverParityTests(unittest.TestCase):
                 }
                 estimator.add_received_local_state(1, target, timestamp_ns)
                 estimator.add_received_clean_local_state(1, target, timestamp_ns)
+                estimator.set_external_relative_measurement(
+                    1, float(np.hypot(target["x"] - host[0], target["y"] - host[1])),
+                    0.05, timestamp_ns, "radar")
                 estimator.add_received_fleet_state(
                     1,
                     {
@@ -641,16 +670,14 @@ class NativeTrustObserverParityTests(unittest.TestCase):
                 global_trust_sample=0.6,
                 trust_levels=np.zeros(5),
             )
-            mismatch = estimator.embedded_core_shadow.compare_trust(
-                target_id=99,
-                python_trust=bad_reference,
-                missing_observation=False,
-            )
-            self.assertFalse(mismatch["passed"])
+            with self.assertRaisesRegex(RuntimeError, "native authority failed"):
+                estimator.embedded_core_shadow.compare_trust(
+                    target_id=99, python_trust=bad_reference, missing_observation=False)
             failed_safe = estimator.get_embedded_core_status()
-            self.assertEqual(failed_safe["mode"], "shadow")
-            self.assertEqual(failed_safe["failback_count"], 1)
-            self.assertEqual(failed_safe["last_failback_stage"], "trust")
+            self.assertEqual(failed_safe["mode"], "native_authority")
+            self.assertFalse(failed_safe["authority_active"])
+            self.assertEqual(failed_safe["failback_count"], 0)
+            self.assertIn("trust", failed_safe["reason"])
             self.assertFalse(failed_safe["authority_ready"])
 
             reset = estimator.reset_embedded_core_parity()

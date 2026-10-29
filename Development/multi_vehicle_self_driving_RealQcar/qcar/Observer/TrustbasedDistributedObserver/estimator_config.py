@@ -109,7 +109,36 @@ def normalize_dynamics_prediction_mode(value: Any) -> str:
         "disable": "none",
         "off": "none",
     }
-    return aliases.get(mode, "model")
+    if mode not in aliases:
+        raise ValueError(f"Unknown dynamics prediction mode: {mode}")
+    return aliases[mode]
+
+
+CLEAN_PREDICTION_MODES = frozenset({"clean_data", "mixed_clean_data", "relative_host_anchor_mixed"})
+
+
+@dataclass(frozen=True)
+class ReferenceSettings:
+    """Explicit data-source choices; test references never select themselves."""
+
+    relative_measurement_source: str = "external"
+    recovery_state_source: str = "estimate"
+    require_relative_measurement: bool = False
+    relative_measurement_max_age_s: float = 0.2
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> "ReferenceSettings":
+        source = str(observer_value(config, "relative_measurement_source", "external")).strip().lower()
+        recovery = str(observer_value(config, "recovery_state_source", "estimate")).strip().lower()
+        if source not in {"external", "clean_v2v"}:
+            raise ValueError(f"Unknown relative measurement source: {source}")
+        if recovery not in {"estimate", "direct_v2v", "clean_v2v"}:
+            raise ValueError(f"Unknown recovery state source: {recovery}")
+        max_age = float(observer_value(config, "relative_measurement_max_age_s", 0.2))
+        if not np.isfinite(max_age) or max_age <= 0:
+            raise ValueError("relative_measurement_max_age_s must be positive and finite")
+        return cls(source, recovery,
+                   as_bool(observer_value(config, "require_relative_measurement", False)), max_age)
 
 
 @dataclass(frozen=True)
@@ -152,7 +181,7 @@ class PredictionSettings:
     enable_output_low_pass: bool = False
     output_low_pass_alpha: float = 1.0
     attack_output_low_pass_alpha: float = 1.0
-    force_clean_pose_anchor: bool = True
+    force_clean_pose_anchor: bool = False
     post_rollback_anchor_enabled: bool = False
     relative_host_anchor_anchor_position_weight: float = 1.0
     relative_host_anchor_estimate_position_weight: float = 0.0
@@ -200,7 +229,7 @@ class PredictionSettings:
                 output_alpha,
             ),
             force_clean_pose_anchor=as_bool(
-                observer_value(config, "force_clean_pose_anchor", True), True
+                observer_value(config, "force_clean_pose_anchor", False), False
             ),
             post_rollback_anchor_enabled=as_bool(
                 observer_value(config, "post_rollback_anchor_enabled", False),
@@ -334,87 +363,75 @@ class RollbackSettings:
 
 
 def normalize_vehicle_model_config(
-    cfg: Mapping[str, Any],
-    default_prediction_mode: str = "model",
+    cfg: Mapping[str, Any], default_prediction_mode: str = "model",
 ) -> Dict[str, Any]:
-    """Normalize a vehicle model dictionary used by prediction."""
+    """Resolve and validate model parameters once, before entering the loop."""
     cfg = cfg if isinstance(cfg, Mapping) else {}
     vehicle_type = str(cfg.get("vehicle_type", cfg.get("type", "Qcar")) or "Qcar")
-    vehicle_type_norm = "Limo" if vehicle_type.strip().lower() == "limo" else "Qcar"
-
-    velocity_lag = dict_section(cfg, "velocity_lag_model")
-    velocity_lag_lookup = dict_section(cfg, "velocity_lag_lookup_model")
-    accel_lag = dict_section(cfg, "accel_lag_model")
-
-    longitudinal_model = str(cfg.get("longitudinal_model", "") or "").strip().lower()
-    if not longitudinal_model:
-        if vehicle_type_norm == "Limo":
-            longitudinal_model = "velocity_command"
-        elif as_bool(velocity_lag_lookup.get("enabled"), False):
-            longitudinal_model = "velocity_lag_lookup"
-        elif as_bool(velocity_lag.get("enabled"), False):
-            longitudinal_model = "velocity_lag"
-        elif as_bool(accel_lag.get("enabled"), False):
-            longitudinal_model = "acceleration_lag"
+    vehicle_type = "Limo" if vehicle_type.strip().lower() == "limo" else "Qcar"
+    lag = dict_section(cfg, "velocity_lag_model")
+    lookup = dict_section(cfg, "velocity_lag_lookup_model")
+    accel = dict_section(cfg, "accel_lag_model")
+    model = str(cfg.get("longitudinal_model", "") or "").strip().lower()
+    if not model:
+        if vehicle_type == "Limo":
+            model = "velocity_command"
+        elif as_bool(lookup.get("enabled"), False):
+            model = "velocity_lag_lookup"
+        elif as_bool(lag.get("enabled"), False):
+            model = "velocity_lag"
+        elif as_bool(accel.get("enabled"), False):
+            model = "acceleration_lag"
         else:
-            longitudinal_model = "constant_velocity"
+            model = "constant_velocity"
+    if model not in {"constant_velocity", "velocity_lag", "velocity_lag_lookup",
+                     "velocity_command", "acceleration_lag", "simple_acceleration"}:
+        raise ValueError(f"Unknown longitudinal prediction model: {model}")
 
-    return {
-        "vehicle_type": vehicle_type_norm,
+    def number(value, name, positive=False, nonnegative=False):
+        value = float(value)
+        if not np.isfinite(value) or (positive and value <= 0) or (nonnegative and value < 0):
+            raise ValueError(f"Invalid vehicle-model parameter {name}: {value}")
+        return value
+
+    resolved = {
+        "vehicle_type": vehicle_type,
         "dynamics_prediction_mode": normalize_dynamics_prediction_mode(
-            cfg.get(
-                "dynamics_prediction_mode",
-                cfg.get("prediction_mode", default_prediction_mode),
-            )
-        ),
-        "wheelbase": as_float(cfg.get("wheelbase"), 0.256),
-        "max_velocity": as_float(cfg.get("max_velocity"), 2.0),
-        "max_acceleration": as_float(cfg.get("max_acceleration"), 5.0),
-        "max_steering": as_float(cfg.get("max_steering"), 0.5),
-        "longitudinal_model": longitudinal_model,
-        "velocity_lag_tau": max(
-            as_float(velocity_lag.get("tau"), cfg.get("velocity_lag_tau", 0.301)),
-            1e-6,
-        ),
-        "velocity_gain": as_float(
-            velocity_lag.get("velocity_gain"), cfg.get("velocity_gain", 6.598)
-        ),
-        "velocity_lag_deadband": max(
-            as_float(
-                velocity_lag.get("throttle_deadband"),
-                cfg.get("velocity_lag_deadband", 0.0),
-            ),
-            0.0,
-        ),
-        "velocity_lag_lookup_tau": max(
-            as_float(
-                velocity_lag_lookup.get("tau"),
-                cfg.get("velocity_lag_lookup_tau", 0.301),
-            ),
-            1e-6,
-        ),
-        "velocity_lag_lookup_throttle_breakpoints": [
-            float(v) for v in velocity_lag_lookup.get("throttle_breakpoints", [])
-        ],
-        "velocity_lag_lookup_velocity_breakpoints": [
-            float(v)
-            for v in velocity_lag_lookup.get("steady_state_velocity_breakpoints", [])
-        ],
-        "velocity_command_tau": max(
-            as_float(cfg.get("velocity_command_tau"), velocity_lag.get("tau", 0.301)),
-            1e-6,
-        ),
-        "accel_lag_tau": max(
-            as_float(accel_lag.get("tau"), cfg.get("accel_lag_tau", 0.318)),
-            1e-6,
-        ),
-        "accel_lag_gain": as_float(
-            accel_lag.get("input_gain"), cfg.get("accel_lag_gain", 1.0)
-        ),
-        "allow_host_control_fallback": as_bool(
-            cfg.get("allow_host_control_fallback"), False
-        ),
+            cfg.get("dynamics_prediction_mode", cfg.get("prediction_mode", default_prediction_mode))),
+        "longitudinal_model": model,
+        "wheelbase": number(cfg.get("wheelbase", .256), "wheelbase", positive=True),
+        "max_velocity": number(cfg.get("max_velocity", 2.), "max_velocity", positive=True),
+        "max_acceleration": number(cfg.get("max_acceleration", 5.), "max_acceleration", positive=True),
+        "max_steering": number(cfg.get("max_steering", .5), "max_steering", nonnegative=True),
+        "velocity_lag_tau": number(lag.get("tau", cfg.get("velocity_lag_tau", .301)),
+                                   "velocity_lag_tau", positive=True),
+        "velocity_gain": number(lag.get("velocity_gain", cfg.get("velocity_gain", 6.598)), "velocity_gain"),
+        "velocity_lag_deadband": number(lag.get("throttle_deadband", cfg.get("velocity_lag_deadband", 0.)),
+                                        "velocity_lag_deadband", nonnegative=True),
+        "velocity_lag_lookup_tau": number(lookup.get("tau", cfg.get("velocity_lag_lookup_tau", .301)),
+                                          "velocity_lag_lookup_tau", positive=True),
+        "velocity_lag_lookup_throttle_breakpoints": list(lookup.get(
+            "throttle_breakpoints", cfg.get("velocity_lag_lookup_throttle_breakpoints", []))),
+        "velocity_lag_lookup_velocity_breakpoints": list(lookup.get(
+            "steady_state_velocity_breakpoints", cfg.get("velocity_lag_lookup_velocity_breakpoints", []))),
+        "velocity_command_tau": number(cfg.get("velocity_command_tau", lag.get("tau", .301)),
+                                       "velocity_command_tau", positive=True),
+        "accel_lag_tau": number(accel.get("tau", cfg.get("accel_lag_tau", .318)), "accel_lag_tau", positive=True),
+        "accel_lag_gain": number(accel.get("input_gain", cfg.get("accel_lag_gain", 1.)), "accel_lag_gain"),
+        "allow_host_control_fallback": as_bool(cfg.get("allow_host_control_fallback"), False),
     }
+    if resolved["max_steering"] >= np.pi / 2:
+        raise ValueError("Vehicle max_steering must be below pi/2")
+    if model == "velocity_lag_lookup":
+        xs = np.asarray(resolved["velocity_lag_lookup_throttle_breakpoints"], dtype=float)
+        ys = np.asarray(resolved["velocity_lag_lookup_velocity_breakpoints"], dtype=float)
+        if (xs.ndim != 1 or ys.ndim != 1 or xs.size < 2 or xs.size != ys.size
+                or not np.all(np.isfinite(xs)) or not np.all(np.isfinite(ys))
+                or not np.all(np.diff(xs) > 0)):
+            raise ValueError("Lookup model requires finite paired values and strictly increasing throttle breakpoints")
+        resolved["velocity_lag_lookup_throttle_breakpoints"] = xs.tolist()
+        resolved["velocity_lag_lookup_velocity_breakpoints"] = ys.tolist()
+    return resolved
 
 
 def load_vehicle_model_overrides(

@@ -97,6 +97,7 @@ class ContaminationRollback:
             prediction = comp.get("prediction", {})
             control = prediction.get("control")
             safe_prediction = {
+                "order": prediction.get("order", "correct_then_predict"),
                 "dt": float(prediction.get("dt", 0.0)),
                 "control": None,
                 "force_clean_pose_anchor": bool(
@@ -117,6 +118,7 @@ class ContaminationRollback:
                 "direct": safe_direct,
                 "neighbors": safe_neighbors,
                 "prediction": safe_prediction,
+                "output_filter": dict(comp.get("output_filter", {})),
             }
 
         self.buffer.append(
@@ -374,68 +376,54 @@ class ContaminationRollback:
         return constrained
 
     def _replay_without_malicious(
-        self,
-        comp: Dict,
-        previous_state: np.ndarray,
-        malicious_ids: Set[int],
-        target_id: int,
-        step_time_ns: Optional[int] = None,
+        self, comp: Dict, previous_state: np.ndarray, malicious_ids: Set[int],
+        target_id: int, step_time_ns: Optional[int] = None,
     ) -> np.ndarray:
-        """Rebuild one target update while excluding all malicious contributors."""
+        """Replay in the recorded order, with wrapped heading residuals."""
         previous_state = np.asarray(previous_state, dtype=float).copy()
-        total_correction = np.zeros(self.state_dim)
-
-        direct = comp.get("direct", {})
-        direct_src = int(direct.get("source", -1))
-        if direct_src not in malicious_ids:
-            if direct.get("state") is not None:
-                direct_weight = float(direct.get("weight", 0.0))
-                direct_state = np.asarray(direct.get("state"), dtype=float)
-                total_correction += direct_weight * (direct_state - previous_state)
-            else:
-                total_correction += np.asarray(
-                    direct.get("delta", np.zeros(self.state_dim)), dtype=float
-                )
-
-        for neighbor_id, neighbor_data in comp.get("neighbors", {}).items():
-            if int(neighbor_id) in malicious_ids:
-                continue
-            if isinstance(neighbor_data, dict) and neighbor_data.get("state") is not None:
-                neighbor_weight = float(neighbor_data.get("weight", 0.0))
-                neighbor_state = np.asarray(neighbor_data.get("state"), dtype=float)
-                total_correction += neighbor_weight * (neighbor_state - previous_state)
-            else:
-                total_correction += np.asarray(
-                    neighbor_data.get("delta", np.zeros(self.state_dim)), dtype=float
-                )
-
-        consensus_state = self._apply_state_constraints(
-            previous_state + total_correction, target_id=target_id
-        )
         prediction = comp.get("prediction", {})
         dt = float(prediction.get("dt", 0.0))
         control = prediction.get("control")
-        force_clean_pose_anchor = bool(
-            prediction.get("force_clean_pose_anchor", False)
-        )
-        attack_relative_host_anchor_active = bool(
-            prediction.get("attack_relative_host_anchor_active", False)
-        )
-        host_anchor_snapshot = prediction.get("host_anchor_snapshot")
         if control is not None:
             control = np.asarray(control, dtype=float).copy()
 
-        if callable(self.predict_fn) and dt > 0.0:
-            predicted_state = self.predict_fn(
-                consensus_state,
-                control,
-                dt,
-                int(target_id),
-                current_time_ns=step_time_ns,
-                force_clean_pose_anchor=force_clean_pose_anchor,
-                attack_relative_host_anchor_active=attack_relative_host_anchor_active,
-                host_anchor_snapshot=host_anchor_snapshot,
+        def predict(state):
+            if not callable(self.predict_fn) or dt <= 0.0:
+                return state.copy()
+            result = self.predict_fn(
+                state, control, dt, int(target_id), current_time_ns=step_time_ns,
+                force_clean_pose_anchor=bool(prediction.get("force_clean_pose_anchor", False)),
+                attack_relative_host_anchor_active=bool(prediction.get("attack_relative_host_anchor_active", False)),
+                host_anchor_snapshot=prediction.get("host_anchor_snapshot"),
             )
-            return self._apply_state_constraints(predicted_state, target_id=target_id)
+            return self._apply_state_constraints(result, target_id=target_id)
 
-        return consensus_state
+        # Records created before the timestamp fix retain their original order.
+        predict_first = prediction.get("order") == "predict_then_correct"
+        prior = predict(previous_state) if predict_first else previous_state
+        correction = np.zeros(self.state_dim)
+
+        def contribution(entry):
+            if entry.get("state") is None:
+                return np.asarray(entry.get("delta", np.zeros(self.state_dim)), dtype=float)
+            residual = np.asarray(entry["state"], dtype=float) - prior
+            if residual.size > 2:
+                residual[2] = np.arctan2(np.sin(residual[2]), np.cos(residual[2]))
+            return float(entry.get("weight", 0.0)) * residual
+
+        direct = comp.get("direct", {})
+        if int(direct.get("source", -1)) not in malicious_ids:
+            correction += contribution(direct)
+        for neighbor_id, entry in comp.get("neighbors", {}).items():
+            if int(neighbor_id) not in malicious_ids:
+                correction += contribution(entry)
+
+        corrected = self._apply_state_constraints(prior + correction, target_id=target_id)
+        result = corrected if predict_first else predict(corrected)
+        output_filter = comp.get("output_filter", {})
+        if output_filter.get("enabled", False):
+            residual = result - previous_state
+            if residual.size > 2:
+                residual[2] = np.arctan2(np.sin(residual[2]), np.cos(residual[2]))
+            result = previous_state + float(output_filter["alpha"]) * residual
+        return self._apply_state_constraints(result, target_id=target_id)

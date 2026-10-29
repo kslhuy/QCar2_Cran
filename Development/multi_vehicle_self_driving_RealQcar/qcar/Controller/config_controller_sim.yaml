@@ -35,9 +35,10 @@ leader_reverse_follow:
 # Local sensor ACC helper used for close-range leader following.
 # It turns a measured leader gap into a target speed, then uses the PID speed
 # loop below to create throttle. The measured gap normally comes from YOLO
-# car_dist; when trust fusion is active and YOLO is missing, the controller can
-# also synthesize this gap from the clean V2V channel.
+# car_dist; fake vehicles use the independent relative sensor/UIO output.
 leader_sensor_acc:
+  gap_source: relative_sensor # relative_sensor or clean_v2v (explicit test reference)
+  measurement_max_age_s: 0.2
   # false = do not apply the old always-on close-range sensor/CACC blend.
   # Note: when trust_longitudinal_fusion.enabled is true, this ACC helper is
   # still available for low-trust fallback even if this flag is false.
@@ -65,8 +66,8 @@ trust_longitudinal_fusion:
   trust_high: 0.70
   alpha_mode: direct_opinion      # direct_opinion = gamma_i equals min opinion; threshold_map keeps the old trust_low/trust_high mapping
   opinion_scope: used_predecessors # direct leader plus upstream predecessor states used by multi-predecessor CACC
-  unavailable_policy: sensor_acc_or_stop
-  low_trust_policy: sensor_acc_or_stop
+  unavailable_policy: stop
+  low_trust_policy: stop
 
 # Shared leader source for FOLLOWING_LEADER. Both longitudinal and lateral use this same state.
 # Options: 'direct_v2v_attacked', 'direct_v2v_clean', or 'fleet_estimator'.
