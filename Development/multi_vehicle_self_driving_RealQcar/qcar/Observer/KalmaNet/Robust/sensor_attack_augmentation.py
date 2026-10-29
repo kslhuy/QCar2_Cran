@@ -15,7 +15,7 @@ Reference:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -114,15 +114,64 @@ class AttackConfig:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "AttackConfig":
-        cfg = cls()
-        for key, value in d.items():
-            if hasattr(cfg, key):
-                current = getattr(cfg, key)
-                if isinstance(current, tuple):
-                    setattr(cfg, key, tuple(value))
-                else:
-                    setattr(cfg, key, value)
-        return cfg
+        return _config_from_dict(cls, d)
+
+
+def _config_from_dict(cls, values):
+    """Accept documented aliases, rejecting misspellings instead of ignoring them."""
+    if not isinstance(values, dict):
+        raise ValueError("Attack configuration must be a mapping")
+    values = dict(values)
+    attack_types = values.pop("attack_types", None)
+    if attack_types is not None:
+        values.setdefault("enabled_attacks", attack_types)
+    mode = values.pop("attack_mode", None)
+    if mode is not None:
+        if mode not in {"mixed", "measurement_only"}:
+            raise ValueError("attack_mode must be mixed or measurement_only")
+        values["measurement_focus_only"] = mode == "measurement_only"
+    declared = {item.name for item in fields(cls)}
+    # Training decides whether to construct an augmenter using this outer switch.
+    if "enabled" not in declared:
+        values.pop("enabled", None)
+    unknown = set(values) - declared
+    if unknown:
+        raise ValueError(f"Unknown attack configuration keys: {sorted(unknown)}")
+    cfg = cls()
+    for key, value in values.items():
+        if isinstance(getattr(cfg, key), tuple):
+            if not isinstance(value, (tuple, list)):
+                raise ValueError(f"{key} must be a two-element range")
+            value = tuple(value)
+        setattr(cfg, key, value)
+    return cfg
+
+
+def _validate_attack_parameters(config):
+    for name in ("attack_prob", "meas_attack_prob", "direct_meas_attack_prob", "gps_attack_prob"):
+        value = float(getattr(config, name))
+        if not np.isfinite(value) or not 0 <= value <= 1:
+            raise ValueError(f"{name} must be finite and in [0, 1]")
+    if not isinstance(config.branch_attack_probs, dict) or set(config.branch_attack_probs) - set(BRANCH_NAMES):
+        raise ValueError(f"branch_attack_probs must map only {BRANCH_NAMES}")
+    for value in config.branch_attack_probs.values():
+        if not np.isfinite(float(value)) or not 0 <= float(value) <= 1:
+            raise ValueError("branch_attack_probs values must be in [0, 1]")
+    for name in ("bias_range", "scale_range", "noise_std_range", "ramp_rate_range",
+                 "gps_noise_std_range", "gps_jump_range", "gps_reacq_jump_range"):
+        bounds = getattr(config, name)
+        if not isinstance(bounds, (tuple, list)) or len(bounds) != 2:
+            raise ValueError(f"{name} must contain two bounds")
+        lo, hi = map(float, bounds)
+        if not np.isfinite([lo, hi]).all() or lo > hi or (name != "scale_range" and lo < 0):
+            raise ValueError(f"{name} requires finite ordered bounds and non-negative magnitudes")
+    if (isinstance(config.max_branches_attacked, bool)
+            or int(config.max_branches_attacked) != config.max_branches_attacked
+            or not 1 <= config.max_branches_attacked <= len(BRANCH_NAMES)):
+        raise ValueError("max_branches_attacked must be an integer from 1 to 3")
+    lo, hi = float(config.gps_dropout_min_fraction), float(config.gps_dropout_max_fraction)
+    if not 0 <= lo <= hi <= 1:
+        raise ValueError("GPS dropout fractions require 0 <= min <= max <= 1")
 
 
 # ============================================================
@@ -216,6 +265,7 @@ class SensorAttackAugmenter:
         self._validate_config()
 
     def _validate_config(self) -> None:
+        _validate_attack_parameters(self.config)
         if not self.config.enabled_attacks:
             raise ValueError("At least one branch attack type must be enabled")
         for name in self.config.enabled_attacks:
@@ -254,9 +304,11 @@ class SensorAttackAugmenter:
                 candidates.append(branch_name)
 
         if not candidates:
-            # At least one branch must be attacked
-            idx = int(torch.randint(len(BRANCH_NAMES), (1,)).item())
-            candidates = [BRANCH_NAMES[idx]]
+            eligible = [name for name in BRANCH_NAMES if float(self.config.branch_attack_probs.get(name, 0.)) > 0]
+            if not eligible:
+                raise ValueError("At least one branch probability must be positive")
+            idx = int(torch.randint(len(eligible), (1,)).item())
+            candidates = [eligible[idx]]
 
         # Limit to max_branches_attacked
         if len(candidates) > self.config.max_branches_attacked:
@@ -529,15 +581,7 @@ class RuntimeAttackConfig(AttackConfig):
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "RuntimeAttackConfig":
-        cfg = cls()
-        for key, value in d.items():
-            if hasattr(cfg, key):
-                current = getattr(cfg, key)
-                if isinstance(current, tuple):
-                    setattr(cfg, key, tuple(value))
-                else:
-                    setattr(cfg, key, value)
-        return cfg
+        return _config_from_dict(cls, d)
 
 
 class RuntimeSensorAttackSimulator:
@@ -557,8 +601,8 @@ class RuntimeSensorAttackSimulator:
 
     def __init__(self, config: Optional[RuntimeAttackConfig] = None):
         self.config = config or RuntimeAttackConfig()
-        self._rng = np.random.default_rng(self.config.seed)
         self._validate_config()
+        self._rng = np.random.default_rng(self.config.seed)
         self.reset()
 
     def reset(self) -> None:
@@ -567,9 +611,38 @@ class RuntimeSensorAttackSimulator:
         self._branch_cooldown_remaining = 0
         self._gps_cooldown_remaining = 0
         self._last_gps_xy = np.zeros(2, dtype=np.float64)
+        self._has_gps_fix = False
+        self._elapsed_s = 0.0
+        self._last_gps_time_s = 0.0
         self._pending_immediate_attack = bool(self.config.immediate_attack)
 
     def _validate_config(self) -> None:
+        _validate_attack_parameters(self.config)
+        for name in ("enabled", "force_gps_attack", "immediate_attack", "measurement_focus_only"):
+            if not isinstance(getattr(self.config, name), bool):
+                raise ValueError(f"{name} must be boolean")
+        for name in ("min_attack_steps", "max_attack_steps", "gps_min_attack_steps", "gps_max_attack_steps",
+                     "cooldown_steps", "gps_cooldown_steps"):
+            value = getattr(self.config, name)
+            if value is None and name.startswith("gps_"):
+                continue
+            minimum = 0 if "cooldown" in name else 1
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < minimum:
+                raise ValueError(f"{name} must be an integer >= {minimum}")
+        gps_min = self.config.gps_min_attack_steps if self.config.gps_min_attack_steps is not None else self.config.min_attack_steps
+        gps_max = self.config.gps_max_attack_steps if self.config.gps_max_attack_steps is not None else self.config.max_attack_steps
+        if gps_max < gps_min:
+            raise ValueError("gps_max_attack_steps must be >= gps_min_attack_steps")
+        if (self.config.seed is not None and (isinstance(self.config.seed, bool)
+                or not isinstance(self.config.seed, (int, np.integer)) or self.config.seed < 0)):
+            raise ValueError("seed must be a non-negative integer")
+        if self.config.attack_prob > 0 and not self.config.enabled_attacks:
+            raise ValueError("Branch attacks require at least one enabled attack type")
+        if (self.config.gps_attack_prob > 0 or self.config.force_gps_attack) and not self.config.gps_attack_types:
+            raise ValueError("GPS attacks require at least one attack type")
+        if (self.config.attack_prob > 0 and not self.config.forced_branches
+                and not any(float(p) > 0 for p in self.config.branch_attack_probs.values())):
+            raise ValueError("At least one branch probability must be positive")
         if self.config.min_attack_steps <= 0:
             raise ValueError("min_attack_steps must be >= 1")
         if self.config.max_attack_steps < self.config.min_attack_steps:
@@ -667,8 +740,9 @@ class RuntimeSensorAttackSimulator:
                 candidates.append(branch_name)
 
         if not candidates:
-            idx = int(self._rng.integers(0, len(BRANCH_NAMES)))
-            candidates = [BRANCH_NAMES[idx]]
+            eligible = [name for name in BRANCH_NAMES if float(self.config.branch_attack_probs.get(name, 0.)) > 0]
+            idx = int(self._rng.integers(0, len(eligible)))
+            candidates = [eligible[idx]]
 
         if len(candidates) > int(self.config.max_branches_attacked):
             self._rng.shuffle(candidates)
@@ -752,12 +826,15 @@ class RuntimeSensorAttackSimulator:
     def _start_gps_event(self, gps_data: Optional[Dict[str, Any]]) -> None:
         attack_name = self._pick_gps_attack_name()
         duration = self._sample_duration(gps=True)
-        source_xy = self._extract_gps_xy(gps_data, self._last_gps_xy)
+        source_xy = self._last_gps_xy.copy()
         event: Dict[str, Any] = {
             "attack_type": attack_name,
             "remaining_steps": int(max(2, duration) if attack_name == "reacquisition" else duration),
             "elapsed_steps": 0,
             "source_xy": source_xy,
+            "started_at_s": self._elapsed_s,
+            "source_age_s": max(0., self._elapsed_s - self._last_gps_time_s),
+            "has_source_fix": self._has_gps_fix,
         }
         if attack_name == "noise":
             event["std"] = self._sample_uniform(self.config.gps_noise_std_range)
@@ -799,6 +876,7 @@ class RuntimeSensorAttackSimulator:
         event = self._gps_event
         attack_name = str(event.get("attack_type", ""))
         elapsed_steps = int(event.get("elapsed_steps", 0))
+        age_since_fix = float(event.get("source_age_s", 0.)) + max(0., self._elapsed_s - float(event.get("started_at_s", self._elapsed_s)))
         source_xy = np.asarray(event.get("source_xy", self._last_gps_xy), dtype=np.float64)
         current_xy = self._extract_gps_xy(gps_out, source_xy)
 
@@ -821,22 +899,25 @@ class RuntimeSensorAttackSimulator:
             xy_out = source_xy.copy()
             position_valid = False
             fresh = False
-            hold_valid = True
-            age_sec = float(max(0.0, elapsed_steps) * max(float(dt), 0.0))
+            hold_valid = bool(event.get("has_source_fix", False))
+            age_sec = age_since_fix
         elif attack_name == "reacquisition":
             dropout_steps = int(event.get("dropout_steps", 1))
             if elapsed_steps < dropout_steps:
                 xy_out = source_xy.copy()
                 position_valid = False
                 fresh = False
-                hold_valid = True
-                age_sec = float(max(0.0, elapsed_steps) * max(float(dt), 0.0))
+                hold_valid = bool(event.get("has_source_fix", False))
+                age_sec = age_since_fix
             else:
                 xy_out = current_xy + np.asarray(event.get("offset", np.zeros(2)), dtype=np.float64)
-                position_valid = True
-                fresh = True
-                hold_valid = True
-                age_sec = 0.0
+                # Reacquisition can corrupt an arrived fix, never create an
+                # observation at the faster observer rate between GPS packets.
+                position_valid = bool(position_valid and fresh)
+                fresh = position_valid
+                hold_valid = bool(hold_valid and self._has_gps_fix)
+                if position_valid:
+                    age_sec = 0.0
         else:
             raise ValueError(f"Unsupported runtime GPS attack type: {attack_name}")
 
@@ -1007,6 +1088,9 @@ class RuntimeSensorAttackSimulator:
         acceleration: Optional[np.ndarray],
         gps_data: Optional[Dict[str, Any]],
     ) -> Tuple[float, float, float, float, np.ndarray, Optional[Dict[str, Any]], Dict[str, Any]]:
+        if not np.isfinite(float(dt)) or float(dt) <= 0:
+            raise ValueError("Sensor attack dt must be finite and positive")
+        self._elapsed_s += float(dt)
         accel = np.asarray(
             acceleration if acceleration is not None else np.zeros(3, dtype=np.float64),
             dtype=np.float64,
@@ -1017,10 +1101,12 @@ class RuntimeSensorAttackSimulator:
             accel = accel_padded
         gps_out = dict(gps_data) if isinstance(gps_data, dict) else gps_data
 
-        if isinstance(gps_out, dict):
+        if self._gps_position_valid(gps_out) and gps_out.get("fresh", True):
             gps_xy = self._extract_gps_xy(gps_out, self._last_gps_xy)
             if np.all(np.isfinite(gps_xy)):
                 self._last_gps_xy = gps_xy
+                self._has_gps_fix = True
+                self._last_gps_time_s = self._elapsed_s - max(0., float(gps_out.get("age_sec", 0.)))
 
         orig_motor_tach = float(motor_tach)
         orig_steering = float(steering)

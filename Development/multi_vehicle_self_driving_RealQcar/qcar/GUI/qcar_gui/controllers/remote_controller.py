@@ -404,7 +404,7 @@ class QCarRemoteController:
             msg_type = data.get("type")
 
             if msg_type == "ping":
-                await websocket.send(json.dumps({"type": "pong"}))
+                await websocket.send(json.dumps({"type": "pong", "ping_id": data.get("ping_id")}))
                 return
 
             elif msg_type == "get_status":

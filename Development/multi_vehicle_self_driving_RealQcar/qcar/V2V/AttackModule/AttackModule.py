@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from numbers import Real
 
 
 class AttackType(Enum):
@@ -107,6 +108,86 @@ class AttackScenario:
     
     # Internal state
     _attack_count: int = field(default=0, repr=False)
+
+    def validate(self) -> None:
+        """Reject experiments that would silently inject nothing or use invalid values."""
+        def finite(value, name):
+            try:
+                result = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} must be numeric") from exc
+            if isinstance(value, bool) or not np.isfinite(result):
+                raise ValueError(f"{name} must be finite")
+            return result
+
+        self.t_start = finite(self.t_start, "t_start")
+        self.t_end = float(self.t_end)
+        if self.t_start < 0 or np.isnan(self.t_end) or self.t_end < self.t_start:
+            raise ValueError("Attack times require 0 <= t_start <= t_end; +inf is allowed for manual attacks")
+        if not isinstance(self.attacker_id, (int, np.integer)) or self.attacker_id < 0:
+            raise ValueError("attacker_id must be a non-negative integer")
+        if not isinstance(self.victim_ids, (list, tuple)) or not self.victim_ids:
+            raise ValueError("victim_ids must be a non-empty list; use [-1] for all")
+        if any(not isinstance(v, (int, np.integer)) or v < -1 for v in self.victim_ids):
+            raise ValueError("victim_ids must contain integer IDs or -1")
+        self.attack_type = AttackType(self.attack_type)
+        self.modification_type = ModificationType(self.modification_type)
+        self.data_type = DataType(self.data_type)
+        if self.attack_type in {AttackType.NONE, AttackType.REPLAY, AttackType.DELAY}:
+            raise ValueError(f"{self.attack_type.value} is not implemented by the value-injection engine")
+        if self.data_type not in {DataType.LOCAL, DataType.FLEET, DataType.BOTH}:
+            raise ValueError("Only local, fleet and both data channels are implemented")
+        if self.should_attack_local() and -1 not in self.victim_ids:
+            raise ValueError("Receiver-selective local attacks are not implemented; use victim_ids: [-1]. "
+                             "For fleet attacks victim_ids selects subject rows, not receivers.")
+        if not isinstance(self.target_fields, (list, tuple)) or not self.target_fields:
+            raise ValueError("target_fields must be a non-empty list")
+        aliases = {key.lower(): value for key, value in AttackModule.LOCAL_STATE_FIELDS.items()}
+        if self.should_attack_fleet():
+            aliases.update({key.lower(): value for key, value in AttackModule.FLEET_STATE_FIELDS.items()})
+        canonical = []
+        for name in self.target_fields:
+            name = str(name).lower()
+            if name == "all":
+                canonical.extend(sorted(set(aliases.values())))
+            elif name in aliases:
+                canonical.append(aliases[name])
+            else:
+                raise ValueError(f"Unknown target field {name!r}")
+        self.target_fields = list(dict.fromkeys(canonical))
+
+        value = self.intensity
+        options = value if isinstance(value, dict) else {}
+        allowed = {
+            ModificationType.SINUSOIDAL: {"amplitude", "frequency", "phase"},
+            ModificationType.FAULTY: {"intensity", "sigma", "std", "probability", "drop_probability", "p"},
+            ModificationType.RANDOM: {"min", "max"},
+            ModificationType.STEP: {"value", "at"},
+            ModificationType.DROP: {"probability", "drop_probability", "p"},
+        }
+        if isinstance(value, dict):
+            unknown = set(value) - allowed.get(self.modification_type, set())
+            if unknown or self.modification_type not in allowed:
+                raise ValueError(f"Invalid intensity parameters: {sorted(unknown or value.keys())}")
+            for key, item in value.items():
+                value[key] = finite(item, key)
+        else:
+            finite(value, "probability" if self.modification_type == ModificationType.DROP else "intensity")
+        if self.modification_type == ModificationType.DROP:
+            AttackModule._drop_probability(value)
+        elif self.modification_type == ModificationType.FAULTY:
+            sigma = options.get("intensity", options.get("sigma", options.get("std", 1.))) if isinstance(value, dict) else value
+            if float(sigma) < 0:
+                raise ValueError("Noise sigma must be non-negative")
+            if options:
+                AttackModule._drop_probability(options)
+        elif self.modification_type == ModificationType.RANDOM:
+            if float(options.get("min", 0.)) > float(options.get("max", 1.) if isinstance(value, dict) else value):
+                raise ValueError("Random intensity requires min <= max")
+        elif self.modification_type == ModificationType.STEP and not 0 <= float(options.get("at", 0.)) <= 1:
+            raise ValueError("Step fraction must be in [0, 1]")
+        elif self.modification_type == ModificationType.SINUSOIDAL and float(options.get("frequency", 1.)) < 0:
+            raise ValueError("Sinusoidal frequency must be non-negative")
     
     def is_active(self, current_time: float) -> bool:
         """Check if attack is currently active based on time."""
@@ -186,6 +267,8 @@ class AttackModule:
         'heading': 'theta',
         'velocity': 'velocity',
         'vel': 'velocity',
+        'acceleration': 'acceleration',
+        'acc': 'acceleration',
         'confidence': 'confidence',
     }
 
@@ -248,6 +331,7 @@ class AttackModule:
     
     def add_scenario(self, scenario: AttackScenario) -> None:
         """Add an attack scenario to the module."""
+        scenario.validate()
         self.scenarios.append(scenario)
         self.stats['attacks_by_scenario'][scenario.scenario_name] = 0
         
@@ -379,9 +463,11 @@ class AttackModule:
 
         try:
             probability = float(raw_probability)
-        except (TypeError, ValueError):
-            probability = 1.0
-        return float(np.clip(probability, 0.0, 1.0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Attack probability must be numeric and in [0, 1]") from exc
+        if not np.isfinite(probability) or not 0.0 <= probability <= 1.0:
+            raise ValueError("Attack probability must be finite and in [0, 1]")
+        return probability
 
     def _should_drop_message(
         self, scenarios: List[AttackScenario], is_fleet: bool = False
@@ -568,6 +654,7 @@ class AttackModule:
         """
         modified = data.copy()
         attack_time = self.current_time - scenario.t_start
+        applied_fields = 0
         
         for target_field in scenario.target_fields:
             # Normalize field name
@@ -579,7 +666,7 @@ class AttackModule:
             original_value = modified[normalized_field]
             
             # Skip non-numeric values
-            if not isinstance(original_value, (int, float)):
+            if not isinstance(original_value, Real) or isinstance(original_value, bool):
                 continue
             
             # Apply modification
@@ -588,6 +675,10 @@ class AttackModule:
             )
             
             modified[normalized_field] = modified_value
+            applied_fields += 1
+
+        if not applied_fields:
+            return modified
         
         # Update statistics
         self.stats['total_attacks_applied'] += 1

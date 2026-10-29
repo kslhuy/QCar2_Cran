@@ -101,21 +101,7 @@ class V2VAttackInjector:
         )
         
         if config_path:
-            config_file = Path(config_path)
-            if config_file.exists():
-                load_scenarios_from_config(
-                    self.attack_module, 
-                    str(config_file),
-                    enabled_only=True
-                )
-                if self.logger:
-                    self.logger.info(
-                        f"Loaded {self.attack_module.get_scenario_count()} "
-                        f"attack scenarios from {config_path}"
-                    )
-            else:
-                if self.logger:
-                    self.logger.warning(f"Attack config not found: {config_path}")
+            load_scenarios_from_config(self.attack_module, str(config_path), enabled_only=True)
     
     def get_elapsed_time(self) -> float:
         """Get elapsed time since the active attack timing reference."""
@@ -178,8 +164,8 @@ class V2VAttackInjector:
             
             self.stats['broadcasts_intercepted'] += 1
         
-        # Intercept and modify broadcast data
-        broadcast_sent = self._intercepted_broadcast()
+            # Serialize configuration changes with one complete broadcast attempt.
+            broadcast_sent = self._intercepted_broadcast()
         
         return broadcast_sent
     
@@ -216,10 +202,27 @@ class V2VAttackInjector:
         
         return broadcast_sent
     
+    def _reserve_broadcast(self, message_type: str) -> Optional[int]:
+        communication = self.v2v_manager.v2v_communication
+        reserve = getattr(communication, "reserve_message_slot", None)
+        if callable(reserve):
+            return reserve(message_type)
+        # Compatibility with simple external adapters/test doubles without a scheduler.
+        return time.time_ns()
+
+    def _send_reserved(self, message_type: str, data: Dict, slot_ns: int) -> bool:
+        communication = self.v2v_manager.v2v_communication
+        if callable(getattr(communication, "reserve_message_slot", None)):
+            return communication.send_message(message_type=message_type, data=data, reserved_time_ns=slot_ns)
+        return communication.send_message(message_type=message_type, data=data)
+
     def _broadcast_local_state_with_attack(self) -> bool:
         """Broadcast local state with attack injection."""
         try:
             if not self.v2v_manager.vehicle_observer:
+                return False
+            slot_ns = self._reserve_broadcast("local_state")
+            if slot_ns is None:
                 return False
 
             # Get original local state from observer. Even when the attacked
@@ -237,10 +240,7 @@ class V2VAttackInjector:
                     selected_channel="clean",
                 )
                 dual_channel_payload["v2v_attacked_local_dropped"] = True
-                success = self.v2v_manager.v2v_communication.send_message(
-                    message_type="local_state",
-                    data=dual_channel_payload
-                )
+                success = self._send_reserved("local_state", dual_channel_payload, slot_ns)
                 if success:
                     with self.v2v_manager._lock:
                         self.v2v_manager.stats['local_broadcasts'] += 1
@@ -264,10 +264,7 @@ class V2VAttackInjector:
 
             # Send modified state at the top level while preserving clean data
             # in the side channel for controller/debug consumers.
-            success = self.v2v_manager.v2v_communication.send_message(
-                message_type="local_state",
-                data=dual_channel_payload
-            )
+            success = self._send_reserved("local_state", dual_channel_payload, slot_ns)
             
             if success:
                 with self.v2v_manager._lock:
@@ -284,6 +281,9 @@ class V2VAttackInjector:
         """Broadcast fleet state with attack injection."""
         try:
             if not self.v2v_manager.vehicle_observer:
+                return False
+            slot_ns = self._reserve_broadcast("fleet_state")
+            if slot_ns is None:
                 return False
             
             if self.attack_module and self.enabled and self.attack_module.should_drop_fleet_message():
@@ -306,10 +306,7 @@ class V2VAttackInjector:
                 modified_state = fleet_state
 
             # Fleet state stays single-channel to keep packet size bounded.
-            success = self.v2v_manager.v2v_communication.send_message(
-                message_type="fleet_state",
-                data=modified_state
-            )
+            success = self._send_reserved("fleet_state", modified_state, slot_ns)
             
             if success:
                 with self.v2v_manager._lock:
@@ -342,23 +339,27 @@ class V2VAttackInjector:
     
     def add_attack_scenario(self, scenario) -> None:
         """Add an attack scenario."""
-        if self.attack_module:
-            self.attack_module.add_scenario(scenario)
+        with self._lock:
+            if self.attack_module:
+                self.attack_module.add_scenario(scenario)
     
     def clear_attack_scenarios(self) -> None:
         """Clear all attack scenarios."""
-        if self.attack_module:
-            self.attack_module.clear_scenarios()
+        with self._lock:
+            if self.attack_module:
+                self.attack_module.clear_scenarios()
     
     def enable_attacks(self) -> None:
         """Enable attack injection."""
-        self.enabled = True
+        with self._lock:
+            self.enabled = True
         if self.logger:
             self.logger.info("V2VAttackInjector: Attacks ENABLED")
     
     def disable_attacks(self) -> None:
         """Disable attack injection."""
-        self.enabled = False
+        with self._lock:
+            self.enabled = False
         if self.logger:
             self.logger.info("V2VAttackInjector: Attacks DISABLED")
     
@@ -380,6 +381,7 @@ class V2VAttackInjector:
         status = self.attack_module.get_attack_status()
         status.update({
             'enabled': self.enabled,
+            'attack_active': bool(self.enabled and status.get('attack_active', False)),
             'attack_module_present': True,
             'elapsed_time': self.get_elapsed_time(),
             'injector_stats': self.stats.copy(),

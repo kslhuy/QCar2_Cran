@@ -47,8 +47,8 @@ scenarios:
   # the same time. Use data_type: "fleet" if you want to attack fleet/global
   # estimates instead of the local V2V state broadcast. or "both"
 
-  # Mix_test Case 1: X position bias -5 m
-  - name: "Mix_test_Case1_XBiasNeg5"
+  # Custom variant: keep the configured +5 m; factory Mix_test case 1 uses -5 m.
+  - name: "Mix_test_Custom_XBiasPos5"
     enabled: false
     attack_type: "Mix_test"
     modification_type: "bias"
@@ -59,10 +59,10 @@ scenarios:
     victim_ids: [-1]
     intensity: 5.0
     target_fields: ["X"]
-    description: "Mix_test case 1: X position bias -5 m"
+    description: "Custom Mix_test variant: X position bias +5 m"
 
-  # Mix_test Case 2: X position intermittent faulty noise, sigma=10, p=0.5
-  - name: "Mix_test_Case2_XFaulty10Prob50"
+  # Custom variant: sigma=5 m; the manual factory Mix_test case 2 uses 10 m.
+  - name: "Mix_test_Custom_XFaulty5Prob50"
     enabled: true
     attack_type: "Mix_test"
     modification_type: "faulty"
@@ -75,7 +75,7 @@ scenarios:
       intensity: 5.0
       probability: 0.5
     target_fields: ["X"]
-    description: "Mix_test case 2: intermittent X position noise, sigma=10 m, p=0.5"
+    description: "Custom Mix_test variant: intermittent X position noise, sigma=5 m, p=0.5"
 
   # Mix_test Case 3: Velocity bias -2.5 m/s
   - name: "Mix_test_Case3_VelBiasNeg2p5"
@@ -206,7 +206,7 @@ scenarios:
     attacker_id: 1
     victim_ids: [-1]
     intensity:
-      amplitude: 5.0      # 5 meters peak-to-peak
+      amplitude: 5.0      # 5 m peak amplitude; 10 m peak-to-peak
       frequency: 0.5      # 0.5 Hz oscillation
       phase: 0.0          # No phase offset
     target_fields: ["x"]

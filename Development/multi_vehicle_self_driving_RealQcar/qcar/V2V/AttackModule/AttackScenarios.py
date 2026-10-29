@@ -789,124 +789,104 @@ def load_scenarios_from_config(
     attack_module: AttackModule,
     config_path: str = "attack_config.yaml",
     enabled_only: bool = True,
-    logger: Optional[logging.Logger] = None
+    logger: Optional[logging.Logger] = None,
+    *,
+    strict: bool = True,
 ) -> AttackModule:
-    """
-    Load attack scenarios from YAML configuration file.
-    
-    Args:
-        attack_module: AttackModule to add scenarios to
-        config_path: Path to YAML configuration file
-        enabled_only: If True, only load enabled scenarios
-        logger: Logger for messages (uses attack_module's logger if None)
-        
-    Returns:
-        AttackModule with loaded scenarios
-        
-    Configuration File Format:
-        attack_settings:
-          enabled: true
-          dt: 0.01
-          log_level: "WARNING"
-          random_seed: 12345  # optional; makes random/drop/faulty attacks repeatable
-        
-        scenarios:
-          - name: "Scenario_Name"
-            enabled: true
-            attack_type: "Bogus"
-            modification_type: "scaling"
-            data_type: "local"
-            t_start: 10.0
-            t_end: 15.0
-            attacker_id: 1
-            victim_ids: [-1]
-            intensity: 0.5
-            target_fields: ["velocity"]
-            description: "Description"
-    """
-    logger = logger or attack_module.logger
-    config_file = Path(config_path)
-    
-    if not config_file.exists():
-        if logger:
-            logger.warning(f"Attack config file not found: {config_path}")
-        return attack_module
-    
-    try:
-        with open(config_file, 'r') as f:
-            config = yaml.safe_load(f) or {}
-    except yaml.YAMLError as e:
-        if logger:
-            logger.error(f"Error parsing YAML config: {e}")
-        return attack_module
-    
-    # Check global enable
-    attack_settings = config.get('attack_settings', {})
-    raw_seed = attack_settings.get('random_seed', attack_settings.get('seed'))
-    if raw_seed not in (None, "", "null"):
-        try:
-            attack_module.set_random_seed(int(raw_seed))
-        except (TypeError, ValueError):
-            if logger:
-                logger.error(f"Invalid attack random seed in config: {raw_seed!r}")
+    """Append validated YAML scenarios atomically.
 
-    if not attack_settings.get('enabled', False) and enabled_only:
+    Strict loading rejects misspelled fields and unsupported scenarios.
+    strict=False explicitly selects the older best-effort behaviour.
+    dt is legacy metadata; timing uses the injector's elapsed clock.
+    """
+    from math import isfinite
+
+    logger = logger or attack_module.logger
+    try:
+        with open(Path(config_path), encoding="utf-8-sig") as handle:
+            config = yaml.safe_load(handle)
+        if not isinstance(config, dict):
+            raise ValueError("Attack configuration must be a YAML mapping")
+        unknown = set(config) - {"attack_settings", "scenarios"}
+        if unknown:
+            raise ValueError(f"Unknown attack configuration keys: {sorted(unknown)}")
+        settings = config.get("attack_settings", {})
+        if not isinstance(settings, dict):
+            raise ValueError("attack_settings must be a mapping")
+        unknown = set(settings) - {"enabled", "dt", "random_seed", "seed", "log_level", "log_interval"}
+        if unknown:
+            raise ValueError(f"Unknown attack_settings keys: {sorted(unknown)}")
+        enabled = settings.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ValueError("attack_settings.enabled must be a YAML boolean")
+        if enabled_only and not enabled:
+            return attack_module
+        dt = float(settings.get("dt", attack_module.dt))
+        log_interval = float(settings.get("log_interval", attack_module.log_interval))
+        if not isfinite(dt) or dt <= 0 or not isfinite(log_interval) or log_interval < 0:
+            raise ValueError("dt must be positive and log_interval non-negative and finite")
+        raw_seed = settings.get("random_seed", settings.get("seed"))
+        seed = None if raw_seed in (None, "", "null") else int(raw_seed)
+        if seed is not None and (isinstance(raw_seed, bool) or seed < 0 or float(raw_seed) != seed):
+            raise ValueError("random_seed must be a non-negative integer")
+        scenarios = config.get("scenarios", [])
+        if not isinstance(scenarios, list):
+            raise ValueError("scenarios must be a list")
+    except (OSError, yaml.YAMLError, ValueError, TypeError) as exc:
+        if strict:
+            raise ValueError(f"Invalid attack configuration {config_path}: {exc}") from exc
         if logger:
-            logger.info("Attacks globally disabled in config")
+            logger.error(f"Attack configuration not loaded: {exc}")
         return attack_module
-    
-    # Load scenarios
-    scenarios_config = config.get('scenarios', [])
-    loaded_count = 0
-    
-    for scenario_data in scenarios_config:
-        # Skip disabled scenarios if enabled_only
-        if enabled_only and not scenario_data.get('enabled', True):
-            continue
-        
+
+    allowed = {"name", "enabled", "t_start", "t_end", "attacker_id", "victim_ids",
+               "attack_type", "modification_type", "data_type", "intensity",
+               "target_fields", "description"}
+    pending = []
+    for index, item in enumerate(scenarios):
+        name = item.get("name", f"scenario {index}") if isinstance(item, dict) else f"scenario {index}"
         try:
-            # Parse intensity (handle dict for sinusoidal/random)
-            intensity = scenario_data.get('intensity', 1.0)
-            if isinstance(intensity, dict):
-                pass  # Keep as dict
-            else:
-                intensity = float(intensity)
-            
-            # Parse victim_ids
-            victim_ids = scenario_data.get('victim_ids', [-1])
-            if isinstance(victim_ids, int):
-                victim_ids = [victim_ids]
-            else:
-                victim_ids = [int(v) for v in victim_ids]
-            
-            # Create scenario
+            if not isinstance(item, dict):
+                raise ValueError("Scenario must be a mapping")
+            selected = item.get("enabled", True)
+            if not isinstance(selected, bool):
+                raise ValueError("enabled must be a YAML boolean")
+            if enabled_only and not selected:
+                continue
+            unknown = set(item) - allowed
+            if unknown:
+                raise ValueError(f"Unknown scenario keys: {sorted(unknown)}")
+            victims = item.get("victim_ids", [-1])
+            if isinstance(victims, int):
+                victims = [victims]
+            if not isinstance(victims, list):
+                raise ValueError("victim_ids must be a list of integers")
             scenario = AttackScenario(
-                t_start=float(scenario_data['t_start']),
-                t_end=float(scenario_data['t_end']),
-                attacker_id=int(scenario_data['attacker_id']),
-                victim_ids=victim_ids,
-                attack_type=AttackType(scenario_data['attack_type']),
-                modification_type=ModificationType(scenario_data['modification_type']),
-                data_type=DataType(scenario_data['data_type']),
-                intensity=intensity,
-                target_fields=scenario_data['target_fields'],
-                scenario_name=scenario_data.get('name', ''),
-                description=scenario_data.get('description', '')
+                t_start=float(item["t_start"]), t_end=float(item["t_end"]),
+                attacker_id=int(item["attacker_id"]), victim_ids=[int(v) for v in victims],
+                attack_type=AttackType(item["attack_type"]),
+                modification_type=ModificationType(item["modification_type"]),
+                data_type=DataType(item["data_type"]), intensity=item.get("intensity", 1.0),
+                target_fields=item["target_fields"], scenario_name=item.get("name", ""),
+                description=item.get("description", ""),
             )
-            
-            attack_module.add_scenario(scenario)
-            loaded_count += 1
-            
-        except (KeyError, ValueError) as e:
+            scenario.validate()
+            pending.append(scenario)
+        except (KeyError, ValueError, TypeError, OverflowError) as exc:
+            if strict:
+                raise ValueError(f"Invalid attack scenario {name!r}: {exc}") from exc
             if logger:
-                logger.error(
-                    f"Error loading scenario '{scenario_data.get('name', 'unknown')}': {e}"
-                )
-            continue
-    
+                logger.error(f"Skipped attack scenario {name!r}: {exc}")
+
+    # Commit only after every selected scenario and setting has passed validation.
+    attack_module.dt = dt
+    attack_module.log_interval = log_interval
+    if seed is not None:
+        attack_module.set_random_seed(seed)
+    for scenario in pending:
+        attack_module.add_scenario(scenario)
     if logger:
-        logger.info(f"Loaded {loaded_count} attack scenario(s) from {config_path}")
-    
+        logger.info(f"Loaded {len(pending)} attack scenario(s) from {config_path}")
     return attack_module
 
 

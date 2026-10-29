@@ -132,6 +132,8 @@ class VehicleLogic:
             self.vehicle_logger.logger.info("V2VAttackInjector successfully wrapped V2VManager.")
         except Exception as e:
             self.vehicle_logger.logger.error(f"Failed to initialize V2VAttackInjector: {e}")
+            if config.vehicle.enable_v2v_attack:
+                raise RuntimeError("Requested V2V attack injection could not be configured") from e
             self.v2v_manager = base_v2v_manager
 
         # Safety systems
@@ -1057,6 +1059,7 @@ class VehicleLogic:
 
                 # Performance monitoring
                 loop_time = time.time() - loop_start
+                self._last_loop_execution_ms = loop_time * 1000.0
                 if hasattr(self, "perf_monitor"):
                     self.perf_monitor.log_loop_time(loop_time)
 
@@ -1592,6 +1595,10 @@ class VehicleLogic:
         
         self._telemetry_state["state"] = self.state_machine.state.name if hasattr(self.state_machine, "state") and self.state_machine.state else "UNKNOWN"
         self._telemetry_state["gps_valid"] = bool(state_info.get("gps_valid", False))
+        # Previous completed iteration's work time; rate-control sleep is excluded.
+        self._telemetry_state["loop_execution_ms"] = getattr(
+            self, "_last_loop_execution_ms", None
+        )
 
         # Include opponent tracking data in telemetry
         self._telemetry_state["opponents"] = self.opponent_data

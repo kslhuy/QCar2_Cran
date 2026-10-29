@@ -1,0 +1,258 @@
+{
+  "checks": [
+    "desktop/tablet/mobile layout",
+    "vehicle selection",
+    "collapse/expand",
+    "silent telemetry expiry",
+    "disconnect invalidation",
+    "no browser errors"
+  ],
+  "reports": [
+    {
+      "label": "desktop, both panels open",
+      "width": 912,
+      "height": 43,
+      "left": 208,
+      "right": 1120,
+      "viewport": 1440,
+      "pageOverflows": false,
+      "cells": [
+        {
+          "text": "2 / 2",
+          "left": 340.859375,
+          "right": 422.265625,
+          "width": 81.40625,
+          "scrollWidth": 81
+        },
+        {
+          "text": "9.3 Hz",
+          "left": 434.265625,
+          "right": 569.953125,
+          "width": 135.6875,
+          "scrollWidth": 136
+        },
+        {
+          "text": "41.2 ms",
+          "left": 581.953125,
+          "right": 717.640625,
+          "width": 135.6875,
+          "scrollWidth": 136
+        },
+        {
+          "text": "2.4 ms",
+          "left": 729.640625,
+          "right": 865.328125,
+          "width": 135.6875,
+          "scrollWidth": 136
+        },
+        {
+          "text": "1 peer · 50.0 / 20.0 Hz",
+          "left": 877.328125,
+          "right": 1107.984375,
+          "width": 230.65625,
+          "scrollWidth": 231
+        }
+      ],
+      "collapsed": false
+    },
+    {
+      "label": "1024px, both panels open",
+      "width": 496,
+      "height": 80,
+      "left": 208,
+      "right": 704,
+      "viewport": 1024,
+      "pageOverflows": false,
+      "cells": [
+        {
+          "text": "2 / 2",
+          "left": 253.75,
+          "right": 393.15625,
+          "width": 139.40625,
+          "scrollWidth": 139
+        },
+        {
+          "text": "9.1 Hz",
+          "left": 403.15625,
+          "right": 542.578125,
+          "width": 139.421875,
+          "scrollWidth": 139
+        },
+        {
+          "text": "41.2 ms",
+          "left": 552.578125,
+          "right": 692,
+          "width": 139.421875,
+          "scrollWidth": 139
+        },
+        {
+          "text": "2.4 ms",
+          "left": 253.75,
+          "right": 393.15625,
+          "width": 139.40625,
+          "scrollWidth": 139
+        },
+        {
+          "text": "1 peer · 50.0 / 20.0 Hz",
+          "left": 403.15625,
+          "right": 692,
+          "width": 288.84375,
+          "scrollWidth": 289
+        }
+      ],
+      "collapsed": false
+    },
+    {
+      "label": "820px, both panels open",
+      "width": 292,
+      "height": 80,
+      "left": 208,
+      "right": 500,
+      "viewport": 820,
+      "pageOverflows": false,
+      "cells": [
+        {
+          "text": "2 / 2",
+          "left": 253.75,
+          "right": 325.15625,
+          "width": 71.40625,
+          "scrollWidth": 71
+        },
+        {
+          "text": "9.3 Hz",
+          "left": 335.15625,
+          "right": 406.578125,
+          "width": 71.421875,
+          "scrollWidth": 71
+        },
+        {
+          "text": "41.2 ms",
+          "left": 416.578125,
+          "right": 487.984375,
+          "width": 71.40625,
+          "scrollWidth": 71
+        },
+        {
+          "text": "2.4 ms",
+          "left": 253.75,
+          "right": 325.15625,
+          "width": 71.40625,
+          "scrollWidth": 71
+        },
+        {
+          "text": "1 peer · 50.0 / 20.0 Hz",
+          "left": 335.15625,
+          "right": 487.984375,
+          "width": 152.828125,
+          "scrollWidth": 153
+        }
+      ],
+      "collapsed": false
+    },
+    {
+      "label": "390px phone",
+      "width": 390,
+      "height": 80,
+      "left": 0,
+      "right": 390,
+      "viewport": 390,
+      "pageOverflows": false,
+      "cells": [
+        {
+          "text": "2 / 2",
+          "left": 45.75,
+          "right": 149.828125,
+          "width": 104.078125,
+          "scrollWidth": 104
+        },
+        {
+          "text": "9.1 Hz",
+          "left": 159.828125,
+          "right": 263.90625,
+          "width": 104.078125,
+          "scrollWidth": 104
+        },
+        {
+          "text": "41.2 ms",
+          "left": 273.90625,
+          "right": 378,
+          "width": 104.09375,
+          "scrollWidth": 104
+        },
+        {
+          "text": "2.4 ms",
+          "left": 45.75,
+          "right": 149.828125,
+          "width": 104.078125,
+          "scrollWidth": 104
+        },
+        {
+          "text": "1 peer · 50.0 / 20.0 Hz",
+          "left": 159.828125,
+          "right": 378,
+          "width": 218.171875,
+          "scrollWidth": 218
+        }
+      ],
+      "collapsed": false
+    },
+    {
+      "label": "360px phone",
+      "width": 360,
+      "height": 80,
+      "left": 0,
+      "right": 360,
+      "viewport": 360,
+      "pageOverflows": false,
+      "cells": [
+        {
+          "text": "2 / 2",
+          "left": 45.75,
+          "right": 139.828125,
+          "width": 94.078125,
+          "scrollWidth": 94
+        },
+        {
+          "text": "9.2 Hz",
+          "left": 149.828125,
+          "right": 243.90625,
+          "width": 94.078125,
+          "scrollWidth": 94
+        },
+        {
+          "text": "41.2 ms",
+          "left": 253.90625,
+          "right": 348,
+          "width": 94.09375,
+          "scrollWidth": 94
+        },
+        {
+          "text": "2.4 ms",
+          "left": 45.75,
+          "right": 139.828125,
+          "width": 94.078125,
+          "scrollWidth": 94
+        },
+        {
+          "text": "1 peer · 50.0 / 20.0 Hz",
+          "left": 149.828125,
+          "right": 348,
+          "width": 198.171875,
+          "scrollWidth": 198
+        }
+      ],
+      "collapsed": false
+    },
+    {
+      "label": "collapsed",
+      "width": 360,
+      "height": 27,
+      "left": 0,
+      "right": 360,
+      "viewport": 360,
+      "pageOverflows": false,
+      "cells": [],
+      "collapsed": true
+    }
+  ]
+}

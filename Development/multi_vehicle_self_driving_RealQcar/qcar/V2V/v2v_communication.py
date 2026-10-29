@@ -353,22 +353,32 @@ class V2VCommunication:
             except Exception as e:
                 self.logger.error(f"Status callback error: {e}")
     
-    def send_message(self, message_type: str, data: dict, 
-                    target_vehicles: Optional[List[int]] = None) -> bool:
+    def reserve_message_slot(self, message_type: str) -> Optional[int]:
+        """Reserve one attempted packet slot, including packets deliberately dropped.
+
+        An attack draws once per scheduled packet, rather than retrying a dropped
+        packet at every control-loop poll. Normal sends use the same scheduler.
+        """
+        if not self._is_active or not self.send_socket:
+            return None
+        now_ns = time.time_ns()
+        with self._lock:
+            interval_ns = self.send_intervals.get(message_type, 50_000_000)
+            if now_ns - self.message_send_times_ns.get(message_type, 0) < interval_ns:
+                return None
+            self.message_send_times_ns[message_type] = now_ns
+        return now_ns
+
+    def send_message(self, message_type: str, data: dict,
+                    target_vehicles: Optional[List[int]] = None, *,
+                    reserved_time_ns: Optional[int] = None) -> bool:
         """Send message via optimized UDP broadcast"""
         if not self._is_active or not self.send_socket:
             return False
         
-        # Per-message-type rate limiting using nanoseconds for better performance
-        send_time_ns = time.time_ns()
-        
-        # Get interval for this message type in nanoseconds (default to 50ms if not configured)
-        message_interval_ns = self.send_intervals.get(message_type, 50_000_000)
-        
-        # Check rate limit for this specific message type
-        last_send_for_type_ns = self.message_send_times_ns.get(message_type, 0)
-        if send_time_ns - last_send_for_type_ns < message_interval_ns:
-            return False  # Skip this send to maintain per-type rate limit
+        send_time_ns = self.reserve_message_slot(message_type) if reserved_time_ns is None else reserved_time_ns
+        if send_time_ns is None:
+            return False
         
         message = V2VMessage(
             sender_id=self.vehicle_id,

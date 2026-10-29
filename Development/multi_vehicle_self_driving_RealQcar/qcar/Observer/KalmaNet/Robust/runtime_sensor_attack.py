@@ -17,7 +17,8 @@ class RuntimeSensorAttackMixin:
         fault_config = config.get("sensor_failure_simulation", config.get("fault_simulation", {}))
         self.sensor_failure_simulation_cfg = self._normalize_runtime_attack_config(fault_config)
         if self.sensor_failure_simulation_cfg.get("enabled", False):
-            self.start_sensor_attack(self.sensor_failure_simulation_cfg)
+            if not self.start_sensor_attack(self.sensor_failure_simulation_cfg):
+                raise ValueError("Configured sensor attack could not be started")
 
     def _log_sensor_attack(self, message, error=None):
         logger = getattr(self, "logger", None)

@@ -57,6 +57,7 @@ exclude = [
 pythonpath = ["Development/multi_vehicle_self_driving_RealQcar"]
 testpaths = [
     "tests/portability",
+    "tests/attacks",
     "Development/multi_vehicle_self_driving_RealQcar/qcar/simulation/test_flow_math.py",
     "Development/multi_vehicle_self_driving_RealQcar/qcar/simulation/test_reference_modes.py",
     "Development/multi_vehicle_self_driving_RealQcar/qcar/simulation/test_observer_pipeline.py",
