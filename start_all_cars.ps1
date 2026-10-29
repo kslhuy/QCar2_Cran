@@ -1,11 +1,18 @@
-# 激活虚拟环境并启动car 0
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd J:\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar; & J:\QCar2_Cran\env\Scripts\Activate.ps1; python vehicle_main.py --car-id 0"
-
-# 启动car 1
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd J:\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar; & J:\QCar2_Cran\env\Scripts\Activate.ps1; python vehicle_main.py --car-id 1"
-
-# 启动car 2
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd J:\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar; & J:\QCar2_Cran\env\Scripts\Activate.ps1; python vehicle_main.py --car-id 2"
-
-# 启动car 3
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd J:\QCar2_Cran\Development\multi_vehicle_self_driving_RealQcar\qcar; & J:\QCar2_Cran\env\Scripts\Activate.ps1; python vehicle_main.py --car-id 3"
+[CmdletBinding()]
+param(
+    [string]$Python = 'python',
+    [ValidateRange(1, 32)][int]$VehicleCount = 4
+)
+$ErrorActionPreference = 'Stop'
+$vehicleScript = Join-Path $PSScriptRoot 'Development/multi_vehicle_self_driving_RealQcar/qcar/vehicle_main.py'
+$pythonCommand = (Get-Command $Python -ErrorAction Stop).Source
+$launchLogs = Join-Path $PSScriptRoot 'logs/launch'
+New-Item -ItemType Directory -Path $launchLogs -Force | Out-Null
+for ($carId = 0; $carId -lt $VehicleCount; $carId++) {
+    $vehicleProcess = Start-Process -FilePath $pythonCommand -WindowStyle Hidden -PassThru `
+        -WorkingDirectory $PSScriptRoot `
+        -ArgumentList @('-u', ('"{0}"' -f $vehicleScript), '--car-id', $carId) `
+        -RedirectStandardOutput (Join-Path $launchLogs "car_$carId.out.log") `
+        -RedirectStandardError (Join-Path $launchLogs "car_$carId.err.log")
+    Write-Host "Car $carId started with PID $($vehicleProcess.Id). Logs: $launchLogs"
+}

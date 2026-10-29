@@ -5,7 +5,7 @@ import unittest
 
 import numpy as np
 
-from electronics import (
+from qcar.electronics import (
     BusFaultProfile,
     CANBus,
     ElectronicsDataGateway,
@@ -19,8 +19,8 @@ from electronics import (
     UARTBus,
     VehiclePlantSample,
 )
-from electronics.types import FrameStatus
-from electronics.v2v_protocol import (
+from qcar.electronics.types import FrameStatus
+from qcar.electronics.v2v_protocol import (
     V2VEnvelopeError,
     decode_host_v2v,
     encode_host_v2v,

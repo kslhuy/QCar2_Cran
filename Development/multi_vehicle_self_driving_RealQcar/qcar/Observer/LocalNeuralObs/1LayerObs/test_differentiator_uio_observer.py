@@ -13,6 +13,20 @@ Tests organized into logical groups:
 9. Factory integration tests
 """
 
+# Preserve direct-file launches while using the canonical package internally.
+if __package__ != "qcar.Observer.LocalNeuralObs.1LayerObs":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.LocalNeuralObs.1LayerObs"
+
+
 import numpy as np
 import sys
 from pathlib import Path
@@ -20,30 +34,14 @@ from typing import Callable, List, Tuple
 
 # Add parent directory to path
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
 
 # Import differentiators from centralized module
-from differentiators import (
-    DirtyDerivative,
-    HighGainDifferentiator,
-    SlidingModeDifferentiator,
-    create_differentiator,
-    create_differentiator_from_config,
-    load_differentiator_config,
-)
+from .differentiators import DirtyDerivative, HighGainDifferentiator, SlidingModeDifferentiator, create_differentiator, create_differentiator_from_config, load_differentiator_config
 
 # Import observer components
-from differentiator_uio_observer import (
-    WEstimatorUIOStyle,
-    DifferentiatorUIOObserver,
-    SchedulingParameters,
-    create_differentiator_uio_observer
-)
+from .differentiator_uio_observer import WEstimatorUIOStyle, DifferentiatorUIOObserver, SchedulingParameters, create_differentiator_uio_observer
 
-from differentiator_uio_ekf import (
-    DifferentiatorUIOEKF,
-    create_differentiator_uio_ekf
-)
+from .differentiator_uio_ekf import DifferentiatorUIOEKF, create_differentiator_uio_ekf
 
 
 # ==============================================================================
@@ -1102,7 +1100,7 @@ def test_factory_uio_ekf():
 def test_factory_integration_with_uio_observers():
     """Factory integration with uio_observers module"""
     try:
-        from firstLayerObserverBase import create_first_layer_observer
+        from .firstLayerObserverBase import create_first_layer_observer
         
         observer = create_first_layer_observer('differentiator_uio', sample_time=0.02)
         assert isinstance(observer, DifferentiatorUIOObserver)

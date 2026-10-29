@@ -11,10 +11,10 @@ import numpy as np
 QCAR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(QCAR))
 
-from Observer.local_state_estimators import EKFStateEstimator
-from Observer.KalmaNet.Robust.robustKLnet import RobustKalmanNetStateEstimator
-from Observer.KalmaNet.Robust.runtime_sensor_attack import RuntimeSensorAttackMixin
-from simulation.robust_estimator_config import simulation_estimator_params, simulation_motion_params
+from qcar.Observer.local_state_estimators import EKFStateEstimator
+from qcar.Observer.KalmaNet.Robust.robustKLnet import RobustKalmanNetStateEstimator
+from qcar.Observer.KalmaNet.Robust.runtime_sensor_attack import RuntimeSensorAttackMixin
+from qcar.simulation.robust_estimator_config import simulation_estimator_params, simulation_motion_params
 
 
 class LiveSensorAttackTests(unittest.TestCase):
@@ -95,7 +95,7 @@ class LiveSensorAttackTests(unittest.TestCase):
         np.testing.assert_array_equal(self.ekf.get_state(), clean.get_state())
 
     def test_vehicle_command_accepts_both_estimators(self):
-        from vehicle_logic import VehicleLogic
+        from qcar.vehicle_logic import VehicleLogic
         logic = VehicleLogic.__new__(VehicleLogic)
         logic.vehicle_logger = Mock()
         logic.vehicle_id = 0
@@ -109,8 +109,8 @@ class LiveSensorAttackTests(unittest.TestCase):
         self.assertFalse(logic.start_local_sensor_attack())
 
     def test_live_switch_keeps_pose_and_simulation_checkpoint(self):
-        from StateMachine.state_base import StateBase
-        from Observer.VehicleObserverSimple import VehicleObserver
+        from qcar.StateMachine.state_base import StateBase
+        from qcar.Observer.VehicleObserverSimple import VehicleObserver
         observer = VehicleObserver.__new__(VehicleObserver)
         observer.stop = lambda: None
         observer.vehicle_logger = Mock()

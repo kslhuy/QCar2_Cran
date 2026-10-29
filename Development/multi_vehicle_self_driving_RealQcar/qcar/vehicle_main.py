@@ -10,15 +10,27 @@ This is a complete refactoring of the vehicle control system with:
 - Thread-safe components
 """
 
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[0]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar"
+
+
 import sys
 import argparse
 import signal
 import time
 from threading import Event
 
-from config_main import VehicleMainConfig
-from vehicle_logic import VehicleLogic
-from pal.products.qcar import IS_PHYSICAL_QCAR
+from qcar.config_main import VehicleMainConfig
 
 
 # Global kill event for clean shutdown
@@ -193,7 +205,7 @@ def load_configuration(args) -> VehicleMainConfig:
         # Check if this is a fleet_config.yaml (has 'vehicles' key)
         import yaml
 
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8-sig") as f:
             raw_config = yaml.safe_load(f)
         if "vehicles" in raw_config:
             # Fleet config format - need car_id to extract per-vehicle settings
@@ -230,6 +242,10 @@ def main():
 
     # Parse arguments
     args = parse_arguments()
+
+    # Hardware imports follow argument parsing so --help works on a fresh machine.
+    from pal.products.qcar import IS_PHYSICAL_QCAR
+    from qcar.vehicle_logic import VehicleLogic
 
     # Load configuration
     print("\n[INIT] Loading configuration...")

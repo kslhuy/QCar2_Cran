@@ -13,8 +13,8 @@ from typing import Dict, Any, Tuple, Optional
 
 from .state_base import StateBase
 from .vehicle_state import VehicleState, StateTransitionReason
-from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
-from ground_station_client import GroundStationClient
+from qcar.Yolo.YoLo import YOLOReceiver, YOLODriveLogic
+from qcar.ground_station_client import GroundStationClient
 
 try:
     from pal.products.qcar import QCar, QCarGPS
@@ -30,11 +30,9 @@ except Exception:
 
 # Add parent directory to sys.path for imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
 
 try:
-    from command_handler import CommandType
+    from qcar.command_handler import CommandType
 
     COMMAND_TYPE_AVAILABLE = True
 except ImportError as e:

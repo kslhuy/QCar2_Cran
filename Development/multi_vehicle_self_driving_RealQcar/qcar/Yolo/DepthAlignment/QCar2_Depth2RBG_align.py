@@ -3,7 +3,7 @@ import cv2
 import time
 import json
 import os
-from QCar2DepthAlignedCamera import QCar2DepthAlignedCamera
+from qcar.Yolo.DepthAlignment.QCar2DepthAlignedCamera import QCar2DepthAlignedCamera
 
 
 ## Timing Parameters and methods

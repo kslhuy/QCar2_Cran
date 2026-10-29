@@ -137,7 +137,7 @@ electronics:
     temperature_c: 30.0
   firmware:
     backend: "native_cpp"             # hil_external connects any real MCU/SoC
-    library_path: "electronics/native/build/cran_electronics_core.dll"
+    library_path: "auto"              # discover this platform's .dll/.so/.dylib build
     publish_rate_hz: 20.0
   buses:
     sensor_compute:

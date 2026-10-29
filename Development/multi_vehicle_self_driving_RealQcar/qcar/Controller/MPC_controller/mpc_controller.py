@@ -1041,7 +1041,7 @@ except ImportError:
         _sim_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), 'simulation')
         if _sim_dir not in _sys.path:
             _sys.path.insert(0, _sim_dir)
-        from vehiclemodels.vehicle_parameters import get_qcar_parameters
+        from qcar.simulation.vehiclemodels.vehicle_parameters import get_qcar_parameters
     except ImportError:
         get_qcar_parameters = None
 

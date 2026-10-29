@@ -35,7 +35,6 @@ from dataclasses import dataclass
 import sys
 from pathlib import Path
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
 
 # Import CVXPY for LMI-based gain design
 try:
@@ -53,51 +52,32 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
 
-from neural_network import (
-    NeuralObserverNet, GRUTireResidualNet, create_network,
-    LearningBatch, SelectiveLearningBatch, ModelQueue,
-    save_model, load_model, create_optimizer
-)
-from gradient_solver import GradientSolver, create_weight_matrix
-from config_loader import load_neural_obs_config, flatten_config, merge_with_overrides
+from .neural_network import NeuralObserverNet, GRUTireResidualNet, create_network, LearningBatch, SelectiveLearningBatch, ModelQueue, save_model, load_model, create_optimizer
+from .gradient_solver import GradientSolver, create_weight_matrix
+from .config_loader import load_neural_obs_config, flatten_config, merge_with_overrides
 # Import unified recorder from parent LocalNeuralObs directory
 parent_local_neural_dir = parent_dir.parent
-sys.path.insert(0, str(parent_local_neural_dir))
-from neural_obs_recorder import NeuralObsRecorder
+from ..neural_obs_recorder import NeuralObsRecorder
 
 # Import first-layer observer from 1LayerObs directory
 one_layer_dir = parent_dir.parent / "1LayerObs"
-sys.path.insert(0, str(one_layer_dir))
-from firstLayerObserverBase import create_first_layer_observer, FirstLayerObserverBase
+from qcar.Observer.LocalNeuralObs import _layer_1LayerObs_firstLayerObserverBase_create_first_layer_observer as create_first_layer_observer, _layer_1LayerObs_firstLayerObserverBase_FirstLayerObserverBase as FirstLayerObserverBase
 
 
 
-from Design_LMI_neural import (
-    # Discrete-time LMI 
-    discretize_system_zoh,
-    # Gain scheduler
-    NeuralQLPVGainScheduler,
-)
+from .Design_LMI_neural import discretize_system_zoh, NeuralQLPVGainScheduler
 
 # Import base class from parent directory
 try:
     # When imported as part of the Observer package
-    from Observer.local_state_estimators import LocalStateEstimatorBase
+    from qcar.Observer.local_state_estimators import LocalStateEstimatorBase
 except ImportError:
     # Fallback for direct execution or testing
     # qcar/Observer/LocalNeuralObs/2LayerObs -> qcar/Observer
-    sys.path.insert(0, str(parent_dir.parent.parent))
-    from local_state_estimators import LocalStateEstimatorBase
+    from qcar.Observer.local_state_estimators import LocalStateEstimatorBase
 
 # Import centralized qLPV vehicle dynamics
-from qlpv_vehicle_dynamics_obs import (
-    SchedulingParameters,
-    QLPVVehicleDynamicsObs,
-    get_default_vehicle_params,
-    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
-    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_IDX_AX, MEAS_DIM,
-    C_MATRIX_MODES,
-)
+from ..qlpv_vehicle_dynamics_obs import SchedulingParameters, QLPVVehicleDynamicsObs, get_default_vehicle_params, IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM, MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_IDX_AX, MEAS_DIM, C_MATRIX_MODES
 
 
 class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
@@ -638,7 +618,6 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
         # Defines conceptual couplings regardless of mode
         _GAIN_MAP = {
             (MEAS_IDX_VX, self.IDX_VX): 2.0,   # vx -> vx
-            (MEAS_IDX_VX, self.IDX_AX): 0.5,   # vx -> ax (if state 8D, here we just use what fits)
             
             (MEAS_IDX_R, self.IDX_R): 2.0,     # r -> r
             (MEAS_IDX_R, self.IDX_VY): 0.5,    # r -> vy
@@ -1451,7 +1430,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
                 A_c = self.dynamics.compute_A_matrix(rho_pred)
                 B_c = self.dynamics.compute_B_matrix(rho_pred)
                 E_c = self.dynamics.compute_E_matrix(rho_pred)
-                from Design_LMI_neural import discretize_system_zoh
+                from .Design_LMI_neural import discretize_system_zoh
                 A_d_pred, B_d_pred, E_d_pred = discretize_system_zoh(A_c, B_c, E_c, dt)
                 
                 # Get current measurement y[k] as target
@@ -1942,7 +1921,7 @@ class NeuralLuenbergerEstimator(LocalStateEstimatorBase):
             nn_input_t = torch.from_numpy(nn_input.astype(np.float64))
             state_t = torch.from_numpy(self.state_nn_6d.astype(np.float64))
             # Use DISCRETE matrices (ZOH) to match the actual observer update
-            from Design_LMI_neural import discretize_system_zoh as _zoh
+            from .Design_LMI_neural import discretize_system_zoh as _zoh
             A_d_np, B_d_np, E_d_np = _zoh(A, B, E, dt)
             A_t = torch.from_numpy(A_d_np.astype(np.float64))
             B_t = torch.from_numpy(B_d_np.astype(np.float64))

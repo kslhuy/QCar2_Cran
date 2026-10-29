@@ -608,7 +608,7 @@ class ElectronicsDigitalTwin:
             library_path = config.get("library_path")
             if not library_path:
                 raise ValueError(
-                    "electronics.firmware.library_path is required for native_cpp"
+                    "qcar.electronics.firmware.library_path is required for native_cpp"
                 )
             return NativeFirmwareCore(
                 library_path=str(library_path),

@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from pcb_connection import PcbConnectionMonitor
+from qcar.pcb_connection import PcbConnectionMonitor
 
 
 class FakeSerial:

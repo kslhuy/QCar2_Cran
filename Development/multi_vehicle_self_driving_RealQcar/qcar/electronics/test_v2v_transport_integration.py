@@ -5,8 +5,8 @@ import unittest
 
 import msgpack
 
-from electronics import ElectronicsDigitalTwin, ElectronicsV2VBridge, VehiclePlantSample
-from V2V.v2v_communication import V2VCommunication, V2VMessage
+from qcar.electronics import ElectronicsDigitalTwin, ElectronicsV2VBridge, VehiclePlantSample
+from qcar.V2V.v2v_communication import V2VCommunication, V2VMessage
 
 
 class _Clock:

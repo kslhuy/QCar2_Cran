@@ -23,11 +23,9 @@ import os
 
 # Add parent directory to sys.path for imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
 
 try:
-    from command_types import CommandType
+    from qcar.command_types import CommandType
 
     COMMAND_TYPE_AVAILABLE = True
 except ImportError as e:
@@ -38,8 +36,8 @@ except ImportError as e:
 
 # Import LaneFusion for modular lane-assisted path following
 try:
-    from Controller.LaneFusion import LaneFusion, LaneFusionConfig, FusionStrategy
-    from Controller.LaneFusion.config_loader_lane_fusion import get_lane_fusion_config
+    from qcar.Controller.LaneFusion import LaneFusion, LaneFusionConfig, FusionStrategy
+    from qcar.Controller.LaneFusion.config_loader_lane_fusion import get_lane_fusion_config
 
     LANE_FUSION_AVAILABLE = True
 except ImportError as e:
@@ -53,7 +51,7 @@ except ImportError as e:
 
 # Import MPC controller directly (standalone, no wrappers needed)
 try:
-    from Controller.MPC_controller.mpc_controller import (
+    from qcar.Controller.MPC_controller.mpc_controller import (
         CasADiMPCController,
         MPCControllerFactory,
     )
@@ -67,7 +65,7 @@ except ImportError as e:
 
 # Import map-based PP controller and rich path planner (optional)
 try:
-    from Controller.PP_controller import PP_Controller
+    from qcar.Controller.PP_controller import PP_Controller
 
     PP_MAP_AVAILABLE = True
 except ImportError as e:
@@ -76,7 +74,7 @@ except ImportError as e:
     PP_Controller = None
 
 try:
-    from PathPlanner.path_rich import RichSDCSPlanner, LocalObstacle
+    from qcar.PathPlanner.path_rich import RichSDCSPlanner, LocalObstacle
 
     PATH_RICH_AVAILABLE = True
 except ImportError as e:

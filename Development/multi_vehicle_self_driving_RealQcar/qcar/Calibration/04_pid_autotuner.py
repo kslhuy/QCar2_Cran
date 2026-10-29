@@ -27,6 +27,20 @@ Output:
     results/pid_gains_recommendation.yaml
 """
 
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar.Calibration":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Calibration"
+
+
 import argparse
 import sys
 import os
@@ -38,7 +52,7 @@ for _p in [_CAL_DIR, _QCAR_DIR]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from calibration_utils import (
+from qcar.Calibration.calibration_utils import (
     load_yaml,
     save_yaml,
     pid_gains_ziegler_nichols,

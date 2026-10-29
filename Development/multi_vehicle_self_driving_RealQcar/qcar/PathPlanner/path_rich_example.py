@@ -1,3 +1,17 @@
+
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar.PathPlanner":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.PathPlanner"
+
 import os
 import sys
 
@@ -11,7 +25,7 @@ import numpy as np
 # if HAL_LIB_DIR not in sys.path:
 #     sys.path.insert(0, HAL_LIB_DIR)
 
-from path_rich import LocalObstacle, RichSDCSPlanner, SpeedZone
+from qcar.PathPlanner.path_rich import LocalObstacle, RichSDCSPlanner, SpeedZone
 
 
 def main():
@@ -195,7 +209,7 @@ def main():
 
     # --- demonstration of PP waypoint conversion and v_ref scaling ---
     try:
-        from StateMachine.following_path.pp_map_utils import build_pp_waypoint_array, update_pp_runtime_speed_profile
+        from qcar.StateMachine.following_path.pp_map_utils import build_pp_waypoint_array, update_pp_runtime_speed_profile
     except ImportError:
         # add qcar package root (one level up) to sys.path
         import os, sys
@@ -206,13 +220,13 @@ def main():
         if QCAR_ROOT not in sys.path:
             sys.path.insert(0, QCAR_ROOT)
         try:
-            from StateMachine.following_path.pp_map_utils import build_pp_waypoint_array, update_pp_runtime_speed_profile
+            from qcar.StateMachine.following_path.pp_map_utils import build_pp_waypoint_array, update_pp_runtime_speed_profile
         except ImportError:
             # fallback: also try workspace root
             WS_ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
             if WS_ROOT not in sys.path:
                 sys.path.insert(0, WS_ROOT)
-            from StateMachine.following_path.pp_map_utils import build_pp_waypoint_array, update_pp_runtime_speed_profile
+            from qcar.StateMachine.following_path.pp_map_utils import build_pp_waypoint_array, update_pp_runtime_speed_profile
 
     rich_path = traj_no_obs  # baseline rich trajectory
     # convert to PP-style waypoint array (N,7)

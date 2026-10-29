@@ -5,7 +5,7 @@ import json
 import unittest
 from pathlib import Path
 
-from electronics import (
+from qcar.electronics import (
     ElectronicsDigitalTwin,
     HILFirmwareCore,
     HILFrame,
@@ -22,9 +22,9 @@ def _plant(timestamp_ns: int) -> VehiclePlantSample:
     return VehiclePlantSample(timestamp_ns, 1.0, 0.2, 0.1, 0.4, 0.0, 0.02)
 
 
-NATIVE_LIBRARY = Path(__file__).resolve().parent / "native" / "build" / (
-    "cran_electronics_core.dll"
-)
+from qcar.electronics.trust_observer_native import default_native_library_path
+
+NATIVE_LIBRARY = default_native_library_path()
 
 
 def _custom_target() -> HardwareTargetManifest:

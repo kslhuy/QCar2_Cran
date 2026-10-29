@@ -52,10 +52,9 @@ except ImportError:
 import sys
 from pathlib import Path
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
 
 try:
-    from firstLayerObserverBase import FirstLayerObserverBase
+    from .firstLayerObserverBase import FirstLayerObserverBase
 except ImportError:
     # Fallback: define minimal base class
     from abc import ABC, abstractmethod
@@ -68,23 +67,11 @@ except ImportError:
             self.f_uk_hat = np.zeros(unknown_input_dim)
 
 # Import centralized qLPV vehicle dynamics
-sys.path.insert(0, str(parent_dir.parent))
-from qlpv_vehicle_dynamics_obs import (
-    SchedulingParameters,
-    QLPVVehicleDynamicsObs,
-    QLPVVehicleDynamicsObs8D,
-    create_qlpv_dynamics,
-    get_default_vehicle_params,
-    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM, AUGMENTED_DIM,
-    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
-    IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D,
-    MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D,
-    AUGMENTED_DIM_10D,
-)
+from ..qlpv_vehicle_dynamics_obs import SchedulingParameters, QLPVVehicleDynamicsObs, QLPVVehicleDynamicsObs8D, create_qlpv_dynamics, get_default_vehicle_params, IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM, AUGMENTED_DIM, MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM, IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D, MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D, AUGMENTED_DIM_10D
 
 # Optional differentiator for r_dot pseudo-measurement
 try:
-    from differentiators import create_differentiator_from_config
+    from .differentiators import create_differentiator_from_config
     DIFFERENTIATOR_AVAILABLE = True
 except ImportError:
     DIFFERENTIATOR_AVAILABLE = False
@@ -92,17 +79,7 @@ except ImportError:
 # Import NeuralQLPVGainScheduler from 2LayerObs (reuse for first layer)
 try:
     layer2_dir = parent_dir.parent / '2LayerObs'
-    sys.path.insert(0, str(layer2_dir))
-    from Design_LMI_neural import (
-        NeuralQLPVGainScheduler,
-        NeuralPolytopicVertex,
-        discretize_system_zoh,
-        compute_discrete_hinf_lmi_observer_gain,
-        compute_discrete_l2_lmi_observer_gain,
-        compute_discrete_h2_lmi_observer_gain,
-        compute_discrete_contraction_lmi,
-        validate_discrete_observer_gain,
-    )
+    from qcar.Observer.LocalNeuralObs import _layer_2LayerObs_Design_LMI_neural_NeuralQLPVGainScheduler as NeuralQLPVGainScheduler, _layer_2LayerObs_Design_LMI_neural_NeuralPolytopicVertex as NeuralPolytopicVertex, _layer_2LayerObs_Design_LMI_neural_discretize_system_zoh as discretize_system_zoh, _layer_2LayerObs_Design_LMI_neural_compute_discrete_hinf_lmi_observer_gain as compute_discrete_hinf_lmi_observer_gain, _layer_2LayerObs_Design_LMI_neural_compute_discrete_l2_lmi_observer_gain as compute_discrete_l2_lmi_observer_gain, _layer_2LayerObs_Design_LMI_neural_compute_discrete_h2_lmi_observer_gain as compute_discrete_h2_lmi_observer_gain, _layer_2LayerObs_Design_LMI_neural_compute_discrete_contraction_lmi as compute_discrete_contraction_lmi, _layer_2LayerObs_Design_LMI_neural_validate_discrete_observer_gain as validate_discrete_observer_gain
     NEURAL_SCHEDULER_AVAILABLE = True
 except ImportError as _e:
     NEURAL_SCHEDULER_AVAILABLE = False

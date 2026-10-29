@@ -12,6 +12,20 @@ Usage:
     python app_main.py --help             # Show help
 """
 
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.GUI":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.GUI"
+
+
 import argparse
 import sys
 
@@ -71,12 +85,7 @@ def main():
     """Main entry point."""
     args = parse_args()
     
-    try:
-        from qcar_gui import create_app
-    except ImportError:
-        # If running from this directory
-        sys.path.insert(0, '.')
-        from qcar_gui import create_app
+    from qcar.GUI.qcar_gui import create_app
     
     print(f"""
 ╔══════════════════════════════════════════════════════════╗

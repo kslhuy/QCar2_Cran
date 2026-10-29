@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # Import the REAL modules
 # =============================================================================
 
-from V2V.AttackModule.AttackModule import (
+from qcar.V2V.AttackModule.AttackModule import (
     AttackModule,
     AttackScenario,
     AttackType,
@@ -54,17 +54,18 @@ from V2V.AttackModule.AttackModule import (
     ModificationType,
 )
 
-from V2V.AttackModule.AttackScenarios import (
+from qcar.V2V.AttackModule.AttackScenarios import (
     make_scenario,
     create_bogus_scenarios,
     create_dos_scenarios,
     load_scenarios_from_config,
 )
 
-from V2V.AttackModule.V2VAttackInjector import (
+from qcar.V2V.AttackModule.V2VAttackInjector import (
     V2VAttackInjector,
     create_v2v_with_attack_injection,
 )
+from qcar.V2V.v2v_manager import V2VManager
 
 print(f"✓ Successfully imported real modules from: {_QCAR_DIR}")
 
@@ -159,6 +160,10 @@ class MockLogger:
 
 class MockV2VManager:
     """Mock V2VManager for testing V2VAttackInjector."""
+
+    # Keep the real wire-format contract while replacing sockets with the fake transport.
+    _normalize_v2v_channel = staticmethod(V2VManager._normalize_v2v_channel)
+    _build_dual_channel_payload = V2VManager._build_dual_channel_payload
     
     def __init__(self, vehicle_id: int = 1):
         self.vehicle_id = vehicle_id

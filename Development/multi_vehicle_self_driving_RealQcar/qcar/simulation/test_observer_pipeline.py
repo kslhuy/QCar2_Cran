@@ -1,3 +1,4 @@
+from pathlib import Path
 """Integration and failure-path tests for the configured observer chain."""
 import socket
 import time
@@ -8,14 +9,14 @@ from unittest.mock import Mock, patch
 import numpy as np
 import yaml
 
-from Observer.VehicleObserverSimple import VehicleObserver
-from Observer.fleet_state_estimators import FleetEstimatorFactory
-from Observer.relative_state_estimators import SA_ACC_UIO_Estimator
-from Observer.TrustbasedDistributedObserver.external_measurement_cache import ExternalMeasurementCache
-from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import TrustBasedFleetEstimator
-from simulation.observer_pipeline import run_pipeline
-from simulation.relative_sensor import LoopbackRelativeSensor, MockRelativeSensor
-from simulation.mock_sensors import MockQCarGPS
+from qcar.Observer.VehicleObserverSimple import VehicleObserver
+from qcar.Observer.fleet_state_estimators import FleetEstimatorFactory
+from qcar.Observer.relative_state_estimators import SA_ACC_UIO_Estimator
+from qcar.Observer.TrustbasedDistributedObserver.external_measurement_cache import ExternalMeasurementCache
+from qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import TrustBasedFleetEstimator
+from qcar.simulation.observer_pipeline import run_pipeline
+from qcar.simulation.relative_sensor import LoopbackRelativeSensor, MockRelativeSensor
+from qcar.simulation.mock_sensors import MockQCarGPS
 
 
 class ObserverPipelineTests(unittest.TestCase):
@@ -85,7 +86,7 @@ class ObserverPipelineTests(unittest.TestCase):
         self.assertIsNone(cache.get(1, 1_201_000_000))
 
     def test_strict_trust_never_substitutes_clean_channel(self):
-        with patch("Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator.TrustWeightLogger.start", return_value=""):
+        with patch("qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator.TrustWeightLogger.start", return_value=""):
             estimator = TrustBasedFleetEstimator(0, 2, config={
                 "require_relative_measurement": True, "dynamics_prediction_mode": "none"})
         self.addCleanup(estimator.embedded_core_shadow.close)
@@ -104,17 +105,17 @@ class ObserverPipelineTests(unittest.TestCase):
     def test_bad_algorithm_and_gain_design_fail_explicitly(self):
         with self.assertRaises(ValueError):
             FleetEstimatorFactory.create("trust_kalman", 0, 2)
-        with patch("Observer.relative_state_estimators.CVXPY_AVAILABLE", False):
+        with patch("qcar.Observer.relative_state_estimators.CVXPY_AVAILABLE", False):
             with self.assertRaises(RuntimeError):
                 SA_ACC_UIO_Estimator({})
-        with open("Observer/config_relative_estimators.yaml", encoding="utf-8") as handle:
+        with open(Path(__file__).resolve().parents[1] / "Observer/config_relative_estimators.yaml", encoding="utf-8") as handle:
             config = yaml.safe_load(handle)["relative"]["sa_acc_uio"]
         config["L"] = np.zeros((4, 2)).tolist()
         with self.assertRaises(ValueError):
             SA_ACC_UIO_Estimator(config)
 
     def test_missing_range_rate_is_not_replaced_by_zero(self):
-        with open("Observer/config_relative_estimators.yaml", encoding="utf-8") as handle:
+        with open(Path(__file__).resolve().parents[1] / "Observer/config_relative_estimators.yaml", encoding="utf-8") as handle:
             config = yaml.safe_load(handle)["relative"]["sa_acc_uio"]
         observer = SA_ACC_UIO_Estimator(config)
         with self.assertRaises(RuntimeError):
@@ -141,8 +142,8 @@ class ObserverPipelineTests(unittest.TestCase):
         import copy
         import contextlib
         import io
-        from simulation.config import SimulationConfig
-        from simulation.mock_vehicle import MockQCar
+        from qcar.simulation.config import SimulationConfig
+        from qcar.simulation.mock_vehicle import MockQCar
         noisy_config = SimulationConfig.load_config()
         clean_config = copy.deepcopy(noisy_config)
         clean_config["sensors"]["imu"]["has_noise"] = False
@@ -158,7 +159,7 @@ class ObserverPipelineTests(unittest.TestCase):
         self.assertFalse(np.allclose(noisy.accelerometer, clean.accelerometer))
 
     def test_following_stop_policy_does_not_select_another_controller(self):
-        from StateMachine.following_leader_state import FollowingLeaderState
+        from qcar.StateMachine.following_leader_state import FollowingLeaderState
         state = FollowingLeaderState.__new__(FollowingLeaderState)
         state.trust_longitudinal_fusion_config = dict(unavailable_policy="stop", low_trust_policy="stop")
         state._get_trust_fusion_opinion = lambda *args: None
@@ -181,7 +182,7 @@ class ObserverPipelineTests(unittest.TestCase):
         self.assertIsNone(observer.local_estimator)
 
     def test_observer_schedule_uses_elapsed_observer_time(self):
-        from vehicle_logic import VehicleLogic
+        from qcar.vehicle_logic import VehicleLogic
         logic = VehicleLogic.__new__(VehicleLogic)
         logic._last_observer_time = 1.0
         logic.observer_rate = 50

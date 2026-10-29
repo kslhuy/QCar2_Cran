@@ -12,7 +12,7 @@ import time
 import threading
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
-from command_types import CommandType
+from qcar.command_types import CommandType
 
 
 @dataclass

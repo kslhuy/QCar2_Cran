@@ -19,10 +19,10 @@ import time
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
 
-from command_types import CommandType
+from qcar.command_types import CommandType
 from .vehicle_state import VehicleState, StateTransitionReason
 from .following_path_state import FollowingPathState
-from Taxi.taxi_manager import TripSuperState, TripState
+from qcar.Taxi.taxi_manager import TripSuperState, TripState
 
 
 class TaxiModeState(FollowingPathState):

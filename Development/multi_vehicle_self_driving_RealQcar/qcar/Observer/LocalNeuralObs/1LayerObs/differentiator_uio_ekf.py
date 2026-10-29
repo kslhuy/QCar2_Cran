@@ -19,6 +19,20 @@ References:
     - UIO (Unknown Input Observer) for disturbance estimation
 """
 
+# Preserve direct-file launches while using the canonical package internally.
+if __package__ != "qcar.Observer.LocalNeuralObs.1LayerObs":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.LocalNeuralObs.1LayerObs"
+
+
 import numpy as np
 from typing import Optional, Dict, Tuple
 from dataclasses import dataclass
@@ -27,21 +41,14 @@ from dataclasses import dataclass
 import sys
 from pathlib import Path
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
 
-from differentiators import (
-    DirtyDerivative,
-    HighGainDifferentiator,
-    SlidingModeDifferentiator,
-    create_differentiator,
-    create_differentiator_from_config,
-)
+from .differentiators import DirtyDerivative, HighGainDifferentiator, SlidingModeDifferentiator, create_differentiator, create_differentiator_from_config
 
 # Import observer components
-from differentiator_uio_observer import WEstimatorUIOStyle
+from .differentiator_uio_observer import WEstimatorUIOStyle
 
 try:
-    from firstLayerObserverBase import FirstLayerObserverBase
+    from .firstLayerObserverBase import FirstLayerObserverBase
 except ImportError:
     from abc import ABC, abstractmethod
     class FirstLayerObserverBase(ABC):
@@ -53,17 +60,7 @@ except ImportError:
             self.f_uk_hat = np.zeros(unknown_input_dim)
 
 # Import centralized qLPV vehicle dynamics (single source of truth)
-sys.path.insert(0, str(parent_dir.parent))
-from qlpv_vehicle_dynamics_obs import (
-    SchedulingParameters,
-    QLPVVehicleDynamicsObs,
-    get_default_vehicle_params,
-    create_qlpv_dynamics,
-    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
-    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
-    IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D,
-    MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS_IDX_AX, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D,
-)
+from ..qlpv_vehicle_dynamics_obs import SchedulingParameters, QLPVVehicleDynamicsObs, get_default_vehicle_params, create_qlpv_dynamics, IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM, MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM, IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D, MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS_IDX_AX, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D
 
 
 class DifferentiatorUIOEKF(FirstLayerObserverBase):

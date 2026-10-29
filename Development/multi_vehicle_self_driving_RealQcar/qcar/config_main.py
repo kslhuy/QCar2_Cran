@@ -223,14 +223,14 @@ class VehicleMainConfig:
     @classmethod
     def from_json(cls, filepath: str) -> "VehicleMainConfig":
         """Load configuration from JSON file"""
-        with open(filepath, "r") as f:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
             config_dict = json.load(f)
         return cls.from_dict(config_dict)
 
     @classmethod
     def from_yaml(cls, filepath: str) -> "VehicleMainConfig":
         """Load configuration from YAML file"""
-        with open(filepath, "r") as f:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
             config_dict = yaml.safe_load(f)
         return cls.from_dict(config_dict)
 
@@ -241,7 +241,7 @@ class VehicleMainConfig:
         Extracts per-vehicle settings (probing, vehicle_type, path_number, etc.)
         from the 'vehicles' array and merges with global settings.
         """
-        with open(filepath, "r") as f:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
             fleet_config = yaml.safe_load(f)
 
         # Start with global settings from the fleet config
@@ -319,12 +319,12 @@ class VehicleMainConfig:
 
     def to_json(self, filepath: str):
         """Save configuration to JSON file"""
-        with open(filepath, "w") as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=2)
 
     def to_yaml(self, filepath: str):
         """Save configuration to YAML file"""
-        with open(filepath, "w") as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             yaml.dump(self.to_dict(), f, default_flow_style=False)
 
     def update_from_args(self, args):

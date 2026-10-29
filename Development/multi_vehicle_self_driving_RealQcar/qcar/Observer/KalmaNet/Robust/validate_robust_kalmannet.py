@@ -1,3 +1,17 @@
+
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.Observer.KalmaNet.Robust":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.KalmaNet.Robust"
+
 import argparse
 import json
 from pathlib import Path
@@ -11,8 +25,8 @@ try:
 except ImportError:
     torch = None
 
-from robustKLnet import RSNConfig, RobustStateNet, wrap_angle_scalar
-from robust_kalmannet_dataset import compute_rmse, load_recorded_dataset
+from qcar.Observer.KalmaNet.Robust.robustKLnet import RSNConfig, RobustStateNet, wrap_angle_scalar
+from qcar.Observer.KalmaNet.Robust.robust_kalmannet_dataset import compute_rmse, load_recorded_dataset
 
 
 def build_gps_dict(dataset: Dict[str, np.ndarray], index: int) -> Dict[str, float] | None:
@@ -63,7 +77,7 @@ def run_model(dataset: Dict[str, np.ndarray], checkpoint_path: Path, sequence_le
     qcar_dir = Path(__file__).resolve().parents[3]
     if str(qcar_dir) not in sys.path:
         sys.path.insert(0, str(qcar_dir))
-    from robustKLnet import RobustKalmanNetStateEstimator
+    from qcar.Observer.KalmaNet.Robust.robustKLnet import RobustKalmanNetStateEstimator
     torch.set_num_threads(1)
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     cfg_dict = checkpoint.get("config", {}) if isinstance(checkpoint, dict) else {}
@@ -141,7 +155,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     if "--simulation" in sys.argv:
-        from simulation_benchmark import main as simulation_main
+        from qcar.Observer.KalmaNet.Robust.simulation_benchmark import main as simulation_main
         sys.argv.remove("--simulation")
         simulation_main()
     else:

@@ -3,6 +3,20 @@ YOLO Server Physical - Refactored for Robustness
 matches architecture of yolo_server_virtual.py but for physical QCar.
 """
 
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar.Yolo":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Yolo"
+
+
 import os
 import sys
 import cv2
@@ -18,14 +32,14 @@ if current_dir not in sys.path:
 from pit.YOLO.utils import QCar2DepthAligned
 
 # Using enhanced wrapper for consistency with virtual server (better rendering)
-from YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy, DetectionBuffers
-from YoLo import YOLOPublisher, YOLOVideoPublisher
-from yolo_config import DEFAULT_CONFIG_PATH, YoloServerConfig, parse_bool_string
+from qcar.Yolo.YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy, DetectionBuffers
+from qcar.Yolo.YoLo import YOLOPublisher, YOLOVideoPublisher
+from qcar.Yolo.yolo_config import DEFAULT_CONFIG_PATH, YoloServerConfig, parse_bool_string
 
 # Import Lane Detection and Interface
 try:
-    from LaneFollow import create_lane_detector
-    from LaneFollow.lane_detection_interface import LaneDetectionResult
+    from qcar.Yolo.LaneFollow import create_lane_detector
+    from qcar.Yolo.LaneFollow.lane_detection_interface import LaneDetectionResult
 
     LANE_MODULE_AVAILABLE = True
 except ImportError as e:

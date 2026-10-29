@@ -1,7 +1,7 @@
 """Smoke test for attack augmentation pipeline."""
 import torch
-from robustKLnet import RSNConfig, RobustStateNet, robuststatenet_loss, make_dummy_batch
-from sensor_attack_augmentation import SensorAttackAugmenter, AttackConfig, mask_supervision_loss
+from qcar.Observer.KalmaNet.Robust.robustKLnet import RSNConfig, RobustStateNet, robuststatenet_loss, make_dummy_batch
+from qcar.Observer.KalmaNet.Robust.sensor_attack_augmentation import SensorAttackAugmenter, AttackConfig, mask_supervision_loss
 
 print("=== Test 1: Forward pass returns pred_mask and meas_mask ===")
 cfg = RSNConfig(predictor_mode="nn")

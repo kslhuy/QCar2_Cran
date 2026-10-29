@@ -60,11 +60,14 @@ Main structure and responsibilities:
 
 ### Software Requirements
 
-- Python 3.13 or higher;
+- Python 3.10+ (64-bit Python 3.11 recommended; see the portability guide);
 - Quanser QCar SDK;
 - Quanser Interactive Labs (Qlabs) for simulation;
 
 Note: For the more detailed software setup instructions, please refer to the [Installation Guide](https://qlabs.quanserdocs.com/en/latest/Get%20Started.html).
+
+For fresh Windows/Ubuntu environments, dependency profiles, portable launch commands
+and SDK-free simulation, start with [PORTABILITY.md](PORTABILITY.md).
 
 ## Quick Start Guide
 

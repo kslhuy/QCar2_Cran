@@ -15,11 +15,11 @@ from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 
-from StateMachine.state_base import StateBase
-from StateMachine.vehicle_state import VehicleState, StateTransitionReason
+from qcar.StateMachine.state_base import StateBase
+from qcar.StateMachine.vehicle_state import VehicleState, StateTransitionReason
 
 try:
-    from command_types import CommandType
+    from qcar.command_types import CommandType
 except Exception:
     CommandType = None
 
@@ -179,7 +179,7 @@ class CarlaInitializingState(StateBase):
         yolo_manager.yolo_drive = None
 
         try:
-            from Yolo.YoLo import YOLOData
+            from qcar.Yolo.YoLo import YOLOData
 
             yolo_manager._cached_data = YOLOData()
         except Exception:

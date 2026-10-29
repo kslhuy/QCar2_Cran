@@ -28,10 +28,8 @@ except Exception:
 
 # Add parent directory to sys.path to import command_types
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
 
-from command_types import CommandType
+from qcar.command_types import CommandType
 
 
 class StateBase:
@@ -1287,7 +1285,7 @@ class StateBase:
             bool: True if activation successful
         """
         try:
-            from Yolo.YoLo import YOLOLauncher, YOLODriveLogic
+            from qcar.Yolo.YoLo import YOLOLauncher, YOLODriveLogic
 
             # Check if this is a fake vehicle - if so, just log and return success
             if hasattr(self.vehicle_logic, "_parent_fake_vehicle"):
@@ -1503,7 +1501,7 @@ class StateBase:
                 return False
 
             # Import and create streamer
-            from scope_data_streamer import ScopeDataStreamer
+            from qcar.scope_data_streamer import ScopeDataStreamer
 
             # Create or update streamer
             if (
@@ -1585,7 +1583,7 @@ class StateBase:
             bool: True if successful
         """
         try:
-            from Observer.local_state_estimators import LocalEstimatorFactory
+            from qcar.Observer.local_state_estimators import LocalEstimatorFactory
 
             valid_types = [
                 "ekf",
@@ -1633,7 +1631,7 @@ class StateBase:
             # Keep the same plant calibration and checkpoint as fake startup.
             fake_vehicle = getattr(self.vehicle_logic, "_parent_fake_vehicle", None)
             if fake_vehicle is not None and observer_type in {"ekf", "robust_kalman_net"}:
-                from simulation.robust_estimator_config import (
+                from qcar.simulation.robust_estimator_config import (
                     simulation_estimator_params, simulation_motion_params,
                 )
                 car = fake_vehicle.mock_qcar
@@ -1684,7 +1682,7 @@ class StateBase:
             bool: True if successful
         """
         try:
-            from Observer.fleet_state_estimators import FleetEstimatorFactory
+            from qcar.Observer.fleet_state_estimators import FleetEstimatorFactory
 
             valid_types = [
                 "consensus",

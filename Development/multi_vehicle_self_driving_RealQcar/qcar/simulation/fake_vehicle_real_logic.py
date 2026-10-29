@@ -2,6 +2,20 @@
 Fake Vehicle using REAL VehicleLogic Class - MODULAR REFACTOR
 This entry point uses the qcar.simulation package for vehicle dynamics and disturbances.
 """
+
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.simulation":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.simulation"
+
 import sys
 import os
 import time
@@ -12,19 +26,15 @@ from typing import Optional
 
 # Add parent directory to path to import qcar modules if needed
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
 
 # Import the REAL VehicleLogic and related classes
-from vehicle_logic import VehicleLogic
-from config_main import VehicleMainConfig
-from StateMachine.vehicle_state import VehicleState
-from fake_initializing_state import FakeInitializingState
+from qcar.config_main import VehicleMainConfig
+from qcar.StateMachine.vehicle_state import VehicleState
 
 # Import modular simulation components
-from simulation.mock_vehicle import MockQCar
-from simulation.config import SimulationConfig
-from electronics import (
+from qcar.simulation.mock_vehicle import MockQCar
+from qcar.simulation.config import SimulationConfig
+from qcar.electronics import (
     ElectronicsDataGateway,
     ElectronicsDigitalTwin,
     MockQCarElectronicsAdapter,
@@ -48,6 +58,7 @@ class FakeVehicleWithRealLogic:
                  steering_model: Optional[str] = None,
                  use_direct_poses: bool = False,
                  local_estimator: Optional[str] = None):
+        from qcar.vehicle_logic import VehicleLogic
         self.car_id = car_id
         self.host_ip = host_ip
         self.base_port = base_port
@@ -60,7 +71,7 @@ class FakeVehicleWithRealLogic:
         self.local_estimator_override = local_estimator
         
         # 1. Load and Configure MockQCar
-        self.sim_config = SimulationConfig.load_config('parameters.yaml')
+        self.sim_config = SimulationConfig.load_config()
 
         # Override with arguments
         self.sim_config['vehicle']['id'] = car_id
@@ -144,7 +155,7 @@ class FakeVehicleWithRealLogic:
         # Components injection will happen in _inject_mock_hardware
         self._inject_mock_hardware()
 
-        from simulation.relative_sensor import LoopbackRelativeSensor
+        from qcar.simulation.relative_sensor import LoopbackRelativeSensor
         relative_config = self.sim_config.get('sensors', {}).get('relative', {})
         self.relative_sensor = (LoopbackRelativeSensor(self.car_id, relative_config)
                                 if relative_config.get('enabled', False) else None)
@@ -198,7 +209,7 @@ class FakeVehicleWithRealLogic:
                 print("🔧 State machine not found, VehicleLogic may not be fully initialized")
                 return
             
-            from fake_initializing_state import FakeInitializingState
+            from qcar.simulation.fake_initializing_state import FakeInitializingState
             fake_init_state = FakeInitializingState(self.vehicle_logic)
             self.vehicle_logic.state_machine.state_handlers[VehicleState.INITIALIZING] = fake_init_state
             self._fake_initialization_replaced = True
@@ -271,21 +282,36 @@ class FakeVehicleWithRealLogic:
 def main():
     """Main entry point"""
     import sys
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Run a fake vehicle with real fleet logic (route maps require Quanser HAL).",
+        epilog="Legacy positional tokens remain supported: 0 qlpv qcar pacejka localhost 5000",
+    )
+    parser.add_argument("legacy", nargs="*", help="Legacy car ID, model, host and port tokens")
+    parser.add_argument("--car-id", type=int, default=0)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument("-u", "--use-direct-poses", action="store_true")
+    parser.add_argument("--longitudinal-model")
+    parser.add_argument("--steering-model")
+    parser.add_argument("--local-estimator", choices=("ekf", "robust_kalman_net"))
+    parsed = parser.parse_args()
     
     # Defaults
-    car_id = 0
-    host_ip = '127.0.0.1'
-    base_port = 5000
+    car_id = parsed.car_id
+    host_ip = parsed.host
+    base_port = parsed.port
     dynamic_model_type = None 
     vehicle_params = None
     tire_model = None
-    longitudinal_model = None
-    steering_model = None
-    local_estimator = None
-    use_direct_poses = False
+    longitudinal_model = parsed.longitudinal_model
+    steering_model = parsed.steering_model
+    local_estimator = parsed.local_estimator
+    use_direct_poses = parsed.use_direct_poses
     
     # Parse args (Backward functionality)
-    args = sys.argv[1:]
+    args = parsed.legacy
     if len(args) > 0 and args[0].isdigit() and int(args[0]) < 1000:
         car_id = int(args[0])
         args.pop(0)

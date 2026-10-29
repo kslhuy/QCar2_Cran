@@ -9,6 +9,20 @@ Skills acivity code for vehicle control lab guide.
 Students will implement a vehicle speed and steering controller.
 Please review Lab Guide - vehicle control PDF
 """
+
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[0]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar"
+
 import signal
 import numpy as np
 from threading import Thread
@@ -20,7 +34,7 @@ from pal.utilities.math import wrap_to_pi
 from hal.content.qcar_functions import QCarEKF
 from hal.products.mats import SDCSRoadMap
 import argparse
-from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
+from qcar.Yolo.YoLo import YOLOReceiver, YOLODriveLogic
 
 parser = argparse.ArgumentParser(prog='Vehicle control')
 parser.add_argument('-c','--calibrate', default=False)

@@ -58,6 +58,20 @@ These are injected directly into the dynamics:
 =============================================================================
 """
 
+# Preserve direct-file launches while using the canonical package internally.
+if __package__ != "qcar.Observer.LocalNeuralObs.2LayerObs":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.LocalNeuralObs.2LayerObs"
+
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -74,35 +88,21 @@ local_neural_obs_dir = current_dir.parent
 observer_dir = local_neural_obs_dir.parent
 
 # 1. Base Class (from Observer)
-sys.path.insert(0, str(observer_dir))
-from local_state_estimators import LocalStateEstimatorBase, wrap_to_pi
+from qcar.Observer.local_state_estimators import LocalStateEstimatorBase, wrap_to_pi
 
 # 2. Dependencies in LocalNeuralObs (Parent)
-sys.path.insert(0, str(local_neural_obs_dir))
-from qlpv_vehicle_dynamics_obs import (
-    SchedulingParameters,
-    QLPVVehicleDynamicsObs,
-    get_default_vehicle_params,
-    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
-)
-from neural_obs_recorder import NeuralObsRecorder
+from ..qlpv_vehicle_dynamics_obs import SchedulingParameters, QLPVVehicleDynamicsObs, get_default_vehicle_params, IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM
+from ..neural_obs_recorder import NeuralObsRecorder
 
 # 3. Layer 1 Estimator (from LocalNeuralObs/1LayerObs)
 one_layer_dir = local_neural_obs_dir / "1LayerObs"
-sys.path.insert(0, str(one_layer_dir))
-from tire_estimator_simple import TireEstimatorSimple
+from qcar.Observer.LocalNeuralObs import _layer_1LayerObs_tire_estimator_simple_TireEstimatorSimple as TireEstimatorSimple
 
 # 4. LMI Gain Scheduler (from current directory or LocalNeuralObs depending on file loc)
-sys.path.insert(0, str(current_dir))
-from Design_LMI_neural import NeuralQLPVGainScheduler
+from .Design_LMI_neural import NeuralQLPVGainScheduler
 
 # 5. Neural Network Components (from current directory)
-from neural_network import (
-    NeuralObserverNet, 
-    save_model, 
-    load_model, 
-    create_optimizer
-)
+from .neural_network import NeuralObserverNet, save_model, load_model, create_optimizer
 
 
 # =============================================================================

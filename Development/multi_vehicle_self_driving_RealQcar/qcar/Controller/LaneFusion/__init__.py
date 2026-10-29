@@ -57,10 +57,8 @@ try:
     import os
     # Add Yolo folder to path for importing LaneFollow
     yolo_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'Yolo')
-    if yolo_dir not in sys.path:
-        sys.path.insert(0, yolo_dir)
     
-    from LaneFollow import (
+    from qcar.Yolo.LaneFollow import (
         LaneDetectorBase,
         LaneDetectionResult,
         LaneDetectionMethod,

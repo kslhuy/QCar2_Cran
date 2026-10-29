@@ -24,6 +24,20 @@ Metrics:
     - Convergence rate
 """
 
+# Preserve direct-file launches while using the canonical package internally.
+if __package__ != "qcar.Observer.LocalNeuralObs":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[2]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.LocalNeuralObs"
+
+
 import numpy as np
 import sys
 import warnings
@@ -39,13 +53,8 @@ warnings.filterwarnings('ignore', category=RuntimeWarning, message='invalid valu
 
 # Add paths - order matters!
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
-sys.path.insert(0, str(parent_dir / "1LayerObs"))
-sys.path.insert(0, str(parent_dir / "2LayerObs"))
 # Add Observer directory (contains local_state_estimators.py)
-sys.path.insert(0, str(parent_dir.parent))
 # Navigate to GUI for vehicle model
-sys.path.insert(0, str(parent_dir.parent.parent / "GUI"))
 
 # Check for PyTorch
 try:
@@ -57,10 +66,10 @@ except ImportError:
 
 # Import Layer 1 observers
 try:
-    from qlpv_observer import qLPVAugmentedObserver as qLPVObserverBasic
-    from qlpv_observer_kalma import qLPVAugmentedObserver as qLPVObserverEKF
-    from differentiator_uio_observer import DifferentiatorUIOObserver
-    from differentiator_uio_ekf import DifferentiatorUIOEKF
+    from qcar.Observer.LocalNeuralObs import _layer_1LayerObs_qlpv_observer_qLPVAugmentedObserver as qLPVObserverBasic
+    from qcar.Observer.LocalNeuralObs import _layer_1LayerObs_qlpv_observer_kalma_qLPVAugmentedObserver as qLPVObserverEKF
+    from qcar.Observer.LocalNeuralObs import _layer_1LayerObs_differentiator_uio_observer_DifferentiatorUIOObserver as DifferentiatorUIOObserver
+    from qcar.Observer.LocalNeuralObs import _layer_1LayerObs_differentiator_uio_ekf_DifferentiatorUIOEKF as DifferentiatorUIOEKF
     LAYER1_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️ Could not import Layer 1 observers: {e}")
@@ -68,7 +77,7 @@ except ImportError as e:
 
 # Import Layer 2 neural estimator
 try:
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from qcar.Observer.LocalNeuralObs import _layer_2LayerObs_neural_state_estimator_NeuralLuenbergerEstimator as NeuralLuenbergerEstimator
     LAYER2_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️ Could not import Layer 2 estimator: {e}")

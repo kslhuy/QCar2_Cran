@@ -8,6 +8,20 @@ the observer, state machine, controllers, telemetry, and command handling.
 
 from __future__ import annotations
 
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[0]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar"
+
+
 import argparse
 import json
 import os
@@ -19,12 +33,12 @@ from typing import List, Optional
 
 import yaml
 
-from Carla import CarlaBridgeConfig, CarlaSimulationBridge
-from StateMachine import VehicleState
-from StateMachine.carla_initializing_state import CarlaInitializingState
-from command_types import CommandType
-from config_main import VehicleMainConfig
-from vehicle_logic import VehicleLogic
+from qcar.Carla import CarlaBridgeConfig, CarlaSimulationBridge
+from qcar.StateMachine import VehicleState
+from qcar.StateMachine.carla_initializing_state import CarlaInitializingState
+from qcar.command_types import CommandType
+from qcar.config_main import VehicleMainConfig
+from qcar.vehicle_logic import VehicleLogic
 
 # python Development\multi_vehicle_self_driving_RealQcar\qcar\vehicle_main_carla.py --auto-start --spawn-point-index 0 --goal-spawn-indices 10 --draw-route --no-ground-station
 kill_event = Event()
@@ -43,7 +57,7 @@ def signal_handler(*_args):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        prog="vehicle_main_carla.py",
+        prog="qcar.vehicle_main_carla.py",
         description="Pure-Python CARLA bridge for the QCar vehicle stack",
     )
 

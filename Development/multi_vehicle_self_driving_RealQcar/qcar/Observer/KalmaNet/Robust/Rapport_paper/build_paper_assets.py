@@ -3,6 +3,20 @@
 Run with the Qcar Python environment. This does not train or change the filter.
 The diagnostic replay is checked against the saved heldout state trajectory.
 """
+
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.Observer.KalmaNet.Robust.Rapport_paper":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[4]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.KalmaNet.Robust.Rapport_paper"
+
 from pathlib import Path
 import hashlib
 import json
@@ -17,7 +31,6 @@ PAPER = Path(__file__).resolve().parent
 ROBUST = PAPER.parent
 OUT = PAPER / "paper_assets"
 OUT.mkdir(exist_ok=True)
-sys.path.insert(0, str(ROBUST))
 
 LABELS = {
     "clean": "Clean", "gps_jump": "GPS jump", "gps_ramp": "GPS ramp",
@@ -113,8 +126,8 @@ def main():
     # The diagnostic is a fresh causal rollout, not invented trust traces.
     import torch
     torch.set_num_threads(1)
-    from simulation_benchmark import generate_drive, attacked_samples, model_config
-    from robustKLnet import RobustKalmanNetStateEstimator
+    from qcar.Observer.KalmaNet.Robust.simulation_benchmark import generate_drive, attacked_samples, model_config
+    from qcar.Observer.KalmaNet.Robust.robustKLnet import RobustKalmanNetStateEstimator
     drive = generate_drive(101, duration=60.)
     samples, attack, _ = attacked_samples(drive, "gps_ramp", 101+10000)
     cfg = dict(model_config(), estimator_backend="innovation_trust", model_path=str(checkpoint),
@@ -180,7 +193,7 @@ def main():
     print("Paper assets generated; source hashes and diagnostic replay verified.")
     print("Checkpoint SHA-256:", digest)
     print("Runtime:", runtime)
-    from build_observer_figures import main as build_observer_figures
+    from qcar.Observer.KalmaNet.Robust.Rapport_paper.build_observer_figures import main as build_observer_figures
     build_observer_figures()
 
 

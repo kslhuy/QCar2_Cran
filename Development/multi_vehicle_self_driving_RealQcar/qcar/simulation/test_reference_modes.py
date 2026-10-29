@@ -12,11 +12,11 @@ from unittest.mock import Mock, patch
 import numpy as np
 import yaml
 
-from config_io import load_yaml_mapping
-from Observer.VehicleObserverSimple import VehicleObserver
-from Observer.TrustbasedDistributedObserver.estimator_config import ReferenceSettings
-from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import TrustBasedFleetEstimator
-from simulation.observer_pipeline import run_pipeline
+from qcar.config_io import load_yaml_mapping
+from qcar.Observer.VehicleObserverSimple import VehicleObserver
+from qcar.Observer.TrustbasedDistributedObserver.estimator_config import ReferenceSettings
+from qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import TrustBasedFleetEstimator
+from qcar.simulation.observer_pipeline import run_pipeline
 
 
 class ReferenceModeTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class ReferenceModeTests(unittest.TestCase):
 
     def make_estimator(self, **settings):
         observer = {"dynamics_prediction_mode": "none", **settings}
-        with patch("Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator.TrustWeightLogger.start", return_value=""):
+        with patch("qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator.TrustWeightLogger.start", return_value=""):
             estimator = TrustBasedFleetEstimator(0, 2, config={"observer": observer})
         self.addCleanup(estimator.close)
         estimator.host_state = dict(x=0., y=0., theta=0., velocity=1., acceleration=0.)
@@ -102,7 +102,7 @@ class ReferenceModeTests(unittest.TestCase):
                 self.assertLess(result["fleet_position_rmse_m"], .15)
 
     def make_following_state(self, source):
-        from StateMachine.following_leader_state import FollowingLeaderState
+        from qcar.StateMachine.following_leader_state import FollowingLeaderState
         state = FollowingLeaderState.__new__(FollowingLeaderState)
         state.sensor_acc_config = dict(gap_source=source, max_distance=10., measurement_max_age_s=.2)
         state.sensor_acc_controller = Mock(compute_throttle=Mock(return_value=.12))
@@ -138,7 +138,7 @@ class ReferenceModeTests(unittest.TestCase):
         manager.get_latest_local_state_raw.assert_not_called()
 
     def test_v2v_snapshot_is_age_checked_and_does_not_mutate_cached_packet(self):
-        from V2V.v2v_manager import V2VManager
+        from qcar.V2V.v2v_manager import V2VManager
         manager = V2VManager.__new__(V2VManager)
         manager._lock = threading.RLock()
         cached = self.packet(5.)
@@ -152,7 +152,7 @@ class ReferenceModeTests(unittest.TestCase):
         logger = SimpleNamespace(logger=Mock(), log_error=Mock(), log_warning=Mock())
         observer = VehicleObserver(0, logger=logger)
         self.addCleanup(observer.stop)
-        with patch("Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator.TrustWeightLogger.start", return_value=""):
+        with patch("qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator.TrustWeightLogger.start", return_value=""):
             observer.reinitialize_fleet_estimation(2, [1])
             previous = observer.fleet_estimator
             with patch.object(previous, "close", wraps=previous.close) as close:

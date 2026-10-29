@@ -35,10 +35,8 @@ _WEBSOCKET_LOGGER.setLevel(logging.CRITICAL)
 # Path: controllers -> qcar_gui -> GUI -> qcar (where command_types.py is located)
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 _qcar_dir = os.path.dirname(os.path.dirname(os.path.dirname(_current_dir)))
-if _qcar_dir not in sys.path:
-    sys.path.insert(0, _qcar_dir)
 
-from command_types import CommandType
+from qcar.command_types import CommandType
 
 # Import SDCSRoadMap for on-the-fly path generation
 try:

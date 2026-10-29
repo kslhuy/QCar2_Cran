@@ -2,7 +2,7 @@ import os
 import numpy as np
 import cv2
 import time
-from scnn_wrapper import SCNNWrapper
+from qcar.Yolo.LaneFollow.scnn_wrapper import SCNNWrapper
 from pal.products.qcar import QCarRealSense
 
 

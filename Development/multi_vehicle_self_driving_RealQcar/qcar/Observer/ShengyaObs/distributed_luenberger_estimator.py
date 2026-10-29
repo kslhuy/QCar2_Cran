@@ -737,7 +737,7 @@ class DistributedLuenbergerEstimator(FleetStateEstimatorBase):
     
     def _load_K_matrices_from_yaml(self) -> Dict:
         """Load finite configured controller gains; never substitute other gains."""
-        from config_io import load_yaml_mapping
+        from qcar.config_io import load_yaml_mapping
 
         config_dir = getattr(self, "_extra_config_dir",
                              os.path.join(os.path.dirname(os.path.dirname(__file__)), "extra_configs"))

@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.Observer.KalmaNet.Robust":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.KalmaNet.Robust"
+
+
 import csv
 from collections import deque
 import copy
@@ -19,30 +33,20 @@ import torch.nn.functional as F
 try:
     from .qcar_heading_fusion import QCarHeadingFusion, QCarHeadingFusionConfig
 except ImportError:
-    from qcar_heading_fusion import QCarHeadingFusion, QCarHeadingFusionConfig
+    from qcar.Observer.KalmaNet.Robust.qcar_heading_fusion import QCarHeadingFusion, QCarHeadingFusionConfig
 
 try:
     from .sensor_attack_augmentation import RuntimeAttackConfig, RuntimeSensorAttackSimulator
 except ImportError:
-    from sensor_attack_augmentation import RuntimeAttackConfig, RuntimeSensorAttackSimulator
+    from qcar.Observer.KalmaNet.Robust.sensor_attack_augmentation import RuntimeAttackConfig, RuntimeSensorAttackSimulator
 
 
 try:
     from .runtime_sensor_attack import RuntimeSensorAttackMixin
 except ImportError:
-    from runtime_sensor_attack import RuntimeSensorAttackMixin
+    from qcar.Observer.KalmaNet.Robust.runtime_sensor_attack import RuntimeSensorAttackMixin
 
-try:
-    from Observer.local_state_estimators import LocalStateEstimatorBase
-except ImportError:
-    class LocalStateEstimatorBase(object):
-        def __init__(self, initial_pose=None, logger=None):
-            self.logger = logger
-            self.state_dim = 4
-            self.state = np.zeros(self.state_dim)
-            if initial_pose is not None:
-                self.state[: min(len(initial_pose), 3)] = initial_pose[:3]
-            self.last_update_time = 0.0
+from qcar.Observer.local_state_estimators import LocalStateEstimatorBase
 
 
 # ============================================================
@@ -1877,7 +1881,7 @@ class RobustKalmanNetStateEstimator(RuntimeSensorAttackMixin, LocalStateEstimato
             try:
                 from .innovation_trust import InnovationTrustFilter
             except ImportError:
-                from innovation_trust import InnovationTrustFilter
+                from qcar.Observer.KalmaNet.Robust.innovation_trust import InnovationTrustFilter
             self.trust_filter = InnovationTrustFilter(
                 self.internal_state, self.config, self.model_path
             )
@@ -1956,7 +1960,7 @@ class RobustKalmanNetStateEstimator(RuntimeSensorAttackMixin, LocalStateEstimato
             return
 
         try:
-            module = importlib.import_module("Observer.local_state_estimators")
+            module = importlib.import_module("qcar.Observer.local_state_estimators")
             comparator_cls = getattr(module, "EKFStateEstimator")
             comparator_cfg = self._build_ekf_comparator_config()
             self.ekf_comparator = comparator_cls(
@@ -1981,7 +1985,7 @@ class RobustKalmanNetStateEstimator(RuntimeSensorAttackMixin, LocalStateEstimato
             return
 
         try:
-            module = importlib.import_module("Observer.local_state_estimators")
+            module = importlib.import_module("qcar.Observer.local_state_estimators")
             comparator_cls = getattr(module, "EKFStateEstimator")
             comparator_cfg = self._build_clean_reference_comparator_config()
             self.clean_reference_comparator = comparator_cls(
@@ -3463,7 +3467,7 @@ def robuststatenet_loss(
     logs = {"loss_upd": loss_upd.item(), "loss_pred": loss_pred.item()}
 
     if pred_mask is not None and attack_labels is not None and lambda_mask > 0:
-        from sensor_attack_augmentation import mask_supervision_loss
+        from qcar.Observer.KalmaNet.Robust.sensor_attack_augmentation import mask_supervision_loss
         loss_mask = mask_supervision_loss(pred_mask, attack_labels)
         total = total + lambda_mask * loss_mask
         logs["loss_mask"] = loss_mask.item()

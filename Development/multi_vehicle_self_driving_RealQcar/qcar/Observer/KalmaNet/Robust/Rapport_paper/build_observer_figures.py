@@ -4,6 +4,20 @@ Called by build_paper_assets.py. Instrumentation observes the existing estimator
 it does not replace their update equations. Every diagnostic state trajectory is
 checked against heldout.npz. No attack label or truth enters an estimator update.
 """
+
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.Observer.KalmaNet.Robust.Rapport_paper":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[4]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.KalmaNet.Robust.Rapport_paper"
+
 from pathlib import Path
 import hashlib
 import inspect
@@ -20,7 +34,6 @@ from matplotlib.lines import Line2D
 PAPER = Path(__file__).resolve().parent
 ROBUST = PAPER.parent
 OUT = PAPER / "paper_assets"
-sys.path.insert(0, str(ROBUST))
 COLORS = {"ekf": "#C26420", "legacy": "#986EAC",
           "analytic_ablation": "#376DA3", "robust": "#147D64"}
 NAMES = {"ekf": "EKF", "legacy": "Legacy GRU",
@@ -70,10 +83,10 @@ def error(prediction, truth):
 def collect_diagnostics(checkpoint):
     import torch
     torch.set_num_threads(1)
-    from simulation_benchmark import generate_drive, attacked_samples, model_config
-    from innovation_trust import InnovationTrustFilter
-    from robustKLnet import RobustKalmanNetStateEstimator
-    from Observer.local_state_estimators import EKFStateEstimator
+    from qcar.Observer.KalmaNet.Robust.simulation_benchmark import generate_drive, attacked_samples, model_config
+    from qcar.Observer.KalmaNet.Robust.innovation_trust import InnovationTrustFilter
+    from qcar.Observer.KalmaNet.Robust.robustKLnet import RobustKalmanNetStateEstimator
+    from qcar.Observer.local_state_estimators import EKFStateEstimator
 
     class ObservedEKF(EKFStateEstimator):
         """Read the original update's local values at its gain-reporting hook."""

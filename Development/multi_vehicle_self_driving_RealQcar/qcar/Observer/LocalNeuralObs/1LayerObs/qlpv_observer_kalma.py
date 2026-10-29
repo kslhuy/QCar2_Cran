@@ -46,10 +46,9 @@ import sys
 from pathlib import Path
 from scipy.linalg import expm
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
 
 try:
-    from firstLayerObserverBase import FirstLayerObserverBase
+    from .firstLayerObserverBase import FirstLayerObserverBase
 except ImportError:
     # Fallback: define minimal base class
     from abc import ABC, abstractmethod
@@ -62,19 +61,10 @@ except ImportError:
             self.f_uk_hat = np.zeros(unknown_input_dim)
 
 # Import centralized qLPV vehicle dynamics
-sys.path.insert(0, str(parent_dir.parent))
-from qlpv_vehicle_dynamics_obs import (
-    SchedulingParameters,
-    get_default_vehicle_params,
-    create_qlpv_dynamics,
-    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
-    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
-    IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D,
-    MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS_IDX_AX, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D,
-)
+from ..qlpv_vehicle_dynamics_obs import SchedulingParameters, get_default_vehicle_params, create_qlpv_dynamics, IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM, MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM, IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D, MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS_IDX_AX, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D
 
 # Optional differentiator for r_dot pseudo-measurement
-from differentiators import create_differentiator_from_config
+from .differentiators import create_differentiator_from_config
 
 
 # Note: SchedulingParameters is imported from qlpv_vehicle_dynamics_obs

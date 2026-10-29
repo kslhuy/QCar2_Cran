@@ -1,4 +1,18 @@
 
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.simulation":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.simulation"
+
+
 import sys
 import os
 import numpy as np
@@ -9,10 +23,10 @@ from omegaconf import OmegaConf
 current_dir = Path(__file__).parent.resolve()
 sys.path.append(str(current_dir))
 
-from vehiclemodels.vehicle_dynamics_qlpv import compute_tire_forces_pacejka, compute_tire_forces_linear, _compute_normal_loads
-from vehiclemodels.vehicle_parameters import VehicleParameters
+from qcar.simulation.vehiclemodels.vehicle_dynamics_qlpv import compute_tire_forces_pacejka, compute_tire_forces_linear, _compute_normal_loads
+from qcar.simulation.vehiclemodels.vehicle_parameters import VehicleParameters
 
-from vehiclemodels.vehicle_parameters import setup_vehicle_parameters
+from qcar.simulation.vehiclemodels.vehicle_parameters import setup_vehicle_parameters
 
 
 def test_stiffness():

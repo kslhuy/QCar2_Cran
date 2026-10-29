@@ -12,7 +12,7 @@ from qvl.multi_agent import readRobots
 from pal.products.qcar import QCar, QCarGPS, IS_PHYSICAL_QCAR
 
 # Import HSVLaneDetector for consistent lane detection algorithm
-from lane_detectors import HSVLaneDetector, LanePosition
+from qcar.Yolo.LaneFollow.lane_detectors import HSVLaneDetector, LanePosition
 
 import time
 import numpy as np

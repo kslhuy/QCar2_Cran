@@ -26,12 +26,10 @@ import sys
 import os
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
 
 try:
-    from command_handler import CommandType
-    from Controller.longitudinal_controllers import ControllerFactory
+    from qcar.command_handler import CommandType
+    from qcar.Controller.longitudinal_controllers import ControllerFactory
 
     COMMAND_TYPE_AVAILABLE = True
 except ImportError as e:

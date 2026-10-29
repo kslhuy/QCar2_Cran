@@ -22,8 +22,8 @@ from pal.utilities.math import Filter
 
 # Lane Detector Imports
 try:
-    from lane_detectors import HSVLaneDetector, BEVLaneDetector, LaneNetDetector
-    from lane_detection_interface import LaneDetectionResult
+    from qcar.Yolo.LaneFollow.lane_detectors import HSVLaneDetector, BEVLaneDetector, LaneNetDetector
+    from qcar.Yolo.LaneFollow.lane_detection_interface import LaneDetectionResult
 except ImportError:
     # Try importing from package if running from root
     try:

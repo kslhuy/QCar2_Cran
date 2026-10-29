@@ -43,6 +43,20 @@ Update:
 =============================================================================
 """
 
+# Preserve direct-file launches while using the canonical package internally.
+if __package__ != "qcar.Observer.LocalNeuralObs.1LayerObs":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.LocalNeuralObs.1LayerObs"
+
+
 import numpy as np
 from typing import Optional, Dict, Tuple
 from scipy.linalg import expm

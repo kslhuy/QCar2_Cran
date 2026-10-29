@@ -19,17 +19,9 @@ from typing import Optional, Tuple, Dict, List
 
 # Add parent directory to path to import base class and dynamics
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
-sys.path.insert(0, str(parent_dir.parent))
 
-from firstLayerObserverBase import FirstLayerObserverBase
-from qlpv_vehicle_dynamics_obs import (
-    QLPVVehicleDynamicsObs, 
-    SchedulingParameters,
-    get_vehicle_params,
-    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
-    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY
-)
+from .firstLayerObserverBase import FirstLayerObserverBase
+from ..qlpv_vehicle_dynamics_obs import QLPVVehicleDynamicsObs, SchedulingParameters, get_vehicle_params, IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM, MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY
 
 class ZLayer1Observer(FirstLayerObserverBase):
     """

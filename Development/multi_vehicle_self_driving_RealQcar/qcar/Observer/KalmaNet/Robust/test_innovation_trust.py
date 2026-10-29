@@ -6,9 +6,9 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from innovation_trust import InnovationTrustFilter
-from simulation_benchmark import HERE, attacked_samples, generate_drive, model_config, run_estimator
-from robustKLnet import RobustKalmanNetStateEstimator
+from qcar.Observer.KalmaNet.Robust.innovation_trust import InnovationTrustFilter
+from qcar.Observer.KalmaNet.Robust.simulation_benchmark import HERE, attacked_samples, generate_drive, model_config, run_estimator
+from qcar.Observer.KalmaNet.Robust.robustKLnet import RobustKalmanNetStateEstimator
 
 
 class InnovationTrustTests(unittest.TestCase):
@@ -100,8 +100,8 @@ class InnovationTrustTests(unittest.TestCase):
 
     def test_vehicle_observer_initialization_uses_simulation_overrides(self):
         from types import SimpleNamespace
-        from Observer.VehicleObserverSimple import VehicleObserver
-        from simulation.robust_estimator_config import simulation_estimator_params
+        from qcar.Observer.VehicleObserverSimple import VehicleObserver
+        from qcar.simulation.robust_estimator_config import simulation_estimator_params
         import logging
         # Exercise the actual merge/factory path without starting fleet services.
         observer = VehicleObserver.__new__(VehicleObserver)
@@ -149,7 +149,7 @@ class InnovationTrustTests(unittest.TestCase):
         self.assertLess(abs(estimator.state[3]-self.drive["truth"][-1, 3]), .04)
 
     def test_isolated_gyro_step_during_gps_outage(self):
-        from innovation_trust import wrap
+        from qcar.Observer.KalmaNet.Robust.innovation_trust import wrap
         estimator = self.core()
         for i, sample in enumerate(self.drive["samples"]):
             if i >= 100:

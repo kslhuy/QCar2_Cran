@@ -16,38 +16,38 @@ except Exception:
     IS_PHYSICAL_QCAR = False
 # from hal.products.mats import SDCSRoadMap
 
-from config_main import VehicleMainConfig
-from pcb_connection import PcbConnectionMonitor
-from logging_utils import VehicleLogger, PerformanceMonitor
-from StateMachine import VehicleState, VehicleStateMachine, Gear
-from ground_station_client import GroundStationClient
-from safety import WatchdogTimer
-from Yolo.YoLo import YOLOManager
-from Controller.platoon_controller import PlatoonController, PlatoonConfig
-from command_handler import CommandHandler
-from V2V.v2v_manager import V2VManager, V2VBroadcastConfig
-from Observer.VehicleObserverSimple import VehicleObserver
-from Taxi.taxi_manager import TaxiManager
+from qcar.config_main import VehicleMainConfig
+from qcar.pcb_connection import PcbConnectionMonitor
+from qcar.logging_utils import VehicleLogger, PerformanceMonitor
+from qcar.StateMachine import VehicleState, VehicleStateMachine, Gear
+from qcar.ground_station_client import GroundStationClient
+from qcar.safety import WatchdogTimer
+from qcar.Yolo.YoLo import YOLOManager
+from qcar.Controller.platoon_controller import PlatoonController, PlatoonConfig
+from qcar.command_handler import CommandHandler
+from qcar.V2V.v2v_manager import V2VManager, V2VBroadcastConfig
+from qcar.Observer.VehicleObserverSimple import VehicleObserver
+from qcar.Taxi.taxi_manager import TaxiManager
 
 # from Observer.estimation_scopes import EstimationScopeManager, LocalStatePreset, LocalControlPreset, FleetPositionPreset, FleetStatePreset
-from Controller.controller_manager import ControllerManager
+from qcar.Controller.controller_manager import ControllerManager
 
 try:
-    from Calibration.On_Track_SysID.src.online_sysid_zmq_client import (
+    from qcar.Calibration.On_Track_SysID.src.online_sysid_zmq_client import (
         OnlineSysIDZMQClient,
     )
 except Exception:
     OnlineSysIDZMQClient = None
 
 try:
-    from Calibration.online_calibration_zmq_client import (
+    from qcar.Calibration.online_calibration_zmq_client import (
         OnlineCalibrationZMQClient,
     )
 except Exception:
     OnlineCalibrationZMQClient = None
 
 try:
-    from Observer.KalmaNet.Robust.robust_kalmannet_dataset import (
+    from qcar.Observer.KalmaNet.Robust.robust_kalmannet_dataset import (
         RobustKalmanNetDatasetRecorder,
     )
 except Exception:
@@ -121,7 +121,7 @@ class VehicleLogic:
         )
 
         try:
-            from V2V.AttackModule.V2VAttackInjector import V2VAttackInjector
+            from qcar.V2V.AttackModule.V2VAttackInjector import V2VAttackInjector
             attack_config_path = os.path.join(os.path.dirname(__file__), "V2V", "AttackModule", "attack_config.yaml")
             self.v2v_manager = V2VAttackInjector(
                 v2v_manager=base_v2v_manager,
@@ -509,7 +509,7 @@ class VehicleLogic:
                 self.vehicle_logger.logger.warning("V2V Attack Module not available")
                 return
 
-            from V2V.AttackModule.AttackScenarios import build_attack_scenario
+            from qcar.V2V.AttackModule.AttackScenarios import build_attack_scenario
 
             attack_type = str(data.get('attack_type', 'Bogus')).strip()
             case_num = int(data.get('case_num', 1))
@@ -1304,7 +1304,7 @@ class VehicleLogic:
         if twin is None or communication is None:
             return None
 
-        from electronics import ElectronicsV2VBridge
+        from qcar.electronics import ElectronicsV2VBridge
 
         bridge = ElectronicsV2VBridge(twin, config)
         communication.set_datagram_adapter(bridge)

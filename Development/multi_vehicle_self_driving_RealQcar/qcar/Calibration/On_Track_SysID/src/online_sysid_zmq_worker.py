@@ -12,6 +12,20 @@ python Development/multi_vehicle_self_driving_RealQcar/qcar/Calibration/On_Track
 
 from __future__ import annotations
 
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar.Calibration.On_Track_SysID.src":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Calibration.On_Track_SysID.src"
+
+
 import argparse
 import time
 from typing import Any, Dict
@@ -23,7 +37,7 @@ try:
 except Exception as exc:
     raise RuntimeError("pyzmq is required for online_sysid_zmq_worker") from exc
 
-from online_sysid_service import OnlineSysIDService
+from qcar.Calibration.On_Track_SysID.src.online_sysid_service import OnlineSysIDService
 
 
 SAMPLE_RCVHWM = 8192

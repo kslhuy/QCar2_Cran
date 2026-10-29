@@ -4,6 +4,20 @@ Provides YOLO object detection and lane detection for virtual QCar.
 Optional LiDAR-camera fusion for improved obstacle distance estimation.
 """
 
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar.Yolo":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Yolo"
+
+
 import numpy as np
 import cv2
 import os
@@ -11,11 +25,11 @@ import sys
 import argparse
 from typing import Optional
 
-from DepthAlignment.QCar2DepthAlignedCamera import QCar2DepthAlignedCamera
-from YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy, DetectionBuffers
+from qcar.Yolo.DepthAlignment.QCar2DepthAlignedCamera import QCar2DepthAlignedCamera
+from qcar.Yolo.YOLOv8Wrapper_Huy import YOLOv8Wrapper_Huy, DetectionBuffers
 from qvl.multi_agent import readRobots
-from YoLo import YOLOPublisher, YOLOVideoPublisher
-from yolo_config import DEFAULT_CONFIG_PATH, YoloServerConfig, parse_bool_string
+from qcar.Yolo.YoLo import YOLOPublisher, YOLOVideoPublisher
+from qcar.Yolo.yolo_config import DEFAULT_CONFIG_PATH, YoloServerConfig, parse_bool_string
 
 # LiDAR Fusion imports (optional, behind --lidar-fusion flag)
 try:
@@ -23,8 +37,8 @@ try:
     # _lidar_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'LidarFusion')
     # if _lidar_dir not in sys.path:
     #     sys.path.insert(0, _lidar_dir)
-    from LidarFusion.RobotGeometryManager import RobotGeometryManager
-    from LidarFusion.qcar_utils_HUY import *
+    from qcar.Yolo.LidarFusion.RobotGeometryManager import RobotGeometryManager
+    from qcar.Yolo.LidarFusion.qcar_utils_HUY import *
     LIDAR_FUSION_AVAILABLE = True
 except ImportError as e:
     print(f"[LIDAR] WARNING: LiDAR fusion modules not available: {e}")
@@ -33,7 +47,7 @@ except ImportError as e:
 
 if LIDAR_FUSION_AVAILABLE:
     try:
-        from LidarFusion.YOLOv8Wrapper_Huy_lidar import EnhancedObstacle
+        from qcar.Yolo.LidarFusion.YOLOv8Wrapper_Huy_lidar import EnhancedObstacle
     except Exception:
         EnhancedObstacle = None
 
@@ -45,7 +59,7 @@ if _qcar_dir not in sys.path:
 
 # Lane detection module (optional)
 try:
-    from LaneFollow import create_lane_detector_from_config, LaneDetectionResult
+    from qcar.Yolo.LaneFollow import create_lane_detector_from_config, LaneDetectionResult
 
     LANE_MODULE_AVAILABLE = True
 except ImportError as e:

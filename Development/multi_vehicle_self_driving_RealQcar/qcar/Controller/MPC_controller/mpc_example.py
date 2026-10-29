@@ -6,6 +6,20 @@ Demonstrates how to use the MPC controller for vehicle control:
 2. With existing controller interfaces (wrappers)
 3. With different vehicle models (kinematic vs dynamic)
 """
+
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar.Controller.MPC_controller":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[2]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Controller.MPC_controller"
+
 import numpy as np
 import matplotlib.pyplot as plt
 import sys
@@ -23,7 +37,7 @@ except ImportError:
     _sim_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'simulation')
     if _sim_dir not in sys.path:
         sys.path.insert(0, _sim_dir)
-    from vehiclemodels.vehicle_parameters import get_qcar_parameters
+    from qcar.simulation.vehiclemodels.vehicle_parameters import get_qcar_parameters
 
 def example_standalone_mpc():
     """Example: Using MPC as a standalone combined controller."""
@@ -31,7 +45,7 @@ def example_standalone_mpc():
     print("Example 1: Standalone MPC Controller")
     print("=" * 60)
     
-    from mpc_controller import CasADiMPCController
+    from qcar.Controller.MPC_controller.mpc_controller import CasADiMPCController
     
     # Load QCar parameters
     qcar_params = get_qcar_parameters()
@@ -164,7 +178,7 @@ def example_with_factory():
     print("Example 2: MPC via Factory (Standalone)")
     print("=" * 60)
     
-    from mpc_controller import MPCControllerFactory
+    from qcar.Controller.MPC_controller.mpc_controller import MPCControllerFactory
     
     # Create MPC controller via factory - auto-loads QCar vehicle params
     mpc = MPCControllerFactory.create('mpc', params={
@@ -209,7 +223,7 @@ def example_path_following():
     print("Example 3: MPC Waypoint Path Following")
     print("=" * 60)
     
-    from mpc_controller import CasADiMPCController
+    from qcar.Controller.MPC_controller.mpc_controller import CasADiMPCController
     
     # Load parameters
     qcar_params = get_qcar_parameters()
@@ -330,7 +344,7 @@ def example_dynamic_model():
     print("Example 4: Dynamic Bicycle Model MPC")
     print("=" * 60)
     
-    from mpc_controller import DynamicBicycleMPCController
+    from qcar.Controller.MPC_controller.mpc_controller import DynamicBicycleMPCController
     
     # Load parameters
     qcar_params = get_qcar_parameters()
@@ -366,7 +380,7 @@ def example_factory_usage():
     print("Example 5: Using MPC Controller Factory")
     print("=" * 60)
     
-    from mpc_controller import MPCControllerFactory
+    from qcar.Controller.MPC_controller.mpc_controller import MPCControllerFactory
     
     # Create kinematic MPC (only pass valid MPC config keys, not vehicle params)
     mpc_kinematic = MPCControllerFactory.create(

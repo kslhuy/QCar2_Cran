@@ -1,26 +1,27 @@
 """Analytic and failure-contract checks for the estimator/control boundaries."""
 import threading
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import numpy as np
 
-from config_io import load_yaml_mapping
-from Observer.fleet_state_estimators import ConsensusFleetEstimator, _state_dict_to_array
-from Observer.KalmaNet.Robust.innovation_trust import InnovationTrustFilter
-from Observer.local_state_estimators import EKFStateEstimator
-from Observer.relative_state_estimators import SA_ACC_UIO_Estimator
-from Observer.TrustbasedDistributedObserver.contamination_rollback import ContaminationRollback
-from Observer.TrustbasedDistributedObserver.external_measurement_cache import ExternalMeasurementCache
-from Observer.TrustbasedDistributedObserver.estimator_config import normalize_vehicle_model_config
-from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import TrustBasedFleetEstimator
-from Observer.TrustbasedDistributedObserver.weight_trust_module import WeightConfig, WeightTrustModule
-from Observer.VehicleObserverSimple import VehicleObserver
-from electronics.trust_observer_native import TrustObserverShadow
-from simulation.observer_pipeline import run_pipeline
-from simulation.relative_sensor import MockRelativeSensor
+from qcar.config_io import load_yaml_mapping
+from qcar.Observer.fleet_state_estimators import ConsensusFleetEstimator, _state_dict_to_array
+from qcar.Observer.KalmaNet.Robust.innovation_trust import InnovationTrustFilter
+from qcar.Observer.local_state_estimators import EKFStateEstimator
+from qcar.Observer.relative_state_estimators import SA_ACC_UIO_Estimator
+from qcar.Observer.TrustbasedDistributedObserver.contamination_rollback import ContaminationRollback
+from qcar.Observer.TrustbasedDistributedObserver.external_measurement_cache import ExternalMeasurementCache
+from qcar.Observer.TrustbasedDistributedObserver.estimator_config import normalize_vehicle_model_config
+from qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import TrustBasedFleetEstimator
+from qcar.Observer.TrustbasedDistributedObserver.weight_trust_module import WeightConfig, WeightTrustModule
+from qcar.Observer.VehicleObserverSimple import VehicleObserver
+from qcar.electronics.trust_observer_native import TrustObserverShadow
+from qcar.simulation.observer_pipeline import run_pipeline
+from qcar.simulation.relative_sensor import MockRelativeSensor
 
 
 class FlowMathTests(unittest.TestCase):
@@ -164,7 +165,7 @@ class FlowMathTests(unittest.TestCase):
         self.assertEqual(len(estimator.received_local_states[1]), 2)
 
     def test_relative_descriptor_reconstruction_and_stability(self):
-        cfg = load_yaml_mapping("Observer/config_relative_estimators.yaml")["relative"]["sa_acc_uio"]
+        cfg = load_yaml_mapping(Path(__file__).resolve().parents[1] / "Observer/config_relative_estimators.yaml")["relative"]["sa_acc_uio"]
         observer = SA_ACC_UIO_Estimator(cfg)
         self.addCleanup(observer.stop_recording)
         np.testing.assert_allclose(observer.Pz @ observer.E + observer.Qz @ observer.Ce, np.eye(4), atol=1e-10)
@@ -228,7 +229,7 @@ class FlowMathTests(unittest.TestCase):
         self.assertAlmostEqual(abs(result[2]), np.pi)
 
     def test_selected_qcar_ekf_does_not_switch_on_initialization_error(self):
-        with patch("Observer.local_state_estimators.QCarEKF", None):
+        with patch("qcar.Observer.local_state_estimators.QCarEKF", None):
             with self.assertRaisesRegex(RuntimeError, "Selected QCarEKF"):
                 EKFStateEstimator(config={"use_qcar_ekf": True})
         estimator = EKFStateEstimator(config={"use_qcar_ekf": False})
@@ -273,7 +274,7 @@ class FlowMathTests(unittest.TestCase):
         with patch.object(observer, "_cleanup_old_data", side_effect=ValueError("test failure")):
             with self.assertRaisesRegex(RuntimeError, "consensus"):
                 observer.update(np.zeros(5), .02, self.now, np.zeros(2))
-        from Observer.ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
+        from qcar.Observer.ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
         observer = DistributedLuenbergerEstimator.__new__(DistributedLuenbergerEstimator)
         observer.stop_recording = lambda: None
         observer.consensus_estimator = None
@@ -284,14 +285,14 @@ class FlowMathTests(unittest.TestCase):
                 observer.update(np.zeros(5), .02, self.now, np.zeros(2))
 
     def test_distributed_gain_loader_has_no_missing_file_substitution(self):
-        from Observer.ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
+        from qcar.Observer.ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
         with tempfile.TemporaryDirectory() as folder:
             harness = SimpleNamespace(_extra_config_dir=folder, observer_size=1)
             with self.assertRaises(FileNotFoundError):
                 DistributedLuenbergerEstimator._load_K_matrices_from_yaml(harness)
 
     def test_distributed_consensus_uses_the_senders_complete_reference_frame(self):
-        from Observer.ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
+        from qcar.Observer.ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
         observer = DistributedLuenbergerEstimator(1, 4, config={"debug_recording": False})
         self.addCleanup(observer.close)
         observer.add_received_local_state(0, self.packet(100., 0.), self.now)
@@ -300,7 +301,7 @@ class FlowMathTests(unittest.TestCase):
         np.testing.assert_allclose(observer._compute_consensus_term(np.zeros(9), self.now), 0., atol=1e-12)
 
     def test_distributed_luenberger_four_vehicle_runtime_smoke(self):
-        from Observer.ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
+        from qcar.Observer.ShengyaObs.distributed_luenberger_estimator import DistributedLuenbergerEstimator
         observers = []
         fields = ("x", "y", "theta", "velocity", "acceleration")
         for vehicle in range(4):

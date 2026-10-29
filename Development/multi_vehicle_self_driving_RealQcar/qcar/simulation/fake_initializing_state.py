@@ -9,15 +9,13 @@ import sys
 import os
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
-from StateMachine.state_base import StateBase
-from StateMachine.vehicle_state import VehicleState, StateTransitionReason
+from qcar.StateMachine.state_base import StateBase
+from qcar.StateMachine.vehicle_state import VehicleState, StateTransitionReason
 import traceback
 
 
 # Add parent directory to fix import issues
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
 
 # Import CommandType with proper error handling - import from parent qcar directory
 try:
@@ -25,10 +23,8 @@ try:
     import sys
     import os
     qcar_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Go up to qcar directory
-    if qcar_dir not in sys.path:
-        sys.path.insert(0, qcar_dir)
     
-    from command_handler import CommandType
+    from qcar.command_handler import CommandType
     COMMAND_TYPE_AVAILABLE = True
     print(f"[+] CommandType imported successfully from {qcar_dir}")
 except ImportError as e:
@@ -218,7 +214,7 @@ class FakeInitializingState(StateBase):
                 yolo_manager.yolo_drive = None
 
             try:
-                from Yolo.YoLo import YOLOData
+                from qcar.Yolo.YoLo import YOLOData
                 yolo_manager._cached_data = YOLOData()
             except Exception:
                 pass
@@ -261,7 +257,7 @@ class FakeInitializingState(StateBase):
             # Retrieve disturbance mode from mock vehicle to ensure observer matches simulation
             disturbance_mode = parent_fake_vehicle.mock_qcar.disturbance_mode
 
-            from simulation.robust_estimator_config import simulation_estimator_params, simulation_motion_params
+            from qcar.simulation.robust_estimator_config import simulation_estimator_params, simulation_motion_params
             observer = self.vehicle_logic.vehicle_observer
             selection = parent_fake_vehicle.local_estimator_override or parent_fake_vehicle.sim_config.get(
                 'state_estimation', {}).get('local_estimator_type', observer.local_estimator_type)

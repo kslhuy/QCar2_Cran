@@ -14,10 +14,10 @@ import time
 import numpy as np
 from typing import Dict, Any, Tuple, Optional
 
-from StateMachine.state_base import StateBase
-from StateMachine.vehicle_state import VehicleState, StateTransitionReason
+from qcar.StateMachine.state_base import StateBase
+from qcar.StateMachine.vehicle_state import VehicleState, StateTransitionReason
 from hal.products.mats import SDCSRoadMap
-from Yolo.YoLo import YOLOReceiver, YOLODriveLogic
+from qcar.Yolo.YoLo import YOLOReceiver, YOLODriveLogic
 
 
 class ROSInitializingState(StateBase):
@@ -261,7 +261,7 @@ class ROSInitializingState(StateBase):
     ) -> Optional[Tuple[VehicleState, StateTransitionReason]]:
         """Handle commands during initialization"""
         try:
-            from command_handler import CommandType
+            from qcar.command_handler import CommandType
 
             if command_type == CommandType.EMERGENCY_STOP:
                 self.logger.logger.warning("[!] Emergency stop during initialization")

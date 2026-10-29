@@ -101,7 +101,7 @@ class RuntimeSensorAttackMixin:
             try:
                 from .sensor_attack_augmentation import RuntimeAttackConfig, RuntimeSensorAttackSimulator
             except ImportError:
-                from sensor_attack_augmentation import RuntimeAttackConfig, RuntimeSensorAttackSimulator
+                from qcar.Observer.KalmaNet.Robust.sensor_attack_augmentation import RuntimeAttackConfig, RuntimeSensorAttackSimulator
 
             normalized_config = self._normalize_runtime_attack_config(config)
             normalized_config["enabled"] = True

@@ -5,6 +5,20 @@ injected before heading fusion, and each rollout has one initialization only.
 """
 from __future__ import annotations
 
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.Observer.KalmaNet.Robust":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.KalmaNet.Robust"
+
+
 import contextlib
 import copy
 import io
@@ -19,8 +33,6 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 QCAR = HERE.parents[2]
-if str(QCAR) not in sys.path:
-    sys.path.insert(0, str(QCAR))
 
 SCENARIOS = (
     "clean", "gps_jump", "gps_ramp", "gps_freeze", "gps_dropout",
@@ -48,7 +60,7 @@ def model_config():
 
 def generate_drive(seed=1, duration=30.0, dt=0.02, gps_hz=10.0,
                    noise=True, mismatch=0.0, model_type="kinematic"):
-    from simulation.mock_vehicle import MockQCar
+    from qcar.simulation.mock_vehicle import MockQCar
     rng = np.random.default_rng(seed)
     cfg = yaml.safe_load((QCAR / "simulation/parameters.yaml").read_text(encoding="utf-8"))
     cfg["vehicle"].update(model_type=model_type, longitudinal_model="qlabs_velocity")
@@ -197,9 +209,9 @@ def evaluate(seeds=(101, 102, 103), duration=30., dt=.02, checkpoint=None,
              gps_hz=10., model_type="kinematic", noise=True):
     import torch
     torch.set_num_threads(1)
-    from Observer.local_state_estimators import EKFStateEstimator
-    from robustKLnet import RobustKalmanNetStateEstimator
-    from innovation_trust import InnovationTrustFilter
+    from qcar.Observer.local_state_estimators import EKFStateEstimator
+    from qcar.Observer.KalmaNet.Robust.robustKLnet import RobustKalmanNetStateEstimator
+    from qcar.Observer.KalmaNet.Robust.innovation_trust import InnovationTrustFilter
     results, predictions = [], {}
     for seed in seeds:
         drive = generate_drive(seed, duration, dt, gps_hz, noise, mismatch, model_type)

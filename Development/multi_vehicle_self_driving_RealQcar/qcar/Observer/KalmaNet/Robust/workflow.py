@@ -1,6 +1,20 @@
 """One entry point for simulation training, headless evaluation and web replay."""
 from __future__ import annotations
 
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.Observer.KalmaNet.Robust":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.KalmaNet.Robust"
+
+
 import argparse
 from datetime import datetime
 import importlib.util
@@ -13,18 +27,22 @@ import subprocess
 import sys
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[5]
-WEB = ROOT / "GroundStation-Qcar-App"
-RUNS = HERE / "results/workflow"
+ROOT = (Path(os.environ["QCAR_WORKSPACE"]).expanduser().resolve()
+        if os.environ.get("QCAR_WORKSPACE") else
+        next((parent for parent in HERE.parents if (parent / "GroundStation-Qcar-App").is_dir()), None))
+WEB = ROOT / "GroundStation-Qcar-App" if ROOT else None
+RUNS = Path(os.environ.get("QCAR_RUNS_DIR", str(
+    HERE / "results/workflow" if ROOT else Path.cwd() / "qcar_runs/workflow"
+))).expanduser().resolve()
 DEFAULT_MODEL = HERE / "models/innovation_trust_sim.npz"
-REPLAY = WEB / "public/evaluation/latest.json"
+REPLAY = WEB / "public/evaluation/latest.json" if WEB else None
 ACTIONS = ("menu", "check", "train", "quick", "full", "web", "closed-loop", "closed-loop-web", "replay")
 
 
 def execute(script, *args):
     command = [sys.executable, "-u", str(HERE/script), *map(str, args)]
     print("\n> " + subprocess.list2cmdline(command), flush=True)
-    subprocess.run(command, cwd=HERE, check=True)
+    subprocess.run(command, check=True)
 
 
 def require_python():
@@ -35,6 +53,8 @@ def require_python():
 
 
 def require_web():
+    if WEB is None or not WEB.is_dir():
+        raise RuntimeError("Web replay requires the source checkout. Set QCAR_WORKSPACE to its root directory.")
     npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
     if not npm or not shutil.which("node"):
         raise RuntimeError("Node.js/npm missing. Install Node.js and reopen the terminal.")
@@ -82,12 +102,12 @@ def print_scores(path):
 
 def serve(source, port, no_browser):
     require_web()
-    from export_evaluation_replay import export_replay
+    from qcar.Observer.KalmaNet.Robust.export_evaluation_replay import export_replay
     export_replay(source, REPLAY)
     # Do not silently switch ports or attach to an unrelated server.
     with socket.socket() as probe:
         if probe.connect_ex(("127.0.0.1", port)) == 0:
-            raise RuntimeError(f"Port {port} is in use. Stop that server or use -Port {port+1}.")
+            raise RuntimeError(f"Port {port} is in use. Stop that server or use --port {port+1}.")
     url = f"http://127.0.0.1:{port}/?evaluation=1"
     print(f"\nEvaluation replay: {url}\nCtrl+C stops this web server. No bridge is required.", flush=True)
     command = [shutil.which("node"), str(WEB/"node_modules/vite/bin/vite.js"),
@@ -128,8 +148,11 @@ def main(argv=None):
     print(f"Python: {sys.executable}", flush=True)
     if args.action == "check":
         print(f"Python dependencies: OK\nDelivered checkpoint: {model_path('')}")
-        require_web()
-        print(f"Frontend dependencies: OK\nGuide: {ROOT/'ROBUST_KALMANNET_WORKFLOW.md'}")
+        if ROOT:
+            require_web()
+            print(f"Frontend dependencies: OK\nGuide: {ROOT/'ROBUST_KALMANNET_WORKFLOW.md'}")
+        else:
+            print("Headless installation: OK. Web replay needs QCAR_WORKSPACE pointing to a source checkout.")
         return
     if args.action in ("web", "replay", "closed-loop-web"):
         require_web()  # Fail before spending time on an evaluation.
@@ -145,7 +168,7 @@ def main(argv=None):
         if not args.smoke:
             remember("training", output)
         print(f"\nNew checkpoint: {output}\nTraining history: {output.with_suffix('.history.json')}")
-        print("Next: .\\robust_workflow.cmd quick -Checkpoint latest" if not args.smoke else
+        print("Next: python -m qcar workflow quick --checkpoint latest" if not args.smoke else
               "Smoke training only. It has not been selected as the latest trained model.")
         return
     if args.action == "replay":
@@ -175,7 +198,7 @@ def main(argv=None):
     if args.action in ("web", "replay", "closed-loop-web"):
         serve(source, args.port, args.no_browser)
     else:
-        print("\nView this result: .\\robust_workflow.cmd replay")
+        print("\nView this result: python -m qcar workflow replay")
 
 
 if __name__ == "__main__":

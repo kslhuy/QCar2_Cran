@@ -15,13 +15,13 @@ parent_dir = os.path.dirname(os.path.abspath(__file__))
 if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
-from vehiclemodels.vehicle_dynamics_qlpv import (
+from qcar.simulation.vehiclemodels.vehicle_dynamics_qlpv import (
     vehicle_dynamics_qlpv,
     compute_tire_forces_linear,
     compute_tire_forces_load_transfer,
     compute_tire_forces_pacejka
 )
-from vehiclemodels.vehicle_parameters import setup_vehicle_parameters
+from qcar.simulation.vehiclemodels.vehicle_parameters import setup_vehicle_parameters
 
 def run_simulation(scenario_name, throttle_profile, steering_profile, dt=0.001, duration=5.0):
     """Run simulation for a specific scenario using 3 different tire configurations"""

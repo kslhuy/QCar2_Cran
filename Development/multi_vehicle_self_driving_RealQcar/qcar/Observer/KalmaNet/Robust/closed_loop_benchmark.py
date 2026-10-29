@@ -3,6 +3,20 @@
 This is a deterministic headless control-loop test, not the networked ground
 station UI. The plant trajectory changes in response to each estimator.
 """
+
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.Observer.KalmaNet.Robust":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.KalmaNet.Robust"
+
 import argparse
 import contextlib
 import io
@@ -14,13 +28,13 @@ import numpy as np
 import torch
 import yaml
 
-from simulation_benchmark import HERE, QCAR, model_config, wrap, metrics
-from simulation.mock_vehicle import MockQCar
-from simulation.robust_estimator_config import simulation_estimator_params
-from Observer.local_state_estimators import EKFStateEstimator
-from Controller.lateral_controllers import StanleyController
-from Controller.longitudinal_controllers import PIDVelocityController
-from robustKLnet import RobustKalmanNetStateEstimator
+from qcar.Observer.KalmaNet.Robust.simulation_benchmark import HERE, QCAR, model_config, wrap, metrics
+from qcar.simulation.mock_vehicle import MockQCar
+from qcar.simulation.robust_estimator_config import simulation_estimator_params
+from qcar.Observer.local_state_estimators import EKFStateEstimator
+from qcar.Controller.lateral_controllers import StanleyController
+from qcar.Controller.longitudinal_controllers import PIDVelocityController
+from qcar.Observer.KalmaNet.Robust.robustKLnet import RobustKalmanNetStateEstimator
 
 CLOSED_LOOP_SCENARIOS = ("clean", "gps_jump", "gps_ramp", "gps_freeze", "gps_dropout",
                          "heading_bias", "wheel_bias", "wheel_freeze", "gps_wheel")

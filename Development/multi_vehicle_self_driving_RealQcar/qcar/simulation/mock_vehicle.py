@@ -19,7 +19,7 @@ from .vehiclemodels.vehicle_dynamics_qlpv import (
     compute_tire_forces_linear,
 )
 from .vehiclemodels.vehicle_parameters import setup_vehicle_parameters
-from Observer.LocalNeuralObs.qlpv_vehicle_dynamics_obs import QLPVVehicleDynamicsObs
+from qcar.Observer.LocalNeuralObs.qlpv_vehicle_dynamics_obs import QLPVVehicleDynamicsObs
 
 class MockQCar:
     """

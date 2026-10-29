@@ -20,6 +20,20 @@ Test signals:
   5. Noisy ramp (robustness test)
 """
 
+# Preserve direct-file launches while using the canonical package internally.
+if __package__ != "qcar.Observer.LocalNeuralObs.1LayerObs":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.LocalNeuralObs.1LayerObs"
+
+
 import numpy as np
 import sys
 from pathlib import Path
@@ -28,17 +42,9 @@ from dataclasses import dataclass
 
 # Add parent directory to path
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
 
 # Import from centralized differentiators module
-from differentiators import (
-    DirtyDerivative,
-    HighGainDifferentiator,
-    SlidingModeDifferentiator,
-    create_differentiator,
-    create_differentiator_from_config,
-    load_differentiator_config,
-)
+from .differentiators import DirtyDerivative, HighGainDifferentiator, SlidingModeDifferentiator, create_differentiator, create_differentiator_from_config, load_differentiator_config
 
 
 # ==============================================================================

@@ -12,15 +12,15 @@ QCAR_ROOT = os.path.dirname(
 if QCAR_ROOT not in sys.path:
     sys.path.insert(0, QCAR_ROOT)
 
-from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (  # noqa: E402
+from qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (  # noqa: E402
     TrustBasedFleetEstimator,
 )
-from Observer.TrustbasedDistributedObserver.trust_model import TrustScore  # noqa: E402
+from qcar.Observer.TrustbasedDistributedObserver.trust_model import TrustScore  # noqa: E402
 
 
 class CleanV2VRelativeMeasurementTests(unittest.TestCase):
     def setUp(self):
-        logging_patch = patch("Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator.TrustWeightLogger.start", return_value="")
+        logging_patch = patch("qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator.TrustWeightLogger.start", return_value="")
         logging_patch.start()
         self.addCleanup(logging_patch.stop)
         self.estimator = TrustBasedFleetEstimator(

@@ -27,11 +27,9 @@ import os
 
 # Add Yolo folder to path for importing LaneFollow
 _yolo_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'Yolo')
-if _yolo_dir not in sys.path:
-    sys.path.insert(0, _yolo_dir)
 
-# Import lane detection types from LaneFollow module (moved from here)
-from LaneFollow.lane_detection_interface import (
+# Import lane detection types from qcar.Yolo.LaneFollow module (moved from here)
+from qcar.Yolo.LaneFollow.lane_detection_interface import (
     LaneDetectionResult, 
     LaneDetectionMethod,
     convert_yolo_data_to_lane_result

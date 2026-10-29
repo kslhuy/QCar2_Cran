@@ -14,7 +14,7 @@ from enum import Enum
 import numpy as np
 
 
-from V2V.v2v_communication import V2VCommunication, V2VMessage, MessageType
+from qcar.V2V.v2v_communication import V2VCommunication, V2VMessage, MessageType
 
 
 class V2VDataType(Enum):

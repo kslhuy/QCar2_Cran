@@ -3,6 +3,12 @@ Development/install/*
 dev/install/*
 Development/log/*
 __pycache__/
+*.egg-info/
+/build/
+/dist/
+/.venv/
+/tmp/portability/
+qcar_runs/
 .pytest_cache/
 .serena/
 

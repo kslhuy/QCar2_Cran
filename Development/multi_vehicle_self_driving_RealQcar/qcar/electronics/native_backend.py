@@ -22,6 +22,9 @@ class NativeFirmwareCore:
         vehicle_id: int,
         publish_rate_hz: float = 20.0,
     ) -> None:
+        if str(library_path).strip().lower() == "auto":
+            from .trust_observer_native import discover_native_library
+            library_path = str(discover_native_library())
         supplied = Path(library_path).expanduser()
         candidates = (
             [supplied]

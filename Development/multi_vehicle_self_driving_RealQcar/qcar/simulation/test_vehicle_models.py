@@ -12,7 +12,7 @@ parent_dir = os.path.dirname(os.path.abspath(__file__))
 if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
-from fake_vehicle_real_logic import MockQCar
+from qcar.simulation.fake_vehicle_real_logic import MockQCar
 
 def test_kinematic_model():
     """Test kinematic single-track model"""

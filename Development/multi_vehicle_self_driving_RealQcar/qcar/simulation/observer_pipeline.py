@@ -4,6 +4,20 @@ Run from qcar: python -m simulation.observer_pipeline --duration 12
 This exercises VehicleObserver with MockQCar plants and independent sensors.
 It does not start Ground Station or substitute synthetic local estimates.
 """
+
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.simulation":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.simulation"
+
 import argparse
 from contextlib import ExitStack, redirect_stdout
 import copy
@@ -17,14 +31,14 @@ from unittest.mock import patch
 
 import numpy as np
 
-from Observer.VehicleObserverSimple import VehicleObserver
-from Observer.TrustbasedDistributedObserver.estimator_config import CLEAN_PREDICTION_MODES
-from Controller.config_controller_loader import ControllerConfig
-from Controller.longitudinal_controllers import CACCLongitudinalController
-from simulation.config import SimulationConfig
-from simulation.mock_vehicle import MockQCar
-from simulation.relative_sensor import LoopbackRelativeSensor, MockRelativeSensor
-from simulation.robust_estimator_config import simulation_estimator_params, simulation_motion_params
+from qcar.Observer.VehicleObserverSimple import VehicleObserver
+from qcar.Observer.TrustbasedDistributedObserver.estimator_config import CLEAN_PREDICTION_MODES
+from qcar.Controller.config_controller_loader import ControllerConfig
+from qcar.Controller.longitudinal_controllers import CACCLongitudinalController
+from qcar.simulation.config import SimulationConfig
+from qcar.simulation.mock_vehicle import MockQCar
+from qcar.simulation.relative_sensor import LoopbackRelativeSensor, MockRelativeSensor
+from qcar.simulation.robust_estimator_config import simulation_estimator_params, simulation_motion_params
 
 
 def run_pipeline(duration=12.0, scenario="clean", seed=91, vehicles=3,
@@ -58,7 +72,7 @@ def run_pipeline(duration=12.0, scenario="clean", seed=91, vehicles=3,
     attack_start, attack_end = duration * 0.3, duration * 0.65
     try:
         with ExitStack() as stack:
-            for module in ("Observer.VehicleObserverSimple", "simulation.mock_sensors", "simulation.mock_vehicle"):
+            for module in ("qcar.Observer.VehicleObserverSimple", "qcar.simulation.mock_sensors", "qcar.simulation.mock_vehicle"):
                 stack.enter_context(patch(f"{module}.time", clock))
             for vehicle in range(vehicles):
                 plant_config = copy.deepcopy(config)

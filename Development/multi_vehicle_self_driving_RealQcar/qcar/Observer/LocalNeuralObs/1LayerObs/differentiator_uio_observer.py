@@ -27,10 +27,9 @@ from dataclasses import dataclass
 import sys
 from pathlib import Path
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
 
 try:
-    from firstLayerObserverBase import FirstLayerObserverBase
+    from .firstLayerObserverBase import FirstLayerObserverBase
 except ImportError:
     # Fallback: define minimal base class
     from abc import ABC, abstractmethod
@@ -43,27 +42,10 @@ except ImportError:
             self.f_uk_hat = np.zeros(unknown_input_dim)
 
 # Import differentiators from centralized module
-from differentiators import (
-    DirtyDerivative,
-    HighGainDifferentiator,
-    SlidingModeDifferentiator,
-    create_differentiator,
-    create_differentiator_from_config,
-    load_differentiator_config,
-)
+from .differentiators import DirtyDerivative, HighGainDifferentiator, SlidingModeDifferentiator, create_differentiator, create_differentiator_from_config, load_differentiator_config
 
 # Import centralized qLPV vehicle dynamics
-sys.path.insert(0, str(parent_dir.parent))
-from qlpv_vehicle_dynamics_obs import (
-    SchedulingParameters,
-    QLPVVehicleDynamicsObs,
-    get_default_vehicle_params,
-    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM,
-    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM,
-    IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D,
-    MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D,
-    create_qlpv_dynamics,
-)
+from ..qlpv_vehicle_dynamics_obs import SchedulingParameters, QLPVVehicleDynamicsObs, get_default_vehicle_params, IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y, STATE_DIM, MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_DIM, IDX8_VX, IDX8_VY, IDX8_PSI, IDX8_R, IDX8_X, IDX8_Y, IDX8_AX, IDX8_AY, STATE_DIM_8D, MEAS8_IDX_VX, MEAS8_IDX_R, MEAS8_IDX_PSI, MEAS8_IDX_X, MEAS8_IDX_Y, MEAS8_IDX_AY, MEAS8_IDX_AX, MEAS_DIM_7D, create_qlpv_dynamics
 
 # Import CVXPY for LMI-based gain design
 try:

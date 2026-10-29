@@ -5,7 +5,7 @@ Loads controller parameters from YAML configuration files.
 Provides a centralized way to manage all controller settings.
 """
 
-from config_io import load_yaml_mapping
+from qcar.config_io import load_yaml_mapping
 import os
 import numpy as np
 from typing import Dict, Any, Optional

@@ -45,17 +45,8 @@ except ImportError:
 import sys
 from pathlib import Path
 parent_dir = Path(__file__).parent.parent  # LocalNeuralObs directory
-sys.path.insert(0, str(parent_dir))
 
-from qlpv_vehicle_dynamics_obs import (
-    SchedulingParameters,
-    QLPVVehicleDynamicsObs,
-    get_default_vehicle_params,
-    STATE_DIM, MEAS_DIM,
-    C_MATRIX_MODES,
-    MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_IDX_AX,
-    IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y,
-)
+from ..qlpv_vehicle_dynamics_obs import SchedulingParameters, QLPVVehicleDynamicsObs, get_default_vehicle_params, STATE_DIM, MEAS_DIM, C_MATRIX_MODES, MEAS_IDX_VX, MEAS_IDX_R, MEAS_IDX_PSI, MEAS_IDX_X, MEAS_IDX_Y, MEAS_IDX_AY, MEAS_IDX_AX, IDX_VX, IDX_VY, IDX_PSI, IDX_R, IDX_X, IDX_Y
 
 
 

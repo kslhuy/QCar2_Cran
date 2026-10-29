@@ -1,3 +1,17 @@
+
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.Observer.KalmaNet.Robust":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.KalmaNet.Robust"
+
 import argparse
 import copy
 import gc
@@ -16,9 +30,9 @@ try:
 except ImportError as exc:
     raise SystemExit("torch is required for training Robust KalmanNet") from exc
 
-from robustKLnet import RSNConfig, RobustStateNet, robuststatenet_loss, weighted_state_mse
-from robust_kalmannet_dataset import RAW_KEYS, build_training_windows, merge_recorded_datasets
-from sensor_attack_augmentation import AttackConfig, SensorAttackAugmenter
+from qcar.Observer.KalmaNet.Robust.robustKLnet import RSNConfig, RobustStateNet, robuststatenet_loss, weighted_state_mse
+from qcar.Observer.KalmaNet.Robust.robust_kalmannet_dataset import RAW_KEYS, build_training_windows, merge_recorded_datasets
+from qcar.Observer.KalmaNet.Robust.sensor_attack_augmentation import AttackConfig, SensorAttackAugmenter
 
 
 DEFAULT_CONFIG = {
@@ -1994,7 +2008,7 @@ def main() -> None:
 if __name__ == "__main__":
     import sys
     if "--simulation-trust" in sys.argv:
-        from train_innovation_trust import main as train_simulation_trust
+        from qcar.Observer.KalmaNet.Robust.train_innovation_trust import main as train_simulation_trust
         train_simulation_trust([arg for arg in sys.argv[1:] if arg != "--simulation-trust"])
     else:
         main()

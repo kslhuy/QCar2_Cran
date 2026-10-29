@@ -164,27 +164,27 @@ def create_first_layer_observer(observer_type: str = 'qlpv',
 
     if observer_type == 'qlpv':
         # Import here to avoid circular imports
-        from qlpv_observer import qLPVAugmentedObserver
+        from .qlpv_observer import qLPVAugmentedObserver
         return qLPVAugmentedObserver(**kwargs)
     elif observer_type == 'qlpv_kalman':
         # Import here to avoid circular imports
-        from qlpv_observer_kalma import qLPVKalmanObserver
+        from .qlpv_observer_kalma import qLPVKalmanObserver
         return qLPVKalmanObserver(**kwargs)
     elif observer_type == 'differentiator_uio':
         # Import here to avoid circular imports
-        from differentiator_uio_observer import DifferentiatorUIOObserver
+        from .differentiator_uio_observer import DifferentiatorUIOObserver
         return DifferentiatorUIOObserver(**kwargs)
     elif observer_type == 'differentiator_uio_ekf':
         # Import here to avoid circular imports
-        from differentiator_uio_ekf import DifferentiatorUIOEKF
+        from .differentiator_uio_ekf import DifferentiatorUIOEKF
         return DifferentiatorUIOEKF(**kwargs)
     elif observer_type == 'z_layer1':
         # Import here to avoid circular imports
-        from z_layer1_observer import ZLayer1Observer
+        from .z_layer1_observer import ZLayer1Observer
         return ZLayer1Observer(**kwargs)
     elif observer_type == 'huy_uio':
         # Import here to avoid circular imports
-        from huy_uio_observer import HuyUIOObserver
+        from .huy_uio_observer import HuyUIOObserver
         return HuyUIOObserver(**kwargs)
     else:
         raise ValueError(f"Unknown observer type: {observer_type}. "

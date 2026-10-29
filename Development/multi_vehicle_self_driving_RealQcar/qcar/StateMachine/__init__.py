@@ -12,7 +12,16 @@ Each state handles its own transition logic internally.
 """
 
 from .vehicle_state import VehicleState, Gear
-from .state_base import StateBase
-from .vehicle_state_machine import VehicleStateMachine
 
 __all__ = ["VehicleState", "Gear", "StateBase", "VehicleStateMachine"]
+
+
+def __getattr__(name):
+    """Enums remain usable without loading controllers or hardware adapters."""
+    if name == "StateBase":
+        from .state_base import StateBase
+        return StateBase
+    if name == "VehicleStateMachine":
+        from .vehicle_state_machine import VehicleStateMachine
+        return VehicleStateMachine
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

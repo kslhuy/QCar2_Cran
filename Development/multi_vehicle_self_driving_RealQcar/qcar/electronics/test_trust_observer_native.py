@@ -9,28 +9,26 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from Observer.TrustbasedDistributedObserver.trust_model import (
+from qcar.Observer.TrustbasedDistributedObserver.trust_model import (
     TriPTrustModel,
     TrustConfig,
     TrustScore,
 )
-from Observer.TrustbasedDistributedObserver.weight_trust_module import (
+from qcar.Observer.TrustbasedDistributedObserver.weight_trust_module import (
     WeightConfig,
     WeightTrustModule,
 )
-from Observer.TrustbasedDistributedObserver.estimator_config import (
+from qcar.Observer.TrustbasedDistributedObserver.estimator_config import (
     normalize_vehicle_model_config,
 )
-from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
+from qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
     TrustBasedFleetEstimator,
 )
 
-from .trust_observer_native import NativeTrustObserverCore
+from .trust_observer_native import NativeTrustObserverCore, default_native_library_path
 
 
-NATIVE_LIBRARY = Path(__file__).resolve().parent / "native" / "build" / (
-    "cran_electronics_core.dll"
-)
+NATIVE_LIBRARY = default_native_library_path()
 
 
 @unittest.skipUnless(

@@ -10,6 +10,20 @@ Components:
 - RemoteScopeViewer: Matplotlib-based real-time visualization
 """
 
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar.GUI.qcar_gui.controllers":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.GUI.qcar_gui.controllers"
+
+
 import threading
 import multiprocessing
 import time
@@ -23,8 +37,7 @@ import numpy as np
 import sys
 import os
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-from scope_data_streamer import (
+from qcar.scope_data_streamer import (
     unpack_scope_data,
     PRESET_FIELDS,
     DEFAULT_FIELDS,
@@ -589,9 +602,6 @@ def _run_scope_plot_process(
 
         try:
             # Import SDCSRoadMap here to avoid dependency issues in main process if not needed
-            sys.path.append(
-                os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-            )
             from hal.products.mats import SDCSRoadMap
 
             if roadmap is None:

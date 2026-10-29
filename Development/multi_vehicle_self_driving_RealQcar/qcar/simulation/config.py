@@ -6,29 +6,17 @@ class SimulationConfig:
     """Configuration loader for vehicle simulation."""
     
     @staticmethod
-    def load_config(config_path: str = "parameters.yaml") -> Dict[str, Any]:
+    def load_config(config_path: str | Path | None = None) -> Dict[str, Any]:
+        """Load packaged defaults, or an explicit path relative to the caller.
+
+        Omitting the argument always selects this package's parameters.yaml.
+        An explicit filename is never silently replaced by a packaged file.
         """
-        Load simulation parameters from a YAML file.
-        
-        Args:
-            config_path: Path to the YAML config file. 
-                         If relative, searches in current directory or package dir.
-        
-        Returns:
-            Dictionary (or OmegaConf object) with configuration.
-        """
-        path = Path(config_path)
-        
-        # If not absolute, check relative to this file
-        if not path.is_absolute():
-            local_path = Path(__file__).parent / config_path
-            if local_path.exists():
-                path = local_path
-        
-        if not path.exists():
-            raise FileNotFoundError(f"Configuration file not found: {path}")
-            
-        conf = OmegaConf.load(str(path))
+        path = (Path(__file__).resolve().parent / "parameters.yaml"
+                if config_path is None else Path(config_path).expanduser())
+        path = path.resolve(strict=True)
+        with path.open(encoding="utf-8-sig") as handle:
+            conf = OmegaConf.load(handle)
         config = OmegaConf.to_object(conf)
         if not isinstance(config, dict):
             raise ValueError(f"Simulation configuration must be a mapping: {path}")

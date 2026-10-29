@@ -9,6 +9,20 @@ This node:
 4. (Optional) Publishes a ZMQ video stream for Ground Station probing
 """
 
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar.Yolo":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Yolo"
+
+
 import os
 import sys
 import time
@@ -29,13 +43,13 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-from limo_yolo import LimoYOLO, DetectionBuffers, detect_line_and_draw
-from YoLo import YOLOVideoPublisher, YOLOPublisher
+from qcar.Yolo.limo_yolo import LimoYOLO, DetectionBuffers, detect_line_and_draw
+from qcar.Yolo.YoLo import YOLOVideoPublisher, YOLOPublisher
 import cv2
 
 try:
-    from LaneFollow import create_lane_detector
-    from LaneFollow.lane_detection_interface import LaneDetectionResult
+    from qcar.Yolo.LaneFollow import create_lane_detector
+    from qcar.Yolo.LaneFollow.lane_detection_interface import LaneDetectionResult
     LANE_MODULE_AVAILABLE = True
 except ImportError as e:
     print(f"[SERVER] WARNING: LaneFollow module not available: {e}")

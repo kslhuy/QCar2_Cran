@@ -26,11 +26,9 @@ from .vehicle_state import VehicleState, StateTransitionReason
 
 # Import CommandType
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
 
 try:
-    from command_types import CommandType
+    from qcar.command_types import CommandType
 
     COMMAND_TYPE_AVAILABLE = True
 except ImportError as e:

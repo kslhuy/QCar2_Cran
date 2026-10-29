@@ -12,15 +12,26 @@ Tests:
 8. Full simulation with synthetic data
 """
 
+# Preserve direct-file launches while using the canonical package internally.
+if __package__ != "qcar.Observer.LocalNeuralObs.2LayerObs":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[3]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.LocalNeuralObs.2LayerObs"
+
+
 import numpy as np
 import sys
 from pathlib import Path
 
 # Add parent directory to path
 parent_dir = Path(__file__).parent
-sys.path.insert(0, str(parent_dir))
-sys.path.insert(0, str(parent_dir.parent))  # LocalNeuralObs
-sys.path.insert(0, str(parent_dir.parent.parent))  # Observer (contains local_state_estimators.py)
 
 # Mock torch if not available (for basic testing)
 try:
@@ -41,7 +52,7 @@ def test_neural_estimator_initialization():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     # Initialize with default config
     estimator = NeuralLuenbergerEstimator()
@@ -69,7 +80,7 @@ def test_neural_estimator_with_initial_pose():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     initial_pose = np.array([10.0, 5.0, 0.5])  # [X, Y, ψ]
     estimator = NeuralLuenbergerEstimator(initial_pose=initial_pose)
@@ -105,7 +116,7 @@ def test_6d_to_4d_state_extraction():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     estimator = NeuralLuenbergerEstimator()
     
@@ -139,7 +150,7 @@ def test_nn_input_preparation_6d():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {'use_acceleration': False, 'input_dim': 6}
     estimator = NeuralLuenbergerEstimator(config=config)
@@ -177,7 +188,7 @@ def test_nn_input_preparation_8d():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {'use_acceleration': True}
     estimator = NeuralLuenbergerEstimator(config=config)
@@ -217,7 +228,7 @@ def test_observer_update_without_gps():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {'use_first_layer': False, 'output_first_layer_only': False}  # Disable first-layer for isolated test
     estimator = NeuralLuenbergerEstimator(
@@ -262,7 +273,7 @@ def test_observer_update_with_gps():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {'use_first_layer': False, 'output_first_layer_only': False}
     estimator = NeuralLuenbergerEstimator(
@@ -310,7 +321,7 @@ def test_first_layer_integration():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     # Test with qLPV first-layer
     config_qlpv = {
@@ -348,7 +359,7 @@ def test_two_layer_update():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {
         'use_first_layer': True,
@@ -406,7 +417,7 @@ def test_state_reset():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     estimator = NeuralLuenbergerEstimator()
     
@@ -441,7 +452,7 @@ def test_simulation_loop():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {
         'use_first_layer': True,
@@ -506,7 +517,7 @@ def test_tire_residual_output():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     estimator = NeuralLuenbergerEstimator()
     
@@ -543,7 +554,7 @@ def test_composite_uio_loss():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {
         'use_first_layer': True,
@@ -611,7 +622,7 @@ def test_default_gain_initialization():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {
         'gain_design_method': 'default',
@@ -654,7 +665,7 @@ def test_hinf_gain_initialization():
         print("⚠️  Skipped (CVXPY not available)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {
         'gain_design_method': 'hinf',
@@ -704,7 +715,7 @@ def test_qlpv_gain_scheduling():
         print("⚠️  Skipped (CVXPY not available)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     config = {
         'gain_design_method': 'qlpv_scheduled',
@@ -752,7 +763,7 @@ def test_gain_stability():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     # Test with hinf if CVXPY available, otherwise default
     try:
@@ -804,7 +815,7 @@ def test_lmi_gain_with_simulation():
         print("⚠️  Skipped (PyTorch required)")
         return True
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
+    from .neural_state_estimator import NeuralLuenbergerEstimator
     
     def run_simulation(estimator, label):
         """Run simulation and return success status"""

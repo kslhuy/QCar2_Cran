@@ -9,10 +9,7 @@ import numpy as np
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Optional, Dict, Tuple
-try:
-    from .KalmaNet.Robust.runtime_sensor_attack import RuntimeSensorAttackMixin
-except ImportError:
-    from KalmaNet.Robust.runtime_sensor_attack import RuntimeSensorAttackMixin
+from .KalmaNet.Robust.runtime_sensor_attack import RuntimeSensorAttackMixin
 
 try:
     from hal.content.qcar_functions import QCarEKF
@@ -1069,13 +1066,13 @@ class LocalEstimatorFactory:
             import importlib
 
             module = importlib.import_module(
-                "Observer.LocalNeuralObs.2LayerObs.neural_state_estimator"
+                "qcar.Observer.LocalNeuralObs.2LayerObs.neural_state_estimator"
             )
             return module.NeuralLuenbergerEstimator
         except (ImportError, ModuleNotFoundError):
             try:
                 # Fallback to root level LocalNeuralObs lazy import
-                from Observer.LocalNeuralObs import NeuralLuenbergerEstimator
+                from qcar.Observer.LocalNeuralObs import NeuralLuenbergerEstimator
 
                 return NeuralLuenbergerEstimator
             except ImportError as e:
@@ -1090,7 +1087,7 @@ class LocalEstimatorFactory:
         try:
             import importlib
 
-            module = importlib.import_module("Observer.KalmaNet.Robust.robustKLnet")
+            module = importlib.import_module("qcar.Observer.KalmaNet.Robust.robustKLnet")
             return module.RobustKalmanNetStateEstimator
         except (ImportError, ModuleNotFoundError) as e:
             raise ImportError(

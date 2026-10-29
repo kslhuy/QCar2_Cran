@@ -1,4 +1,18 @@
 
+# Preserve direct-file launches while using the canonical package internally.
+if __package__ != "qcar.Observer.LocalNeuralObs":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[2]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.Observer.LocalNeuralObs"
+
+
 import sys
 import os
 import numpy as np
@@ -14,15 +28,12 @@ current_dir = Path(__file__).parent.absolute()
 # If we place this test in Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/LocalNeuralObs/
 # then project root is ../../../../
 project_root = current_dir.parent.parent.parent.parent
-sys.path.insert(0, str(project_root))
 
 try:
     # Try importing using sys.path manipulation since '2LayerObs' is not a valid python identifier for direct import
-    sys.path.insert(0, str(current_dir / "2LayerObs"))
-    sys.path.insert(0, str(current_dir / "1LayerObs"))
     
-    from neural_state_estimator import NeuralLuenbergerEstimator
-    from qlpv_observer_kalma import qLPVKalmanObserver
+    from qcar.Observer.LocalNeuralObs import _layer_2LayerObs_neural_state_estimator_NeuralLuenbergerEstimator as NeuralLuenbergerEstimator
+    from qcar.Observer.LocalNeuralObs import _layer_1LayerObs_qlpv_observer_kalma_qLPVKalmanObserver as qLPVKalmanObserver
 except ImportError as e:
     print(f"Import Error: {e}")
     # Try alternate structure if above fails
@@ -62,7 +73,7 @@ def test_shared_dynamics_model():
     # 2. Check connections
     if estimator.first_layer_observer is None:
         print("FAIL: First layer observer not initialized.")
-        return False
+        raise AssertionError("First layer observer was not initialized")
         
     print(f"Estimator initialized with first layer type: {type(estimator.first_layer_observer)}")
     
@@ -80,7 +91,7 @@ def test_shared_dynamics_model():
         print("SUCCESS: Dynamics model instance is SHARED.")
     else:
         print("FAIL: Dynamics model instances are DIFFERENT.")
-        return False
+        raise AssertionError("The neural and first-layer observers must share their dynamics model")
         
     # 4. Verify Parameter Consistency
     # Modify one parameter in main and check if it reflects in layer1
@@ -92,21 +103,17 @@ def test_shared_dynamics_model():
         print("SUCCESS: Parameter modification reflected in both references (Expected).")
     else:
         print("FAIL: Parameter modification NOT reflected.")
-        return False
+        raise AssertionError("The shared model did not expose the same parameters")
     
     # Restore
     main_dynamics.params['lf'] = original_lf
     
-    return True
 
 if __name__ == "__main__":
     try:
-        if test_shared_dynamics_model():
-            print("\nTest Passed!")
-            sys.exit(0)
-        else:
-            print("\nTest Failed!")
-            sys.exit(1)
+        test_shared_dynamics_model()
+        print("\nTest Passed!")
+        sys.exit(0)
     except Exception as e:
         print(f"\nAn error occurred: {e}")
         import traceback

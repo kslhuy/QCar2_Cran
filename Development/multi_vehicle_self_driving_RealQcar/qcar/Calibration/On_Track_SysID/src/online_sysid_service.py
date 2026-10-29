@@ -407,7 +407,7 @@ class OnlineSysIDService:
         )
 
         try:
-            from helpers.train_model import nn_train
+            from qcar.Calibration.On_Track_SysID.src.helpers.train_model import nn_train
 
             c_pf_identified, c_pr_identified = nn_train(
                 training_data=training_data,

@@ -20,7 +20,7 @@ import os
 import yaml
 
 from .config_controller_loader import ControllerConfig, get_controller_config
-from Controller.longitudinal_controllers import ControllerFactory
+from qcar.Controller.longitudinal_controllers import ControllerFactory
 
 
 @dataclass
@@ -255,7 +255,7 @@ class ControllerManager:
 
         # Create new controller
         try:
-            from Controller.lateral_controllers import LateralControllerFactory
+            from qcar.Controller.lateral_controllers import LateralControllerFactory
 
             params = {}
             if self.config:
@@ -318,7 +318,7 @@ class ControllerManager:
 
         # Create new steering controller
         try:
-            from Controller.lateral_controllers import StanleyController
+            from qcar.Controller.lateral_controllers import StanleyController
 
             controller = StanleyController(
                 waypoints=waypoints, config=self.config, logger=self.logger, cyclic=True

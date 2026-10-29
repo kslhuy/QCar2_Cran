@@ -29,21 +29,21 @@ Usage:
 See README.md for detailed documentation.
 """
 
-from Observer.TrustbasedDistributedObserver.trust_model import (
+from qcar.Observer.TrustbasedDistributedObserver.trust_model import (
     TriPTrustModel,
     TrustConfig,
     TrustScore,
     VehicleData
 )
 
-from Observer.TrustbasedDistributedObserver.weight_trust_module import (
+from qcar.Observer.TrustbasedDistributedObserver.weight_trust_module import (
     WeightTrustModule,
     WeightConfig,
     WeightResult,
     AdaptiveWeightCalculator
 )
 
-from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
+from qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
     TrustBasedFleetEstimator,
     create_trust_based_estimator
 )

@@ -152,11 +152,9 @@ def _native_library_candidates(library_path: Optional[str]) -> Iterable[Path]:
             yield qcar_dir / supplied
             yield package_dir / supplied
 
-    names = (
-        "cran_electronics_core.dll",
-        "cran_electronics_core.so",
-        "cran_electronics_core.dylib",
-    )
+    import sys
+    suffix = ".dll" if sys.platform == "win32" else ".dylib" if sys.platform == "darwin" else ".so"
+    names = (f"cran_electronics_core{suffix}", f"libcran_electronics_core{suffix}")
     for build_dir in (
         package_dir / "native" / "build",
         package_dir / "native" / "build" / "Release",
@@ -178,6 +176,14 @@ def discover_native_library(library_path: Optional[str] = None) -> Path:
             return resolved
     checked_text = ", ".join(str(item) for item in checked)
     raise FileNotFoundError(f"CRAN native core was not found; checked: {checked_text}")
+
+
+def default_native_library_path() -> Path:
+    """Find this platform's build, or return its expected path without loading it."""
+    try:
+        return discover_native_library()
+    except FileNotFoundError:
+        return next(iter(_native_library_candidates(None))).resolve()
 
 
 class NativeTrustObserverCore:

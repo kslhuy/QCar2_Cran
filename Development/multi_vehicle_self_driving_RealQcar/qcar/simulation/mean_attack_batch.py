@@ -8,6 +8,20 @@ the six MATLAB Mix_test-style attacks, and writes summary metrics/plots.
 
 from __future__ import annotations
 
+# Keep direct-file launches working, including uploads into a renamed robot folder.
+if __package__ != "qcar.simulation":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.simulation"
+
+
 import argparse
 import csv
 import json
@@ -22,14 +36,12 @@ import yaml
 
 
 QCAR_ROOT = Path(__file__).resolve().parents[1]
-if str(QCAR_ROOT) not in sys.path:
-    sys.path.insert(0, str(QCAR_ROOT))
 
-from Observer.TrustbasedDistributedObserver import (  # noqa: E402
+from qcar.Observer.TrustbasedDistributedObserver import (  # noqa: E402
     trust_based_fleet_estimator as trust_estimator_module,
 )
-from Observer.TrustbasedDistributedObserver.trust_logger import TrustWeightLogger  # noqa: E402
-from Observer.TrustbasedDistributedObserver.estimator_config import (  # noqa: E402
+from qcar.Observer.TrustbasedDistributedObserver.trust_logger import TrustWeightLogger  # noqa: E402
+from qcar.Observer.TrustbasedDistributedObserver.estimator_config import (  # noqa: E402
     CLEAN_PREDICTION_MODES,
     normalize_dynamics_prediction_mode,
 )
@@ -392,9 +404,9 @@ def run_case(
     states = make_initial_states(args.num_vehicles)
     case_log_dir = output_dir / f"case_{attack_case.case_number:02d}_trust_logs"
     estimators = create_estimators(args.num_vehicles, config, states, case_log_dir)
-    from simulation.config import SimulationConfig
-    from simulation.relative_sensor import MockRelativeSensor
-    from Observer.relative_state_estimators import SA_ACC_UIO_Estimator
+    from qcar.simulation.config import SimulationConfig
+    from qcar.simulation.relative_sensor import MockRelativeSensor
+    from qcar.Observer.relative_state_estimators import SA_ACC_UIO_Estimator
     sensor_config = dict(SimulationConfig.load_config()["sensors"]["relative"],
                          max_range_m=30.0, seed=args.seed, drop_probability=0.0)
     with (QCAR_ROOT / "Observer/config_relative_estimators.yaml").open(encoding="utf-8") as handle:

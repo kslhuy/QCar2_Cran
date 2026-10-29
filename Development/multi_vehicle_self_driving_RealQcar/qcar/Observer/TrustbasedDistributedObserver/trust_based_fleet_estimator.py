@@ -27,34 +27,33 @@ from collections import defaultdict, deque
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from Observer.fleet_state_estimators import (
+from qcar.Observer.fleet_state_estimators import (
     FleetStateEstimatorBase,
     _normalize_state_array,
     _state_dict_to_array,
 )
 
 # Import trust components
-from Observer.TrustbasedDistributedObserver.trust_model import (
+from qcar.Observer.TrustbasedDistributedObserver.trust_model import (
     TriPTrustModel,
     TrustConfig,
     TrustScore,
     VehicleData,
 )
-from Observer.TrustbasedDistributedObserver.weight_trust_module import (
+from qcar.Observer.TrustbasedDistributedObserver.weight_trust_module import (
     WeightTrustModule,
     WeightConfig,
     WeightResult,
 )
-from Observer.TrustbasedDistributedObserver.trust_logger import TrustWeightLogger
-from Observer.TrustbasedDistributedObserver.external_measurement_cache import (
+from qcar.Observer.TrustbasedDistributedObserver.trust_logger import TrustWeightLogger
+from qcar.Observer.TrustbasedDistributedObserver.external_measurement_cache import (
     ExternalMeasurementCache,
 )
-from Observer.TrustbasedDistributedObserver.contamination_rollback import (
+from qcar.Observer.TrustbasedDistributedObserver.contamination_rollback import (
     ContaminationRollback,
 )
-from Observer.TrustbasedDistributedObserver.estimator_config import (
+from qcar.Observer.TrustbasedDistributedObserver.estimator_config import (
     ObserverSettings,
     ReferenceSettings,
     CLEAN_PREDICTION_MODES,
@@ -68,10 +67,10 @@ from Observer.TrustbasedDistributedObserver.estimator_config import (
     normalize_vehicle_model_config,
     vehicle_model_for_target,
 )
-from Observer.TrustbasedDistributedObserver.v2v_attack_status import (
+from qcar.Observer.TrustbasedDistributedObserver.v2v_attack_status import (
     V2VAttackStatusTracker,
 )
-from electronics.trust_observer_native import TrustObserverShadow
+from qcar.electronics.trust_observer_native import TrustObserverShadow
 
 
 class TrustBasedFleetEstimator(FleetStateEstimatorBase):

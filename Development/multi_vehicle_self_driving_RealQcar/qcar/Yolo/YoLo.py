@@ -2,7 +2,6 @@ import numpy as np
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
-import cv2  # Added for video streaming
 import subprocess
 import os
 import sys
@@ -900,6 +899,7 @@ class YOLOVideoPublisher:
         Args:
             frame: encoding-ready image (numpy array, usually BGR)
         """
+        import cv2
         try:
             # Compress to JPEG with 80% quality to save bandwidth
             _, buffer = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
@@ -940,6 +940,7 @@ class YOLOVideoReceiver:
         Returns:
             frame: cv2 image (BGR) or None if no new frame
         """
+        import cv2
         try:
             data = self._socket.recv(zmq.NOBLOCK)
             # Decode JPEG buffer

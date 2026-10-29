@@ -10,8 +10,8 @@ import msgpack
 from typing import Optional, Dict, Any
 from threading import Event
 
-from logging_utils import VehicleLogger
-from config_main import VehicleMainConfig
+from qcar.logging_utils import VehicleLogger
+from qcar.config_main import VehicleMainConfig
 
 class GroundStationClient:
     """

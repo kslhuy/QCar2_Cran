@@ -7,6 +7,20 @@ Run from the qcar directory with::
 
 from __future__ import annotations
 
+# Support direct-file launches from an uninstalled checkout or robot upload.
+if __package__ != "qcar.electronics":
+    import importlib.util as _import_util
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parents[1]
+    if "qcar" not in _sys.modules:
+        _spec = _import_util.spec_from_file_location("qcar", _root / "__init__.py", submodule_search_locations=[str(_root)])
+        _pkg = _import_util.module_from_spec(_spec)
+        _sys.modules["qcar"] = _pkg
+        _spec.loader.exec_module(_pkg)
+    __package__ = "qcar.electronics"
+
+
 import argparse
 import json
 import time
@@ -18,7 +32,7 @@ from typing import Any, Callable, Dict, Iterable
 import numpy as np
 import yaml
 
-from Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
+from qcar.Observer.TrustbasedDistributedObserver.trust_based_fleet_estimator import (
     TrustBasedFleetEstimator,
 )
 
@@ -26,13 +40,14 @@ from .board import ElectronicsDigitalTwin
 from .hardware import HardwareTargetManifest, available_hardware_profiles
 from .hil import HILFirmwareCore, LoopbackHILTransport, ReferenceHILDevice
 from .native_backend import NativeFirmwareCore
+from .trust_observer_native import default_native_library_path
 from .types import MCUState, VehiclePlantSample
 from .v2v_bridge import ElectronicsV2VBridge
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 QCAR_DIR = PACKAGE_DIR.parent
-NATIVE_LIBRARY = PACKAGE_DIR / "native" / "build" / "cran_electronics_core.dll"
+NATIVE_LIBRARY = default_native_library_path()
 TRUST_CONFIG = (
     QCAR_DIR
     / "Observer"

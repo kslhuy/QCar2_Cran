@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qcar-cran"
+version = "0.1.0"
+description = "QCar fleet control, simulation and observer experiments"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26,<3",
+    "scipy>=1.12,<2",
+    "PyYAML>=6,<7",
+    "omegaconf>=2.3,<3",
+    "msgpack>=1,<2",
+    "pyzmq>=25,<28",
+]
+
+[project.optional-dependencies]
+simulation = ["torch>=2.2,<3", "matplotlib>=3.8,<4"]
+gui = [
+    "websockets>=14,<16", "paramiko>=3.4,<5", "scp>=0.15,<1",
+    "pygame>=2.5,<3", "PyQt6>=6.6,<7", "pyqtgraph>=0.13,<1",
+    "matplotlib>=3.8,<4",
+]
+vision = ["opencv-python>=4.9,<5", "ultralytics>=8.3,<9"]
+optimization = ["casadi>=3.6,<4", "cvxpy>=1.5,<2"]
+analysis = ["pandas>=2.2,<3", "matplotlib>=3.8,<4", "mplcursors>=0.5,<1"]
+hardware = ["pyserial>=3.5,<4"]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+qcar = "qcar.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "Development/multi_vehicle_self_driving_RealQcar"}
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["Development/multi_vehicle_self_driving_RealQcar"]
+include = ["qcar*"]
+exclude = [
+    "qcar.*.__pycache__*", "qcar.Observer.KalmaNet.Origine*",
+    "qcar.Observer.Liqi_obs*", "qcar.Controller.oldss*",
+    "qcar.*.results*", "qcar.*.data*", "qcar.*.fig*", "qcar.*.logs*",
+    "qcar.*.paper_figures*", "qcar.*.Rapport_paper*",
+    "qcar.*.build*", "qcar.*.node_modules*",
+]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.yml"]
+"qcar.Observer.KalmaNet.Robust" = ["models/*.npz", "models/*.pt"]
+"qcar.Observer.ShengyaObs" = ["*.mat", "*.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["Development/multi_vehicle_self_driving_RealQcar"]
+testpaths = [
+    "tests/portability",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/simulation/test_flow_math.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/simulation/test_reference_modes.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/simulation/test_observer_pipeline.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/KalmaNet/Robust/test_innovation_trust.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/test_trust_based_fleet_estimator_initialization.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/TrustbasedDistributedObserver/test_trust_model_relative_measurement_memory.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/electronics/test_electronics_digital_twin.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/electronics/test_hardware_abstraction.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/electronics/test_trust_observer_native.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/electronics/test_v2v_transport_integration.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/test_pcb_connection.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/Observer/test_live_sensor_attacks.py",
+    "Development/multi_vehicle_self_driving_RealQcar/qcar/V2V/AttackModule/test_v2v_attack_injector.py",
+]
+addopts = "--import-mode=importlib"

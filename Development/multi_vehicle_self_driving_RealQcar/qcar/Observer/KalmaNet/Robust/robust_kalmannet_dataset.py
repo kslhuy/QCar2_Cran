@@ -8,7 +8,7 @@ import numpy as np
 try:
     from .qcar_heading_fusion import QCarHeadingFusion, QCarHeadingFusionConfig
 except ImportError:
-    from qcar_heading_fusion import QCarHeadingFusion, QCarHeadingFusionConfig
+    from qcar.Observer.KalmaNet.Robust.qcar_heading_fusion import QCarHeadingFusion, QCarHeadingFusionConfig
 
 
 RAW_KEYS = (
