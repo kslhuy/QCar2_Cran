@@ -589,8 +589,8 @@ class RuntimeSensorAttackSimulator:
     Stateful online sensor fault simulator.
 
     This reuses the same attack vocabulary as offline training, but applies
-    attacks over multiple observer ticks so runtime evaluation can reproduce
-    realistic sensor failures instead of one-step perturbations.
+    faults over multiple observer ticks. Magnitudes and step durations require
+    calibration for the specific sensor and observer cadence.
     """
 
     BRANCH_RUNTIME_KEYS: Dict[str, Tuple[str, ...]] = {

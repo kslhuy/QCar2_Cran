@@ -69,6 +69,9 @@ Note: For the more detailed software setup instructions, please refer to the [In
 For fresh Windows/Ubuntu environments, dependency profiles, portable launch commands
 and SDK-free simulation, start with [PORTABILITY.md](PORTABILITY.md).
 
+For attack configuration, actual injection points, verified fixes and the limits
+of realism claims, see [ATTACK_AUDIT.md](ATTACK_AUDIT.md).
+
 ## Quick Start Guide
 
 To get started with the QCar Multi-Vehicle Control System, please follow the instructions in the [For User Guide](Development/multi_vehicle_self_driving_RealQcar/ForUser.md) for both real QCar and simulation environments. This guide provides step-by-step instructions for setting up and running the system in different scenarios.

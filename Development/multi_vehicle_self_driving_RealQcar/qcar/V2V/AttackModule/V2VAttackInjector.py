@@ -379,6 +379,14 @@ class V2VAttackInjector:
             }
         
         status = self.attack_module.get_attack_status()
+        if not self.enabled:
+            status.update({
+                'active_scenarios': 0,
+                'current_scenario_names': [],
+                'active_scenario_details': [],
+                'attack_value_snapshot': {'clock_s': status.get('current_time', 0.), 'by_vehicle': {}},
+                'all_scenario_details': [dict(item, active=False) for item in status.get('all_scenario_details', [])],
+            })
         status.update({
             'enabled': self.enabled,
             'attack_active': bool(self.enabled and status.get('attack_active', False)),

@@ -20,6 +20,7 @@ if __package__ != "qcar.simulation":
 import argparse
 import asyncio
 import json
+import math
 import sys
 from typing import List
 
@@ -42,7 +43,7 @@ def _parse_victim_ids(raw: str) -> List[int]:
 
 
 def _build_trigger_payload(args: argparse.Namespace) -> dict:
-    return {
+    payload = {
         "type": "trigger_attack",
         "target": args.target,
         "attack_type": args.attack_type,
@@ -51,6 +52,9 @@ def _build_trigger_payload(args: argparse.Namespace) -> dict:
         "attacker_id": args.attacker_id,
         "victim_ids": args.victim_ids,
     }
+    if not args.no_disable:
+        payload["duration_s"] = float(args.duration)
+    return payload
 
 
 def _build_disable_payload(args: argparse.Namespace) -> dict:
@@ -96,8 +100,12 @@ async def _send_timed_attack(args: argparse.Namespace) -> None:
         if args.no_disable:
             return
 
-        await asyncio.sleep(args.duration)
-        await websocket.send(json.dumps(disable_payload))
+        try:
+            await asyncio.sleep(args.duration)
+        finally:
+            # Best-effort early stop on Ctrl+C; vehicle-side expiry remains the
+            # upper bound if the connection is no longer usable.
+            await websocket.send(json.dumps(disable_payload))
         print(f"Disabled attack after {args.duration:.2f}s.")
 
 
@@ -132,10 +140,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
-    if args.duration < 0.0:
-        parser.error("--duration must be non-negative")
-    if args.attack_delay < 0.0:
-        parser.error("--attack-delay must be non-negative")
+    if not math.isfinite(args.duration) or args.duration <= 0.0:
+        parser.error("--duration must be finite and positive")
+    if not math.isfinite(args.attack_delay) or args.attack_delay < 0.0:
+        parser.error("--attack-delay must be finite and non-negative")
+    if not math.isfinite(args.connect_timeout) or args.connect_timeout <= 0.0:
+        parser.error("--connect-timeout must be finite and positive")
     try:
         asyncio.run(_send_timed_attack(args))
     except KeyboardInterrupt:

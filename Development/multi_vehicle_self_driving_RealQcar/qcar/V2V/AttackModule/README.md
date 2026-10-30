@@ -140,6 +140,14 @@ Important:
 - For `fleet` attacks, `victim_ids` refers to the vehicle entries inside `fleet_states`.
 - `-1` means all vehicles.
 
+For local broadcasts use `victim_ids: [-1]`; receiver-selective local attacks
+are not implemented and now fail explicitly. Fleet IDs select subject rows,
+not receiving hosts. Configuration loading is strict and atomic by default.
+
+See the [attack audit](../../../../../ATTACK_AUDIT.md) for current effective
+parameters, packet-drop semantics, corrected defects and realism limitations.
+Manual factory cases and custom YAML scenarios can have different parameters.
+
 
 ## Example: attack on global state estimation
 

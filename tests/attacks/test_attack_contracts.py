@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import RLock
 from types import SimpleNamespace
 from unittest.mock import patch
+from unittest.mock import Mock
 
 import msgpack
 import numpy as np
@@ -89,6 +90,8 @@ def test_disabled_injector_reports_inactive_attack():
     injector.disable_attacks()
     assert not injector.is_attack_active()
     assert not injector.get_attack_status()["attack_active"]
+    assert injector.get_attack_status()["active_scenarios"] == 0
+    assert injector.get_attack_status()["attack_value_snapshot"]["by_vehicle"] == {}
 
 
 def test_unknown_field_is_rejected_instead_of_counted_as_an_attack():
@@ -183,3 +186,80 @@ def test_dropout_age_uses_elapsed_time_and_does_not_invent_a_prior_fix():
     output = simulator.apply(**values, dt=.02, gps_data=None)[5]
     assert output["age_sec"] == pytest.approx(.05)
     assert output["hold_valid"]
+
+
+def test_timed_trigger_expires_without_the_client_stop_message():
+    from qcar.vehicle_logic import VehicleLogic
+    injector, _, clock, _ = make_link()
+    logic = VehicleLogic.__new__(VehicleLogic)
+    logic.vehicle_id = 0
+    logic.v2v_manager = injector
+    logic.vehicle_logger = SimpleNamespace(logger=logging.getLogger("timed-attack"), log_error=Mock())
+    logic._get_v2v_log_time_s = lambda: 0.
+    logic._sync_v2v_attack_status_to_observer = Mock()
+    logic.trigger_v2v_attack({"attack_type": "Bogus", "case_num": 1,
+                              "attacker_id": 0, "victim_ids": [-1], "duration_s": 1.5})
+    assert len(injector.attack_module.scenarios) == 1
+    assert injector.attack_module.scenarios[0].t_end == 1.5
+    with patch("qcar.V2V.v2v_communication.time.time_ns", side_effect=lambda: clock[0]):
+        injector.update_broadcast()
+        assert injector.is_attack_active()
+        clock[0] += 2_000_000_000
+        injector.update_broadcast()
+        assert not injector.is_attack_active()
+    logic.vehicle_logger.log_error.assert_not_called()
+
+
+def test_timed_cli_carries_vehicle_side_expiry():
+    from qcar.simulation.timed_v2v_attack import _build_parser, _build_trigger_payload
+    args = _build_parser().parse_args(["--duration", "3.5"])
+    assert _build_trigger_payload(args)["duration_s"] == 3.5
+    args.no_disable = True
+    assert "duration_s" not in _build_trigger_payload(args)
+
+
+def test_combined_drop_and_falsification_counts_only_applied_changes():
+    module = AttackModule(0, random_seed=1)
+    module.add_scenario(make_scenario(0, -1, 0., 1., "drop", 0., "local", ["all"]))
+    module.add_scenario(make_scenario(0, -1, 0., 1., "bias", .1, "local", ["velocity"]))
+    module.update(.1)
+    assert not module.should_drop_local_message()
+    assert module.apply_attack_to_local_state({"velocity": .5})["velocity"] == pytest.approx(.6)
+    assert module.stats["total_attacks_applied"] == 1
+
+
+def test_fractional_step_requires_a_finite_duration():
+    with pytest.raises(ValueError, match="finite"):
+        AttackModule(0).add_scenario(make_scenario(0, -1, 0., float("inf"),
+            "step", {"at": .5, "value": 1.}, "local", ["x"]))
+
+
+def test_training_aliases_and_branch_selection_preserve_clean_inputs():
+    import torch
+    from qcar.Observer.KalmaNet.Robust.sensor_attack_augmentation import (
+        AttackConfig, SensorAttackAugmenter, BRANCH_KEYS,
+    )
+    config = AttackConfig.from_dict(dict(attack_types=["bias"], attack_mode="mixed",
+        attack_prob=1., meas_attack_prob=0., direct_meas_attack_prob=0., gps_attack_prob=0.,
+        branch_attack_probs={"imu": .0001, "steer": 0., "wheel": 0.}))
+    raw = {key: torch.ones(2, 16) for keys in BRANCH_KEYS.values() for key in keys}
+    z = torch.zeros(2, 16, 4)
+    changed, observed, branches, measurements = SensorAttackAugmenter(config).augment_batch(raw, z)
+    assert torch.all(branches[:, 0] == 1) and torch.all(branches[:, 1:] == 0)
+    for key in raw:
+        assert torch.all(raw[key] == 1)
+        if key in BRANCH_KEYS["imu"]:
+            assert not torch.equal(changed[key], raw[key])
+        else:
+            assert torch.equal(changed[key], raw[key])
+    assert torch.equal(observed, z) and not measurements.any()
+
+
+def test_legacy_runtime_gps_mode_selects_only_gps():
+    from qcar.Observer.KalmaNet.Robust.runtime_sensor_attack import RuntimeSensorAttackMixin
+    values = RuntimeSensorAttackMixin._normalize_runtime_attack_config(
+        {"attack_mode": "gps", "gps_attack_types": ["jump"]})
+    assert values["attack_prob"] == 0.
+    assert values["gps_attack_prob"] == 1.
+    assert values["forced_branches"] == []
+    assert values["force_gps_attack"]

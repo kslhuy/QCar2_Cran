@@ -545,7 +545,14 @@ class VehicleLogic:
             if normalized_victim_ids == []:
                 normalized_victim_ids = -1
 
-            # Manual trigger semantics: start now and stay active until the user disables it.
+            # A timed client supplies a vehicle-side expiry so a disconnected
+            # client cannot accidentally leave its finite test running forever.
+            duration = data.get("duration_s")
+            if duration is not None:
+                duration = float(duration)
+                if not np.isfinite(duration) or duration <= 0:
+                    raise ValueError("duration_s must be finite and positive")
+            # Manual GUI triggers without duration keep the until-disabled behaviour.
             # The injector still uses its local elapsed clock, while logs use the
             # shared V2V-reference clock so CSVs compare across vehicles.
             injector_t_start = (
@@ -565,15 +572,17 @@ class VehicleLogic:
                 attacker_id=scenario_attacker_id,
                 victim_ids=normalized_victim_ids,
                 t_start=injector_t_start,
-                t_end=float("inf"),
+                t_end=injector_t_start + duration if duration is not None else float("inf"),
                 data_type=data_type,
             )
+            scenario.validate()
 
             self._sync_v2v_attack_status_to_observer(
                 self._build_gui_attack_status(
                     scenario,
                     clock_s=log_t_start,
                     log_start_s=log_t_start,
+                    log_end_s=log_t_start + duration if duration is not None else float("inf"),
                 )
             )
 
@@ -589,7 +598,7 @@ class VehicleLogic:
 
             self.vehicle_logger.logger.info(
                 f"Triggered manual {attack_type} attack (Case {case_num}) "
-                f"starting at V2V t={log_t_start:.3f}s and running until disabled. "
+                f"starting at V2V t={log_t_start:.3f}s; duration={duration if duration is not None else 'until disabled'}. "
                 f"Victims: {normalized_victim_ids}"
             )
         except Exception as e:

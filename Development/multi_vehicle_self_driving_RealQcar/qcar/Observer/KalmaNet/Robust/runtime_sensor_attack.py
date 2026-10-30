@@ -33,6 +33,12 @@ class RuntimeSensorAttackMixin:
     ) -> Dict[str, Any]:
         normalized = copy.deepcopy(config) if isinstance(config, dict) else {}
         target_sensor = str(normalized.pop("target_sensor", "") or "").strip().lower()
+        # Older callers used attack_mode="gps" (or a branch) for runtime
+        # selection. Keep that API distinct from training's mixed/measurement_only.
+        legacy_target = str(normalized.get("attack_mode", "")).strip().lower()
+        if legacy_target in {"gps", "imu", "steering", "steer", "velocity", "wheel", "random"}:
+            normalized.pop("attack_mode")
+            target_sensor = target_sensor or legacy_target
 
         attack_types = normalized.pop("attack_types", None)
         if attack_types is not None and "enabled_attacks" not in normalized:

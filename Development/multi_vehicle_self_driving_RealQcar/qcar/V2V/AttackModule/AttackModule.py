@@ -5,7 +5,10 @@ This module provides attack simulation capabilities for vehicle-to-vehicle (V2V)
 communication in fleet frameworks. It can inject faults into V2V data including:
 - Local state broadcasts (position, velocity, heading)
 - Fleet state estimates
-- Heartbeat messages
+- Local/fleet values and withholding selected state updates
+
+Heartbeat and trust reports are forwarded unchanged by V2VAttackInjector.
+Replay and delay names are reserved; this value injector does not implement them.
 
 Supports multiple attack types:
 - Bogus messages (scaling, bias, linear drift, sinusoidal, faulty/noise)
@@ -188,6 +191,9 @@ class AttackScenario:
             raise ValueError("Step fraction must be in [0, 1]")
         elif self.modification_type == ModificationType.SINUSOIDAL and float(options.get("frequency", 1.)) < 0:
             raise ValueError("Sinusoidal frequency must be non-negative")
+        if (self.modification_type == ModificationType.STEP and isinstance(value, dict)
+                and float(options.get("at", .5)) > 0 and not np.isfinite(self.t_end)):
+            raise ValueError("A fractional step requires a finite attack duration")
     
     def is_active(self, current_time: float) -> bool:
         """Check if attack is currently active based on time."""
@@ -333,7 +339,7 @@ class AttackModule:
         """Add an attack scenario to the module."""
         scenario.validate()
         self.scenarios.append(scenario)
-        self.stats['attacks_by_scenario'][scenario.scenario_name] = 0
+        self.stats['attacks_by_scenario'].setdefault(scenario.scenario_name, 0)
         
         if self.logger:
             self.logger.info(
@@ -541,7 +547,7 @@ class AttackModule:
         # Find scenarios where this vehicle is the attacker
         attacker_scenarios = [
             s for s in self.current_scenarios
-            if s.attacker_id == self.vehicle_id and s.should_attack_local()
+            if s.attacker_id == self.vehicle_id and s.should_attack_local() and not s.is_drop_attack()
         ]
         
         if not attacker_scenarios:
@@ -591,7 +597,7 @@ class AttackModule:
         # Find scenarios where this vehicle is the attacker
         attacker_scenarios = [
             s for s in self.current_scenarios
-            if s.attacker_id == self.vehicle_id and s.should_attack_fleet()
+            if s.attacker_id == self.vehicle_id and s.should_attack_fleet() and not s.is_drop_attack()
         ]
         
         if not attacker_scenarios:

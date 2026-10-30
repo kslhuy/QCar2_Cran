@@ -843,6 +843,11 @@ def load_scenarios_from_config(
                "attack_type", "modification_type", "data_type", "intensity",
                "target_fields", "description"}
     pending = []
+    def integer_id(value):
+        converted = int(value)
+        if isinstance(value, bool) or float(value) != converted:
+            raise ValueError("Vehicle IDs must be integers")
+        return converted
     for index, item in enumerate(scenarios):
         name = item.get("name", f"scenario {index}") if isinstance(item, dict) else f"scenario {index}"
         try:
@@ -863,7 +868,7 @@ def load_scenarios_from_config(
                 raise ValueError("victim_ids must be a list of integers")
             scenario = AttackScenario(
                 t_start=float(item["t_start"]), t_end=float(item["t_end"]),
-                attacker_id=int(item["attacker_id"]), victim_ids=[int(v) for v in victims],
+                attacker_id=integer_id(item["attacker_id"]), victim_ids=[integer_id(v) for v in victims],
                 attack_type=AttackType(item["attack_type"]),
                 modification_type=ModificationType(item["modification_type"]),
                 data_type=DataType(item["data_type"]), intensity=item.get("intensity", 1.0),
